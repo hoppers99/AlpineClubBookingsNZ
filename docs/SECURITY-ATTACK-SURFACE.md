@@ -781,12 +781,16 @@ Hardening applied in #2235:
   stream is read) and uses the strict `Content-Length` parse from
   `readBoundedWebhookText` so a malformed header is treated as absent, never
   trusted.
-- Adopted across all four multipart surfaces with their existing status codes and
+- Adopted across all five multipart surfaces with their existing status codes and
   messages preserved: `/api/members/[id]/photo` (2MB/file), `/api/admin/image-library`
-  (2MB/file), `/api/admin/image-manager/upload` (a batch route — now capped at 25
-  files and an 80MB total request body, while keeping its friendly per-file
-  10MB result), and the config-transfer `readBundleUpload` shared by the plan /
-  apply / reseal routes (50MB bundle file, ~54MB request body).
+  (2MB/file), `/api/admin/site-style/logo` (2MB/file, #2322 — additionally
+  re-checks the materialised source size after buffering, bounds the decoded
+  image to 160x640 through `sharp`, and 413s if the RE-ENCODED bytes exceed the
+  2MB cap, so a pathological canvas cannot be stored), `/api/admin/image-manager/upload`
+  (a batch route — now capped at 25 files and an 80MB total request body, while
+  keeping its friendly per-file 10MB result), and the config-transfer
+  `readBundleUpload` shared by the plan / apply / reseal routes (50MB bundle
+  file, ~54MB request body).
 - **Inclusive caps (fix, this review).** `busboy` trips its `fileSize` / `fieldSize`
   truncation when the running size *reaches* the limit (`size === limit`), so the
   first cut of #2235 turned a byte-exact upload (a file of exactly 2MB / 50MB, or a
@@ -954,6 +958,84 @@ to **any** scoped policy this app adds in future, not just these (#2279):
   visibly on staging instead of silently shipping an unprotected page to
   production. Measured against `caddy:2`: with an upstream emitting a CSP the
   header is untouched; with an upstream emitting none the baseline appears.
+
+## Anonymous Public-Page Caching - 2026-07-29
+
+Issue #2322. `src/proxy.ts` relaxes `Cache-Control` to
+`public, max-age=60, s-maxage=60, stale-while-revalidate=300` on a **closed
+allow list** of public pages — currently the home page `/` alone — when the
+request is a `GET` carrying no session cookie. Every other response keeps the
+framework default (`private, no-cache, no-store`).
+
+The security-relevant properties:
+
+- **Allow list, not deny list.** A route added later is uncached until someone
+  adds it deliberately, so a new token- or session-bearing page cannot become
+  publicly cacheable by omission. Every `(public)` route (login, register,
+  password reset, `pay/[token]`, `family-invite/[token]`, `chores/[token]`…) is
+  excluded because all of them are token-, form-, or session-bearing, as are
+  `/join/*` and `/contact`. `/hut-leader-instructions` is excluded despite
+  having no login gate: it is per-assignment and PIN-gated (`?a=` from an
+  assignment email), so it is not shared content. The `(website)` `[...slug]`
+  CMS catch-all is excluded too: middleware cannot distinguish a CMS path from
+  an application path without a database read.
+- **Session detection fails toward not caching.** The cookie test matches the
+  next-auth v5 name (plain, `__Secure-` prefixed, and chunked `.0`/`.1`
+  variants) **and** the legacy v4 `next-auth.session-token`. This deliberately
+  diverges from `SESSION_COOKIE_NAME_PATTERN` in `src/lib/auth-diagnostics.ts`,
+  which excludes v4 so a stale cookie is not misread as an auth anomaly. Here a
+  stale cookie only costs a cache miss, whereas the opposite error would let a
+  shared cache store a page served to someone holding a session.
+- **`Vary: Cookie` is required, not decorative.** Without it a shared cache
+  would serve the stored anonymous render to a member who has a session, who
+  would then see the header painted logged-out. It is appended rather than set
+  so any `Vary` the framework adds for RSC navigation survives.
+- **No member data is in scope, but the body is not wholly request-independent.**
+  The allow-listed page renders club-wide branding and CMS content only, so a
+  mis-keyed cache entry cannot disclose anything member-specific. It does,
+  however, carry the **per-request CSP nonce**: a cached copy replays one
+  request's nonce to later visitors for up to the cache lifetime. That does not
+  weaken the policy for the attacker's own page — a nonce is not a secret and
+  grants nothing to a third party who cannot inject markup — but it does mean
+  the nonce is NOT unique-per-response while a shared cache is serving, so the
+  nonce must never be treated as a CSRF token or a per-session secret. The
+  60-second window bounds the replay.
+- Both `max-age` and `s-maxage` are emitted. No shared cache was found in the
+  deployment path (Caddy runs without a cache module and sets no cache
+  directives), so an `s-maxage`-only value would today be stored by nothing;
+  `max-age` earns the repeat-visit win from the browser, and `s-maxage` is
+  correct if a CDN is ever placed in front.
+
+The relaxed value survives the framework default because Next writes its own
+`Cache-Control` only when the response does not already carry one
+(`node_modules/next/dist/server/send-payload.js`:
+`if (cacheControl && !res.getHeader('Cache-Control'))`). This holds in
+production only — in development `base-server` overwrites the header
+unconditionally, so a dev-server observation of this behaviour is a false
+negative. Caddy neither sets nor rewrites `Cache-Control`, so the edge does not
+override these values either.
+
+**Flight requests are excluded (#2322).** The cache header is applied only to
+plain document requests: any request carrying `RSC`, `Next-Router-State-Tree`,
+`Next-Router-Prefetch`, or `Next-Router-Segment-Prefetch` keeps the framework
+default. A React Server Components navigation returns a *different body under the
+same URL*, and on stable Next builds `validateRSCRequestHeaders` is off, so a
+crafted `RSC: 1` GET of `/` would otherwise be handed a cacheable flight payload
+stored under the HTML's cache key — served to ordinary document requests by any
+shared cache that ignores `Vary`. (The two prefetch headers are already excluded
+by the proxy matcher's `missing:` clause; they are listed so the check stays
+correct if that matcher changes.)
+
+**Accepted residual: non-steady-state renders of `/`.** The home page is
+allow-listed unconditionally, so the two transient screens it can serve — the
+"site setup in progress" screen before the style is first saved, and the 404 that
+renders while the home page content is unpublished — are browser-cacheable for up
+to 60 seconds after the admin transitions out of that state. Tag invalidation
+(`revalidateTag`) reaches Next's own data cache but cannot reach an HTTP cache
+already holding the response, so the stale screen simply expires. Self-healing,
+bounded by the 60-second lifetime, and affecting only anonymous visitors during
+first-time setup or a content edit — accepted rather than special-cased, since
+gating the allow list on render state would put a database read in the proxy.
 
 ## Follow-Up Mapping
 

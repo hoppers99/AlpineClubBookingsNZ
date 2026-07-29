@@ -179,6 +179,45 @@ do not use unnamespaced `hashtext(<id>)` for new lock families.
 - `admin-bed-allocation.ts` locks the owning `LodgeRoom` row with `FOR UPDATE`
   before checking and changing one room's bunk-group membership. This protocol
   is independent of the booking/capacity/credit lock cluster.
+- **Club-theme logo writer** — `src/lib/club-theme.ts` (`saveClubTheme`, #2322):
+  the site-style save transaction locks the `ClubTheme` singleton
+  (`SELECT "logoUrl" FROM "ClubTheme" WHERE "id" = 'default' FOR UPDATE`) and
+  reads the currently-stored logo under that lock, so two concurrent saves
+  serialise and can never both delete the same replaced `LOGO` blob (or orphan
+  each other's new one). Because `FOR UPDATE` locks nothing when the row is
+  absent, the transaction first materialises the singleton with a
+  `createMany … skipDuplicates` so a **first-ever** save is serialised too.
+  Singleton-keyed; no advisory lock; disjoint from the booking/capacity/credit
+  and money lock clusters. The acquisition order is **`ClubTheme` row first,
+  then `MediaImage`** — the lock is taken before the blob presence check, the
+  row write, and the scoped `deleteMany`. The delete is scoped to
+  `kind: "LOGO"`, so a `CONTENT` picker image referenced by page HTML can never
+  be collected by a theme save. Under the same lock the incoming `logoUrl` is
+  checked to still exist before it is written, which refuses a stale tab's save
+  (409) rather than dangling the theme or deleting a blob that is still
+  referenced.
+
+  Counterpart writers, and why there is no cycle:
+  - **Config-transfer apply** (`src/lib/config-transfer/apply.ts`) takes
+    `pg_advisory_xact_lock(hashtext('config-transfer-import'))` and then writes the
+    `ClubTheme` row inside its bundle transaction, so the order is advisory ->
+    `ClubTheme` row. `saveClubTheme` takes no advisory lock at all, so the two
+    orders cannot invert. `recreateBundleMedia` only ever **creates**
+    `MediaImage` rows (and reads candidates for byte-identical reuse) — it locks
+    no existing `MediaImage` row — so an import never holds a `MediaImage` lock
+    while waiting for the theme row. Because an import can hold the theme row for
+    the length of a whole bundle, `saveClubTheme` runs with an explicit
+    `maxWait` 10s / `timeout` 15s and the site-style route maps an exhausted wait
+    to a 503 retry-later rather than a 500.
+  - **Image-library delete** (`src/app/api/admin/image-library/[id]/route.ts`) is
+    a bare `MediaImage` delete with no surrounding row lock, and is itself scoped
+    to `kind: "CONTENT"`, so it can never touch a `LOGO` blob this protocol owns
+    — disjoint in both direction and row set.
+  - **Member photo writer** (below) locks the `Member` row and touches only
+    `MEMBER_PHOTO` blobs. The two protocols share the `MediaImage` table but
+    never the same rows, and neither takes the other's parent row, so they are
+    table-disjoint for locking purposes.
+
 - **Member photo writer** — `src/app/api/members/[id]/photo/route.ts` (epic #171):
   the upload (POST) and remove (DELETE) transactions each `SELECT "photoImageId"
   FROM "Member" WHERE "id" = $1 FOR UPDATE` before creating/repointing the blob,
