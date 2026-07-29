@@ -58,6 +58,15 @@ export interface EmailTemplateValidationResult {
   unsafeLinks: string[];
 }
 
+// #2268: a required token that moved to a pre-composed line still accepts the
+// raw token it replaced. `{{doorCodeNote}}` is the whole "Door code: 1234"
+// line (or nothing at all, for a lodge with no code), but an override an admin
+// saved before #2268 writes the bare `{{doorCode}}` — it must keep validating,
+// keep rendering, and keep being re-savable.
+const REQUIRED_TOKEN_ALTERNATIVES: Record<string, readonly string[]> = {
+  doorCodeNote: ["doorCode"],
+};
+
 function extractTemplateTokens(value: string): string[] {
   return Array.from(value.matchAll(/\{\{([^{}]+)\}\}/g))
     .map((match) => match[1].trim())
@@ -176,7 +185,16 @@ export function validateEmailTemplateContent({
   const bodyTokenSet = new Set(bodyTokens);
   const missingRequiredTokens =
     bodyText.trim().length > 0
-      ? Array.from(requiredTokenSet).filter((token) => !bodyTokenSet.has(token))
+      ? Array.from(requiredTokenSet).filter(
+          (token) =>
+            !bodyTokenSet.has(token) &&
+            // #2268: a required token that became a pre-composed line is also
+            // satisfied by the raw token it replaced, so an override saved
+            // before the change keeps validating and keeps re-saving.
+            !(REQUIRED_TOKEN_ALTERNATIVES[token] ?? []).some((alternative) =>
+              bodyTokenSet.has(alternative),
+            ),
+        )
       : [];
   if (missingRequiredTokens.length > 0) {
     issues.push({

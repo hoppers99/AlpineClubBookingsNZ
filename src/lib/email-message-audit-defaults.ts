@@ -56,15 +56,15 @@ export const EMAIL_AUDIT_DEFAULTS = {
   },
   "checkin-reminder": {
     "defaultSubject": "Check-in Reminder - {{CLUB_LODGE_NAME}}",
-    "defaultBody": "Check-in Reminder\n\nHi {{firstName}}, your lodge stay begins tomorrow!\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\n\nGuest list:\n\n{{guestFirstName}} {{guestLastName}}\n...\n\nYour arrival day chores:\n\n{{choreName}}: {{choreDescription}}\n...\n\nPlease ensure you arrive prepared for alpine conditions. Check the weather forecast before departing.\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\nView Booking: {{BASE_URL}}/bookings"
+    "defaultBody": "Check-in Reminder\n\nHi {{firstName}}, your lodge stay begins tomorrow!\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\n\nGuest list:\n\n{{guestFirstName}} {{guestLastName}}\n...\n\n{{choreListNote}}Please ensure you arrive prepared for alpine conditions. Check the weather forecast before departing.\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\nView Booking: {{BASE_URL}}/bookings"
   },
   "pre-arrival-reminder": {
     "defaultSubject": "Pre-arrival Information - {{CLUB_LODGE_NAME}}",
-    "defaultBody": "Upcoming Lodge Stay\n\nHi {{firstName}}, your lodge stay is coming up.\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\nExpected arrival: {{expectedArrivalTime}}\n\nHow to get to the lodge\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\nDoor code: {{doorCode}}\n\nView Booking: {{BASE_URL}}/bookings"
+    "defaultBody": "Upcoming Lodge Stay\n\nHi {{firstName}}, your lodge stay is coming up.\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\n{{expectedArrivalNote}}\nHow to get to the lodge\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\n{{doorCodeNote}}View Booking: {{BASE_URL}}/bookings"
   },
   "chore-roster": {
     "defaultSubject": "Your chore roster for {{formattedDate}} - {{CLUB_LODGE_NAME}}",
-    "defaultBody": "Chore Roster\n\nHi {{guestName}},\n\nHere are your assigned chores for {{formattedDate}} at the lodge:\n\n{{choreName}}: {{choreDescription}}\n...\n\nMark Chores Complete: {{choreLink}}\n\nUse this link to mark your chores as done from your phone. Link expires in 48 hours.\n\nLast person to bed: Check heaters and fire are safe and doors are secure.\n\nThanks for helping keep the lodge running smoothly!"
+    "defaultBody": "Chore Roster\n\nHi {{guestName}},\n\nHere are your assigned chores for {{formattedDate}} at the lodge:\n\n{{choreListNote}}{{choreLinkNote}}Last person to bed: Check heaters and fire are safe and doors are secure.\n\nThanks for helping keep the lodge running smoothly!"
   },
   "hut-leader-assignment": {
     "defaultSubject": "Your {{CLUB_NAME}} hut leader assignment",
@@ -100,11 +100,11 @@ export const EMAIL_AUDIT_DEFAULTS = {
   },
   "membership-application-approved": {
     "defaultSubject": "Your {{CLUB_NAME}} membership has been approved",
-    "defaultBody": "Membership Approved\n\nHi {{firstName}}, your {{CLUB_NAME}} membership application has been approved.\n\nYour account is ready. Use the button below to set your password and access the bookings system.\n\nSet Up My Account: {{BASE_URL}}/reset-password?token={{token}}\n\nCommittee note: {{adminNotes}}\n\nYour joining fee and any membership charges will be managed separately through the club's normal process.\n\nThis setup link expires in 7 days."
+    "defaultBody": "Membership Approved\n\nHi {{firstName}}, your {{CLUB_NAME}} membership application has been approved.\n\nYour account is ready. Use the button below to set your password and access the bookings system.\n\nSet Up My Account: {{BASE_URL}}/reset-password?token={{token}}\n\n{{committeeNote}}Your joining fee and any membership charges will be managed separately through the club's normal process.\n\nThis setup link expires in 7 days."
   },
   "membership-application-rejected": {
     "defaultSubject": "Update on your {{CLUB_NAME}} membership application",
-    "defaultBody": "Membership Application Update\n\nHi {{firstName}}, your {{CLUB_NAME}} membership application has been reviewed.\n\nThe committee has decided not to approve the application at this time.\n\nCommittee note: {{adminNotes}}\n\nIf you would like more information, please contact the club directly.\n\n{{CLUB_NAME}} — {{SUPPORT_EMAIL}}"
+    "defaultBody": "Membership Application Update\n\nHi {{firstName}}, your {{CLUB_NAME}} membership application has been reviewed.\n\nThe committee has decided not to approve the application at this time.\n\n{{committeeNote}}If you would like more information, please contact the club directly.\n\n{{CLUB_NAME}} — {{SUPPORT_EMAIL}}"
   },
   "family-group-invitation": {
     "defaultSubject": "{{inviterName}} invited you to join {{groupName}} — {{CLUB_BOOKINGS_NAME}}",
@@ -124,7 +124,7 @@ export const EMAIL_AUDIT_DEFAULTS = {
   },
   "child-request-rejected": {
     "defaultSubject": "Infant/Child/Youth request update — {{CLUB_BOOKINGS_NAME}}",
-    "defaultBody": "Infant/Child/Youth Request Update\n\nHi {{parentName}},\n\nYour request to add {{childName}} to your family group was not approved.\n\nAdmin note: {{reason}}\n\nIf you have questions, please contact the club.\n\n{{CLUB_NAME}} — {{SUPPORT_EMAIL}}"
+    "defaultBody": "Infant/Child/Youth Request Update\n\nHi {{parentName}},\n\nYour request to add {{childName}} to your family group was not approved.\n\n{{adminNoteLine}}If you have questions, please contact the club.\n\n{{CLUB_NAME}} — {{SUPPORT_EMAIL}}"
   },
   "admin-family-group-request": {
     "defaultSubject": "Family Group Request: {{requesterName}} ({{requestType}})",
@@ -144,7 +144,7 @@ export const EMAIL_AUDIT_DEFAULTS = {
   },
   "family-group-create-rejected": {
     "defaultSubject": "Family group request update — {{CLUB_BOOKINGS_NAME}}",
-    "defaultBody": "Family Group Request Update\n\nHi {{requesterName}},\n\nYour request to create the family group {{groupName}} was not approved.\n\nAdmin note: {{reason}}\n\nIf you have questions, please contact the club.\n\n{{CLUB_NAME}} — {{SUPPORT_EMAIL}}"
+    "defaultBody": "Family Group Request Update\n\nHi {{requesterName}},\n\nYour request to create the family group {{groupName}} was not approved.\n\n{{adminNoteLine}}If you have questions, please contact the club.\n\n{{CLUB_NAME}} — {{SUPPORT_EMAIL}}"
   },
   "partner-invite": {
     "defaultSubject": "{{inviterName}} invited you to join {{groupName}} — {{CLUB_BOOKINGS_NAME}}",
@@ -168,7 +168,7 @@ export const EMAIL_AUDIT_DEFAULTS = {
   },
   "membership-cancellation-submitted": {
     "defaultSubject": "Membership cancellation request submitted — {{CLUB_BOOKINGS_NAME}}",
-    "defaultBody": "Membership Cancellation Request Submitted\n\nHi {{firstName}},\n\nYour membership cancellation request has been submitted for admin review.\n\nIncluded memberships: {{participantSummary}}\n\nReason: {{reason}}\n\nMemberships remain active until an administrator approves the request. Any included login-capable adult must confirm before an administrator can process their cancellation.\n\nView Request: {{reviewUrl}}\n\n{{CLUB_NAME}} — {{SUPPORT_EMAIL}}"
+    "defaultBody": "Membership Cancellation Request Submitted\n\nHi {{firstName}},\n\nYour membership cancellation request has been submitted for admin review.\n\nIncluded memberships: {{participantSummary}}\n\n{{reasonNote}}Memberships remain active until an administrator approves the request. Any included login-capable adult must confirm before an administrator can process their cancellation.\n\nView Request: {{reviewUrl}}\n\n{{CLUB_NAME}} — {{SUPPORT_EMAIL}}"
   },
   "membership-cancellation-confirmation": {
     "defaultSubject": "Confirm membership cancellation request — {{CLUB_BOOKINGS_NAME}}",
@@ -176,15 +176,15 @@ export const EMAIL_AUDIT_DEFAULTS = {
   },
   "membership-cancellation-approved": {
     "defaultSubject": "Membership cancellation approved — {{CLUB_BOOKINGS_NAME}}",
-    "defaultBody": "Membership Cancellation Approved\n\nHi {{firstName}},\n\nThe membership cancellation for {{participantName}} has been approved and processed.\n\nRequest reason: {{reason}}\n\nThis membership is now inactive and the booking login has been disabled. Booking, payment, and audit history has been retained.\n\nIf this membership had an unpaid or overdue subscription invoice, that invoice has been cancelled with a Xero credit note. Paid subscriptions will not be refunded; thank you for being a member of {{CLUB_NAME}}.\n\nAdmin note: {{adminNote}}\n\n{{rejoinProcessText}}\n\n{{CLUB_NAME}} — {{SUPPORT_EMAIL}}"
+    "defaultBody": "Membership Cancellation Approved\n\nHi {{firstName}},\n\nThe membership cancellation for {{participantName}} has been approved and processed.\n\n{{reasonNote}}This membership is now inactive and the booking login has been disabled. Booking, payment, and audit history has been retained.\n\nIf this membership had an unpaid or overdue subscription invoice, that invoice has been cancelled with a Xero credit note. Paid subscriptions will not be refunded; thank you for being a member of {{CLUB_NAME}}.\n\n{{adminNoteLine}}{{rejoinProcessNote}}{{CLUB_NAME}} — {{SUPPORT_EMAIL}}"
   },
   "membership-cancellation-rejected": {
     "defaultSubject": "Membership cancellation update — {{CLUB_BOOKINGS_NAME}}",
-    "defaultBody": "Membership Cancellation Request Update\n\nHi {{firstName}},\n\nThe membership cancellation request for {{participantName}} was not approved at this time.\n\nRequest reason: {{reason}}\n\nAdmin note: {{adminNote}}\n\nThis membership remains active.\n\n{{CLUB_NAME}} — {{SUPPORT_EMAIL}}"
+    "defaultBody": "Membership Cancellation Request Update\n\nHi {{firstName}},\n\nThe membership cancellation request for {{participantName}} was not approved at this time.\n\n{{reasonNote}}{{adminNoteLine}}This membership remains active.\n\n{{CLUB_NAME}} — {{SUPPORT_EMAIL}}"
   },
   "admin-membership-cancellation-request": {
     "defaultSubject": "Membership cancellation ready: {{requesterName}}",
-    "defaultBody": "Membership Cancellation Ready for Review\n\n{{requesterName}} submitted a membership cancellation request with at least one participant ready for admin review.\n\nRequester: {{requesterName}}\nIncluded memberships: {{participantSummary}}\n\nReason: {{reason}}\n\nReview Cancellation Requests: {{reviewUrl}}\n\n{{CLUB_NAME}} — {{SUPPORT_EMAIL}}"
+    "defaultBody": "Membership Cancellation Ready for Review\n\n{{requesterName}} submitted a membership cancellation request with at least one participant ready for admin review.\n\nRequester: {{requesterName}}\nIncluded memberships: {{participantSummary}}\n\n{{reasonNote}}Review Cancellation Requests: {{reviewUrl}}\n\n{{CLUB_NAME}} — {{SUPPORT_EMAIL}}"
   },
   "age-up-invitation": {
     "defaultSubject": "You're now {{targetAgeTierLabel}} — set up your {{CLUB_NAME}} account",
@@ -200,11 +200,11 @@ export const EMAIL_AUDIT_DEFAULTS = {
   },
   "account-deletion-rejected": {
     "defaultSubject": "Update on Your Account Deletion Request",
-    "defaultBody": "Account Deletion Request Update\n\nHi {{firstName}},\n\nYour account deletion request has been reviewed and was not approved at this time.\n\nAdmin note: {{adminNote}}\n\nIf you have questions about this decision, please contact the club directly.\n\n{{CLUB_NAME}} — {{SUPPORT_EMAIL}}"
+    "defaultBody": "Account Deletion Request Update\n\nHi {{firstName}},\n\nYour account deletion request has been reviewed and was not approved at this time.\n\n{{adminNoteLine}}If you have questions about this decision, please contact the club directly.\n\n{{CLUB_NAME}} — {{SUPPORT_EMAIL}}"
   },
   "admin-account-deletion-requested": {
     "defaultSubject": "Account deletion requested: {{memberName}}",
-    "defaultBody": "Account Deletion Request Submitted\n\n{{memberName}} submitted an account deletion request.\n\nMember: {{memberName}}\nEmail: {{memberEmail}}\n\nReason:\n{{reason}}\n\nReview Deletion Requests: {{reviewUrl}}\n\n{{CLUB_NAME}} — {{SUPPORT_EMAIL}}"
+    "defaultBody": "Account Deletion Request Submitted\n\n{{memberName}} submitted an account deletion request.\n\nMember: {{memberName}}\nEmail: {{memberEmail}}\n\n{{reasonNote}}Review Deletion Requests: {{reviewUrl}}\n\n{{CLUB_NAME}} — {{SUPPORT_EMAIL}}"
   },
   "admin-member-archive-requested": {
     "defaultSubject": "Member archive requested: {{memberName}}",
@@ -212,11 +212,11 @@ export const EMAIL_AUDIT_DEFAULTS = {
   },
   "member-archive-approved": {
     "defaultSubject": "Membership archive completed — {{CLUB_BOOKINGS_NAME}}",
-    "defaultBody": "Membership Archive Completed\n\nHi {{firstName}},\n\nYour cancelled membership record has been archived.\n\nReason:\n{{reason}}\n\nReview note: {{reviewNote}}\n\nArchive preserves booking, payment, Xero, and audit history while removing the record from default operational lists.\n\n{{CLUB_NAME}} — {{SUPPORT_EMAIL}}"
+    "defaultBody": "Membership Archive Completed\n\nHi {{firstName}},\n\nYour cancelled membership record has been archived.\n\nReason:\n{{reason}}\n\n{{reviewNoteLine}}Archive preserves booking, payment, Xero, and audit history while removing the record from default operational lists.\n\n{{CLUB_NAME}} — {{SUPPORT_EMAIL}}"
   },
   "member-archive-rejected": {
     "defaultSubject": "Membership archive request update — {{CLUB_BOOKINGS_NAME}}",
-    "defaultBody": "Membership Archive Request Update\n\nHi {{firstName}},\n\nThe archive request for your cancelled membership was not approved at this time.\n\nReason:\n{{reason}}\n\nReview note: {{reviewNote}}\n\n{{CLUB_NAME}} — {{SUPPORT_EMAIL}}"
+    "defaultBody": "Membership Archive Request Update\n\nHi {{firstName}},\n\nThe archive request for your cancelled membership was not approved at this time.\n\nReason:\n{{reason}}\n\n{{reviewNoteLine}}{{CLUB_NAME}} — {{SUPPORT_EMAIL}}"
   },
   "admin-member-delete-requested": {
     "defaultSubject": "Member delete requested: {{memberName}}",
@@ -224,11 +224,11 @@ export const EMAIL_AUDIT_DEFAULTS = {
   },
   "admin-member-delete-approved": {
     "defaultSubject": "Member delete approved: {{memberName}}",
-    "defaultBody": "Member Delete Approved\n\nHi {{requesterName}},\n\nThe hard-delete request for {{memberName}} was approved and processed.\n\nReason:\n{{reason}}\n\nReview note: {{reviewNote}}\n\nA request snapshot was retained before the member record was deleted.\n\n{{CLUB_NAME}} — {{SUPPORT_EMAIL}}"
+    "defaultBody": "Member Delete Approved\n\nHi {{requesterName}},\n\nThe hard-delete request for {{memberName}} was approved and processed.\n\nReason:\n{{reason}}\n\n{{reviewNoteLine}}A request snapshot was retained before the member record was deleted.\n\n{{CLUB_NAME}} — {{SUPPORT_EMAIL}}"
   },
   "admin-member-delete-rejected": {
     "defaultSubject": "Member delete rejected: {{memberName}}",
-    "defaultBody": "Member Delete Request Rejected\n\nHi {{requesterName}},\n\nThe hard-delete request for {{memberName}} was not approved.\n\nReason:\n{{reason}}\n\nReview note: {{reviewNote}}\n\nOpen Member: {{reviewUrl}}\n\n{{CLUB_NAME}} — {{SUPPORT_EMAIL}}"
+    "defaultBody": "Member Delete Request Rejected\n\nHi {{requesterName}},\n\nThe hard-delete request for {{memberName}} was not approved.\n\nReason:\n{{reason}}\n\n{{reviewNoteLine}}Open Member: {{reviewUrl}}\n\n{{CLUB_NAME}} — {{SUPPORT_EMAIL}}"
   },
   "admin-minors-review": {
     "defaultSubject": "Review required: booking has only under-18 guests ({{memberName}})",
@@ -244,7 +244,7 @@ export const EMAIL_AUDIT_DEFAULTS = {
   },
   "admin-new-booking": {
     "defaultSubject": "New Booking: {{memberName}} ({{status}})",
-    "defaultBody": "New Booking Created\n\nA new booking has been created.\n\n{{reviewReason}}\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\nTotal: {{total}}\nStatus: {{status}}\n\nView Bookings: {{BASE_URL}}/admin/bookings"
+    "defaultBody": "New Booking Created\n\nA new booking has been created.\n\n{{reviewReasonNote}}Member: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\nTotal: {{total}}\nStatus: {{status}}\n\nView Bookings: {{BASE_URL}}/admin/bookings"
   },
   "admin-payment-failure": {
     "defaultSubject": "Payment Failed — {{CLUB_BOOKINGS_NAME}}",
@@ -252,7 +252,7 @@ export const EMAIL_AUDIT_DEFAULTS = {
   },
   "admin-duplicate-capture-refund": {
     "defaultSubject": "Duplicate capture auto-refunded: {{memberName}}",
-    "defaultBody": "Duplicate Card Capture Auto-Refunded\n\nA second, distinct card capture arrived on a booking that was already paid (settled by another capture), so the duplicate charge was automatically refunded in full — the member has not been double-charged and no action is needed unless the member reports otherwise. [when the automatic refund could not complete inline: the refund could not complete and a durable recovery operation is queued — the payment recovery cron will retry it with backoff; watch the recovery queue and confirm the refund lands. Failure detail: {{errorMessage}}]\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nAmount refunded: {{amount}}\nDuplicate Stripe PI: {{paymentIntentId}}\nRecovery operation: {{operation}}\n\nThe booking's own settlement is untouched.\n\nView Payments: {{reviewUrl}}"
+    "defaultBody": "Duplicate Card Capture Auto-Refunded\n\n{{refundOutcomeNote}}\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nAmount refunded: {{amount}}\nDuplicate Stripe PI: {{paymentIntentId}}\nRecovery operation: {{operation}}\n\nThe booking's own settlement is untouched.\n\nView Payments: {{reviewUrl}}"
   },
   "admin-pending-deadline": {
     "defaultSubject": "{{count}} Pending Booking{{s}} Approaching Deadline",
@@ -276,7 +276,7 @@ export const EMAIL_AUDIT_DEFAULTS = {
   },
   "admin-xero-repeated-failure": {
     "defaultSubject": "Repeated Xero Failure: {{correlationKey}}",
-    "defaultBody": "Repeated Xero Failures\n\nThe same Xero sync correlation key has failed repeatedly and now needs operator attention.\n\nCorrelation Key: {{correlationKey}}\nFailures in Window: {{failureCount}} in the last {{windowHours}} hour(s)\nEntity: {{entityType}}\nOperation: {{operationType}}\nLocal Record: {{localModel}} {{localId}}\nLatest Error: {{latestErrorMessage}}\nTimestamp: {{timestamp}}\n\nOpen local record: {{localUrl}}\nOpen Xero object: {{xeroObjectUrl}}\n\nOpen Xero Admin: {{BASE_URL}}/admin/xero"
+    "defaultBody": "Repeated Xero Failures\n\nThe same Xero sync correlation key has failed repeatedly and now needs operator attention.\n\nCorrelation Key: {{correlationKey}}\nFailures in Window: {{failureCount}} in the last {{windowHours}} hour(s)\nEntity: {{entityType}}\nOperation: {{operationType}}\n{{localRecordNote}}{{latestErrorNote}}Timestamp: {{timestamp}}\n\n{{xeroLinksNote}}\nOpen Xero Admin: {{BASE_URL}}/admin/xero"
   },
   "admin-xero-reconciliation-report": {
     "defaultSubject": "Xero Reconciliation Report - {{issueTotalCount}} item{{s}}",
@@ -284,15 +284,15 @@ export const EMAIL_AUDIT_DEFAULTS = {
   },
   "admin-refund-request": {
     "defaultSubject": "Refund Appeal: {{memberName}}",
-    "defaultBody": "Refund Appeal Submitted\n\n{{memberName}} has submitted a refund appeal.\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nPaid: {{paidAmount}}\nAlready Refunded: {{refundedAmount}}\nRemaining: {{remainingAmount}}\nRequested: {{requestedAmount}}\n\n{{reason}}\n\nReview Appeal: {{BASE_URL}}/admin/refund-requests"
+    "defaultBody": "Refund Appeal Submitted\n\n{{memberName}} has submitted a refund appeal.\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nPaid: {{paidAmount}}\nAlready Refunded: {{refundedAmount}}\nRemaining: {{remainingAmount}}\n{{requestedAmountNote}}\n{{reason}}\n\nReview Appeal: {{BASE_URL}}/admin/refund-requests"
   },
   "admin-booking-change-request": {
     "defaultSubject": "Booking Change Request: {{memberName}}",
-    "defaultBody": "Booking Change Request Submitted\n\n{{memberName}} has requested an admin-reviewed booking change for a locked same-day or past-night period.\n\nMember: {{memberName}}\nEmail: {{memberEmail}}\nBooking: {{bookingId}}\nCurrent check-in: {{checkIn}}\nCurrent check-out: {{checkOut}}\nRequested change: {{requestedSummary}}\n\nReason: {{reason}}\n\nReview Request: {{reviewUrl}}"
+    "defaultBody": "Booking Change Request Submitted\n\n{{memberName}} has requested an admin-reviewed booking change for a locked same-day or past-night period.\n\nMember: {{memberName}}\nEmail: {{memberEmail}}\nBooking: {{bookingId}}\nCurrent check-in: {{checkIn}}\nCurrent check-out: {{checkOut}}\nRequested change: {{requestedSummary}}\n\n{{reasonNote}}Review Request: {{reviewUrl}}"
   },
   "refund-request-resolved": {
     "defaultSubject": "Refund Appeal Approved — {{CLUB_BOOKINGS_NAME}}",
-    "defaultBody": "Refund Appeal Approved\n\nHi {{firstName}},\n\nYour refund appeal for your booking ({{checkIn}} - {{checkOut}}) has been approved. A refund of {{amount}} will be processed to your original payment method.\n\nNotes:\n{{adminNotes}}\n\nIf you have questions, contact the club at {{SUPPORT_EMAIL}}."
+    "defaultBody": "Refund Appeal Approved\n\nHi {{firstName}},\n\nYour refund appeal for your booking ({{checkIn}} - {{checkOut}}) has been approved. A refund of {{amount}} will be processed to your original payment method.\n\n{{adminNotesLine}}If you have questions, contact the club at {{SUPPORT_EMAIL}}."
   },
   "admin-issue-report": {
     "defaultSubject": "Issue Report: {{memberName}}",
@@ -314,10 +314,6 @@ export const EMAIL_AUDIT_DEFAULTS = {
     "defaultSubject": "Email delivery permanently failed",
     "defaultBody": "Email to {{originalRecipient}} (template: {{originalTemplateName}}) has failed after {{attemptCount}} attempts and will not be retried."
   },
-  "credit-applied-to-booking": {
-    "defaultSubject": "Account Credit Applied - {{CLUB_LODGE_NAME}}",
-    "defaultBody": "Account Credit Applied\n\nHi {{firstName}}, account credit was applied to your booking.\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nCredit applied: {{creditUsed}}\nRemaining credit: {{remainingCredit}}"
-  },
   "booking-request-verification": {
     "defaultSubject": "Confirm your booking request — {{CLUB_NAME}}",
     "defaultBody": "Confirm Your Booking Request\n\nHi {{firstName}}, thanks for your booking request with {{CLUB_NAME}}.\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\n\nPlease confirm your email address to add your request to our review queue.\n\nConfirm Request: {{BASE_URL}}/booking-requests/verify/{{token}}\n\nThis link expires on {{expiresAt}}. If you did not submit this request, please ignore this email."
@@ -336,7 +332,7 @@ export const EMAIL_AUDIT_DEFAULTS = {
   },
   "booking-request-declined": {
     "defaultSubject": "Update on your booking request — {{CLUB_NAME}}",
-    "defaultBody": "Booking Request Update\n\nHi {{firstName}}, thank you for your interest in staying with {{CLUB_NAME}}.\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\n\nUnfortunately we're unable to accommodate this request.\n\nNote: {{reason}}\n\nIf you have any questions, please contact the club at {{SUPPORT_EMAIL}}."
+    "defaultBody": "Booking Request Update\n\nHi {{firstName}}, thank you for your interest in staying with {{CLUB_NAME}}.\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\n\nUnfortunately we're unable to accommodate this request.\n\n{{reasonNote}}If you have any questions, please contact the club at {{SUPPORT_EMAIL}}."
   },
   "booking-request-payment-expired": {
     "defaultSubject": "Your booking was released — payment not received — {{CLUB_NAME}}",
@@ -356,23 +352,23 @@ export const EMAIL_AUDIT_DEFAULTS = {
   },
   "admin-split-settlement-unpaid": {
     "defaultSubject": "Split booking guest portion unpaid — no card on file: {{memberName}}",
-    "defaultBody": "Split Booking Guest Portion Unpaid — No Card on File\n\nA split booking reached its hold deadline for the non-member guest portion, but there is no saved card to charge — the member paid their own place by internet banking. A secure payment link has been emailed to the member so they can pay for their guests, and the hold has been extended. [when the member's own linked booking is also unpaid: no payment link is sent and a human must chase payment for the whole booking, because the guest portion must not settle ahead of the member's own place]\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\nAmount due: {{total}}\nHold extended to: {{holdUntil}}\n\nNo beds are held for these guests until payment is received. Follow up with the member or cancel the guest portion if payment is not expected.\n\nThis alert repeats on a capped cadence (the first three hold extensions, then every seventh) while the guest portion stays unpaid. A terminal cancellation past the check-in day ends the series with a separate final notice.\n\nView Bookings: {{reviewUrl}}"
+    "defaultBody": "Split Booking Guest Portion Unpaid — No Card on File\n\n{{settlementActionNote}}\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\nAmount due: {{total}}\nHold extended to: {{holdUntil}}\n\nNo beds are held for these guests until payment is received. Follow up with the member or cancel the guest portion if payment is not expected.\n\nThis alert repeats on a capped cadence (the first three hold extensions, then every seventh) while the guest portion stays unpaid. A terminal cancellation past the check-in day ends the series with a separate final notice.\n\nView Bookings: {{reviewUrl}}"
   },
   "admin-split-settlement-cancelled": {
     "defaultSubject": "Split booking guest portion auto-cancelled — unpaid past check-in: {{memberName}}",
-    "defaultBody": "Split Booking Guest Portion Auto-Cancelled — Unpaid Past Check-in\n\nA split booking's non-member guest portion was still unpaid at the end of its check-in day, with no saved card to charge (the member had paid their own place by internet banking). The provisional guest booking has now been automatically cancelled. No payment was taken and no beds were held. The member has been notified; the member's own linked booking is settled and is unaffected. [when the member's own linked booking is not settled: the member's own linked booking is not settled either (it may be unpaid or already cancelled), so review the whole booking]\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\nAmount (unpaid): {{total}}\n\nNo further action is required for the guest portion. If these guests are in fact coming and the member intends to pay, create a new booking for them.\n\nThis is a one-off notice — it ends the capped hold-extension alert series for this guest portion.\n\nView Bookings: {{reviewUrl}}"
+    "defaultBody": "Split Booking Guest Portion Auto-Cancelled — Unpaid Past Check-in\n\n{{settlementActionNote}}\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\nAmount (unpaid): {{total}}\n\nNo further action is required for the guest portion. If these guests are in fact coming and the member intends to pay, create a new booking for them.\n\nThis is a one-off notice — it ends the capped hold-extension alert series for this guest portion.\n\nView Bookings: {{reviewUrl}}"
   },
   "split-guest-portion-cancelled": {
     "defaultSubject": "Your guests' provisional place was cancelled — {{CLUB_NAME}}",
-    "defaultBody": "Your Guests' Provisional Place Was Cancelled\n\nHi {{firstName}}, the provisional place we were holding for your non-member guests stayed unpaid up to the check-in day, so it has now been automatically cancelled. Nothing was ever charged for it, and no beds were held.\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nYour booking reference: {{bookingReference}}\n\nThis only affects your guests' provisional place — your own booking is unaffected and remains confirmed. [when your own linked booking is not settled: your own linked booking has not been changed by this cancellation]\n\nIf your guests are still coming, you can make a new booking for them at any time.\n\nMake a New Booking: {{BASE_URL}}/book"
+    "defaultBody": "Your Guests' Provisional Place Was Cancelled\n\nHi {{firstName}}, the provisional place we were holding for your non-member guests stayed unpaid up to the check-in day, so it has now been automatically cancelled. Nothing was ever charged for it, and no beds were held.\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\n{{bookingReferenceNote}}\n{{ownBookingNote}}\n\nIf your guests are still coming, you can make a new booking for them at any time.\n\nMake a New Booking: {{BASE_URL}}/book"
   },
   "booking-review-approved": {
     "defaultSubject": "Your booking has been approved - {{CLUB_LODGE_NAME}}",
-    "defaultBody": "Booking Approved\n\nHi {{firstName}}, an admin has approved your booking. You can now complete payment to confirm it.\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\n\nNote from admin: {{adminNotes}}\n\nComplete Payment: {{BASE_URL}}/bookings/{{bookingId}}"
+    "defaultBody": "Booking Approved\n\nHi {{firstName}}, an admin has approved your booking. You can now complete payment to confirm it.\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\n\n{{adminNotesLine}}Complete Payment: {{BASE_URL}}/bookings/{{bookingId}}"
   },
   "booking-review-rejected": {
     "defaultSubject": "Your booking could not be approved - {{CLUB_LODGE_NAME}}",
-    "defaultBody": "Booking Declined\n\nHi {{firstName}}, an admin has reviewed your booking and was not able to approve it. The booking has been cancelled — no payment was taken.\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\n\nReason from admin: {{adminNotes}}\n\nYou are welcome to make a new booking that includes an adult guest, or contact the club to discuss.\n\nMake a New Booking: {{BASE_URL}}/book"
+    "defaultBody": "Booking Declined\n\nHi {{firstName}}, an admin has reviewed your booking and was not able to approve it. The booking has been cancelled — no payment was taken.\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\n\n{{adminNotesLine}}You are welcome to make a new booking that includes an adult guest, or contact the club to discuss.\n\nMake a New Booking: {{BASE_URL}}/book"
   },
   "induction-sign-off-request": {
     "defaultSubject": "Lodge induction sign-off for {{inducteeName}} — {{CLUB_NAME}}",
@@ -412,7 +408,7 @@ export const EMAIL_AUDIT_DEFAULTS = {
   },
   "membership-payment-recorded": {
     "defaultSubject": "Your {{seasonYear}} membership payment has been recorded — {{CLUB_NAME}}",
-    "defaultBody": "Membership Payment Recorded\n\nHi {{firstName}}, thank you — {{CLUB_NAME}} has recorded your membership subscription payment for the {{seasonYear}} season.\n\nSeason: {{seasonYear}}\nAmount recorded: {{amount}}\nDate recorded: {{date}}\n\nYour membership is now marked paid for the season, so there is nothing further for you to pay.\n\nIf anything looks wrong, contact the club at {{SUPPORT_EMAIL}}."
+    "defaultBody": "Membership Payment Recorded\n\nHi {{firstName}}, thank you — {{CLUB_NAME}} has recorded your membership subscription payment for the {{seasonYear}} season.\n\nSeason: {{seasonYear}}\n{{amountRecordedNote}}Date recorded: {{date}}\n\nYour membership is now marked paid for the season, so there is nothing further for you to pay.\n\nIf anything looks wrong, contact the club at {{SUPPORT_EMAIL}}."
   }
 } as const;
 

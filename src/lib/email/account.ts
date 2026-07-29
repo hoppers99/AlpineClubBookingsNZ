@@ -9,6 +9,7 @@ import {
   twoFactorCodeTemplate,
   accountDeletionApprovedTemplate,
   accountDeletionRejectedTemplate,
+  composeOptionalEmailLine,
 } from "../email-templates";
 import {
   CLUB_BOOKINGS_NAME,
@@ -229,6 +230,12 @@ export async function sendAccountDeletionRejectedEmail(
     // password reset, magic link or email-change notice is account lockout.
     bookingContext: "none",
     templateName: "account-deletion-rejected",
-    templateData: { firstName, adminNote },
+    templateData: {
+      firstName,
+      adminNote,
+      // #2268: pre-composed optional line — an empty note must not leave a
+      // dangling "Admin note:" in the flat body.
+      adminNoteLine: composeOptionalEmailLine("Admin note", adminNote),
+    },
   });
 }

@@ -14,6 +14,9 @@ import {
   adminBookingRequestHoldCancelledTemplate,
   adminSplitSettlementUnpaidTemplate,
   adminSplitSettlementCancelledTemplate,
+  adminSplitSettlementUnpaidLeadParagraph,
+  adminSplitSettlementCancelledLeadParagraph,
+  composeOptionalEmailLine,
 } from "../email-templates";
 import {
   formatNZDate,
@@ -46,6 +49,9 @@ export async function sendAdminNewBookingAlert(data: {
       checkOut: formatNZDate(data.checkOut),
       total: formatMoneyCents(data.totalCents),
       reviewReason: data.reviewReason ?? "",
+      // #2268: pre-composed optional line — the flat body has no conditional
+      // syntax, so a routine booking must not print an empty review paragraph.
+      reviewReasonNote: composeOptionalEmailLine(null, data.reviewReason),
       memberJustification: data.memberJustification ?? "",
     },
     preferenceKey: "adminNewBooking",
@@ -295,6 +301,8 @@ export async function sendAdminBookingChangeRequestAlert(data: {
       checkIn: formatNZDate(data.checkIn),
       checkOut: formatNZDate(data.checkOut),
       reason: data.reason ?? "",
+      // #2268: pre-composed optional line — no dangling "Reason:".
+      reasonNote: composeOptionalEmailLine("Reason", data.reason),
       reviewUrl,
     },
     preferenceKey: "adminBookingChangeRequest",
@@ -452,6 +460,12 @@ export async function sendAdminSplitSettlementUnpaidAlert(data: {
       guestCount: data.guestCount,
       total: formatMoneyCents(data.totalCents),
       holdUntil: formatNZDateTime(data.holdUntil),
+      // #2268: the outcome-dependent lead paragraph, built from the same
+      // helper as the hand-built HTML. The flat body used to assert that a
+      // payment link had been emailed even when none was sent.
+      settlementActionNote: adminSplitSettlementUnpaidLeadParagraph(
+        data.parentUnpaid,
+      ),
       reviewUrl,
       parentUnpaid: data.parentUnpaid,
     },
@@ -496,6 +510,13 @@ export async function sendAdminSplitSettlementCancelledAlert(data: {
       checkOut: formatNZDate(data.checkOut),
       guestCount: data.guestCount,
       total: formatMoneyCents(data.totalCents),
+      // #2268: the outcome-dependent lead paragraph, built from the same
+      // helper as the hand-built HTML. The flat body used to assert that the
+      // member's own linked booking was settled and unaffected even when it
+      // was not.
+      settlementActionNote: adminSplitSettlementCancelledLeadParagraph(
+        data.parentUnpaid,
+      ),
       reviewUrl,
       parentUnpaid: data.parentUnpaid,
     },

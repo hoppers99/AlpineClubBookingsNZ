@@ -47,6 +47,10 @@ describe("email message registry", () => {
   });
 
   it("has editor-safe defaults for every registered template", () => {
+    // Kept for the checks that are NOT circular — raw HTML, unsafe links,
+    // subject line breaks, sensitive subject tokens. The token half of this
+    // assertion never had teeth on a default (see the #2268 guards below):
+    // `allowedTokens` is scraped out of the default body it validates.
     const invalidDefinitions = EMAIL_TEMPLATE_DEFINITIONS.flatMap((definition) => {
       const validation = validateEmailTemplateContent({
         templateName: definition.key,

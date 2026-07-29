@@ -8,6 +8,7 @@ import {
   groupCreateRequestConfirmationTemplate,
   groupCreateApprovedTemplate,
   groupCreateRejectedTemplate,
+  composeOptionalEmailLine,
   partnerInviteTemplate,
   partnerInviteClaimedTemplate,
   partnerLinkRequestTemplate,
@@ -102,7 +103,14 @@ export async function sendChildRequestRejectedEmail(
     // Family-group membership mail is not about any booking (#2258).
     bookingContext: "none",
     templateName: "child-request-rejected",
-    templateData: { parentName, childName, reason: reason ?? "" },
+    templateData: {
+      parentName,
+      childName,
+      reason: reason ?? "",
+      // #2268: pre-composed optional line — the flat body has no conditional
+      // syntax, so "Admin note:" must not print without a note.
+      adminNoteLine: composeOptionalEmailLine("Admin note", reason),
+    },
   });
 }
 
@@ -170,7 +178,13 @@ export async function sendGroupCreateRejectedEmail(
     // Family-group membership mail is not about any booking (#2258).
     bookingContext: "none",
     templateName: "family-group-create-rejected",
-    templateData: { requesterName, groupName, reason: reason ?? "" },
+    templateData: {
+      requesterName,
+      groupName,
+      reason: reason ?? "",
+      // #2268: pre-composed optional line (see sendChildRequestRejectedEmail).
+      adminNoteLine: composeOptionalEmailLine("Admin note", reason),
+    },
   });
 }
 

@@ -21,6 +21,27 @@ import { SUPPORT_EMAIL } from "./email-sender";
 import { MEMBER_SETUP_INVITE_TTL_DAYS } from "./member-setup-invite";
 import { formatNZDate, formatNZDateTime } from "./nzst-date";
 import { emailPalette } from "./email-theme";
+import {
+  adminSplitSettlementCancelledLeadParagraph,
+  adminSplitSettlementUnpaidLeadParagraph,
+  composeChoreLine,
+  composeOptionalEmailLine,
+  duplicateCaptureRefundOutcomeParagraph,
+  splitGuestPortionOwnBookingLine,
+} from "./email-message-notes";
+
+// #2268: the optional/outcome-dependent line composers live in a leaf module
+// (the template registry needs them for its editor previews without pulling
+// in this whole file). Re-exported here so every email module keeps one
+// import site for template copy.
+export {
+  adminSplitSettlementCancelledLeadParagraph,
+  adminSplitSettlementUnpaidLeadParagraph,
+  composeChoreLine,
+  composeOptionalEmailLine,
+  duplicateCaptureRefundOutcomeParagraph,
+  splitGuestPortionOwnBookingLine,
+};
 
 const BASE_URL = getAppBaseUrl();
 
@@ -970,6 +991,7 @@ export function adminPaymentFailureTemplate(data: {
  *   queued and the recovery cron will retry it — watch the recovery queue.
  * No bearer token, so this is not sensitive-log material.
  */
+
 export function adminDuplicateCaptureRefundTemplate(data: {
   memberName: string;
   checkIn: Date;
@@ -1002,11 +1024,11 @@ export function adminDuplicateCaptureRefundTemplate(data: {
             "success"
           )
     }
-    ${paragraph(
-      data.refundFailed
-        ? "A second, distinct card capture arrived on a booking that was already paid and settled by another capture. The system tried to refund the duplicate charge automatically, but the refund could not complete inline. A durable recovery operation is queued and the payment recovery cron will retry it with backoff — watch the recovery queue and confirm the refund lands. The booking's own settlement is untouched."
-        : "A second, distinct card capture arrived on a booking that was already paid and settled by another capture. The duplicate charge was automatically refunded in full, so the member has not been double-charged and no action is needed unless the member reports otherwise. The booking's own settlement is untouched."
-    )}
+    ${
+      // Static developer-authored copy (no member data), so it is emitted raw
+      // exactly as before — the shared helper only removes the duplication.
+      paragraph(duplicateCaptureRefundOutcomeParagraph(data.refundFailed))
+    }
     ${infoTable([
       { label: "Member", value: escapeHtml(data.memberName) },
       { label: "Check-in", value: formatNZDate(data.checkIn) },
@@ -3055,7 +3077,6 @@ export function adminBookingRequestHoldCancelledTemplate(data: {
   `);
 }
 
-
 /**
  * Split-booking guest portion unpaid at hold expiry, no card on file (#1967).
  * Admin alert fired while a split non-member child remains unsettled with no
@@ -3069,6 +3090,7 @@ export function adminBookingRequestHoldCancelledTemplate(data: {
  *   guest portion must not settle ahead of the member's own place, so a human
  *   needs to chase the whole booking.
  */
+
 export function adminSplitSettlementUnpaidTemplate(data: {
   memberName: string;
   checkIn: Date;
@@ -3081,11 +3103,7 @@ export function adminSplitSettlementUnpaidTemplate(data: {
 }): string {
   return layout(`
     ${heading("Split Booking Guest Portion Unpaid — No Card on File")}
-    ${paragraph(
-      data.parentUnpaid
-        ? "A split booking reached its hold deadline for the non-member guest portion, but there is no saved card to charge and the member's own linked booking has not been paid either. No payment link has been sent — the guest portion should not be paid ahead of the member's own place. The hold has been extended; follow up with the member about paying for the whole booking."
-        : "A split booking reached its hold deadline for the non-member guest portion, but there is no saved card to charge — the member paid their own place by internet banking. A secure payment link has been emailed to the member so they can pay for their guests, and the hold has been extended."
-    )}
+    ${paragraph(adminSplitSettlementUnpaidLeadParagraph(data.parentUnpaid))}
     ${infoTable([
       { label: "Member", value: escapeHtml(data.memberName) },
       { label: "Check-in", value: formatNZDate(data.checkIn) },
@@ -3111,6 +3129,7 @@ export function adminSplitSettlementUnpaidTemplate(data: {
  * already-cancelled parent that a human should review), never a false "also
  * unpaid" for a parent that is in fact cancelled or bumped.
  */
+
 export function adminSplitSettlementCancelledTemplate(data: {
   memberName: string;
   checkIn: Date;
@@ -3122,11 +3141,7 @@ export function adminSplitSettlementCancelledTemplate(data: {
 }): string {
   return layout(`
     ${heading("Split Booking Guest Portion Auto-Cancelled — Unpaid Past Check-in")}
-    ${paragraph(
-      data.parentUnpaid
-        ? "A split booking's non-member guest portion was still unpaid at the end of its check-in day, with no saved card to charge, and the member's own linked booking is not settled either (it may be unpaid or already cancelled). The provisional guest booking has now been automatically cancelled. No payment was taken and no beds were held. The member has been notified. Review the whole booking to confirm the state of the member's own place."
-        : "A split booking's non-member guest portion was still unpaid at the end of its check-in day, with no saved card to charge (the member had paid their own place by internet banking). The provisional guest booking has now been automatically cancelled. No payment was taken and no beds were held. The member has been notified; the member's own linked booking is settled and is unaffected."
-    )}
+    ${paragraph(adminSplitSettlementCancelledLeadParagraph(data.parentUnpaid))}
     ${infoTable([
       { label: "Member", value: escapeHtml(data.memberName) },
       { label: "Check-in", value: formatNZDate(data.checkIn) },
@@ -3150,6 +3165,7 @@ export function adminSplitSettlementCancelledTemplate(data: {
  * changed by this cancellation, never a false "confirmed". No bearer token, so
  * this is not sensitive-log material.
  */
+
 export function splitGuestPortionCancelledTemplate(data: {
   firstName: string;
   checkIn: Date;
@@ -3157,9 +3173,7 @@ export function splitGuestPortionCancelledTemplate(data: {
   parentConfirmed: boolean;
   parentBookingReference?: string | null;
 }): string {
-  const ownBookingLine = data.parentConfirmed
-    ? "This only affects your guests' provisional place — your own booking is unaffected and remains confirmed."
-    : "This only affects your guests' provisional place — your own linked booking has not been changed by this cancellation.";
+  const ownBookingLine = splitGuestPortionOwnBookingLine(data.parentConfirmed);
   return layout(`
     ${heading("Your Guests' Provisional Place Was Cancelled")}
     ${paragraph("Hi " + escapeHtml(data.firstName) + ", the provisional place we were holding for your non-member guests stayed unpaid up to the check-in day, so it has now been automatically cancelled. Nothing was ever charged for it, and no beds were held.")}

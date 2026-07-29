@@ -9,7 +9,10 @@ import {
   kickQueuedXeroOutboxOperationsIfConnected,
 } from "@/lib/xero-operation-outbox";
 import { sendEmail } from "@/lib/email";
-import { refundRequestResolvedTemplate } from "@/lib/email-templates";
+import {
+  refundRequestResolvedTemplate,
+  composeOptionalEmailLine,
+} from "@/lib/email-templates";
 import logger from "@/lib/logger";
 import { getRemainingRefundableCents } from "@/lib/booking-payment-state";
 import {
@@ -303,6 +306,10 @@ export async function PUT(
           status: "APPROVED",
           amount: formatCents(approvedAmountCents),
           adminNotes: adminNotes ?? "",
+          // #2268: pre-composed optional line — the flat body has no
+          // conditional syntax, so a resolution with no admin note must not
+          // print a bare "Notes:" heading over nothing.
+          adminNotesLine: composeOptionalEmailLine("Notes", adminNotes),
           checkIn: formatNZDate(booking.checkIn),
           checkOut: formatNZDate(booking.checkOut),
         },
@@ -378,6 +385,8 @@ export async function PUT(
           status: "REJECTED",
           amount: "",
           adminNotes: adminNotes ?? "",
+          // #2268: pre-composed optional line (see the approved branch).
+          adminNotesLine: composeOptionalEmailLine("Notes", adminNotes),
           checkIn: formatNZDate(booking.checkIn),
           checkOut: formatNZDate(booking.checkOut),
         },
