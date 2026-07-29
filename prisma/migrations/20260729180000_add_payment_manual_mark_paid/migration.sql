@@ -14,8 +14,13 @@
 -- behaving exactly as before.
 --
 -- Timestamp coordination: this sorts strictly after
--- 20260727120000_add_booking_no_emails (#2258). #2286's future custodian
--- migration must choose a strictly later timestamp than this one.
+-- 20260727120000_add_booking_no_emails (#2258) and strictly after #2265's
+-- reserved 20260729120000_add_booking_credit_election — this migration's
+-- prefix was moved from 120000 to 180000 precisely to avoid colliding with it
+-- (the duplicate-prefix ratchet in scripts/check-migration-safety-coverage.sh
+-- turns main red on the second merge of a shared prefix). #2263's and #2286's
+-- reserved migrations must each choose a strictly later timestamp than this
+-- one.
 
 -- Manual settlement provenance. Nullable with no default, so the ADD COLUMNs
 -- are PostgreSQL catalog-only adds (no table rewrite, no row scan) even though
