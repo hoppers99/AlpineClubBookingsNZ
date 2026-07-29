@@ -19,13 +19,16 @@ All notable public reference-release changes should be recorded here.
   already taken that night (the occupying guest is named, and an occupant whose
   booking does not hold the night is badged **Provisional** — still a clash, so
   nothing is overwritten behind your back); the guest is not booked that night,
-  which is not a clash at all but a sign the range or the guest is wrong; or the
-  night belongs to a booking holding the whole lodge, which needs no individual
-  beds. Only then, and only if you click the second button, does it write just
-  the free nights — it says how many before you commit. Either way the operation
-  leaves a **single** audit entry against the booking recording the range you
-  asked for, what was written and what was refused, so "who put this guest in
-  bed 4 for the winter?" has one answer rather than fragments. Assigning a range
+  which is not a clash at all but a sign the range or the guest is wrong; or this
+  booking itself holds the whole lodge, which needs no individual beds. Only
+  then, and only if you click the second button, does it write just the free
+  nights — it says how many before you commit, and writes exactly those, refusing
+  again with a fresh list if one of them has been taken in the meantime. Either
+  way the operation leaves a **single** audit entry against the booking recording
+  the range you asked for, what was written and what was refused, so "who put
+  this guest in bed 4 for the winter?" has one answer rather than fragments. The
+  entry records dates and counts rather than other members' names, which stay on
+  your screen. Assigning a range
   confirms those beds immediately, which locks the member out of changing their
   requested room; the dialog says so before you commit. Afterwards the board
   tints the nights it wrote green and the nights it refused red so any gaps are

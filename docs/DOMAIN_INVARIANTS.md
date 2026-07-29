@@ -581,14 +581,27 @@ Future reviews and issues should cite this file when proposing changes.
   refuses a held booking, so a hand-placed row can no longer be created only to
   be swept by the next reconcile.
 - **A range assignment writes all or nothing, and records itself once (#2251):**
-  `assignBedRange` scans and writes inside one transaction. If any requested
-  night is blocked, NOTHING is written and the caller receives a per-night
-  refusal in one of three categories that are never merged — `BED_TAKEN` (a
-  clash; a provisional occupant counts, so nothing is silently overwritten),
-  `GUEST_NOT_BOOKED` (a bad request, never a silent skip), and `EXCLUSIVE_HOLD`
-  (ADR-001). A partial result exists only when a human passes `freeNightsOnly`.
-  Either outcome produces exactly ONE `BED_ALLOCATION_RANGE_SET` audit entry
-  against the booking id. The 31-night `MAX_BED_ALLOCATION_RANGE_NIGHTS` bounds
+  `assignBedRange` scans, writes and audits inside one transaction. If any
+  requested night is blocked, NOTHING is written and the caller receives a
+  per-night refusal in one of three categories that are never merged —
+  `BED_TAKEN` (a clash; a provisional occupant counts, so nothing is silently
+  overwritten), `GUEST_NOT_BOOKED` (a bad request, never a silent skip, and it
+  includes a gap night of a non-contiguous stay, #713), and `EXCLUSIVE_HOLD` —
+  which here means **the guest's OWN booking** holds the lodge (ADR-001's
+  short-circuit, scoped to the held booking's own guests). Another booking's
+  overlapping hold is surfaced on the board (`overlapsExclusiveHold`), not
+  refused here: no allocation path in the domain hard-blocks on it, and this one
+  must not be the exception. A partial result exists only when a human sends the
+  explicit `nights` list they were shown — the server writes exactly that set or
+  refuses it with a fresh report, never a set it re-derived. Every attempt that
+  COMPLETES — applied or refused — produces exactly ONE
+  `BED_ALLOCATION_RANGE_SET` audit entry against the booking id, committed in the
+  same transaction as the rows; an attempt that THROWS (unknown guest/bed,
+  cancelled booking, deactivated bed, over-cap range, lost write race) rolls back
+  and records nothing, because nothing happened. That entry records shape, not
+  people: night counts and runs per category plus the involved booking ids, with
+  the occupying guests' names carried only in the API response to the admin who
+  asked. The 31-night `MAX_BED_ALLOCATION_RANGE_NIGHTS` bounds
   the board's READ window, not this write: lodge capacity is the active bed
   count and never reads `BedAllocation` rows, and no capacity or advisory lock
   is taken on any allocation write path. The separate write bound

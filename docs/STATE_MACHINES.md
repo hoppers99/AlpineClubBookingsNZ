@@ -1006,12 +1006,19 @@ step) and atomic: any blocked night refuses the WHOLE range, nothing is written,
 and the refusal report names each blocked night in one of three distinct
 categories — the bed is already allocated that night (naming the occupying
 guest; a provisional occupant still counts, so nothing is silently overwritten),
-the guest is not booked that night (a **bad request**, never a silent skip), or
-the night falls inside an exclusive whole-lodge hold (ADR-001 — no per-bed
-allocation applies). A second, explicit "assign the N free nights" action
-re-attempts with just the free set. Either way the operation records exactly one
-`BED_ALLOCATION_RANGE_SET` audit entry (`targetId` = the booking id) carrying the
-requested range, what was written, and what was refused. Range assignments
+the guest is not booked that night (a **bad request**, never a silent skip —
+including a gap night of a non-contiguous stay, #713), or **the guest's own
+booking** holds the whole lodge (ADR-001's short-circuit — a held booking owns no
+per-bed rows, so the whole range is refused). Another booking's overlapping hold
+is NOT a blocker here: it is surfaced on the board as a banner and an
+`overlapsExclusiveHold` badge, exactly as it is for every other allocation path.
+A second, explicit "assign the N free nights" action re-sends the exact night
+list the report showed, and the server writes that set or refuses it with a fresh
+report. Either way the operation records exactly one `BED_ALLOCATION_RANGE_SET`
+audit entry (`targetId` = the booking id, written inside the same transaction as
+the rows) carrying the requested range, what was written, and what was refused —
+as counts and night runs, without the other bookings' guest names, which stay in
+the response to the admin. Range assignments
 **auto-approve**: their rows land with `approvedAt`/`approvedByMemberId` stamped
 rather than as drafts. Board single-night and drag placements are deliberately
 NOT auto-approved — draft-vs-approved remains the suggestion-vs-confirmation

@@ -93,18 +93,25 @@ year in one go).
    - **Guest is not booked that night** — this is not a clash. It means the
      range or the guest is wrong, so check the dates rather than working
      around it.
-   - **Whole-lodge hold** — those nights belong to a booking that has taken the
-     whole lodge, which needs no per-bed allocation.
+   - **Whole-lodge hold** — *this* booking has taken the whole lodge for those
+     nights, so its guests need no individual beds. (Someone *else's*
+     whole-lodge hold does not block you here; the board shows it as a banner
+     and a badge so you can see the clash and decide.)
 5. If some nights are free, a second button appears — **Assign the N free
-   nights** — stating exactly how many it will write. That is the only way a
-   range lands partly done, and it is a deliberate choice, never a default.
+   nights** — stating exactly how many it will write, and it sends exactly the
+   nights listed. If one of them has been taken in the meantime, the whole thing
+   is refused again with a fresh list rather than quietly writing fewer. That is
+   the only way a range lands partly done, and it is a deliberate choice, never
+   a default.
 6. Afterwards the board tints the nights it wrote green (**Assigned**) and the
    nights it refused red (**Refused**) on that bed, with a summary you can
    dismiss when you have finished checking the gaps.
 
 Every range assignment — whether it succeeded, was refused, or wrote only the
-free nights — records a **single** entry in the audit log against the booking,
-covering the range you asked for, what was written, and what was refused.
+nights you chose — records a **single** entry in the audit log against the
+booking, covering the range you asked for, what was written, and what was
+refused. It records the counts and the dates, not other members' names: those
+appear on screen for you, and are not filed away.
 
 ## Settings reference
 
@@ -140,7 +147,8 @@ individual beds — the whole lodge is taken for their nights.
 | "The board window is out of range" | You typed more than 31 nights, or a Date Out before Date In | Narrow the dates, or use ‹ › to step a month at a time |
 | "Showing part of this stay" | You followed a link for a booking longer than the board window | Step forward with › to see the rest of the stay |
 | A range assign says "Nothing was written" | At least one night is blocked — bed taken, guest not booked, or a whole-lodge hold | Read the three lists; fix the range, or use **Assign the N free nights** to take just the free ones |
-| A range assign is refused on every night | The booking has an exclusive whole-lodge hold | Held bookings take the whole lodge and get no individual beds — remove the hold first if that is wrong |
+| A range assign is refused on every night | This booking has an exclusive whole-lodge hold | Held bookings take the whole lodge and get no individual beds — remove the hold first if that is wrong |
+| "That took too long to save" | The range was large enough for the save to time out; nothing was written | Split it into shorter ranges and assign them one after the other |
 | The member says they can no longer change their requested room | A range assign approved their beds | That is expected: confirming beds locks the room request. Removing every approved allocation re-opens it |
 
 ## Related links
