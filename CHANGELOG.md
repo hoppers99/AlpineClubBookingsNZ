@@ -4,6 +4,40 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Members can now ask to book the whole lodge (#2263).** Planning a course, a
+  club trip or a family gathering that needs the lodge to yourselves? Book a
+  Stay now has a "Need the whole lodge?" card leading to a short form: your
+  dates, roughly how many people, who the group is, and anything else the
+  booking officer should know. No guest names are needed yet, and an estimate of
+  the headcount is fine — the officer confirms the real number with you before
+  anything is charged. The ordinary four-step booking wizard is unchanged. This
+  is a request, not a booking: nothing is reserved and nothing is charged until
+  the officer confirms it, and you can withdraw a request while it is still
+  waiting. Requests appear under **My requests** on My bookings, showing whether
+  each one is still with the booking officer, approved (with a link straight to
+  the real booking), declined, or withdrawn; declined and withdrawn ones are
+  removed after 90 days. Two open requests at a time, so the queue stays honest.
+
+  The form deliberately shows no calendar, no "beds left" hint and no price. The
+  club's long-standing rule is that a lodge held for one group looks exactly
+  like a full lodge to everybody else, and a calendar on this form would give
+  that away. For the same reason the confirmation message you get back is the
+  same words every time, whatever you asked for and whatever else is booked.
+
+  For booking officers, whole-lodge requests land in the existing booking
+  requests queue alongside the school ones, tagged "Member" and "Whole lodge
+  requested" — the second tag now shows on school requests too, which it never
+  did before. Each one can be expanded to show, officer-side only, how full each
+  requested night already is, which nights are already held, and exactly which
+  bookings overlap. Set the headcount you are really pricing (and a total price
+  if no season rate covers those dates), then approve: the booking is confirmed,
+  invoiced by internet banking, and the whole lodge is held for those nights.
+  Approving never cancels anything that is already booked — anything that
+  overlaps is listed for you to sort out with the people involved, as it always
+  has been. Declining is one click through the usual "email them or not?" prompt;
+  any note you write is kept in the audit log for the club's own record and is
+  never shown to the member, who receives the same fixed wording either way.
+
 - **Exclusive whole-lodge bookings no longer collect hidden bed assignments
   (#2285).** A booking with an exclusive whole-lodge hold takes the entire
   lodge, so nobody in the group is assigned an individual bed — the
