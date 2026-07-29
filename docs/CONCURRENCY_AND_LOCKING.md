@@ -89,7 +89,7 @@ are the literal `1`.
 | **Global booking / money** | `1` (literal) | inline `tx.$executeRaw` | 2 | Booking-status + money side effects that must exclude across the whole booking regardless of lodge: cancel, capture/settle, hold-release, group-settlement reaper/settle/refund/organiser-cancel, refunds, credit restore. |
 | **Per-lodge capacity** | `hashtextextended(<lodgeId>, 0)` | `acquireLodgeCapacityLock(tx, lodgeId)` (`capacity.ts`) | 1 | Capacity claims/checks for one lodge. |
 | **Per-member night footprint** | `hashtext("booking-member-night"), hashtext(<memberId>)` | `lockBookingMemberNights(tx, guests)` (`booking-member-night-conflicts.ts`) | cross-lodge | Serialises the person-night guard ACROSS lodges (see below). |
-| **Per-member credit ledger** | `hashtext("member-credit-ledger"), hashtext(<memberId>)` | `lockMemberCreditLedger(memberId, tx)` (`member-credit.ts`) | — | A member's credit-ledger balance operations (spend, negative-adjustment validation, orphan-restore repair, the Xero inbound applied-credit repair, and the F20 pre-payment-reduction applied-credit clamp `clampAppliedCreditToBookingPrice`, taken inside the modification transaction only when the booking carries applied credit). |
+| **Per-member credit ledger** | `hashtext("member-credit-ledger"), hashtext(<memberId>)` | `lockMemberCreditLedger(memberId, tx)` (`member-credit.ts`) | — | A member's credit-ledger balance operations (spend, negative-adjustment validation, orphan-restore repair, the Xero inbound applied-credit repair, and the F20 pre-payment-reduction applied-credit clamp `clampAppliedCreditToBookingPrice`, taken inside the modification transaction only when the booking carries applied credit, and the #2265 stored-election consumption `consumeStoredCreditElection`, taken inside the `create-payment-intent` DRAFT transaction only when the booking carries an outstanding election). |
 | **Member lifecycle** | `hashtext("member-lifecycle:<memberId>")` | inline (`member-lifecycle-actions.ts`, `nomination.ts` approval mapping, `admin-family-group-requests-service.ts`, `member-merge.ts`) | — | Archive/delete of one member; overwrite of one member by application-approval mapping (E10, #1936); linking/removing one member into/from a family group on admin request review; and **member merge** (dual-lock on master + loser, E11 #1937, see below). |
 | **Membership application** | `hashtext(<application key>)` | `membershipApplicationLockKey` (`nomination.ts`) | — | State transitions of one membership application. |
 | **Membership applicant** | `hashtext(<applicant-email key>)` | `membershipApplicationApplicantLockKey` (`nomination.ts`) | — | Per-email applicant dedup at submit time. |
@@ -149,6 +149,20 @@ preserve queue order only while it has no snapshot/checkpoint; a manually
 requeued checkpointed PENDING row remains fenced, as do RUNNING and any
 provider-ambiguous failure states. Manual retry only CAS-requeues to PENDING;
 the outbox claim is the sole authority that may execute provider calls.
+
+Applying a draft's stored credit election (#2265) takes the per-lodge capacity
+lock first and the per-member credit-ledger lock second, inside ONE
+`create-payment-intent` transaction — the same lodge-then-credit order
+`createConfirmedBooking` uses, so no inversion is introduced. The election is
+cleared in that same transaction as the ledger write, so the credit is applied
+exactly once or not at all; a lost claim (the booking already left `DRAFT`, or a
+concurrent request already consumed the election) returns before any lock, read
+or write. The already-`PAYMENT_PENDING` arm — an admin-released
+`AWAITING_REVIEW` draft — takes only the credit lock: it makes no status
+transition that claims capacity and runs no capacity re-check, so it never needs
+the lodge lock and cannot invert the order. Every provider call (the Stripe
+intent, the confirmation email, the Xero invoice queue, the superseded-intent
+drain) stays outside the transaction.
 
 Never-captured cancellation and Internet-Banking hold expiry acquire global
 booking lock(1) first and the per-member credit-ledger lock second. While
