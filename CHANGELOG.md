@@ -36,8 +36,17 @@ All notable public reference-release changes should be recorded here.
   the token already carries its sign — while older overrides that reference
   `{{subtotal}}`, `{{discount}}`, `{{promoCode}}`, `{{doorCode}}` or the
   per-piece `Previous`/`New` tokens keep rendering and re-saving exactly as
-  before. When a saved override is rejected, the editor now shows the specific
-  reasons instead of a bare "Invalid email template". Only clubs that saved an
+  before. Showing members the promo explanation is now **required** in a
+  booking-confirmed override, satisfied any of three ways — `{{promoSummary}}`,
+  the signed `{{promoAdjustment}}`, or the older `{{discount}}` the previous
+  default body used — so no override a club already saved is invalidated, while
+  an override that deletes the explanation altogether is refused instead of
+  quietly leaving a charged member with a total and no reason for it. (A
+  `{{subtotal}}` line on its own does not count: a subtotal with no adjustment
+  beside it is the confusing email this whole fix is about.) The editor now
+  prints that rule, and the tokens that satisfy it, under the token chips. When
+  a saved override is rejected, the editor also shows the specific reasons
+  instead of a bare "Invalid email template". Only clubs that saved an
   override of these templates ever saw the broken email; clubs on the defaults
   always got the correct built-in HTML version.
 
