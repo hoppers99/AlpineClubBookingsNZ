@@ -341,6 +341,88 @@ describe("booking detail write-surface gates (issue #1313 + option A2)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// In-booking Bed allocation panel (#2252, epic #2245 B2).
+//
+// Every affordance on that card is a WRITE — assign, remove, confirm — so it
+// sits behind the same admin-tooling cluster as the Admin tools card, not
+// behind bookings:view. That is a deliberate asymmetry with the board, which a
+// read-only admin can open read-only: it is one click away via the panel's own
+// "Open on the board" link, and a card of disabled controls tells a read-only
+// admin nothing the board does not tell them better.
+//
+// The predicate pin below is paired with a SOURCE pin on the render site,
+// because the identity logic being right is worthless if the page renders the
+// card outside it.
+// ---------------------------------------------------------------------------
+describe("in-booking bed allocation panel visibility (#2252)", () => {
+  const canSeePanel = (accessRoles: AppAccessRole[]) => {
+    const subject = { accessRoles };
+    return (
+      hasAdminAccess(subject) ||
+      hasAdminAreaAccess(subject, { area: "bookings", level: "edit" })
+    );
+  };
+
+  it("shows the panel to a Full Admin and to a Booking Officer", () => {
+    expect(canSeePanel(["ADMIN"])).toBe(true);
+    expect(canSeePanel(["ADMIN_BOOKINGS"])).toBe(true);
+  });
+
+  it("withholds it from a read-only admin, who gets the board instead", () => {
+    expect(canSeePanel(["ADMIN_READONLY"])).toBe(false);
+  });
+
+  it("withholds it from a plain member, including the booking's own owner", () => {
+    // Ownership grants nothing here: the panel is admin tooling, and the member
+    // never receives the component or the allocation data behind it.
+    expect(canSeePanel(["USER"])).toBe(false);
+  });
+
+  it("withholds it from an admin scoped away from bookings", () => {
+    expect(canSeePanel(["ADMIN_MEMBERSHIP"])).toBe(false);
+    expect(canSeePanel(["ADMIN_FINANCE"])).toBe(false);
+  });
+
+  it("renders the panel only behind canSeeAdminTools AND the bedAllocation module flag", () => {
+    const source = fs.readFileSync(
+      path.join(
+        process.cwd(),
+        "src/app/(authenticated)/bookings/[id]/page.tsx",
+      ),
+      "utf8",
+    );
+
+    // The gate and the render site must be the same expression: the routes 404
+    // when the module is off, and the member-invisibility half is this gate.
+    expect(source).toMatch(
+      /\{canSeeAdminTools && modules\.bedAllocation && \(\s*<BookingBedAllocationPanel/,
+    );
+    // …and there is exactly one render site, so a second, ungated copy cannot
+    // creep in below the first.
+    expect(source.match(/<BookingBedAllocationPanel/g)).toHaveLength(1);
+  });
+
+  it("keys the panel's write controls off the same permission its APIs demand", () => {
+    // Assign/remove/confirm all POST or DELETE under /api/admin/bed-allocation,
+    // which resolves to bookings:edit — the same area/level the panel's
+    // useAdminAreaEditAccess("bookings") gate asks for, so no button is
+    // rendered enabled that the route would refuse.
+    for (const path of [
+      "/api/admin/bed-allocation/approve",
+      "/api/admin/bed-allocation/allocations/range",
+    ]) {
+      expect(getAdminRouteRequirement(path, "POST")).toEqual({
+        area: "bookings",
+        level: "edit",
+      });
+    }
+    expect(
+      getAdminRouteRequirement("/api/admin/bed-allocation/allocations/AID", "DELETE"),
+    ).toEqual({ area: "bookings", level: "edit" });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // bookingManagementAuthorizationRole (issue #1313 option A2): the single legacy
 // authorization Role the widened modify / modify-quote / change-requests paths
 // key their admin-on-behalf relaxations off. A Booking Officer maps onto the
