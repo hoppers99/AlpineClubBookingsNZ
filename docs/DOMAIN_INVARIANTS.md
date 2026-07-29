@@ -576,7 +576,25 @@ Future reviews and issues should cite this file when proposing changes.
   auto-places it (keyed on the flag, not status). The exclusive-hold toggle
   reconciles both directions (set prunes, release re-plans), and a school
   approval granting exclusivity prunes after stamping the hold. Divergence
-  guard: `src/lib/__tests__/held-booking-allocation-agreement.test.ts`.
+  guard: `src/lib/__tests__/held-booking-allocation-agreement.test.ts`. The
+  manual write chokepoint agrees (#2251): `assertGuestAndBedForAllocation`
+  refuses a held booking, so a hand-placed row can no longer be created only to
+  be swept by the next reconcile.
+- **A range assignment writes all or nothing, and records itself once (#2251):**
+  `assignBedRange` scans and writes inside one transaction. If any requested
+  night is blocked, NOTHING is written and the caller receives a per-night
+  refusal in one of three categories that are never merged — `BED_TAKEN` (a
+  clash; a provisional occupant counts, so nothing is silently overwritten),
+  `GUEST_NOT_BOOKED` (a bad request, never a silent skip), and `EXCLUSIVE_HOLD`
+  (ADR-001). A partial result exists only when a human passes `freeNightsOnly`.
+  Either outcome produces exactly ONE `BED_ALLOCATION_RANGE_SET` audit entry
+  against the booking id. The 31-night `MAX_BED_ALLOCATION_RANGE_NIGHTS` bounds
+  the board's READ window, not this write: lodge capacity is the active bed
+  count and never reads `BedAllocation` rows, and no capacity or advisory lock
+  is taken on any allocation write path. The separate write bound
+  (`MAX_BED_ALLOCATION_ASSIGN_RANGE_NIGHTS`, 366) exists only to keep one
+  transaction finite, and is **refused at, never silently truncated to** — as is
+  every board window the admin types.
 
 ## Payment And Settlement
 

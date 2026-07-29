@@ -999,9 +999,32 @@ stay-level `ROOM_SWITCH` warning when a booking's rooms change between nights,
 plus a `MINOR_ADULT_MIX` warning on any persisted room-night that mixes one
 booking's minors with another booking's adults (#1768).
 
+**Range assignment (#2251).** "Assign range…" places ONE guest on ONE bed
+across a range of any length — the board's 31-night window bounds the read, not
+the write. The write is attempt-first (there is deliberately no dry-run/preview
+step) and atomic: any blocked night refuses the WHOLE range, nothing is written,
+and the refusal report names each blocked night in one of three distinct
+categories — the bed is already allocated that night (naming the occupying
+guest; a provisional occupant still counts, so nothing is silently overwritten),
+the guest is not booked that night (a **bad request**, never a silent skip), or
+the night falls inside an exclusive whole-lodge hold (ADR-001 — no per-bed
+allocation applies). A second, explicit "assign the N free nights" action
+re-attempts with just the free set. Either way the operation records exactly one
+`BED_ALLOCATION_RANGE_SET` audit entry (`targetId` = the booking id) carrying the
+requested range, what was written, and what was refused. Range assignments
+**auto-approve**: their rows land with `approvedAt`/`approvedByMemberId` stamped
+rather than as drafts. Board single-night and drag placements are deliberately
+NOT auto-approved — draft-vs-approved remains the suggestion-vs-confirmation
+distinction. One consequence to state plainly: because
+`isBookingBedAllocationLocked` is "at least one approved row exists" (#776), the
+member's requested-room editing locks on the FIRST range assign, not at a later
+confirmation step; the assign dialog says so before the admin commits. Manual
+allocation of a whole-lodge-held booking is refused outright at the write
+chokepoint, matching the lifecycle prune (#2285).
+
 To verify: approval status representation, conflict handling, per-night guest
-uniqueness, room continuity and whole-booking displacement behavior, and
-module-disabled behavior.
+uniqueness, room continuity and whole-booking displacement behavior, range
+refusal categories and their single audit entry, and module-disabled behavior.
 
 ## Membership Application Lifecycle
 

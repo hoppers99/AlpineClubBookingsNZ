@@ -4,6 +4,43 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **A guest can now be put in one bed for a whole long stay in a single action,
+  and the board can be browsed a month at a time (#2251).** The bed-allocation
+  board shows 31 nights at once, and until now that was also as far as you could
+  assign: a long stay meant dragging a guest onto a bed, moving the dates,
+  dragging again, over and over. Every guest awaiting a bed — and every guest
+  already placed on the board — now has an **Assign range…** action. Choose a
+  bed, a first night and a checkout date of any length (up to a year), and the
+  whole stay is written in one go.
+
+  It is deliberately all-or-nothing. If any night in the range is blocked,
+  **nothing is written at all** and you are shown exactly which nights and why,
+  split into three kinds that are never lumped together as "skipped": the bed is
+  already taken that night (the occupying guest is named, and an occupant whose
+  booking does not hold the night is badged **Provisional** — still a clash, so
+  nothing is overwritten behind your back); the guest is not booked that night,
+  which is not a clash at all but a sign the range or the guest is wrong; or the
+  night belongs to a booking holding the whole lodge, which needs no individual
+  beds. Only then, and only if you click the second button, does it write just
+  the free nights — it says how many before you commit. Either way the operation
+  leaves a **single** audit entry against the booking recording the range you
+  asked for, what was written and what was refused, so "who put this guest in
+  bed 4 for the winter?" has one answer rather than fragments. Assigning a range
+  confirms those beds immediately, which locks the member out of changing their
+  requested room; the dialog says so before you commit. Afterwards the board
+  tints the nights it wrote green and the nights it refused red so any gaps are
+  easy to spot.
+
+  The board itself gains **‹** and **›** arrows that step the window a calendar
+  month at a time, and it no longer quietly shortens a date range you type: a
+  window longer than 31 nights is refused with an explanation instead of
+  silently showing you something narrower than you asked for. Arriving from a
+  long booking's link, the board shows the first 31 nights and tells you it is
+  showing part of the stay. Finally, hand-placing a guest from a booking that
+  holds the whole lodge is now refused outright, matching the automatic
+  allocator (#2285) — previously such a placement was accepted and then quietly
+  cleaned away later.
+
 - **Exclusive whole-lodge bookings no longer collect hidden bed assignments
   (#2285).** A booking with an exclusive whole-lodge hold takes the entire
   lodge, so nobody in the group is assigned an individual bed — the
