@@ -47,7 +47,11 @@ function everydayState(): import("@/lib/lodge-display-state").DisplayState {
       { date: "2026-04-15", arriving: 0, departing: 1, staying: 1 },
     ],
     chores: [
-      { date: "2026-04-13", title: "Sweep the bunkroom", assigneeLabels: ["Sam T"] },
+      {
+        date: "2026-04-13",
+        title: "Sweep the bunkroom",
+        assigneeLabels: ["Sam T"],
+      },
     ],
     rules: [{ title: "House rules", html: "<p>Boots off at the door.</p>" }],
     notice: "Committee meeting Friday 7pm",
@@ -81,7 +85,7 @@ beforeEach(async () => {
         status: 200,
         headers: { "content-type": "application/json" },
       });
-    })
+    }),
   );
 });
 
@@ -92,14 +96,15 @@ afterEach(() => {
 
 describe("LTV-038 everyday-board built-in — visual parity", () => {
   it("renders the board, side-rail cards, notice, grid container, and footer chrome", async () => {
-    const { BUILT_IN_DISPLAY_LAYOUTS, BUILT_IN_DISPLAY_TEMPLATES } = await import(
-      "@/lib/lodge-display/built-in-seeds"
-    );
+    const { BUILT_IN_DISPLAY_LAYOUTS, BUILT_IN_DISPLAY_TEMPLATES } =
+      await import("@/lib/lodge-display/built-in-seeds");
     const { DisplayScreen } = await import("@/app/display/display-screen");
 
-    const layout = BUILT_IN_DISPLAY_LAYOUTS.find((l) => l.key === "everyday-board")!;
+    const layout = BUILT_IN_DISPLAY_LAYOUTS.find(
+      (l) => l.key === "everyday-board",
+    )!;
     const template = BUILT_IN_DISPLAY_TEMPLATES.find(
-      (t) => t.key === "everyday-board"
+      (t) => t.key === "everyday-board",
     )!;
     const state = everydayState();
     // The exact payload the state route would ship for a device bound to the
@@ -113,7 +118,7 @@ describe("LTV-038 everyday-board built-in — visual parity", () => {
         cssOverrides: template.cssOverrides,
         footerHtml: template.footerHtml,
       },
-      state
+      state,
     );
 
     queue.push({
@@ -165,19 +170,20 @@ describe("LTV-038 everyday-board built-in — visual parity", () => {
     expect(screen.queryByText("alpine1234")).toBeNull();
     expect(container.querySelector(".display-info-footer")).not.toBeNull();
     expect(
-      container.querySelector(".display-authored-root .display-lodge-header")
+      container.querySelector(".display-authored-root .display-lodge-header"),
     ).toBeNull();
   });
 
   it("omits the notice card when no committee notice is set (conditional area)", async () => {
-    const { BUILT_IN_DISPLAY_LAYOUTS, BUILT_IN_DISPLAY_TEMPLATES } = await import(
-      "@/lib/lodge-display/built-in-seeds"
-    );
+    const { BUILT_IN_DISPLAY_LAYOUTS, BUILT_IN_DISPLAY_TEMPLATES } =
+      await import("@/lib/lodge-display/built-in-seeds");
     const { DisplayScreen } = await import("@/app/display/display-screen");
 
-    const layout = BUILT_IN_DISPLAY_LAYOUTS.find((l) => l.key === "everyday-board")!;
+    const layout = BUILT_IN_DISPLAY_LAYOUTS.find(
+      (l) => l.key === "everyday-board",
+    )!;
     const template = BUILT_IN_DISPLAY_TEMPLATES.find(
-      (t) => t.key === "everyday-board"
+      (t) => t.key === "everyday-board",
     )!;
     const state = { ...everydayState(), notice: null };
     const layoutRender = buildLayoutRender(
@@ -189,7 +195,7 @@ describe("LTV-038 everyday-board built-in — visual parity", () => {
         cssOverrides: template.cssOverrides,
         footerHtml: template.footerHtml,
       },
-      state
+      state,
     );
 
     queue.push({

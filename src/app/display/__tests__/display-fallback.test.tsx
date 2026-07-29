@@ -13,10 +13,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // board is the everyday-board built-in, which does NOT use welcome, so it
 // renders cleanly through the proven legacy region path.
 vi.mock("@/components/lodge-display/modules", async () => {
-  const actual =
-    await vi.importActual<typeof import("@/components/lodge-display/modules")>(
-      "@/components/lodge-display/modules"
-    );
+  const actual = await vi.importActual<
+    typeof import("@/components/lodge-display/modules")
+  >("@/components/lodge-display/modules");
   function BoomModule(): never {
     throw new Error("welcome module crashed");
   }
@@ -43,7 +42,9 @@ const PAYLOAD = {
       label: "Olive O",
       wholeLodge: false,
       roomId: null,
-      guests: [{ label: "Jane S", stayStart: "2026-04-13", stayEnd: "2026-04-15" }],
+      guests: [
+        { label: "Jane S", stayStart: "2026-04-13", stayEnd: "2026-04-15" },
+      ],
       guestCount: 1,
       stayStart: "2026-04-13",
       stayEnd: "2026-04-15",
@@ -60,7 +61,10 @@ const PAYLOAD = {
     name: "Everyday board",
     regions: [
       { key: "header", panels: [{ module: "lodge-header" }] },
-      { key: "main", panels: [{ module: "arrivals-board", options: { days: 3 } }] },
+      {
+        key: "main",
+        panels: [{ module: "arrivals-board", options: { days: 3 } }],
+      },
       { key: "footer", panels: [{ module: "info-footer" }] },
     ],
   },
@@ -87,12 +91,13 @@ function enqueueState(body: unknown) {
     "fetch",
     vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (!url.includes("/api/display/state")) throw new Error(`unexpected ${url}`);
+      if (!url.includes("/api/display/state"))
+        throw new Error(`unexpected ${url}`);
       return new Response(JSON.stringify(body), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
-    })
+    }),
   );
 }
 
@@ -139,7 +144,9 @@ describe("DisplayScreen page-level fallback (LTV-030) — client render throw", 
     });
 
     expect(container.querySelector("[data-display-fallback]")).not.toBeNull();
-    expect(screen.getByText(/Template failed — showing fallback board/)).toBeDefined();
+    expect(
+      screen.getByText(/Template failed — showing fallback board/),
+    ).toBeDefined();
   });
 });
 
@@ -163,6 +170,8 @@ describe("DisplayScreen page-level fallback (LTV-030) — server broken binding"
     await act(async () => {
       await vi.advanceTimersByTimeAsync(10);
     });
-    expect(screen.getByText(/Template failed — showing fallback board/)).toBeDefined();
+    expect(
+      screen.getByText(/Template failed — showing fallback board/),
+    ).toBeDefined();
   });
 });

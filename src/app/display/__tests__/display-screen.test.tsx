@@ -21,7 +21,9 @@ const PAYLOAD = {
       label: "Olive O",
       wholeLodge: false,
       roomId: null,
-      guests: [{ label: "Jane S", stayStart: "2026-04-13", stayEnd: "2026-04-15" }],
+      guests: [
+        { label: "Jane S", stayStart: "2026-04-13", stayEnd: "2026-04-15" },
+      ],
       guestCount: 1,
       stayStart: "2026-04-13",
       stayEnd: "2026-04-15",
@@ -42,21 +44,25 @@ const PAYLOAD = {
     name: "Everyday board",
     regions: [
       { key: "header", panels: [{ module: "lodge-header" }] },
-      { key: "main", panels: [{ module: "arrivals-board", options: { days: 3 } }] },
+      {
+        key: "main",
+        panels: [{ module: "arrivals-board", options: { days: 3 } }],
+      },
       { key: "footer", panels: [{ module: "info-footer" }] },
     ],
   },
 };
 
-type QueuedResponse =
-  | { status: number; body: unknown }
-  | { reject: true };
+type QueuedResponse = { status: number; body: unknown } | { reject: true };
 
-const queue: Array<{ match: (url: string, init?: RequestInit) => boolean; response: QueuedResponse }> = [];
+const queue: Array<{
+  match: (url: string, init?: RequestInit) => boolean;
+  response: QueuedResponse;
+}> = [];
 
 function enqueue(
   match: (url: string, init?: RequestInit) => boolean,
-  response: QueuedResponse
+  response: QueuedResponse,
 ) {
   queue.push({ match, response });
 }
@@ -76,7 +82,7 @@ beforeEach(() => {
         status: entry.response.status,
         headers: { "content-type": "application/json" },
       });
-    })
+    }),
   );
 });
 
@@ -239,7 +245,11 @@ describe("DisplayScreen lifecycle", () => {
   });
 
   it("marks the header clock as simulated (amber, in place) when a previewDate is active (issue #60)", async () => {
-    window.history.pushState({}, "", "/display?previewDevice=dev-9&previewDate=2026-08-01");
+    window.history.pushState(
+      {},
+      "",
+      "/display?previewDevice=dev-9&previewDate=2026-08-01",
+    );
     try {
       const isPreviewState = (url: string) =>
         url.includes("/api/display/state?previewDevice=dev-9");
@@ -251,7 +261,7 @@ describe("DisplayScreen lifecycle", () => {
       // The existing clock container carries the simulated state — recoloured
       // in place, so no separate marker element is added.
       expect(
-        container.querySelector(".display-header-clock[data-simulated]")
+        container.querySelector(".display-header-clock[data-simulated]"),
       ).not.toBeNull();
       // The date line is a picker with a hidden date input in preview mode.
       expect(container.querySelector('input[type="date"]')).not.toBeNull();
@@ -289,7 +299,7 @@ describe("DisplayScreen lifecycle", () => {
         await vi.advanceTimersByTimeAsync(10);
       });
       const input = container.querySelector(
-        'input[type="date"]'
+        'input[type="date"]',
       ) as HTMLInputElement | null;
       expect(input).not.toBeNull();
       // The input is a sibling of the picker button, never its descendant.
@@ -322,7 +332,7 @@ describe("DisplayScreen lifecycle", () => {
     expect(screen.getByText("Silverpeak Lodge")).toBeDefined();
     expect(container.querySelector('input[type="date"]')).toBeNull();
     expect(
-      container.querySelector(".display-header-clock[data-simulated]")
+      container.querySelector(".display-header-clock[data-simulated]"),
     ).toBeNull();
     expect(screen.queryByText(/Simulating/)).toBeNull();
     // No "previewing against" line on a real, unattended wall (LTV-036).
@@ -348,7 +358,9 @@ describe("DisplayScreen lifecycle", () => {
       await vi.advanceTimersByTimeAsync(10);
     });
     expect(
-      container.querySelector('.display-module-placeholder[data-module="future-module"]')
+      container.querySelector(
+        '.display-module-placeholder[data-module="future-module"]',
+      ),
     ).not.toBeNull();
   });
 });
@@ -364,28 +376,36 @@ function markerize(html: string): string {
   return html
     .replace(
       /\{\{area:([a-z0-9][a-z0-9-]{0,63})\}\}/g,
-      (_m, key: string) => `<div data-display-area="${key}"></div>`
+      (_m, key: string) => `<div data-display-area="${key}"></div>`,
     )
     .replace(
       /\{\{module:([a-z0-9][a-z0-9-]{0,63})\}\}/g,
-      (_m, name: string) => `<div data-display-module="${name}"></div>`
+      (_m, name: string) => `<div data-display-module="${name}"></div>`,
     );
 }
 
 function markerizeSlot(value: unknown): unknown {
   if (value && typeof value === "object" && "html" in value) {
-    return { ...value, html: markerize(String((value as { html: unknown }).html)) };
+    return {
+      ...value,
+      html: markerize(String((value as { html: unknown }).html)),
+    };
   }
   return value;
 }
 
-function markerizeLayout(layoutRender: Record<string, unknown>): Record<string, unknown> {
+function markerizeLayout(
+  layoutRender: Record<string, unknown>,
+): Record<string, unknown> {
   const out = { ...layoutRender };
   if (typeof out.bodyHtml === "string") out.bodyHtml = markerize(out.bodyHtml);
-  if (typeof out.footerHtml === "string") out.footerHtml = markerize(out.footerHtml);
+  if (typeof out.footerHtml === "string")
+    out.footerHtml = markerize(out.footerHtml);
   if (out.slotContent && typeof out.slotContent === "object") {
     const slots: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(out.slotContent as Record<string, unknown>)) {
+    for (const [key, value] of Object.entries(
+      out.slotContent as Record<string, unknown>,
+    )) {
       slots[key] = markerizeSlot(value);
     }
     out.slotContent = slots;
@@ -393,8 +413,13 @@ function markerizeLayout(layoutRender: Record<string, unknown>): Record<string, 
   if (Array.isArray(out.areas)) {
     out.areas = out.areas.map((area) =>
       area && typeof area === "object" && "defaultContent" in area
-        ? { ...area, defaultContent: markerizeSlot((area as { defaultContent: unknown }).defaultContent) }
-        : area
+        ? {
+            ...area,
+            defaultContent: markerizeSlot(
+              (area as { defaultContent: unknown }).defaultContent,
+            ),
+          }
+        : area,
     );
   }
   return out;
@@ -540,7 +565,9 @@ describe("DisplayScreen layout engine (LTV-027)", () => {
           description: "Rotator",
           kind: "rotator",
           rotateSeconds: 5,
-          children: [{ key: "a", description: "A", condition: "content:notice" }],
+          children: [
+            { key: "a", description: "A", condition: "content:notice" },
+          ],
         },
       ],
       slotContent: { "roto/a": { html: "<p>Never eligible</p>" } },
@@ -562,7 +589,9 @@ describe("DisplayScreen layout engine (LTV-027)", () => {
       footerHtml: "",
     });
     expect(
-      container.querySelector('.display-module-placeholder[data-module="future-module"]')
+      container.querySelector(
+        '.display-module-placeholder[data-module="future-module"]',
+      ),
     ).not.toBeNull();
   });
 
@@ -620,7 +649,7 @@ describe("DisplayScreen layout engine — CSS scoping + theme (LTV-029)", () => 
   it("injects three ordered style tags: theme → layout → overrides", async () => {
     const { container } = await renderLayout(CSS_LAYOUT);
     const styles = Array.from(
-      container.querySelectorAll("style[data-display-style]")
+      container.querySelectorAll("style[data-display-style]"),
     );
     expect(styles.map((s) => s.getAttribute("data-display-style"))).toEqual([
       "theme",
@@ -637,12 +666,12 @@ describe("DisplayScreen layout engine — CSS scoping + theme (LTV-029)", () => 
     const { container } = await renderLayout(CSS_LAYOUT);
     // The body is a descendant of the authored root...
     expect(
-      container.querySelector(".display-authored-root .display-layout-body")
+      container.querySelector(".display-authored-root .display-layout-body"),
     ).not.toBeNull();
     // ...but the fixed header chrome is NOT — authored CSS can never reach it.
     expect(container.querySelector(".display-lodge-header")).not.toBeNull();
     expect(
-      container.querySelector(".display-authored-root .display-lodge-header")
+      container.querySelector(".display-authored-root .display-lodge-header"),
     ).toBeNull();
   });
 
@@ -650,7 +679,7 @@ describe("DisplayScreen layout engine — CSS scoping + theme (LTV-029)", () => 
     const { container } = await renderLayout(CSS_LAYOUT);
     expect(screen.getByText("Authored footer")).toBeDefined();
     expect(
-      container.querySelector(".display-authored-root .display-info-footer")
+      container.querySelector(".display-authored-root .display-info-footer"),
     ).not.toBeNull();
   });
 
@@ -660,7 +689,7 @@ describe("DisplayScreen layout engine — CSS scoping + theme (LTV-029)", () => 
     expect(screen.getByText("alpine1234")).toBeDefined();
     expect(container.querySelector(".display-info-footer")).not.toBeNull();
     expect(
-      container.querySelector(".display-authored-root .display-info-footer")
+      container.querySelector(".display-authored-root .display-info-footer"),
     ).toBeNull();
   });
 });
@@ -725,7 +754,9 @@ describe("DisplayScreen layout engine — embedded module tokens (LTV-028)", () 
       footerHtml: "",
     });
     expect(
-      container.querySelector('.display-module-placeholder[data-module="future-thing"]')
+      container.querySelector(
+        '.display-module-placeholder[data-module="future-thing"]',
+      ),
     ).not.toBeNull();
   });
 });
@@ -769,7 +800,7 @@ describe("DisplayScreen render-branch error boundaries (issue #176)", () => {
     expect(screen.getByText("Silverpeak Lodge")).toBeDefined();
     // It did NOT fall all the way to the minimal shell.
     expect(
-      container.querySelector('[data-display-fallback="minimal"]')
+      container.querySelector('[data-display-fallback="minimal"]'),
     ).toBeNull();
   });
 
@@ -788,7 +819,7 @@ describe("DisplayScreen render-branch error boundaries (issue #176)", () => {
       await vi.advanceTimersByTimeAsync(10);
     });
     const shell = container.querySelector<HTMLElement>(
-      '[data-display-fallback="minimal"]'
+      '[data-display-fallback="minimal"]',
     );
     expect(shell).not.toBeNull();
     // Not blank: the shell element is actually mounted as the render root.
@@ -817,7 +848,7 @@ describe("DisplayScreen render-branch error boundaries (issue #176)", () => {
       await vi.advanceTimersByTimeAsync(10);
     });
     expect(
-      container.querySelector('[data-display-fallback="minimal"]')
+      container.querySelector('[data-display-fallback="minimal"]'),
     ).not.toBeNull();
   });
 

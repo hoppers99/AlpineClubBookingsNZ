@@ -13,7 +13,9 @@ import { emptyBuilderModel } from "@/lib/lodge-display/builder-model";
 // fully simulate a @dnd-kit pointer drag, so these assert the keyboard-operable
 // surface and fallbacks that guarantee no-pointer operation.
 
-function renderBuilder(skeleton: Parameters<typeof emptyBuilderModel>[0] = "columns") {
+function renderBuilder(
+  skeleton: Parameters<typeof emptyBuilderModel>[0] = "columns",
+) {
   return render(
     <DisplayBuilder
       layoutId={null}
@@ -27,7 +29,7 @@ function renderBuilder(skeleton: Parameters<typeof emptyBuilderModel>[0] = "colu
       canEdit
       lodges={[{ id: "lodge-a", name: "Ruapehu" }]}
       onDuplicate={() => undefined}
-    />
+    />,
   );
 }
 
@@ -41,12 +43,16 @@ describe("DisplayBuilder — keyboard operability + fallbacks", () => {
     expect(arrivals).toHaveAttribute("aria-roledescription", "draggable");
     expect(arrivals).toHaveAttribute("aria-describedby");
     // The HTML content block is a palette item too.
-    expect(screen.getByRole("button", { name: /HTML content block/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /HTML content block/i }),
+    ).toBeInTheDocument();
   });
 
   it("does NOT surface page-furniture modules in the palette", () => {
     renderBuilder();
-    expect(screen.queryByRole("button", { name: /^Lodge header$/i })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /^Lodge header$/i }),
+    ).toBeNull();
     expect(screen.queryByRole("button", { name: /^Info footer$/i })).toBeNull();
   });
 
@@ -54,8 +60,12 @@ describe("DisplayBuilder — keyboard operability + fallbacks", () => {
     renderBuilder("columns");
     // Two zones → two "Settings" triggers, each zone move/remove labelled by key.
     expect(screen.getAllByRole("button", { name: "Settings" })).toHaveLength(2);
-    expect(screen.getByRole("button", { name: /Move zone-1 later/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Remove zone-2/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Move zone-1 later/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Remove zone-2/i }),
+    ).toBeInTheDocument();
   });
 
   it("side-rail pins the main cell — no remove/reorder on it", () => {
@@ -63,7 +73,9 @@ describe("DisplayBuilder — keyboard operability + fallbacks", () => {
     expect(screen.queryByRole("button", { name: /Remove main/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /Move main/i })).toBeNull();
     // Rail zones still reorder.
-    expect(screen.getByRole("button", { name: /Remove rail-1/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Remove rail-1/i }),
+    ).toBeInTheDocument();
   });
 
   it("opens the zone settings drawer on demand (focus moves into it)", () => {
@@ -80,13 +92,15 @@ describe("DisplayBuilder — keyboard operability + fallbacks", () => {
   // the DOM slot (which now holds a different zone).
   it("keeps focus on the moved zone's control after a keyboard reorder", () => {
     renderBuilder("columns");
-    const downFirst = screen.getByRole("button", { name: /Move zone-1 later/i });
+    const downFirst = screen.getByRole("button", {
+      name: /Move zone-1 later/i,
+    });
     downFirst.focus();
     fireEvent.click(downFirst);
     // The zone that was first is now second; focus followed it to the second
     // position's "later" control (labelled by its re-derived key, zone-2).
     expect(document.activeElement).toBe(
-      screen.getByRole("button", { name: /Move zone-2 later/i })
+      screen.getByRole("button", { name: /Move zone-2 later/i }),
     );
   });
 });

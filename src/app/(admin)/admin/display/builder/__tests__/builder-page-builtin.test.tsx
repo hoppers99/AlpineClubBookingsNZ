@@ -44,12 +44,14 @@ beforeEach(() => {
   window.history.pushState(
     {},
     "",
-    "/admin/display/builder?templateId=builtin-template-everyday-board"
+    "/admin/display/builder?templateId=builtin-template-everyday-board",
   );
   global.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.includes("/api/admin/lodges")) {
-      return jsonResponse({ lodges: [{ id: "lodge-a", name: "Ruapehu", active: true }] });
+      return jsonResponse({
+        lodges: [{ id: "lodge-a", name: "Ruapehu", active: true }],
+      });
     }
     if (url.includes("/api/admin/display/templates/")) {
       return jsonResponse({ template: BUILT_IN_TEMPLATE });
@@ -73,7 +75,7 @@ describe("Visual builder page — built-in board (§U1)", () => {
     });
     expect(screen.getByText(/This is a built-in design/i)).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: /Rebuild in builder/i })
+      screen.queryByRole("button", { name: /Rebuild in builder/i }),
     ).toBeNull();
 
     fireEvent.click(duplicate);
@@ -82,7 +84,7 @@ describe("Visual builder page — built-in board (§U1)", () => {
     // disabled read-only builder) and a pre-filled, editable key/name copy.
     await waitFor(() => {
       expect(
-        screen.getByRole("button", { name: /Create board/i })
+        screen.getByRole("button", { name: /Create board/i }),
       ).toBeInTheDocument();
     });
     const key = screen.getByLabelText(/Board key/i) as HTMLInputElement;

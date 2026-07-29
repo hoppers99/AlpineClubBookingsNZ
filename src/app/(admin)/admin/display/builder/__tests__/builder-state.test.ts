@@ -25,11 +25,18 @@ describe("builder-state — keys stay canonical + valid", () => {
   it("moveZone reorders columns and re-keys positionally", () => {
     let model = emptyBuilderModel("columns", 3);
     model = setZoneModule(model, 0, "arrivals-board");
-    const before = model.zones[0].kind === "static" ? model.zones[0].content : null;
+    const before =
+      model.zones[0].kind === "static" ? model.zones[0].content : null;
     model = moveZone(model, 0, 2);
     // The moved zone now sits last but keeps its content; keys are z1..z3 in order.
-    expect(model.zones.map((z) => z.key)).toEqual(["zone-1", "zone-2", "zone-3"]);
-    expect(model.zones[2].kind === "static" && model.zones[2].content).toEqual(before);
+    expect(model.zones.map((z) => z.key)).toEqual([
+      "zone-1",
+      "zone-2",
+      "zone-3",
+    ]);
+    expect(model.zones[2].kind === "static" && model.zones[2].content).toEqual(
+      before,
+    );
     // The regenerated body references the canonical keys and round-trips.
     expect(builderBodyHtml(model)).toContain("{{area:zone-1}}");
   });
@@ -106,22 +113,40 @@ describe("builder-state — kind transitions initialise/forbid the right fields"
 describe("builder-state — option coercion stays in the descriptor domain", () => {
   it("clamps ints and rejects out-of-set enums to the default", () => {
     expect(
-      coerceOptionValue({ key: "days", label: "d", type: "int", default: 3, min: 1, max: 7 }, "99")
+      coerceOptionValue(
+        { key: "days", label: "d", type: "int", default: 3, min: 1, max: 7 },
+        "99",
+      ),
     ).toBe(7);
     expect(
-      coerceOptionValue({ key: "days", label: "d", type: "int", default: 3, min: 1, max: 7 }, "0")
+      coerceOptionValue(
+        { key: "days", label: "d", type: "int", default: 3, min: 1, max: 7 },
+        "0",
+      ),
     ).toBe(1);
     expect(
-      coerceOptionValue({ key: "days", label: "d", type: "int", default: 3, min: 1, max: 7 }, "xx")
+      coerceOptionValue(
+        { key: "days", label: "d", type: "int", default: 3, min: 1, max: 7 },
+        "xx",
+      ),
     ).toBe(3);
     expect(
       coerceOptionValue(
-        { key: "v", label: "v", type: "enum", default: "auto", allowed: ["auto", "board"] },
-        "nope"
-      )
+        {
+          key: "v",
+          label: "v",
+          type: "enum",
+          default: "auto",
+          allowed: ["auto", "board"],
+        },
+        "nope",
+      ),
     ).toBe("auto");
     expect(
-      coerceOptionValue({ key: "b", label: "b", type: "bool", default: true }, "false")
+      coerceOptionValue(
+        { key: "b", label: "b", type: "bool", default: true },
+        "false",
+      ),
     ).toBe(false);
   });
 });
