@@ -7,9 +7,11 @@ import {
   isBoardsStepVerified,
   isConfigStepVerified,
   isDoneStepVerified,
+  isLodgeUnresolved,
   isModuleStepVerified,
   isPairStepVerified,
   liveDevicesForLodge,
+  pendingDeviceForLodge,
   savedConfigKeys,
   shouldLeadWithSetupCard,
   type DisplayWizardContext,
@@ -34,6 +36,7 @@ function makeContext(
       lodgeId: "lodge-1",
       lodgeName: "Ruapehu Lodge",
       displayConfig: {},
+      unrepresentableConfigKeys: [],
       displayNotice: null,
     },
     loaded: true,
@@ -151,12 +154,45 @@ describe("step 3 — pick the board", () => {
     ).toBeNull();
   });
 
-  it("counts every lodge's screens when no lodge has been resolved yet", () => {
+  // #2249 review M4. This used to fall back to "every lodge" when no lodge had
+  // been resolved (the lodges fetch failed, or the club has no active lodge),
+  // which let a screen at ANOTHER lodge tick this lodge's steps off and let the
+  // pairing step adopt a device belonging somewhere else. An unresolved lodge is
+  // now a blocking state that reads nothing at all.
+  it("reads NO screens while no lodge has been resolved, and says so", () => {
     const context = makeContext({
       lodgeId: null,
-      devices: [makeDevice({ lodgeId: "lodge-9" })],
+      devices: [
+        makeDevice({ lodgeId: "lodge-9", templateId: "tpl-1" }),
+        makeDevice({ id: "device-2", lodgeId: "lodge-9", paired: false }),
+      ],
     });
-    expect(liveDevicesForLodge(context)).toHaveLength(1);
+    expect(isLodgeUnresolved(context)).toBe(true);
+    expect(liveDevicesForLodge(context)).toEqual([]);
+    expect(pendingDeviceForLodge(context)).toBeNull();
+    expect(boundTemplateId(context)).toBeNull();
+    expect(isBoardStepVerified(context)).toBe(false);
+    expect(isPairStepVerified(context)).toBe(false);
+    expect(isDoneStepVerified(context)).toBe(false);
+  });
+
+  it("is not 'unresolved' before the reads have settled", () => {
+    // Mid-load there is no lodge yet either, but that is a loading state, not a
+    // failure to report — the steps must not flash the blocking notice.
+    expect(
+      isLodgeUnresolved(makeContext({ lodgeId: null, loaded: false })),
+    ).toBe(false);
+  });
+
+  it("finds only THIS lodge's screen awaiting pairing", () => {
+    const context = makeContext({
+      devices: [
+        makeDevice({ id: "other-lodge", lodgeId: "lodge-2", paired: false }),
+        makeDevice({ id: "revoked", paired: false, revoked: true }),
+        makeDevice({ id: "ours", paired: false }),
+      ],
+    });
+    expect(pendingDeviceForLodge(context)?.id).toBe("ours");
   });
 });
 
@@ -170,6 +206,7 @@ describe("step 4 — lodge details", () => {
             lodgeId: "lodge-1",
             lodgeName: "Ruapehu Lodge",
             displayConfig: { "wifi-name": "RUAPEHU-GUEST" },
+            unrepresentableConfigKeys: [],
             displayNotice: null,
           },
         }),
@@ -182,6 +219,7 @@ describe("step 4 — lodge details", () => {
             lodgeId: "lodge-1",
             lodgeName: "Ruapehu Lodge",
             displayConfig: {},
+            unrepresentableConfigKeys: [],
             displayNotice: "Lights out 10:30pm",
           },
         }),
@@ -195,6 +233,7 @@ describe("step 4 — lodge details", () => {
         lodgeId: "lodge-1",
         lodgeName: "Ruapehu Lodge",
         displayConfig: { "wifi-code": "   " },
+        unrepresentableConfigKeys: [],
         displayNotice: "  ",
       },
     });
