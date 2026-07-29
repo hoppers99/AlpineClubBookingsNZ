@@ -4,6 +4,27 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Groundwork for adding another club member as a guest (#2306).** Members can
+  currently only put people from their own family group on a booking as linked
+  members. Work has started on letting a member add *any* club member as a
+  guest, with that member's consent. This first change lays the foundations —
+  the database columns that record whether a member agreed, a new
+  "Add another member as a guest" switch on Admin > Modules, and the settings
+  row that will hold the club's policy — and **deliberately changes nothing you
+  can see or do**. Adding somebody outside your own family group is still
+  declined exactly as before, whether the new module switch is on or off, and
+  the switch's own description on the Modules page says plainly that the
+  feature arrives in a later update. That is on purpose: the consent request
+  emails, the approval screen, and the timer that releases a held bed when
+  nobody answers all arrive together in the next change, so there is never a
+  version where turning the switch on could hold beds for approvals that
+  nothing can grant. The settings this will eventually use ship with sensible
+  defaults already chosen: consent is required by default, a held bed is
+  released after 7 days, and the two settings that would make the club's member
+  list browsable are off and never travel in a club config transfer, so
+  importing another club's settings can never widen your members' privacy
+  without your admin choosing it.
+
 - **Exclusive whole-lodge bookings no longer collect hidden bed assignments
   (#2285).** A booking with an exclusive whole-lodge hold takes the entire
   lodge, so nobody in the group is assigned an individual bed — the
