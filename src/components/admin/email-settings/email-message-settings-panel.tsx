@@ -67,6 +67,29 @@ const settingFields: Array<{
   { key: "publicUrl", label: "Public URL" },
 ];
 
+// The template write/preview routes reject an invalid body with a generic
+// "Invalid email template" plus a list of specific issues. Showing only the
+// generic line left an admin guessing what to change (#2267), so join the
+// explanations onto it — every rule the server enforces already carries a
+// plain-English message.
+function templateErrorMessage(responseBody: unknown, fallback: string): string {
+  const body = responseBody as
+    | { error?: string; issues?: Array<{ message?: string }> }
+    | null
+    | undefined;
+  const headline = body?.error ?? fallback;
+  const details = Array.isArray(body?.issues)
+    ? Array.from(
+        new Set(
+          body.issues
+            .map((issue) => issue?.message)
+            .filter((message): message is string => Boolean(message)),
+        ),
+      )
+    : [];
+  return details.length > 0 ? `${headline}: ${details.join("; ")}` : headline;
+}
+
 export function EmailMessageSettingsPanel() {
   const [settings, setSettings] = useState<EmailSettings | null>(null);
   const [templates, setTemplates] = useState<TemplateDefinition[]>([]);
@@ -184,7 +207,9 @@ export function EmailMessageSettingsPanel() {
       const responseBody = await response.json().catch(() => null);
       if (!response.ok) {
         if (response.status === 403) setForbiddenSave(true);
-        throw new Error(responseBody?.error ?? "Failed to save email template");
+        throw new Error(
+          templateErrorMessage(responseBody, "Failed to save email template"),
+        );
       }
       toast.success("Email template saved");
       await load();
@@ -237,7 +262,9 @@ export function EmailMessageSettingsPanel() {
       });
       const responseBody = await response.json().catch(() => null);
       if (!response.ok) {
-        throw new Error(responseBody?.error ?? "Failed to preview email template");
+        throw new Error(
+          templateErrorMessage(responseBody, "Failed to preview email template"),
+        );
       }
       setPreviewSubject(responseBody.subject);
       setPreviewHtml(responseBody.html);

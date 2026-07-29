@@ -253,6 +253,55 @@ describe("booking-confirmed promo summary (#2267)", () => {
     expect(result.sensitiveSubjectTokens).toContain("doorCodeNote");
   });
 
+  it("refuses an override that writes its own minus in front of a signed promo token", () => {
+    // "Discount: -{{promoAdjustment}}" is the incident shape re-created by
+    // hand: it renders "Discount: -+$1,370.00" on a surcharge promo and a bare
+    // "Discount: -" on a booking with no promo at all.
+    for (const bodyText of [
+      "Hi {{firstName}}\n\nDiscount: -{{promoAdjustment}}\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\n{{doorCodeNote}}",
+      "Hi {{firstName}}\n\nDiscount: - {{ promoAdjustment }}\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\n{{doorCodeNote}}",
+      "Hi {{firstName}}\n\nSurcharge: +{{promoSummary}}\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\n{{doorCodeNote}}",
+    ]) {
+      const result = validateEmailTemplateContent({
+        templateName: "booking-confirmed",
+        subject: "Booking Confirmed",
+        bodyText,
+      });
+      expect(result.valid, bodyText).toBe(false);
+      expect(result.issues.map((issue) => issue.code)).toContain(
+        "sign_prefixed_token",
+      );
+      const issue = result.issues.find(
+        (candidate) => candidate.code === "sign_prefixed_token",
+      );
+      expect(issue?.field).toBe("bodyText");
+      // Plain English, and it says what to do about it.
+      expect(issue?.message).toContain("already includes its own sign");
+    }
+  });
+
+  it("accepts the tokens used without a hand-written sign", () => {
+    const result = validateEmailTemplateContent({
+      templateName: "booking-confirmed",
+      subject: "Booking Confirmed",
+      bodyText:
+        "Hi {{firstName}}\n\n{{promoSummary}}Total Paid: {{totalPaid}}\nAdjustment: {{promoAdjustment}}\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\n{{doorCodeNote}}",
+    });
+    expect(result.signPrefixedTokens).toEqual([]);
+    expect(result.valid).toBe(true);
+
+    // The shipped default body must obviously satisfy its own rule.
+    const definition = getEmailTemplateDefinition("booking-confirmed");
+    if (!definition) throw new Error("missing booking-confirmed");
+    expect(
+      validateEmailTemplateContent({
+        templateName: "booking-confirmed",
+        subject: definition.defaultSubject,
+        bodyText: definition.defaultBody,
+      }).valid,
+    ).toBe(true);
+  });
+
   it("keeps the split provisionalGuestsNote token in the default body (CONFIGURATION.md mandate)", () => {
     const definition = getEmailTemplateDefinition("booking-confirmed");
     if (!definition) throw new Error("missing booking-confirmed");

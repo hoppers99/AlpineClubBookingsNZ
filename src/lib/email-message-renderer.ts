@@ -38,6 +38,7 @@ interface EmailTemplateValidationIssue {
     | "unknown_token"
     | "disallowed_token"
     | "missing_required_token"
+    | "sign_prefixed_token"
     | "sensitive_subject_token"
     | "subject_line_break"
     | "raw_html"
@@ -54,8 +55,24 @@ export interface EmailTemplateValidationResult {
   unknownTokens: string[];
   disallowedTokens: string[];
   missingRequiredTokens: string[];
+  signPrefixedTokens: string[];
   sensitiveSubjectTokens: string[];
   unsafeLinks: string[];
+}
+
+// #2267: these tokens render their own sign — "-$30.00" for a discount,
+// "+$1,370.00" for a promo that raises the price — and render nothing at all
+// when no promo applied. Typing a minus in front of one ("Discount:
+// -{{promoAdjustment}}") re-creates the exact incident #2267 fixed: a member
+// reading "Discount: -+$1,370.00" on a surcharge, or a bare "Discount: -" on a
+// booking with no promo. The editor rejects it at save time instead.
+const SIGN_CARRYING_TOKEN_PATTERN =
+  /[-+]\s*\{\{\s*(promoAdjustment|promoSummary)\s*\}\}/g;
+
+function findSignPrefixedTokens(value: string): string[] {
+  return Array.from(
+    new Set(Array.from(value.matchAll(SIGN_CARRYING_TOKEN_PATTERN), (m) => m[1])),
+  );
 }
 
 function extractTemplateTokens(value: string): string[] {
@@ -197,6 +214,27 @@ export function validateEmailTemplateContent({
     });
   }
 
+  const signPrefixedTokens = Array.from(
+    new Set([
+      ...findSignPrefixedTokens(subject),
+      ...findSignPrefixedTokens(bodyText),
+    ]),
+  );
+  for (const field of ["subject", "bodyText"] as const) {
+    const fieldTokens = findSignPrefixedTokens(
+      field === "subject" ? subject : bodyText,
+    );
+    if (fieldTokens.length > 0) {
+      issues.push({
+        code: "sign_prefixed_token",
+        field,
+        message:
+          "Remove the plus or minus you typed in front of this token. It already includes its own sign — a discount reads -$30.00 and a promo that raises the price reads +$1,370.00 — and it renders nothing at all when no promo applied, so a sign of your own would leave a stray + or - in the email",
+        tokens: fieldTokens,
+      });
+    }
+  }
+
   // Subjects are persisted in EmailLog and travel in clear mail headers, so
   // secret-bearing tokens are never allowed in a subject line.
   const sensitiveSubjectTokenSet = getSensitiveEmailSubjectTokens(templateName);
@@ -244,6 +282,7 @@ export function validateEmailTemplateContent({
     unknownTokens,
     disallowedTokens,
     missingRequiredTokens,
+    signPrefixedTokens,
     sensitiveSubjectTokens,
     unsafeLinks,
   };
