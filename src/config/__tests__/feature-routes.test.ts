@@ -19,7 +19,7 @@ describe("feature route map", () => {
       "financeDashboard",
     ]);
     expect(
-      getRequiredFeaturesForPath("/api/admin/setup/finance-report-mappings"),
+      getRequiredFeaturesForPath("/api/admin/setup/finance-report-mappings")
     ).toEqual(["financeDashboard"]);
     expect(getRequiredFeaturesForPath("/admin/waitlist")).toEqual(["waitlist"]);
     expect(getRequiredFeaturesForPath("/admin/xero/records")).toEqual([
@@ -30,13 +30,13 @@ describe("feature route map", () => {
       "internetBankingPayments",
     ]);
     expect(
-      getRequiredFeaturesForPath("/api/admin/internet-banking-settings"),
+      getRequiredFeaturesForPath("/api/admin/internet-banking-settings")
     ).toEqual(["xeroIntegration", "internetBankingPayments"]);
+    expect(getRequiredFeaturesForPath("/api/address-autocomplete/search")).toEqual([
+      "addressAutocomplete",
+    ]);
     expect(
-      getRequiredFeaturesForPath("/api/address-autocomplete/search"),
-    ).toEqual(["addressAutocomplete"]);
-    expect(
-      getRequiredFeaturesForPath("/api/address-autocomplete/details/123"),
+      getRequiredFeaturesForPath("/api/address-autocomplete/details/123")
     ).toEqual(["addressAutocomplete"]);
   });
 
@@ -75,9 +75,9 @@ describe("feature route map", () => {
 
   it("gates the AI assistant admin surface but NOT the /api/help/chat route", () => {
     // The admin usage + settings surfaces hard-gate on the module flag.
-    expect(getRequiredFeaturesForPath("/api/admin/ai-assistant/usage")).toEqual(
-      ["aiAssistant"],
-    );
+    expect(getRequiredFeaturesForPath("/api/admin/ai-assistant/usage")).toEqual([
+      "aiAssistant",
+    ]);
     expect(
       getRequiredFeaturesForPath("/api/admin/ai-assistant/settings"),
     ).toEqual(["aiAssistant"]);
@@ -102,7 +102,7 @@ describe("feature route map", () => {
     expect(getDisabledFeatureForPath("/admin/lodges", allOn)).toBeNull();
     expect(getDisabledFeatureForPath("/api/admin/lodges", allOn)).toBeNull();
     expect(
-      getDisabledFeatureForPath("/api/admin/lodges/lodge-1", allOn),
+      getDisabledFeatureForPath("/api/admin/lodges/lodge-1", allOn)
     ).toBeNull();
   });
 
@@ -111,7 +111,7 @@ describe("feature route map", () => {
     // Lodges admin surface — the whole point of promoting multi-lodge to core
     // (ADR-005). Gating it on a now-removed flag would have hidden it here.
     const allOff = Object.fromEntries(
-      MODULE_KEYS.map((key) => [key, false]),
+      MODULE_KEYS.map((key) => [key, false])
     ) as FeatureFlags;
     for (const href of ["/admin/lodges", "/api/admin/lodges"]) {
       expect(getDisabledFeatureForPath(href, allOff)).toBeNull();
@@ -123,31 +123,31 @@ describe("feature route map", () => {
     // Both a page and an API route 404 when the module is disabled — i.e. an
     // off module is fully gated, not just hidden in the UI.
     expect(
-      getDisabledFeatureForPath("/admin/lockers", { ...allOn, lockers: false }),
+      getDisabledFeatureForPath("/admin/lockers", { ...allOn, lockers: false })
     ).toBe("lockers");
     expect(
       getDisabledFeatureForPath("/api/admin/lockers", {
         ...allOn,
         lockers: false,
-      }),
+      })
     ).toBe("lockers");
     expect(
       getDisabledFeatureForPath("/api/group-bookings/abc/join", {
         ...allOn,
         groupBookings: false,
-      }),
+      })
     ).toBe("groupBookings");
     expect(
       getDisabledFeatureForPath("/api/promo-codes/validate", {
         ...allOn,
         promoCodes: false,
-      }),
+      })
     ).toBe("promoCodes");
     expect(
       getDisabledFeatureForPath("/api/address-autocomplete/search", {
         ...allOn,
         addressAutocomplete: false,
-      }),
+      })
     ).toBe("addressAutocomplete");
   });
 
@@ -156,43 +156,43 @@ describe("feature route map", () => {
       getDisabledFeatureForPath("/api/bookings/booking-1/waitlist-confirm", {
         ...allOn,
         waitlist: false,
-      }),
+      })
     ).toBe("waitlist");
     expect(
       getDisabledFeatureForPath("/api/admin/members/member-1/xero-link", {
         ...allOn,
         xeroIntegration: false,
-      }),
+      })
     ).toBe("xeroIntegration");
     expect(
       getDisabledFeatureForPath("/admin/internet-banking", {
         ...allOn,
         xeroIntegration: false,
-      }),
+      })
     ).toBe("xeroIntegration");
     expect(
       getDisabledFeatureForPath("/admin/internet-banking", {
         ...allOn,
         internetBankingPayments: false,
-      }),
+      })
     ).toBe("internetBankingPayments");
     expect(
       getDisabledFeatureForPath("/api/admin/internet-banking-settings", {
         ...allOn,
         internetBankingPayments: false,
-      }),
+      })
     ).toBe("internetBankingPayments");
     expect(
       getDisabledFeatureForPath(
         "/api/admin/setup/finance-report-mappings/backfill",
-        { ...allOn, financeDashboard: false },
-      ),
+        { ...allOn, financeDashboard: false }
+      )
     ).toBe("financeDashboard");
     expect(
       isFeatureHrefVisible("/admin/xero#xero-section-mappings", {
         ...allOn,
         xeroIntegration: false,
-      }),
+      })
     ).toBe(false);
   });
 
@@ -201,15 +201,15 @@ describe("feature route map", () => {
     expect(
       getDisabledFeatureForPath(
         "/admin/waitlist",
-        getEffectiveModuleFlags({ ...allOn, waitlist: false }),
-      ),
+        getEffectiveModuleFlags({ ...allOn, waitlist: false })
+      )
     ).toBe("waitlist");
     // Admin on → enabled.
     expect(
       getDisabledFeatureForPath(
         "/admin/waitlist",
-        getEffectiveModuleFlags({ ...allOn, waitlist: true }),
-      ),
+        getEffectiveModuleFlags({ ...allOn, waitlist: true })
+      )
     ).toBeNull();
   });
 
@@ -224,20 +224,20 @@ describe("feature route map", () => {
       getDisabledFeatureForPath("/admin/integrations", {
         ...allOn,
         xeroIntegration: false,
-      }),
+      })
     ).toBeNull();
     expect(
       isFeatureHrefVisible("/admin/integrations", {
         ...allOn,
         xeroIntegration: false,
-      }),
+      })
     ).toBe(true);
     // The Xero setup card's own href stays gated, so it filters out with Xero off.
     expect(
       isFeatureHrefVisible("/admin/xero/setup", {
         ...allOn,
         xeroIntegration: false,
-      }),
+      })
     ).toBe(false);
   });
 
@@ -254,7 +254,7 @@ describe("feature route map", () => {
     expect(getRequiredFeaturesForPath("/api/bookings/booking-1")).toEqual([]);
     expect(getDisabledFeatureForPath("/api/bookings", allOn)).toBeNull();
     expect(
-      getDisabledFeatureForPath("/api/bookings/booking-1", allOn),
+      getDisabledFeatureForPath("/api/bookings/booking-1", allOn)
     ).toBeNull();
     expect(getDisabledFeatureForPath("/admin/bookings", allOn)).toBeNull();
   });
@@ -271,7 +271,7 @@ describe("feature route map", () => {
         isFeatureHrefVisible("/admin/display/setup", {
           ...allOn,
           lobbyDisplay: false,
-        }),
+        })
       ).toBe(true);
     });
 
@@ -289,7 +289,7 @@ describe("feature route map", () => {
       ]) {
         expect(getRequiredFeaturesForPath(path)).toEqual(["lobbyDisplay"]);
         expect(
-          getDisabledFeatureForPath(path, { ...allOn, lobbyDisplay: false }),
+          getDisabledFeatureForPath(path, { ...allOn, lobbyDisplay: false })
         ).toBe("lobbyDisplay");
       }
     });
@@ -303,7 +303,7 @@ describe("feature route map", () => {
           lobbyDisplay: false,
           kiosk: false,
           chores: false,
-        }),
+        })
       ).toBeNull();
     });
   });
@@ -313,20 +313,20 @@ describe("feature route map", () => {
       isFeatureHrefVisible("/admin/waitlist?status=WAITLISTED", {
         ...allOn,
         waitlist: false,
-      }),
+      })
     ).toBe(false);
     expect(isFeatureHrefVisible("/admin/bookings", allOn)).toBe(true);
     expect(
       isFeatureHrefVisible("/admin/internet-banking", {
         ...allOn,
         xeroIntegration: false,
-      }),
+      })
     ).toBe(false);
     expect(
       isFeatureHrefVisible("/admin/internet-banking", {
         ...allOn,
         internetBankingPayments: false,
-      }),
+      })
     ).toBe(false);
     expect(isFeatureHrefVisible("/admin/internet-banking", allOn)).toBe(true);
   });

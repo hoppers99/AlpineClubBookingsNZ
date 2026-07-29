@@ -35,35 +35,25 @@ interface Def {
 
 /** Load the extras bundle's layouts + templates from the committed zip. */
 function loadExtras(): {
-  layouts: Record<
-    string,
-    { bodyHtml: string; defaultCss: string; areas: unknown }
-  >;
+  layouts: Record<string, { bodyHtml: string; defaultCss: string; areas: unknown }>;
   templates: Record<
     string,
-    {
-      layoutKey: string;
-      slotContent: unknown;
-      cssOverrides: string;
-      footerHtml: string;
-    }
+    { layoutKey: string; slotContent: unknown; cssOverrides: string; footerHtml: string }
   >;
 } {
   const zipPath = path.join(
     process.cwd(),
-    "docs/lobby-display/seeds/display-template-pack.bundle.zip",
+    "docs/lobby-display/seeds/display-template-pack.bundle.zip"
   );
   const files = unzipSync(readFileSync(zipPath));
-  const layoutsJson = JSON.parse(
-    strFromU8(files["display/layouts.json"]),
-  ) as Array<{
+  const layoutsJson = JSON.parse(strFromU8(files["display/layouts.json"])) as Array<{
     key: string;
     bodyHtml: string;
     defaultCss: string;
     areas: unknown;
   }>;
   const templatesJson = JSON.parse(
-    strFromU8(files["display/templates.json"]),
+    strFromU8(files["display/templates.json"])
   ) as Array<{
     key: string;
     layoutKey: string;
@@ -78,8 +68,9 @@ function loadExtras(): {
 
 /** Build a Def for a committed built-in by key. */
 async function builtInDef(key: string): Promise<Def> {
-  const { BUILT_IN_DISPLAY_LAYOUTS, BUILT_IN_DISPLAY_TEMPLATES } =
-    await import("@/lib/lodge-display/built-in-seeds");
+  const { BUILT_IN_DISPLAY_LAYOUTS, BUILT_IN_DISPLAY_TEMPLATES } = await import(
+    "@/lib/lodge-display/built-in-seeds"
+  );
   const layout = BUILT_IN_DISPLAY_LAYOUTS.find((l) => l.key === key)!;
   const template = BUILT_IN_DISPLAY_TEMPLATES.find((t) => t.key === key)!;
   return {
@@ -115,7 +106,7 @@ beforeEach(async () => {
         status: 200,
         headers: { "content-type": "application/json" },
       });
-    }),
+    })
   );
 });
 
@@ -136,7 +127,7 @@ async function renderBoard(def: Def, state: DisplayState) {
       cssOverrides: def.cssOverrides,
       footerHtml: def.footerHtml,
     },
-    state,
+    state
   );
   queue.push({
     match: (url) => url.includes("/api/display/state"),
@@ -162,12 +153,7 @@ function baseState(overrides: Partial<DisplayState> = {}): DisplayState {
     window: { start: "2026-04-13", days: 3 },
     rooms: null,
     bookings: [],
-    occupancy: WINDOW3.map((date) => ({
-      date,
-      arriving: 0,
-      departing: 0,
-      staying: 0,
-    })),
+    occupancy: WINDOW3.map((date) => ({ date, arriving: 0, departing: 0, staying: 0 })),
     chores: [],
     rules: null,
     notice: null,
@@ -191,9 +177,7 @@ describe("issue #2047 pack — built-in boards", () => {
           label: "Jane O",
           wholeLodge: false,
           roomId: "r1",
-          guests: [
-            { label: "Jane S", stayStart: "2026-04-13", stayEnd: "2026-04-15" },
-          ],
+          guests: [{ label: "Jane S", stayStart: "2026-04-13", stayEnd: "2026-04-15" }],
           guestCount: 1,
           stayStart: "2026-04-13",
           stayEnd: "2026-04-15",
@@ -227,9 +211,7 @@ describe("issue #2047 pack — built-in boards", () => {
           label: "Jane O",
           wholeLodge: false,
           roomId: "r1",
-          guests: [
-            { label: "Jane S", stayStart: "2026-04-13", stayEnd: "2026-04-15" },
-          ],
+          guests: [{ label: "Jane S", stayStart: "2026-04-13", stayEnd: "2026-04-15" }],
           guestCount: 1,
           stayStart: "2026-04-13",
           stayEnd: "2026-04-15",
@@ -268,20 +250,14 @@ describe("issue #2047 pack — built-in boards", () => {
           label: "Jane O",
           wholeLodge: false,
           roomId: null,
-          guests: [
-            { label: "Jane S", stayStart: "2026-04-13", stayEnd: "2026-04-15" },
-          ],
+          guests: [{ label: "Jane S", stayStart: "2026-04-13", stayEnd: "2026-04-15" }],
           guestCount: 1,
           stayStart: "2026-04-13",
           stayEnd: "2026-04-15",
         },
       ],
       chores: [
-        {
-          date: "2026-04-13",
-          title: "Sweep the bunkroom",
-          assigneeLabels: ["Sam T"],
-        },
+        { date: "2026-04-13", title: "Sweep the bunkroom", assigneeLabels: ["Sam T"] },
       ],
       notice: "Committee meeting Friday",
       capabilities: { bedAllocation: false, chores: true },
@@ -304,9 +280,7 @@ describe("issue #2047 pack — built-in boards", () => {
           label: "Jane O",
           wholeLodge: false,
           roomId: null,
-          guests: [
-            { label: "Jane S", stayStart: "2026-04-13", stayEnd: "2026-04-15" },
-          ],
+          guests: [{ label: "Jane S", stayStart: "2026-04-13", stayEnd: "2026-04-15" }],
           guestCount: 1,
           stayStart: "2026-04-13",
           stayEnd: "2026-04-15",
@@ -324,7 +298,7 @@ describe("issue #2047 pack — built-in boards", () => {
     expect(container.querySelector(".display-notice-board")).not.toBeNull();
     expect(container.querySelector(".display-chores-board")).toBeNull();
     expect(
-      container.querySelector("[data-module-disabled='chores-board']"),
+      container.querySelector("[data-module-disabled='chores-board']")
     ).not.toBeNull();
   });
 
@@ -349,13 +323,7 @@ describe("issue #2047 pack — built-in boards", () => {
           label: "Priya N",
           wholeLodge: false,
           roomId: null,
-          guests: [
-            {
-              label: "Priya Nathan",
-              stayStart: "2026-04-13",
-              stayEnd: "2026-04-14",
-            },
-          ],
+          guests: [{ label: "Priya Nathan", stayStart: "2026-04-13", stayEnd: "2026-04-14" }],
           guestCount: 1,
           stayStart: "2026-04-13",
           stayEnd: "2026-04-14",
@@ -425,8 +393,7 @@ describe("issue #2047 pack — built-in boards", () => {
     // Nothing MORE than the lodge granularity's whole-lodge label: the name occurs
     // ONLY inside the welcome-group label — nowhere else in text OR markup — and no
     // name-bearing roster module is embedded to emit any further name.
-    const occurrences = (container.innerHTML.match(/Priya Nathan/g) ?? [])
-      .length;
+    const occurrences = (container.innerHTML.match(/Priya Nathan/g) ?? []).length;
     expect(occurrences).toBe(1);
     expect(container.querySelector(".display-arrivals-board")).toBeNull();
     expect(container.querySelector(".display-room-cards")).toBeNull();
@@ -471,9 +438,7 @@ describe("issue #2047 pack — built-in boards", () => {
     // The info area's portal marker still exists but carries no rendered card.
     const infoArea = container.querySelector('[data-display-area="info"]');
     expect(infoArea).not.toBeNull();
-    expect(
-      infoArea?.querySelector(".display-lodge-rules, .display-notice-board"),
-    ).toBeNull();
+    expect(infoArea?.querySelector(".display-lodge-rules, .display-notice-board")).toBeNull();
   });
 });
 
@@ -517,11 +482,7 @@ describe("issue #2047 pack — extras bundle boards (from the committed zip)", (
     const { container } = await renderBoard(def, state);
     // occupancy child is condition-eligible (a whole-lodge booking is in window),
     // so it is the first rotator child rendered.
-    expect(
-      container.querySelector(
-        ".display-occupancy-grid, .display-blockout-board",
-      ),
-    ).not.toBeNull();
+    expect(container.querySelector(".display-occupancy-grid, .display-blockout-board")).not.toBeNull();
     expect(screen.getByText("Harakeke College")).toBeDefined();
   });
 
@@ -544,9 +505,7 @@ describe("issue #2047 pack — extras bundle boards (from the committed zip)", (
           label: "Jane O",
           wholeLodge: false,
           roomId: null,
-          guests: [
-            { label: "Jane S", stayStart: "2026-04-13", stayEnd: "2026-04-14" },
-          ],
+          guests: [{ label: "Jane S", stayStart: "2026-04-13", stayEnd: "2026-04-14" }],
           guestCount: 1,
           stayStart: "2026-04-13",
           stayEnd: "2026-04-14",
@@ -605,9 +564,7 @@ describe("issue #2047 pack — extras bundle boards (from the committed zip)", (
     // sibling spans): the lead name shows and the rest fold into a "+N" overflow,
     // rather than the second guest being spelled out.
     expect(screen.getByText("Jane S")).toBeDefined();
-    expect(
-      container.querySelector(".display-bar-overflow")?.textContent,
-    ).toContain("+1");
+    expect(container.querySelector(".display-bar-overflow")?.textContent).toContain("+1");
     expect(screen.queryByText(/Rewi P/)).toBeNull();
   });
 });

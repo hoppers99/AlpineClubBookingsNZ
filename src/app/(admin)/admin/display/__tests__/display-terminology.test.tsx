@@ -121,14 +121,15 @@ describe("Layout / Template / board are defined consistently (#2247)", () => {
 
     for (const entry of DISPLAY_GLOSSARY) {
       expect(text, `hub card missing the ${entry.term} definition`).toContain(
-        entry.oneLiner,
+        entry.oneLiner
       );
     }
   });
 
   it("the Reference page explains Layout vs Template", async () => {
-    const { default: AdminDisplayReferencePage } =
-      await import("../reference/page");
+    const { default: AdminDisplayReferencePage } = await import(
+      "../reference/page"
+    );
     const { container } = render(<AdminDisplayReferencePage />);
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
 
@@ -137,7 +138,7 @@ describe("Layout / Template / board are defined consistently (#2247)", () => {
     for (const entry of DISPLAY_GLOSSARY) {
       expect(
         text,
-        `Reference page missing the ${entry.term} definition`,
+        `Reference page missing the ${entry.term} definition`
       ).toContain(entry.oneLiner);
     }
   });
@@ -148,7 +149,7 @@ describe("Layout / Template / board are defined consistently (#2247)", () => {
     for (const entry of DISPLAY_GLOSSARY) {
       expect(
         flat,
-        `docs/guides/display.md missing the ${entry.term} definition`,
+        `docs/guides/display.md missing the ${entry.term} definition`
       ).toContain(entry.oneLiner);
     }
   });
@@ -157,18 +158,20 @@ describe("Layout / Template / board are defined consistently (#2247)", () => {
   // met, and each previously carried its own hand-written paraphrase (or, on
   // Layouts, no definition at all).
   it("the Templates page states the shared Template definition", async () => {
-    const { default: AdminDisplayTemplatesPage } =
-      await import("../templates/page");
+    const { default: AdminDisplayTemplatesPage } = await import(
+      "../templates/page"
+    );
     const { container } = render(<AdminDisplayTemplatesPage />);
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     expect(container.textContent ?? "").toContain(
-      DISPLAY_TERM_TEMPLATE.oneLiner,
+      DISPLAY_TERM_TEMPLATE.oneLiner
     );
   });
 
   it("the Layouts page states the shared Layout definition", async () => {
-    const { default: AdminDisplayLayoutsPage } =
-      await import("../layouts/page");
+    const { default: AdminDisplayLayoutsPage } = await import(
+      "../layouts/page"
+    );
     const { container } = render(<AdminDisplayLayoutsPage />);
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     expect(container.textContent ?? "").toContain(DISPLAY_TERM_LAYOUT.oneLiner);
@@ -192,7 +195,7 @@ describe("the reserved built-in keys are documented where they bite (#2247)", ()
     const guide = guideSource();
     for (const key of BUILT_IN_DISPLAY_TEMPLATE_KEYS) {
       expect(guide, `docs/guides/display.md does not name "${key}"`).toContain(
-        key,
+        key
       );
     }
   });
@@ -231,14 +234,14 @@ describe("the reserved built-in keys are documented where they bite (#2247)", ()
   ])("no admin copy in %s claims an upgrade re-seeds the built-ins", (rel) => {
     const source = readFileSync(
       path.join(process.cwd(), "src/app/(admin)/admin/display", rel),
-      "utf8",
+      "utf8"
     );
     for (const claim of STALE_RESEED_CLAIMS) {
       expect(
         source,
         `${rel} still tells the operator an upgrade rewrites a built-in. ` +
           `Upgrading re-runs neither the seed nor the restore — name the real ` +
-          `mechanism (the seed running again, or Restore built-in boards).`,
+          `mechanism (the seed running again, or Restore built-in boards).`
       ).not.toMatch(claim);
     }
   });
@@ -247,6 +250,6 @@ describe("the reserved built-in keys are documented where they bite (#2247)", ()
 function guideSource(): string {
   return readFileSync(
     path.join(process.cwd(), "docs/guides/display.md"),
-    "utf8",
+    "utf8"
   );
 }

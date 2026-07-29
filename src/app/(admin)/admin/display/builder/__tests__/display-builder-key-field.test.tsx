@@ -27,7 +27,7 @@ function renderNewBuilder() {
       canEdit
       lodges={[{ id: "lodge-a", name: "Ruapehu" }]}
       onDuplicate={() => undefined}
-    />,
+    />
   );
 }
 
@@ -61,12 +61,12 @@ describe("DisplayBuilder — board key field (§U2/U3)", () => {
 
     expect(key).toHaveAttribute("aria-invalid", "true");
     expect(
-      screen.getByText(/Use lower-case letters, numbers and hyphens only/i),
+      screen.getByText(/Use lower-case letters, numbers and hyphens only/i)
     ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Create board/i })).toBeDisabled();
     expect(
-      screen.getByRole("button", { name: /Create board/i }),
-    ).toBeDisabled();
-    expect(screen.getByText(/Fix the board key to save/i)).toBeInTheDocument();
+      screen.getByText(/Fix the board key to save/i)
+    ).toBeInTheDocument();
   });
 
   // #2048 L1: the client mirrors the server's `.max(80)` so a long auto-derived
@@ -80,14 +80,10 @@ describe("DisplayBuilder — board key field (§U2/U3)", () => {
     expect(key).toHaveAttribute("aria-invalid", "true");
     // The inline alert (distinct from the always-on hint) names the cap.
     expect(screen.getByRole("alert")).toHaveTextContent(/up to 80 characters/i);
-    expect(
-      screen.getByRole("button", { name: /Create board/i }),
-    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Create board/i })).toBeDisabled();
 
     // Exactly 80 chars is accepted (with a name present to unblock Save).
-    fireEvent.change(screen.getByLabelText("Name"), {
-      target: { value: "Long board" },
-    });
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Long board" } });
     fireEvent.change(key, { target: { value: "a".repeat(80) } });
     expect(key).toHaveAttribute("aria-invalid", "false");
     expect(screen.getByRole("button", { name: /Create board/i })).toBeEnabled();
@@ -115,9 +111,7 @@ describe("DisplayBuilder — board key field (§U2/U3)", () => {
   it("labels the canvas as the board body area (§U7)", () => {
     renderNewBuilder();
     expect(
-      screen.getByText(
-        /Canvas — board body \(16:9 screen minus header\/footer\)/i,
-      ),
+      screen.getByText(/Canvas — board body \(16:9 screen minus header\/footer\)/i)
     ).toBeInTheDocument();
   });
 });

@@ -45,14 +45,12 @@ beforeEach(() => {
   window.history.pushState(
     {},
     "",
-    "/admin/display/builder?templateId=template-foyer-board",
+    "/admin/display/builder?templateId=template-foyer-board"
   );
   global.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.includes("/api/admin/lodges")) {
-      return jsonResponse({
-        lodges: [{ id: "lodge-a", name: "Ruapehu", active: true }],
-      });
+      return jsonResponse({ lodges: [{ id: "lodge-a", name: "Ruapehu", active: true }] });
     }
     if (url.includes("/api/admin/display/templates/")) {
       return jsonResponse({ template: CUSTOM_ON_BUILTIN_LAYOUT });
@@ -74,21 +72,21 @@ describe("Visual builder page — custom template on a built-in layout (§2048 E
     // does NOT offer the doomed Rebuild path.
     await screen.findByText(/This board's layout is a built-in/i);
     expect(
-      screen.queryByRole("button", { name: /Rebuild in builder/i }),
+      screen.queryByRole("button", { name: /Rebuild in builder/i })
     ).toBeNull();
     // Advanced mode is offered as a working in-place path.
     expect(
-      screen.getAllByRole("link", { name: /Advanced mode/i }).length,
+      screen.getAllByRole("link", { name: /Advanced mode/i }).length
     ).toBeGreaterThan(0);
 
     // Duplicate-to-customise lands an editable fresh board (Create action), with
     // the custom key suffixed — never a read-only builder.
     fireEvent.click(
-      await screen.findByRole("button", { name: /Duplicate to customise/i }),
+      await screen.findByRole("button", { name: /Duplicate to customise/i })
     );
     await waitFor(() => {
       expect(
-        screen.getByRole("button", { name: /Create board/i }),
+        screen.getByRole("button", { name: /Create board/i })
       ).toBeInTheDocument();
     });
     const key = screen.getByLabelText(/Board key/i) as HTMLInputElement;

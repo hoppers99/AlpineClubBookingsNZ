@@ -121,21 +121,39 @@ function GuidedSetupCard() {
   );
 }
 
+/**
+ * How far this club has got: how many boards exist, and how many screens are
+ * actually working (paired AND not revoked — a device row created but never
+ * paired shows nothing on a wall).
+ *
+ * Fails SOFT, like `loadEffectiveModuleFlags` beside it. This hub is a menu; it
+ * rendered without touching the database before the setup card existed, and a
+ * transient database problem must not turn it into an error page. The fallback
+ * is deliberately "already set up": the alternative would tell an established
+ * club with seven boards and a live screen that it has nothing on its screens,
+ * which is a worse lie than quietly not leading with the setup card.
+ */
+async function loadDisplaySetupProgress() {
+  try {
+    const [templateCount, pairedDeviceCount] = await Promise.all([
+      prisma.displayTemplate.count(),
+      prisma.lodgeDisplayDevice.count({
+        where: { tokenHash: { not: null }, revokedAt: null },
+      }),
+    ]);
+    return { templateCount, pairedDeviceCount };
+  } catch {
+    return { templateCount: 1, pairedDeviceCount: 1 };
+  }
+}
+
 export default async function DisplayHubPage() {
-  const [features, templateCount, pairedDeviceCount] = await Promise.all([
+  const [features, progress] = await Promise.all([
     loadEffectiveModuleFlags(),
-    prisma.displayTemplate.count(),
-    // Only a screen that is paired AND not revoked counts as working: a device
-    // row created but never paired shows nothing on a wall.
-    prisma.lodgeDisplayDevice.count({
-      where: { tokenHash: { not: null }, revokedAt: null },
-    }),
+    loadDisplaySetupProgress(),
   ]);
 
-  const leadWithSetup = shouldLeadWithSetupCard({
-    templateCount,
-    pairedDeviceCount,
-  });
+  const leadWithSetup = shouldLeadWithSetupCard(progress);
 
   return (
     <AdminHubPage

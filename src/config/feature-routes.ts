@@ -73,7 +73,9 @@ export const FEATURE_ROUTE_RULES: FeatureRouteRule[] = [
       "/api/cron/xero",
       "/api/webhooks/xero",
     ],
-    patterns: [/^\/api\/admin\/members\/[^/]+\/xero-(link|push|unlink)$/],
+    patterns: [
+      /^\/api\/admin\/members\/[^/]+\/xero-(link|push|unlink)$/,
+    ],
   },
   {
     flag: "bedAllocation",
@@ -159,12 +161,7 @@ export const FEATURE_ROUTE_RULES: FeatureRouteRule[] = [
     // the kiosk flag, and the display module must work without the kiosk
     // (ADR-001 §1, docs/lobby-display/decisions/).
     flag: "lobbyDisplay",
-    prefixes: [
-      "/display",
-      "/api/display",
-      "/admin/display",
-      "/api/admin/display",
-    ],
+    prefixes: ["/display", "/api/display", "/admin/display", "/api/admin/display"],
     // The guided setup wizard (#2249) opens with "turn the Lobby TV display
     // module on", so it has to be reachable while the module is OFF — otherwise
     // its first step is the one state it can never be seen in. It renders only
@@ -204,8 +201,7 @@ function normaliseForExemption(pathname: string): string {
 
 function isExemptFromRule(rule: FeatureRouteRule, pathname: string): boolean {
   if (!rule.exemptPaths) return false;
-  const normalised = normaliseForExemption(pathname);
-  return rule.exemptPaths.includes(normalised);
+  return rule.exemptPaths.includes(normaliseForExemption(pathname));
 }
 
 export function getRequiredFeaturesForPath(pathname: string): FeatureFlagKey[] {
@@ -217,10 +213,10 @@ export function getRequiredFeaturesForPath(pathname: string): FeatureFlagKey[] {
     if (isExemptFromRule(rule, pathname)) continue;
 
     const prefixMatch = rule.prefixes?.some((prefix) =>
-      matchesPrefix(pathname, prefix),
+      matchesPrefix(pathname, prefix)
     );
     const patternMatch = rule.patterns?.some((pattern) =>
-      pattern.test(pathname),
+      pattern.test(pathname)
     );
 
     if (prefixMatch || patternMatch) {
@@ -233,16 +229,14 @@ export function getRequiredFeaturesForPath(pathname: string): FeatureFlagKey[] {
 
 export function getDisabledFeatureForPath(
   pathname: string,
-  flags: FeatureFlags,
+  flags: FeatureFlags
 ): FeatureFlagKey | null {
-  return (
-    getRequiredFeaturesForPath(pathname).find((flag) => !flags[flag]) ?? null
-  );
+  return getRequiredFeaturesForPath(pathname).find((flag) => !flags[flag]) ?? null;
 }
 
 export function isFeatureHrefVisible(
   href: string,
-  flags: FeatureFlags,
+  flags: FeatureFlags
 ): boolean {
   const pathname = href.startsWith("http")
     ? new URL(href).pathname

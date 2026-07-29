@@ -33,7 +33,7 @@ function renderBuilder() {
       canEdit
       lodges={[{ id: "lodge-a", name: "Ruapehu" }]}
       onDuplicate={() => undefined}
-    />,
+    />
   );
 }
 
@@ -44,7 +44,7 @@ describe("DisplayBuilder — Live preview frame (ADR-004 §7)", () => {
         new Response(JSON.stringify({ token: "signed.draft.grant" }), {
           status: 200,
           headers: { "content-type": "application/json" },
-        }),
+        })
     );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -62,12 +62,12 @@ describe("DisplayBuilder — Live preview frame (ADR-004 §7)", () => {
     expect(iframe.getAttribute("sandbox")).not.toContain("allow-same-origin");
     // The frame carries the short-lived grant, not the admin session.
     expect(iframe.getAttribute("src")).toBe(
-      "/display?previewGrant=signed.draft.grant",
+      "/display?previewGrant=signed.draft.grant"
     );
     // The grant is minted through the admin-only endpoint from the DRAFT.
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/admin/display/preview-grant",
-      expect.objectContaining({ method: "POST" }),
+      expect.objectContaining({ method: "POST" })
     );
   });
 
@@ -75,11 +75,9 @@ describe("DisplayBuilder — Live preview frame (ADR-004 §7)", () => {
     const fetchMock = vi.fn(
       async () =>
         new Response(
-          JSON.stringify({
-            errors: [{ code: "empty", message: "Add a zone." }],
-          }),
-          { status: 400, headers: { "content-type": "application/json" } },
-        ),
+          JSON.stringify({ errors: [{ code: "empty", message: "Add a zone." }] }),
+          { status: 400, headers: { "content-type": "application/json" } }
+        )
     );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -90,9 +88,7 @@ describe("DisplayBuilder — Live preview frame (ADR-004 §7)", () => {
       expect(fetchMock).toHaveBeenCalled();
     });
     await waitFor(() => {
-      expect(
-        screen.getByText(/Fix these before previewing/i),
-      ).toBeInTheDocument();
+      expect(screen.getByText(/Fix these before previewing/i)).toBeInTheDocument();
     });
     expect(container.querySelector("iframe")).toBeNull();
   });

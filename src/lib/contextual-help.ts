@@ -368,7 +368,8 @@ const adminHelpEntries: HelpEntry[] = [
       [
         {
           name: "Assignment date",
-          description: "The lodge date the hut leader is responsible for.",
+          description:
+            "The lodge date the hut leader is responsible for.",
         },
         {
           name: "Eligible member",
@@ -517,7 +518,8 @@ const adminHelpEntries: HelpEntry[] = [
         },
         {
           name: "Requested nights",
-          description: "The date-only lodge nights the member wants to book.",
+          description:
+            "The date-only lodge nights the member wants to book.",
         },
         {
           name: "Capacity",
@@ -540,15 +542,18 @@ const adminHelpEntries: HelpEntry[] = [
       [
         {
           name: "Season dates",
-          description: "The date-only range where this season applies.",
+          description:
+            "The date-only range where this season applies.",
         },
         {
           name: "Season type",
-          description: "Whether the window is a Winter or Summer season.",
+          description:
+            "Whether the window is a Winter or Summer season.",
         },
         {
           name: "Active",
-          description: "Whether the season window is currently in effect.",
+          description:
+            "Whether the season window is currently in effect.",
         },
       ],
     ),
@@ -595,7 +600,8 @@ const adminHelpEntries: HelpEntry[] = [
       [
         {
           name: "Minimum age",
-          description: "The first age included in a tier.",
+          description:
+            "The first age included in a tier.",
         },
         {
           name: "Maximum age",
@@ -623,7 +629,8 @@ const adminHelpEntries: HelpEntry[] = [
       [
         {
           name: "Code",
-          description: "The member-entered value used during booking.",
+          description:
+            "The member-entered value used during booking.",
         },
         {
           name: "Discount",
@@ -632,7 +639,8 @@ const adminHelpEntries: HelpEntry[] = [
         },
         {
           name: "Usage limit",
-          description: "Controls how many times the code can be redeemed.",
+          description:
+            "Controls how many times the code can be redeemed.",
         },
       ],
     ),
@@ -650,7 +658,8 @@ const adminHelpEntries: HelpEntry[] = [
       [
         {
           name: "Effective window",
-          description: "The dates or conditions where a policy applies.",
+          description:
+            "The dates or conditions where a policy applies.",
         },
         {
           name: "Penalty or discount",
@@ -659,7 +668,8 @@ const adminHelpEntries: HelpEntry[] = [
         },
         {
           name: "Public request setting",
-          description: "Controls how non-member request workflows behave.",
+          description:
+            "Controls how non-member request workflows behave.",
         },
       ],
     ),
@@ -735,15 +745,18 @@ const adminHelpEntries: HelpEntry[] = [
       [
         {
           name: "Report type",
-          description: "Selects which dataset or summary is generated.",
+          description:
+            "Selects which dataset or summary is generated.",
         },
         {
           name: "Date range",
-          description: "Limits records to the relevant operational window.",
+          description:
+            "Limits records to the relevant operational window.",
         },
         {
           name: "Export",
-          description: "Downloads the filtered report for offline review.",
+          description:
+            "Downloads the filtered report for offline review.",
         },
       ],
     ),
@@ -807,7 +820,9 @@ const adminHelpEntries: HelpEntry[] = [
             "The Xero response that explains why an operation failed or needs repair.",
         },
       ],
-      ["Prefer built-in retry and repair actions over manual database edits."],
+      [
+        "Prefer built-in retry and repair actions over manual database edits.",
+      ],
     ),
   ),
   entry(
@@ -977,11 +992,13 @@ const adminHelpEntries: HelpEntry[] = [
       [
         {
           name: "Locker",
-          description: "The physical locker identifier used at the lodge.",
+          description:
+            "The physical locker identifier used at the lodge.",
         },
         {
           name: "Assigned member",
-          description: "The member currently responsible for the locker.",
+          description:
+            "The member currently responsible for the locker.",
         },
         {
           name: "Status",
@@ -1004,7 +1021,8 @@ const adminHelpEntries: HelpEntry[] = [
       [
         {
           name: "Suggested members",
-          description: "Records that appear related based on shared details.",
+          description:
+            "Records that appear related based on shared details.",
         },
         {
           name: "Confidence clues",
@@ -1027,7 +1045,8 @@ const adminHelpEntries: HelpEntry[] = [
       [
         {
           name: "Roster date",
-          description: "The lodge date being prepared.",
+          description:
+            "The lodge date being prepared.",
         },
         {
           name: "Guests",
@@ -1079,11 +1098,13 @@ const adminHelpEntries: HelpEntry[] = [
       [
         {
           name: "Kiosk PIN",
-          description: "The access code used for lodge/kiosk workflows.",
+          description:
+            "The access code used for lodge/kiosk workflows.",
         },
         {
           name: "Arrivals and departures",
-          description: "Guest movement signals for the selected lodge day.",
+          description:
+            "Guest movement signals for the selected lodge day.",
         },
       ],
     ),
@@ -1101,15 +1122,18 @@ const adminHelpEntries: HelpEntry[] = [
       [
         {
           name: "Event date",
-          description: "When the work party occurs.",
+          description:
+            "When the work party occurs.",
         },
         {
           name: "Capacity",
-          description: "How many volunteers or attendees can join.",
+          description:
+            "How many volunteers or attendees can join.",
         },
         {
           name: "Tasks",
-          description: "The work or maintenance items planned for the event.",
+          description:
+            "The work or maintenance items planned for the event.",
         },
       ],
     ),
@@ -1231,7 +1255,8 @@ const adminHelpEntries: HelpEntry[] = [
       [
         {
           name: "Severity",
-          description: "How urgently the stuck state should be investigated.",
+          description:
+            "How urgently the stuck state should be investigated.",
         },
         {
           name: "Owner",
@@ -1317,7 +1342,8 @@ const adminHelpEntries: HelpEntry[] = [
         },
         {
           name: "Started / finished",
-          description: "Timestamps used to detect stale or overlapping runs.",
+          description:
+            "Timestamps used to detect stale or overlapping runs.",
         },
         {
           name: "Error",
@@ -1345,7 +1371,8 @@ const adminHelpEntries: HelpEntry[] = [
         },
         {
           name: "Entity",
-          description: "The record type and id affected by the action.",
+          description:
+            "The record type and id affected by the action.",
         },
         {
           name: "Metadata",
@@ -1368,7 +1395,8 @@ const adminHelpEntries: HelpEntry[] = [
       [
         {
           name: "Requester",
-          description: "The member or account that asked for deletion.",
+          description:
+            "The member or account that asked for deletion.",
         },
         {
           name: "Blockers",
@@ -1431,7 +1459,8 @@ const adminHelpEntries: HelpEntry[] = [
         },
         {
           name: "Modules",
-          description: "Club-level activation controls for optional workflows.",
+          description:
+            "Club-level activation controls for optional workflows.",
         },
         {
           name: "System Health",
@@ -1493,7 +1522,8 @@ const adminHelpEntries: HelpEntry[] = [
         },
         {
           name: "Rooms & Beds",
-          description: "Capacity and allocation inventory used by lodge stays.",
+          description:
+            "Capacity and allocation inventory used by lodge stays.",
         },
       ],
     ),
@@ -1516,11 +1546,13 @@ const adminHelpEntries: HelpEntry[] = [
         },
         {
           name: "Email Deliverability",
-          description: "SES/SMTP delivery and suppression diagnostics.",
+          description:
+            "SES/SMTP delivery and suppression diagnostics.",
         },
         {
           name: "Provider Health",
-          description: "Safe runtime checks for provider readiness.",
+          description:
+            "Safe runtime checks for provider readiness.",
         },
       ],
     ),
@@ -1731,7 +1763,8 @@ const adminHelpEntries: HelpEntry[] = [
         },
         {
           name: "Affected status",
-          description: "Which subscription states trigger restrictions.",
+          description:
+            "Which subscription states trigger restrictions.",
         },
         {
           name: "Lockout message",
@@ -1768,7 +1801,8 @@ const adminHelpEntries: HelpEntry[] = [
         },
         {
           name: "Allowed age tiers",
-          description: "Limits the age bands that can use the membership type.",
+          description:
+            "Limits the age bands that can use the membership type.",
         },
         {
           name: "Xero rule mode",
@@ -1814,7 +1848,8 @@ const adminHelpEntries: HelpEntry[] = [
         },
         {
           name: "Colours and fonts",
-          description: "Theme values applied to public website pages.",
+          description:
+            "Theme values applied to public website pages.",
         },
         {
           name: "Custom CSS",
@@ -1837,7 +1872,8 @@ const adminHelpEntries: HelpEntry[] = [
       [
         {
           name: "Slug",
-          description: "The unique URL segment for the public page.",
+          description:
+            "The unique URL segment for the public page.",
         },
         {
           name: "Menu title and order",
@@ -1846,10 +1882,13 @@ const adminHelpEntries: HelpEntry[] = [
         },
         {
           name: "Body",
-          description: "Sanitised rich HTML displayed on the page.",
+          description:
+            "Sanitised rich HTML displayed on the page.",
         },
       ],
-      ["Scripts and unsafe HTML are removed on save and render."],
+      [
+        "Scripts and unsafe HTML are removed on save and render.",
+      ],
     ),
   ),
   entry(
@@ -1870,7 +1909,8 @@ const adminHelpEntries: HelpEntry[] = [
         },
         {
           name: "Display window",
-          description: "Inclusive New Zealand date-only start and end dates.",
+          description:
+            "Inclusive New Zealand date-only start and end dates.",
         },
         {
           name: "Active",
@@ -1975,11 +2015,13 @@ const adminHelpEntries: HelpEntry[] = [
       [
         {
           name: "Room",
-          description: "A physical lodge room containing one or more beds.",
+          description:
+            "A physical lodge room containing one or more beds.",
         },
         {
           name: "Bed",
-          description: "An individual bed that can be allocated to a guest.",
+          description:
+            "An individual bed that can be allocated to a guest.",
         },
         {
           name: "Active",
@@ -2012,7 +2054,8 @@ const adminHelpEntries: HelpEntry[] = [
         },
         {
           name: "Field label",
-          description: "The wording users see beside the field.",
+          description:
+            "The wording users see beside the field.",
         },
       ],
     ),
@@ -2035,7 +2078,8 @@ const adminHelpEntries: HelpEntry[] = [
         },
         {
           name: "Rule",
-          description: "The event and conditions that trigger a notification.",
+          description:
+            "The event and conditions that trigger a notification.",
         },
         {
           name: "Delivery mode",
@@ -2058,11 +2102,13 @@ const adminHelpEntries: HelpEntry[] = [
       [
         {
           name: "Template",
-          description: "The message slot used by a booking workflow.",
+          description:
+            "The message slot used by a booking workflow.",
         },
         {
           name: "Subject and body",
-          description: "The email or UI wording members see.",
+          description:
+            "The email or UI wording members see.",
         },
         {
           name: "Tokens",
