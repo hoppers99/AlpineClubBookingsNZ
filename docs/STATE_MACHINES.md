@@ -1056,14 +1056,18 @@ MOVE **re-drafts** an approved row (the upsert's update branch clears
 are approved with a **booking-scoped** approval: `approveBedAllocations` takes
 `bookingId` as a first-class selector, sufficient on its own, so confirming one
 booking can never stamp another booking's pending rows the way the `from`/`to`
-form would. That approval audits `BED_ALLOCATION_APPROVED` with
-`targetId` = the booking id, so the booking's own audit deep link finds it.
+form would. It carries the panel's ADR-003 lodge scope too, so the write scope
+matches the lodge-scoped read the card displayed. That approval audits
+`BED_ALLOCATION_APPROVED` with `targetId` = the booking id, so the booking's own
+audit deep link finds it.
 
 The room-request lock is therefore **two-way**, and the surfaces say so. No
 un-approve action exists or is invented, but two existing paths take a booking's
 last approved row away and re-open the member's editor: the move re-draft above,
 and `deleteBedAllocation`. The in-booking panel warns before removing the last
-approved row for exactly that reason.
+approved row for exactly that reason — deciding it from the booking's own
+approved-night count rather than the window on screen, because the panel pages a
+stay longer than 31 nights and cannot see the rest of it.
 
 To verify: approval status representation, conflict handling, per-night guest
 uniqueness, room continuity and whole-booking displacement behavior, range

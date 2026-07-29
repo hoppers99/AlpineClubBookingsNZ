@@ -117,9 +117,10 @@ appear on screen for you, and are not filed away.
 
 You do not have to go to the board at all. Open the booking (**Admin → Bookings
 →** the booking, or from anywhere that links to it) and scroll to the
-**Bed allocation** card — it also has its own entry in the section list down the
-side. Only admins who can edit bookings see it: members never do, not even the
-person whose booking it is.
+**Bed allocation** card, directly below **Room Request** — it also has its own
+entry, in that same position, in the section list down the side. Only admins who
+can edit bookings see it: members never do, not even the person whose booking it
+is, and the section list does not offer them the entry either.
 
 The card shows one row per guest on the booking — their stay window, how many of
 their nights have a bed and how many do not, and each bed they are on as a run
@@ -130,9 +131,12 @@ of nights rather than a line per night.
   the warning that assigning a range confirms those beds straight away.
 - **Remove** takes a run of nights off a bed. If those are the last confirmed
   nights on the booking, the panel warns you first: removing them re-opens the
-  member's room request for editing. The room-request lock is not one-way.
+  member's room request for editing. The room-request lock is not one-way. That
+  check counts the whole booking, not just the page on screen, so a long stay
+  with confirmed nights on another page does not get the warning by mistake.
 - **Confirm draft beds** approves every draft bed night on **this booking and no
-  other**. It does not place anybody — if some nights still have nobody on a bed,
+  other**, at the lodge whose beds the card is showing — it can never confirm a
+  bed you were not shown. It does not place anybody — if some nights still have nobody on a bed,
   the card says so above the button — and it does not email anyone. What it does
   do is lock the member out of changing their requested room, which under range
   assignment may already have happened.
@@ -147,7 +151,14 @@ Some things the card deliberately will not pretend about:
   nights on the pages you cannot currently see as well.
 - **A booking that cannot hold beds keeps the card** and says why — cancelled,
   deleted, or a status that is never allocated beds. The card does not vanish
-  and leave you guessing.
+  and leave you guessing. That note is about the booking's own status, so it says
+  the same thing whatever dates you are looking at.
+- **A page with none of the booking's nights on it says exactly that**, rather
+  than claiming the booking cannot hold beds. The rows and **Confirm draft beds**
+  stay available: on a long stay the booking's nights are simply on another page.
+- **The counts and the card's Draft/Confirmed badge are the page's**, and say
+  "(this page)" when the stay is paged, because that is all a single 31-night
+  read can honestly report.
 - **A booking with an exclusive whole-lodge hold** shows the hold instead of
   rows, with no assign or confirm buttons at all: it takes the lodge, so it
   needs no individual beds.
@@ -204,7 +215,8 @@ you place them yourself.
 | "That took too long to save" | The range was large enough for the save to time out; nothing was written | Split it into shorter ranges and assign them one after the other |
 | The member says they can no longer change their requested room | A range assign approved their beds | That is expected: confirming beds locks the room request. Removing every approved allocation re-opens it |
 | The Bed allocation card is missing from a booking | The `bedAllocation` module is off, or your admin role can view but not edit bookings | Enable the module under **Admin → Setup → Modules**, or ask a full admin for bookings edit access — the board is still readable meanwhile |
-| The card says this booking "cannot hold beds" | The booking is cancelled, deleted, or in a status that is never allocated beds | Nothing to do — any beds it once held were released |
+| The card says this booking "cannot hold beds" | The booking really is cancelled, deleted, or in a status that is never allocated beds — this is the booking's status, not a symptom of the dates you are looking at | Nothing to do — any beds it once held were released |
+| The card says "No nights of this booking on this page" | None of the booking's guests is booked on any night of the page shown. On a long stay its nights are on another page; otherwise check the guests' stay dates | Step through with › , or fix the guest stay dates. Assign and **Confirm draft beds** still work — Confirm covers the whole booking |
 | **Confirm draft beds** is greyed out | Nothing on this booking is still in draft | Everything is already confirmed; range assignments confirm as they are written |
 | The card shows fewer nights than the stay | The stay is longer than the 31-night read window, so it is paged | Step forward with › — the label tells you which nights you are looking at |
 

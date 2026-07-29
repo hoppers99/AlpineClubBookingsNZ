@@ -611,14 +611,21 @@ Future reviews and issues should cite this file when proposing changes.
   form approves every pending allocation of every booking in the window). A
   booking-scoped approval audits `BED_ALLOCATION_APPROVED` with
   `targetId` = the booking id, because the booking page's audit deep link
-  searches `targetId` and never metadata.
+  searches `targetId` and never metadata. The booking selector honours the same
+  ADR-003 lodge scope the range selector does, so the approve can never reach
+  wider than the lodge-scoped read the officer was shown — an anomalous row of
+  the booking in another lodge's room is neither displayed nor confirmed.
 - **The requested-room lock is two-way, and nothing pretends otherwise
   (#776, #2252):** no un-approve action exists and none is invented, but two
   ordinary paths take a booking's last approved row away and re-open the
   member's editor — a board MOVE re-drafts the row it updates (the upsert's
   update branch clears `approvedAt`/`approvedByMemberId`), and
   `deleteBedAllocation` removes it. The in-booking panel therefore warns before
-  removing the last approved row rather than describing the lock as permanent.
+  removing the last approved row rather than describing the lock as permanent —
+  and that warning counts the booking's approved nights **booking-wide**
+  (`countApprovedBedAllocationNights`), never just the 31-night page on screen,
+  because a page-scoped count claims a re-open that a longer stay's other pages
+  disprove.
   The same three paths (single-night/drag placements, `source: "AUTO"`
   suggestions, and move re-drafts) are why draft rows persist under #2251's
   auto-approve, and why a confirmation affordance stays meaningful.

@@ -33,11 +33,25 @@ All notable public reference-release changes should be recorded here.
   always labelled ("Nights 32–61 of 61") and Confirm stating plainly that it
   reaches the nights you cannot currently see. A booking that cannot hold beds —
   cancelled, deleted, or a status that is never allocated — keeps the card and
-  says why, instead of vanishing and leaving you to wonder. A booking holding
-  the whole lodge shows the hold instead of rows, with no buttons at all,
-  because it needs no individual beds. And because removing a run is one night
-  at a time, a removal that stops half way tells you exactly how many nights
-  actually went.
+  says why, instead of vanishing and leaving you to wonder — and that note is
+  about the booking's own status, so it reads the same whatever dates you are
+  looking at, and it is no longer swallowed when a cancelled booking still
+  carries an old whole-lodge-hold flag. A page that simply holds none of the
+  booking's nights says exactly that instead, and keeps the rows and **Confirm
+  draft beds** available, because on a long stay its nights are just on another
+  page. A booking holding the whole lodge shows the hold instead of rows, with no
+  buttons at all, because it needs no individual beds. And because removing a run
+  is one night at a time, a removal that stops half way tells you exactly how
+  many nights actually went.
+
+  Two smaller pieces of the same honesty: the card's counts and its
+  Draft/Confirmed badge say "(this page)" when a stay is paged, because a single
+  31-night read cannot report on the rest; and the "this re-opens the member's
+  room request" warning counts the whole booking rather than the page, so a long
+  stay with confirmed nights on another page no longer gets warned about
+  something that is not going to happen. **Confirm draft beds** also stays inside
+  the lodge whose beds the card is showing, so it can never confirm a bed you
+  were not shown.
 
   Members see none of this, including on their own booking, and neither do
   read-only admins — every control on the card is a change, and the board is one
