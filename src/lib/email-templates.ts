@@ -309,6 +309,27 @@ export function twoFactorCodeTemplate(params: {
 }
 
 /**
+ * #2267: the single source of truth for the signed promo adjustment behind a
+ * booking's price, shared by the hand-built HTML confirmation and the send that
+ * fills the admin-editable body so the two can never derive it differently.
+ *
+ * `promoAdjustmentCents` (the pricing policy's signed `priceAdjustmentCents`)
+ * wins when present; older bookings only carry `discountCents`, which can only
+ * ever describe a price cut, so it becomes a negative adjustment.
+ */
+export function resolvePromoAdjustmentCents(options?: {
+  discountCents?: number;
+  promoAdjustmentCents?: number;
+}): number {
+  return (
+    options?.promoAdjustmentCents ??
+    (options?.discountCents && options.discountCents > 0
+      ? -options.discountCents
+      : 0)
+  );
+}
+
+/**
  * #2267: the single source of truth for how a promo shows on money emails —
  * shared by the hand-built HTML confirmation (bookingConfirmedTemplate) and the
  * flat {{promoSummary}} token the admin-editable body renders, so the two
@@ -358,11 +379,7 @@ export function bookingConfirmedTemplate(
     };
   }
 ): string {
-  const promoAdjustmentCents =
-    options?.promoAdjustmentCents ??
-    (options?.discountCents && options.discountCents > 0
-      ? -options.discountCents
-      : 0);
+  const promoAdjustmentCents = resolvePromoAdjustmentCents(options);
   const provisional = options?.provisionalGuests;
   const provisionalSection =
     provisional && provisional.guestCount > 0

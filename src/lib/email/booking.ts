@@ -12,6 +12,7 @@ import {
   preArrivalReminderTemplate,
   splitGuestPortionCancelledTemplate,
   promoAdjustmentSummaryRows,
+  resolvePromoAdjustmentCents,
 } from "../email-templates";
 import { CLUB_NAME } from "@/config/club-identity";
 import { EMAIL_DEFAULT_LODGE_NAME } from "@/lib/email-message-settings";
@@ -57,11 +58,9 @@ export async function sendBookingConfirmedEmail(
   },
 ) {
   const settings = await loadEmailMessageSettingsForLodge(options?.lodgeId);
-  const promoAdjustmentCents =
-    options?.promoAdjustmentCents ??
-    (options?.discountCents && options.discountCents > 0
-      ? -options.discountCents
-      : 0);
+  // #2267: derived by the same shared helper the HTML template uses, so the
+  // two paths can never disagree about what the promo did to the price.
+  const promoAdjustmentCents = resolvePromoAdjustmentCents(options);
   const promoAdjustmentPrefix = promoAdjustmentCents > 0 ? "+" : "-";
   // #2267: pre-composed {{promoSummary}} block for the admin-editable body —
   // the provisionalGuestsNote precedent, built from the same rows as the HTML
