@@ -12,7 +12,7 @@
  * auto-refund, and every consumer that pattern-matches CANCELLED events (today:
  * the shared member/admin narrative, which reads the FIRST CANCELLED event as
  * "when this booking was cancelled") MUST exclude it via
- * `isManualSettlementReversalEvent`. Without that exclusion a booking that is
+ * `isManualSettlementMarkerEvent`. Without that exclusion a booking that is
  * reversed and LATER genuinely cancelled would show the member the reversal's
  * date as its cancellation date.
  *
@@ -65,21 +65,6 @@ export function asManualSettlementReversalSnapshot(
     return value as ManualSettlementReversalEventSnapshot;
   }
   return null;
-}
-
-/**
- * True when a durable event is a #2262 manual mark-paid reversal: a CANCELLED
- * event carrying the discriminator snapshot. The booking narrative excludes
- * these so a reversal is never misread as the booking's cancellation.
- */
-export function isManualSettlementReversalEvent(event: {
-  type: BookingEventType;
-  snapshot: unknown;
-}): boolean {
-  return (
-    event.type === BookingEventType.CANCELLED &&
-    asManualSettlementReversalSnapshot(event.snapshot) !== null
-  );
 }
 
 /**
