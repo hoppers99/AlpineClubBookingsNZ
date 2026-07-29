@@ -745,18 +745,30 @@ describe("view-only section banner coverage (#2160)", () => {
           270  +1  #2259 adds the per-booking "No emails" switch.
           271  +1  #2247 adds "Restore built-in boards" to the display Templates
                page — a static opt-out under that page's existing banner.
+          275  +4  #2262 adds the cash / off-Xero payment feature's two leaf
+               surfaces, four controls across two files, all keeping their own
+               per-button reason: `booking-manual-payment-controls.tsx` (Record
+               and Reverse manual payment) is a leaf control dropped into the
+               Admin tools card's layout, exactly like the "No emails" switch
+               and the two hold controls beside it, and
+               `manual-refund-task-queue.tsx` (Mark paid back and Dismiss, one
+               pair per open task) is a card on /admin/payments with no banner
+               of its own. Both are gated on FINANCE, so neither may vouch off a
+               banner elsewhere on its page that states another area. No new
+               banner component: dropping one into the Admin tools card would
+               duplicate what its siblings already handle per button.
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into
       // the Admin tools card's layout — the same shape as the capacity- and
       // exclusive-hold controls beside it, so it keeps its own per-button
       // reason rather than opting out under a banner it cannot prove renders.
-      callSites: 271,
+      callSites: 275,
       optOuts: 237,
       staticOptOuts: 216,
       vouchedOptOuts: 21,
-      exceptions: 34,
-      exceptionFiles: 17,
+      exceptions: 38,
+      exceptionFiles: 19,
       bannerComponents: 78,
     });
 
@@ -818,7 +830,9 @@ describe("view-only section banner coverage (#2160)", () => {
       memberDetailCards: { controls: 4, files: 1 },
       separateA11yContainer: { controls: 9, files: 4 },
       // +1 control / +1 file vs 20/11: the #2259 "No emails" switch, above.
-      leaves: { controls: 21, files: 12 },
+      // +4 controls / +2 files vs 21/12: the #2262 cash-payment controls and
+      // the manual-refund-task queue, both leaf surfaces described above.
+      leaves: { controls: 25, files: 14 },
     });
   });
 

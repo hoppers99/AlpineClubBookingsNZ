@@ -15,10 +15,7 @@ import {
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { BookingNoEmailsNotice } from "@/components/booking-no-emails-notice";
-import {
-  AdminViewOnlySectionBanner,
-  ViewOnlyActionButton,
-} from "@/components/admin/view-only-action";
+import { ViewOnlyActionButton } from "@/components/admin/view-only-action";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import { formatCents } from "@/lib/utils";
 
@@ -81,6 +78,25 @@ export function BookingManualPaymentControls({
   function openDialog(direction: "paid" | "unpaid") {
     setNote("");
     setDialog(direction);
+  }
+
+  /**
+   * #2259 H1: dispatch the silenced path so the send is ATTEMPTED, not skipped.
+   *
+   * `notifyMember: false` would make the ROUTE skip the send outright, so the
+   * mailer's "No emails" gate never runs, no `SKIPPED_NO_EMAILS` row is written,
+   * and the booking's withheld-list banner would omit the confirmation the
+   * member was never sent — the very banner the operator guide tells the officer
+   * to work down. The sibling surfaces achieve that by OMITTING the flag; this
+   * route cannot, because #2260 makes the choice REQUIRED on the paid direction
+   * (an absent flag is a 422, deliberately, so an ambiguous money action is
+   * refused rather than guessed). So the silenced path asks for the send and
+   * lets the mailer withhold and RECORD it, which is the same audit outcome by
+   * the stronger route: the member is not emailed either way, and the returned
+   * receipt reports not-delivered rather than claiming a send.
+   */
+  function confirmSilenced() {
+    void submit("paid", true);
   }
 
   async function submit(direction: "paid" | "unpaid", notifyMember?: boolean) {
@@ -147,8 +163,6 @@ export function BookingManualPaymentControls({
           settles an invoice.
         </p>
       )}
-
-      <AdminViewOnlySectionBanner canEdit={canEdit} />
 
       {!isSettled &&
         (state.canMarkPaid ? (
@@ -238,19 +252,25 @@ export function BookingManualPaymentControls({
                 >
                   Cancel
                 </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => submit("paid", false)}
-                  disabled={submitting}
-                >
-                  Record without emailing
-                </Button>
-                {!noEmails && (
-                  <Button
-                    onClick={() => submit("paid", true)}
-                    disabled={submitting}
-                  >
-                    Record and email member
+                {!noEmails ? (
+                  <>
+                    <Button
+                      variant="outline"
+                      onClick={() => submit("paid", false)}
+                      disabled={submitting}
+                    >
+                      Record without emailing
+                    </Button>
+                    <Button
+                      onClick={() => submit("paid", true)}
+                      disabled={submitting}
+                    >
+                      Record and email member
+                    </Button>
+                  </>
+                ) : (
+                  <Button onClick={confirmSilenced} disabled={submitting}>
+                    Record payment
                   </Button>
                 )}
               </DialogFooter>
