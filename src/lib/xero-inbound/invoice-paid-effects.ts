@@ -14,6 +14,8 @@ import { bookingHasCapacityOverride } from "@/lib/booking-status";
 import { processWaitlistForDates } from "@/lib/waitlist";
 import { enqueueXeroAccountCreditNoteOperation } from "@/lib/xero-operation-outbox";
 import { createAuditLog } from "@/lib/audit";
+import { clearStaleCreditElection } from "@/lib/booking-credit-election";
+import { reportUnappliedCreditElection } from "@/lib/booking-credit-election-report";
 import { getProvisionalNonMemberChildSummary } from "@/lib/booking-split-summary";
 import { formatCents } from "@/lib/utils";
 
@@ -228,62 +230,6 @@ async function sumInternetBankingMintedCentsForBookings(
     _sum: { amountCents: true },
   });
   return aggregate._sum.amountCents ?? 0;
-}
-
-/**
- * Clear a stored credit election (#2265) off a booking this reconcile is about
- * to move to a terminal status, returning the cents that were cleared (or null
- * when there was nothing to clear).
- *
- * Why clearing is the honest outcome here, and not applying. `Booking.creditElectionCents`
- * records that the member asked to put account credit towards this booking; it
- * is consumed at `PAYMENT_PENDING` by the card pay step and by the
- * switch-to-Internet-Banking route, both of which recompute the amount owed
- * from the ledger AFTERWARDS so the charge (or the Xero invoice) is raised for
- * the post-election remainder. This reconcile arrives much later and at the
- * other end of that pipe: a Xero invoice has already been raised, the member
- * has already bank-transferred the amount printed on it, and Xero reports it
- * PAID. Retroactively "applying" the election now would debit the member's
- * credit balance for money they have already handed over in cash — inventing a
- * charge, not honouring a choice. The bank transfer stands, and the election
- * simply cannot be honoured on this booking any more.
- *
- * Which bookings can reach here still carrying one. Since #2265 the switch to
- * Internet Banking consumes the election before it computes the invoice amount,
- * so a booking that switched on this code cannot. Two windows remain: a booking
- * whose invoice was raised by the OLD colour during a blue/green drain (the old
- * client never reads this column, so it invoices the full price and leaves the
- * election live), and any future invoice-raising path that forgets to consume.
- * Both leave the member no worse off — they paid full price and still hold
- * their whole balance — but the column must not linger on a settled booking
- * advertising an outstanding election nothing will ever act on. The caller
- * therefore audits the clear and alerts an operator, who can decide whether to
- * refund the difference or leave the credit for the member's next stay.
- *
- * Guarded claim, matching the discipline every other consumer of this column
- * uses (`booking-credit-election.ts`): the row is moved from the EXACT amount
- * that was read to NULL, so a consumer that somehow ran concurrently either
- * already applied the credit (and this claim matches nothing, reporting "no
- * stale election") or has yet to run and is unaffected. The caller holds
- * `pg_advisory_xact_lock(1)`, which both real consumers also take, so this is
- * belt and braces rather than the primary defence — but it means the property
- * does not depend on that lock still being there.
- */
-async function claimStaleCreditElection(
-  tx: Prisma.TransactionClient,
-  booking: { id: string; creditElectionCents: number | null }
-): Promise<number | null> {
-  const requestedCents = booking.creditElectionCents;
-  if (requestedCents == null) {
-    return null;
-  }
-
-  const claimed = await tx.booking.updateMany({
-    where: { id: booking.id, creditElectionCents: requestedCents },
-    data: { creditElectionCents: null },
-  });
-
-  return claimed.count === 1 ? requestedCents : null;
 }
 
 export async function syncInternetBankingPaymentsForPaidInvoice(
@@ -813,7 +759,7 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
           // carries a stale election. Nothing is lost — the election never
           // moved money, and the cash the member did send is minted as credit
           // just below.
-          await claimStaleCreditElection(tx, fresh.booking);
+          await clearStaleCreditElection(tx, fresh.booking);
           await tx.booking.update({
             where: { id: fresh.bookingId },
             data: {
@@ -900,7 +846,7 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
       // election. Read off `fresh`, which is a post-`lock(1)` snapshot, and
       // taken as a guarded claim; see claimStaleCreditElection for the full
       // reasoning and for who can still reach here carrying one.
-      const staleCreditElectionCents = await claimStaleCreditElection(
+      const staleCreditElectionCents = await clearStaleCreditElection(
         tx,
         fresh.booking
       );
@@ -1140,68 +1086,25 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
       );
     }
 
-    // #2265 (#2319 door 2). The settle cleared a stored credit election that
-    // this invoice could not honour. Say so, in both places that matter: an
-    // audit row the member's own booking history renders as a plain-English
-    // note (booking-history.ts), and an operator alert — the member paid the
-    // full invoice by bank transfer while holding credit they had asked to
-    // spend, so someone should decide whether to refund the difference or leave
-    // the credit for their next stay. Their balance is untouched either way.
+    // #2265 (#2319 door 2). The settle cleared a stored credit election this
+    // invoice could not honour — the member bank-transferred the full invoiced
+    // amount while holding credit they had asked to spend. Reported through the
+    // shared reporter so the member's booking history and the operator alert read
+    // identically however the clear was reached.
     if (outcome.staleCreditElectionCents != null) {
-      logger.warn(
-        {
-          bookingId: outcome.payment.bookingId,
-          paymentId: outcome.payment.id,
-          invoiceId,
-          creditElectionCents: outcome.staleCreditElectionCents,
-        },
-        "Cleared a stored credit election on an Internet Banking settlement: the invoice was raised and paid at full price, so the election could not be applied (#2265)"
-      );
-      try {
-        await createAuditLog({
-          action: "booking.credit_election.unapplied",
-          targetId: outcome.payment.bookingId,
-          subjectMemberId: outcome.payment.booking.memberId,
-          entityType: "Booking",
-          entityId: outcome.payment.bookingId,
-          category: "payment",
-          outcome: "success",
-          summary:
-            "Stored credit election cleared: the Internet Banking invoice was paid in full",
-          details: JSON.stringify({
-            source: "xero-inbound-invoice",
-            creditElectionCents: outcome.staleCreditElectionCents,
-            paidAmountCents: outcome.payment.amountCents,
-            xeroInvoiceId: invoiceId,
-            xeroInvoiceNumber: invoiceNumber,
-          }),
-          metadata: {
-            source: "xero-inbound-invoice",
-            creditElectionCents: outcome.staleCreditElectionCents,
-            paidAmountCents: outcome.payment.amountCents,
-            xeroInvoiceId: invoiceId,
-            xeroInvoiceNumber: invoiceNumber,
-          },
-        });
-      } catch (err) {
-        logger.error(
-          { err, bookingId: outcome.payment.bookingId, paymentId: outcome.payment.id },
-          "Failed to audit a cleared credit election on an Internet Banking settlement"
-        );
-      }
-      sendAdminPaymentFailureAlert({
-        memberName: `${outcome.payment.booking.member.firstName} ${outcome.payment.booking.member.lastName}`,
+      await reportUnappliedCreditElection({
+        bookingId: outcome.payment.bookingId,
+        memberId: outcome.payment.booking.memberId,
+        memberFirstName: outcome.payment.booking.member.firstName,
+        memberLastName: outcome.payment.booking.member.lastName,
         checkIn: outcome.payment.booking.checkIn,
         checkOut: outcome.payment.booking.checkOut,
-        amountCents: outcome.staleCreditElectionCents,
-        errorMessage: `This member had asked to put ${formatCents(outcome.staleCreditElectionCents)} of account credit towards this booking, but its Internet Banking invoice was raised and paid at the full price, so the credit could not be applied. Their account credit balance is untouched and the booking is fully settled — no money is missing. Decide whether to refund the difference or leave the credit for their next stay; the saved choice has been cleared so it cannot be applied twice.`,
-        paymentIntentId: invoiceId,
-      }).catch((err) =>
-        logger.error(
-          { err, bookingId: outcome.payment.bookingId, paymentId: outcome.payment.id },
-          "Failed to alert admins about a cleared credit election on an Internet Banking settlement"
-        )
-      );
+        electionCents: outcome.staleCreditElectionCents,
+        paidAmountCents: outcome.payment.amountCents,
+        source: "xero-inbound-invoice",
+        reference: invoiceId,
+        extraDetails: { xeroInvoiceId: invoiceId, xeroInvoiceNumber: invoiceNumber },
+      });
     }
 
     await recordBookingEvent({

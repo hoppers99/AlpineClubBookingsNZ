@@ -232,6 +232,71 @@ export async function consumeStoredCreditElection(
 }
 
 /**
+ * The audit action a settlement writes when it CLEARS a stored credit election
+ * it could not honour (#2265, #2319 doors 1 and 2).
+ *
+ * One constant rather than a literal per call site, because two things read it
+ * back: the member's own booking history (`booking-history.ts` renders it as
+ * "Saved account credit was not applied", keyed on this exact string and on a
+ * `creditElectionCents` key in the audit `details` JSON) and the booking page's
+ * audit allowlist. A typo'd action string would silently render nothing, which
+ * is precisely the silence this audit exists to prevent.
+ */
+export const UNAPPLIED_CREDIT_ELECTION_AUDIT_ACTION =
+  "booking.credit_election.unapplied";
+
+/**
+ * Clear a stored credit election off a booking whose settlement cannot honour
+ * it, returning the cents cleared (or `null` when there was nothing to clear).
+ *
+ * When clearing is the honest answer. The election records that the member ASKED
+ * to put account credit towards this booking; it is consumed at
+ * `PAYMENT_PENDING` by the card pay step and the switch-to-Internet-Banking
+ * route, both of which recompute what is owed from the ledger AFTERWARDS so the
+ * charge or invoice is raised for the post-election remainder. A settlement that
+ * arrives with the full price already captured — cash against a full-price Xero
+ * invoice, or a Stripe intent that already succeeded — is at the other end of
+ * that pipe. "Applying" the election there would debit the member's balance for
+ * money they have already handed over, inventing a charge rather than honouring
+ * a choice. The payment stands, the balance stays whole, and the election simply
+ * cannot be honoured on this booking any more — so it must be cleared, because
+ * a settled booking carrying a non-NULL election advertises an outstanding
+ * request that nothing will ever act on.
+ *
+ * What clearing is NOT for: a settlement that has not yet taken the money. There
+ * the election is still honourable and the caller must refuse or defer, never
+ * clear — throwing away a member's request to make a charge simpler would be the
+ * original #2265 bug wearing a different hat. `payment-link.ts` shows both
+ * halves of that distinction in one function.
+ *
+ * Guarded claim, the same discipline `consumeStoredCreditElection` uses: the row
+ * moves from the EXACT amount that was read to NULL, so a consumer racing this
+ * writer either already applied the credit (this claim matches nothing and
+ * reports "nothing stale") or has not run yet and is untouched. Callers that
+ * hold `pg_advisory_xact_lock(1)` already exclude both real consumers; the guard
+ * means the property does not depend on that.
+ *
+ * Callers MUST report a non-null return: an audit row under
+ * `UNAPPLIED_CREDIT_ELECTION_AUDIT_ACTION` (the member's booking history renders
+ * it) and an operator alert, so a member who chose to spend credit and then paid
+ * full price is told their balance is intact rather than left guessing.
+ */
+export async function clearStaleCreditElection(
+  tx: Prisma.TransactionClient,
+  booking: { id: string; creditElectionCents: number | null },
+): Promise<number | null> {
+  const requestedCents = booking.creditElectionCents;
+  if (requestedCents == null) return null;
+
+  const claimed = await tx.booking.updateMany({
+    where: { id: booking.id, creditElectionCents: requestedCents },
+    data: { creditElectionCents: null },
+  });
+
+  return claimed.count === 1 ? requestedCents : null;
+}
+
+/**
  * Thrown when the $0 settlement's status-guarded claim matches no row: the
  * booking left `PAYMENT_PENDING` (a concurrent cancel, most likely) while this
  * transaction was assembling its settlement. Loud on purpose — the caller's
@@ -296,12 +361,19 @@ export async function settleFullyCreditCoveredBooking(
       status: PaymentStatus.SUCCEEDED,
       // Nothing is owed by card, so no card pointer on this Payment can still
       // be live. Clearing them is the same shape the repriced-to-zero
-      // settlement uses (booking-modify-settlement.ts), and it is not
-      // hypothetical here: an admin payment link or a saved-card charge can
-      // mint a primary intent against a PAYMENT_PENDING booking that still
-      // carries an unconsumed election, and that booking can then settle at $0
-      // when the member's balance grows. The queue below cancels the intents
-      // with the provider; this stops the Payment row pointing at them.
+      // settlement uses (booking-modify-settlement.ts). It is not hypothetical:
+      // a booking reaches this settlement THROUGH `PAYMENT_PENDING`, and a
+      // previous pay attempt on the same booking can already have minted a
+      // primary intent (the member started paying by card, abandoned it, and
+      // their balance then grew enough to cover the stay) — that intent must
+      // stop being pointed at as well as being cancelled with the provider,
+      // which the queue below does.
+      //
+      // Note on the two OTHER card doors, since an earlier draft of this comment
+      // named them as producers here and was wrong (#2319). A public payment
+      // link cannot reach a booking carrying an unconsumed election — it now
+      // refuses one outright (payment-link.ts) — and `charge-saved-method`
+      // requires `PENDING`, a status no election-bearing booking is ever in.
       //
       // `stripePaymentMethodId` is DELIBERATELY kept (unlike the
       // booking-modify-settlement sibling): a split parent's saved card is the
