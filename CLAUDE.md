@@ -81,12 +81,13 @@ for an interactive Claude Code session:
 - **PRs open as drafts and stay draft** until fully reviewed, fixed, and
   CI-green; then flip to ready and post an owner-addressed "merge ready" comment
   covering what was built, review findings, fixes, decisions, and carry-forward.
-- **Residual risks are resolved in the PR — never carried, never just noted**
-  (owner directive, 30 Jul 2026; full rule in `AGENTS.md` §6): iterate the PR
-  until zero residuals remain, and flip to ready only then. The sole thing that
-  may hold one open is a genuine owner decision — the PR stays draft while it is
-  put to the owner, and the fix still lands in the same PR. A separate issue is
-  a last resort used only when the owner explicitly directs scope out.
+- **Residual risks are resolved in the PR — never just noted** (owner
+  directive, 30 Jul 2026; full rule in `AGENTS.md` §6): ideally iterate the PR
+  until zero residuals remain, and flip to ready only then. An owner-decision
+  residual holds the PR draft while the question is put to the owner, with the
+  fix landing in the same PR. Carrying one into a new issue is acceptable when
+  justified (overnight run, needs a full planning pass) — filed immediately and
+  linked, never left as prose — but in-PR resolution is always the ideal.
 
 ## Keep docs in lockstep
 
