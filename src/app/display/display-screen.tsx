@@ -190,19 +190,18 @@ function HeaderClock({
 }
 
 function LodgeHeader({ state }: DisplayModuleProps) {
+  // #2322: the served-image logo wins over the legacy inlined data URI.
+  const logoSrc = state.club.logoUrl || state.club.logoDataUrl;
+
   return (
     <div className="display-lodge-header">
       <div className="display-header-brand">
-        {state.club.logoDataUrl && (
+        {logoSrc && (
           // Decorative: the lodge name (and club name, when set) render as
           // adjacent visible text below, so an alt here would be redundant.
           // Empty alt is the correct WCAG treatment (#1947).
           // eslint-disable-next-line @next/next/no-img-element
-          <img
-            className="display-header-logo"
-            src={state.club.logoDataUrl}
-            alt=""
-          />
+          <img className="display-header-logo" src={logoSrc} alt="" />
         )}
         <div>
           <div className="display-lodge-name">{state.lodge.name}</div>

@@ -53,6 +53,10 @@ function makeStore() {
   const db = {
     pageContent: keyed(pages, "slug"),
     siteContent: keyed(site, "key"),
+    // Reached on re-export now that the theme's logoUrl references an image
+    // (#2322); the round-trip carries no image bytes, so an empty result is
+    // the honest stub.
+    mediaImage: { findMany: async () => [] },
     clubTheme: {
       findUnique: async () => theme,
       create: async ({ data }: { data: Record<string, unknown> }) => {
@@ -80,7 +84,7 @@ function sourceDb(): ReadDb {
     clubTheme: {
       findUnique: vi.fn().mockResolvedValue({
         brandGold: "#e0a800", brandDeep: "#111", brandSafety: "#f00",
-        headingFontKey: "LEAGUE_SPARTAN", bodyFontKey: "INTER", logoDataUrl: null, rawCss: "",
+        headingFontKey: "LEAGUE_SPARTAN", bodyFontKey: "INTER", logoUrl: "/api/images/logo999", logoDataUrl: null, rawCss: "",
       }),
     },
     mediaImage: { findMany: vi.fn().mockResolvedValue([]) },

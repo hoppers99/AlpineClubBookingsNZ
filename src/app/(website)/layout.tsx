@@ -6,11 +6,13 @@ import { SiteBanners } from "@/components/site-banners";
 import { WebsiteHeader } from "@/components/website-header";
 import { WebsiteFooter } from "@/components/website-footer";
 import { loadEmailMessageSettings } from "@/lib/email-message-settings";
-import { getWebsiteThemeRenderState } from "@/lib/club-theme";
 import { clubThemeFontVariableClassName } from "@/lib/club-theme-fonts";
 import { CSP_NONCE_HEADER } from "@/lib/csp";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
-import { getCachedClubIdentity } from "@/lib/public-layout-config";
+import {
+  getCachedClubIdentity,
+  getCachedWebsiteThemeRenderState,
+} from "@/lib/public-layout-config";
 import { getCurrentSiteBanners } from "@/lib/site-banners";
 
 function resolvePageSlug(requestHeaders: Headers) {
@@ -25,7 +27,11 @@ export default async function WebsiteLayout({
   const [session, theme, requestHeaders, siteBanners, modules, clubIdentity] =
     await Promise.all([
       auth(),
-      getWebsiteThemeRenderState(),
+      // Tagged cache wrapper, matching (public)/layout.tsx (#2322): this layout
+      // previously re-read ClubTheme from the database on every request. The
+      // `public-layout:theme` tag is revalidated on theme save by the
+      // admin/site-style PUT.
+      getCachedWebsiteThemeRenderState(),
       headers(),
       getCurrentSiteBanners(),
       loadEffectiveModuleFlags(),
@@ -90,10 +96,15 @@ export default async function WebsiteLayout({
       <SiteBanners banners={siteBanners} />
       <WebsiteHeader
         isAuthenticated={!!session?.user}
+        logoUrl={theme.logoUrl}
         logoDataUrl={theme.logoDataUrl}
       />
       <main className="flex-1" id="main-content">{children}</main>
-      <WebsiteFooter logoDataUrl={theme.logoDataUrl} pageSlug={pageSlug} />
+      <WebsiteFooter
+        logoUrl={theme.logoUrl}
+        logoDataUrl={theme.logoDataUrl}
+        pageSlug={pageSlug}
+      />
       <AnalyticsConsent
         enabled={modules.analytics}
         measurementId={process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID}

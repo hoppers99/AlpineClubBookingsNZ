@@ -1255,6 +1255,27 @@ confirmation step; the assign dialog says so before the admin commits. Manual
 allocation of a whole-lodge-held booking is refused outright at the write
 chokepoint, matching the lifecycle prune (#2285).
 
+Draft rows still arise constantly, which is why a confirmation step remains a
+real affordance rather than a legacy one: board single-night and drag placements
+create them, auto-allocation writes `source: "AUTO"` suggestions as drafts, and a
+MOVE **re-drafts** an approved row (the upsert's update branch clears
+`approvedAt`/`approvedByMemberId`). From inside a booking (#2252) those drafts
+are approved with a **booking-scoped** approval: `approveBedAllocations` takes
+`bookingId` as a first-class selector, sufficient on its own, so confirming one
+booking can never stamp another booking's pending rows the way the `from`/`to`
+form would. It carries the panel's ADR-003 lodge scope too, so the write scope
+matches the lodge-scoped read the card displayed. That approval audits
+`BED_ALLOCATION_APPROVED` with `targetId` = the booking id, so the booking's own
+audit deep link finds it.
+
+The room-request lock is therefore **two-way**, and the surfaces say so. No
+un-approve action exists or is invented, but two existing paths take a booking's
+last approved row away and re-open the member's editor: the move re-draft above,
+and `deleteBedAllocation`. The in-booking panel warns before removing the last
+approved row for exactly that reason — deciding it from the booking's own
+approved-night count rather than the window on screen, because the panel pages a
+stay longer than 31 nights and cannot see the rest of it.
+
 To verify: approval status representation, conflict handling, per-night guest
 uniqueness, room continuity and whole-booking displacement behavior, range
 refusal categories and their single audit entry, and module-disabled behavior.

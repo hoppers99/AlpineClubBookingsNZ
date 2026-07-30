@@ -127,12 +127,12 @@ async function appendReferencedMedia(
 
   const images = await db.mediaImage.findMany({
     where: { id: { in: ids } },
-    select: { id: true, filename: true, contentType: true, data: true },
+    select: { id: true, filename: true, contentType: true, data: true, kind: true },
   });
 
   const map: Record<
     string,
-    { path: string; filename: string; contentType: string }
+    { path: string; filename: string; contentType: string; kind?: string }
   > = {};
   for (const image of images) {
     const ext = CONTENT_TYPE_EXT[image.contentType] ?? "bin";
@@ -141,6 +141,10 @@ async function appendReferencedMedia(
       path,
       filename: image.filename,
       contentType: image.contentType,
+      // #2322: carried so a club logo is recreated as LOGO rather than
+      // defaulting to CONTENT. Optional on the read side, so an older bundle
+      // without it still imports (as CONTENT).
+      kind: image.kind,
     };
     entries.push({
       path,

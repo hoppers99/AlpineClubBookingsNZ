@@ -33,6 +33,110 @@ All notable public reference-release changes should be recorded here.
   and the club is alerted so someone can decide whether to refund the
   difference. Recording, reversing and closing all need finance edit
   access and are written to the audit log with your name.
+- **The club logo is now stored as a real image instead of being baked into
+  every page, cutting a multi-megabyte home page down to roughly its content
+  size (#2322).** The logo used to be kept as text encoded directly inside the
+  page, and the same copy was repeated four times on every public page — in the
+  desktop header, the mobile menu, the footer, and once more in the data the
+  browser loads behind the scenes. On one club's live site that made the home
+  page **5.4MB** and gave it a six-second wait before anything appeared, almost
+  all of it the logo. Uploading a logo now sends the file to the server, which
+  shrinks it to at most 160 pixels tall and 640 pixels wide — never enlarging
+  a smaller one — converts it to a compact modern image format (keeping any
+  transparency), and stores it once. Pages then link to that
+  stored image the way any normal website does, so browsers fetch it a single
+  time and reuse it everywhere and on every later visit. Existing sites are not
+  disturbed: a logo saved the old way keeps displaying exactly as before until
+  someone uploads a new one, and the kiosk lodge display, the configuration
+  export/import bundles, and the admin preview all understand both forms. A
+  freshly uploaded logo replaces the old inline copy, and the same rule is
+  applied when a configuration bundle is imported, so the two forms can never
+  both be set and drift apart. Uploads accept PNG, JPEG, WebP, or GIF up to 2MB — a big
+  high-resolution original is fine, it gets resized for you — while SVG is
+  refused because scalable-vector files can carry active content. Clubs whose
+  logo is still stored the old way are unaffected in every direction: it keeps
+  displaying, and they can keep saving colour and font changes normally. The
+  old inline format remains accepted for automated callers and configuration
+  bundles, now capped at 64KB rather than 900KB, but that cap applies only to a
+  logo actually being changed — an existing large one is never rejected just
+  because some other setting was edited.
+
+- **The public home page is now cached for logged-out visitors, and the
+  website stops re-reading its theme on every request (#2322).** Two changes
+  aimed at how long the public site takes to load. First, a logged-out visitor
+  asking for the home page can now be served a copy cached for up to a minute
+  (and a slightly staler one for up to five minutes while a fresh copy is
+  fetched), instead of the site rebuilding the page from scratch for every
+  single visitor. Anyone who is signed in is never served a cached page — the
+  cache is keyed on the session cookie, so a member always gets their own
+  freshly rendered view with the right header. Only the home page is cached,
+  and deliberately so: every page that carries a login form, a sign-up form, or
+  a one-time link (joining, paying, password resets, chore and family
+  invitations, the PIN-gated hut leader instructions) is left exactly as it
+  was, because those must never be shared between visitors. The practical
+  trade-off is that a style or footer change can take up to a minute to show
+  up for logged-out visitors; both admin guides now say so in their
+  troubleshooting tables. Second, the public website was re-reading the club's
+  colours, fonts and logo from the database on **every** page view, while the
+  rest of the site had long since switched to a cached read that refreshes the
+  moment the style is saved. It now uses that same cached read, so saving the
+  style still updates the site immediately but ordinary page views no longer
+  pay for a database round trip.
+
+
+
+- **Beds can now be allocated and confirmed from inside a booking, without going
+  to the board at all (#2252).** Until now, answering "where is this party
+  sleeping, and is it settled?" meant leaving the booking, opening the
+  bed-allocation board, setting the date window to that booking's nights, and
+  picking its chips out from among everyone else's. An admin viewing a booking
+  now gets a **Bed allocation** card on the booking itself — its own section, in
+  the section list down the side — with one row per guest: their stay, how many
+  of their nights have a bed and how many do not, and each bed they are on shown
+  as a run of nights rather than a line per night.
+
+  **Assign…** opens the same range dialog the board uses, prefilled with that
+  guest's own stay, so everything it does there it does here — including
+  confirming those beds as it writes them. **Remove** takes a run of nights off
+  a bed. **Confirm draft beds** approves every draft bed night on that booking
+  and, importantly, on no other: the board's existing "approve everything in
+  this window" action would have swept up other people's bookings, so confirming
+  from a booking now selects by the booking itself. That approval is recorded
+  against the booking, so the booking's own **Audit log** link finds it.
+
+  The card is deliberately honest about the things it cannot do or cannot show.
+  Confirming beds locks the member out of changing their requested room — and
+  under range assignment that lock has usually already happened, so the card
+  says so rather than implying the button is the trigger. The lock is also not
+  one-way: removing a booking's last confirmed night re-opens the member's room
+  request, and the card warns before it does. A stay longer than the 31-night
+  window the allocation view allows is shown a page at a time, with the page
+  always labelled ("Nights 32–61 of 61") and Confirm stating plainly that it
+  reaches the nights you cannot currently see. A booking that cannot hold beds —
+  cancelled, deleted, or a status that is never allocated — keeps the card and
+  says why, instead of vanishing and leaving you to wonder — and that note is
+  about the booking's own status, so it reads the same whatever dates you are
+  looking at, and it is no longer swallowed when a cancelled booking still
+  carries an old whole-lodge-hold flag. A page that simply holds none of the
+  booking's nights says exactly that instead, and keeps the rows and **Confirm
+  draft beds** available, because on a long stay its nights are just on another
+  page. A booking holding the whole lodge shows the hold instead of rows, with no
+  buttons at all, because it needs no individual beds. And because removing a run
+  is one night at a time, a removal that stops half way tells you exactly how
+  many nights actually went.
+
+  Two smaller pieces of the same honesty: the card's counts and its
+  Draft/Confirmed badge say "(this page)" when a stay is paged, because a single
+  31-night read cannot report on the rest; and the "this re-opens the member's
+  room request" warning counts the whole booking rather than the page, so a long
+  stay with confirmed nights on another page no longer gets warned about
+  something that is not going to happen. **Confirm draft beds** also stays inside
+  the lodge whose beds the card is showing, so it can never confirm a bed you
+  were not shown.
+
+  Members see none of this, including on their own booking, and neither do
+  read-only admins — every control on the card is a change, and the board is one
+  click away for anyone who only needs to look.
 - **Members can now ask to book the whole lodge (#2263).** Planning a course, a
   club trip or a family gathering that needs the lodge to yourselves? Book a
   Stay now has a "Need the whole lodge?" card leading to a short form: your
@@ -108,9 +212,10 @@ All notable public reference-release changes should be recorded here.
   Xero, Stripe and Google steps, which appeared and then vanished for actual Full
   Admins, because the page read "still working out who you are" as "not a Full
   Admin". All three are gone or now wait until they know. The published
-  banner-coverage figures were re-measured with it, and again when the cash /
-  off-Xero payment feature (#2262) landed its four per-button-reason controls:
-  **289** gated admin controls, **242** of them covered by a banner (216 in their
+  banner-coverage figures were re-measured with it (again after the in-booking
+  Bed allocation card, #2252, added its three, and again when the cash /
+  off-Xero payment feature, #2262, landed its four per-button-reason controls):
+  **292** gated admin controls, **245** of them covered by a banner (219 in their
   own file, 26 by a verified vouching parent — 5 of those through the wizard
   frame), and **47** across 25 files deliberately keeping their own reason.
 - **Choosing to use your account credit and then saving the booking as a draft

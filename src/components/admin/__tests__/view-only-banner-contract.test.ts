@@ -322,11 +322,11 @@ const NOTICE = "AdminViewOnlyNotice";
 */
 const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 289,
+  callSites: 292,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 242,
+  optOuts: 245,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 216,
+  staticOptOuts: 219,
   /** `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch. */
   vouchedOptOuts: 26,
   /** …of the vouched: proved at a parent's own JSX render site (#2168). */
@@ -340,7 +340,7 @@ const FIGURES = {
   leafControls: 34,
   leafFiles: 20,
   /** Components that render an `AdminViewOnlySectionBanner`. */
-  bannerComponents: 78,
+  bannerComponents: 79,
 } as const;
 
 const WIZARD_SHELL = "IntegrationWizard";
@@ -1114,22 +1114,6 @@ describe("view-only section banner coverage (#2160)", () => {
                Nothing else in the tree changed, and no call site was removed —
                the whole +10 is those four provider wizards' step files
                becoming visible to this suite for the first time.
-          289  +4  #2262 adds the cash / off-Xero payment feature's two leaf
-               surfaces, four controls across two files, all keeping their own
-               per-button reason: `booking-manual-payment-controls.tsx` (Record
-               and Reverse manual payment) is a leaf control dropped into the
-               Admin tools card's layout, exactly like the "No emails" switch
-               and the two hold controls beside it, and
-               `manual-refund-task-queue.tsx` (Mark paid back and Dismiss, one
-               pair per open task) is a card on /admin/payments with no banner
-               of its own. Both are gated on FINANCE, so neither may vouch off a
-               banner elsewhere on its page that states another area. No new
-               banner component: dropping one into the Admin tools card would
-               duplicate what its siblings already handle per button. With them
-               exceptions 43 -> 47 (+4), exceptionFiles 23 -> 25 (+2), and the
-               leaf bucket 30/18 -> 34/20; optOuts, the vouched split and
-               bannerComponents are untouched.
-
         And how the other figures moved with #2324, each re-measured:
 
           optOuts  237 -> 242 (+5)   the controls the vouch NOW covers, all of
@@ -1170,6 +1154,33 @@ describe("view-only section banner coverage (#2160)", () => {
           - the disabled `Input`s and `select`s inside the wizard steps. This
             suite polices `ViewOnlyActionButton`; text inputs have never been in
             its scope, and the display wizard has always left its own that way.
+
+        The ledger then resumes:
+
+          288  +3  #2252 adds the in-booking Bed allocation panel
+               (`booking-bed-allocation-panel.tsx`): Assign, Remove and the
+               booking-level Confirm, all static opt-outs under the panel's own
+               banner (+1 banner component, 78 -> 79). Its remove-confirmation
+               dialog keeps its own reason — a dialog is a separate
+               accessibility container the card's banner does not reach — and
+               is a plain Button rather than a ViewOnlyActionButton, matching
+               the shared range dialog (#2251), so it adds no call site and no
+               exception.
+          292  +4  #2262 adds the cash / off-Xero payment feature's two leaf
+               surfaces, four controls across two files, all keeping their own
+               per-button reason: `booking-manual-payment-controls.tsx` (Record
+               and Reverse manual payment) is a leaf control dropped into the
+               Admin tools card's layout, exactly like the "No emails" switch
+               and the two hold controls beside it, and
+               `manual-refund-task-queue.tsx` (Mark paid back and Dismiss, one
+               pair per open task) is a card on /admin/payments with no banner
+               of its own. Both are gated on FINANCE, so neither may vouch off a
+               banner elsewhere on its page that states another area. No new
+               banner component: dropping one into the Admin tools card would
+               duplicate what its siblings already handle per button. With them
+               exceptions 43 -> 47 (+4), exceptionFiles 23 -> 25 (+2), and the
+               leaf bucket 30/18 -> 34/20; optOuts, the vouched split and
+               bannerComponents are untouched.
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into
