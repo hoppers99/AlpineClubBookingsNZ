@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => ({
   clubModuleSettingsFindUnique: vi.fn(),
   lodgeBedCount: vi.fn(),
   lodgeSettingsFindUnique: vi.fn(),
+  // #2286: custodian bed holds. Defaults to none in beforeEach.
+  hutLeaderAssignmentFindMany: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -32,6 +34,12 @@ vi.mock("@/lib/prisma", () => ({
     // therefore model that self-healed override here.
     lodgeSettings: {
       findUnique: mocks.lodgeSettingsFindUnique,
+    },
+    // #2286: the capacity engines read bed-holding hut-leader assignments
+    // (custodian occupancy). No holds by default, so every case below reads
+    // exactly as it did before that feature existed.
+    hutLeaderAssignment: {
+      findMany: mocks.hutLeaderAssignmentFindMany,
     },
   },
 }));
@@ -81,6 +89,9 @@ function singleLodgeDb(overrides: Record<string, unknown> = {}) {
     lodgeBed: {
       count: mocks.lodgeBedCount,
     },
+    hutLeaderAssignment: {
+      findMany: mocks.hutLeaderAssignmentFindMany,
+    },
     ...overrides,
   } as never;
 }
@@ -99,6 +110,8 @@ describe("capacity calendar availability", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.bookingFindMany.mockResolvedValue([]);
+    // #2286: no custodian bed holds in these cases.
+    mocks.hutLeaderAssignmentFindMany.mockResolvedValue([]);
     mocks.clubModuleSettingsFindUnique.mockResolvedValue(null);
     mocks.lodgeBedCount.mockResolvedValue(0);
     // Default lodge carries a self-healed capacity override (#1982) for the
@@ -561,6 +574,8 @@ describe("multi-lodge capacity scoping", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.bookingFindMany.mockResolvedValue([]);
+    // #2286: no custodian bed holds in these cases.
+    mocks.hutLeaderAssignmentFindMany.mockResolvedValue([]);
     mocks.clubModuleSettingsFindUnique.mockResolvedValue(null);
     mocks.lodgeBedCount.mockResolvedValue(0);
   });
@@ -772,6 +787,8 @@ describe("whole-lodge exclusive hold — capacity engine (issue #118)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.bookingFindMany.mockResolvedValue([]);
+    // #2286: no custodian bed holds in these cases.
+    mocks.hutLeaderAssignmentFindMany.mockResolvedValue([]);
     mocks.clubModuleSettingsFindUnique.mockResolvedValue(null);
     mocks.lodgeBedCount.mockResolvedValue(0);
   });
@@ -1042,6 +1059,8 @@ describe("findOverlappingCapacityHoldingBookings (issue #119)", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // #2286: no custodian bed holds in these cases.
+    mocks.hutLeaderAssignmentFindMany.mockResolvedValue([]);
   });
 
   it("returns the overlapping capacity-holding bookings, excluding the held booking", async () => {
@@ -1100,6 +1119,8 @@ describe("findOverlappingOverriddenNonHoldingBookings (issue #177)", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // #2286: no custodian bed holds in these cases.
+    mocks.hutLeaderAssignmentFindMany.mockResolvedValue([]);
   });
 
   it("surfaces an overridden PAYMENT_PENDING overlap, marked overridden", async () => {
@@ -1167,6 +1188,8 @@ describe("getLodgeHeldNights — admin companion to getLodgeCapacityStatus (issu
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // #2286: no custodian bed holds in these cases.
+    mocks.hutLeaderAssignmentFindMany.mockResolvedValue([]);
   });
 
   it("reports the whole-lodge-held nights within the range (half-open span)", async () => {

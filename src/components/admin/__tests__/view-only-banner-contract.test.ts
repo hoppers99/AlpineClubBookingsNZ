@@ -322,11 +322,11 @@ const NOTICE = "AdminViewOnlyNotice";
 */
 const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 290,
+  callSites: 293,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 247,
+  optOuts: 250,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 221,
+  staticOptOuts: 224,
   /** `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch. */
   vouchedOptOuts: 26,
   /** …of the vouched: proved at a parent's own JSX render site (#2168). */
@@ -1167,10 +1167,21 @@ describe("view-only section banner coverage (#2160)", () => {
                is a plain Button rather than a ViewOnlyActionButton, matching
                the shared range dialog (#2251), so it adds no call site and no
                exception.
-          290  +2  #2307's Member guests settings card on Bookings setup
+          291  +3  #2286 wires the Hut Leaders page's bed controls to the PUT
+               that already existed: "Release bed" and "Change bed" per
+               assignment row, plus "Confirm anyway" on the over-capacity
+               question. All three are STATIC opt-outs under that page's single
+               unconditional `AdminViewOnlySectionBanner`, which the two
+               existing row actions (reset PIN, delete) already opt out under
+               (optOuts 245 -> 248, staticOptOuts 219 -> 222; nothing else
+               moves).
+          293  +2  #2307's Member guests settings card on Bookings setup
                (member-guest-settings-card.tsx): Edit + Save, both static
                opt-outs under the card's own banner, so staticOptOuts and
                optOuts move +2 with it and bannerComponents +1 (79 -> 80).
+               Re-measured on the merged tree rather than added to either
+               side's figure: #2286 and #2307 landed in the same window and
+               both moved the count.
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into

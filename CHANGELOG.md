@@ -49,7 +49,7 @@ All notable public reference-release changes should be recorded here.
   is stuck and what actually fixes it (cancel the booking, add another guest,
   re-quote the request), never a dead-end "ask the club".
   The published banner-coverage figures were re-measured with the new settings
-  card: **290** gated admin controls, **247** of them covered by a banner (221
+  card: **293** gated admin controls, **250** of them covered by a banner (224
   in their own file, 26 by a verified vouching parent — 5 of those through the
   wizard frame), and **43** across 23 files deliberately keeping their own
   reason.
@@ -57,6 +57,82 @@ All notable public reference-release changes should be recorded here.
   **check-in reminder** email joined every guest's first names together and then
   every guest's last names, so the guest list read `Ada, Bob, Cleo Lovelace,
   Smith, Jones`. It now lists each guest's own full name, one per line.
+- **Self-hosted sites now use whatever processing power the server has free,
+  instead of being rationed to a fraction of one core (#2351).** The standard
+  deployment recipe used to cap each app container at eight-tenths of a
+  processor core. That sounded like plenty, but it isn't: the app rebuilds a
+  page's optimised machinery whenever that page hasn't been visited for about
+  ten seconds, and that rebuild wants a few seconds of a whole core — more
+  than one core if available, since it splits the work across them. Under the
+  old cap the rebuild was rationed into small slices, and on a quiet club site
+  — where almost every visit is the first one in a while — that turned into
+  four-to-thirteen-second page loads that looked like a slow server or
+  database but were neither (a live deployment measured exactly this, and
+  dropped from over five seconds to about 1.4 the moment the cap was lifted).
+  The recipe now sets no cap at all, so pages can spread across every core
+  the server has spare — a one-core budget server and an eight-core machine
+  both simply use what they have — while the database and the web proxy
+  still get a fair, equal share of the processor whenever things genuinely
+  compete for it. The deployment guide gains an
+  "App CPU sizing" section explaining the arrangement, the measurements
+  behind it, how to reimpose a hard cap on a shared server, and two
+  mitigations for genuinely starved machines (a keep-warm pinger, and the
+  planned pre-rendered public pages of #2352).
+
+
+- **A custodian can now be given a bed for the season without booking it
+  (#2286).** Clubs that keep someone on site all winter had no honest way to
+  record it: the custodian had to be given a real booking, usually with a
+  100%-off promo code, which put them on the chore roster, counted them in the
+  utilisation reports, and left a phantom stay in their booking history. A hut
+  leader assignment can now simply **hold one bed** instead.
+
+  Pick the nights and the person as usual, then choose their bed in the new
+  **Hold a bed (optional)** step. From that moment the bed is out of the
+  bookable pool and off the allocation board for every covered night, with no
+  booking anywhere. The default is still **No bed — role only**, which behaves
+  exactly as assignments always have and changes no capacity at all — including
+  every assignment the nightly auto-assign job creates.
+
+  Members simply see one fewer bed on the availability calendar for those
+  nights, with no custodian label anywhere: who is in the building is not a
+  member-facing fact. Staff see a hatched **Custodian** band across that bed's
+  cells on the allocation board, which is not a drop target and which the server
+  refuses regardless, and the lodge screen shows a **Custodian** line in its
+  footer while the assignment is running. A custodian who is a minor is never
+  named on that screen, at any name-display setting. The in-booking **Bed
+  allocation** card (#2252) is told the same facts: it shows the board's
+  held-bed notice for the nights on screen, marks any of the booking's own
+  placed nights that are somehow sitting on a held bed with the same neutral
+  hatched treatment, and its Assign dialog gives the same refusal report the
+  board's does.
+
+  The bed is genuinely reserved rather than merely labelled: no guest can be
+  placed on it by hand, by the range assign, by the auto-allocator or by the
+  lifecycle; and the bed or its room cannot be deactivated or deleted while the
+  hold exists. If the bed already has guests on it, or another custodian holds
+  it, you are told exactly which nights are in the way rather than having anyone
+  quietly moved. If the hold tips the lodge past its capacity you are asked to
+  confirm — which is often the right answer, because the custodian really is
+  sleeping there; that question lists the nights and, separately, any live
+  booking those figures could not count, so you are never confirming a smaller
+  number than the real one. Ending or shortening the assignment frees the bed
+  immediately, and each row of the assignments table now has its own
+  **Release bed** and **Change bed** buttons, so you never have to delete an
+  assignment (and its coverage record and kiosk PIN) to hand a bed back. Release
+  keeps working even if bed allocation is later turned off, because a bed held
+  while it was on still has someone in it. Those buttons also work on the rows
+  the nightly job creates, which never come with a bed.
+
+  Everywhere in the admin area the role is called whatever your club calls it —
+  the band on the board, the refusal in the range dialog, the picker, the page.
+  The lodge TV is the one exception: it prints the fixed word **Custodian** (or
+  *Custodians* with a count, on a handover night when two people hold two beds)
+  so a visitor reads it without knowing your club's vocabulary. The hold covers the night of the end date itself, so an
+  assignment whose dates came from the automatic job (which ends on a guest's
+  departure day) should have its end date trimmed by a day first — the form and
+  the guide both say so.
+
 - **The club logo is now stored as a real image instead of being baked into
   every page, cutting a multi-megabyte home page down to roughly its content
   size (#2322).** The logo used to be kept as text encoded directly inside the
@@ -106,8 +182,6 @@ All notable public reference-release changes should be recorded here.
   moment the style is saved. It now uses that same cached read, so saving the
   style still updates the site immediately but ordinary page views no longer
   pay for a database round trip.
-
-
 
 - **Beds can now be allocated and confirmed from inside a booking, without going
   to the board at all (#2252).** Until now, answering "where is this party
@@ -237,8 +311,10 @@ All notable public reference-release changes should be recorded here.
   Admins, because the page read "still working out who you are" as "not a Full
   Admin". All three are gone or now wait until they know. The published
   banner-coverage figures were re-measured with it (and again after the
-  in-booking Bed allocation card, #2252, added its three): **288**
-  gated admin controls, **245** of them covered by a banner (219 in their own
+  in-booking Bed allocation card, #2252, added its three, and once more when
+  #2286's Release/Change bed controls landed, and once more when #2307's
+  Member guests settings card did): **293**
+  gated admin controls, **250** of them covered by a banner (224 in their own
   file, 26 by a verified vouching parent — 5 of those through the wizard frame),
   and **43** across 23 files deliberately keeping their own reason.
 - **Choosing to use your account credit and then saving the booking as a draft

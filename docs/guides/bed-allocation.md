@@ -85,7 +85,12 @@ year in one go).
    member out of changing their requested room for that booking — the dialog
    warns you before you commit.
 4. If any night is blocked, **nothing is written** and the dialog lists every
-   blocked night under one of three headings:
+   blocked night under one of four headings:
+   - **Held for a hut leader** (your club's own word for the role) — that bed is
+     held for a hut leader on those nights, with no booking behind it, so no
+     guest can go on it. This one is fixed on a different page: change the dates
+     or the bed under **Hut Leader Assignments**, or pick another bed here. It is
+     listed first for exactly that reason.
    - **Bed already allocated** — someone else is in that bed. The occupying
      guest is named, and a **Provisional** badge marks an occupant whose
      booking does not hold the night. Provisional or not, it is a clash:
@@ -171,6 +176,14 @@ Some things the card deliberately will not pretend about:
 - **A booking with an exclusive whole-lodge hold** shows the hold instead of
   rows, with no assign or confirm buttons at all: it takes the lodge, so it
   needs no individual beds.
+- **A bed held for a hut leader** (your club's own word for the role) in the
+  nights on screen shows the same notice the board gives: the bed is held with
+  no booking behind it, no guest can be placed on it for those nights, and the
+  fix is under **Hut Leader Assignments**, not here. Trying it anyway in
+  **Assign…** gets the standard refusal report, exactly as on the board. And if
+  one of this booking's placed nights is somehow sitting on a held bed — which
+  the app itself never writes — that run is marked held rather than left
+  looking clean.
 - **Removing a run is one night at a time**, so if it stops half way the message
   tells you exactly how many nights actually went.
 
@@ -219,7 +232,7 @@ you place them yourself.
 | A focused booking is "not on the board" | The deep-linked booking is outside the date range or was cancelled | Adjust Date In / Date Out to bring it into view |
 | "The board window is out of range" | You typed more than 31 nights, or a Date Out before Date In | Narrow the dates, or use ‹ › to step a month at a time |
 | "Showing part of this stay" | You followed a link for a booking longer than the board window | Step forward with › to see the rest of the stay |
-| A range assign says "Nothing was written" | At least one night is blocked — bed taken, guest not booked, or a whole-lodge hold | Read the three lists; fix the range, or use **Assign the N free nights** to take just the free ones (if any night is outside the guest's stay, you are asked to confirm that first) |
+| A range assign says "Nothing was written" | At least one night is blocked — held for a hut leader, bed taken, guest not booked, or a whole-lodge hold | Read the lists; fix the range, or use **Assign the N free nights** to take just the free ones (if any night is outside the guest's stay, you are asked to confirm that first). A hut-leader hold is cleared on the **Hut Leader Assignments** page, not here |
 | A range assign is refused on every night | This booking has an exclusive whole-lodge hold | Held bookings take the whole lodge and get no individual beds — remove the hold first if that is wrong |
 | "That took too long to save" | The range was large enough for the save to time out; nothing was written | Split it into shorter ranges and assign them one after the other |
 | The member says they can no longer change their requested room | A range assign approved their beds | That is expected: confirming beds locks the room request. Removing every approved allocation re-opens it |

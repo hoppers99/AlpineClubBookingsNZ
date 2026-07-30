@@ -5,7 +5,14 @@ import { describe, expect, it, vi } from "vitest";
 import { canonicalPartnerPair } from "@/lib/member-partner-link-shared";
 
 vi.mock("@/lib/prisma", () => ({
-  prisma: {},
+  prisma: {
+    // #2286: the self-wrapping placement paths resolve the bed's lodge OUTSIDE
+    // their transaction, purely to derive the per-lodge advisory-lock key, so
+    // the lock can be the first statement inside it.
+    lodgeBed: {
+      findUnique: vi.fn().mockResolvedValue({ room: { lodgeId: "lodge-1" } }),
+    },
+  },
 }));
 
 vi.mock("@/lib/lodge-capacity", () => ({
@@ -426,6 +433,14 @@ describe("manuallyAllocateBedForNights", () => {
       lodgeBed: {
         findUnique: vi.fn().mockResolvedValue(input.bed),
       },
+      // #2286: allocateBedNight refuses a custodian-held bed-night. No holds in
+      // these cases, so every assertion below reads as it did before.
+      hutLeaderAssignment: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+      // #2286: the self-wrapped placement transaction takes the per-lodge
+      // advisory lock as its first statement.
+      $executeRaw: vi.fn().mockResolvedValue(1),
       // #1701/#1744: mayShareDoubleBed() resolves both members' age tier and
       // looks up the pair's partner link; findMany filters the seeded members
       // by the queried ids, findUnique matches a seeded link by the canonical
@@ -1887,6 +1902,8 @@ describe("bed allocation board lodge scope (ADR-003)", () => {
         lodgeRoom: { findMany: roomFindMany },
         booking: { findMany: bookingFindMany },
         bedAllocation: { findMany: allocationFindMany },
+        // #2286: the board loads custodian bed holds for its range. None here.
+        hutLeaderAssignment: { findMany: vi.fn().mockResolvedValue([]) },
       },
       bookingFindMany,
       allocationFindMany,
@@ -2042,6 +2059,8 @@ describe("getBedAllocationDashboard school-group threading (#1768)", () => {
       lodgeRoom: {
         findMany: vi.fn().mockResolvedValue([room("ra", 1), room("rb", 2)]),
       },
+      // #2286: the board loads custodian bed holds for its range. None here.
+      hutLeaderAssignment: { findMany: vi.fn().mockResolvedValue([]) },
       booking: {
         findMany: vi.fn().mockResolvedValue([
           {
@@ -2111,6 +2130,8 @@ describe("getBedAllocationDashboard focused booking (#1302)", () => {
         bedAllocationSettings: { findUnique: vi.fn().mockResolvedValue(null) },
         lodgeRoom: { findMany: vi.fn().mockResolvedValue([]) },
         bedAllocation: { findMany: vi.fn().mockResolvedValue([]) },
+        // #2286: the board loads custodian bed holds for its range. None here.
+        hutLeaderAssignment: { findMany: vi.fn().mockResolvedValue([]) },
         booking: {
           findMany: vi
             .fn()
@@ -2229,7 +2250,13 @@ describe("deleteBedAllocationRoom (#1674 guarded hard delete)", () => {
       db: {
         lodgeRoom: { findFirst: roomFindFirst, delete: roomDelete },
         bedAllocation: { findFirst: allocationFindFirst },
-        lodgeBed: { deleteMany: bedDeleteMany },
+        lodgeBed: {
+          deleteMany: bedDeleteMany,
+          // #2286: the room guard now also asks which beds the room holds, so
+          // it can refuse a delete that would strand a custodian.
+          findMany: vi.fn().mockResolvedValue([{ id: "bed-1" }]),
+        },
+        hutLeaderAssignment: { findMany: vi.fn().mockResolvedValue([]) },
       },
       roomFindFirst,
       allocationFindFirst,
@@ -2324,7 +2351,12 @@ describe("deleteBedAllocationRoom (#1674 guarded hard delete)", () => {
         delete: vi.fn().mockResolvedValue({ id: "room-1", name: "Bunkroom" }),
       },
       bedAllocation: { findFirst: vi.fn().mockResolvedValue(null) },
-      lodgeBed: { deleteMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      lodgeBed: {
+        deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+        // #2286: the room guard also reads the room's beds.
+        findMany: vi.fn().mockResolvedValue([{ id: "bed-1" }]),
+      },
+      hutLeaderAssignment: { findMany: vi.fn().mockResolvedValue([]) },
     };
     const txnMock = vi.fn(async (cb: (client: typeof tx) => unknown) => cb(tx));
     const prismaMock = prisma as unknown as { $transaction?: unknown };
@@ -2656,6 +2688,9 @@ describe("getBedAllocationDashboard exclusive whole-lodge holds (#119/#120)", ()
       lodgeRoom: { findMany: vi.fn().mockResolvedValue([room]) },
       booking: { findMany: vi.fn().mockResolvedValue(bookings) },
       bedAllocation: { findMany: vi.fn().mockResolvedValue([]) },
+      // #2286: custodian bed holds feed the board payload and the planner.
+      // None here.
+      hutLeaderAssignment: { findMany: vi.fn().mockResolvedValue([]) },
     };
   }
 
@@ -2781,6 +2816,11 @@ describe("bed allocation board member-guest consent exclusion (D-12, #2307)", ()
         lodgeRoom: { findMany: roomFindMany },
         booking: { findMany: bookingFindMany },
         bedAllocation: { findMany: allocationFindMany },
+        // Custodian occupancy (#2286/#2339): the board now also asks which
+        // beds a hut-leader assignment holds. Nobody in residence here — this
+        // block is about the D-12 consent exclusion, and a custodian would
+        // only add noise to the two queries it inspects.
+        hutLeaderAssignment: { findMany: vi.fn().mockResolvedValue([]) },
       },
       bookingFindMany,
       allocationFindMany,
@@ -3130,6 +3170,9 @@ describe("bed allocation lock semantics are two-way (#2252)", () => {
         update: vi.fn(),
         upsert,
       },
+      // #2286: allocateBedNight refuses a custodian-held bed-night. No holds
+      // here, so the move behaves exactly as before.
+      hutLeaderAssignment: { findMany: vi.fn().mockResolvedValue([]) },
     };
 
     await manuallyAllocateBedForNights({

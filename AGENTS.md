@@ -201,8 +201,8 @@ before changing Next.js APIs or conventions.
   itself a load, it unmounts the very `PolicyScopeSelect` the admin just used,
   dropping keyboard focus to `<body>` mid-interaction. Started in the five
   Booking Policies sections (#2142) and rolled across most of the admin tree
-  (#2160, extended by #2168 and #2324): 247 of 290 `ViewOnlyActionButton` call
-  sites now opt out — 221 covered by a banner in the SAME file, 26 by a verified
+  (#2160, extended by #2168 and #2324): 250 of 293 `ViewOnlyActionButton` call
+  sites now opt out — 224 covered by a banner in the SAME file, 26 by a verified
   vouching parent (21 at a JSX render site, 5 through the guided-setup shell) —
   and 43 keep the per-button reason: dialog/popover contents, leaf toolbars,
   `member-credit-card.tsx`, whose finance scope differs from the member detail

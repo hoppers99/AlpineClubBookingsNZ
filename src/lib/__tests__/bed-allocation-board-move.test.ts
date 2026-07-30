@@ -232,6 +232,8 @@ describe("applyOptimisticAllocationBedMove", () => {
       allocations: [affectedFirst, affectedSecond, unaffected],
       unallocatedGuestNights: [],
       exclusiveHolds: [],
+      // #2286: no custodian holds in this fixture.
+      custodianHolds: [],
       suggestedAllocations: [],
       suggestedUnallocatedGuestNights: [],
       warnings: [],

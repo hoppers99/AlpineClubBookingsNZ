@@ -21,6 +21,7 @@ import {
   type BedOption,
   type BedOptionGroup,
   type DashboardAllocation,
+  type DashboardCustodianHold,
   type DashboardRoom,
 } from "./types";
 
@@ -51,6 +52,8 @@ interface RoomTableProps {
   // #2251 decision 3: green/red tinting of the nights the last range operation
   // wrote and refused, on the bed it targeted, until the admin dismisses it.
   rangeTint?: { bedId: string; written: Set<string>; refused: Set<string> };
+  // #2286: `bedId:YYYY-MM-DD` -> the custodian hold covering that bed-night.
+  custodianHoldByBedAndDate?: Map<string, DashboardCustodianHold>;
   pendingAllocationIds: Set<string>;
   highlightedBookingId: string;
   activeDragDates?: Set<string>;
@@ -71,6 +74,7 @@ export function RoomTable({
   onRemove,
   onAssignRange,
   rangeTint,
+  custodianHoldByBedAndDate,
   pendingAllocationIds,
   highlightedBookingId,
   activeDragDates = new Set(),
@@ -185,6 +189,9 @@ export function RoomTable({
                             : undefined
                         : undefined
                     }
+                    custodianHold={custodianHoldByBedAndDate?.get(
+                      `${bed.id}:${night}`,
+                    )}
                     pendingAllocationIds={pendingAllocationIds}
                     highlightedBookingId={highlightedBookingId}
                     activeDragLane={activeDragDates.has(night)}

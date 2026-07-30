@@ -129,3 +129,158 @@ describe("hut leaders assignment error placement", () => {
     expect(card).toHaveTextContent(OVERLAP_ERROR);
   });
 });
+
+/*
+ * #2286: the custodian bed hold's admin controls. Two review findings live here.
+ *
+ * M6 — the over-capacity question appears BELOW the form after a save the server
+ * declined to complete, so it must be announced and take focus. Rendering it
+ * silently means a keyboard or screen-reader admin presses Confirm, hears
+ * nothing, and never learns a second step is waiting.
+ *
+ * M7 — the PUT route and its three-state `bedId` already existed but nothing
+ * called them: a hold could only be removed by DELETING the whole assignment
+ * (losing the coverage record and the kiosk PIN), and a hold on a cron-created
+ * assignment had no control at all. Every "clear the bed first" refusal
+ * elsewhere in the app depends on these two buttons existing.
+ */
+describe("custodian bed hold controls (#2286)", () => {
+  const ASSIGNMENT_WITH_BED = {
+    id: "a1",
+    memberId: "m1",
+    memberName: "Dana Diaz",
+    memberEmail: "dana@test.com",
+    startDate: "2099-07-10",
+    endDate: "2099-07-12",
+    createdAt: "2099-01-01T00:00:00.000Z",
+    lodgeId: "lodge-1",
+    lodgeName: "Silverpeak",
+    bedId: "bed-1",
+    bedName: "A1",
+    bedRoomName: "Kea",
+  };
+
+  const OVER_CAPACITY_BODY = {
+    error: "Holding that bed puts the lodge over capacity on at least one night.",
+    code: "CUSTODIAN_OVER_CAPACITY_CONFIRM_REQUIRED",
+    nightDetails: [{ date: "2099-07-11", occupiedBeds: 11, capacity: 10 }],
+    nonHoldingBookings: [
+      {
+        id: "booking-override",
+        memberName: "Pat Payer",
+        checkIn: "2099-07-11",
+        checkOut: "2099-07-13",
+        guestCount: 3,
+        status: "PAYMENT_PENDING",
+      },
+    ],
+  };
+
+  function stubWithAssignment(
+    putResponse: { ok: boolean; body: unknown } = { ok: true, body: {} },
+  ) {
+    const calls: Array<{ url: string; method: string; body: unknown }> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+      calls.push({
+        url,
+        method,
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+      if (url.startsWith("/api/admin/hut-leaders/available-beds")) {
+        return { ok: true, status: 200, json: async () => ({ rooms: [] }) };
+      }
+      if (url.startsWith("/api/admin/hut-leaders/eligible-members")) {
+        return { ok: true, json: async () => ({ members: [] }) };
+      }
+      if (url === "/api/admin/hut-leaders/unassigned-dates") {
+        return { ok: true, json: async () => ({ unassignedDates: [] }) };
+      }
+      if (url === "/api/admin/hut-leaders/a1" && method === "PUT") {
+        return {
+          ok: putResponse.ok,
+          status: putResponse.ok ? 200 : 409,
+          json: async () => putResponse.body,
+        };
+      }
+      if (url === "/api/admin/hut-leaders") {
+        return {
+          ok: true,
+          json: async () => ({ assignments: [ASSIGNMENT_WITH_BED] }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    }) as unknown as typeof fetch;
+    vi.stubGlobal("fetch", fetchMock);
+    return calls;
+  }
+
+  it("releases the bed with ONE explicit null bedId, keeping the assignment", async () => {
+    const calls = stubWithAssignment();
+    const HutLeadersPage = (await import("@/app/(admin)/admin/hut-leaders/page"))
+      .default;
+    render(<HutLeadersPage />);
+
+    const release = await screen.findByRole("button", { name: /release bed/i });
+    fireEvent.click(release);
+
+    await waitFor(() => {
+      const put = calls.find((call) => call.method === "PUT");
+      expect(put).toBeDefined();
+      // Explicit null, never an omitted key: to the route, absent means "leave
+      // the bed alone", which is the one thing a release must not do.
+      expect(put!.body).toEqual({ bedId: null });
+      expect(put!.url).toBe("/api/admin/hut-leaders/a1");
+    });
+    // The assignment itself is NOT deleted.
+    expect(calls.some((call) => call.method === "DELETE")).toBe(false);
+  });
+
+  it("announces the over-capacity question, takes focus, and names the uncounted bookings", async () => {
+    const calls = stubWithAssignment({ ok: false, body: OVER_CAPACITY_BODY });
+    const HutLeadersPage = (await import("@/app/(admin)/admin/hut-leaders/page"))
+      .default;
+    render(<HutLeadersPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /release bed/i }));
+
+    const card = await screen.findByTestId("custodian-over-capacity-confirm");
+    // Announced, not merely rendered — and it holds focus, because it appeared
+    // below the control the admin just used.
+    expect(card).toHaveAttribute("role", "alert");
+    expect(card).toHaveFocus();
+    expect(card).toHaveTextContent("2099-07-11");
+
+    // #2286 review M5: the per-night figures count only capacity-HOLDING
+    // bookings, so the overridden booking that will settle onto these nights is
+    // invisible to them. It must be named, or the confirmation understates what
+    // is being accepted.
+    const uncounted = screen.getByTestId("custodian-over-capacity-bookings");
+    expect(uncounted).toHaveTextContent("Pat Payer");
+    expect(uncounted).toHaveTextContent("PAYMENT_PENDING");
+
+    // Confirming re-sends the SAME action with the override.
+    fireEvent.click(screen.getByRole("button", { name: /confirm anyway/i }));
+    await waitFor(() => {
+      expect(
+        calls.filter(
+          (call) =>
+            call.method === "PUT" &&
+            (call.body as { confirmOverCapacity?: boolean })
+              ?.confirmOverCapacity === true,
+        ),
+      ).toHaveLength(1);
+    });
+  });
+
+  it("offers a bed picker per row, so a cron-created assignment can hold a bed too", async () => {
+    stubWithAssignment();
+    const HutLeadersPage = (await import("@/app/(admin)/admin/hut-leaders/page"))
+      .default;
+    render(<HutLeadersPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /change bed/i }));
+    expect(await screen.findByTestId("bed-picker-a1")).toBeInTheDocument();
+  });
+});

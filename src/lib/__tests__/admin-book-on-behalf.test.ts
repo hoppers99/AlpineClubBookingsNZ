@@ -10,6 +10,9 @@ vi.mock("@/lib/prisma", () => ({
     // #1982: default lodge capacity is a self-healed DB override, not a
     // club.json runtime fallback.
     lodgeSettings: { findUnique: async () => ({ capacity: 20 }) },
+    // #2286: the capacity engines read bed-holding hut-leader assignments
+    // (custodian occupancy). None in these cases.
+    hutLeaderAssignment: { findMany: vi.fn().mockResolvedValue([]) },
     memberLodgeAccess: { findMany: vi.fn() },
     bookingGuest: { findMany: vi.fn().mockResolvedValue([]) },
     membershipType: { findMany: vi.fn() },

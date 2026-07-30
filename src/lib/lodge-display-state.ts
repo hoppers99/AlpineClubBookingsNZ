@@ -132,6 +132,31 @@ export interface DisplayState {
    * function of the payload. Limited to DISPLAY_RELEVANT_MODULE_KEYS — the
    * whole club flag map is never shipped to a public wall. */
   capabilities: Record<string, boolean>;
+  /**
+   * The custodian(s) in residence today (#2286), or null when there is none.
+   *
+   * ONLY a bed-holding hut-leader assignment produces this slot: a role-only
+   * assignment is not an occupancy and does not appear. The custodian is not a
+   * BookingGuest, so their exclusion from the occupancy counts, the booking
+   * rows and the chore roster is structural — there is nothing to filter.
+   *
+   * `count` is how many bed-holding custodians are in residence tonight. It is
+   * a COUNT, not a flag, because a handover night legitimately has two people
+   * on two different beds — the previous shape (one `findFirst`) silently named
+   * one of them and hid the other, which is the one thing a "who is here" slot
+   * must not do.
+   *
+   * `label` is the joined names, or null whenever ANY of them must not be
+   * individually named: under COUNTS_ONLY granularity, and ALWAYS when a
+   * minor-age custodian is among them regardless of granularity (the
+   * file-level contract: minors are never individually named at any level).
+   * All-or-nothing on purpose — naming the adult and omitting the minor next to
+   * "Custodians" would identify the minor by elimination. The template then
+   * renders the role word and the count.
+   *
+   * No phone, no dates, no member id — the slot carries names or a count.
+   */
+  custodian: { label: string | null; count: number } | null;
 }
 
 function isMinor(ageTier: AgeTier): boolean {
@@ -627,6 +652,62 @@ export async function buildDisplayState(
   // back to config.
   const clubIdentity = await getCachedClubIdentity();
 
+  // Custodian in residence (#2286). Scoped to this lodge and to the window's
+  // CURRENT day — the wall answers "who is here now", not "who will be here on
+  // Thursday". `bedId: not null` is the whole gate: a role-only assignment is
+  // not an occupancy and never renders a slot.
+  //
+  // Gated on the hutLeaders module like every other module-owned read in this
+  // builder (`flags.bedAllocation` for rooms, `flags.chores` for the roster): a
+  // club with the module off has no hut-leader surface at all, so the wall must
+  // not grow one. The query is skipped entirely rather than filtered later.
+  //
+  // findMany, NOT findFirst (#2286 review B11): a handover night has TWO
+  // custodians on two different beds, and a findFirst named one and silently
+  // dropped the other. `take` is a sanity bound — the assignment overlap rule
+  // permits a one-day handover, so more than a handful on one night means bad
+  // data, not a case to render.
+  const custodianAssignments = flags.hutLeaders
+    ? await prisma.hutLeaderAssignment.findMany({
+        where: {
+          bedId: { not: null },
+          startDate: { lte: startDate },
+          endDate: { gte: startDate },
+          ...lodgeNullTolerantScope(lodgeId),
+        },
+        select: {
+          member: { select: { firstName: true, lastName: true, ageTier: true } },
+        },
+        orderBy: [{ startDate: "asc" }, { id: "asc" }],
+        take: 8,
+      })
+    : [];
+  // A minor is never individually named at ANY granularity (the contract at the
+  // top of this file). Nothing structurally stops a minor-age member being made
+  // custodian, so the guard lives here rather than relying on the admin
+  // surface. All-or-nothing across the whole set: naming one of two custodians
+  // and withholding the other would identify the withheld person by
+  // elimination, so one un-nameable custodian withholds every name and the wall
+  // falls back to the role word plus the count.
+  const custodianNames = custodianAssignments.map((assignment) =>
+    isMinor(assignment.member.ageTier)
+      ? null
+      : reduceName(
+          assignment.member.firstName,
+          assignment.member.lastName,
+          granularity,
+        ),
+  );
+  const custodian =
+    custodianAssignments.length > 0
+      ? {
+          label: custodianNames.every((name) => name)
+            ? custodianNames.join(" · ")
+            : null,
+          count: custodianAssignments.length,
+        }
+      : null;
+
   return {
     lodge: { name: lodge.name },
     club: clubBrandingForDisplay(clubIdentity.name, theme),
@@ -649,5 +730,6 @@ export async function buildDisplayState(
         : null,
     config: sanitiseDisplayConfig(lodge.displayConfig),
     capabilities,
+    custodian,
   };
 }
