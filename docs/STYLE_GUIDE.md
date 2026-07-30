@@ -171,10 +171,14 @@ re-creatable.
   That tooltip never appears (disabled buttons receive no pointer events), and
   gated controls also stay out of the keyboard tab order, so "tab to the button
   to hear why" is wrong too. **Check the screen before you write "the banner
-  says why":** 32 controls still carry their own per-button reason instead —
+  says why":** 43 controls still carry their own per-button reason instead —
   controls inside a dialog, popover, or dropdown; leaf toolbars dropped into
-  another page's layout; and the member detail **credit** card, whose buttons
-  are gated on finance while that page's banner states membership. The member
+  another page's layout; the member detail **credit** card, whose buttons
+  are gated on finance while that page's banner states membership; and the
+  integration setup wizards' credential writes, which need Full Admin on top of
+  the area their wizard's banner names (#2324). The rule of thumb: where a
+  control needs a NARROWER permission than the banner above it states, it says
+  so itself. The member
   detail page itself was converted under owner decision #2168 and now shows ONE
   banner covering its eight membership-scoped cards.
   See `docs/ARCHITECTURE.md` for the full list of shapes and counts. And note

@@ -14,6 +14,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { CopyField } from "@/components/admin/integration-wizard";
 import type { WizardStepHelpers } from "@/components/admin/integration-wizard";
+import { ViewOnlyActionButton } from "@/components/admin/view-only-action";
+import { ADMIN_FULL_ADMIN_ONLY_ACTION_REASON } from "@/hooks/use-admin-area-edit-access";
 import { useClubIdentity } from "@/components/club-identity-provider";
 import { MappingsPanel } from "../_components/mappings-panel";
 import { SetupPanels } from "../_components/setup-panels";
@@ -224,7 +226,7 @@ export function WebhooksStep({
             description="In Xero (My Apps → your app → Webhooks), paste this as the delivery URL, then subscribe to the Invoices and Contacts events."
           />
 
-          {!canWrite ? (
+          {canWrite === false ? (
             <div className="flex items-start gap-2 rounded-md border border-border bg-muted p-3 text-sm text-muted-foreground">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
               <span>
@@ -256,7 +258,7 @@ export function WebhooksStep({
               }
               value={webhookKey}
               onChange={(e) => setWebhookKey(e.target.value)}
-              disabled={!canWrite || saving || verifying}
+              disabled={canWrite !== true || saving || verifying}
             />
             <p className="text-xs text-muted-foreground">
               Xero shows this key when you save the webhook. It is encrypted at
@@ -296,14 +298,20 @@ export function WebhooksStep({
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            <Button
+            {/* KEEPS its own reason (#2324): Full Admin, not the banner's
+                `finance` scope. The Verify button beside it is not
+                permission-gated at all — it needs a key to be stored, not a
+                permission — so it stays a plain Button. */}
+            <ViewOnlyActionButton
               type="button"
               variant="outline"
+              canEdit={canWrite}
+              readOnlyReason={ADMIN_FULL_ADMIN_ONLY_ACTION_REASON}
               onClick={() => void saveKey()}
-              disabled={!canWrite || !webhookKey.trim() || saving || verifying}
+              disabled={!webhookKey.trim() || saving || verifying}
             >
               {saving ? "Saving…" : keySet ? "Replace key" : "Save key"}
-            </Button>
+            </ViewOnlyActionButton>
             <Button
               type="button"
               onClick={() => void verify()}
