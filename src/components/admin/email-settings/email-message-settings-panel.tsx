@@ -49,6 +49,9 @@ interface TemplateDefinition {
   defaultBody: string;
   allowedTokens: string[];
   requiredTokens: string[];
+  // Per required token, the other tokens that satisfy the same requirement
+  // (#2267). Optional here because the older fixtures/responses omit it.
+  requiredTokenAlternatives?: Record<string, string[]>;
   triggerSummary: string;
   frequency: string;
   override: TemplateOverride | null;
@@ -66,6 +69,52 @@ const settingFields: Array<{
   { key: "contactEmail", label: "Contact email" },
   { key: "publicUrl", label: "Public URL" },
 ];
+
+// The template write/preview routes reject an invalid body with a generic
+// "Invalid email template" plus a list of specific issues. Showing only the
+// generic line left an admin guessing what to change (#2267), so join the
+// explanations onto it — every rule the server enforces already carries a
+// plain-English message.
+function templateErrorMessage(responseBody: unknown, fallback: string): string {
+  const body = responseBody as
+    | { error?: string; issues?: Array<{ message?: string }> }
+    | null
+    | undefined;
+  const headline = body?.error ?? fallback;
+  const details = Array.isArray(body?.issues)
+    ? Array.from(
+        new Set(
+          body.issues
+            .map((issue) => issue?.message)
+            .filter((message): message is string => Boolean(message)),
+        ),
+      )
+    : [];
+  return details.length > 0 ? `${headline}: ${details.join("; ")}` : headline;
+}
+
+// A filled chip is the only hint that a token is required, and it says nothing
+// about the tokens that satisfy the same requirement instead (#2267). Spell the
+// rule out under the chips so an admin learns it while editing, not from a
+// rejected save.
+export function requiredTokenSentence(
+  template: {
+    requiredTokens: string[];
+    requiredTokenAlternatives?: Record<string, string[]>;
+  } | null,
+): string | null {
+  const required = template?.requiredTokens ?? [];
+  if (required.length === 0) return null;
+  const parts = required.map((token) => {
+    const alternatives = template?.requiredTokenAlternatives?.[token] ?? [];
+    if (alternatives.length === 0) return `{{${token}}}`;
+    const alternativeText = alternatives
+      .map((alternative) => `{{${alternative}}}`)
+      .join(" or ");
+    return `{{${token}}} (or ${alternativeText})`;
+  });
+  return `Keep these in the body: ${parts.join(", ")}.`;
+}
 
 export function EmailMessageSettingsPanel() {
   const [settings, setSettings] = useState<EmailSettings | null>(null);
@@ -87,6 +136,10 @@ export function EmailMessageSettingsPanel() {
   const currentTemplate = useMemo(
     () => templates.find((template) => template.key === selectedTemplate) ?? null,
     [selectedTemplate, templates],
+  );
+  const requirementSentence = useMemo(
+    () => requiredTokenSentence(currentTemplate),
+    [currentTemplate],
   );
 
   async function load() {
@@ -184,7 +237,9 @@ export function EmailMessageSettingsPanel() {
       const responseBody = await response.json().catch(() => null);
       if (!response.ok) {
         if (response.status === 403) setForbiddenSave(true);
-        throw new Error(responseBody?.error ?? "Failed to save email template");
+        throw new Error(
+          templateErrorMessage(responseBody, "Failed to save email template"),
+        );
       }
       toast.success("Email template saved");
       await load();
@@ -237,7 +292,9 @@ export function EmailMessageSettingsPanel() {
       });
       const responseBody = await response.json().catch(() => null);
       if (!response.ok) {
-        throw new Error(responseBody?.error ?? "Failed to preview email template");
+        throw new Error(
+          templateErrorMessage(responseBody, "Failed to preview email template"),
+        );
       }
       setPreviewSubject(responseBody.subject);
       setPreviewHtml(responseBody.html);
@@ -376,6 +433,11 @@ export function EmailMessageSettingsPanel() {
                 required: currentTemplate.requiredTokens.includes(token),
               }))}
             />
+            {requirementSentence ? (
+              <p className="text-xs text-muted-foreground">
+                {requirementSentence}
+              </p>
+            ) : null}
           </div>
         ) : null}
 

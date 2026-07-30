@@ -98,6 +98,51 @@ All notable public reference-release changes should be recorded here.
   holds the whole lodge is now refused outright, matching the automatic
   allocator (#2285) — previously such a placement was accepted and then quietly
   cleaned away later.
+- **The booking-confirmed email now explains a promo that raises the price,
+  instead of a blank Discount line and an unexplained total (#2267).** A member
+  who booked with an exclusive-use flat-rate promo received a payment
+  confirmation whose Discount line trailed off after a minus sign, whose
+  authoring notes (`[only when …]`) rendered as body text, and whose subtotal
+  and total differed by $1,370 with nothing in between to say why — nothing was
+  mischarged, but the one token that could explain a price-*raising* promo was
+  not usable in the admin-editable body. The editable booking-confirmed body
+  now uses a single pre-composed `{{promoSummary}}` token that renders the
+  whole story — `Subtotal:` plus a signed `Promo adjustment (CODE):` line,
+  `-$30.00` for a discount and `+$1,370.00` for a surcharge — and renders
+  nothing at all when no promo applied, so there is never a ragged or empty
+  line. The flat body and the built-in HTML email now build that block from the
+  same code, so their money stories cannot drift apart again, and a test matrix
+  (discount, surcharge, no promo, door code set and unset) renders the shipped
+  default body end-to-end — through the same layout a member receives — and
+  fails on any line that trails off after a `-`, `+`, `–` or `:`. The door code
+  travels the same way: the body carries a pre-composed `{{doorCodeNote}}`
+  line, so a club that records no door code no longer emails a bare
+  `Door code:`. The booking-modified default body loses its 13 bracket
+  annotations the same way: a pre-composed `{{changeSummary}}` block, built by
+  the same code as the built-in HTML email, lists only what actually changed —
+  `Previous`/`New` pairs where something moved, a single line where it did not,
+  and a change fee only when one was charged — and the additional-payment story
+  arrives through the existing pre-composed `{{paymentNote}}`. That email also
+  names the change in words on both paths (a batch edit used to reach members
+  as the raw word `BATCH_MODIFY`). Admins can now also use
+  `{{promoAdjustment}}` (the signed value) in overrides — and the editor now
+  refuses a body that types its own `+` or `-` in front of it, explaining that
+  the token already carries its sign — while older overrides that reference
+  `{{subtotal}}`, `{{discount}}`, `{{promoCode}}`, `{{doorCode}}` or the
+  per-piece `Previous`/`New` tokens keep rendering and re-saving exactly as
+  before. Showing members the promo explanation is now **required** in a
+  booking-confirmed override, satisfied any of three ways — `{{promoSummary}}`,
+  the signed `{{promoAdjustment}}`, or the older `{{discount}}` the previous
+  default body used — so no override a club already saved is invalidated, while
+  an override that deletes the explanation altogether is refused instead of
+  quietly leaving a charged member with a total and no reason for it. (A
+  `{{subtotal}}` line on its own does not count: a subtotal with no adjustment
+  beside it is the confusing email this whole fix is about.) The editor now
+  prints that rule, and the tokens that satisfy it, under the token chips. When
+  a saved override is rejected, the editor also shows the specific reasons
+  instead of a bare "Invalid email template". Only clubs that saved an
+  override of these templates ever saw the broken email; clubs on the defaults
+  always got the correct built-in HTML version.
 
 - **Setting up a lodge TV is now one guided path instead of five cards and a
   guess (#2249).** **Admin → Lobby Display** leads with a **Guided setup** card
