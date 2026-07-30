@@ -48,6 +48,11 @@ export interface PartnerSharingCandidate {
  * Server-computed so the admin edit UI renders policy rather than
  * re-implementing it; the admission path (mayShareDoubleBed +
  * checkCapacityForPartnerSharedAdmission) still re-validates at apply time.
+ *
+ * "Member guests already on a booking" means two different sets here, and the
+ * body explains why: only an operationally present guest may ANCHOR an offer
+ * (owner decision D-12, #2307), but every guest — consented or not — counts as
+ * already on the booking for the purpose of not being offered again.
  */
 export async function listBookingPartnerSharingCandidates(
   bookingId: string,
