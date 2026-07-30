@@ -237,7 +237,11 @@ export async function sendMemberGuestAddNotifications(params: {
                   guest: { firstName: guest.firstName, lastName: guest.lastName },
                 },
             consentExpiresAt: guest.consentExpiresAt!,
-            consentUrl: buildMemberGuestConsentUrl(bookingId),
+            consentUrl: buildMemberGuestConsentUrl({
+              bookingId,
+              guestId: guest.id,
+              isTarget: recipient.isTarget,
+            }),
             bookerName: context.bookerName,
             checkIn: context.checkIn,
             checkOut: context.checkOut,
@@ -316,22 +320,29 @@ export async function sendMemberGuestAddNotifications(params: {
 }
 
 /**
- * The link the request email's "Answer this request" button points at.
+ * The link the request email's "Answer this request" button points at — a
+ * DIFFERENT surface per recipient, because the two audiences hold different
+ * access (MG2's visible half):
  *
- * Owner decision D-11 gives a member with a PENDING guest row full access to the
- * booking page, so that is the surface for a target answering for themselves.
- *
- * CROSS-LANE GAP, recorded: a DELEGATE gets the same link and D-11 gives them no
- * booking-page access (the consent endpoint's own doc comment is explicit that
- * answering as a delegate grants no view of the booking), so a delegate following
- * this link reaches a page they cannot open. A delegate-specific surface is not
- * part of this work package; the sender's own parameter doc anticipates one ("the
- * booking card, or the delegate page"). Until it exists the delegate's route in is
- * the endpoint itself, and this link is the only member-facing URL that exists.
+ *  - The TARGET answering for themselves gets the booking page's `#consent`
+ *    anchor: owner decision D-11 gives their PENDING guest row full access to
+ *    that page, and the consent card lives there, directly above the #2250
+ *    self-removal card.
+ *  - A DELEGATE gets `/bookings/consent/[guestId]` — their own page. D-11
+ *    gives a delegate no booking-page access (the consent endpoint's doc
+ *    comment is explicit that answering grants no view of the booking), so
+ *    the booking-page link would land them on a redirect. The delegate page
+ *    shows names, dates and the question, and never money.
  */
-function buildMemberGuestConsentUrl(bookingId: string): string {
+function buildMemberGuestConsentUrl(params: {
+  bookingId: string;
+  guestId: string;
+  isTarget: boolean;
+}): string {
   const baseUrl = process.env.NEXTAUTH_URL || "http://localhost:3000";
-  return `${baseUrl}/bookings/${bookingId}`;
+  return params.isTarget
+    ? `${baseUrl}/bookings/${params.bookingId}#consent`
+    : `${baseUrl}/bookings/consent/${params.guestId}`;
 }
 
 type NotificationContext = {

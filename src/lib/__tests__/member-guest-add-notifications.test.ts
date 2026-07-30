@@ -137,7 +137,9 @@ describe("recipients (owner decision D-9)", () => {
     // The expiry comes from the COMMITTED row, so the deadline in the email is
     // the one the sweep will act on.
     expect(params.consentExpiresAt).toEqual(EXPIRES);
-    expect(params.consentUrl).toContain(`/bookings/${BOOKING}`);
+    // A target with a login answers on the booking page itself (D-11 gives
+    // their PENDING row full access), at the card's #consent anchor.
+    expect(params.consentUrl).toContain(`/bookings/${BOOKING}#consent`);
     expect(params.guestNights).toEqual([CHECK_IN]);
     // MG2-D-a: everyone on the booking, names only.
     expect(params.party).toEqual([
@@ -174,6 +176,14 @@ describe("recipients (owner decision D-9)", () => {
       "Pat",
       "Robin",
     ]);
+    for (const [params] of h.sendConsentRequest.mock.calls) {
+      // A delegate has NO booking-page access (D-11 covers guest rows, not
+      // delegates), so their link must be the delegate page — a booking-page
+      // link would land them on a redirect. The guest-row id, never the
+      // booking id, is what the delegate page keys on.
+      expect(params.consentUrl).toContain(`/bookings/consent/${GUEST_ROW}`);
+      expect(params.consentUrl).not.toContain(`/bookings/${BOOKING}`);
+    }
   });
 
   it("falls back to the guest's stay envelope when the row has no night rows", async () => {
