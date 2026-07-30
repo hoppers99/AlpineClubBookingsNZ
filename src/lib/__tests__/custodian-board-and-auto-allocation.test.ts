@@ -257,4 +257,29 @@ describe("runAutoBedAllocation (chokepoint 4)", () => {
     await runAutoBedAllocation({ range, lodgeId: LODGE, db });
     expect(mocks.executeRaw).toHaveBeenCalled();
   });
+
+  it("locks a CLUB-WIDE run's lodges in sorted order (#2286 review L5)", async () => {
+    // The route accepts an omitted lodgeId, so one transaction can span several
+    // lodges. Sorted acquisition is the codebase's multi-lodge pattern and is
+    // the only thing that stops this deadlocking against the per-lodge
+    // transactions taking the same keys one at a time.
+    const db = buildDb({
+      // Unsorted on purpose: the room lookup answers in whatever order the
+      // database returns, and the sort must happen here.
+      lodgeRoom: {
+        findMany: vi
+          .fn()
+          // 1st call: the dashboard's room load. 2nd: the lock-key resolution.
+          .mockResolvedValueOnce([room])
+          .mockResolvedValue([{ lodgeId: "lodge-zulu" }, { lodgeId: "lodge-alpha" }]),
+      },
+    });
+
+    await runAutoBedAllocation({ range, db });
+
+    const lockedKeys = mocks.executeRaw.mock.calls.flatMap((call) =>
+      call.slice(1),
+    );
+    expect(lockedKeys).toEqual(["lodge-alpha", "lodge-zulu"]);
+  });
 });

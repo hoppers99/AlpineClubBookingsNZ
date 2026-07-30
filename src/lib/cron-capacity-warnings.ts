@@ -4,8 +4,11 @@ import { getOccupiedBedsForNight } from "./capacity";
 import { buildLodgeCustodianNightCounter } from "./custodian-occupancy";
 import { getLodgeCapacity } from "./lodge-capacity";
 import { lodgeNullTolerantScope } from "@/lib/lodges";
-import { getTodayDateOnly } from "./date-only";
-import { eachDayOfInterval, addDays } from "date-fns";
+import {
+  addDaysDateOnly,
+  eachDateOnlyInRange,
+  getTodayDateOnly,
+} from "./date-only";
 import logger from "@/lib/logger";
 import { capacityHoldingBookingFilter } from "@/lib/booking-status";
 
@@ -25,12 +28,14 @@ const WARN_THRESHOLD_BEDS = 5; // Alert when <= 5 beds remaining
  */
 export async function checkCapacityWarnings(): Promise<{ alertedDays: number }> {
   const todayNZ = getTodayDateOnly();
-  const endDate = addDays(todayNZ, 14);
+  const endDate = addDaysDateOnly(todayNZ, 14);
 
-  const nights = eachDayOfInterval({
-    start: todayNZ,
-    end: addDays(endDate, -1),
-  });
+  // UTC date-only nights, stepped with the domain's own helper (#2286 review
+  // L3). date-fns `eachDayOfInterval` returns LOCAL-midnight dates, so on a host
+  // whose clock is not UTC every night in this list was shifted off the
+  // date-only grid the rest of the capacity code keys on — a pre-existing bug
+  // that the custodian night index would have inherited.
+  const nights = eachDateOnlyInRange(todayNZ, endDate);
 
   const activeLodges = await prisma.lodge.findMany({
     where: { active: true },

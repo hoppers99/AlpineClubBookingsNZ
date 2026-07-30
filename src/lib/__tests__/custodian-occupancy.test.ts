@@ -250,4 +250,47 @@ describe("the placement guard", () => {
       }),
     ).resolves.toEqual([]);
   });
+
+  it("uses the MIN of an UNSORTED night list as the window's lower bound", async () => {
+    // #2286 review L2. The bulk and range paths legitimately pass a
+    // non-contiguous (#713) and not-necessarily-sorted night set. Taking
+    // `stayDates[0]` as the lower bound meant a window that started AFTER some
+    // of the nights being asked about, so a hold covering the earlier ones read
+    // as absent — and the placement guard let the write through.
+    seedHold("2026-07-02", "2026-07-02");
+
+    await expect(
+      custodianHeldNightsForBed({
+        bedId: "bed-1",
+        // Deliberately out of order: the latest night first.
+        stayDates: [
+          parseDateOnly("2026-07-09"),
+          parseDateOnly("2026-07-02"),
+        ],
+      }),
+    ).resolves.toEqual(["2026-07-02"]);
+
+    const where = mocks.hutLeaderAssignmentFindMany.mock.calls[0][0].where;
+    // The query window starts at the EARLIEST night, not the first one listed.
+    expect(where.endDate.gte).toEqual(parseDateOnly("2026-07-02"));
+    expect(where.startDate.lt).toEqual(parseDateOnly("2026-07-10"));
+  });
+
+  it("keys nights on the UTC date-only grid, not the club time zone", async () => {
+    // #2286 review L3: ONE convention. A caller that hands over a Date carrying
+    // a time component (or a local-midnight Date on a non-UTC host) must be
+    // truncated the same way the rest of the capacity domain truncates, so the
+    // keys compared on both sides of the guard come from the same grid.
+    seedHold("2026-07-02", "2026-07-02");
+
+    await expect(
+      custodianHeldNightsForBed({
+        bedId: "bed-1",
+        stayDates: [new Date("2026-07-02T13:45:00.000Z")],
+      }),
+    ).resolves.toEqual(["2026-07-02"]);
+
+    const where = mocks.hutLeaderAssignmentFindMany.mock.calls[0][0].where;
+    expect(where.endDate.gte).toEqual(parseDateOnly("2026-07-02"));
+  });
 });

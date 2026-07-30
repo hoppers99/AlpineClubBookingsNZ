@@ -41,6 +41,11 @@ vi.mock("@/hooks/use-admin-area-edit-access", async (importOriginal) => {
   return { ...actual, useAdminAreaEditAccess: () => true };
 });
 
+// #2286: the board's custodian copy uses the club's own word for the role.
+vi.mock("@/components/club-identity-provider", () => ({
+  useClubIdentity: () => ({ hutLeaderLabel: "Hut Leader" }),
+}));
+
 vi.mock("@/components/lodge-select", () => ({
   LodgeSelect: () => null,
   useLodgeOptions: () => ({ lodges: [], loading: false }),
@@ -160,5 +165,71 @@ describe("bed allocation board — refused window", () => {
     expect(
       screen.queryByText("The board window is out of range"),
     ).not.toBeInTheDocument();
+  });
+});
+
+/*
+ * #2286 review L4: the deploy-drain tolerance, pinned DELIBERATELY.
+ *
+ * The fixture above happens to omit `custodianHolds`, so this file already
+ * exercised the tolerance by accident — and an accident is not a contract. A
+ * new-colour browser bundle can be served an OLD-colour payload during a drain,
+ * and crashing the entire allocation board in that window would be far worse
+ * than the drain exposure the feature already accepts and documents. The
+ * assertion is explicit so a later refactor that dereferences the field again
+ * fails here with the reason attached.
+ */
+describe("bed allocation board — a payload with no custodianHolds (#2286)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it("renders the whole board, with no custodian banner and no crash", async () => {
+    const drainPayload = buildPayload() as Record<string, unknown>;
+    delete drainPayload.custodianHolds;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, json: async () => drainPayload }),
+    );
+
+    render(<AdminBedAllocationPage />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("room-table")).toBeInTheDocument();
+    });
+    // The banner is absent (nothing is held) rather than the board being gone.
+    expect(screen.queryByText(/not available to allocate/i)).toBeNull();
+  });
+
+  it("renders the banner when the field IS present, so the tolerance is not hiding it", async () => {
+    const payload = buildPayload() as Record<string, unknown>;
+    payload.custodianHolds = [
+      {
+        assignmentId: "a1",
+        memberName: "Sam Ranger",
+        bedId: "bed-1",
+        bedName: "Bed One",
+        roomId: "room-1",
+        roomName: "Example Room",
+        startDate: "2026-06-01",
+        endDate: "2026-06-08",
+        nights: ["2026-06-01"],
+      },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, json: async () => payload }),
+    );
+
+    render(<AdminBedAllocationPage />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("room-table")).toBeInTheDocument();
+    });
+    expect(screen.getByText(/not available to allocate/i)).toBeInTheDocument();
+    // Singular wording comes from the tolerant list's own length, not from the
+    // raw payload field (the bug this finding named).
+    expect(screen.getByText(/This bed is/)).toBeInTheDocument();
   });
 });

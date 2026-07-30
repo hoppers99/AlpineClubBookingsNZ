@@ -1,9 +1,5 @@
 import { prisma } from "./prisma";
-import {
-  formatDateOnly,
-  formatDateOnlyForTimeZone,
-  normalizeDateOnlyForTimeZone,
-} from "./date-only";
+import { formatDateOnly, parseDateOnly } from "./date-only";
 import { lodgeNullTolerantScope } from "./lodges";
 
 /**
@@ -29,6 +25,20 @@ import { lodgeNullTolerantScope } from "./lodges";
  * `endDate` is a covered day. Converting between them is the caller's job —
  * `overlapsRange` below takes an EXCLUSIVE end so it composes with the
  * booking-shaped ranges the capacity engines already work in.
+ *
+ * ## ONE date-only convention (#2286 review L3)
+ *
+ * Every date in this module is a UTC-midnight date-only `Date`, keyed with
+ * {@link formatDateOnly} and truncated with {@link truncateToDateOnly} — the
+ * same convention the rest of the bed-allocation and capacity domain uses
+ * (`eachDateOnlyInRange`, `addDaysDateOnly`, `parseDateOnly`, and the
+ * `formatDateOnly` keys in `capacity.ts`). This module previously keyed with
+ * `formatDateOnlyForTimeZone`, which agrees for a properly normalised
+ * UTC-midnight input but silently disagrees for a LOCAL-midnight one — so a
+ * caller building nights with a local-midnight helper would compare keys from
+ * two different conventions and lose or gain a night. One convention, applied
+ * everywhere, is what makes that class of bug impossible rather than merely
+ * unlikely.
  *
  * ## Counting, never a boolean
  *
@@ -76,6 +86,18 @@ export interface CustodianBedHold {
 }
 
 const MINOR_AGE_TIERS = new Set(["INFANT", "CHILD", "YOUTH"]);
+
+/**
+ * Truncate a `Date` to its UTC date-only midnight — this module's ONE
+ * convention (see the note at the top of the file).
+ *
+ * `formatDateOnly` is `toISOString().slice(0, 10)`, so this is exactly the
+ * inverse-then-forward round trip and is a no-op for a date that is already a
+ * date-only value.
+ */
+function truncateToDateOnly(date: Date): Date {
+  return parseDateOnly(formatDateOnly(date));
+}
 
 /**
  * Is this age tier a minor? Exported because the custodian slot on the lobby
@@ -128,8 +150,8 @@ export async function findCustodianBedHolds(input: {
   db?: CustodianDb;
 }): Promise<CustodianBedHold[]> {
   const db = input.db ?? prisma;
-  const from = normalizeDateOnlyForTimeZone(input.from);
-  const toExclusive = normalizeDateOnlyForTimeZone(input.toExclusive);
+  const from = truncateToDateOnly(input.from);
+  const toExclusive = truncateToDateOnly(input.toExclusive);
 
   if (input.bedIds && input.bedIds.length === 0) return [];
   if (from >= toExclusive) return [];
@@ -201,7 +223,7 @@ export function buildCustodianNightIndex(
   const index = new Map<string, number>();
   if (holds.length === 0) return index;
   for (const night of nights) {
-    const key = formatDateOnlyForTimeZone(night);
+    const key = formatDateOnly(night);
     let count = 0;
     for (const hold of holds) {
       if (holdCoversNight(hold, key)) count += 1;
@@ -239,7 +261,7 @@ export async function buildLodgeCustodianNightCounter(input: {
   });
   const index = buildCustodianNightIndex(holds, input.nights);
   if (index.size === 0) return () => 0;
-  return (night: Date) => index.get(formatDateOnlyForTimeZone(night)) ?? 0;
+  return (night: Date) => index.get(formatDateOnly(night)) ?? 0;
 }
 
 /**
@@ -254,13 +276,15 @@ export async function custodianHeldNightsForBed(input: {
   excludeAssignmentId?: string;
 }): Promise<string[]> {
   if (input.stayDates.length === 0) return [];
-  const keys = input.stayDates.map((date) => formatDateOnlyForTimeZone(date)).sort();
-  const from = normalizeDateOnlyForTimeZone(input.stayDates[0]);
-  let latest = from;
-  for (const date of input.stayDates) {
-    const normalized = normalizeDateOnlyForTimeZone(date);
-    if (normalized > latest) latest = normalized;
-  }
+  const keys = input.stayDates.map((date) => formatDateOnly(date)).sort();
+  // The window bounds are the MIN and MAX of the set, never `stayDates[0]`
+  // (#2286 review L2): a caller that passes an unsorted or non-contiguous night
+  // list — which the bulk and range paths legitimately do (#713) — would
+  // otherwise get a window starting AFTER some of the nights it asked about, and
+  // a hold covering those earlier nights would be read as absent.
+  const normalized = input.stayDates.map(truncateToDateOnly);
+  const from = normalized.reduce((a, b) => (a < b ? a : b));
+  const latest = normalized.reduce((a, b) => (a > b ? a : b));
   const toExclusive = new Date(latest.getTime() + 24 * 60 * 60 * 1000);
 
   const holds = await findCustodianBedHolds({
@@ -360,7 +384,7 @@ export function custodianOccupiedBedNightsForPlanner(
     bookingGuestId: null;
   }> = [];
   for (const night of nights) {
-    const key = formatDateOnlyForTimeZone(night);
+    const key = formatDateOnly(night);
     for (const hold of holds) {
       if (!holdCoversNight(hold, key)) continue;
       rows.push({
@@ -385,7 +409,7 @@ export function custodianHeldBedNightKeys(
 ): Set<string> {
   const keys = new Set<string>();
   for (const night of nights) {
-    const key = formatDateOnlyForTimeZone(night);
+    const key = formatDateOnly(night);
     for (const hold of holds) {
       if (holdCoversNight(hold, key)) keys.add(`${hold.bedId}:${key}`);
     }
