@@ -25,6 +25,9 @@ const mocks = vi.hoisted(() => ({
   auditLogCreate: vi.fn(),
   bookingFindMany: vi.fn(),
   bookingUpdate: vi.fn(),
+  // #2265 (#2319): the guarded claim that clears a stale credit election on a
+  // terminal flip.
+  bookingUpdateMany: vi.fn(),
   // Split-parent describe helper (getProvisionalNonMemberChildSummary) reads the
   // provisional non-member child via prisma.booking.findFirst; default null =
   // not a split parent.
@@ -112,6 +115,7 @@ vi.mock("@/lib/prisma", () => ({
       findMany: mocks.bookingFindMany,
       findFirst: mocks.bookingFindFirst,
       update: mocks.bookingUpdate,
+      updateMany: mocks.bookingUpdateMany,
     },
     bookingModification: {
       findMany: mocks.bookingModificationFindMany,
@@ -383,6 +387,7 @@ describe("processStoredXeroInboundEvents", () => {
         },
         booking: {
           update: mocks.bookingUpdate,
+          updateMany: mocks.bookingUpdateMany,
         },
         memberCredit: {
           findFirst: mocks.memberCreditFindFirst,
@@ -454,6 +459,7 @@ describe("processStoredXeroInboundEvents", () => {
     mocks.auditLogCreate.mockResolvedValue({});
     mocks.bookingFindMany.mockResolvedValue([]);
     mocks.bookingUpdate.mockResolvedValue({});
+    mocks.bookingUpdateMany.mockResolvedValue({ count: 1 });
     mocks.bookingModificationFindMany.mockResolvedValue([]);
     mocks.paymentFindMany.mockResolvedValue([]);
     mocks.paymentFindUnique.mockResolvedValue(null);
@@ -1168,6 +1174,162 @@ describe("processStoredXeroInboundEvents", () => {
     );
   });
 
+  /**
+   * #2265 (#2319 door 2). An invoice raised at the full price and then paid in
+   * full by bank transfer cannot retroactively "apply" a stored credit election:
+   * debiting the member's balance for money they have already sent as cash would
+   * invent a charge, not honour a choice. So the settle clears the election and
+   * says so — never a stale column on a settled booking, and never a silent one.
+   *
+   * Reachable through the blue/green drain (an old-colour switch-to-Internet-
+   * Banking raises the full-price invoice without reading this column) and through
+   * any future invoice-raising path that forgets to consume.
+   */
+  it("clears a stale credit election when an Internet Banking invoice settles, and reports it (#2265)", async () => {
+    const bookingWithElection = {
+      id: "booking_ib_1",
+      memberId: "mem_1",
+      checkIn: new Date("2026-07-10"),
+      checkOut: new Date("2026-07-12"),
+      status: "PAYMENT_PENDING",
+      finalPriceCents: 12345,
+      discountCents: 0,
+      promoAdjustmentCents: 0,
+      creditElectionCents: 4500,
+      member: {
+        email: "member@example.com",
+        firstName: "Alice",
+        lastName: "Smith",
+      },
+      guests: [{ id: "guest_1" }],
+      promoRedemption: null,
+    };
+    mocks.inboundFindMany.mockResolvedValue([
+      {
+        id: "evt_ib_election",
+        source: "webhook",
+        eventCategory: "INVOICE",
+        eventType: "UPDATE",
+        resourceId: "inv_ib_election",
+        correlationKey: "corr_ib_election",
+        payload: { resourceId: "inv_ib_election" },
+      },
+    ]);
+    mocks.processedCreate.mockResolvedValue({ id: "processed_ib_election" });
+    mocks.linkFindMany
+      .mockResolvedValueOnce([
+        {
+          localModel: "Payment",
+          localId: "pay_ib_1",
+          xeroObjectType: "INVOICE",
+          role: "PRIMARY_INVOICE",
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    mocks.paymentFindMany
+      .mockResolvedValueOnce([
+        { id: "pay_ib_1", xeroInvoiceId: null, xeroInvoiceNumber: null },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: "pay_ib_1",
+          bookingId: "booking_ib_1",
+          amountCents: 12345,
+          status: "PENDING",
+          source: "INTERNET_BANKING",
+          reference: "BOOKING-ABC12345",
+          xeroInvoiceId: null,
+          xeroInvoiceNumber: null,
+          booking: bookingWithElection,
+        },
+      ])
+      .mockResolvedValueOnce([
+        { id: "pay_ib_1", bookingId: "booking_ib_1", booking: { memberId: "mem_1" } },
+      ]);
+    // internetBankingHoldSlots keeps this on the already-holding path, so the
+    // settle runs straight through to the PAID flip with no capacity re-check.
+    mocks.paymentFindUnique.mockResolvedValue({
+      id: "pay_ib_1",
+      bookingId: "booking_ib_1",
+      amountCents: 12345,
+      status: "PENDING",
+      source: "INTERNET_BANKING",
+      reference: "BOOKING-ABC12345",
+      xeroInvoiceId: null,
+      xeroInvoiceNumber: null,
+      internetBankingHoldSlots: true,
+      booking: bookingWithElection,
+    });
+    mocks.subscriptionFindMany.mockResolvedValue([]);
+    mocks.getAuthenticatedXeroClient.mockResolvedValue({
+      xero: {
+        accountingApi: {
+          getInvoice: vi.fn().mockResolvedValue({
+            body: {
+              invoices: [
+                {
+                  invoiceID: "inv_ib_election",
+                  invoiceNumber: "INV-IB-ELECT",
+                  date: "2026-07-01",
+                  status: "PAID",
+                  fullyPaidOnDate: "2026-07-02",
+                  contact: { contactID: "contact_1" },
+                  payments: [
+                    {
+                      paymentID: "xpay_ib_1",
+                      amount: 123.45,
+                      invoiceNumber: "INV-IB-ELECT",
+                      status: "PAID",
+                    },
+                  ],
+                  lineItems: [{ accountCode: "200" }],
+                },
+              ],
+            },
+          }),
+        },
+      },
+      tenantId: "tenant_1",
+    });
+
+    await expect(processStoredXeroInboundEvents()).resolves.toMatchObject({
+      succeeded: 1,
+      failed: 0,
+    });
+
+    // Guarded claim on the exact amount read: a consumer that got there first is
+    // never clobbered.
+    expect(mocks.bookingUpdateMany).toHaveBeenCalledWith({
+      where: { id: "booking_ib_1", creditElectionCents: 4500 },
+      data: { creditElectionCents: null },
+    });
+    // The booking still settles exactly as it did before — the PAID flip itself
+    // is untouched by this change.
+    expect(mocks.bookingUpdate).toHaveBeenCalledWith({
+      where: { id: "booking_ib_1" },
+      data: { status: "PAID", draftExpiresAt: null },
+    });
+    // The member's note, and the officer's.
+    expect(mocks.auditLogCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        action: "booking.credit_election.unapplied",
+        entityId: "booking_ib_1",
+        subjectMemberId: "mem_1",
+        metadata: expect.objectContaining({
+          creditElectionCents: 4500,
+          xeroInvoiceId: "inv_ib_election",
+        }),
+      }),
+    });
+    expect(vi.mocked(sendAdminPaymentFailureAlert)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        amountCents: 4500,
+        paymentIntentId: "inv_ib_election",
+        errorMessage: expect.stringContaining("account credit balance is untouched"),
+      })
+    );
+  });
+
   it("threads the provisional non-member child into the Internet-Banking split-parent confirmation email (#1942 FIX 4a)", async () => {
     mocks.inboundFindMany.mockResolvedValue([
       {
@@ -1358,6 +1520,7 @@ describe("processStoredXeroInboundEvents", () => {
           },
           booking: {
             update: mocks.bookingUpdate,
+            updateMany: mocks.bookingUpdateMany,
           },
           memberCredit: {
             findFirst: mocks.memberCreditFindFirst,
@@ -5536,6 +5699,7 @@ describe("replayStoredXeroInboundEvent", () => {
         },
         booking: {
           update: mocks.bookingUpdate,
+          updateMany: mocks.bookingUpdateMany,
         },
         memberCredit: {
           findFirst: mocks.memberCreditFindFirst,

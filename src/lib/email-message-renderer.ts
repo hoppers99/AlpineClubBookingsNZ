@@ -38,6 +38,7 @@ interface EmailTemplateValidationIssue {
     | "unknown_token"
     | "disallowed_token"
     | "missing_required_token"
+    | "sign_prefixed_token"
     | "sensitive_subject_token"
     | "subject_line_break"
     | "raw_html"
@@ -54,8 +55,37 @@ export interface EmailTemplateValidationResult {
   unknownTokens: string[];
   disallowedTokens: string[];
   missingRequiredTokens: string[];
+  signPrefixedTokens: string[];
   sensitiveSubjectTokens: string[];
   unsafeLinks: string[];
+}
+
+// #2267: these tokens render their own sign — "-$30.00" for a discount,
+// "+$1,370.00" for a promo that raises the price — and render nothing at all
+// when no promo applied. Typing a minus in front of one ("Discount:
+// -{{promoAdjustment}}") re-creates the exact incident #2267 fixed: a member
+// reading "Discount: -+$1,370.00" on a surcharge, or a bare "Discount: -" on a
+// booking with no promo. The editor rejects it at save time instead.
+const SIGN_CARRYING_TOKEN_PATTERN =
+  /[-+]\s*\{\{\s*(promoAdjustment|promoSummary)\s*\}\}/g;
+
+// #2267: plain-English copy for the required tokens whose requirement can be
+// satisfied more than one way (see REQUIRED_TOKEN_ALTERNATIVES). Naming a token
+// and stopping leaves an admin guessing whether their own hand-written wording
+// counts, so the message says what the email must show the member and which
+// tokens do that. Keyed by token name — a token name means the same thing in
+// every template that supplies it.
+const REQUIRED_TOKEN_GUIDANCE: Record<string, string> = {
+  promoSummary:
+    "this email must show members how a promo code changed their price — keep {{promoSummary}}, or show the adjustment yourself with {{promoAdjustment}} or {{discount}} (a {{subtotal}} line on its own is not an explanation)",
+  doorCodeNote:
+    "this email must tell members how to get into the lodge — keep {{doorCodeNote}}, or write your own label around the bare {{doorCode}} value",
+};
+
+function findSignPrefixedTokens(value: string): string[] {
+  return Array.from(
+    new Set(Array.from(value.matchAll(SIGN_CARRYING_TOKEN_PATTERN), (m) => m[1])),
+  );
 }
 
 function extractTemplateTokens(value: string): string[] {
@@ -172,18 +202,55 @@ export function validateEmailTemplateContent({
   // must be present in the body itself — a token in the subject does not
   // satisfy the requirement. An empty body override falls back to the default
   // body, which already carries the required tokens, so it is not checked.
+  // A required token may also be satisfied by a registered alternative that
+  // carries the same information (#2267): the booking-confirmed body now uses
+  // the pre-composed {{doorCodeNote}}, but an override saved earlier writes
+  // its own "Door code: {{doorCode}}" line and must stay valid and re-savable.
   const requiredTokenSet = new Set(definition?.requiredTokens ?? []);
+  const requiredTokenAlternatives = definition?.requiredTokenAlternatives ?? {};
   const bodyTokenSet = new Set(bodyTokens);
   const missingRequiredTokens =
     bodyText.trim().length > 0
-      ? Array.from(requiredTokenSet).filter((token) => !bodyTokenSet.has(token))
+      ? Array.from(requiredTokenSet).filter(
+          (token) =>
+            !bodyTokenSet.has(token) &&
+            !(requiredTokenAlternatives[token] ?? []).some((alternative) =>
+              bodyTokenSet.has(alternative),
+            ),
+        )
       : [];
   if (missingRequiredTokens.length > 0) {
+    const guidance = missingRequiredTokens
+      .map((token) => REQUIRED_TOKEN_GUIDANCE[token])
+      .filter((entry): entry is string => Boolean(entry));
     issues.push({
       code: "missing_required_token",
-      message: "Required template tokens are missing from the body",
+      message:
+        guidance.length > 0
+          ? `Required template tokens are missing from the body: ${guidance.join("; ")}`
+          : "Required template tokens are missing from the body",
       tokens: missingRequiredTokens,
     });
+  }
+
+  const signPrefixedByField = {
+    subject: findSignPrefixedTokens(subject),
+    bodyText: findSignPrefixedTokens(bodyText),
+  };
+  const signPrefixedTokens = Array.from(
+    new Set([...signPrefixedByField.subject, ...signPrefixedByField.bodyText]),
+  );
+  for (const field of ["subject", "bodyText"] as const) {
+    const fieldTokens = signPrefixedByField[field];
+    if (fieldTokens.length > 0) {
+      issues.push({
+        code: "sign_prefixed_token",
+        field,
+        message:
+          "Remove the plus or minus you typed in front of this token. It already includes its own sign — a discount reads -$30.00 and a promo that raises the price reads +$1,370.00 — and it renders nothing at all when no promo applied, so a sign of your own would leave a stray + or - in the email",
+        tokens: fieldTokens,
+      });
+    }
   }
 
   // Subjects are persisted in EmailLog and travel in clear mail headers, so
@@ -233,6 +300,7 @@ export function validateEmailTemplateContent({
     unknownTokens,
     disallowedTokens,
     missingRequiredTokens,
+    signPrefixedTokens,
     sensitiveSubjectTokens,
     unsafeLinks,
   };

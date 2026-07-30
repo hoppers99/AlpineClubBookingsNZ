@@ -63,6 +63,35 @@ dashboard's **Account Credit** card links straight to it. How a cancellation
 produces credit rather than a card refund is covered in
 [Changing or cancelling a booking](changing-or-cancelling-a-booking.md).
 
+If you tick **use my credit** and then **Save as draft**, your credit is *not*
+taken there and then — your balance stays free while the booking is only a
+draft, so nothing is tied up in a booking you might never make. What you asked
+for is remembered, and it is applied when you come back and pay.
+
+Because time passes in between, what you asked for is not always still
+available. Your balance may have gone on another booking, or the booking itself
+may have been repriced. The club applies **as much of your election as it still
+can** rather than refusing your payment, and the pay step tells you what it did:
+
+| At the pay step | What it means |
+| --- | --- |
+| Your full election was applied | Nothing changed since you saved the booking |
+| Less was applied than you asked for, "you no longer hold that much credit" | Your balance went elsewhere in the meantime |
+| Less was applied than you asked for, "the booking no longer costs that much" | The booking was repriced below your election |
+| **Your credit covered it all** | Nothing is left to pay — the booking is confirmed on the spot and no card is charged |
+
+The same applies if you switch that booking to internet banking: your credit is
+applied first and the invoice asks only for the difference. If your credit
+covers the whole thing there is no invoice to send, so finish the booking on the
+pay step instead and it settles for $0.
+
+Very occasionally a booking gets paid in full before the credit can be applied —
+an invoice that had already gone out at the full price, say. If that happens
+your credit is **not** used and stays on your account down to the cent, and your
+booking's History shows a line saying so ("Saved account credit was not
+applied"). The club is told at the same time, so if you would rather have the
+difference back than keep the credit for next time, just ask.
+
 ## Split charges for non-member guests
 
 When a **Members First** hold splits a mixed party (your members are booked now,
@@ -92,6 +121,8 @@ The booking side of this split is described in
 | Card, split booking | "Charged today" is your member portion; guest portion charged near the hold deadline |
 | Internet banking | Xero invoice emailed; pay by transfer; bed held per lead-time rules |
 | Account credit | Applied toward what you owe; balance shown on your profile |
+| Account credit chosen on a draft | Not taken while it is a draft; applied when you pay, clamped to what you still hold and still owe |
+| Account credit covers it all | Nothing to pay: the booking is confirmed at $0 and no card is charged |
 | Payment failed | Booking stays unpaid with a **Complete Payment** card — retry from there |
 
 All amounts are shown in dollars, formatted from the integer cents the club
@@ -107,6 +138,8 @@ stores. Settlement rules are in
 | Your card was declined | A normal card failure | Try another card from the **Complete Payment** card |
 | The invoice email never arrived | It may be in spam | Check spam; the booking page always shows what is owed even without the email |
 | You expected credit to be applied | Credit shows but was not used | Check the **Account Credit** section on your [profile](your-account.md); contact the club office if it looks wrong |
+| Less credit was applied than you chose | Your balance was spent elsewhere, or the booking was repriced below what you asked to apply, between saving the draft and paying | The pay step says which; the rest is still yours on your [profile](your-account.md), and the difference was charged to your card |
+| Internet banking says there is nothing to pay by transfer | Your account credit covers the whole booking, so there is no invoice to raise | Go back to the booking page and complete it there — it settles for $0 |
 | Your non-member guests were bumped | No bed remained at the hold deadline | Their provisional hold lapsed; your own place stands — re-add them if beds free up |
 
 ## Related links

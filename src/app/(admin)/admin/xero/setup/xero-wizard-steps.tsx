@@ -2,11 +2,12 @@
 
 import { useEffect, useState } from "react";
 import { AlertTriangle, CheckCircle2, ExternalLink } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { CopyField } from "@/components/admin/integration-wizard";
 import type { WizardStepHelpers } from "@/components/admin/integration-wizard";
+import { ViewOnlyActionButton } from "@/components/admin/view-only-action";
+import { ADMIN_FULL_ADMIN_ONLY_ACTION_REASON } from "@/hooks/use-admin-area-edit-access";
 import { ConnectionStatusPanel } from "../_components/connection-status-panel";
 import { useXeroConnection } from "../_hooks/use-xero-connection";
 import type { XeroWizardContext } from "./use-xero-wizard-context";
@@ -180,7 +181,7 @@ export function CredentialsStep({
 
       <LegacyEnvWarning vars={context.legacyEnvVars} />
 
-      {!canWrite ? (
+      {canWrite === false ? (
         <div className="flex items-start gap-2 rounded-md border border-border bg-muted p-3 text-sm text-muted-foreground">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
           <span>
@@ -215,7 +216,7 @@ export function CredentialsStep({
           }
           value={clientId}
           onChange={(e) => setClientId(e.target.value)}
-          disabled={!canWrite || saving}
+          disabled={canWrite !== true || saving}
         />
       </div>
 
@@ -244,7 +245,7 @@ export function CredentialsStep({
           }
           value={clientSecret}
           onChange={(e) => setClientSecret(e.target.value)}
-          disabled={!canWrite || saving}
+          disabled={canWrite !== true || saving}
         />
       </div>
 
@@ -269,17 +270,24 @@ export function CredentialsStep({
       </div>
 
       <div className="flex items-center gap-3">
-        <Button
+        {/* KEEPS its own reason (#2324). The shell's banner states `finance`;
+            writing a credential additionally needs Full Admin, so a
+            finance-edit admin without it meets no banner and a dead button.
+            Before #2324 this was a plain disabled Button that said nothing at
+            all. */}
+        <ViewOnlyActionButton
           type="button"
+          canEdit={canWrite}
+          readOnlyReason={ADMIN_FULL_ADMIN_ONLY_ACTION_REASON}
           onClick={() => void handleSave()}
-          disabled={!canWrite || !dirty || saving}
+          disabled={!dirty || saving}
         >
           {saving
             ? "Saving…"
             : bothSet
               ? "Replace credentials"
               : "Save credentials"}
-        </Button>
+        </ViewOnlyActionButton>
         {bothSet ? (
           <span className="inline-flex items-center gap-1 text-sm text-success-11">
             <CheckCircle2 className="h-4 w-4" aria-hidden />

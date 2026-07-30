@@ -28,8 +28,13 @@ export interface StripeWizardContext {
   legacyEnvVars: string[];
   /** Metadata-only credential status (never a value). */
   credentials: Record<StripeCredentialKey, StripeCredentialFieldMeta>;
-  /** Whether the viewer may write credentials (Full Admin only). */
-  isFullAdmin: boolean;
+  /**
+   * Whether the viewer may write credentials (Full Admin only). Tri-state
+   * (#2065 / #2324): `undefined` while the session resolves, so a step neither
+   * flashes "Only a Full Admin can…" at a Full Admin nor flashes an enabled
+   * control at anyone else. Treat only `true` as permission.
+   */
+  isFullAdmin: boolean | undefined;
   /** Live "right account" confirmation — the secret key retrieved an account. */
   connected: boolean;
   /** Connected Stripe account display name, when known. */
@@ -73,10 +78,16 @@ export function useStripeWizardContext(serverConfig: StripeWizardServerConfig): 
   loading: boolean;
   refresh: () => void;
 } {
-  const { data: session } = useSession();
-  const isFull = session
-    ? isFullAdmin({ accessRoles: session.user?.accessRoles ?? [] })
-    : false;
+  const { data: session, status: sessionStatus } = useSession();
+  // Tri-state: `undefined` until the session resolves (#2324). Reading an
+  // unresolved session as `false` made every step's Full-Admin notice appear
+  // and then vanish for an actual Full Admin.
+  const isFull =
+    sessionStatus === "loading"
+      ? undefined
+      : session
+        ? isFullAdmin({ accessRoles: session.user?.accessRoles ?? [] })
+        : false;
 
   const [loading, setLoading] = useState(true);
   const [credentials, setCredentials] = useState<

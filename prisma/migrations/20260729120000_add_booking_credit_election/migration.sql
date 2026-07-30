@@ -1,0 +1,15 @@
+-- #2265 (epic #2245, E1): remember the member's account-credit election when a
+-- booking is saved as a draft, so it can be applied at confirmation instead of
+-- being silently discarded.
+--
+-- Blue/green EXPAND migration (see docs/BLUE_GREEN_MIGRATION_SAFETY.tsv): one
+-- nullable integer-cents column on Booking, no default, no backfill. Nothing is
+-- dropped, renamed, retyped or backfilled, and no index, constraint or foreign
+-- key is added.
+--
+-- NULL means "no election outstanding" (never made, or already consumed by the
+-- pay path), which is exactly the state every existing row is in, so no data
+-- migration is required. Credit is never consumed while the booking is a draft;
+-- this column stores intent only. The authoritative record of credit actually
+-- applied remains the MemberCredit ledger.
+ALTER TABLE "Booking" ADD COLUMN "creditElectionCents" INTEGER;
