@@ -175,13 +175,53 @@ describe("admin email message APIs", () => {
     expect(mocks.emailTemplateOverrideUpsert).not.toHaveBeenCalled();
   });
 
+  // #2267 (owner decision on PR #2311): the promo explanation is required
+  // content on the payment confirmation, and the rejection has to arrive at the
+  // editor as something an admin can act on — the panel joins these issue
+  // messages onto its error toast.
+  it("rejects a booking-confirmed override that drops the promo explanation", async () => {
+    const response = await putEmailTemplate(
+      request("/api/admin/email-templates", {
+        templateName: "booking-confirmed",
+        subject: "See you soon - {{CLUB_LODGE_NAME}}",
+        bodyText:
+          "Hi {{firstName}}.\n\nTotal Paid: {{totalPaid}}\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\n{{doorCodeNote}}",
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body.missingRequiredTokens).toEqual(["promoSummary"]);
+    expect(
+      body.issues.map((issue: { message: string }) => issue.message).join(" "),
+    ).toContain("must show members how a promo code changed their price");
+    expect(mocks.emailTemplateOverrideUpsert).not.toHaveBeenCalled();
+  });
+
+  it("keeps saving a legacy booking-confirmed override that shows the promo its own way", async () => {
+    // The pre-#2267 shipped default's promo lines: subtotal, a hand-written
+    // "Discount ({{promoCode}}): -{{discount}}" row, then the total. Every
+    // override a club saved from that default must keep re-saving.
+    const response = await putEmailTemplate(
+      request("/api/admin/email-templates", {
+        templateName: "booking-confirmed",
+        subject: "See you soon - {{CLUB_LODGE_NAME}}",
+        bodyText:
+          "Hi {{firstName}}.\n\nSubtotal: {{subtotal}}\nDiscount ({{promoCode}}): -{{discount}}\nTotal Paid: {{totalPaid}}\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\nDoor code: {{doorCode}}",
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.emailTemplateOverrideUpsert).toHaveBeenCalled();
+  });
+
   it("rejects override subjects containing the door code token", async () => {
     const response = await putEmailTemplate(
       request("/api/admin/email-templates", {
         templateName: "booking-confirmed",
         subject: "Door code {{doorCode}} - {{CLUB_LODGE_NAME}}",
         bodyText:
-          "Hi {{firstName}}.\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\nDoor code: {{doorCode}}",
+          "Hi {{firstName}}.\n\n{{promoSummary}}Total Paid: {{totalPaid}}\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\nDoor code: {{doorCode}}",
       }),
     );
     const body = await response.json();
@@ -239,7 +279,7 @@ describe("admin email message APIs", () => {
         templateName: "booking-confirmed",
         subject: "See you soon - {{CLUB_LODGE_NAME}}",
         bodyText:
-          "Hi {{firstName}}.\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\nDoor code: {{doorCode}}",
+          "Hi {{firstName}}.\n\n{{promoSummary}}Total Paid: {{totalPaid}}\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\nDoor code: {{doorCode}}",
       }),
     );
 
