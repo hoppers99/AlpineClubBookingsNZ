@@ -40,6 +40,7 @@ import {
 } from "@/lib/booking-status";
 import { mayShareDoubleBed } from "@/lib/double-bed-sharing";
 import { bookingsOverlap, sameLodgeNullTolerant } from "@/lib/capacity";
+import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent";
 import { prisma } from "@/lib/prisma";
 
 const BED_ALLOCATION_SETTINGS_ID = "default";
@@ -1223,6 +1224,14 @@ async function loadBookingRecords(
         where: {
           stayStart: { lt: range.to },
           stayEnd: { gt: range.from },
+          // Owner decision D-12 (#2307): the board's guest list is what feeds
+          // `buildGuestNightRows`, and from there the awaiting-allocation queue
+          // and the planner's candidate set. A member guest whose consent is
+          // still PENDING holds a bed under D-4 but is not somebody an officer
+          // should be placing, so they never enter the queue. Occupancy on the
+          // board is unaffected: `loadAllocationRecords` reads the BedAllocation
+          // rows independently and names their guests from the allocation row.
+          ...OPERATIONALLY_PRESENT_GUEST_WHERE,
         },
         select: {
           id: true,
@@ -1816,6 +1825,11 @@ export async function countGuestsAwaitingBed(input: {
           where: {
             stayStart: { lt: to },
             stayEnd: { gt: from },
+            // D-12 (#2307): this counter is a window-scoped mirror of the
+            // board's own awaiting-allocation construction, so it has to apply
+            // the same exclusion — otherwise the officer card advertises work
+            // the board itself does not list.
+            ...OPERATIONALLY_PRESENT_GUEST_WHERE,
           },
           select: {
             id: true,

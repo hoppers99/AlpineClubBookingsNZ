@@ -18,6 +18,7 @@ import {
 import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
 import { lodgeNullTolerantScope } from "@/lib/lodges";
 import logger from "@/lib/logger";
+import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent";
 import { prisma } from "@/lib/prisma";
 
 type BedAllocationLifecycleDb = Prisma.TransactionClient | typeof prisma;
@@ -406,6 +407,19 @@ async function loadBookingForBedAllocation(
       // status — a held booking sits in an ordinary allocatable status.
       wholeLodgeHold: true,
       guests: {
+        // Owner decision D-12 (#2307): bed allocation places the people who
+        // will actually sleep at the lodge, so a member guest whose consent is
+        // still PENDING (or was DECLINED / EXPIRED and survived its removal
+        // attempt) is not in this set. They still hold a bed against capacity
+        // under D-4 — that is capacity.ts's job and is deliberately untouched.
+        //
+        // This list is also what `pruneAllocationsForBooking` diffs against, so
+        // excluding a row here does not merely skip placing them: any
+        // BedAllocation an earlier release wrote for them is swept on the next
+        // reconcile. That is the intended coherence, not a side effect — a
+        // guest who is not operationally present must not be occupying a bed on
+        // the board either.
+        where: { ...OPERATIONALLY_PRESENT_GUEST_WHERE },
         select: {
           id: true,
           bookingId: true,
@@ -597,6 +611,12 @@ async function autoAllocateMissingBedNights({
         // stays sit inside the booking envelope, which is inside the widened
         // load envelope by construction.
         guests: {
+          // D-12 (#2307): the planner never drafts a bed for a guest who is not
+          // operationally present. A booking whose only overlapping guests are
+          // unconsented therefore yields an empty guest list and is dropped from
+          // `plannerBookings` below, exactly as a booking with nothing left to
+          // place already is.
+          where: { ...OPERATIONALLY_PRESENT_GUEST_WHERE },
           select: {
             id: true,
             bookingId: true,
@@ -632,6 +652,17 @@ async function autoAllocateMissingBedNights({
     checkOut: envelopeCheckOut,
   };
 
+  // DELIBERATELY NOT CONSENT-FILTERED (owner decision D-12, #2307).
+  //
+  // This reads the BedAllocation rows that already exist, to learn which beds
+  // are occupied and which guest-nights are already placed. It is an occupancy
+  // view of the world as written, not a list of who should be placed. Filtering
+  // it on consent would corrupt that view in two ways: a bed still holding an
+  // unconsented guest's row would look free and the planner would double-book
+  // it, and `allocatedGuestNights` below would forget that guest-night was
+  // already written and draft a duplicate. The exclusion belongs on the two
+  // guest SELECTS above, which decide who gets placed; the sweep in
+  // `pruneAllocationsForBooking` is what removes a stale row, not this query.
   const existingAllocations = await db.bedAllocation.findMany({
     where: {
       stayDate: {
