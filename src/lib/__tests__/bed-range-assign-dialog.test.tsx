@@ -4,6 +4,8 @@ import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ComponentProps, ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ClubIdentityProvider } from "@/components/club-identity-provider";
+import { clubIdentity } from "@/config/club-identity";
 import {
   BedRangeAssignDialog,
   rangeAssignError,
@@ -67,17 +69,31 @@ const bedOptionGroups = [
   { roomId: "room-1", roomName: "Room One", beds: [{ id: "bed-1", bedName: "Bed One" }] },
 ];
 
-function renderDialog(overrides: { onAssigned?: () => void } = {}) {
+// The dialog reads the club's own word for a hut leader (#2286): admin copy is
+// label-driven, only the lobby TV is pinned to the fixed word "Custodian". The
+// provider is always mounted above this component in the app shell.
+function renderDialog(
+  overrides: { onAssigned?: () => void; hutLeaderLabel?: string } = {},
+) {
   const onAssigned = overrides.onAssigned ?? vi.fn();
   render(
-    <BedRangeAssignDialog
-      open
-      onOpenChange={vi.fn()}
-      target={target}
-      bedOptionGroups={bedOptionGroups}
-      canEdit
-      onAssigned={onAssigned}
-    />,
+    <ClubIdentityProvider
+      value={{
+        ...clubIdentity,
+        ...(overrides.hutLeaderLabel
+          ? { hutLeaderLabel: overrides.hutLeaderLabel }
+          : {}),
+      }}
+    >
+      <BedRangeAssignDialog
+        open
+        onOpenChange={vi.fn()}
+        target={target}
+        bedOptionGroups={bedOptionGroups}
+        canEdit
+        onAssigned={onAssigned}
+      />
+    </ClubIdentityProvider>,
   );
   return { onAssigned };
 }
@@ -603,6 +619,154 @@ describe("BedRangeAssignDialog", () => {
       "No nights selected yet.",
     );
     expect(screen.getByRole("button", { name: /^Assign$/ })).toBeDisabled();
+  });
+});
+
+describe("BedRangeAssignDialog refusal categories (#2286)", () => {
+  // Regression guard for the drift class this dialog used to have: it declared
+  // its OWN three-member category union while the server emitted four, so a
+  // CUSTODIAN_HOLD night was counted in the "N of M nights are blocked" banner
+  // and then rendered nowhere. The types are now imported from the server, and
+  // this test walks EVERY category the server can emit.
+  const MIXED_REFUSAL = {
+    applied: false,
+    partialByConsent: false,
+    bookingId: "booking-1",
+    bookingGuestId: "guest-1",
+    guestName: "Range Guest",
+    bedId: "bed-1",
+    bedName: "Bed One",
+    roomName: "Room One",
+    fromDate: "2026-06-01",
+    toDate: "2026-06-06",
+    requestedNights: [
+      "2026-06-01",
+      "2026-06-02",
+      "2026-06-03",
+      "2026-06-04",
+      "2026-06-05",
+    ],
+    freeNights: ["2026-06-05"],
+    writtenNights: [],
+    refusals: [
+      {
+        stayDate: "2026-06-01",
+        category: "EXCLUSIVE_HOLD",
+        hold: {
+          bookingId: "booking-1",
+          memberName: "Own Member",
+          ownBooking: true,
+        },
+      },
+      { stayDate: "2026-06-02", category: "GUEST_NOT_BOOKED" },
+      { stayDate: "2026-06-03", category: "CUSTODIAN_HOLD" },
+      {
+        stayDate: "2026-06-04",
+        category: "BED_TAKEN",
+        occupiedBy: {
+          guestName: "Other Guest",
+          memberName: "Other Member",
+          bookingId: "booking-other",
+          holdsCapacity: true,
+        },
+      },
+    ],
+  };
+
+  it("renders one night of EVERY server category, so the banner count and the list agree", async () => {
+    fetchMock.mockResolvedValueOnce(refusalResponse(409, MIXED_REFUSAL));
+    renderDialog();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Assign 5 nights$/ }));
+    await screen.findByTestId("range-refusal-report");
+
+    expect(
+      screen.getByText(/Nothing was written — 4 of 5 nights are blocked/),
+    ).toBeInTheDocument();
+
+    // Four blocks for four blocked nights — the count in the banner is the
+    // number of nights the admin can actually read below it.
+    for (const category of [
+      "CUSTODIAN_HOLD",
+      "BED_TAKEN",
+      "GUEST_NOT_BOOKED",
+      "EXCLUSIVE_HOLD",
+    ]) {
+      expect(screen.getByTestId(`refusal-category-${category}`)).toBeVisible();
+    }
+    const listedNights = screen
+      .getAllByTestId(/^refusal-category-/)
+      .flatMap((block) => Array.from(block.querySelectorAll("li")))
+      .map((item) => item.textContent ?? "");
+    expect(listedNights).toHaveLength(4);
+    expect(listedNights.join(" ")).toContain("2026-06-03");
+  });
+
+  it("puts the custodian block above the clashes and names the page that fixes it", async () => {
+    fetchMock.mockResolvedValueOnce(refusalResponse(409, MIXED_REFUSAL));
+    renderDialog();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Assign 5 nights$/ }));
+    await screen.findByTestId("range-refusal-report");
+
+    const custodian = screen.getByTestId("refusal-category-CUSTODIAN_HOLD");
+    // The club's own label, not a hardcoded "Custodian": only the lobby TV is
+    // pinned to the fixed word.
+    expect(custodian).toHaveTextContent(
+      `Held for a ${clubIdentity.hutLeaderLabel.toLowerCase()}`,
+    );
+    // The fix is on another page, so the block has to say which one.
+    expect(custodian).toHaveTextContent(
+      new RegExp(`${clubIdentity.hutLeaderLabel} Assignments page`),
+    );
+    expect(custodian).toHaveTextContent("no booking behind it");
+
+    // Display order: the block whose fix is elsewhere leads, so it is never
+    // buried under a list of clashes on this page.
+    const order = screen
+      .getAllByTestId(/^refusal-category-/)
+      .map((block) => block.getAttribute("data-testid"));
+    expect(order).toEqual([
+      "refusal-category-CUSTODIAN_HOLD",
+      "refusal-category-BED_TAKEN",
+      "refusal-category-GUEST_NOT_BOOKED",
+      "refusal-category-EXCLUSIVE_HOLD",
+    ]);
+  });
+
+  it("uses the club's own word for the role in the custodian block", async () => {
+    fetchMock.mockResolvedValueOnce(refusalResponse(409, MIXED_REFUSAL));
+    renderDialog({ hutLeaderLabel: "Warden" });
+
+    fireEvent.click(screen.getByRole("button", { name: /^Assign 5 nights$/ }));
+    await screen.findByTestId("range-refusal-report");
+
+    const custodian = screen.getByTestId("refusal-category-CUSTODIAN_HOLD");
+    expect(custodian).toHaveTextContent("Held for a warden");
+    expect(custodian).toHaveTextContent("Warden Assignments page");
+    expect(custodian).not.toHaveTextContent(/custodian/i);
+  });
+
+  it("RENDERS a category it has never heard of rather than dropping the nights", async () => {
+    // Deploy drain: a new server answering an old browser bundle. Dropping the
+    // block would print a blocked-night count above a shorter list, which is a
+    // worse failure than an unstyled row.
+    fetchMock.mockResolvedValueOnce(
+      refusalResponse(409, {
+        ...MIXED_REFUSAL,
+        freeNights: ["2026-06-01"],
+        refusals: [{ stayDate: "2026-06-02", category: "SOMETHING_NEW" }],
+      }),
+    );
+    renderDialog();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Assign 5 nights$/ }));
+    await screen.findByTestId("range-refusal-report");
+
+    const unknown = screen.getByTestId("refusal-category-SOMETHING_NEW");
+    expect(unknown).toHaveTextContent("Blocked for another reason");
+    expect(unknown).toHaveTextContent("2026-06-02");
+    expect(unknown).toHaveTextContent(/reload the page/i);
   });
 });
 

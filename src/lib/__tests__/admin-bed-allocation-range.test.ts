@@ -1,6 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@/lib/prisma", () => ({ prisma: {} }));
+vi.mock("@/lib/prisma", () => ({
+  prisma: {
+    // #2286: assignBedRange resolves the bed's lodge OUTSIDE its transaction so
+    // the per-lodge advisory lock can be the first statement inside it.
+    lodgeBed: {
+      findUnique: vi.fn().mockResolvedValue({ room: { lodgeId: "lodge-1" } }),
+    },
+  },
+}));
 vi.mock("@/lib/lodge-capacity", () => ({
   getLodgeCapacityStatus: vi.fn(),
   getLodgePartnerSharedCapacityStatus: vi.fn(),
@@ -28,7 +36,8 @@ import { prisma } from "@/lib/prisma";
 /*
  * Range assignment (#2251). The board's own 31-night window is irrelevant here:
  * these exercise the WRITE path, which is atomic across a range of any length,
- * refuses in three distinct categories, records itself inside its own
+ * refuses in four distinct categories (CUSTODIAN_HOLD joined them in #2286),
+ * records itself inside its own
  * transaction, and only ever writes a subset the admin explicitly listed.
  */
 
@@ -128,6 +137,9 @@ function buildDb(input: {
     isSecondOccupant: boolean;
   }>;
   ownBookingMemberName?: string;
+  // #2286: bed-holding hut-leader assignment rows, as the custodian read
+  // returns them. Absent means no hold, which is the pre-#2286 shape.
+  holds?: Array<Record<string, unknown>>;
 }) {
   const createMany = vi.fn().mockResolvedValue({ count: 0 });
   const updateMany = vi.fn().mockResolvedValue({ count: 0 });
@@ -174,6 +186,14 @@ function buildDb(input: {
       createMany,
       updateMany,
     },
+    // #2286: the range path classifies custodian-held nights as their own
+    // CUSTODIAN_HOLD refusal category. No holds by default, so every refusal
+    // below is still the category the test names.
+    hutLeaderAssignment: {
+      findMany: vi.fn().mockResolvedValue(input.holds ?? []),
+    },
+    // #2286: the range transaction takes the per-lodge advisory lock first.
+    $executeRaw: vi.fn().mockResolvedValue(1),
     auditLog: { create: auditCreate },
   };
 
@@ -1095,6 +1115,147 @@ describe("whole-lodge holds at the manual write chokepoint", () => {
         db: db as never,
       }),
     ).rejects.toThrow("not staying on the selected date");
+  });
+});
+
+describe("assignBedRange vs a custodian bed hold (#2286)", () => {
+  // A hold over PART of the range: the middle two nights. The custodian
+  // exclusion has no database constraint behind it, so this behavioural test is
+  // the thing that proves the chokepoint — the refusal category, the atomic
+  // "nothing written", and (the one that matters) that no createMany row ever
+  // targets a held bed-night even on the consented-nights path.
+  function heldMiddleNights() {
+    return buildDb({
+      guest: buildGuest({ stayStart: "2026-06-01", stayEnd: "2026-06-06" }),
+      // The hold covers 06-03 and 06-04 on this exact bed.
+      holds: [
+        {
+          id: "assignment-1",
+          memberId: "member-1",
+          lodgeId: "lodge-1",
+          bedId: "bed-1",
+          startDate: parseDateOnly("2026-06-03"),
+          endDate: parseDateOnly("2026-06-04"),
+          member: { firstName: "Sam", lastName: "Ranger", ageTier: "ADULT" },
+          bed: {
+            id: "bed-1",
+            name: "Bed One",
+            roomId: "room-1",
+            room: { id: "room-1", name: "Room One" },
+          },
+        },
+      ],
+    });
+  }
+
+  it("refuses the held nights as CUSTODIAN_HOLD, never as BED_TAKEN, and writes nothing", async () => {
+    const { db, createMany, updateMany } = heldMiddleNights();
+
+    const result = await assignBedRange({
+      bookingGuestId: "guest-1",
+      bedId: "bed-1",
+      from: "2026-06-01",
+      to: "2026-06-06",
+      approvedByMemberId: "admin-1",
+      db: db as never,
+    });
+
+    expect(result.applied).toBe(false);
+    expect(result.writtenNights).toEqual([]);
+    expect(createMany).not.toHaveBeenCalled();
+    expect(updateMany).not.toHaveBeenCalled();
+    // Its own category: there is no occupying booking to name, and the fix is
+    // on the Hut Leaders page rather than on this board.
+    expect(result.refusals).toEqual([
+      { stayDate: "2026-06-03", category: "CUSTODIAN_HOLD" },
+      { stayDate: "2026-06-04", category: "CUSTODIAN_HOLD" },
+    ]);
+    expect(result.freeNights).toEqual([
+      "2026-06-01",
+      "2026-06-02",
+      "2026-06-05",
+    ]);
+  });
+
+  it("writes ONLY the free nights when the admin consents to them — no row on a held bed-night", async () => {
+    const { db, createMany } = heldMiddleNights();
+
+    const result = await assignBedRange({
+      bookingGuestId: "guest-1",
+      bedId: "bed-1",
+      from: "2026-06-01",
+      to: "2026-06-06",
+      approvedByMemberId: "admin-1",
+      nights: ["2026-06-01", "2026-06-02", "2026-06-05"],
+      db: db as never,
+    });
+
+    expect(result.applied).toBe(true);
+    expect(result.partialByConsent).toBe(true);
+    expect(result.writtenNights).toEqual([
+      "2026-06-01",
+      "2026-06-02",
+      "2026-06-05",
+    ]);
+    const rows = createMany.mock.calls[0][0].data as Array<{
+      bedId: string;
+      stayDate: Date;
+    }>;
+    // THE assertion: not one written row lands on a night the custodian holds.
+    const held = new Set(["2026-06-03", "2026-06-04"]);
+    expect(
+      rows.some(
+        (row) => row.bedId === "bed-1" && held.has(formatDateOnly(row.stayDate)),
+      ),
+    ).toBe(false);
+    expect(rows.map((row) => formatDateOnly(row.stayDate))).toEqual([
+      "2026-06-01",
+      "2026-06-02",
+      "2026-06-05",
+    ]);
+  });
+
+  it("refuses a consented list that includes a held night, with a fresh report and no write", async () => {
+    const { db, createMany } = heldMiddleNights();
+
+    const result = await assignBedRange({
+      bookingGuestId: "guest-1",
+      bedId: "bed-1",
+      from: "2026-06-01",
+      to: "2026-06-06",
+      approvedByMemberId: "admin-1",
+      // The admin (or a stale client) asks for a night the hold covers.
+      nights: ["2026-06-01", "2026-06-03"],
+      db: db as never,
+    });
+
+    expect(result.applied).toBe(false);
+    expect(createMany).not.toHaveBeenCalled();
+    expect(
+      result.refusals.map((refusal) => refusal.category),
+    ).toEqual(["CUSTODIAN_HOLD", "CUSTODIAN_HOLD"]);
+  });
+
+  it("reads the holds with the bedId gate — a role-only assignment is not an occupancy", async () => {
+    const { db } = heldMiddleNights();
+
+    await assignBedRange({
+      bookingGuestId: "guest-1",
+      bedId: "bed-1",
+      from: "2026-06-01",
+      to: "2026-06-06",
+      approvedByMemberId: "admin-1",
+      db: db as never,
+    });
+
+    // A role-only assignment is not an occupancy: the read is scoped to this
+    // bed, which is what makes `bedId: { in: [...] }` the gate here.
+    const where = db.hutLeaderAssignment.findMany.mock.calls[0][0].where;
+    expect(where.bedId).toEqual({ in: ["bed-1"] });
+    // The lock that makes this read and the write serialise against the hold
+    // writer belongs to the transaction assignBedRange opens for ITSELF; these
+    // cases pass their own client, so its owner holds it. That the self-wrapped
+    // path takes it is pinned in custodian-write-path-contract.test.ts.
   });
 });
 

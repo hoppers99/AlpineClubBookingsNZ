@@ -211,6 +211,98 @@ using the bed count unless a capacity is set.
 | On | 40 | 50 (≥ beds) | 40 | `configured_beds` |
 | On | 40 | 30 (< beds) | **30** | `capped_beds` |
 
+The custodian never changes this table: a bed held for a custodian stays an
+active bed and stays in the ceiling. It is subtracted per night on the
+occupancy side instead — see the section below.
+
+## Custodian bed holds — a dated occupancy, not a smaller lodge (#2286)
+
+A `HutLeaderAssignment` may carry an optional `bedId`. With one, the assignment
+is a **custodian bed hold**: for the night of every covered date that bed is out
+of the bookable pool and out of the allocatable pool, with **no `Booking` and no
+`BedAllocation` row anywhere**. Without one — including every row the
+`hut-leader-auto-assign` cron creates — the assignment is a role only and has
+**zero** capacity effect.
+
+**Night semantics.** The hold covers `startDate <= night <= endDate`,
+**inclusive** — matching the existing hut-leader coverage semantics. This is
+deliberately not the half-open `[checkIn, checkOut)` booking envelope: a
+booking's `checkOut` is a departure morning, an assignment's `endDate` is a
+covered day.
+
+**Counted as an occupant, not as a smaller ceiling.** The engines do
+`occupiedBeds += custodianCount(night)` rather than reducing `lodgeCapacity`.
+The arithmetic for `availableBeds` is identical, but this keeps
+`occupiedBeds + availableBeds === lodgeCapacity` true on every night (the #155
+payload contract) and makes every `capacity - occupied` consumer correct with no
+consumer change. It is also the right reading under a capped capacity
+(`capped_beds` below): a licence cap is a sleeping cap, and the custodian
+sleeps in the lodge. The arithmetic is a per-night **count**, never a boolean —
+two custodians handing over on the same night, on different beds, subtract two.
+
+**Who counts it, and who deliberately does not:**
+
+| Surface | Custodian counted? | Why |
+|---|---|---|
+| `checkCapacity`, `checkCapacityForGuestRanges`, `checkCapacityForPartnerSharedAdmission`, `getMonthAvailability` | **Yes** | Every admission path and both calendars must see the bed as taken |
+| Capacity-warnings cron | **Yes** | Its whole job is fullness; excluding the hold would under-fire the warning all season |
+| Admin reports `occupancyByDate` | **No** | Utilisation measures *booked* usage, so the report reads slightly low during custodian season. Stated here so the gap is a decision, not a bug |
+
+**Two accepted, deliberate imprecisions:**
+
+1. *Partner-shared headroom overshoot.* `getLodgePartnerSharedCapacityStatus` is
+   undated, so a custodian-held DOUBLE still counts toward
+   `partnerSharedHeadroom`. An admin can therefore be admitted a sharer when
+   zero physically shareable doubles remain. At **placement** level nothing can
+   go wrong (a custodian bed has no primary allocation row to share, and the
+   allocation guard sits in front); the overshoot is admin-only and analogous to
+   the accepted #1668 over-capacity override.
+2. *Room-mix side effect.* The custodian is fed to the bed planner as a #1768
+   "unknown occupant" row, so their room reads as containing an out-of-booking
+   adult. Auto-placement therefore keeps other bookings' unaccompanied minors
+   out of that room for the whole season. This is conservative and correct — an
+   unrelated adult really does sleep there.
+
+**Whole-lodge holds never contend.** An exclusive whole-lodge hold reserves the
+*bookable* lodge; the custodian's bed sits outside that pool. Setting a hold
+never lists a custodian as a conflict, and a custodian hold can be created over
+held nights and vice versa. On a held night the ADR-001 pin still presents a
+full lodge; on the hold's own admission path the group's headcount is checked
+*with* the custodian counted, so an over-size group surfaces as over-capacity
+for explicit admin confirmation instead of silently displacing them.
+
+### With the bed-allocation module OFF (#2286 review M11)
+
+A hold created while `bedAllocation` was on **keeps counting** after the module
+is turned off. That is deliberate, not an oversight: the module flag governs
+which admin surfaces exist, not whether a person is asleep in a bed. Capacity
+that silently un-reduced itself when a flag flipped would over-admit a lodge
+whose custodian is still living in it.
+
+So the off state is **recoverable rather than frozen**:
+
+- the module gate on the hut-leaders write routes guards only the **set**
+  direction — a new bed cannot be held while the module is off;
+- the **clear** direction is deliberately module-check-free, and the
+  *Release bed* control on the Hut Leaders page is rendered regardless, so a hold
+  can always be undone (`custodian-hut-leaders-route.test.ts` pins both
+  directions);
+- the module-settings copy for `bedAllocation` states this, so an admin turning
+  it off is told capacity stays reduced and where the way back is.
+
+**Enforcement is application code, not a constraint.** Owner decision, 28 Jul
+2026: every allocation chokepoint re-reads the live holds on the client that is
+about to write, immediately before writing (`src/lib/custodian-occupancy.ts`),
+and every placement transaction the app opens itself takes the per-lodge
+advisory lock first so that read and the write serialise against the hold
+writer. A chokepoint running inside a caller's transaction inherits that
+caller's lock discipline and still re-filters at write time. A board warning
+(`CUSTODIAN_BED_CONFLICT`) is the net and a write-path contract test is the
+alarm. Representing the hold as nullable-FK `BedAllocation` rows was weighed and
+rejected: it breaks the old colour on a runtime-hot table during a deploy drain,
+needs a null-tolerance audit of ~30 read sites, and the lifecycle prune would
+read custodian rows as orphans and silently delete them.
+
 ## Admin surface
 
 On the lodge admin page (`/admin/lodges/[id]`) the **Capacity** card shows the

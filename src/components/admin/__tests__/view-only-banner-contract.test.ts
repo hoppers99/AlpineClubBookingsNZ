@@ -322,11 +322,11 @@ const NOTICE = "AdminViewOnlyNotice";
 */
 const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 292,
+  callSites: 295,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 245,
+  optOuts: 248,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 219,
+  staticOptOuts: 222,
   /** `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch. */
   vouchedOptOuts: 26,
   /** …of the vouched: proved at a parent's own JSX render site (#2168). */
@@ -1166,7 +1166,15 @@ describe("view-only section banner coverage (#2160)", () => {
                is a plain Button rather than a ViewOnlyActionButton, matching
                the shared range dialog (#2251), so it adds no call site and no
                exception.
-          292  +4  #2262 adds the cash / off-Xero payment feature's two leaf
+          291  +3  #2286 wires the Hut Leaders page's bed controls to the PUT
+               that already existed: "Release bed" and "Change bed" per
+               assignment row, plus "Confirm anyway" on the over-capacity
+               question. All three are STATIC opt-outs under that page's single
+               unconditional `AdminViewOnlySectionBanner`, which the two
+               existing row actions (reset PIN, delete) already opt out under
+               (optOuts 245 -> 248, staticOptOuts 219 -> 222; nothing else
+               moves).
+          295  +4  #2262 adds the cash / off-Xero payment feature's two leaf
                surfaces, four controls across two files, all keeping their own
                per-button reason: `booking-manual-payment-controls.tsx` (Record
                and Reverse manual payment) is a leaf control dropped into the

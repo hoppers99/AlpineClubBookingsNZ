@@ -2377,6 +2377,10 @@ model LodgeBed {
 
   room        LodgeRoom       @relation(fields: [roomId], references: [id], onDelete: Restrict)
   allocations BedAllocation[]
+  // Custodian bed holds (#2286): a bed held for a season by a hut-leader
+  // assignment, with no booking. Restrict on the assignment side, so a bed
+  // with a live hold cannot be deleted.
+  custodianHolds HutLeaderAssignment[]
 
   @@unique([roomId, name])
   @@unique([id, roomId])
@@ -4448,15 +4452,30 @@ model HutLeaderAssignment {
   // during the phase-4 expand release (null = the club's default lodge); a
   // later contract release enforces NOT NULL.
   lodgeId      String   @default(dbgenerated("default_lodge_id()"))
+  // Custodian bed hold (#2286). Optional: an assignment WITHOUT a bed is the
+  // pre-#2286 behaviour (a role only, zero capacity effect — including every
+  // row the auto-assign cron creates). WITH a bed, the assignment is a
+  // custodian occupancy: for the night of every covered date
+  // (startDate <= night <= endDate, inclusive) that bed is out of the bookable
+  // pool and out of the allocatable pool, with no Booking and no BedAllocation
+  // row anywhere. Enforcement is application-code exclusion at the allocation
+  // chokepoints under the per-lodge advisory lock (owner decision, option (a));
+  // see src/lib/custodian-occupancy.ts and docs/CAPACITY_MODEL.md.
+  //
+  // onDelete: Restrict is the FK backstop behind the app-level guards: a bed
+  // (or its room) can never be deleted out from under a live custodian hold.
+  bedId        String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  member Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
-  lodge  Lodge  @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
+  member Member    @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  lodge  Lodge     @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
+  bed    LodgeBed? @relation(fields: [bedId], references: [id], onDelete: Restrict)
 
   @@index([memberId])
   @@index([startDate, endDate])
   @@index([lodgeId])
+  @@index([bedId])
 }
 
 // Per-lodge access grants (docs/multi-lodge/lodge-scoping-contract.md,

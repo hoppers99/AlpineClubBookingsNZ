@@ -100,6 +100,11 @@ type Assignment = {
 function stubFetch(opts: {
   assignments?: Assignment[];
   monthRed?: Array<{ date: string; bookingCount: number; guestCount: number }>;
+  // When set, the windowed red-date endpoint returns THIS body verbatim —
+  // for pinning the malformed-shape tolerance (#2286 review; the round's one
+  // real CI failure was this mapping crashing the page from inside a state
+  // updater, where the fetch's own `catch` can no longer intercept it).
+  monthRedRawBody?: unknown;
   occupancyNights?: Array<{ date: string; guestCount: number }>;
 }) {
   const assignments = opts.assignments ?? [];
@@ -112,7 +117,13 @@ function stubFetch(opts: {
       return { ok: true, json: async () => ({ members: [] }) };
     }
     if (url.startsWith("/api/admin/hut-leaders/unassigned-dates?month=")) {
-      return { ok: true, json: async () => ({ unassignedDates: monthRed }) };
+      return {
+        ok: true,
+        json: async () =>
+          opts.monthRedRawBody !== undefined
+            ? opts.monthRedRawBody
+            : { unassignedDates: monthRed },
+      };
     }
     if (url === "/api/admin/hut-leaders/unassigned-dates") {
       return { ok: true, json: async () => ({ unassignedDates: [] }) };
@@ -239,5 +250,60 @@ describe("hut leaders redesign — calendar-painted 3-step flow", () => {
       expect(overlay["2099-07-20"]).toMatchObject({ tone: "red" });
       expect(overlay["2099-07-15"]).toMatchObject({ tone: "violet" });
     });
+  });
+
+  it("degrades the red-date overlay on a malformed body instead of taking the page down (#2286 review)", async () => {
+    // The windowed red-date endpoint answers 200 with a body whose
+    // `unassignedDates` is not an array. The overlay is non-essential, so the
+    // page must keep rendering with no red entries — the mapping must happen
+    // EAGERLY inside the fetch's own try, never inside the setState updater,
+    // where React invokes it later, during render, and the catch can no longer
+    // see it (this exact crash was the round's one real CI failure).
+    const fetchMock = stubFetch({
+      assignments: [
+        {
+          id: "a1",
+          memberId: "m9",
+          memberName: "Bob Jones",
+          memberEmail: "bob@test.com",
+          startDate: "2099-07-15",
+          endDate: "2099-07-17",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+      monthRedRawBody: { unassignedDates: "corrupt — not an array" },
+      occupancyNights: [{ date: "2099-07-15", guestCount: 3 }],
+    });
+    const HutLeadersPage = (await import("@/app/(admin)/admin/hut-leaders/page")).default;
+    render(<HutLeadersPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /load july 2099/i }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/admin/hut-leaders/unassigned-dates?month=2099-07",
+      ),
+    );
+
+    // The page survives: the occupancy half of the overlay still lands (violet)
+    // and the malformed red set contributes nothing — no crash, no red tone.
+    await waitFor(() => {
+      const overlay =
+        (calendar.lastProps?.overlayByDate as Record<
+          string,
+          { tone: string; emphasis?: string }
+        >) ?? {};
+      expect(overlay["2099-07-15"]).toMatchObject({ tone: "violet" });
+    });
+    const overlay =
+      (calendar.lastProps?.overlayByDate as Record<string, { tone: string }>) ??
+      {};
+    expect(
+      Object.values(overlay).some((entry) => entry.tone === "red"),
+    ).toBe(false);
+    // Still interactive, not an unmounted crash shell.
+    expect(
+      screen.getByRole("button", { name: /load july 2099/i }),
+    ).toBeInTheDocument();
   });
 });

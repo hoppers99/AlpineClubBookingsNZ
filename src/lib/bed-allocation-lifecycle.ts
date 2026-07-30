@@ -16,6 +16,12 @@ import {
   getTodayDateOnly,
 } from "@/lib/date-only";
 import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
+import { acquireLodgeCapacityLock } from "@/lib/capacity";
+import {
+  custodianHeldBedNightKeys,
+  custodianOccupiedBedNightsForPlanner,
+  findCustodianBedHolds,
+} from "@/lib/custodian-occupancy";
 import { lodgeNullTolerantScope } from "@/lib/lodges";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
@@ -310,9 +316,10 @@ function isAllocatableBookingStatus(status: string): boolean {
  * Write-time re-check of the bookings a planner is about to write rows for
  * (#2285 review).
  *
- * Every bed-allocation planner reads state, plans in memory, then writes — and
- * the two are not serialised against the hold toggle: `runAutoBedAllocation`
- * reads the dashboard and `createMany`s with no lock at all, and
+ * Every bed-allocation planner reads state, plans in memory, then writes, and
+ * the read is not serialised against the hold toggle: `runAutoBedAllocation`
+ * reads the dashboard OUTSIDE its locked write transaction (#2286 gave it one;
+ * before that it had no lock at all), and
  * `reconcileBedAllocationsForBooking` is called post-commit and unlocked from
  * several lifecycle callers. A hold SET (or a cancel, or a soft delete) that
  * commits between the read and the write would otherwise be silently undone:
@@ -367,6 +374,84 @@ export async function dropAllocationRowsForUnallocatableBookings<
     rows: rows.filter((row) => allocatable.has(row.bookingId)),
     droppedBookingIds,
   };
+}
+
+/**
+ * Which lodges do these rooms belong to, sorted (#2286 review M1).
+ *
+ * Used to decide the advisory-lock keys for an UNSCOPED reconcile, which can
+ * legitimately span several lodges. Sorted so every multi-lodge acquirer takes
+ * the keys in the same order and cannot deadlock against a per-lodge writer.
+ */
+async function resolveLodgeIdsForRooms(
+  db: BedAllocationLifecycleDb,
+  roomIds: string[],
+): Promise<string[]> {
+  const distinct = [...new Set(roomIds)];
+  if (distinct.length === 0) return [];
+  const rooms = await db.lodgeRoom.findMany({
+    where: { id: { in: distinct } },
+    select: { lodgeId: true },
+  });
+  // `LodgeRoom.lodgeId` is NOT NULL in the schema, but a missing value must
+  // never become a lock key ("" hashes to a real key that protects nothing).
+  return [
+    ...new Set(rooms.map((room) => room.lodgeId).filter((id): id is string => Boolean(id))),
+  ].sort();
+}
+
+/**
+ * Drop any payload row that would land on a custodian-held bed-night (#2286
+ * review M1).
+ *
+ * Called immediately before a `createMany`, on the SAME client that performs
+ * it. The planner is already fed the holds as never-evictable unknown
+ * occupants, but that read is not the write: no unique index and no database
+ * constraint stands behind the custodian exclusion, so a hold that commits
+ * between the plan and the write would otherwise be silently written over. This
+ * is the write-time half, and it is what makes the DOMAIN_INVARIANTS claim
+ * ("every placing write re-checks the live holds immediately before writing")
+ * true for the lifecycle planner rather than only for `runAutoBedAllocation`.
+ */
+async function dropRowsOnCustodianHeldBedNights<
+  TRow extends { bedId: string; stayDate: Date },
+>(
+  db: BedAllocationLifecycleDb,
+  rows: TRow[],
+  context: { lodgeId?: string; bookingId: string },
+): Promise<TRow[]> {
+  if (rows.length === 0) return rows;
+
+  const stayDates = rows.map((row) => row.stayDate);
+  const from = stayDates.reduce((a, b) => (a < b ? a : b));
+  const latest = stayDates.reduce((a, b) => (a > b ? a : b));
+  const toExclusive = addDaysDateOnly(latest, 1);
+
+  const heldKeys = custodianHeldBedNightKeys(
+    await findCustodianBedHolds({
+      lodgeId: context.lodgeId,
+      from,
+      toExclusive,
+      db,
+    }),
+    eachDateOnlyInRange(from, toExclusive),
+  );
+  if (heldKeys.size === 0) return rows;
+
+  const writable = rows.filter(
+    (row) => !heldKeys.has(`${row.bedId}:${formatDateOnly(row.stayDate)}`),
+  );
+  if (writable.length < rows.length) {
+    logger.info(
+      {
+        bookingId: context.bookingId,
+        lodgeId: context.lodgeId ?? null,
+        droppedCount: rows.length - writable.length,
+      },
+      "Bed allocation write-time re-check dropped rows targeting custodian-held bed-nights",
+    );
+  }
+  return writable;
 }
 
 function normalizeRange(
@@ -755,6 +840,23 @@ async function autoAllocateMissingBedNights({
     })),
   })) satisfies BedAllocationRoom[];
 
+  // Custodian bed holds (#2286): a bed held for a season by a hut-leader
+  // assignment has no Booking and no BedAllocation row, so it is invisible to
+  // `existingAllocations` above. Feed it to the planner as #1768 "unknown
+  // occupant" rows — blocking, NEVER evictable (so a displacement can never
+  // move a booking onto it either) and conservative for room mix.
+  const custodianHolds = await findCustodianBedHolds({
+    // Club-wide when the reconcile is unscoped, matching every other load here.
+    lodgeId: lodgeId ?? undefined,
+    from: envelope.checkIn,
+    toExclusive: envelope.checkOut,
+    db,
+  });
+  const envelopeNights = eachDateOnlyInRange(
+    envelope.checkIn,
+    envelope.checkOut,
+  );
+
   const plan = buildFirstFitBedAllocationPlan({
     enabled: true,
     // #1387: capacity-holding bookings get first claim; a blocking provisional
@@ -763,39 +865,42 @@ async function autoAllocateMissingBedNights({
     prioritizeCapacityHolding: true,
     rooms: plannerRooms,
     bookings: plannerBookings,
-    occupiedBedNights: existingAllocations.map((allocation) => ({
-      bedId: allocation.bedId,
-      bookingId: allocation.bookingId,
-      bookingGuestId: allocation.bookingGuestId,
-      roomId: allocation.roomId,
-      stayDate: allocation.stayDate,
-      ageTier: allocation.bookingGuest.ageTier,
-      approvedAt: allocation.approvedAt,
-      // #1677: newest provisional bookings are evicted first when a held
-      // booking needs a whole room.
-      bookingCreatedAt: allocation.booking?.createdAt ?? null,
-      // #1677: a stay extending past the loaded envelope is only partially
-      // visible, so a whole-stay move is impossible — treat it as
-      // non-displaceable (mirrors the holdsCapacity-undefined default).
-      stayExtendsBeyondWindow: Boolean(
-        allocation.booking &&
-          ((allocation.booking.checkIn &&
-            allocation.booking.checkIn < envelope.checkIn) ||
-            (allocation.booking.checkOut &&
-              allocation.booking.checkOut > envelope.checkOut)),
-      ),
-      holdsCapacity: allocation.booking
-        ? bookingHoldsCapacity({
-            status: allocation.booking.status,
-            isRequestConverted: Boolean(
-              allocation.booking.originBookingRequest,
-            ),
-            hasAdminCapacityHold: Boolean(
-              allocation.booking.adminCapacityHoldAt,
-            ),
-          })
-        : false,
-    })),
+    occupiedBedNights: [
+      ...custodianOccupiedBedNightsForPlanner(custodianHolds, envelopeNights),
+      ...existingAllocations.map((allocation) => ({
+        bedId: allocation.bedId,
+        bookingId: allocation.bookingId,
+        bookingGuestId: allocation.bookingGuestId,
+        roomId: allocation.roomId,
+        stayDate: allocation.stayDate,
+        ageTier: allocation.bookingGuest.ageTier,
+        approvedAt: allocation.approvedAt,
+        // #1677: newest provisional bookings are evicted first when a held
+        // booking needs a whole room.
+        bookingCreatedAt: allocation.booking?.createdAt ?? null,
+        // #1677: a stay extending past the loaded envelope is only partially
+        // visible, so a whole-stay move is impossible — treat it as
+        // non-displaceable (mirrors the holdsCapacity-undefined default).
+        stayExtendsBeyondWindow: Boolean(
+          allocation.booking &&
+            ((allocation.booking.checkIn &&
+              allocation.booking.checkIn < envelope.checkIn) ||
+              (allocation.booking.checkOut &&
+                allocation.booking.checkOut > envelope.checkOut)),
+        ),
+        holdsCapacity: allocation.booking
+          ? bookingHoldsCapacity({
+              status: allocation.booking.status,
+              isRequestConverted: Boolean(
+                allocation.booking.originBookingRequest,
+              ),
+              hasAdminCapacityHold: Boolean(
+                allocation.booking.adminCapacityHoldAt,
+              ),
+            })
+          : false,
+      })),
+    ],
   });
 
   if (plan.allocations.length === 0) {
@@ -833,7 +938,18 @@ async function autoAllocateMissingBedNights({
         "Bed allocation write-time re-check dropped rows for bookings that became unallocatable (held/cancelled/deleted) after planning",
       );
     }
-    return rows;
+    // Custodian re-filter (#2286 review M1). Feeding the holds to the planner
+    // above is NOT enough on its own: that read happened several queries
+    // earlier, and this reconcile is routinely called post-commit and unlocked,
+    // so a hold created between the plan and the write would be silently
+    // written over — no unique index and no database constraint stands behind
+    // the custodian exclusion (owner decision, option (a)). Re-read the holds
+    // HERE, on the SAME client that is about to write, and drop any row that
+    // would land on one. Mirrors runAutoBedAllocation's re-filter exactly.
+    return dropRowsOnCustodianHeldBedNights(client, rows, {
+      lodgeId: lodgeId ?? undefined,
+      bookingId,
+    });
   };
 
   // Common case (no displacement): a plain createMany, unchanged apart from the
@@ -853,8 +969,22 @@ async function autoAllocateMissingBedNights({
   // @@unique([bedId, stayDate]) conflict occurs (issue #1387). updateMany/
   // deleteMany (not update/delete) make a row that was concurrently pruned an
   // idempotent no-op (count 0) rather than a P2025 crash.
-  const applyPlan = async (client: BedAllocationLifecycleDb) => {
-    // Re-check FIRST, on the transaction client: if the booking we are planning
+  const applyPlan = async (
+    client: BedAllocationLifecycleDb,
+    lockLodgeIds: string[],
+  ) => {
+    // Locks FIRST, in sorted order (#2286 review M1). The custodian exclusion
+    // has no database constraint behind it, so the re-check read below and the
+    // write must sit inside the same per-lodge advisory lock the hold writer
+    // takes. Sorted acquisition is the codebase's multi-lodge pattern, so a
+    // club-wide reconcile can never deadlock against the per-lodge
+    // transactions taking the same keys one at a time; pg advisory locks are
+    // re-entrant within a session, so re-taking one an outer caller already
+    // holds is a no-op.
+    for (const lockLodgeId of lockLodgeIds) {
+      await acquireLodgeCapacityLock(client, lockLodgeId);
+    }
+    // Re-check on the transaction client: if the booking we are planning
     // for became held/cancelled/deleted since the read, we must not displace
     // anyone else's provisional rows on its behalf either.
     const data = await recheckPayload(client);
@@ -894,9 +1024,26 @@ async function autoAllocateMissingBedNights({
 
   let created: { count: number; applied: boolean };
   if (canOpenTransaction) {
-    created = await transactionalDb.$transaction((tx) => applyPlan(tx));
+    // Which lodges does this write touch? A scoped reconcile locks exactly its
+    // lodge; an unscoped (pre-backfill / club-wide) one locks every lodge whose
+    // rooms the payload targets, sorted. Resolved BEFORE the transaction opens
+    // so the lock is the transaction's first statement.
+    const lockLodgeIds = lodgeId
+      ? [lodgeId]
+      : await resolveLodgeIdsForRooms(
+          db,
+          plan.allocations.map((allocation) => allocation.roomId),
+        );
+    created = await transactionalDb.$transaction((tx) =>
+      applyPlan(tx, lockLodgeIds),
+    );
   } else {
-    created = await applyPlan(db);
+    // Already inside the caller's transaction: it owns the lock discipline (and
+    // may already hold this lodge's key), so re-acquiring here could only add a
+    // second key to a transaction whose ordering we do not control. The
+    // custodian re-filter still runs on that client, immediately before the
+    // write.
+    created = await applyPlan(db, []);
   }
 
   // Audit trail: record each displacement on the displaced PROVISIONAL booking

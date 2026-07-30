@@ -223,6 +223,8 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/hut-leaders": "lodge",
   "/api/admin/hut-leaders/[id]": "lodge",
   "/api/admin/hut-leaders/[id]/pin": "lodge",
+  // #2286: the custodian bed picker's per-bed availability feed.
+  "/api/admin/hut-leaders/available-beds": "lodge",
   "/api/admin/hut-leaders/eligible-members": "lodge",
   "/api/admin/hut-leaders/unassigned-dates": "lodge",
   "/api/admin/image-library": "content",

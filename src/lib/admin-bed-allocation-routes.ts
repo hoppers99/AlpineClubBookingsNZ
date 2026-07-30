@@ -35,6 +35,30 @@ export function bedAllocationErrorResponse(error: unknown) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
     if (error.code === "P2003") {
+      // #2286: a HutLeaderAssignment_bedId_fkey violation means the bed is held
+      // for a custodian, not that it has allocation history — the generic
+      // message would steer the admin to "deactivate it instead", which the
+      // custodian guard also refuses, leaving them with no way forward. Tested
+      // first because the raw pg message names both tables.
+      const meta = error.meta as
+        | { field_name?: unknown; constraint?: unknown }
+        | undefined;
+      const text = [
+        error.message,
+        typeof meta?.field_name === "string" ? meta.field_name : "",
+        typeof meta?.constraint === "string" ? meta.constraint : "",
+      ]
+        .join(" ")
+        .toLowerCase();
+      if (text.includes("hutleaderassignment")) {
+        return NextResponse.json(
+          {
+            error:
+              "This bed is held by a hut-leader assignment and cannot be deleted. Clear the bed on the Hut Leaders page first.",
+          },
+          { status: 409 },
+        );
+      }
       return NextResponse.json(
         { error: "Cannot delete a bed with allocation history; deactivate it instead." },
         { status: 409 },
