@@ -267,6 +267,34 @@ export function buildBookingHistoryItems({
         });
         break;
       }
+      // #2265 (#2319 door 2). The member asked to put account credit towards
+      // this booking and the settlement could not honour it — most plainly,
+      // an Internet Banking invoice that was raised and paid at the full price.
+      // Their balance was never touched, so the honest note is "we did not use
+      // it, and you still have it": a silent cleared column would leave them
+      // believing credit had been spent that is in fact still theirs. Rendered
+      // for members and admins alike, because both need the same answer to
+      // "what happened to my credit?".
+      case "booking.credit_election.unapplied": {
+        const electionCents =
+          typeof parsedDetails?.creditElectionCents === "number"
+            ? parsedDetails.creditElectionCents
+            : null;
+
+        items.push({
+          id: `audit-${auditLog.id}`,
+          occurredAt: auditLog.createdAt,
+          category: "Payment",
+          title: "Saved account credit was not applied",
+          detail:
+            electionCents != null
+              ? `You had chosen to put ${formatCents(electionCents)} of account credit towards this booking, but it was paid in full before the credit could be applied. Your account credit has not been used and is still available.`
+              : "The account credit saved against this booking was not applied, because the booking was paid in full first. Your account credit has not been used and is still available.",
+          amountDisplay: electionCents != null ? formatCents(electionCents) : null,
+          tone: "warning",
+        });
+        break;
+      }
       case "booking.cancel":
         items.push({
           id: `audit-${auditLog.id}`,

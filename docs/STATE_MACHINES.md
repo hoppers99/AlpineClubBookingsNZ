@@ -17,6 +17,43 @@ WAITLISTED -> WAITLIST_OFFERED -> CONFIRMED/PAID or WAITLISTED/CANCELLED
 AWAITING_REVIEW -> PENDING (quote accepted, #1254) or CONFIRMED/PAID or CANCELLED
 ```
 
+`DRAFT -> PAYMENT_PENDING` is also where a stored account-credit election is
+spent (#2265). A draft carries the member's election on
+`Booking.creditElectionCents` and consumes no credit while it may still be
+abandoned; the pay path (`create-payment-intent`) advances the status, applies
+the election clamped to the live balance and the price, and clears the column —
+all in one transaction, so the transition and the money move together and a
+retry cannot spend the election twice. When the election covers the whole price
+the same transaction continues straight to `PAID` with a $0 SUCCEEDED payment
+rather than minting a card intent — as does a draft that was repriced to $0
+while the member was looking at the pay step. Any booking held in
+`AWAITING_REVIEW` keeps its election through review and spends it on the
+`AWAITING_REVIEW -> PAYMENT_PENDING` release instead; that release path claims
+capacity before it settles, honouring a persisted capacity override (#1771),
+and refuses with a 409 (election intact, nothing charged) when the beds are
+gone. `confirm-draft` only ever settles a $0 booking, where credit has nothing
+to pay, so it clears the election without consuming any. Switching to Internet
+Banking consumes the election too, so the Xero invoice is raised for what the
+member actually owes; when credit covers the whole price there is nothing to
+invoice, so the switch is refused and the booking is settled at $0 on the pay
+step instead.
+
+Every transition INTO a settled status clears the election if one is somehow
+still on the row (#2319), because nothing reads the column after settlement and a
+non-NULL value there would advertise an outstanding request forever:
+`markBookingPaymentSucceeded`'s `PAID` claim (the door the Stripe webhook, the
+session confirm, the payment link, the saved-card charge and the auto-confirm
+cron share), the Internet Banking reconcile's `PAID` flip and its
+late-capacity-failure `CANCELLED` flip, and the repriced-to-$0 auto-pay in both
+modification services — the last of which is the one arm that can genuinely get
+there, when a guest removal releases a review-parked booking to `PAYMENT_PENDING`
+and reprices the stay to nothing in the same edit. A clear on a $0 settle is
+silent (nothing was owed); a clear where real money was taken writes a
+`booking.credit_election.unapplied` audit row that the member's booking history
+renders, plus an operator alert. `PENDING -> PAID` via the public payment link is
+the exception that never needs it: that route refuses a booking carrying an
+election outright rather than charging the pre-credit price.
+
 Waitlist confirmation and expiry serialize on the offered booking's lodge lock.
 Confirmation re-reads `WAITLIST_OFFERED` and the deadline after acquiring the
 lock and uses a status/deadline-guarded claim, so an expiry that wins first
