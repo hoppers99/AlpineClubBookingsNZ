@@ -322,11 +322,11 @@ const NOTICE = "AdminViewOnlyNotice";
 */
 const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 288,
+  callSites: 291,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 245,
+  optOuts: 248,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 219,
+  staticOptOuts: 222,
   /** `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch. */
   vouchedOptOuts: 26,
   /** …of the vouched: proved at a parent's own JSX render site (#2168). */
@@ -1167,6 +1167,14 @@ describe("view-only section banner coverage (#2160)", () => {
                is a plain Button rather than a ViewOnlyActionButton, matching
                the shared range dialog (#2251), so it adds no call site and no
                exception.
+          291  +3  #2286 wires the Hut Leaders page's bed controls to the PUT
+               that already existed: "Release bed" and "Change bed" per
+               assignment row, plus "Confirm anyway" on the over-capacity
+               question. All three are STATIC opt-outs under that page's single
+               unconditional `AdminViewOnlySectionBanner`, which the two
+               existing row actions (reset PIN, delete) already opt out under
+               (optOuts 245 -> 248, staticOptOuts 219 -> 222; nothing else
+               moves).
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into
