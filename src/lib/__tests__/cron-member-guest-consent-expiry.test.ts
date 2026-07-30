@@ -610,6 +610,48 @@ describe("LAST_GUEST order-dependence is deterministic, and documented", () => {
   });
 });
 
+describe("a lapse on a guest row a member merge re-pointed", () => {
+  // `BookingGuest.member` is classified `move` in member-merge.ts, so merging one
+  // member into another re-points the loser's guest rows — consent columns and all
+  // — onto the survivor. MG1 (#2306) recorded that as an accepted consequence and
+  // noted it was unreachable while every consentStatus was NULL; MG2 makes it real,
+  // and member-merge-execute.test.ts pins what the merge itself does. What is left
+  // to check is what the SWEEP then does with such a row, because the merge can
+  // leave a booking whose only remaining guest is the survivor.
+  it("blocks as LAST_GUEST and names the SURVIVOR, not the member who was merged away", async () => {
+    // The row's `memberId` is the survivor's, so this is the survivor's bed hold to
+    // lose and the survivor's inbox the lapse notice belongs in. The deleted
+    // member's id survives only in `consentRespondedByMemberId`, which a PENDING row
+    // does not carry — so there is nothing here that could email a member who no
+    // longer exists.
+    seed([guest({ id: "g-merged", memberId: "m-survivor" })]);
+
+    const result = await runMemberGuestConsentExpiryCron({ now: () => NOW });
+
+    // Its booking has no other guest, so the bed cannot be released: the honest
+    // answer is an operator deciding whether the booking should exist at all.
+    expect(result).toMatchObject({
+      expiredGuestIds: [],
+      blockedGuests: [{ guestId: "g-merged", reason: "LAST_GUEST" }],
+      failedGuestIds: [],
+    });
+    expect(world().guests.get("g-merged")).toMatchObject({
+      consentStatus: "EXPIRED",
+      memberId: "m-survivor",
+    });
+
+    // Everything downstream is about the survivor.
+    expect(h.logAudit.mock.calls[0][0]).toMatchObject({
+      action: "member_guest_consent_blocked",
+      subjectMemberId: "m-survivor",
+    });
+    expect(h.sendExpiredEmail).toHaveBeenCalledTimes(1);
+    expect(h.sendExpiredEmail.mock.calls[0][0]).toMatchObject({
+      email: "m-survivor@example.com",
+    });
+  });
+});
+
 describe("what the sweep records", () => {
   it("audits the transition against the job, with no person named as the actor", async () => {
     // Nobody acted. The audit entry names `cron:member-guest-consent-expiry` in its

@@ -1,11 +1,16 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 import {
   buildMemberMergePreviewToken,
   executeMemberMerge,
+  MEMBER_MERGE_RELATION_SPECS,
   MemberMergeError,
   mergeMemberFields,
   type MemberMergePreviewCore,
 } from "@/lib/member-merge";
+import { classifyMemberGuestConsent } from "@/lib/member-guest-consent";
 
 const MASTER_ID = "master-1";
 const LOSER_ID = "loser-1";
@@ -745,6 +750,272 @@ describe("member-photo reconciliation at execute time (MP1, #189)", () => {
     expect((member as { delete: ReturnType<typeof vi.fn> }).delete).toHaveBeenCalledWith({
       where: { id: LOSER_ID },
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// "+ Add Member Guest" (epic #2305) MG2 (#2307) — what a merge does to consent
+// ---------------------------------------------------------------------------
+//
+// `BookingGuest.member` is classified `move`, so merging A into B re-points A's
+// guest rows onto B — INCLUDING their consent columns. MG1 (#2306) recorded that
+// as an accepted consequence and noted it was unreachable in that release, because
+// every `consentStatus` was NULL and there was nothing to inherit. MG2 makes rows
+// carry a status, so the consequence is now real and these are its tests.
+//
+// Two of them describe behaviour that is arguably wrong and is asserted anyway,
+// because an unasserted hazard is one nobody can find later: the merge silently
+// changes what an approval MEANS, and it can leave two guest rows for the same
+// person on one booking. Both are called out where they appear.
+describe("a merge and the consent columns it carries with it (#2307)", () => {
+  const BOOKING = "bk-merge";
+
+  type GuestRow = {
+    id: string;
+    bookingId: string;
+    memberId: string | null;
+    consentStatus: string | null;
+    consentRequestedAt: Date | null;
+    consentRespondedAt: Date | null;
+    consentRespondedByMemberId: string | null;
+    consentExpiresAt: Date | null;
+  };
+
+  /**
+   * A stateful `bookingGuest` delegate: `updateMany` really re-points rows, so the
+   * end state can be inspected instead of only the call arguments.
+   */
+  function bookingGuestDelegate(rows: GuestRow[]) {
+    const store = rows.map((row) => ({ ...row }));
+    return {
+      ...defaultDelegate(),
+      count: vi.fn(async ({ where }: { where: { memberId?: string } }) =>
+        store.filter((row) => row.memberId === where.memberId).length,
+      ),
+      findMany: vi.fn(async ({ where }: { where: { memberId?: string } }) =>
+        store.filter((row) => row.memberId === where.memberId).map((row) => ({ id: row.id })),
+      ),
+      updateMany: vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: { memberId?: string };
+          data: { memberId?: string };
+        }) => {
+          const hits = store.filter((row) => row.memberId === where.memberId);
+          for (const row of hits) Object.assign(row, data);
+          return { count: hits.length };
+        },
+      ),
+      store,
+    };
+  }
+
+  /** The preview token the execute path will recompute, given the guest-row count. */
+  function tokenWithGuestRows(count: number) {
+    const core: MemberMergePreviewCore = {
+      fieldMerge: mergeMemberFields(
+        master as unknown as Record<string, unknown>,
+        loser as unknown as Record<string, unknown>,
+      ).diff,
+      relationMoves: count > 0 ? [{ model: "BookingGuest.member", count }] : [],
+      collisions: [],
+      blockers: [],
+      warnings: [],
+    };
+    return buildMemberMergePreviewToken(
+      MASTER_ID,
+      LOSER_ID,
+      master.updatedAt,
+      loser.updatedAt,
+      core,
+    );
+  }
+
+  async function mergeWithGuests(rows: GuestRow[]) {
+    const bookingGuest = bookingGuestDelegate(rows);
+    const { client, auditLog } = makeClient({ bookingGuest });
+    const result = await executeMemberMerge({
+      masterId: MASTER_ID,
+      loserId: LOSER_ID,
+      actorMemberId: ACTOR_ID,
+      previewToken: tokenWithGuestRows(
+        rows.filter((row) => row.memberId === LOSER_ID).length,
+      ),
+      confirmationText: "MERGE Dup Person",
+      db: client as never,
+    });
+    return { result, store: bookingGuest.store, bookingGuest, auditLog };
+  }
+
+  it("re-points the loser's guest rows, so the survivor inherits the consent", async () => {
+    // The plain case. The loser said yes to being on somebody's booking; after the
+    // merge that same place belongs to the survivor, consent and all. Nothing is
+    // re-asked and nothing is cleared — which is the right outcome for the booking
+    // (the bed is still legitimately held) even though it means the survivor is
+    // now standing behind a decision the loser made.
+    const { result, store } = await mergeWithGuests([
+      {
+        id: "g-1",
+        bookingId: BOOKING,
+        memberId: LOSER_ID,
+        consentStatus: "CONFIRMED",
+        consentRequestedAt: new Date("2026-07-01T00:00:00.000Z"),
+        consentRespondedAt: new Date("2026-07-02T00:00:00.000Z"),
+        consentRespondedByMemberId: LOSER_ID,
+        consentExpiresAt: null,
+      },
+    ]);
+
+    expect(store[0].memberId).toBe(MASTER_ID);
+    expect(store[0].consentStatus).toBe("CONFIRMED");
+    expect(result.relationMoves).toContainEqual({ model: "BookingGuest.member", count: 1 });
+  });
+
+  it("QUIETLY CHANGES WHAT THE APPROVAL MEANS: a target approval becomes a delegate approval", async () => {
+    // ASSERTED BECAUSE IT IS SURPRISING, not because it is desirable.
+    //
+    // `consentRespondedByMemberId` is a deliberate FK-less SNAPSHOT column: if the
+    // person who approved is later merged away, the id stays as it was, because the
+    // audit answer to "who stood behind this add" is the person who did it at the
+    // time. But `memberId` is `move`, so it becomes the survivor's — and the
+    // classifier tells TARGET_APPROVED from DELEGATE_APPROVED by comparing the two.
+    //
+    // The row therefore reads, after the merge, as though somebody ELSE approved on
+    // the survivor's behalf. Both column classifications are individually correct
+    // and documented; the interaction between them is not written down anywhere,
+    // and it changes an audit answer without any writer having touched the row.
+    const requestedAt = new Date("2026-07-01T00:00:00.000Z");
+    const respondedAt = new Date("2026-07-02T00:00:00.000Z");
+    const before = {
+      consentStatus: "CONFIRMED" as const,
+      consentRequestedAt: requestedAt,
+      consentRespondedAt: respondedAt,
+      consentRespondedByMemberId: LOSER_ID,
+      consentExpiresAt: null,
+    };
+
+    // Before: the member who was asked answered for themselves.
+    expect(classifyMemberGuestConsent(before, LOSER_ID)).toBe("TARGET_APPROVED");
+
+    const { store } = await mergeWithGuests([
+      { id: "g-1", bookingId: BOOKING, memberId: LOSER_ID, ...before },
+    ]);
+
+    // After: the responder is unchanged (it is a snapshot) but the target moved.
+    expect(store[0].consentRespondedByMemberId).toBe(LOSER_ID);
+    expect(classifyMemberGuestConsent(store[0], store[0].memberId)).toBe("DELEGATE_APPROVED");
+  });
+
+  it("carries a PENDING hold and its deadline across, so the sweep inherits it too", async () => {
+    // A `PENDING` row holds a bed (D-4) and the sweep finds it through the partial
+    // index. Re-pointing it does not touch `consentExpiresAt`, so the survivor
+    // inherits both the bed hold and the deadline — and if nobody answers, the
+    // lapse is processed against the survivor.
+    const expiresAt = new Date("2026-08-01T11:00:00.000Z");
+    const { store } = await mergeWithGuests([
+      {
+        id: "g-1",
+        bookingId: BOOKING,
+        memberId: LOSER_ID,
+        consentStatus: "PENDING",
+        consentRequestedAt: new Date("2026-07-25T00:00:00.000Z"),
+        consentRespondedAt: null,
+        consentRespondedByMemberId: null,
+        consentExpiresAt: expiresAt,
+      },
+    ]);
+
+    expect(store[0]).toMatchObject({
+      memberId: MASTER_ID,
+      consentStatus: "PENDING",
+      consentExpiresAt: expiresAt,
+    });
+    expect(classifyMemberGuestConsent(store[0], store[0].memberId)).toBe("AWAITING_TARGET");
+  });
+
+  it("PRODUCES TWO GUEST ROWS FOR ONE PERSON ON ONE BOOKING, and says nothing about it", async () => {
+    // ASSERTED BECAUSE IT IS UNSAFE, and papering over it would hide it.
+    //
+    // If both members were already guests on the same booking — which is exactly
+    // what a duplicate-member record makes likely, since the duplicate is how the
+    // same human ended up entered twice — the merge re-points one row onto the
+    // other's member and the booking is left holding TWO places for ONE person.
+    // That is a person-night conflict of the kind the booking write paths refuse
+    // outright, arrived at through the back door: two beds, two charges, two
+    // arrival rows, two chore slots.
+    //
+    // The merge does not detect it. `BookingGuest.member` is a `move`, not a
+    // `resolve`, so there is no collision resolver; the database cannot stop it
+    // either, because `BookingGuest` carries no unique on (bookingId, memberId);
+    // and the merge reports it as an ordinary relation move with no warning and no
+    // blocker. Every part of that is asserted below so the shape of the hazard is
+    // on record.
+    const { result, store, bookingGuest, auditLog } = await mergeWithGuests([
+      {
+        id: "g-loser",
+        bookingId: BOOKING,
+        memberId: LOSER_ID,
+        consentStatus: "CONFIRMED",
+        consentRequestedAt: new Date("2026-07-01T00:00:00.000Z"),
+        consentRespondedAt: new Date("2026-07-02T00:00:00.000Z"),
+        consentRespondedByMemberId: LOSER_ID,
+        consentExpiresAt: null,
+      },
+      {
+        id: "g-master",
+        bookingId: BOOKING,
+        memberId: MASTER_ID,
+        consentStatus: null,
+        consentRequestedAt: null,
+        consentRespondedAt: null,
+        consentRespondedByMemberId: null,
+        consentExpiresAt: null,
+      },
+    ]);
+
+    // Two rows, one booking, one member.
+    const onBooking = store.filter((row) => row.bookingId === BOOKING);
+    expect(onBooking).toHaveLength(2);
+    expect(onBooking.map((row) => row.memberId)).toEqual([MASTER_ID, MASTER_ID]);
+
+    // A single unconditional updateMany, and no collision handling of any kind.
+    expect(bookingGuest.updateMany).toHaveBeenCalledTimes(1);
+    expect(bookingGuest.updateMany).toHaveBeenCalledWith({
+      where: { memberId: LOSER_ID },
+      data: { memberId: MASTER_ID },
+    });
+    expect(result.relationMoves).toContainEqual({ model: "BookingGuest.member", count: 1 });
+    expect(result.collisions.map((collision) => collision.model)).not.toContain(
+      "BookingGuest.member",
+    );
+    // Nor does the one critical MEMBER_MERGED audit entry say anything about a
+    // duplicated place — so there is no record an operator could act on later.
+    const auditSpy = (auditLog as { create: ReturnType<typeof vi.fn> }).create;
+    expect(auditSpy).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(auditSpy.mock.calls[0][0])).not.toMatch(/duplicat|conflict/i);
+  });
+
+  it("has no resolver and no database constraint standing behind that", () => {
+    // The structural half of the case above, so the hazard is pinned to its two
+    // causes rather than to one test's fixture. If somebody later adds a
+    // (bookingId, memberId) unique or reclassifies the relation as `resolve`, this
+    // fails and the test above should be rewritten to describe the new behaviour.
+    const spec = MEMBER_MERGE_RELATION_SPECS.find(
+      (candidate) => candidate.key === "BookingGuest.member",
+    );
+    expect(spec?.bucket).toBe("move");
+
+    const schema = readFileSync(
+      path.resolve(process.cwd(), "prisma/schema.prisma"),
+      "utf8",
+    );
+    const model = schema.slice(
+      schema.indexOf("model BookingGuest {"),
+      schema.indexOf("enum MemberGuestConsentStatus"),
+    );
+    expect(model).not.toMatch(/@@unique\(\[bookingId,\s*memberId\]\)/);
   });
 });
 
