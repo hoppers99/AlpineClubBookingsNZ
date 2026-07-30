@@ -98,11 +98,53 @@ actually encounters in this release:
   candidate sweep, and the pre-arrival and check-in reminder emails. They still
   hold a bed and a person-night, because that is what the hold IS.
 
-The **member-facing consent card, the family-delegate consent page, the consent
-badges on the guest list, and the admin settings card** are designed and signed
-off as static mockups in `docs/member-guests/mockups/` but are **not implemented
-in MG2's first PR** — they are held pending owner sign-off on the mockup pack.
-This section gains their flow description in the same change that ships them.
+The visible half — signed off as static mockups in `docs/member-guests/mockups/`
+(30 Jul, all four MG2-M decisions ticked as drawn) — ships with it:
+
+- **The consent card** on `/bookings/[id]`, anchored `#consent` (the request
+  email deep-links there), immediately above the #2250 self-removal card. A
+  pending member sees the whole booking page (D-11) with the card inside it:
+  who added them, lodge, stay, their own nights, the answer-by date, the full
+  party listing by name ("— that's you" on their own row), the lapse sentence,
+  and **Yes, add me** / **No thanks**. A predictable decline refusal (last
+  guest, quote-priced, status, started stay) warns before the click and
+  withholds "No thanks"; the unpredictable settled-payment refusal keeps both
+  buttons and repeats the server's 400 verbatim. A quote-priced ask says
+  "booking request" in its heading. Under notify-only policy there is no
+  question, so the card is a "You're on this booking" notice pointing at the
+  #2250 card below — never a second removal path.
+- **The delegate page** at `/bookings/consent/[guestId]` — its own route,
+  carrying real traffic (D-9: a target with no login is the normal case). Only
+  an adult in the target's family group (the same resolver the endpoint
+  authorises with) sees anything beyond one neutral "nothing here to answer"
+  state; no-row, non-consent row and not-your-family are indistinguishable, so
+  the URL cannot be used as an existence oracle. An accepted delegate sees
+  names, dates and the question — **never the booking page and never money**
+  (the deliberate asymmetry with a logged-in target is a security choice) —
+  answers for the target, and has their name recorded against the answer.
+  Already-answered, lapsed and module-off render as honest states; the target
+  themselves is redirected to the booking page's `#consent` card.
+- **Consent badges on the guest list** (`BookingEditor`, the same page member
+  and admin read), wording per MG2-M-2 as ticked: "Waiting for consent ·
+  expires 7 Aug", "Consented", "Consented by Ana Kaur, 2 Aug", "Told, not
+  asked", "Added by Jo Admin", "Said no — could not be removed", "Lapsed —
+  could not be removed". Family and non-member rows get no badge and no layout
+  change.
+- **The settings card** on Admin › Bookings setup (MG2-M-1: no new admin
+  route): ask-first/tell radios (ask is the default), the 1–60 day waiting
+  period with the never-outlives-the-stay rule stated, and the two name-search
+  toggles with their privacy warnings; the D-18 note states that the search
+  settings never travel in config transfer. Three honest states: normal;
+  module-off **editable** with a not-in-use banner (MG2-M-4); view-only as a
+  real third state via the shared banner + gated controls.
+- **The exception queues** as two filter chips on the existing Admin › Bookings
+  list (MG2-M-3: not a new page): "Waiting for consent · N" (bookings holding an
+  unanswered request) and "Consent needs attention · N" (stuck guest rows),
+  where the attention view swaps in a per-guest table with Why-stuck /
+  What-fixes-it columns composed from D-15's four reasons — always the real
+  remedy, never "ask the club".
+- The consent-request email now deep-links per recipient: the target to
+  `/bookings/[id]#consent`, a delegate to `/bookings/consent/[guestId]`.
 
 ## Feedback Conventions
 

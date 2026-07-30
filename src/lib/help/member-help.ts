@@ -160,7 +160,9 @@ const bookingsListHelp: HelpPageContent = {
 };
 
 // Source: docs/user-guide/changing-or-cancelling-a-booking.md,
-// docs/user-guide/paying-for-your-stay.md — keep in sync (see docs/user-guide/README.md)
+// docs/user-guide/paying-for-your-stay.md,
+// docs/user-guide/being-added-to-a-booking.md — keep in sync
+// (see docs/user-guide/README.md)
 const bookingDetailHelp: HelpPageContent = {
   title: "Your booking",
   summary:
@@ -216,6 +218,10 @@ const bookingDetailHelp: HelpPageContent = {
     {
       q: "I paid but it still says 'Payment required'.",
       a: "The card step was probably interrupted before payment finished. Open the booking and retry from the Complete Payment card.",
+    },
+    {
+      q: "Another member added me to this booking — do I have to answer?",
+      a: "No. The consent card near the top of the page lets you say Yes, add me or No thanks, and a bed is held for you in the meantime — but if you do nothing the request simply lapses at the answer-by date, the bed is released, and the person who made the booking is told. Saying no releases the bed straight away. If the card says only the booking's owner or the club can take you off (for example you are the only guest, or the booking was priced by hand), ask them.",
     },
   ],
 };

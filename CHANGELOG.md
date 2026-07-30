@@ -25,15 +25,34 @@ All notable public reference-release changes should be recorded here.
   list browsable to any member ship **off** and never travel in a club config
   transfer, so importing another club's settings can never widen your members'
   privacy without your own admin choosing it.
-  **One part is not finished, and the switch says so.** The screen a member
-  presses *Yes* on is still to come, so **leave the module off for now**: with it
-  on, a request can be sent but not accepted — it would simply lapse and release
-  the bed. The **Add another member as a guest** switch carries that warning
-  under **Admin → Modules**. Everything the accept screen needs is already
-  here — the consent emails, the settings, the timer that releases the bed, and
-  the rule that keeps an unconsented guest off every operational list — which is
-  why they shipped together rather than leaving a version where turning the switch
-  on could hold beds for approvals nothing could grant.
+  **The screens are here too, so the module is usable end to end.** A member who
+  has been asked sees the question on the booking itself: a **consent card** at
+  the top of the booking page states who added them, the lodge, the dates, their
+  own nights, the deadline, and everyone on the booking — names only, no money —
+  with **Yes, add me** and **No thanks** side by side. When saying no cannot
+  actually work (they are the last guest, or the booking was priced by hand),
+  the card says so *before* the click and names who really can act; when only
+  the server can know (an already-paid booking needs a refund-or-credit
+  decision), the card keeps both buttons and repeats the server's answer word
+  for word. For a member with no login of their own — a child, or an adult on a
+  household login — the emailed request goes to the adults in their family
+  group, whose link opens a dedicated **consent page** showing just the
+  question and the facts: a delegate answers *for* the member, with their name
+  recorded against the answer, and deliberately never sees the booking page or
+  any of its money. Everyone who can see the booking now also sees each member
+  guest's consent state as a badge on the guest list — *Waiting for consent*,
+  *Consented*, *Consented by …*, *Told, not asked*, *Added by …*, or the two
+  stuck states below — while family and non-member guests are unchanged. And
+  admins get the leftovers that genuinely need a human: two filter chips on
+  **Admin → Bookings** — **Waiting for consent** and **Consent needs
+  attention** — where the attention view lists each stuck request with why it
+  is stuck and what actually fixes it (cancel the booking, add another guest,
+  re-quote the request), never a dead-end "ask the club".
+  The published banner-coverage figures were re-measured with the new settings
+  card: **287** gated admin controls, **244** of them covered by a banner (218
+  in their own file, 26 by a verified vouching parent — 5 of those through the
+  wizard frame), and **43** across 23 files deliberately keeping their own
+  reason.
   We also fixed an unrelated bug we found next door while doing this: the
   **check-in reminder** email joined every guest's first names together and then
   every guest's last names, so the guest list read `Ada, Bob, Cleo Lovelace,

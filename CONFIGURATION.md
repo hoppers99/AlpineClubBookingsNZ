@@ -1486,7 +1486,10 @@ cannot be read, optional modules fail closed.
 
 The "Add another member as a guest" module stores its policy in the
 `MemberGuestSettings` singleton (`id = "default"`), created lazily on first
-write. Admins read and write it through `GET`/`PUT
+write. Admins edit it on the **Member guests** card under **Admin → Bookings
+setup** (`/admin/bookings-setup`); the card stays editable while the module is
+off, with a banner saying nothing is in use yet, so the policy can be configured
+before the module is switched on. The card reads and writes through `GET`/`PUT
 /api/admin/member-guest-settings`, gated on the **bookings** permission area:
 view-level access reads the settings, edit-level access changes them, and the
 payload says which so a card never shows a Save button that would be refused.
