@@ -1890,7 +1890,10 @@ model BookingGuest {
 // Consent state of a MEMBER added as another member's guest ("+ Add Member
 // Guest", epic #2305, D-7). Provisioned here in MG1 (#2306) but UNREACHABLE
 // until MG2 (#2307): no code path in this release writes a non-null
-// BookingGuest.consentStatus, so every label below is registered-but-unused.
+// BookingGuest.consentStatus, so no ROW ever carries one of these labels. (They
+// are not literally unused — the migration's partial index names 'PENDING' in
+// its predicate — but never being carried by data is the property that makes
+// the reverse blue/green direction safe.)
 // See docs/STATE_MACHINES.md for the transitions MG2 implements.
 enum MemberGuestConsentStatus {
   PENDING

@@ -31,9 +31,12 @@ import type { MemberGuestConsentStatus } from "@prisma/client";
  *
  * A second consequence, equally deliberate: because nothing can widen the
  * boundary, nothing in this release can write a non-null
- * `BookingGuest.consentStatus` — which is what makes the new enum labels
- * "registered but never used" and makes the reverse blue/green direction safe
- * (see the ledger row for `20260731120100_add_booking_guest_consent`).
+ * `BookingGuest.consentStatus` — so no ROW ever carries one of the new enum
+ * labels, which is what makes the reverse blue/green direction safe (see the
+ * ledger row for `20260731120100_add_booking_guest_consent`). Note the precise
+ * claim: the labels are not "registered but never used" — the migration's
+ * partial index names 'PENDING' in its predicate — they are never carried by
+ * data, which is the property an old-colour Prisma client actually cares about.
  *
  * MG2's change here is one line: flip this to a policy read. The dark-guarantee
  * tests (the module ON/OFF identity matrix, the beyond-family refusal, and the
