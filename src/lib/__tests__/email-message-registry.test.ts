@@ -415,6 +415,50 @@ describe("#1993 Part A terminal split-cancellation email templates", () => {
       expect(definition.defaultBody).toContain(`{{${token}}}`);
     }
   });
+
+  /*
+    #2350. This email exists to ask a member for money, so an override that
+    silently drops the amount, the date it was raised or the stay it belongs to
+    leaves a demand the member cannot act on or check — the same reason every
+    other member money email pins its load-bearing tokens.
+  */
+  it("pins the load-bearing tokens of the additional-payment reminder", () => {
+    const definition = getEmailTemplateDefinition("additional-payment-reminder");
+    if (!definition) throw new Error("missing additional-payment-reminder");
+
+    expect(definition.audience).toBe("member");
+    expect(definition.requiredTokens).toEqual(
+      expect.arrayContaining([
+        "additionalAmount",
+        "requestedOn",
+        "checkIn",
+        "checkOut",
+      ]),
+    );
+    for (const token of definition.requiredTokens) {
+      expect(definition.defaultBody).toContain(`{{${token}}}`);
+    }
+    // And the preview reads as a member reads it: a date where a date belongs,
+    // not the literal token name.
+    expect(definition.sampleData.requestedOn).toBe("1 Jul 2026");
+  });
+
+  /*
+    #2350: {{outstandingAdditionalNote}} is the ONLY place a pre-arrival reminder
+    says money is still owed, so dropping it in an override would silence that
+    for every booking. It is pre-composed like {{doorCodeNote}}, so its preview
+    must be the whole sentence rather than the token's own name mid-paragraph.
+  */
+  it("pins and previews the pre-arrival outstanding-payment note", () => {
+    const definition = getEmailTemplateDefinition("pre-arrival-reminder");
+    if (!definition) throw new Error("missing pre-arrival-reminder");
+
+    expect(definition.requiredTokens).toContain("outstandingAdditionalNote");
+    expect(definition.defaultBody).toContain("{{outstandingAdditionalNote}}");
+    expect(String(definition.sampleData.outstandingAdditionalNote)).toContain(
+      "still $123.45 to pay",
+    );
+  });
 });
 
 describe("render path for newly-registered action-link templates (#1797)", () => {

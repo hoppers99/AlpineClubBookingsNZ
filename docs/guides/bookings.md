@@ -86,10 +86,14 @@ date-only lodge night (no times), matching the rules in
 
 ### Chase money still owed after a booking change
 
-When a change increases a booking's price after it has been paid — adding a
-non-member guest to a paid booking, say — the difference becomes an **additional
-payment** the member has to make from their own booking page. It is easy for
-that to be quietly forgotten by everybody.
+When a change increases a booking's price after the booking has been confirmed —
+adding a non-member guest to a paid booking, say — the difference becomes an
+**additional payment** the member has to make from their own booking page. It is
+easy for that to be quietly forgotten by everybody.
+
+Only confirmed, paid and completed bookings are counted and chased. A cancelled
+booking keeps the record of what it once owed, but the club never asks for it and
+no screen calls it outstanding.
 
 1. Find the bookings that owe something: the **Bookings With Unpaid Additions**
    card on the admin dashboard, or the **Unpaid Stay Additions** entry in the
@@ -107,11 +111,21 @@ that to be quietly forgotten by everybody.
    message names the amount too. Nothing is ever cancelled or expired because of
    an unpaid addition, and the automatic chasing stops once the stay is over —
    from then on it is a conversation, which is what the dashboard card is for.
+
+   Automatic chasing covers changes made from the day this feature went live
+   onwards. Anything that was already outstanding before then is shown on all
+   the screens above but is never emailed about automatically — the club would
+   otherwise have mailed its entire backlog in one go, quoting dates it could not
+   reconstruct. Chase those by hand with the button below.
 4. To chase now, click **Resend payment request email**. It sends the same
-   message the automatic reminders send. If the member was already emailed
-   within the last hour — by you, by another officer, or by the automatic
-   reminder — you are told so and nothing is sent, so nobody is chased twice
-   over. Every re-send is recorded in the audit log.
+   message the automatic reminders send, and it **takes the place of** the
+   automatic reminder that was coming: the member gets one message, not two.
+   If they were already emailed within the last hour — by you, by another
+   officer, or by the automatic reminder — you are told so and nothing is sent,
+   so nobody is chased twice over. If the message cannot actually go out (a
+   bounced address, or a member with no real email on file) you are told that
+   too, rather than being shown a success you cannot rely on. Every re-send is
+   recorded in the audit log.
 5. If the booking has the **No emails** switch on (below), the re-send is
    refused outright with an explanation rather than silently withheld. Turn the
    switch off first if the member should hear from the club.

@@ -1548,7 +1548,11 @@ delta on a stay whose check-out is still ahead is counted too
 predicate by the direction of its check-out bound), the dashboard card carries
 a split "N upcoming, M finished" label, the sidebar badge shows the sum, and
 both link to `buildUnsettledAdditionalStaysHref()` - the owed filter with no
-date bound, which is the only link that covers both halves.
+date bound, which is the only link that covers both halves. The in-memory twin
+of that predicate is `isAdditionalPaymentOwed`
+(`src/lib/additional-payment-chase.ts`), which takes the booking status as a
+required argument and shares one status list with the SQL builder, so no
+surface can read a cancelled booking's untouched delta columns as money owed.
 All sidebar badge counts come from the single `GET /api/admin/pending-counts`
 endpoint (`src/lib/admin-pending-counts.ts`), whose per-queue where-clauses
 mirror the individual queue routes. Sidebar sections render expanded by

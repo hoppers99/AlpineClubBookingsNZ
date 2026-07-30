@@ -5,16 +5,16 @@ All notable public reference-release changes should be recorded here.
 ## Unreleased
 
 - **Money still owed after a booking change is now visible everywhere, and the
-  member is actually asked for it (#2350).** When a change pushed a paid
+  member is actually asked for it (#2350).** When a change pushed a confirmed
   booking's price up — an admin adding a non-member guest, say — the difference
   became an "additional payment" the member had to make from their own booking
   page. Nothing chased them for it, no admin screen showed it, and the revenue
   report counted it as money in the bank. It could sit there indefinitely, and
   did.
 
-  The bookings list now says how much has actually arrived. A settled booking
-  reads **Paid**; one that is short reads **Partly paid** with an amber
-  **"$210.00 due"** beside it. The booking's own status chip still reads Paid,
+  The bookings list now says when the money is short: such a row reads **Partly
+  paid** with an amber **"$210.00 due"** beside it. The booking's own status chip
+  still reads Paid,
   which is right — the stay is confirmed; it is the money that is short. Opening
   the booking gives any admin an **Additional payment outstanding** panel with
   the amount, when the change was made and how long ago, whether the last
@@ -28,11 +28,18 @@ All notable public reference-release changes should be recorded here.
   The member is now chased while it still matters: a few days after the change,
   and once more shortly before check-in, with the pre-arrival message naming the
   amount as well. An admin can send the same message on demand with **Resend
-  payment request email**. Automatic and manual sends share one clock, so a
-  member emailed within the last hour — by an officer, or by the reminder — is
-  not chased twice over, and every re-send is audited. A booking with the **No
-  emails** switch on is refused with an explanation rather than silently
-  swallowed. Nothing is ever auto-cancelled or expired over an unpaid addition,
+  payment request email**, which takes the place of whichever automatic reminder
+  was coming rather than adding to it. Automatic and manual sends share one
+  clock, so a member emailed within the last hour — by an officer, or by the
+  reminder — is not chased twice over, and every re-send is audited. A booking
+  with the **No emails** switch on is refused with an explanation rather than
+  silently swallowed, and a message the mail system withholds (a bounced address,
+  a member with no real address on file) is reported as not sent rather than
+  counted as sent. Only confirmed, paid and completed bookings are chased at all
+  — cancelling a booking ends the club's claim on the difference, and no screen
+  calls it outstanding afterwards. Changes made before this shipped are shown but
+  never emailed about automatically, so going live does not mail the backlog.
+  Nothing is ever auto-cancelled or expired over an unpaid addition,
   and the chasing stops once the stay is over: from then on it is a
   conversation, which is what the dashboard card is for.
 

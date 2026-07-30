@@ -269,7 +269,23 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
     // Satisfied by any of the promo-adjustment tokens above.
     "promoSummary",
   ],
-  "pre-arrival-reminder": ["CLUB_LODGE_TRAVEL_NOTE", "doorCode"],
+  // #2350: {{outstandingAdditionalNote}} is the only place a pre-arrival
+  // reminder says money is still owed on the booking. Dropping it in an override
+  // would silence that for every booking, so it is pinned like the travel note.
+  "pre-arrival-reminder": [
+    "CLUB_LODGE_TRAVEL_NOTE",
+    "doorCode",
+    "outstandingAdditionalNote",
+  ],
+  // #2350: this email exists to ask for money, so the amount, the date it was
+  // raised and the stay it belongs to are all load-bearing — an override that
+  // drops any of them leaves a demand a member cannot act on or check.
+  "additional-payment-reminder": [
+    "additionalAmount",
+    "requestedOn",
+    "checkIn",
+    "checkOut",
+  ],
   "password-reset": ["token"],
   "admin-password-reset": ["token"],
   "member-setup-invite": ["token"],
@@ -679,6 +695,17 @@ function sampleValue(token: string): string {
   // no door code — the live send renders this token empty).
   if (token === "doorCodeNote") return "Door code: 1234";
   if (token === "expectedArrivalTime") return "16:30";
+  // #2350: pre-composed like {{doorCodeNote}} above — the whole sentence as the
+  // send builds it, so the preview reads as a member reads it instead of
+  // printing the token's own name mid-paragraph. Empty on a live send when
+  // nothing is owed. The amount reconciles with the sample below.
+  if (token === "outstandingAdditionalNote") {
+    return "There is still $123.45 to pay on this booking after a change to your stay. Please pay it from your booking page before you arrive.";
+  }
+  // #2350: the day the outstanding extra was raised. Named like a date but
+  // matching none of the generic date rules below, so it would otherwise
+  // preview as the literal word "requestedOn" where a date belongs.
+  if (token === "requestedOn") return "1 Jul 2026";
   // #2267: mirror what sendBookingConfirmedEmail composes — each row carries
   // its own trailing newline so the default body's
   // "{{promoSummary}}Total Paid: …" previews as a contiguous block.

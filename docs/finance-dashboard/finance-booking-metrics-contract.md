@@ -41,14 +41,22 @@ The booking metrics response includes:
 
 - booking coverage counts: `bookingCount`, `bookingsWithPayment`, `bookingsWithoutPayment`
 - primary payment status counts plus `NONE` for bookings without a payment row
-- additional payment status counts plus `NONE`
+- additional payment status counts plus `NONE`. A legacy row with no
+  `additionalPaymentStatus` but a real uncollected `additionalAmountCents`
+  counts as `PENDING`, not `NONE`, so the split cannot contradict
+  `outstandingAdditionalCents` below it
 - `capturedPrimaryCents`
 - `capturedAdditionalCents`
 - `outstandingAdditionalCents` and `outstandingAdditionalBookings` (#2350): the
   money and booking count behind an upward change that was never collected -
-  `additionalAmountCents` where `additionalPaymentStatus` is anything other
-  than `SUCCEEDED`. It is already inside the booked revenue figure, so
-  subtracting it is what "collected" looks like
+  `additionalAmountCents > 0` where `additionalPaymentStatus` is anything other
+  than `SUCCEEDED`, on a booking whose status is `CONFIRMED`, `PAID` or
+  `COMPLETED` (the shared `isAdditionalPaymentOwed` predicate; a cancelled
+  booking keeps its delta columns and must never be counted as owing). It is
+  already inside the booked revenue figure, so subtracting it is what
+  "collected" looks like. Window-scoped like every other figure here, so it will
+  legitimately differ from the all-time dashboard/sidebar queue counts and from
+  the reports summary's own date range
 - `refundedCents`
 - `netCollectedCents`
 - `creditAppliedCents`

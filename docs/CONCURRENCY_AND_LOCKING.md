@@ -502,6 +502,27 @@ credit spend engine, which takes the same key. The orphan-heal repair
 (`orphaned-applied-credit-backfill.ts`) also takes the per-member credit ledger
 lock and re-derives an "already restored?" predicate.
 
+### Send-bookkeeping on `Payment` → deliberately NO lock (#2350)
+
+`Payment.additionalReminderSentAt` and `Payment.additionalFinalReminderSentAt`
+are the only `Payment` columns written outside `lock(1)`. The two writers are
+the additional-payment chase cron
+(`src/lib/cron-additional-payment-reminders.ts`) and the admin re-send
+(`src/lib/additional-payment-resend-service.ts`), and both write **only** those
+two columns: no money, no status, no lifecycle. They record "this member has
+been emailed about this obligation", so they join no lock cohort — taking
+`lock(1)` would serialise a three-hourly mailer behind every cancel, capture and
+settlement in the system for no invariant.
+
+Single-flight comes from the guarded `updateMany` instead: the claim re-states
+the full owed test (booking status included), pins the exact
+`additionalAmountCents`, requires no ADDITIONAL `PaymentTransaction` newer than
+the episode being chased, and requires the stamp to be unset for that episode.
+Two runners racing therefore leave one winner, and a money writer landing in the
+read→claim window makes the claim match nothing rather than producing an email
+about a stale obligation. Nothing else reads these columns for a money decision,
+so a stamp written concurrently with a locked money write cannot corrupt one.
+
 ## Rules of thumb when working here
 
 - **Adding a capacity claim?** Take `acquireLodgeCapacityLock(tx, lodgeId)` on
