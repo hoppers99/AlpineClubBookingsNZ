@@ -141,3 +141,101 @@ describe("SkifieldWhakapapaWidget status styling", () => {
     },
   );
 });
+
+describe("SkifieldWhakapapaWidget trail sub-area layout", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  function trail(name: string) {
+    return {
+      name,
+      status: "Open",
+      groomed: true,
+      difficulty: "Beginner",
+      size: "",
+    };
+  }
+
+  function payloadWithAreas(
+    areas: { name: string; trailNames: string[] }[],
+  ): WhakapapaCurlData {
+    const data = emptyWhakapapaCurlData();
+    data.updated = "2026-07-30T00:00:00.000Z";
+    data.trails = areas.map((area) => ({
+      name: area.name,
+      trails: area.trailNames.map(trail),
+    }));
+    return data;
+  }
+
+  function mockPayload(payload: WhakapapaCurlData) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, json: async () => payload }),
+    );
+  }
+
+  it("puts two consecutive small sub-areas (<4 trails each) on one row", async () => {
+    mockPayload(
+      payloadWithAreas([
+        { name: "Happy Valley Area", trailNames: ["Happy Valley"] },
+        { name: "Rangatira Area", trailNames: ["Rockgarden", "Tennants Valley"] },
+      ]),
+    );
+    render(<SkifieldWhakapapaWidget />);
+
+    const areaA = await screen.findByText("Happy Valley Area");
+    const areaB = screen.getByText("Rangatira Area");
+
+    // Each area name is inline with its trail cards (parent is a flex-wrap
+    // container), and both areas share the SAME combined row (same grandparent).
+    expect(areaA.parentElement?.className).toContain("flex-wrap");
+    expect(areaB.parentElement?.className).toContain("flex-wrap");
+    expect(areaA.parentElement?.parentElement).toBe(
+      areaB.parentElement?.parentElement,
+    );
+
+    // No trails from either area are lost.
+    for (const name of ["Happy Valley", "Rockgarden", "Tennants Valley"]) {
+      expect(screen.getByText(name)).toBeTruthy();
+    }
+  });
+
+  it("keeps a 4+ trail sub-area as its own stacked block", async () => {
+    mockPayload(
+      payloadWithAreas([
+        {
+          name: "Sky Waka Area",
+          trailNames: ["K Road", "Honeymoon", "Staircase", "Terraces"],
+        },
+        { name: "Happy Valley Area", trailNames: ["Happy Valley"] },
+      ]),
+    );
+    render(<SkifieldWhakapapaWidget />);
+
+    // The 4-trail area stacks its name ABOVE its trails (name parent is not a
+    // flex-wrap row), so it is not merged onto a line with the small area.
+    const bigArea = await screen.findByText("Sky Waka Area");
+    expect(bigArea.parentElement?.className ?? "").not.toContain("flex-wrap");
+  });
+
+  it("keeps a lone small sub-area (no small neighbour) as its own block", async () => {
+    mockPayload(
+      payloadWithAreas([
+        {
+          name: "Sky Waka Area",
+          trailNames: ["K Road", "Honeymoon", "Staircase", "Terraces"],
+        },
+        { name: "Happy Valley Area", trailNames: ["Happy Valley", "Rockgarden"] },
+      ]),
+    );
+    render(<SkifieldWhakapapaWidget />);
+
+    // The 2-trail area's only neighbour is large, so the pair rule does not fire
+    // and it stays a stacked block.
+    const loneSmall = await screen.findByText("Happy Valley Area");
+    expect(loneSmall.parentElement?.className ?? "").not.toContain("flex-wrap");
+  });
+});

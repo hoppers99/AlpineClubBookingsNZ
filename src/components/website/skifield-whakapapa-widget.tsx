@@ -5,6 +5,7 @@ import {
   emptyWhakapapaSectionVisibility,
   type WhakapapaCurlData,
   type WhakapapaFacilityItem,
+  type WhakapapaTrail,
   type WhakapapaTrailArea,
 } from "@/lib/whakapapa-report";
 
@@ -78,10 +79,7 @@ function FacilityGroup({
   emptyLabel: string;
 }) {
   return (
-    <article
-      id={id}
-      className="rounded-md border border-border bg-card p-2"
-    >
+    <article id={id} className="rounded-md border border-border bg-card p-2">
       <h3 className="text-sm font-semibold text-foreground">{title}</h3>
       {items.length > 0 ? (
         <div
@@ -121,7 +119,12 @@ const DIFFICULTY_MARKERS: {
   color: string;
 }[] = [
   { key: "beginner", label: "Beginner", shape: "circle", color: "#2E9E3F" },
-  { key: "intermediate", label: "Intermediate", shape: "square", color: "#0B75B8" },
+  {
+    key: "intermediate",
+    label: "Intermediate",
+    shape: "square",
+    color: "#0B75B8",
+  },
   { key: "advanced", label: "Advanced", shape: "diamond", color: "#1A1A1A" },
   { key: "expert", label: "Expert", shape: "diamond", color: "#D22F2F" },
 ];
@@ -209,12 +212,90 @@ function TrailsKey() {
           key={marker.key}
           className="flex items-center gap-1 text-[11px] text-muted-foreground"
         >
-          <DifficultyShape shape={marker.shape} color={marker.color} size={12} />
+          <DifficultyShape
+            shape={marker.shape}
+            color={marker.color}
+            size={12}
+          />
           {marker.label}
         </li>
       ))}
     </ul>
   );
+}
+
+function TrailCard({ trail }: { trail: WhakapapaTrail }) {
+  return (
+    <div className="flex flex-col gap-1 rounded-md border border-border bg-card p-2">
+      <span className="text-xs font-medium text-foreground">
+        {trail.name || "Unknown"}
+      </span>
+      <div className="flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
+        {trail.difficulty ? (
+          <DifficultyMarker difficulty={trail.difficulty} />
+        ) : null}
+        {trail.difficulty && (trail.groomed || trail.size) ? (
+          <span aria-hidden>·</span>
+        ) : null}
+        <span>{trail.groomed ? "Groomed" : "Ungroomed"}</span>
+        {trail.size ? (
+          <>
+            <span aria-hidden>·</span>
+            <span>{trail.size}</span>
+          </>
+        ) : null}
+      </div>
+      <StatusCell status={trail.status} />
+    </div>
+  );
+}
+
+function TrailAreaName({ name }: { name: string }) {
+  if (!name) {
+    return null;
+  }
+  return (
+    <h4 className="text-xs font-semibold text-muted-foreground">{name}</h4>
+  );
+}
+
+// A sub-area is "small" when it holds fewer than 4 trails.
+const SMALL_TRAIL_AREA_MAX = 3;
+
+type TrailAreaGroup =
+  | { kind: "row"; areas: WhakapapaTrailArea[] }
+  | { kind: "block"; area: WhakapapaTrailArea };
+
+// Merge each maximal run of consecutive small (<4 trail) sub-areas into a single
+// "row" so their names and trails share one line — but only when a small area's
+// next neighbour is also small. A small area with a large (or no) neighbour, and
+// any 4+ trail area, stays its own stacked block.
+function groupTrailAreas(areas: WhakapapaTrailArea[]): TrailAreaGroup[] {
+  const groups: TrailAreaGroup[] = [];
+  let index = 0;
+  while (index < areas.length) {
+    const current = areas[index];
+    const next = areas[index + 1];
+    const currentIsSmall = current.trails.length <= SMALL_TRAIL_AREA_MAX;
+    const nextIsSmall = Boolean(next && next.trails.length <= SMALL_TRAIL_AREA_MAX);
+
+    if (currentIsSmall && nextIsSmall) {
+      const run: WhakapapaTrailArea[] = [current];
+      index += 1;
+      while (
+        index < areas.length &&
+        areas[index].trails.length <= SMALL_TRAIL_AREA_MAX
+      ) {
+        run.push(areas[index]);
+        index += 1;
+      }
+      groups.push({ kind: "row", areas: run });
+    } else {
+      groups.push({ kind: "block", area: current });
+      index += 1;
+    }
+  }
+  return groups;
 }
 
 function TrailsGroup({ areas }: { areas: WhakapapaTrailArea[] }) {
@@ -229,43 +310,54 @@ function TrailsGroup({ areas }: { areas: WhakapapaTrailArea[] }) {
       </div>
       {areas.length > 0 ? (
         <div className="mt-2 space-y-3">
-          {areas.map((area) => (
-            <div key={area.name || "trails-area"}>
-              {area.name ? (
-                <h4 className="text-xs font-semibold text-muted-foreground">
-                  {area.name}
-                </h4>
-              ) : null}
-              <div className="mt-1 flex flex-wrap gap-2">
-                {area.trails.map((trail) => (
-                  <div
-                    key={`${area.name}-${trail.name}`}
-                    className="flex flex-col gap-1 rounded-md border border-border bg-card p-2"
-                  >
-                    <span className="text-xs font-medium text-foreground">
-                      {trail.name || "Unknown"}
-                    </span>
-                    <div className="flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
-                      {trail.difficulty ? (
-                        <DifficultyMarker difficulty={trail.difficulty} />
-                      ) : null}
-                      {trail.difficulty && (trail.groomed || trail.size) ? (
-                        <span aria-hidden>·</span>
-                      ) : null}
-                      <span>{trail.groomed ? "Groomed" : "Ungroomed"}</span>
-                      {trail.size ? (
-                        <>
-                          <span aria-hidden>·</span>
-                          <span>{trail.size}</span>
-                        </>
-                      ) : null}
+          {groupTrailAreas(areas).map((group, groupIndex) => {
+            if (group.kind === "row") {
+              // Consecutive small sub-areas share one wrapping line: each area's
+              // name sits inline ahead of its own trail cards.
+              return (
+                <div
+                  key={`trails-row-${group.areas
+                    .map((area) => area.name || "unnamed")
+                    .join("|")}-${groupIndex}`}
+                  className="flex flex-wrap items-center gap-x-4 gap-y-2"
+                >
+                  {group.areas.map((area) => (
+                    <div
+                      key={area.name || `trails-area-${groupIndex}`}
+                      aria-label={area.name || "trails-area"}
+                      className="flex flex-wrap items-center gap-2"
+                    >
+                      <TrailAreaName name={area.name} />
+                      {area.trails.map((trail) => (
+                        <TrailCard
+                          key={`${area.name}-${trail.name}`}
+                          trail={trail}
+                        />
+                      ))}
                     </div>
-                    <StatusCell status={trail.status} />
-                  </div>
-                ))}
+                  ))}
+                </div>
+              );
+            }
+
+            const area = group.area;
+            return (
+              <div
+                key={area.name || `trails-area-${groupIndex}`}
+                aria-label={area.name || "trails-area"}
+              >
+                <TrailAreaName name={area.name} />
+                <div className="mt-1 flex flex-wrap gap-2">
+                  {area.trails.map((trail) => (
+                    <TrailCard
+                      key={`${area.name}-${trail.name}`}
+                      trail={trail}
+                    />
+                  ))}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       ) : (
         <p className="mt-2 text-xs text-muted-foreground">
@@ -381,7 +473,9 @@ export function SkifieldWhakapapaWidget() {
           <h2 className="text-lg font-semibold text-foreground">
             Whakapapa Conditions
           </h2>
-          <p className="text-xs text-muted-foreground">Updated: {formattedUpdated}</p>
+          <p className="text-xs text-muted-foreground">
+            Updated: {formattedUpdated}
+          </p>
         </div>
         {stale ? (
           <span className="inline-flex rounded-full bg-warning-3 px-2 py-1 text-xs font-medium text-warning-11">
@@ -496,10 +590,7 @@ export function SkifieldWhakapapaWidget() {
               <tbody>
                 {data.conditions.length > 0 ? (
                   data.conditions.map((condition) => (
-                    <tr
-                      key={condition.name}
-                      className="border-t border-border"
-                    >
+                    <tr key={condition.name} className="border-t border-border">
                       <td className="py-2 pr-4 font-medium text-foreground">
                         {condition.name || "Unknown"}
                       </td>
