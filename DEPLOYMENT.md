@@ -84,6 +84,29 @@ consumer, a much larger replica count, or enabling the audit-archive client via
 may lower both values, but keep the invariant above whenever you change a pool
 size, `max_connections`, or the replica count.
 
+## App CPU sizing
+
+Each app container ships with `cpus: 2` in `docker-compose.yml`. Budget
+**roughly one dedicated core minimum per app slot that serves web traffic**,
+and prefer two: page renders are fully dynamic (nothing is prerendered — every
+page reads the per-request CSP nonce and session), and Node's JavaScript engine
+discards a route's optimised code within about ten seconds of that route going
+idle. The next request to the route then pays **~3.5–5 CPU-seconds** rebuilding
+it — most of it in the engine's background compiler threads, which parallelise
+across cores. With enough CPU that cold render is 1–2 seconds and a warm one is
+tens of milliseconds; capped below ~1 CPU the same render is CFS-throttled into
+**4–13 second page loads**, which presents as a mysteriously slow site with an
+idle database (measured in production, issue #2351 — the container had been
+throttled in 64% of all scheduler periods).
+
+Low-traffic sites feel this the most, because sparse visits mean *every* visit
+is a cold render. Two mitigations if you cannot spare the CPU: a keep-warm
+pinger (curl the key public routes on each app container every ~8 seconds —
+warm renders are so cheap the pings cost ~1–2% of a core), and the structural
+fix tracked in #2352 (static/ISR public pages). A constrained-VPS fork may
+lower `cpus`, but treat multi-second anonymous page loads as the expected
+symptom, not a bug, and say so in your fork's docs.
+
 ## Prerequisites
 
 - A host sized for your traffic and runtime memory needs

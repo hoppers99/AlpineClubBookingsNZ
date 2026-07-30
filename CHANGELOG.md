@@ -4,6 +4,23 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Self-hosted sites get enough processing power out of the box to load pages
+  quickly (#2351).** The standard deployment recipe used to cap each app
+  container at eight-tenths of one processor core. That sounded like plenty,
+  but it isn't: the app rebuilds a page's optimised machinery whenever that
+  page hasn't been visited for about ten seconds, and that rebuild wants a few
+  seconds of a whole core to itself. Under the old cap the rebuild was rationed
+  into small slices, and on a quiet club site — where almost every visit is the
+  first one in a while — that turned into four-to-thirteen-second page loads
+  that looked like a slow server or database but were neither (a live
+  deployment measured exactly this before the fix, and dropped from over five
+  seconds to about 1.4 the moment the cap was lifted). The recipe now allots
+  two cores per app container, the deployment guide gains an "App CPU sizing"
+  section explaining the budget, the why, and two mitigations for genuinely
+  small servers (a keep-warm pinger, and the planned pre-rendered public pages
+  of #2352), and the compose file says in place why the number should not be
+  casually lowered.
+
 - **The club logo is now stored as a real image instead of being baked into
   every page, cutting a multi-megabyte home page down to roughly its content
   size (#2322).** The logo used to be kept as text encoded directly inside the

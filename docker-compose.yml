@@ -126,7 +126,13 @@ x-app-service: &app-service
   security_opt:
     - no-new-privileges:true
   mem_limit: 1g
-  cpus: 0.8
+  # A cold page render costs ~3.5-5 CPU-seconds of V8 re-warm work (per-route
+  # optimised code is discarded within ~10s of idleness), so an app slot needs
+  # roughly a dedicated core to serve sparse traffic without multi-second page
+  # loads. Below ~1 CPU the renders get CFS-throttled into 4-13s (#2351).
+  # Lower this only for genuinely tiny hosts, with DEPLOYMENT.md ("App CPU
+  # sizing") in hand.
+  cpus: 2
   healthcheck:
     test:
       [
