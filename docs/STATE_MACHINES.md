@@ -1367,6 +1367,13 @@ Completing a `HUT_LEADER` induction sets the member's hut-leader eligibility
 flag. Actual `HutLeaderAssignment` rows remain separate dated roster/coverage
 records and are not created by induction completion.
 
+`HutLeaderAssignment` has **no state machine of its own** and gains none from
+the custodian bed hold (#2286): it stays a stateless dated record whose
+Upcoming / Active / Past reading is derived from `startDate`/`endDate` against
+today. Adding, changing or clearing its optional `bedId` is a plain field edit —
+the held bed is computed from the row on every query, so shortening, extending
+or deleting the assignment returns the bed with nothing to reconcile.
+
 ## Membership Cancellation, Archive, And Delete Lifecycle
 
 Known request statuses: `REQUESTED`, `APPROVED`, `REJECTED`, `WITHDRAWN`,

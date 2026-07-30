@@ -16,6 +16,8 @@ vi.mock("../prisma", () => ({
     booking: {
       findMany: prismaMocks.bookingFindMany,
     },
+    // #2286: custodian bed holds are base occupancy. None in these cases.
+    hutLeaderAssignment: { findMany: vi.fn().mockResolvedValue([]) },
     bookingGuest: {
       findFirst: prismaMocks.bookingGuestFindFirst,
       findMany: prismaMocks.bookingGuestFindMany,

@@ -139,6 +139,9 @@ const tx = {
   lodge: {
     findFirst: (...args: unknown[]) => mocks.lodgeFindFirst(...args),
   },
+  // #2286: the capacity engines read bed-holding hut-leader assignments
+  // (custodian occupancy). None in these cases.
+  hutLeaderAssignment: { findMany: vi.fn().mockResolvedValue([]) },
   booking: {
     findUnique: (...args: unknown[]) => mocks.bookingFindUnique(...args),
     findMany: (...args: unknown[]) => mocks.bookingFindMany(...args),

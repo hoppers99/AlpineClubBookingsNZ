@@ -3013,8 +3013,63 @@ Assignment additionally requires the member to hold the standard
 `USER` access role: a member whose only roles are custom definition-backed rows
 (`role = null`) cannot be assigned as a hut leader, and the booking-derived
 picker only surfaces adult `USER` members with an operational booking
-overlapping the assignment range (see CONFIGURATION.md → "Hut Leaders" for the
-promo-code/book-on-behalf workaround that rosters a booking-less custodian).
+overlapping the assignment range, while the "Any member" tab rosters a
+booking-less custodian directly (see CONFIGURATION.md → "Hut Leaders").
+
+A `HutLeaderAssignment` may additionally hold ONE bed (`bedId`), which makes it
+a **custodian occupancy** (#2286). The invariants:
+
+- **Optional and inert by default.** `bedId = null` is a role only and has zero
+  capacity effect — the pre-#2286 behaviour, and what every
+  `hut-leader-auto-assign` cron row is. Only a bed-holding assignment reaches a
+  capacity or allocation consumer.
+- **Inclusive night semantics.** The hold covers the night of every date from
+  `startDate` to `endDate` **inclusive**, never the half-open booking envelope.
+  The bed is bookable again for the night after `endDate`.
+- **Counted as an occupant, never as a smaller lodge.** The capacity engines add
+  the per-night custodian **count** to `occupiedBeds` rather than reducing
+  `lodgeCapacity`, so `occupiedBeds + availableBeds === lodgeCapacity` still
+  holds on every night. It is a count, never a boolean: two custodians handing
+  over on different beds subtract two.
+- **No booking, no allocation row, no guest.** A custodian is not a
+  `BookingGuest`, so they are structurally absent from the chore roster, the
+  booking rows and the display occupancy counts. They may still make an ordinary
+  booking of their own anywhere, including at the same lodge, and capacity then
+  correctly counts both their held bed and their booked bed.
+- **Two assignments may never hold the SAME bed on an overlapping night.** The
+  one-day handover overlap assignments already permit is allowed only on
+  different beds; the same-bed case is refused at create and update.
+- **A whole-lodge hold and a custodian never contend.** The hold reserves the
+  *bookable* lodge; the custodian's bed sits outside that pool. Neither refuses
+  the other, and the ADR-001 held-night pin is unchanged.
+- **Exclusion is enforced in application code, never by a database constraint**
+  (owner decision 28 Jul 2026, option (a)). Two things make that safe, and both
+  are required:
+  1. **Every** `BedAllocation` write path that places a guest on a bed re-reads
+     the live holds **on the same client, immediately before the write**, and
+     refuses or drops what would land on one: the manual funnel
+     `allocateBedNight`, the range assign's `CUSTODIAN_HOLD` classification,
+     `runAutoBedAllocation`'s in-transaction re-filter, and the lifecycle
+     reconcile's write-time re-filter (`dropRowsOnCustodianHeldBedNights`). A
+     read at plan time alone is NOT enough — a reconcile is routinely called
+     post-commit, so a hold committed between the plan and the write would
+     otherwise be written over.
+  2. Every placement transaction this code **opens itself** takes the per-lodge
+     advisory lock (`acquireLodgeCapacityLock`) as its first statement, sorted
+     when it can span several lodges, so that re-read and the write serialise
+     against the hold writer, which takes the same key. A reconcile running
+     inside a CALLER's transaction inherits that caller's lock discipline
+     instead of adding a key to an ordering it does not control; its write-time
+     re-filter still runs on that client.
+
+  `custodian-write-path-contract.test.ts` fails CI when a new write
+  path appears undeclared, and `CUSTODIAN_BED_CONFLICT` on the allocation board
+  surfaces any row that got through anyway.
+- **A held bed cannot be deactivated or deleted**, nor can its room, while the
+  hold exists (`onDelete: Restrict` is the FK backstop behind the app guards).
+- **Minor privacy.** A minor-age custodian is never individually named on the
+  lobby display at any name-display granularity; the slot shows the role word
+  alone.
 
 Hard delete must remain limited to records that pass the eligibility checks for
 no durable booking, financial, family, Xero, or membership-history blockers.

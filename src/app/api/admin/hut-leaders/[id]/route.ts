@@ -6,11 +6,26 @@ import { z } from "zod";
 import logger from "@/lib/logger";
 import { calculateOverlapDays } from "@/lib/hut-leader-overlap";
 import { lodgeNullTolerantScope } from "@/lib/lodges";
+import { acquireLodgeCapacityLock } from "@/lib/capacity";
+import { validateCustodianBedHold } from "@/lib/custodian-assignment";
+import { custodianBedHoldErrorResponse } from "@/lib/custodian-assignment-routes";
+import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
 
 const updateSchema = z.object({
   startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   lodgeId: z.string().min(1).optional(),
+  // Custodian bed hold (#2286), THREE-state and deliberately so:
+  //   absent          -> leave the bed exactly as it is
+  //   null            -> CLEAR the bed (back to role only; the bed is bookable
+  //                      again from the moment this commits)
+  //   a bed id string -> set/replace the bed
+  // `.nullable()` as well as `.optional()` is what makes "clear" expressible at
+  // all — without it there would be no way to undo a hold except deleting the
+  // whole assignment.
+  bedId: z.string().min(1).nullable().optional(),
+  // #1668-style explicit override of the over-capacity warning.
+  confirmOverCapacity: z.boolean().optional(),
 });
 
 /**
@@ -47,7 +62,12 @@ export async function PUT(
     return NextResponse.json({ error: "Assignment not found" }, { status: 404 });
   }
 
-  const updateData: { startDate?: Date; endDate?: Date; lodgeId?: string } = {};
+  const updateData: {
+    startDate?: Date;
+    endDate?: Date;
+    lodgeId?: string;
+    bedId?: string | null;
+  } = {};
   if (parsed.data.startDate) {
     if (!isDateOnlyString(parsed.data.startDate)) {
       return NextResponse.json({ error: "Invalid startDate" }, { status: 400 });
@@ -114,14 +134,59 @@ export async function PUT(
     }
   }
 
+  // Custodian bed hold (#2286). Three-state: absent leaves the hold alone,
+  // explicit null clears it, a string sets it. `bedIdProvided` is the only way
+  // to tell "not sent" from "sent as null", which is exactly the distinction
+  // between "don't touch the bed" and "release the bed".
+  // JSON has no `undefined`, so zod's three parsed values map one-to-one onto
+  // the three intents: undefined = key absent, null = explicit clear, string =
+  // set. No separate "was the key present" probe is needed or wanted.
+  const bedIdProvided = parsed.data.bedId !== undefined;
+  const nextBedId = bedIdProvided ? parsed.data.bedId : existing.bedId;
+  if (bedIdProvided) {
+    updateData.bedId = parsed.data.bedId ?? null;
+  }
+  if (nextBedId && !(await isEffectiveModuleEnabled("bedAllocation"))) {
+    return NextResponse.json(
+      {
+        error:
+          "Bed allocation is turned off for this club, so a bed cannot be held for a hut leader.",
+        code: "MODULE_DISABLED",
+      },
+      { status: 400 },
+    );
+  }
+
   try {
-    await prisma.hutLeaderAssignment.update({
-      where: { id },
-      data: updateData,
-    });
+    // A hold that still exists after this edit is re-validated against the
+    // FINAL dates and lodge, under the lodge lock — shortening, extending or
+    // moving lodges can all invalidate a bed that was fine before. Clearing the
+    // bed (or never having one) needs no lock: it only ever frees capacity.
+    if (nextBedId) {
+      await prisma.$transaction(async (tx) => {
+        await acquireLodgeCapacityLock(tx, finalLodgeId);
+        await validateCustodianBedHold({
+          bedId: nextBedId,
+          lodgeId: finalLodgeId,
+          startDate: finalStart,
+          endDate: finalEnd,
+          assignmentId: id,
+          confirmOverCapacity: parsed.data.confirmOverCapacity,
+          db: tx,
+        });
+        await tx.hutLeaderAssignment.update({ where: { id }, data: updateData });
+      });
+    } else {
+      await prisma.hutLeaderAssignment.update({
+        where: { id },
+        data: updateData,
+      });
+    }
 
     return NextResponse.json({ success: true });
   } catch (err) {
+    const custodianResponse = custodianBedHoldErrorResponse(err);
+    if (custodianResponse) return custodianResponse;
     logger.error({ err }, "Error updating hut leader assignment");
     return NextResponse.json({ error: "Failed to update assignment" }, { status: 500 });
   }
