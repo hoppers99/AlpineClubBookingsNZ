@@ -56,7 +56,7 @@ export const EMAIL_AUDIT_DEFAULTS = {
   },
   "checkin-reminder": {
     "defaultSubject": "Check-in Reminder - {{CLUB_LODGE_NAME}}",
-    "defaultBody": "Check-in Reminder\n\nHi {{firstName}}, your lodge stay begins tomorrow!\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\n\nGuest list:\n\n{{guestFirstName}} {{guestLastName}}\n...\n\nYour arrival day chores:        [only when chores exist]\n\n{{choreName}}: {{choreDescription}}\n...\n\nPlease ensure you arrive prepared for alpine conditions. Check the weather forecast before departing.\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\nView Booking: {{BASE_URL}}/bookings"
+    "defaultBody": "Check-in Reminder\n\nHi {{firstName}}, your lodge stay begins tomorrow!\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\n\nGuest list:\n\n{{guestName}}\n\nYour arrival day chores:        [only when chores exist]\n\n{{choreName}}: {{choreDescription}}\n...\n\nPlease ensure you arrive prepared for alpine conditions. Check the weather forecast before departing.\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\nView Booking: {{BASE_URL}}/bookings"
   },
   "pre-arrival-reminder": {
     "defaultSubject": "Pre-arrival Information - {{CLUB_LODGE_NAME}}",

@@ -391,8 +391,16 @@ export async function sendCheckinReminderEmail(
       checkIn: formatNZDate(checkIn),
       checkOut: formatNZDate(checkOut),
       guestCount: guests.length,
-      guestFirstName: guests.map((guest) => guest.firstName).join(", "),
-      guestLastName: guests.map((guest) => guest.lastName).join(", "),
+      // #2307: the audited/overridable body renders one guest per line. This
+      // used to supply every FIRST name comma-joined into {{guestFirstName}} and
+      // every LAST name comma-joined into {{guestLastName}} on one line, so a
+      // three-guest booking read "Ada, Bob, Cleo Lovelace, Smith, Jones" — each
+      // guest's surname attached to somebody else. One newline-joined
+      // "First Last" per guest is what the HTML template has always rendered as
+      // a <li> list, so the audit trail and the delivered mail now agree.
+      guestName: guests
+        .map((guest) => `${guest.firstName} ${guest.lastName}`.trim())
+        .join("\n"),
       choreName: chores.map((chore) => chore.name).join(", "),
       choreDescription: chores
         .map((chore) => chore.description ?? "")
