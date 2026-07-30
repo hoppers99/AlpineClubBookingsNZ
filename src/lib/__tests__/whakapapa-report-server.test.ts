@@ -42,7 +42,11 @@ function conditionRow(name: string): string {
     </div>`;
 }
 
-function buildHtml(sections: SectionSpec[], conditionNames: string[]): string {
+function buildHtml(
+  sections: SectionSpec[],
+  conditionNames: string[],
+  trailsHtml = "",
+): string {
   return `<!doctype html><html><body>
     <div class="areaTitle_3oPk4X">Bruce Road</div>
     <span class="open_3oPk4X">Open</span>
@@ -50,7 +54,60 @@ function buildHtml(sections: SectionSpec[], conditionNames: string[]): string {
     <div class="roadContent_3oPk4X">Sealed to the car park.</div>
     ${sections.map(section).join("")}
     ${conditionNames.map(conditionRow).join("")}
+    ${trailsHtml}
   </body></html>`;
+}
+
+// The difficulty SVG markers exactly as the upstream report draws them: a green
+// circle (id "green"), a blue square (id "blue"), an id-LESS black diamond path,
+// and a red diamond drawn as diamond_left/diamond_right paths.
+const DIFFICULTY_SVG: Record<string, string> = {
+  beginner: '<svg viewBox="0 0 600 600"><circle id="green" cx="300" cy="300" r="250"/></svg>',
+  intermediate:
+    '<svg viewBox="0 0 600 600"><rect id="blue" x="66" y="66" width="472" height="472"/></svg>',
+  advanced:
+    '<svg viewBox="0 0 600 600"><path d="M300,575l275,-275l-275,-275l-275,275l275,275Z"/></svg>',
+  expert:
+    '<svg viewBox="0 0 600 600"><path id="diamond_left" d="M155,560l135,-260l-135,-260l-135,260l135,260Z"/><path id="diamond_right" d="M445,560l135,-260l-135,-260l-135,260l135,260Z"/></svg>',
+};
+
+type TrailSpec = {
+  name: string;
+  status: string;
+  /** Difficulty the marker should encode: beginner|intermediate|advanced|expert. */
+  grade: keyof typeof DIFFICULTY_SVG;
+  subInfo: string;
+  statusClass: string;
+};
+
+// Mirror the upstream Trails DOM: a `wrapper_` (lowercase w) section holding a
+// `#trails` heading inside a `titleWrapper_` (capital W, so it is skipped by the
+// wrapper selector), then collapsable sub-areas of items. Difficulty is a
+// coloured SVG grade marker; groomed/size live in a subInfo line.
+function trailsSection(areaName: string, trails: TrailSpec[]): string {
+  const items = trails
+    .map(
+      (trail) => `
+        <div class="item_3CiH98">
+          <div class="iconWrapper_3CiH98">${DIFFICULTY_SVG[trail.grade]}</div>
+          <div class="textWrapper_3CiH98">
+            <div class="name_3CiH98">${trail.name}</div>
+            <div class="subInfo_3CiH98">${trail.subInfo}</div>
+          </div>
+          <div class="status_3CiH98 ${trail.statusClass}">${trail.status}</div>
+        </div>`,
+    )
+    .join("");
+  return `
+    <div class="wrapper_3WEWyU">
+      <div class="titleWrapper_3WEWyU"><div id="trails" class="title_3WEWyU">Trails</div></div>
+      <div class="collapsableSection_3WEWyU">
+        <div class="title_3WEWyU">${areaName}</div>
+        <div class="collapsableContent_3WEWyU">
+          <div class="items_3WEWyU">${items}</div>
+        </div>
+      </div>
+    </div>`;
 }
 
 function mockFetchHtml(
@@ -183,6 +240,102 @@ describe("fetchWhakapapaCurlData", () => {
         snowfall7d: "",
       },
     ]);
+  });
+
+  it("still parses after the upstream style-name hashes rotate (resilience)", async () => {
+    // The upstream site is CSS-modules: every class carries a build-hash suffix
+    // that rotates on each deploy (e.g. `areaTitle_3oPk4X` -> `areaTitle_4xD33B`),
+    // which is what repeatedly broke the scraper. The hash-agnostic selectors
+    // must match on the stable prefix regardless of the suffix.
+    const rotated = buildHtml(CANONICAL_SECTIONS, ["Top of Waterfall"])
+      .replace(/_3CiH98/g, "_9aa11Z")
+      .replace(/_3oPk4X/g, "_4xD33B")
+      .replace(/_2hnOFJ/g, "_kk22QQ")
+      .replace(/_1pp0Bo/g, "_zz99PP");
+    mockFetchHtml(rotated);
+
+    const data = await fetchWhakapapaCurlData();
+
+    expect(data.roadStatus.name).toBe("Bruce Road");
+    expect(data.roadStatus.status).toBe("Open");
+    expect(data.roadStatus.wheelRequirements).toBe("Chains must be carried");
+    expect(data.facilities).toEqual([{ name: "Ticket Office", status: "Open" }]);
+    expect(data.lifts).toEqual([{ name: "Sky Waka", status: "Open" }]);
+    expect(data.conditions[0]?.name).toBe("Top of Waterfall");
+  });
+
+  it("parses trails grouped by sub-area with difficulty, groomed, and size", async () => {
+    const trails = trailsSection("Happy Valley Area", [
+      {
+        name: "Happy Valley",
+        status: "Open",
+        grade: "beginner", // green circle
+        subInfo: "Groomed",
+        statusClass: "open_3CiH98",
+      },
+      {
+        name: "Tennants Valley",
+        status: "Coming Soon",
+        grade: "advanced", // id-less black diamond path
+        subInfo: "Ungroomed",
+        statusClass: "inactive_3CiH98",
+      },
+      {
+        name: "Big Park",
+        status: "Open",
+        grade: "intermediate", // blue square
+        subInfo: "Groomed - Large",
+        statusClass: "open_3CiH98",
+      },
+      {
+        name: "Waterfall",
+        status: "Coming Soon",
+        grade: "expert", // red diamond (diamond_left/diamond_right paths)
+        subInfo: "Ungroomed",
+        statusClass: "inactive_3CiH98",
+      },
+    ]);
+    mockFetchHtml(buildHtml(CANONICAL_SECTIONS, [], trails));
+
+    const data = await fetchWhakapapaCurlData();
+
+    expect(data.trails).toEqual([
+      {
+        name: "Happy Valley Area",
+        trails: [
+          {
+            name: "Happy Valley",
+            status: "Open",
+            groomed: true,
+            difficulty: "Beginner",
+            size: "",
+          },
+          {
+            name: "Tennants Valley",
+            status: "Coming Soon",
+            groomed: false,
+            difficulty: "Advanced",
+            size: "",
+          },
+          {
+            name: "Big Park",
+            status: "Open",
+            groomed: true,
+            difficulty: "Intermediate",
+            size: "Large",
+          },
+          {
+            name: "Waterfall",
+            status: "Coming Soon",
+            groomed: false,
+            difficulty: "Expert",
+            size: "",
+          },
+        ],
+      },
+    ]);
+    // The road-status open badge must not swallow a trail's `open_` status class.
+    expect(data.roadStatus.status).toBe("Open");
   });
 
   it("throws when the upstream response is not ok", async () => {

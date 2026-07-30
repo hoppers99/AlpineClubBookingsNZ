@@ -757,15 +757,21 @@ describe("view-only section banner coverage (#2160)", () => {
                state, not an oversight. (The Xero/Stripe/Google/backup wizard
                steps sidestep this by using a plain disabled `Button`, which
                says nothing at all; these say why.)
+          277  +2  the Mountain Conditions "Source & selectors" panel adds
+               Preview and Save configuration ViewOnlyActionButtons — static
+               opt-outs under the panel's existing AdminViewOnlySectionBanner,
+               so callSites and staticOptOuts (and thus optOuts) each rise by
+               two while exceptions and bannerComponents hold (no new banner
+               component).
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into
       // the Admin tools card's layout — the same shape as the capacity- and
       // exclusive-hold controls beside it, so it keeps its own per-button
       // reason rather than opting out under a banner it cannot prove renders.
-      callSites: 275,
-      optOuts: 237,
-      staticOptOuts: 216,
+      callSites: 277,
+      optOuts: 239,
+      staticOptOuts: 218,
       vouchedOptOuts: 21,
       exceptions: 38,
       exceptionFiles: 18,
