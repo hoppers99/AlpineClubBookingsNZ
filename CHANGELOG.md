@@ -4,6 +4,58 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Beds can now be allocated and confirmed from inside a booking, without going
+  to the board at all (#2252).** Until now, answering "where is this party
+  sleeping, and is it settled?" meant leaving the booking, opening the
+  bed-allocation board, setting the date window to that booking's nights, and
+  picking its chips out from among everyone else's. An admin viewing a booking
+  now gets a **Bed allocation** card on the booking itself — its own section, in
+  the section list down the side — with one row per guest: their stay, how many
+  of their nights have a bed and how many do not, and each bed they are on shown
+  as a run of nights rather than a line per night.
+
+  **Assign…** opens the same range dialog the board uses, prefilled with that
+  guest's own stay, so everything it does there it does here — including
+  confirming those beds as it writes them. **Remove** takes a run of nights off
+  a bed. **Confirm draft beds** approves every draft bed night on that booking
+  and, importantly, on no other: the board's existing "approve everything in
+  this window" action would have swept up other people's bookings, so confirming
+  from a booking now selects by the booking itself. That approval is recorded
+  against the booking, so the booking's own **Audit log** link finds it.
+
+  The card is deliberately honest about the things it cannot do or cannot show.
+  Confirming beds locks the member out of changing their requested room — and
+  under range assignment that lock has usually already happened, so the card
+  says so rather than implying the button is the trigger. The lock is also not
+  one-way: removing a booking's last confirmed night re-opens the member's room
+  request, and the card warns before it does. A stay longer than the 31-night
+  window the allocation view allows is shown a page at a time, with the page
+  always labelled ("Nights 32–61 of 61") and Confirm stating plainly that it
+  reaches the nights you cannot currently see. A booking that cannot hold beds —
+  cancelled, deleted, or a status that is never allocated — keeps the card and
+  says why, instead of vanishing and leaving you to wonder — and that note is
+  about the booking's own status, so it reads the same whatever dates you are
+  looking at, and it is no longer swallowed when a cancelled booking still
+  carries an old whole-lodge-hold flag. A page that simply holds none of the
+  booking's nights says exactly that instead, and keeps the rows and **Confirm
+  draft beds** available, because on a long stay its nights are just on another
+  page. A booking holding the whole lodge shows the hold instead of rows, with no
+  buttons at all, because it needs no individual beds. And because removing a run
+  is one night at a time, a removal that stops half way tells you exactly how
+  many nights actually went.
+
+  Two smaller pieces of the same honesty: the card's counts and its
+  Draft/Confirmed badge say "(this page)" when a stay is paged, because a single
+  31-night read cannot report on the rest; and the "this re-opens the member's
+  room request" warning counts the whole booking rather than the page, so a long
+  stay with confirmed nights on another page no longer gets warned about
+  something that is not going to happen. **Confirm draft beds** also stays inside
+  the lodge whose beds the card is showing, so it can never confirm a bed you
+  were not shown.
+
+  Members see none of this, including on their own booking, and neither do
+  read-only admins — every control on the card is a change, and the board is one
+  click away for anyone who only needs to look.
 - **Members can now ask to book the whole lodge (#2263).** Planning a course, a
   club trip or a family gathering that needs the lodge to yourselves? Book a
   Stay now has a "Need the whole lodge?" card leading to a short form: your
@@ -79,8 +131,9 @@ All notable public reference-release changes should be recorded here.
   Xero, Stripe and Google steps, which appeared and then vanished for actual Full
   Admins, because the page read "still working out who you are" as "not a Full
   Admin". All three are gone or now wait until they know. The published
-  banner-coverage figures were re-measured with it: **285**
-  gated admin controls, **242** of them covered by a banner (216 in their own
+  banner-coverage figures were re-measured with it (and again after the
+  in-booking Bed allocation card, #2252, added its three): **288**
+  gated admin controls, **245** of them covered by a banner (219 in their own
   file, 26 by a verified vouching parent — 5 of those through the wizard frame),
   and **43** across 23 files deliberately keeping their own reason.
 - **Choosing to use your account credit and then saving the booking as a draft
