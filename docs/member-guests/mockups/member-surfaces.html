@@ -1,0 +1,210 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Member guests — what the member sees (MG2 #2307)</title>
+<style>
+  :root { --bg:#eef2f4; --panel:#fff; --panel2:#f6f9fa; --ink:#102329; --muted:#516670; --line:#dce5e9; --accent:#0e6e78; --accent-ink:#0a545c; --warn:#8a5a00; --warn-bg:#fff6e2; --warn-line:#e8cf9a; --bad:#a3242b; --bad-bg:#fdeced; --bad-line:#f0c2c5; --ok:#1d6b45; --ok-bg:#e9f6ee; --radius:14px; --maxw:920px; }
+  @media (prefers-color-scheme: dark){ :root{ --bg:#08171c; --panel:#0f242b; --panel2:#0c1e24; --ink:#e8f4f6; --muted:#8fb0b8; --line:#213840; --accent:#3fb9cb; --accent-ink:#6fd2e0; --warn:#f0c674; --warn-bg:#2b2313; --warn-line:#5a4a20; --bad:#f2a2a6; --bad-bg:#2c1618; --bad-line:#5a2a2e; --ok:#7fd6a5; --ok-bg:#12261c; } }
+  :root[data-theme="light"]{ --bg:#eef2f4; --panel:#fff; --panel2:#f6f9fa; --ink:#102329; --muted:#516670; --line:#dce5e9; --accent:#0e6e78; --accent-ink:#0a545c; --warn:#8a5a00; --warn-bg:#fff6e2; --warn-line:#e8cf9a; --bad:#a3242b; --bad-bg:#fdeced; --bad-line:#f0c2c5; --ok:#1d6b45; --ok-bg:#e9f6ee; }
+  :root[data-theme="dark"]{ --bg:#08171c; --panel:#0f242b; --panel2:#0c1e24; --ink:#e8f4f6; --muted:#8fb0b8; --line:#213840; --accent:#3fb9cb; --accent-ink:#6fd2e0; --warn:#f0c674; --warn-bg:#2b2313; --warn-line:#5a4a20; --bad:#f2a2a6; --bad-bg:#2c1618; --bad-line:#5a2a2e; --ok:#7fd6a5; --ok-bg:#12261c; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; line-height:1.55; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:var(--maxw); margin:0 auto; padding: clamp(22px,5vw,52px) clamp(16px,4vw,34px) 80px; }
+  .eyebrow { font-size:12px; letter-spacing:.18em; text-transform:uppercase; color:var(--accent-ink); font-weight:700; margin:0 0 10px; }
+  h1 { font-size:clamp(26px,5vw,40px); line-height:1.05; margin:0 0 12px; letter-spacing:-.025em; font-weight:800; }
+  .lede { font-size:clamp(15px,2.2vw,18px); color:var(--muted); max-width:66ch; margin:0 0 8px; }
+  h2 { font-size:clamp(18px,2.6vw,23px); margin:clamp(34px,6vw,50px) 0 4px; letter-spacing:-.01em; }
+  .sub { margin:0 0 16px; color:var(--muted); font-size:14.5px; max-width:70ch; }
+  .rule { height:2px; background:linear-gradient(to right, var(--accent), transparent 65%); border-radius:2px; margin:0 0 18px; opacity:.5; }
+  .note { background:var(--panel2); border:1px solid var(--line); border-left:3px solid var(--accent); border-radius:10px; padding:12px 15px; font-size:13.5px; color:var(--muted); margin:14px 0; }
+  .note b { color:var(--ink); }
+
+  /* --- the mock chrome: a fake app page --- */
+  .screen { background:var(--panel2); border:1px solid var(--line); border-radius:var(--radius); padding:16px; }
+  .screen .crumb { font-size:12px; color:var(--muted); margin:0 4px 12px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px 20px; }
+  .card + .card { margin-top:12px; }
+  .card h3 { margin:0 0 6px; font-size:17px; letter-spacing:-.01em; }
+  .card p { margin:0 0 10px; font-size:14.5px; color:var(--muted); }
+  .card p:last-child { margin-bottom:0; }
+  .card p b { color:var(--ink); font-weight:650; }
+  .card.ask { border-color:color-mix(in srgb,var(--accent) 45%, var(--line)); box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 25%, transparent); }
+  dl.facts { margin:0 0 14px; display:grid; grid-template-columns:auto 1fr; gap:4px 16px; font-size:14px; }
+  dl.facts dt { color:var(--muted); }
+  dl.facts dd { margin:0; color:var(--ink); font-weight:600; }
+  ul.party { margin:2px 0 14px; padding:0 0 0 2px; list-style:none; font-size:14px; display:flex; flex-direction:column; gap:3px; }
+  ul.party li { color:var(--ink); }
+  ul.party li::before { content:"·"; color:var(--muted); margin-right:8px; }
+  .actions { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:4px; }
+  button { font:inherit; font-size:14px; font-weight:650; border-radius:9px; padding:9px 16px; border:1px solid var(--line); background:var(--panel2); color:var(--ink); cursor:default; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.danger { background:transparent; border-color:color-mix(in srgb,var(--bad) 50%, var(--line)); color:var(--bad); }
+  .badge { display:inline-flex; align-items:center; gap:5px; font-size:11.5px; font-weight:700; letter-spacing:.02em; text-transform:uppercase; padding:3px 9px; border-radius:999px; border:1px solid var(--line); background:var(--panel2); color:var(--muted); }
+  .badge.pend { background:var(--warn-bg); color:var(--warn); border-color:var(--warn-line); }
+  .badge.ok { background:var(--ok-bg); color:var(--ok); border-color:color-mix(in srgb,var(--ok) 35%, var(--line)); }
+  .badge.bad { background:var(--bad-bg); color:var(--bad); border-color:var(--bad-line); }
+  .inline-warn { background:var(--warn-bg); border:1px solid var(--warn-line); color:var(--warn); border-radius:9px; padding:10px 13px; font-size:13.5px; margin:0 0 12px; }
+  .inline-bad { background:var(--bad-bg); border:1px solid var(--bad-line); color:var(--bad); border-radius:9px; padding:10px 13px; font-size:13.5px; margin:0 0 12px; }
+  .guests { display:flex; flex-direction:column; gap:0; }
+  .guests .row { display:flex; align-items:center; gap:10px; padding:9px 2px; border-bottom:1px solid var(--line); font-size:14.5px; flex-wrap:wrap; }
+  .guests .row:last-child { border-bottom:0; }
+  .guests .row .who { font-weight:600; }
+  .guests .row .meta { color:var(--muted); font-size:13px; }
+  .guests .row .sp { flex:1; }
+  .foot { margin-top:44px; padding-top:16px; border-top:1px solid var(--line); font-size:13px; color:var(--muted); }
+  code { background:var(--panel2); border:1px solid var(--line); border-radius:6px; padding:1px 6px; font-size:12.5px; }
+  a { color:var(--accent-ink); }
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">Alpine Sports Club · epic #2305 · MG2 (#2307)</p>
+  <h1>Member guests — what the <em>member</em> sees</h1>
+  <p class="lede">Static mockup, mock data. These are the member-facing surfaces MG2 ships: the consent card on the booking page, the standalone page a family delegate answers on, and the states where the club has to say "no, not this way".</p>
+  <div class="note"><b>Read alongside</b> <code>emails.html</code> (the four emails that link here) and <code>admin-surfaces.html</code> (settings card, badges, exception list).</div>
+
+  <!-- ============ 1 ============ -->
+  <h2>1 · The consent card — the normal ask</h2>
+  <p class="sub">Where: <code>/bookings/[id]</code>, immediately above the existing "take yourself off this booking" card. The email deep-links to <code>#consent</code>. Owner decision <b>D-11</b> means a pending member can already open the whole booking page, so this card sits inside the real page rather than replacing it.</p>
+  <div class="rule"></div>
+  <div class="screen">
+    <p class="crumb">My bookings › Silverpeak Lodge · 8–10 Aug 2026</p>
+    <div class="card ask" id="consent">
+      <span class="badge pend">Waiting for your answer</span>
+      <h3 style="margin-top:8px">Dave Ngata has added you to this booking</h3>
+      <p>You have been put down for two nights at <b>Silverpeak Lodge</b>. Nothing is settled until you answer. A bed is being held for you in the meantime.</p>
+      <dl class="facts">
+        <dt>Booked by</dt><dd>Dave Ngata</dd>
+        <dt>Lodge</dt><dd>Silverpeak Lodge</dd>
+        <dt>Stay</dt><dd>Sat 8 Aug – Mon 10 Aug 2026 (2 nights)</dd>
+        <dt>Your nights</dt><dd>Sat 8 Aug, Sun 9 Aug</dd>
+        <dt>Answer by</dt><dd>Fri 7 Aug 2026</dd>
+      </dl>
+      <p style="margin-bottom:4px">Everyone on the booking:</p>
+      <ul class="party">
+        <li>Dave Ngata</li>
+        <li>Marama Ngata</li>
+        <li>Ari Ngata</li>
+        <li>Priya Kaur — that's you</li>
+      </ul>
+      <p>If you do not answer by <b>Fri 7 Aug</b> the request lapses on its own, the held bed is released, and Dave is told. You do not have to do anything to decline.</p>
+      <div class="actions">
+        <button class="primary">Yes, add me</button>
+        <button class="danger">No thanks</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Take yourself off this booking</h3>
+      <p>The existing #2250 card, unchanged, still below ours.</p>
+    </div>
+  </div>
+  <div class="note"><b>What is deliberately not here:</b> no prices, no booking total, no payment state. Owner decision <b>MG2-D-a</b> put the full party listing in — names only. (Honest caveat: under D-11 this member can scroll the same page and the booking editor below shows every guest's price and the total. Leaving money out of the card and the email is a courtesy, not a control.)</p>
+
+  <!-- ============ 2 ============ -->
+  <h2>2 · The delegate page — answering for someone who cannot log in</h2>
+  <p class="sub">Where: <code>/bookings/consent/[guestId]</code>, its own route. A delegate is not a guest on the booking, so the booking page would redirect them away. Per <b>D-9</b> a target with no login is the normal case, not an edge case, so this page carries real traffic.</p>
+  <div class="rule"></div>
+  <div class="screen">
+    <p class="crumb">alpineclub.nz › Consent request</p>
+    <div class="card ask">
+      <span class="badge pend">Waiting for an answer</span>
+      <h3 style="margin-top:8px">Dave Ngata has added Tama Kaur (age 9) to a booking</h3>
+      <p>You are being asked because <b>Tama</b> does not have a login of their own and you are an adult in their family group. Answering here counts as Tama's answer, and your name is recorded against it.</p>
+      <dl class="facts">
+        <dt>Booked by</dt><dd>Dave Ngata</dd>
+        <dt>Lodge</dt><dd>Silverpeak Lodge</dd>
+        <dt>Stay</dt><dd>Sat 8 Aug – Mon 10 Aug 2026 (2 nights)</dd>
+        <dt>Tama's nights</dt><dd>Sat 8 Aug, Sun 9 Aug</dd>
+        <dt>Answer by</dt><dd>Fri 7 Aug 2026</dd>
+      </dl>
+      <p style="margin-bottom:4px">Everyone on the booking:</p>
+      <ul class="party">
+        <li>Dave Ngata</li>
+        <li>Marama Ngata</li>
+        <li>Ari Ngata</li>
+        <li>Tama Kaur</li>
+      </ul>
+      <div class="actions">
+        <button class="primary">Yes, add Tama</button>
+        <button class="danger">No thanks</button>
+      </div>
+    </div>
+  </div>
+  <div class="note"><b>Deliberate asymmetry, and it is a security choice.</b> A target with a login sees the whole booking page (D-11 applies to <em>guest rows</em>). A delegate sees only this panel — we do <em>not</em> widen the linked-guest-viewer rule to admit delegates, because that would hand a delegate the whole booking including its money.</p>
+
+  <!-- ============ 3 ============ -->
+  <h2>3 · Notify-only mode — told, not asked</h2>
+  <p class="sub">When the club has set <b>Tell the member</b> instead of <b>Ask the member</b> (D-3: asking is the shipped default; this is an explicit opt-down). There is no card to answer, because there is no question.</p>
+  <div class="rule"></div>
+  <div class="screen">
+    <p class="crumb">My bookings › Silverpeak Lodge · 8–10 Aug 2026</p>
+    <div class="card">
+      <span class="badge ok">You're on this booking</span>
+      <h3 style="margin-top:8px">Dave Ngata added you to this booking</h3>
+      <p>Your place is already held — the club does not ask first for member guests. If you would rather not go, take yourself off below.</p>
+    </div>
+    <div class="card">
+      <h3>Take yourself off this booking</h3>
+      <p>The existing #2250 card does this job. No second removal path.</p>
+    </div>
+  </div>
+
+  <!-- ============ 4 ============ -->
+  <h2>4 · When "No thanks" cannot be actioned — the honest refusals</h2>
+  <p class="sub">Owner decision <b>D-14</b>: the ordinary self-removal blockers apply to a member who never consented. So declining is sometimes refused. Rather than hide that, the card says who <em>can</em> act, and names the real remedy.</p>
+  <div class="rule"></div>
+
+  <div class="screen">
+    <p class="crumb">Variant A — predictable refusal, known before the click</p>
+    <div class="card ask">
+      <span class="badge pend">Waiting for your answer</span>
+      <h3 style="margin-top:8px">Dave Ngata has added you to this booking</h3>
+      <div class="inline-warn">You are the only guest on this booking, so taking you off would leave it empty. Only Dave or the club can cancel it. <b>Ask Dave to cancel the booking</b> if you do not want to go.</div>
+      <p>You can still say yes.</p>
+      <div class="actions"><button class="primary">Yes, add me</button></div>
+    </div>
+  </div>
+
+  <div class="screen" style="margin-top:12px">
+    <p class="crumb">Variant B — unpredictable refusal, only knowable from the server</p>
+    <div class="card ask">
+      <span class="badge pend">Waiting for your answer</span>
+      <h3 style="margin-top:8px">Dave Ngata has added you to this booking</h3>
+      <div class="inline-bad">This booking has already been paid, and taking a guest off it needs the owner or an admin to choose between a refund and account credit. <b>Ask Dave or the club to take you off.</b></div>
+      <p>Both buttons stay on the page: whether this refusal applies cannot be known without running the full repricing pass, so the club shows the action and repeats the server's answer word for word if it is refused. This follows the existing #2250 design exactly.</p>
+      <div class="actions"><button class="primary">Yes, add me</button><button class="danger">No thanks</button></div>
+    </div>
+  </div>
+
+  <div class="screen" style="margin-top:12px">
+    <p class="crumb">Variant C — a negotiated (quote-priced) booking request</p>
+    <div class="card ask">
+      <span class="badge pend">Waiting for your answer</span>
+      <h3 style="margin-top:8px">Alpine Sports Club has added you to a booking request</h3>
+      <div class="inline-warn">This booking was priced by hand, so guests cannot be taken off it here. <b>Only the club can take you off — it will re-quote the request.</b> Reply to the club and they will sort it.</div>
+      <div class="actions"><button class="primary">Yes, add me</button></div>
+    </div>
+  </div>
+
+  <!-- ============ 5 ============ -->
+  <h2>5 · Consent state on the guest list (everyone who can see the booking)</h2>
+  <p class="sub">A badge per guest row in the booking editor. Family and non-member guests — the overwhelming majority of rows, forever — get <b>no badge and no layout change</b>.</p>
+  <div class="rule"></div>
+  <div class="screen">
+    <div class="card">
+      <h3>Guests</h3>
+      <div class="guests">
+        <div class="row"><span class="who">Dave Ngata</span><span class="meta">Adult · member</span><span class="sp"></span></div>
+        <div class="row"><span class="who">Marama Ngata</span><span class="meta">Adult · family</span><span class="sp"></span></div>
+        <div class="row"><span class="who">Ari Ngata</span><span class="meta">Child · family</span><span class="sp"></span></div>
+        <div class="row"><span class="who">Priya Kaur</span><span class="meta">Adult · member guest</span><span class="sp"></span><span class="badge pend">Waiting for consent · expires 7 Aug</span></div>
+        <div class="row"><span class="who">Sione Tui</span><span class="meta">Adult · member guest</span><span class="sp"></span><span class="badge ok">Consented</span></div>
+        <div class="row"><span class="who">Hana Lee</span><span class="meta">Adult · member guest</span><span class="sp"></span><span class="badge ok">Told, not asked</span></div>
+        <div class="row"><span class="who">Rewi Boyd</span><span class="meta">Adult · member guest</span><span class="sp"></span><span class="badge ok">Added by the club</span></div>
+        <div class="row"><span class="who">Tui Aporo</span><span class="meta">Adult · member guest</span><span class="sp"></span><span class="badge bad">Said no — still on the booking</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="note"><b>Disclosure, recorded so it is a choice and not an accident:</b> under D-11 a member who has not yet consented can see this list, so they see other members' consent states too. That is consistent with them already seeing every name and price on the same page.</div>
+
+  <p class="foot">Mock data. Copy is the real proposed copy — mark it up if it is wrong. Behaviour behind these screens is specified in the MG2 FINAL v2 plan on issue #2307.</p>
+</div>
