@@ -16,6 +16,7 @@ vi.mock("@/lib/date-only", async () => {
 import { Prisma } from "@prisma/client";
 import {
   BedAllocationAdminError,
+  MAX_AUDITED_RANGE_PARTNER_PROMOTIONS,
   MAX_BED_ALLOCATION_ASSIGN_RANGE_NIGHTS,
   assignBedRange,
   manuallyAllocateBed,
@@ -813,6 +814,170 @@ describe("assignBedRange audit record", () => {
     expect(serialised).not.toContain("Other Guest");
     expect(serialised).not.toContain("Other Member");
     expect(serialised).not.toContain("Range Guest");
+  });
+
+  /*
+   * #2251 residual R4. Partner promotions used to be audited one row per
+   * promotion, which is the one thing in this transaction that still grew with
+   * the range length: a 366-night move off shared doubles would write 366 audit
+   * rows inside it. One batched entry replaces them, following the #2285 prune's
+   * shape — a compact list capped at the audit sanitiser's array limit, the exact
+   * count, and a flag saying the list is partial.
+   */
+  it("records ONE batched partner-promotion entry, never one per promotion", async () => {
+    const { db, auditCreate } = buildDb({
+      existingRows: [
+        {
+          id: "allocation-1",
+          bedId: "bed-old",
+          stayDate: parseDateOnly("2026-06-02"),
+          isSecondOccupant: false,
+        },
+      ],
+    });
+    db.bedAllocation.findMany = vi.fn(
+      async (args: { where: Record<string, unknown> }) => {
+        if ("bedId" in args.where) return [];
+        if ("isSecondOccupant" in args.where) {
+          return [
+            {
+              id: "partner-1",
+              isSecondOccupant: true,
+              bedId: "bed-old",
+              bookingId: "booking-other",
+              bookingGuestId: "guest-other",
+              stayDate: parseDateOnly("2026-06-02"),
+            },
+          ];
+        }
+        return [
+          {
+            id: "allocation-1",
+            bedId: "bed-old",
+            stayDate: parseDateOnly("2026-06-02"),
+            isSecondOccupant: false,
+          },
+        ];
+      },
+    ) as never;
+
+    await assignBedRange({
+      bookingGuestId: "guest-1",
+      bedId: "bed-1",
+      from: "2026-06-01",
+      to: "2026-06-06",
+      approvedByMemberId: "admin-1",
+      db: db as never,
+    });
+
+    // The range entry plus ONE promotion entry — the whole transaction's audit
+    // row count, whatever the night count.
+    expect(auditCreate).toHaveBeenCalledTimes(2);
+    expect(auditEntry(auditCreate, 0).action).toBe("BED_ALLOCATION_RANGE_SET");
+    const entry = auditEntry(auditCreate, 1);
+    expect(entry.action).toBe("BED_ALLOCATION_PARTNERS_PROMOTED");
+    // Targeted at the booking whose assignment caused it; the promoted partner's
+    // own booking is named inside the list, because it may be a different one.
+    expect(entry.targetId).toBe("booking-1");
+    expect(entry.outcome).toBe("success");
+    // The promoted partner's OWN booking must still be able to find this entry:
+    // the admin audit search reads details/targetId, never metadata.
+    expect(entry.details).toBe("Promoted partner bookings: booking-other");
+    expect(entry.metadata).toMatchObject({
+      // Named distinctly from each promotion's own bookingGuestId: the guest who
+      // moved is not the partner who was promoted.
+      movedBookingGuestId: "guest-1",
+      movedToBedId: "bed-1",
+      promotedCount: 1,
+      promotionsTruncated: false,
+      promotions: [
+        {
+          allocationId: "partner-1",
+          bookingId: "booking-other",
+          bookingGuestId: "guest-other",
+          bedId: "bed-old",
+          stayDate: "2026-06-02",
+        },
+      ],
+    });
+    // The per-promotion action stays the single-night/bulk board paths' shape.
+    for (const call of auditCreate.mock.calls) {
+      expect(call[0].data.action).not.toBe("BED_ALLOCATION_PARTNER_PROMOTED");
+    }
+  });
+
+  it("caps the batched promotion list and says the list is partial", async () => {
+    const nights = eachDateOnlyInRange(
+      parseDateOnly("2026-06-01"),
+      parseDateOnly("2026-07-31"),
+    ).map(formatDateOnly);
+    expect(nights).toHaveLength(60);
+
+    const existingRows = nights.map((stayDate, index) => ({
+      id: `allocation-${index}`,
+      bedId: "bed-old",
+      stayDate: parseDateOnly(stayDate),
+      isSecondOccupant: false,
+    }));
+    const partners = nights.map((stayDate, index) => ({
+      id: `partner-${index}`,
+      isSecondOccupant: true,
+      bedId: "bed-old",
+      bookingId: `booking-partner-${index}`,
+      bookingGuestId: `guest-partner-${index}`,
+      stayDate: parseDateOnly(stayDate),
+    }));
+
+    const { db, auditCreate } = buildDb({
+      guest: buildGuest({ stayStart: "2026-06-01", stayEnd: "2026-09-01" }),
+      existingRows,
+    });
+    db.bedAllocation.findMany = vi.fn(
+      async (args: { where: Record<string, unknown> }) => {
+        if ("bedId" in args.where) return [];
+        if ("isSecondOccupant" in args.where) return partners;
+        return existingRows;
+      },
+    ) as never;
+
+    const result = await assignBedRange({
+      bookingGuestId: "guest-1",
+      bedId: "bed-1",
+      from: "2026-06-01",
+      to: "2026-07-31",
+      approvedByMemberId: "admin-1",
+      db: db as never,
+    });
+
+    expect(result.applied).toBe(true);
+    expect(result.promotedPartners).toHaveLength(60);
+    // Sixty promotions, still exactly two audit rows.
+    expect(auditCreate).toHaveBeenCalledTimes(2);
+    const metadata = auditEntry(auditCreate, 1).metadata as Record<
+      string,
+      unknown
+    >;
+    expect(metadata.promotedCount).toBe(60);
+    expect(metadata.promotionsTruncated).toBe(true);
+    // The searchable details string is capped too, and says how many bookings it
+    // could not repeat rather than dropping them silently.
+    const details = auditEntry(auditCreate, 1).details as string;
+    expect(details).toContain("booking-partner-0");
+    expect(details).toContain("(+30 more in metadata.promotions)");
+    expect(details.length).toBeLessThanOrEqual(1000);
+    const promotions = metadata.promotions as Record<string, unknown>[];
+    // Capped at the audit sanitiser's array limit: listing more would not be
+    // preserved and could cost the entries that DO fit.
+    expect(promotions).toHaveLength(MAX_AUDITED_RANGE_PARTNER_PROMOTIONS);
+    expect(promotions[0]).toEqual({
+      allocationId: "partner-0",
+      bookingId: "booking-partner-0",
+      bookingGuestId: "guest-partner-0",
+      bedId: "bed-old",
+      stayDate: "2026-06-01",
+    });
+    // Shape, not people — the same minimisation the range entry follows.
+    expect(JSON.stringify(metadata)).not.toContain("Range Guest");
   });
 });
 

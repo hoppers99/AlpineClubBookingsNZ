@@ -1033,11 +1033,20 @@ is NOT a blocker here: it is surfaced on the board as a banner and an
 `overlapsExclusiveHold` badge, exactly as it is for every other allocation path.
 A second, explicit "assign the N free nights" action re-sends the exact night
 list the report showed, and the server writes that set or refuses it with a fresh
-report. Either way the operation records exactly one `BED_ALLOCATION_RANGE_SET`
+report. When the report contains nights the guest is not booked on, that action
+asks for an explicit confirmation first — naming how many nights are not part of
+the guest's booking and will NOT be assigned, and how many will — so a partial write is never
+one click away from a warning. Either way the operation records exactly one
+`BED_ALLOCATION_RANGE_SET`
 audit entry (`targetId` = the booking id, written inside the same transaction as
 the rows) carrying the requested range, what was written, and what was refused —
 as counts and night runs, without the other bookings' guest names, which stay in
-the response to the admin. Range assignments
+the response to the admin. If the move stranded partners on shared doubles, the
+same transaction adds ONE batched `BED_ALLOCATION_PARTNERS_PROMOTED` entry for
+all of them (capped list + exact count + truncation flag) rather than one entry
+per promotion, so a 366-night range writes a bounded number of audit rows as well
+as a bounded number of statements; the single-night and bulk board paths keep
+their per-promotion `BED_ALLOCATION_PARTNER_PROMOTED` entries. Range assignments
 **auto-approve**: their rows land with `approvedAt`/`approvedByMemberId` stamped
 rather than as drafts. Board single-night and drag placements are deliberately
 NOT auto-approved — draft-vs-approved remains the suggestion-vs-confirmation

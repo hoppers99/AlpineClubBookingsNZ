@@ -2448,6 +2448,37 @@ export async function manuallyAllocateBedForNights(input: {
 // silently truncated to.
 export const MAX_BED_ALLOCATION_ASSIGN_RANGE_NIGHTS = 366;
 
+/**
+ * Cap on how many partner promotions the range path's ONE batched
+ * `BED_ALLOCATION_PARTNERS_PROMOTED` entry lists verbatim (#2251 residual R4).
+ *
+ * Pinned, like `MAX_AUDITED_PRUNED_ALLOCATIONS` in `bed-allocation-lifecycle.ts`,
+ * to the audit layer's own `MAX_METADATA_ARRAY_ITEMS` (`src/lib/audit.ts`): the
+ * sanitiser silently truncates any metadata array past 50 entries and replaces
+ * the WHOLE blob with a short preview once the serialised JSON passes its size
+ * budget, so listing more would not preserve them and could cost the entries that
+ * DO fit. The exact figure is always recorded alongside as `promotedCount`, and
+ * `promotionsTruncated` says the list is partial.
+ */
+export const MAX_AUDITED_RANGE_PARTNER_PROMOTIONS = 50;
+
+/**
+ * How many DISTINCT promoted-partner booking ids the batched entry repeats into
+ * its searchable `details` string (#2251 residual R4, review follow-up).
+ *
+ * The admin audit search matches `action, summary, details, requestId, entityId,
+ * targetId` and never metadata (`src/lib/audit-admin-query.ts`), and a booking
+ * page's audit link is `?q=<bookingId>`. One batched entry has only one
+ * `targetId` — the booking whose range assignment caused the promotions — so
+ * without this the promoted partner's OWN booking could no longer find the entry
+ * that explains why its guest became a primary. 30 × a 25-character cuid plus the
+ * prefix stays inside `sanitizeMetadataString`'s 1000-character budget
+ * (`src/lib/audit.ts`), so the string is never truncated mid-id; a longer list
+ * (many different bookings' partners stranded by one range) states the overflow
+ * and leaves the full set in `metadata.promotions`.
+ */
+const MAX_SEARCHABLE_PROMOTED_BOOKING_IDS = 30;
+
 export type BedRangeRefusalCategory =
   | "EXCLUSIVE_HOLD"
   | "GUEST_NOT_BOOKED"
@@ -2497,8 +2528,10 @@ export interface AssignBedRangeResult {
   freeNights: string[];
   writtenNights: string[];
   refusals: BedRangeRefusal[];
-  // #1750: partners stranded on a vacated bed-night by this operation. The
-  // route audits each one separately (they may belong to another booking).
+  // #1750: partners stranded on a vacated bed-night by this operation. Recorded
+  // as ONE batched audit entry inside the same transaction (#2251 residual R4);
+  // each listed promotion carries its own booking, because a promoted partner may
+  // belong to a different booking than the row that moved.
   promotedPartners: BedAllocation[];
 }
 
@@ -2826,27 +2859,76 @@ async function recordRangeAssignAudit(
     db,
   );
 
-  // Moving a shared double's primary onto another bed auto-promotes the partner
-  // left on the OLD bed-night (#1750). The partner may belong to a different
-  // booking, so it gets its own audit entry against that booking — it is a
-  // separate state change, not part of the range operation's record.
-  for (const promotedPartner of result.promotedPartners) {
+  /*
+   * Moving a shared double's primary onto another bed auto-promotes the partner
+   * left on the OLD bed-night (#1750). On the range path this is recorded as ONE
+   * batched entry, not one per promotion (#2251 residual R4): a 366-night move
+   * off shared doubles would otherwise write up to 366 audit rows inside the
+   * transaction, so the one thing left growing with the range length is now
+   * bounded too — every statement AND every audit row in this transaction is
+   * fixed whatever the night count.
+   *
+   * The single-night and bulk board paths keep their per-promotion
+   * BED_ALLOCATION_PARTNER_PROMOTED entries: they vacate one bed-night, so there
+   * is nothing to batch and the established shape stays untouched.
+   *
+   * Shape follows the #2285 prune precedent (MAX_AUDITED_PRUNED_ALLOCATIONS): a
+   * compact list capped at the audit sanitiser's array limit, the exact count
+   * alongside it, and a flag saying the list is partial. `targetId` is the
+   * booking whose range assignment caused the promotions — a promoted partner may
+   * belong to a DIFFERENT booking, so each entry in the list carries its own
+   * `bookingId`/`bookingGuestId` rather than the trail implying it was this
+   * booking's row that moved.
+   *
+   * SEARCHABILITY (review finding on the batching): the admin audit search ORs
+   * over `action, summary, details, requestId, entityId, targetId` and never
+   * metadata (`audit-admin-query.ts`), and the booking page's audit link is
+   * `?q=<bookingId>`. One batched entry can only carry ONE `targetId`, so the
+   * promoted partner's own booking would stop being findable from its own
+   * booking page — exactly the property the range entry above relies on. The
+   * distinct promoted booking ids are therefore also written into `details`,
+   * which IS searched, capped so the string stays inside the audit layer's
+   * per-string budget with the overflow stated rather than silently dropped.
+   */
+  if (result.promotedPartners.length > 0) {
+    const promotedBookingIds = [
+      ...new Set(result.promotedPartners.map((row) => row.bookingId)),
+    ];
+    const searchableBookingIds = promotedBookingIds.slice(
+      0,
+      MAX_SEARCHABLE_PROMOTED_BOOKING_IDS,
+    );
+    const overflow = promotedBookingIds.length - searchableBookingIds.length;
     await createAuditLog(
       {
-        action: "BED_ALLOCATION_PARTNER_PROMOTED",
+        action: "BED_ALLOCATION_PARTNERS_PROMOTED",
         memberId: actorMemberId,
-        targetId: promotedPartner.bookingId,
+        targetId: result.bookingId,
         entityType: "BedAllocation",
-        entityId: promotedPartner.id,
         category: "admin",
         outcome: "success",
-        summary:
-          "Second occupant auto-promoted to primary after the shared double's primary was moved to another bed",
+        summary: `${result.promotedPartners.length} second occupant${result.promotedPartners.length === 1 ? "" : "s"} auto-promoted to primary after a range assignment moved the shared double's primary to another bed`,
+        details: `Promoted partner bookings: ${searchableBookingIds.join(", ")}${overflow > 0 ? ` (+${overflow} more in metadata.promotions)` : ""}`,
         metadata: {
-          allocationId: promotedPartner.id,
-          bedId: promotedPartner.bedId,
-          bookingGuestId: result.bookingGuestId,
-          stayDate: formatDateOnly(promotedPartner.stayDate),
+          issue: 1750,
+          // The guest whose range assignment vacated the bed-nights, named
+          // distinctly from each promoted partner's own bookingGuestId below:
+          // they are different people on possibly different bookings.
+          movedBookingGuestId: result.bookingGuestId,
+          movedToBedId: result.bedId,
+          promotedCount: result.promotedPartners.length,
+          promotions: result.promotedPartners
+            .slice(0, MAX_AUDITED_RANGE_PARTNER_PROMOTIONS)
+            .map((promotedPartner) => ({
+              allocationId: promotedPartner.id,
+              bookingId: promotedPartner.bookingId,
+              bookingGuestId: promotedPartner.bookingGuestId,
+              bedId: promotedPartner.bedId,
+              stayDate: formatDateOnly(promotedPartner.stayDate),
+            })),
+          promotionsTruncated:
+            result.promotedPartners.length >
+            MAX_AUDITED_RANGE_PARTNER_PROMOTIONS,
         },
       },
       db,
@@ -2993,15 +3075,16 @@ async function runAssignBedRangeAttempt(input: {
 
   // Batched by (already exists?, is second occupant?): at most two updateMany +
   // two createMany however long the range is — the whole reason a 366-night
-  // assign can be atomic at all. The real bound for ONE attempt is AT MOST 13
+  // assign can be atomic at all. The real bound for ONE attempt is AT MOST 14
   // statements, whatever the night count: guest + bed (2), the occupant scan
   // (1), up to two partner-eligibility lookups (2), the existing-row scan (1),
   // up to two updateMany + two createMany (4), the batched promotion's findMany
-  // + updateMany (2), and the audit row (1). PLUS one audit row per partner
-  // actually promoted — which only happens when this move strands a partner on a
-  // shared double. (The own-hold member lookup is on the mutually exclusive
-  // refusal path, which runs 4 statements and writes nothing.) Nothing else in
-  // this transaction may grow with the night count.
+  // + updateMany (2), the range audit row (1), and — only when this move strands
+  // partners on shared doubles — ONE batched partner-promotion audit row for all
+  // of them (1, #2251 residual R4). (The own-hold member lookup is on the
+  // mutually exclusive refusal path, which runs 4 statements and writes nothing.)
+  // Nothing in this transaction, statement or audit row, may grow with the night
+  // count.
   for (const isSecondOccupant of [false, true]) {
     const nights = targetNights.filter(
       (stayDate) => secondOccupantNights.has(stayDate) === isSecondOccupant,

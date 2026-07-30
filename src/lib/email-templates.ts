@@ -308,6 +308,56 @@ export function twoFactorCodeTemplate(params: {
   `);
 }
 
+/**
+ * #2267: the single source of truth for the signed promo adjustment behind a
+ * booking's price, shared by the hand-built HTML confirmation and the send that
+ * fills the admin-editable body so the two can never derive it differently.
+ *
+ * `promoAdjustmentCents` (the pricing policy's signed `priceAdjustmentCents`)
+ * wins when present; older bookings only carry `discountCents`, which can only
+ * ever describe a price cut, so it becomes a negative adjustment.
+ */
+export function resolvePromoAdjustmentCents(options?: {
+  discountCents?: number;
+  promoAdjustmentCents?: number;
+}): number {
+  return (
+    options?.promoAdjustmentCents ??
+    (options?.discountCents && options.discountCents > 0
+      ? -options.discountCents
+      : 0)
+  );
+}
+
+/**
+ * #2267: the single source of truth for how a promo shows on money emails —
+ * shared by the hand-built HTML confirmation (bookingConfirmedTemplate) and the
+ * flat {{promoSummary}} token the admin-editable body renders, so the two
+ * paths cannot drift apart again (the 31651e00 failure mode).
+ *
+ * `promoAdjustmentCents` is the signed pricing-policy adjustment
+ * (priceAdjustmentCents): negative for a discount, positive for a
+ * FIXED_NIGHTLY/SET_PRICE promo that raises the price. Empty when zero — no
+ * promo means no rows at all, never ragged "Subtotal:"/"Promo adjustment ():"
+ * lines. Values are unescaped plain text; the HTML path escapes at the edge.
+ */
+export function promoAdjustmentSummaryRows(
+  totalCents: number,
+  promoAdjustmentCents: number,
+  promoCode?: string,
+): Array<{ label: string; value: string }> {
+  if (promoAdjustmentCents === 0) return [];
+  const subtotalCents = totalCents - promoAdjustmentCents;
+  const adjustmentPrefix = promoAdjustmentCents > 0 ? "+" : "-";
+  return [
+    { label: "Subtotal", value: formatMoneyCents(subtotalCents) },
+    {
+      label: promoCode ? `Promo adjustment (${promoCode})` : "Promo adjustment",
+      value: `${adjustmentPrefix}${formatMoneyCents(Math.abs(promoAdjustmentCents))}`,
+    },
+  ];
+}
+
 export function bookingConfirmedTemplate(
   firstName: string,
   checkIn: Date,
@@ -329,11 +379,7 @@ export function bookingConfirmedTemplate(
     };
   }
 ): string {
-  const promoAdjustmentCents =
-    options?.promoAdjustmentCents ??
-    (options?.discountCents && options.discountCents > 0
-      ? -options.discountCents
-      : 0);
+  const promoAdjustmentCents = resolvePromoAdjustmentCents(options);
   const provisional = options?.provisionalGuests;
   const provisionalSection =
     provisional && provisional.guestCount > 0
@@ -354,17 +400,15 @@ export function bookingConfirmedTemplate(
     { label: "Guests", value: String(guestCount) },
   ];
 
-  if (promoAdjustmentCents !== 0) {
-    const subtotalCents = totalCents - promoAdjustmentCents;
-    rows.push({ label: "Subtotal", value: formatCents(subtotalCents) });
-    const promoLabel = options?.promoCode
-      ? `Promo adjustment (${escapeHtml(options.promoCode)})`
-      : "Promo adjustment";
-    const adjustmentPrefix = promoAdjustmentCents > 0 ? "+" : "-";
-    rows.push({
-      label: promoLabel,
-      value: `${adjustmentPrefix}${formatCents(Math.abs(promoAdjustmentCents))}`,
-    });
+  for (const row of promoAdjustmentSummaryRows(
+    totalCents,
+    promoAdjustmentCents,
+    options?.promoCode,
+  )) {
+    // The shared rows are unescaped plain text (the flat token path needs them
+    // raw); the promo code inside the label is club-entered data, so escape at
+    // this HTML edge.
+    rows.push({ label: escapeHtml(row.label), value: escapeHtml(row.value) });
   }
 
   rows.push({ label: "Total Paid", value: formatCents(totalCents) });
@@ -1567,6 +1611,112 @@ export function adminXeroReconciliationReportTemplate(report: XeroReconciliation
   `);
 }
 
+/**
+ * #2267: the single source of truth for WHICH change rows a booking-modified
+ * email shows — shared by the hand-built HTML email (bookingModifiedTemplate)
+ * and the flat {{changeSummary}} token the admin-editable body renders, so the
+ * two paths cannot tell different stories about the same modification.
+ *
+ * Only what actually changed is shown as a Previous/New pair; anything
+ * unchanged is stated once ("Dates", "Guests", "Total"), and a change fee only
+ * appears when one was charged. The flat body used to hardcode every
+ * Previous/New row unconditionally, so a guest-only change emailed a member
+ * "Previous Dates" and "New Dates" that were identical and a "Change Fee:
+ * $0.00" for a booking that was never charged one.
+ *
+ * Values are unescaped plain text; the HTML path escapes at its edge.
+ */
+export function bookingModificationSummaryRows(params: {
+  oldCheckIn: Date;
+  oldCheckOut: Date;
+  newCheckIn: Date;
+  newCheckOut: Date;
+  oldGuestCount: number;
+  newGuestCount: number;
+  oldFinalPriceCents: number;
+  newFinalPriceCents: number;
+  changeFeeCents: number;
+}): Array<{ label: string; value: string }> {
+  const dateRange = (from: Date, to: Date) =>
+    `${formatNZDate(from)} – ${formatNZDate(to)}`;
+  const rows: Array<{ label: string; value: string }> = [];
+
+  const datesChanged =
+    params.oldCheckIn.getTime() !== params.newCheckIn.getTime() ||
+    params.oldCheckOut.getTime() !== params.newCheckOut.getTime();
+  if (datesChanged) {
+    rows.push({
+      label: "Previous Dates",
+      value: dateRange(params.oldCheckIn, params.oldCheckOut),
+    });
+    rows.push({
+      label: "New Dates",
+      value: dateRange(params.newCheckIn, params.newCheckOut),
+    });
+  } else {
+    rows.push({
+      label: "Dates",
+      value: dateRange(params.newCheckIn, params.newCheckOut),
+    });
+  }
+
+  if (params.oldGuestCount !== params.newGuestCount) {
+    rows.push({ label: "Previous Guests", value: String(params.oldGuestCount) });
+    rows.push({ label: "New Guests", value: String(params.newGuestCount) });
+  } else {
+    rows.push({ label: "Guests", value: String(params.newGuestCount) });
+  }
+
+  if (params.oldFinalPriceCents !== params.newFinalPriceCents) {
+    rows.push({
+      label: "Previous Total",
+      value: formatMoneyCents(params.oldFinalPriceCents),
+    });
+    rows.push({
+      label: "New Total",
+      value: formatMoneyCents(params.newFinalPriceCents),
+    });
+  } else {
+    rows.push({
+      label: "Total",
+      value: formatMoneyCents(params.newFinalPriceCents),
+    });
+  }
+
+  if (params.changeFeeCents > 0) {
+    rows.push({
+      label: "Change Fee",
+      value: formatMoneyCents(params.changeFeeCents),
+    });
+  }
+
+  return rows;
+}
+
+/**
+ * #2267: member-facing wording for a booking modification type, shared by the
+ * hand-built HTML email and the flat {{modificationTypeLabel}} token the
+ * admin-editable body renders. Before this, the flat body passed the raw enum
+ * word through, so an override-using club emailed members "DATE_CHANGE", and
+ * even the HTML path had no wording for BATCH_MODIFY (emitted by the admin
+ * batch edit in booking-batch-modification-service) and emailed "BATCH_MODIFY".
+ *
+ * The wording matches the booking history timeline's labels
+ * (MODIFICATION_LABELS in booking-history.ts) so a member reading the email and
+ * an admin reading the timeline see the same words. Unknown values fall back to
+ * the raw string rather than hiding the change.
+ */
+export function bookingModificationTypeLabel(modificationType: string): string {
+  const labels: Record<string, string> = {
+    DATE_CHANGE: "Dates Changed",
+    GUEST_ADD: "Guests Added",
+    GUEST_REMOVE: "Guest Removed",
+    EXTEND_STAY: "Stay Extended",
+    BATCH_MODIFY: "Booking Modified",
+  };
+  return labels[modificationType] ?? modificationType;
+}
+
 export function bookingModifiedTemplate(params: {
   firstName: string;
   modificationType: string;
@@ -1606,51 +1756,23 @@ export function bookingModifiedTemplate(params: {
     xeroInvoiceNumber,
   } = params;
 
-  const typeLabel: Record<string, string> = {
-    DATE_CHANGE: "Dates Changed",
-    GUEST_ADD: "Guests Added",
-    GUEST_REMOVE: "Guest Removed",
-  };
-
-  const rows: Array<{ label: string; value: string }> = [];
-
-  const datesChanged =
-    oldCheckIn.getTime() !== newCheckIn.getTime() ||
-    oldCheckOut.getTime() !== newCheckOut.getTime();
-
-  if (datesChanged) {
-    rows.push({
-      label: "Previous Dates",
-      value: `${formatNZDate(oldCheckIn)} &ndash; ${formatNZDate(oldCheckOut)}`,
-    });
-    rows.push({
-      label: "New Dates",
-      value: `${formatNZDate(newCheckIn)} &ndash; ${formatNZDate(newCheckOut)}`,
-    });
-  } else {
-    rows.push({
-      label: "Dates",
-      value: `${formatNZDate(newCheckIn)} &ndash; ${formatNZDate(newCheckOut)}`,
-    });
-  }
-
-  if (oldGuestCount !== newGuestCount) {
-    rows.push({ label: "Previous Guests", value: String(oldGuestCount) });
-    rows.push({ label: "New Guests", value: String(newGuestCount) });
-  } else {
-    rows.push({ label: "Guests", value: String(newGuestCount) });
-  }
-
-  if (oldFinalPriceCents !== newFinalPriceCents) {
-    rows.push({ label: "Previous Total", value: formatCents(oldFinalPriceCents) });
-    rows.push({ label: "New Total", value: formatCents(newFinalPriceCents) });
-  } else {
-    rows.push({ label: "Total", value: formatCents(newFinalPriceCents) });
-  }
-
-  if (changeFeeCents > 0) {
-    rows.push({ label: "Change Fee", value: formatCents(changeFeeCents) });
-  }
+  // The change rows come from the shared helper the flat {{changeSummary}}
+  // token also uses, so both paths always show the same rows (#2267). The
+  // shared rows are plain text, so escape at this HTML edge.
+  const rows = bookingModificationSummaryRows({
+    oldCheckIn,
+    oldCheckOut,
+    newCheckIn,
+    newCheckOut,
+    oldGuestCount,
+    newGuestCount,
+    oldFinalPriceCents,
+    newFinalPriceCents,
+    changeFeeCents,
+  }).map((row) => ({
+    label: escapeHtml(row.label),
+    value: escapeHtml(row.value),
+  }));
 
   let paymentNote = "";
   if (refundAmountCents > 0) {
@@ -1686,7 +1808,7 @@ export function bookingModifiedTemplate(params: {
   return layout(`
     ${heading("Booking Modified")}
     ${paragraph("Hi " + escapeHtml(firstName) + ", your booking has been updated.")}
-    ${alertBox(typeLabel[modificationType] || modificationType, "info")}
+    ${alertBox(escapeHtml(bookingModificationTypeLabel(modificationType)), "info")}
     ${infoTable(rows)}
     ${paymentNote}
     ${paragraph("You can view your updated booking details from your account.")}

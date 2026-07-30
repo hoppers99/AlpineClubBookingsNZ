@@ -76,12 +76,19 @@ All notable public reference-release changes should be recorded here.
   booking itself holds the whole lodge, which needs no individual beds. Only
   then, and only if you click the second button, does it write just the free
   nights — it says how many before you commit, and writes exactly those, refusing
-  again with a fresh list if one of them has been taken in the meantime. Either
+  again with a fresh list if one of them has been taken in the meantime. If any
+  night was refused because the guest is not booked on it, that button asks you to
+  confirm first: it names how many nights are not part of the guest's booking and
+  will not be assigned, and how many will, and waits for a **Yes**. That refusal usually means
+  a typo in the dates, so going past it is something you read and agree to rather
+  than a click next to a warning. Either
   way the operation leaves a **single** audit entry against the booking recording
   the range you asked for, what was written and what was refused, so "who put
   this guest in bed 4 for the winter?" has one answer rather than fragments. The
   entry records dates and counts rather than other members' names, which stay on
-  your screen. Assigning a range
+  your screen. If moving the guest left a partner alone on a shared double, all of
+  those promotions are recorded together in one further entry rather than one
+  entry per night. Assigning a range
   confirms those beds immediately, which locks the member out of changing their
   requested room; the dialog says so before you commit. Afterwards the board
   tints the nights it wrote green and the nights it refused red so any gaps are
@@ -96,6 +103,107 @@ All notable public reference-release changes should be recorded here.
   holds the whole lodge is now refused outright, matching the automatic
   allocator (#2285) — previously such a placement was accepted and then quietly
   cleaned away later.
+- **The booking-confirmed email now explains a promo that raises the price,
+  instead of a blank Discount line and an unexplained total (#2267).** A member
+  who booked with an exclusive-use flat-rate promo received a payment
+  confirmation whose Discount line trailed off after a minus sign, whose
+  authoring notes (`[only when …]`) rendered as body text, and whose subtotal
+  and total differed by $1,370 with nothing in between to say why — nothing was
+  mischarged, but the one token that could explain a price-*raising* promo was
+  not usable in the admin-editable body. The editable booking-confirmed body
+  now uses a single pre-composed `{{promoSummary}}` token that renders the
+  whole story — `Subtotal:` plus a signed `Promo adjustment (CODE):` line,
+  `-$30.00` for a discount and `+$1,370.00` for a surcharge — and renders
+  nothing at all when no promo applied, so there is never a ragged or empty
+  line. The flat body and the built-in HTML email now build that block from the
+  same code, so their money stories cannot drift apart again, and a test matrix
+  (discount, surcharge, no promo, door code set and unset) renders the shipped
+  default body end-to-end — through the same layout a member receives — and
+  fails on any line that trails off after a `-`, `+`, `–` or `:`. The door code
+  travels the same way: the body carries a pre-composed `{{doorCodeNote}}`
+  line, so a club that records no door code no longer emails a bare
+  `Door code:`. The booking-modified default body loses its 13 bracket
+  annotations the same way: a pre-composed `{{changeSummary}}` block, built by
+  the same code as the built-in HTML email, lists only what actually changed —
+  `Previous`/`New` pairs where something moved, a single line where it did not,
+  and a change fee only when one was charged — and the additional-payment story
+  arrives through the existing pre-composed `{{paymentNote}}`. That email also
+  names the change in words on both paths (a batch edit used to reach members
+  as the raw word `BATCH_MODIFY`). Admins can now also use
+  `{{promoAdjustment}}` (the signed value) in overrides — and the editor now
+  refuses a body that types its own `+` or `-` in front of it, explaining that
+  the token already carries its sign — while older overrides that reference
+  `{{subtotal}}`, `{{discount}}`, `{{promoCode}}`, `{{doorCode}}` or the
+  per-piece `Previous`/`New` tokens keep rendering and re-saving exactly as
+  before. Showing members the promo explanation is now **required** in a
+  booking-confirmed override, satisfied any of three ways — `{{promoSummary}}`,
+  the signed `{{promoAdjustment}}`, or the older `{{discount}}` the previous
+  default body used — so no override a club already saved is invalidated, while
+  an override that deletes the explanation altogether is refused instead of
+  quietly leaving a charged member with a total and no reason for it. (A
+  `{{subtotal}}` line on its own does not count: a subtotal with no adjustment
+  beside it is the confusing email this whole fix is about.) The editor now
+  prints that rule, and the tokens that satisfy it, under the token chips. When
+  a saved override is rejected, the editor also shows the specific reasons
+  instead of a bare "Invalid email template". Only clubs that saved an
+  override of these templates ever saw the broken email; clubs on the defaults
+  always got the correct built-in HTML version.
+
+- **Setting up a lodge TV is now one guided path instead of five cards and a
+  guess (#2249).** **Admin → Lobby Display** leads with a **Guided setup** card
+  whenever your club has no boards or no working screen, and it opens a six-step
+  wizard that takes you from "the Lobby TV display module is off" to a TV in the
+  lodge showing the right board: turn the module on, make sure the built-in
+  boards exist (running the same **Restore built-in boards** action, with the
+  same warning about what it overwrites), pick the board and preview it as the
+  lodge will see it, fill in the handful of values the board prints — Wi-Fi name
+  and password, checkout time, door code, and the on-screen notice — then pair
+  the screen by typing the six characters it shows. The wizard creates the
+  screen record, binds the board you picked and arms the pairing in one press —
+  and then waits with you: while it is waiting for the TV to claim the code, and
+  again while it is waiting for the screen to fetch its first board, it re-reads
+  your screens every few seconds and ticks itself over, with a **Check again**
+  button for when you would rather not wait. One screen record is created no
+  matter how many times a code is mistyped, and if the board could not be
+  assigned it says so instead of promising a board the screen is not showing.
+  The order is deliberate: you finish the authoring first and hang the TV last.
+  Every step checks the real state of your club rather than what you typed, so
+  you can leave, come back, or re-run the whole thing after replacing a TV
+  without undoing anything — and the final step only ticks once the screen has
+  actually fetched its board, which is the only real proof the whole path works
+  rather than just the admin half of it. Two things are said out loud rather
+  than left as surprises: where you got to is saved for the **whole club**, not
+  for you personally, so another admin resumes from the same step; and turning
+  the module on needs system-settings access, so an admin with lodge access only
+  is told who to ask instead of being handed a button that would be refused. The
+  wizard is the one Lobby Display page that stays open while the module is off —
+  everything else there still 404s until it is on — and once your screens are
+  live it steps back from the gold lead card to an ordinary card in the hub, and
+  stays named in the **Help** panel on every Lobby Display page.
+
+- **A member's admin page now draws the whole family as a read-only tree
+  (#2253).** In the Family section — under the family-group chips, above the
+  billing family and parent link cards — the page works out how everyone
+  connects from the links the club has already recorded (parents, second
+  parents, confirmed partners) and follows them across households, so
+  grandparents, siblings, half-siblings, cousins, and a dependant's other
+  parent all appear, each drawn once. It reaches three generations above and
+  below the member being viewed (four counting the member's own), the same
+  limit parent links themselves are capped at. Relationships that are not
+  stored anywhere are marked **Derived** with a dashed outline, so a worked-out
+  sibling is never mistaken for a recorded claim — and half-siblings are
+  separated from full siblings by *which* parents are shared, not how many,
+  with the tree saying plainly when that verdict comes from a missing record
+  rather than a different parentage. Where a child's club email goes to someone
+  further up the family than their own parent, the tree says so in words and
+  names the person — unless the mailbox belongs to a member outside the family
+  altogether, which it reports without naming anyone. Archived relatives stay
+  in the tree, badged, with their contact details left off, rather than
+  silently vanishing and making a grandparent look unrelated. Where a family is
+  too tall or simply too large to draw in full, the tree says which, instead of
+  quietly ending. Nothing in the tree can be edited: it is a picture of the
+  Parent Links, Partner, and Dependents cards below it, and changing those
+  changes the tree.
 
 - **Exclusive whole-lodge bookings no longer collect hidden bed assignments
   (#2285).** A booking with an exclusive whole-lodge hold takes the entire
