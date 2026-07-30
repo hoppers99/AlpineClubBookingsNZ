@@ -10,6 +10,7 @@ import {
   mergeMemberFields,
   type MemberMergePreviewCore,
 } from "@/lib/member-merge";
+import type { MemberGuestConsentStatus } from "@prisma/client";
 import { classifyMemberGuestConsent } from "@/lib/member-guest-consent";
 
 const MASTER_ID = "master-1";
@@ -774,7 +775,9 @@ describe("a merge and the consent columns it carries with it (#2307)", () => {
     id: string;
     bookingId: string;
     memberId: string | null;
-    consentStatus: string | null;
+    // The real column type, so a row can be handed straight to
+    // classifyMemberGuestConsent without a cast dulling the assertion.
+    consentStatus: MemberGuestConsentStatus | null;
     consentRequestedAt: Date | null;
     consentRespondedAt: Date | null;
     consentRespondedByMemberId: string | null;

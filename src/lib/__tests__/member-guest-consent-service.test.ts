@@ -298,10 +298,12 @@ function makeWorld(rows: GuestRow[]) {
       const row = members.get(args.where.id);
       return row ? { ...row } : null;
     }),
-    findMany: vi.fn(async () => []),
+    // These two exist so the delegate resolver's queries resolve rather than
+    // throw; the fixture members all hold logins, so nothing reads the results.
+    findMany: vi.fn(async (_args: unknown) => []),
   };
 
-  const familyGroupMember = { findMany: vi.fn(async () => []) };
+  const familyGroupMember = { findMany: vi.fn(async (_args: unknown) => []) };
 
   const tx = {
     $executeRaw: vi.fn(async () => 0),
