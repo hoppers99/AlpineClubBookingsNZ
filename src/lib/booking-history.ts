@@ -418,6 +418,27 @@ export function buildBookingHistoryItems({
     });
   }
 
+  // #2350: the timeline had a fallback for a SUCCEEDED and a FAILED additional
+  // payment but none for one that is simply still awaiting the member, which is
+  // the state an outstanding delta spends nearly all of its life in. Without
+  // this entry the moment the price went up left no mark on the timeline at all.
+  if (
+    payment &&
+    payment.additionalAmountCents > 0 &&
+    payment.additionalPaymentStatus === "PENDING"
+  ) {
+    items.push({
+      id: "payment-additional-pending",
+      occurredAt: payment.updatedAt,
+      category: "Payment",
+      title: "Additional payment requested",
+      detail:
+        "A booking change increased the total. This extra amount has not been paid yet.",
+      amountDisplay: formatCents(payment.additionalAmountCents),
+      tone: "warning",
+    });
+  }
+
   if (
     payment &&
     payment.additionalAmountCents > 0 &&

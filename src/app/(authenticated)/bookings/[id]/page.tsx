@@ -17,6 +17,8 @@ import { SendGuestPaymentLinkButton } from "@/components/send-guest-payment-link
 import { BookingNotesEditor } from "@/components/booking-notes-editor";
 import { BookingEditor, type BookingEditorData } from "@/components/booking-editor";
 import { AdditionalPaymentCard } from "@/components/additional-payment-card";
+import { BookingAdditionalPaymentPanel } from "@/components/admin/booking-additional-payment-panel";
+import { additionalPaymentEpisodeStartedAt } from "@/lib/additional-payment-chase";
 import { ConfirmDraftButton } from "@/components/confirm-draft-button";
 import { AdminBookingToolsCard } from "@/components/admin/admin-booking-tools-card";
 import { BookingBedAllocationPanel } from "@/components/admin/booking-bed-allocation-panel";
@@ -166,7 +168,19 @@ export default async function BookingDetailPage({
     where: { id },
     include: {
       guests: { include: { nights: { select: { stayDate: true } } } },
-      payment: true,
+      payment: {
+        // #2350: every Payment scalar as before, plus the most recent ADDITIONAL
+        // transaction so the admin panel can say when the outstanding extra was
+        // raised (the summary columns only describe the latest one).
+        include: {
+          transactions: {
+            where: { kind: "ADDITIONAL" },
+            select: { createdAt: true },
+            orderBy: { createdAt: "desc" },
+            take: 1,
+          },
+        },
+      },
       member: { select: { firstName: true, lastName: true } },
       // Admin capacity hold (#1764): who placed it, for the admin tools card.
       adminCapacityHoldBy: { select: { firstName: true, lastName: true } },
@@ -1725,6 +1739,23 @@ export default async function BookingDetailPage({
           </CardContent>
         </Card>
       )}
+
+      {/* #2350: the admin-side view of the same outstanding amount. The card
+          below is owner-only (it holds the member's own card controls), which
+          left every other admin viewer with no sign that money was owing at all.
+          Read-only, plus a re-send for admins who may write. */}
+      {nonOwnerAdminViewer && !isDeleted && booking.payment ? (
+        <BookingAdditionalPaymentPanel
+          bookingId={booking.id}
+          payment={booking.payment}
+          requestedOn={additionalPaymentEpisodeStartedAt({
+            paymentCreatedAt: booking.payment.createdAt,
+            latestAdditionalTransactionCreatedAt:
+              booking.payment.transactions[0]?.createdAt ?? null,
+          })}
+          canResend={canSeeAdminTools}
+        />
+      ) : null}
 
       {/* Additional payment required after a modification that increased the
           price. Member-personal payment (Stripe card entry) — owner-only so a
