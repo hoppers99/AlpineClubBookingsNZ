@@ -61,6 +61,49 @@ current docs and may need verification during a later UI/UX review.
 | Treasurer subscription billing | Preview and explicitly confirm annual membership invoices | Open `/admin/subscriptions`, choose year/decision date, review recipients, coverage, proration, cents, frozen Xero mapping, total and exceptions, then confirm the unchanged preview | Confirmation freezes an immutable charge and queues background Xero work; queue rows show invoice/email/conflict state; retry reuses a persisted invoice; due days default 30 and are finance-editable; finance-view users see read-only previews/history with write controls disabled | Missing assignment/schedule/family/recipient/explicit mapping produces a visible no-invoice exception; a date change or failed refresh clears the actionable preview; stale confirmation returns 409; late family members do not create a second invoice; email failure remains retryable; provider mismatch/non-AUTHORISED state is `CONFLICT` and never auto-rewritten | `/admin/subscriptions`, `/api/admin/subscription-billing` |
 | Treasurer manual mark-paid | Record a subscription paid outside Xero (non-Xero club / cash), or reverse it | On `/admin/subscriptions`, use the per-row "Mark as paid (manual)" / "Mark as unpaid" action; the confirmation dialog takes an optional note and, on mark-paid, the standard "Mark paid without emailing" / "Mark paid and email member" choice | Sets `PAID` with provenance (who/when/note) and audits it, including the email choice; never calls Xero or touches an invoice; emailing sends the `membership-payment-recorded` receipt (season, amount when the club has one recorded, date recorded); a reversal never emails; the member is immediately paid-up for booking and nomination; chip shows a `(manual)` suffix; finance-view users see no action | Already-`PAID` rows expose no mark-paid action; only manually-paid rows can be reversed (Xero-owned PAID is untouched); reversal restores `UNPAID`/`NOT_INVOICED` by invoice-link presence; the invoice sweep never re-invoices a PAID row and Xero sync never downgrades a manual PAID | `/admin/subscriptions`, `/api/admin/subscriptions/[id]/manual-payment` |
 
+## Member-guest consent ("+ Add Member Guest", #2305 / MG2 #2307)
+
+MG2 turns the feature on server-side and makes consent *happen*. What a person
+actually encounters in this release:
+
+- **Four member-facing emails.** A consent request to the member being added (or
+  to a family adult, when that member has no login of their own); a "you have been
+  added" notice when nobody was asked — notify-only clubs, admin adds, and
+  pipeline rows all share one template distinguished by a single composed
+  sentence; an outcome email to whoever made the booking; and a lapse notice to a
+  member whose request timed out. The request email carries the **full party
+  listing by name and no money at all** (owner decision MG2-D-a). Money is left
+  out as a courtesy rather than as a control, and the docs say so: under owner
+  decision D-11 that member can open the booking page immediately and the guest
+  table there shows every price and the total.
+- **One answer endpoint**, `POST /api/bookings/[id]/guests/[guestId]/consent`,
+  taking `{ action: "APPROVE" | "DECLINE" }`. Every failure — missing booking,
+  missing guest, wrong booking, already answered, not your request — returns the
+  **same 403 with the same body**, so neither id can be used to probe who is on
+  which booking. That uniformity is deliberate and must not be "improved" into
+  helpful messages.
+- **An honest refusal path.** Owner decision D-14 keeps the ordinary
+  self-removal blockers in force for a member who never consented, so "No thanks"
+  is sometimes refused. Predictable refusals state the reason and name who can
+  act; the settled-payment refusal is not predictable without the full repricing
+  pass, so the action is offered and the server's plain-English 400 is repeated
+  verbatim — exactly the pattern #2250 already established.
+- **Admin policy settings** at `GET`/`PUT /api/admin/member-guest-settings`,
+  gated on the bookings permission area with a real view/manage split so a card
+  can render read-only without ever showing a Save button that would 403.
+- **A pending guest is deliberately invisible operationally** (owner decision
+  D-12): absent from the kiosk arrivals list and the arrive/depart gate, the chore
+  roster and its print sheet, bed allocation and the admin bed board, the
+  hut-leader pickers, the lodge display board, the week summary, the double-bed
+  candidate sweep, and the pre-arrival and check-in reminder emails. They still
+  hold a bed and a person-night, because that is what the hold IS.
+
+The **member-facing consent card, the family-delegate consent page, the consent
+badges on the guest list, and the admin settings card** are designed and signed
+off as static mockups in `docs/member-guests/mockups/` but are **not implemented
+in MG2's first PR** — they are held pending owner sign-off on the mockup pack.
+This section gains their flow description in the same change that ships them.
+
 ## Feedback Conventions
 
 One rule for "did that work?" feedback, so the affordance is predictable on
