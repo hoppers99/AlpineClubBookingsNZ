@@ -597,7 +597,11 @@ test("the officer sees the member badges and the admin-only availability strip, 
   test.setTimeout(180_000);
 
   const page = await adminContext.newPage();
-  await page.goto("/admin/booking-requests");
+  // ?tab=public, NOT the bare path: /admin/booking-requests opens on the
+  // Approvals tab, and the public/member request queue is only MOUNTED when the
+  // Public Requests tab is active. The bare path renders a page with none of
+  // this feature's UI on it.
+  await page.goto("/admin/booking-requests?tab=public");
 
   // Both badges: "Member" (this came from an account) and "Whole lodge
   // requested" (the exclusivity ask, which the queue never used to show).
