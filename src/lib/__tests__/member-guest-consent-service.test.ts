@@ -84,6 +84,13 @@ vi.mock("@/lib/prisma", () => ({
     },
     member: {
       findUnique: (args: unknown) => h.state.world.member.findUnique(args as never),
+      findMany: (args: unknown) => h.state.world.member.findMany(args as never),
+    },
+    // The lapse notice reaches the member through the real delegate resolver, so
+    // the fake has to answer its queries too rather than have them throw into the
+    // notifier's catch-all and look like "nobody to tell".
+    familyGroupMember: {
+      findMany: (args: unknown) => h.state.world.familyGroupMember.findMany(args as never),
     },
   },
 }));
@@ -218,9 +225,34 @@ function makeWorld(rows: GuestRow[]) {
       },
     ],
   ]);
+  // Both fixture members hold logins of their own, so a lapse notice goes to the
+  // member who was asked without any family lookup. The no-login case is the
+  // delegate resolver's own suite (member-guest-delegate.test.ts).
   const members = new Map([
-    [TARGET, { id: TARGET, email: "target@example.com", firstName: "Tania", lastName: "Target" }],
-    [OWNER, { id: OWNER, email: "owner@example.com", firstName: "Ophelia", lastName: "Owner" }],
+    [
+      TARGET,
+      {
+        id: TARGET,
+        active: true,
+        canLogin: true,
+        ageTier: "ADULT",
+        email: "target@example.com",
+        firstName: "Tania",
+        lastName: "Target",
+      },
+    ],
+    [
+      OWNER,
+      {
+        id: OWNER,
+        active: true,
+        canLogin: true,
+        ageTier: "ADULT",
+        email: "owner@example.com",
+        firstName: "Ophelia",
+        lastName: "Owner",
+      },
+    ],
   ]);
 
   const state = { raceHook: null as null | (() => void) };
@@ -266,7 +298,10 @@ function makeWorld(rows: GuestRow[]) {
       const row = members.get(args.where.id);
       return row ? { ...row } : null;
     }),
+    findMany: vi.fn(async () => []),
   };
+
+  const familyGroupMember = { findMany: vi.fn(async () => []) };
 
   const tx = {
     $executeRaw: vi.fn(async () => 0),
@@ -282,6 +317,7 @@ function makeWorld(rows: GuestRow[]) {
     bookingGuest,
     booking,
     member,
+    familyGroupMember,
     tx,
     $transaction: vi.fn(async (cb: (client: typeof tx) => unknown) => {
       state.raceHook?.();
