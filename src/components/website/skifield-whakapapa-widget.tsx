@@ -5,6 +5,7 @@ import {
   emptyWhakapapaSectionVisibility,
   type WhakapapaCurlData,
   type WhakapapaFacilityItem,
+  type WhakapapaTrail,
   type WhakapapaTrailArea,
 } from "@/lib/whakapapa-report";
 
@@ -201,6 +202,32 @@ function TrailsKey() {
   );
 }
 
+function TrailCard({ trail }: { trail: WhakapapaTrail }) {
+  return (
+    <div className="flex flex-col gap-1 rounded-md border border-border bg-card p-2">
+      <span className="text-xs font-medium text-foreground">
+        {trail.name || "Unknown"}
+      </span>
+      <div className="flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
+        {trail.difficulty ? (
+          <DifficultyMarker difficulty={trail.difficulty} />
+        ) : null}
+        {trail.difficulty && (trail.groomed || trail.size) ? (
+          <span aria-hidden>·</span>
+        ) : null}
+        <span>{trail.groomed ? "Groomed" : "Ungroomed"}</span>
+        {trail.size ? (
+          <>
+            <span aria-hidden>·</span>
+            <span>{trail.size}</span>
+          </>
+        ) : null}
+      </div>
+      <StatusCell status={trail.status} />
+    </div>
+  );
+}
+
 function TrailsGroup({ areas }: { areas: WhakapapaTrailArea[] }) {
   return (
     <article
@@ -213,43 +240,37 @@ function TrailsGroup({ areas }: { areas: WhakapapaTrailArea[] }) {
       </div>
       {areas.length > 0 ? (
         <div className="mt-2 space-y-3">
-          {areas.map((area) => (
-            <div key={area.name || "trails-area"}>
-              {area.name ? (
-                <h4 className="text-xs font-semibold text-muted-foreground">
-                  {area.name}
-                </h4>
-              ) : null}
-              <div className="mt-1 flex flex-wrap gap-2">
-                {area.trails.map((trail) => (
-                  <div
-                    key={`${area.name}-${trail.name}`}
-                    className="flex flex-col gap-1 rounded-md border border-border bg-card p-2"
-                  >
-                    <span className="text-xs font-medium text-foreground">
-                      {trail.name || "Unknown"}
-                    </span>
-                    <div className="flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
-                      {trail.difficulty ? (
-                        <DifficultyMarker difficulty={trail.difficulty} />
-                      ) : null}
-                      {trail.difficulty && (trail.groomed || trail.size) ? (
-                        <span aria-hidden>·</span>
-                      ) : null}
-                      <span>{trail.groomed ? "Groomed" : "Ungroomed"}</span>
-                      {trail.size ? (
-                        <>
-                          <span aria-hidden>·</span>
-                          <span>{trail.size}</span>
-                        </>
-                      ) : null}
-                    </div>
-                    <StatusCell status={trail.status} />
-                  </div>
-                ))}
+          {areas.map((area) => {
+            const areaName = area.name ? (
+              <h4 className="text-xs font-semibold text-muted-foreground">
+                {area.name}
+              </h4>
+            ) : null;
+            const cards = area.trails.map((trail) => (
+              <TrailCard key={`${area.name}-${trail.name}`} trail={trail} />
+            ));
+
+            // Compact small sub-areas: a 1–3 trail area puts its name and cards
+            // on one wrapping row so the section is not needlessly tall.
+            if (area.trails.length <= 3) {
+              return (
+                <div
+                  key={area.name || "trails-area"}
+                  className="flex flex-wrap items-center gap-2"
+                >
+                  {areaName}
+                  {cards}
+                </div>
+              );
+            }
+
+            return (
+              <div key={area.name || "trails-area"}>
+                {areaName}
+                <div className="mt-1 flex flex-wrap gap-2">{cards}</div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       ) : (
         <p className="mt-2 text-xs text-muted-foreground">
