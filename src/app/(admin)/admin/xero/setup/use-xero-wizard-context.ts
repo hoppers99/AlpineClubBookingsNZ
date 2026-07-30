@@ -27,8 +27,13 @@ export interface XeroWizardContext {
   legacyEnvVars: string[];
   /** Metadata-only credential status (never a value). */
   credentials: Record<XeroCredentialKey, XeroCredentialFieldMeta>;
-  /** Whether the viewer may write credentials (Full Admin only). */
-  isFullAdmin: boolean;
+  /**
+   * Whether the viewer may write credentials (Full Admin only). Tri-state
+   * (#2065 / #2324): `undefined` while the session resolves, so a step neither
+   * flashes "Only a Full Admin can…" at a Full Admin nor flashes an enabled
+   * control at anyone else. Treat only `true` as permission.
+   */
+  isFullAdmin: boolean | undefined;
   /** Xero OAuth connection state. */
   connected: boolean;
   /** Stored tokens exist but no longer decrypt (auth secret changed). */
@@ -83,10 +88,16 @@ export function useXeroWizardContext(serverConfig: XeroWizardServerConfig): {
   loading: boolean;
   refresh: () => void;
 } {
-  const { data: session } = useSession();
-  const isFull = session
-    ? isFullAdmin({ accessRoles: session.user?.accessRoles ?? [] })
-    : false;
+  const { data: session, status: sessionStatus } = useSession();
+  // Tri-state: `undefined` until the session resolves (#2324). Reading an
+  // unresolved session as `false` made every step's Full-Admin notice appear
+  // and then vanish for an actual Full Admin.
+  const isFull =
+    sessionStatus === "loading"
+      ? undefined
+      : session
+        ? isFullAdmin({ accessRoles: session.user?.accessRoles ?? [] })
+        : false;
 
   const [loading, setLoading] = useState(true);
   const [credentials, setCredentials] = useState<
