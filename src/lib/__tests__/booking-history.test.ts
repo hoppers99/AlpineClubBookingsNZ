@@ -143,3 +143,67 @@ describe("buildBookingHistoryItems", () => {
     expect(items.map((item) => item.title)).toEqual(["Booking created"]);
   });
 });
+
+/**
+ * #2265 (#2319) — the member's answer to "what happened to my credit?".
+ *
+ * A settlement that takes the full price cannot honour a stored credit election,
+ * so it clears the column. Cleared silently, a member who had chosen to spend
+ * $45 and then paid in full could not tell which of two very different things
+ * had happened: their balance was debited, or it was not. It was not — a clear
+ * never moves money — and this note is where they read that.
+ */
+describe("buildBookingHistoryItems — unapplied credit election (#2265)", () => {
+  function build(details: string | null) {
+    return buildBookingHistoryItems({
+      createdAt: new Date("2026-04-01T09:00:00Z"),
+      payment: null,
+      modifications: [],
+      refundRequests: [],
+      auditLogs: [
+        {
+          id: "audit-election",
+          action: "booking.credit_election.unapplied",
+          details,
+          createdAt: new Date("2026-04-02T10:00:00Z"),
+        },
+      ],
+    });
+  }
+
+  it("names the amount and says the credit is still available", () => {
+    const item = build(
+      JSON.stringify({
+        source: "xero-inbound-invoice",
+        creditElectionCents: 4500,
+        paidAmountCents: 12000,
+      })
+    ).find((entry) => entry.id === "audit-audit-election");
+
+    expect(item).toMatchObject({
+      category: "Payment",
+      title: "Saved account credit was not applied",
+      amountDisplay: "$45.00",
+      tone: "warning",
+    });
+    expect(item?.detail).toContain("$45.00");
+    // The load-bearing sentence: nothing was spent.
+    expect(item?.detail).toContain("still available");
+    expect(item?.detail).not.toContain("undefined");
+  });
+
+  it("still renders an honest note when the amount cannot be read", () => {
+    // A malformed or legacy details payload must not produce "$NaN" or a missing
+    // row — the member is told the credit went unused either way.
+    const item = build("not json at all").find(
+      (entry) => entry.id === "audit-audit-election"
+    );
+
+    expect(item).toMatchObject({
+      title: "Saved account credit was not applied",
+      amountDisplay: null,
+      tone: "warning",
+    });
+    expect(item?.detail).toContain("still available");
+  });
+});

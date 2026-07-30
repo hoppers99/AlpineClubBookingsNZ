@@ -22,6 +22,9 @@ const mocks = vi.hoisted(() => ({
   isXeroConnected: vi.fn(),
   creditAggregate: vi.fn(),
   lockMemberCreditLedger: vi.fn(),
+  applyCreditToBooking: vi.fn(),
+  getMemberCreditBalance: vi.fn(),
+  deriveBookingAppliedCreditCents: vi.fn(),
   acquireLodgeCapacityLock: vi.fn(),
 }));
 
@@ -58,6 +61,11 @@ vi.mock("@/lib/xero-operation-outbox", () => ({
 vi.mock("@/lib/xero", () => ({ isXeroConnected: mocks.isXeroConnected }));
 vi.mock("@/lib/member-credit", () => ({
   lockMemberCreditLedger: mocks.lockMemberCreditLedger,
+  // #2265 — the switch now consumes a stored credit election, which drives the
+  // shared ledger helpers.
+  applyCreditToBooking: mocks.applyCreditToBooking,
+  getMemberCreditBalance: mocks.getMemberCreditBalance,
+  deriveBookingAppliedCreditCents: mocks.deriveBookingAppliedCreditCents,
 }));
 vi.mock("@/lib/capacity", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/capacity")>();
@@ -160,6 +168,9 @@ beforeEach(() => {
   // Default booking has no applied credit → effective amount == finalPrice.
   mocks.creditAggregate.mockResolvedValue({ _sum: { amountCents: 0 } });
   mocks.lockMemberCreditLedger.mockResolvedValue(undefined);
+  mocks.applyCreditToBooking.mockResolvedValue(undefined);
+  mocks.getMemberCreditBalance.mockResolvedValue(0);
+  mocks.deriveBookingAppliedCreditCents.mockResolvedValue(0);
   mocks.acquireLodgeCapacityLock.mockResolvedValue(undefined);
   mocks.kickQueuedXeroOutboxOperationsIfConnected.mockResolvedValue(undefined);
   mocks.isXeroConnected.mockResolvedValue(true);
@@ -309,6 +320,64 @@ describe("POST /api/payments/switch-to-internet-banking", () => {
     expect(mocks.upsert).not.toHaveBeenCalled();
   });
 
+  it("spends a stored credit election so the invoice asks only for the rest", async () => {
+    // #2265 — a booking an admin released from review can still be carrying the
+    // member's election when they choose Internet Banking. The switch used to
+    // walk straight past it: the invoice was raised for the full price and the
+    // credit was stranded on a booking that could never consume it.
+    const withElection = { ...stripeBooking(), creditElectionCents: 2_000 };
+    mocks.findUnique.mockResolvedValue(withElection);
+    mocks.txBookingFindUnique.mockResolvedValue({ ...withElection, guests: [] });
+    mocks.getMemberCreditBalance.mockResolvedValue(5_000);
+    // The route re-reads the ledger AFTER the consumption, so the aggregate
+    // reports the newly written BOOKING_APPLIED row.
+    mocks.creditAggregate.mockResolvedValue({ _sum: { amountCents: -2_000 } });
+
+    const res = await POST(postRequest());
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      reference: REFERENCE,
+      creditElection: { requestedCents: 2_000, appliedCents: 2_000 },
+    });
+
+    expect(mocks.applyCreditToBooking).toHaveBeenCalledWith(
+      "member-1",
+      2_000,
+      BOOKING_ID,
+      expect.anything(),
+    );
+    // The invoice is raised for the post-election remainder, and the mirror
+    // keeps amountCents + creditAppliedCents = finalPriceCents.
+    expect(mocks.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          amountCents: 2_500,
+          creditAppliedCents: 2_000,
+        }),
+      }),
+    );
+  });
+
+  it("refuses the switch when credit covers the booking, leaving the election intact", async () => {
+    const withElection = { ...stripeBooking(), creditElectionCents: 4_500 };
+    mocks.findUnique.mockResolvedValue(withElection);
+    mocks.txBookingFindUnique.mockResolvedValue({ ...withElection, guests: [] });
+    mocks.getMemberCreditBalance.mockResolvedValue(5_000);
+    mocks.creditAggregate.mockResolvedValue({ _sum: { amountCents: -4_500 } });
+
+    const res = await POST(postRequest());
+
+    // There is no $0 invoice to raise, and settling belongs to the pay step.
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toMatchObject({
+      code: "CREDIT_COVERS_BOOKING",
+    });
+    // Nothing was written: the transaction rolled back, so the election is
+    // still on the booking for the pay step to spend.
+    expect(mocks.upsert).not.toHaveBeenCalled();
+    expect(mocks.enqueueXeroBookingInvoiceOperation).not.toHaveBeenCalled();
+  });
+
   it("converts a Stripe booking to Internet Banking and raises the invoice", async () => {
     const res = await POST(postRequest());
     expect(res.status).toBe(200);
@@ -318,6 +387,8 @@ describe("POST /api/payments/switch-to-internet-banking", () => {
       reference: REFERENCE,
       holdBedSlots: false,
       holdUntil: null,
+      // #2265 — null because this booking carried no stored credit election.
+      creditElection: null,
     });
 
     // Voids the open Stripe intent.

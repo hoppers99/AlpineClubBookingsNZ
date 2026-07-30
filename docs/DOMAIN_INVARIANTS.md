@@ -650,6 +650,103 @@ Future reviews and issues should cite this file when proposing changes.
 
 ## Payment And Settlement
 
+- Account credit is consumed only by a booking that is actually reaching
+  `PAYMENT_PENDING`, never by one that is still provisional. A booking saved as
+  a draft therefore stores the member's ELECTION on
+  `Booking.creditElectionCents` (nullable integer cents, #2265) and consumes
+  nothing: NULL means no election is outstanding, `0` means the member
+  explicitly chose to use none, and a positive value is what they asked to
+  apply. A draft that is abandoned, deleted or expires leaves the balance
+  untouched, so no release path exists or is needed. The election is
+  single-consumption — the pay path clears it to NULL in the same transaction
+  that writes the `BOOKING_APPLIED` ledger row — and it is NEVER a record of
+  credit already applied: the authoritative applied total is always the
+  MemberCredit ledger (`deriveBookingAppliedCreditCents`). ANY booking held for
+  admin review keeps its election until an admin releases it to
+  `PAYMENT_PENDING` — a saved draft that landed in `AWAITING_REVIEW` and a
+  booking the confirmed-create path parked there via `blockForReview` alike.
+  Holding for review suppresses the SPEND, never the member's request.
+- The election is consumed by a guarded CLAIM, not a read-then-write (#2265):
+  the column is moved from the exact amount that was read to NULL with an
+  `updateMany` matching the booking id, `PAYMENT_PENDING` and that amount, in
+  the same transaction as the ledger write. Two concurrent consumers therefore
+  cannot both debit the member; the loser applies nothing and reports nothing,
+  because a phantom outcome would produce a second confirmation email, a second
+  Xero invoice and a second `MEMBER_PAID` event. There are exactly two
+  consumers — the card pay step and the Internet Banking switch — and both take
+  the per-member credit-ledger lock before the claim and refuse (leaving the
+  election intact) before consuming when capacity is gone. An
+  organiser-settled booking can never consume one, so group settlement clears
+  the column instead.
+- A stored credit election is CLAMPED at confirmation, never refused, and never
+  applied short in silence (#2265). Between the election and the confirmation
+  the balance may have been spent elsewhere and the booking may have been
+  repriced, so the amount applied is
+  `min(election, live balance, price not already covered by credit)` — the same
+  posture `clampAppliedCreditToBookingPrice` (#1887) takes when a modification
+  reprices a booking below its applied credit, and for the same reason: throwing
+  would leave the member unable to pay their own booking. The requested amount,
+  the applied amount, the shortfall and its cause are returned by the pay route
+  so the shortfall is always surfaced. `calculateBookingCreditApplication` keeps
+  its throw-on-over-request contract at booking-create, where the wizard
+  validated the balance in the same request and an over-request is a bug. The
+  reported reason names the bound that ACTUALLY bound — the lower of the two —
+  and reads `balance_and_price` only when the balance and the uncovered price
+  are equal and both below the request; a bound that sits under the request but
+  above the other decided nothing and is not reported.
+- A booking with nothing left to pay settles at $0 inside the pay transaction
+  rather than dead-ending at the card-intent effective-price guard (#2265):
+  status `PAID` plus one $0 `SUCCEEDED` Payment mirroring the applied credit,
+  the same zero-dollar shape booking-create and the modification engine use,
+  keeping `amountCents + creditAppliedCents = finalPriceCents`. This covers a
+  fully-covering election, a booking already covered by credit applied
+  elsewhere, and a draft repriced to $0 between the member rendering the pay
+  step and clicking it — the last of which previously committed
+  `DRAFT -> PAYMENT_PENDING` and only then refused, stranding a booking that
+  had left `DRAFT` and could never be paid. The settlement clears the Payment's
+  card-intent pointers but keeps `stripePaymentMethodId`, which a split
+  parent's deferred non-member guest charge falls back to.
+- No SETTLED booking carries a stored credit election (#2265, #2319). Once the
+  money has been taken for the amount the intent or the invoice was raised at,
+  the election can no longer be honoured: "applying" it then would debit the
+  member's balance for cash they have already handed over, inventing a charge
+  rather than honouring a choice. So every settlement CLEARS the column, with the
+  same guarded claim on the exact amount read (`clearStaleCreditElection`) that
+  the consumers use, so a consumer racing the settle is never clobbered:
+  - `markBookingPaymentSucceeded` — the single door the Stripe webhook, the
+    session confirm, the public payment link, the saved-card charge and the
+    auto-confirm cron all funnel through — clears on its `PAID` claim.
+  - The Internet Banking inbound reconcile clears on its `PAID` flip, and on the
+    late-capacity-failure `CANCELLED` flip in the same writer.
+  - The repriced-to-$0 auto-pay arms of both modification services clear, as
+    `confirm-draft`'s $0 confirm and group settlement already did.
+  Clearing is the answer ONLY once the money is taken. While a booking is still
+  payable the election remains honourable and must be consumed or left alone —
+  never discarded to make a charge simpler, which is the original #2265 bug in
+  another form. A reprice that leaves a booking payable therefore keeps its
+  election, and the public payment link REFUSES a booking that carries one
+  (below) rather than clearing it.
+- Whether the clear is reported depends on whether the member lost anything. A
+  clear on a $0 settlement is silent: nothing was owed, so the election was moot
+  rather than unhonoured. A clear on a settlement that took real money is
+  reported through `reportUnappliedCreditElection` — an audit row under
+  `booking.credit_election.unapplied`, which the member's own booking history
+  renders as a plain-English note ("your credit was not used and is still
+  available"), plus an operator alert so someone can decide whether to refund the
+  difference. A cleared column is invisible, and without the note a member who
+  chose to spend credit and then paid full price could not tell whether their
+  balance had been debited. It never is: a clear moves no money.
+- The public payment link never spends, and never ignores, a member's credit
+  election (#2319). `createPaymentIntentForPaymentLink` refuses (409) a booking
+  carrying one instead of minting an intent at the pre-credit price. The reason
+  is authorisation, not convenience: the election is a member's request to spend
+  their own account-credit balance, and that route is authenticated by a bearer
+  token routinely held by someone else (a booking requester, a group joiner, a
+  non-member guest), carries no member session, and has no surface on which to
+  report a clamped outcome. Nothing is lost by refusing — the member's own pay
+  step honours the election — and no mint path attaches a link to a booking that
+  can carry one, so the guard asserts that invariant rather than serving routine
+  traffic, and alerts an operator if it ever fires.
 - Stripe and Internet Banking/Xero settlement paths must remain distinct.
 - Stripe paths own PaymentIntents, SetupIntents, Stripe refunds, Stripe
   webhooks, and durable PaymentRecoveryOperation rows.
