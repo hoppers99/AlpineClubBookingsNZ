@@ -1,53 +1,263 @@
 import type { MemberGuestConsentStatus } from "@prisma/client";
+import {
+  addDaysDateOnly,
+  formatDateOnly,
+  normalizeDateOnlyForTimeZone,
+  startOfDateOnlyForTimeZone,
+} from "@/lib/date-only";
 
 /**
  * Member-guest consent model — the pure, database-free half of "+ Add Member
- * Guest" (epic #2305). Everything here is provisioned by MG1 (#2306) and
- * exercised by MG2 (#2307) onwards.
- *
- * MG1 SHIPS DARK. That is not a slogan, it is the single load-bearing property
- * of this release, and `MEMBER_GUEST_WIDENING_ENABLED` below is where it is
- * enforced. Read the note on that constant before changing anything in this
- * file.
+ * Guest" (epic #2305). Provisioned by MG1 (#2306); MG2 (#2307) is the release
+ * that turns it on and adds the state machine, the expiry clamp, and the
+ * operational-presence predicate every other surface filters on.
  */
 
 /**
- * THE WIDENING PREDICATE — the one switch MG2 flips.
+ * THE WIDENING PREDICATE — flipped by MG2 (#2307) from a hard-coded `false`
+ * into a per-club policy read.
  *
- * `false` means: a member may still only add guests from inside their own
- * family group, exactly as before this feature existed. A request to add any
- * other member is refused with the identical error `main` returns today, with
- * no reference to member guests, in EVERY module state and for every actor.
+ * MG1 shipped the whole feature dark behind a constant, because an admin who
+ * switched the module on in an MG1-only release could have created
+ * capacity-holding `PENDING` rows that no released code could resolve or
+ * expire. MG2 removes that hazard by shipping the approval surface, the
+ * transition service and the expiry sweep in the same release, so the module
+ * flag can finally mean what it says.
  *
- * Why the module flag does not do this job. `ClubModuleSettings.memberGuests`
- * exists from this release and an admin can switch it on — but switching it on
- * must change NOTHING, because MG1 has no consent request, no approval surface,
- * and no expiry sweep. If module-on widened the boundary here, an admin on an
- * MG1-only release could create capacity-holding `PENDING` guest rows that no
- * released code can ever resolve or expire. So the refusal is gated on this
- * constant, which is `false` unconditionally, and the module flag gates nothing
- * yet. The widening, the approval surface, and the expiry sweep all go live
- * together in MG2.
+ * WHY THIS IS A PARAMETER AND NOT A MODULE READ INSIDE `booking-guests.ts`.
+ * Every caller already knows whether the module is on — most of them have
+ * loaded module state for other reasons — and `resolveLinkedBookingMembers`
+ * deliberately takes an injected `db` narrowed to `familyGroupMember` + `member`
+ * so it can run inside a booking transaction without dragging the whole client
+ * (or a settings read) in with it. Passing the answer keeps that property, keeps
+ * the decision visible at each of the seven call sites, and makes the census
+ * test in `member-guest-widening.test.ts` meaningful rather than incidental.
  *
- * A second consequence, equally deliberate: because nothing can widen the
- * boundary, nothing in this release can write a non-null
- * `BookingGuest.consentStatus` — so no ROW ever carries one of the new enum
- * labels, which is what makes the reverse blue/green direction safe (see the
- * ledger row for `20260731120100_add_booking_guest_consent`). Note the precise
- * claim: the labels are not "registered but never used" — the migration's
- * partial index names 'PENDING' in its predicate — they are never carried by
- * data, which is the property an old-colour Prisma client actually cares about.
+ * IT FAILS CLOSED. `resolveLinkedBookingMembersWithBoundary`'s
+ * `memberGuestWideningEnabled` option defaults to `false`, so a call site that
+ * forgets it keeps MG1's behaviour — a beyond-family add is refused — rather
+ * than minting a consent-free cross-family guest row. That is the right
+ * direction to fail in, and the census test names every call site so a forgotten
+ * one is a visible test failure and not a silent policy hole.
  *
- * MG2's change here is one line: flip this to a policy read. The dark-guarantee
- * tests (the module ON/OFF identity matrix, the beyond-family refusal, and the
- * mutation probe that flips this constant) are written to fail the moment it
- * moves, so the flip cannot land quietly.
- *
- * Annotated `: boolean` on purpose — a bare `false` narrows to the literal
- * type, which makes every guard that reads it look like dead code to the
- * compiler and to reviewers.
+ * The name below exists so the module key is written down once, in the file that
+ * explains what it gates, instead of being re-typed as a string literal at each
+ * call site.
  */
-export const MEMBER_GUEST_WIDENING_ENABLED: boolean = false;
+export const MEMBER_GUEST_MODULE_KEY = "memberGuests" as const;
+
+/**
+ * The consent statuses a guest row may carry and still be a real occupant.
+ *
+ * Owner decision D-12: kiosk arrivals, the chore roster, bed allocation, the
+ * arrival emails, the lodge board and the double-bed candidate sweep all
+ * describe who is ACTUALLY going to be at the lodge. A `PENDING` row holds a bed
+ * (D-4) and nothing else; a `DECLINED` or `EXPIRED` row that survived its
+ * removal attempt (see the exception list) is not an occupant either.
+ *
+ * TRAP, AND A NASTY ONE — read before you write a filter by hand.
+ * Do NOT write `{ consentStatus: { not: "PENDING" } }`. `consentStatus` is
+ * nullable and NULL is the dominant value forever: every non-member guest,
+ * every family-scope guest, every row written before this feature existed. In
+ * SQL, `consentStatus <> 'PENDING'` is UNKNOWN for a NULL row, so that filter
+ * silently drops every ordinary guest out of the kiosk, the chore roster and the
+ * arrival emails. The explicit `OR` below cannot go wrong that way. A dedicated
+ * test asserts a NULL-consent guest IS matched, and mutation probe 4 requires
+ * flipping this to the `not:` form and watching a test fail.
+ *
+ * Typed as a plain object literal rather than `Prisma.BookingGuestWhereInput` so
+ * it can be spread into a `where`, a `guests.some`, or an `include.guests.where`
+ * without a cast at each site.
+ */
+export const OPERATIONALLY_PRESENT_GUEST_WHERE = {
+  OR: [{ consentStatus: null }, { consentStatus: "CONFIRMED" }],
+} as const;
+
+/**
+ * The in-memory twin of `OPERATIONALLY_PRESENT_GUEST_WHERE`, for the surfaces
+ * that already hold rows and filter them in JavaScript.
+ *
+ * Both forms exist because both are needed, and they are declared next to each
+ * other on purpose: a reviewer can see in one glance that they agree, and a test
+ * asserts they agree over all six possible column values.
+ */
+export function isOperationallyPresentConsent(
+  consentStatus: MemberGuestConsentStatus | null | undefined,
+): boolean {
+  return consentStatus === null || consentStatus === undefined || consentStatus === "CONFIRMED";
+}
+
+/**
+ * The shortest hold a request may be given, mirroring `MIN_GRACE_MS` in
+ * `cron-group-settlement-reaper.ts`: never mint a request that has already
+ * expired by the time the confirmation email lands.
+ */
+export const MEMBER_GUEST_CONSENT_MIN_HOLD_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * When a `PENDING` request lapses: `min(now + N days, the day before check-in)`,
+ * never sooner than two hours from now.
+ *
+ * WHY THE CLAMP IS CHECK-IN MINUS ONE DAY AND NOT CHECK-IN. The sweep releases
+ * the bed through the same removal path a member's own self-removal uses, and
+ * that path refuses `STAY_NOT_FUTURE` once the NZ-local check-in date is no
+ * longer in the future (`booking-guest-self-removal.ts`). An expiry clamped to
+ * check-in itself would therefore fire on a morning when the removal is already
+ * refused — every such row would land on the admin exception list instead of
+ * releasing, which is precisely the outcome D-4's expiry exists to prevent.
+ * Clamping a day earlier means the sweep's last possible run still sees a future
+ * check-in.
+ *
+ * The clamp lands on the START of the day before check-in in club time, so the
+ * nightly sweep (04:30 NZ) is guaranteed to be past it on that day.
+ *
+ * THE ONE CASE THE CLAMP CANNOT SAVE, stated rather than hidden: a booking made
+ * inside the last two days before check-in. The two-hour floor wins over the
+ * clamp, so the request can outlive the useful window and the sweep may find the
+ * removal refused. That row goes to the exception list with honest copy. The
+ * alternative — an already-expired request — would be worse: the member would
+ * never get a chance to answer at all.
+ */
+export function computeMemberGuestConsentExpiry(params: {
+  now: Date;
+  pendingHoldExpiryDays: number;
+  bookingCheckIn: Date;
+  timeZone?: string;
+}): Date {
+  const { now, pendingHoldExpiryDays, bookingCheckIn, timeZone } = params;
+
+  const requested = new Date(
+    now.getTime() + pendingHoldExpiryDays * 24 * 60 * 60 * 1000,
+  );
+
+  const dayBeforeCheckIn = addDaysDateOnly(
+    normalizeDateOnlyForTimeZone(bookingCheckIn, timeZone),
+    -1,
+  );
+  const latest = startOfDateOnlyForTimeZone(
+    formatDateOnly(dayBeforeCheckIn),
+    timeZone,
+  );
+
+  const clamped = requested.getTime() < latest.getTime() ? requested : latest;
+  const floor = now.getTime() + MEMBER_GUEST_CONSENT_MIN_HOLD_MS;
+  return new Date(Math.max(clamped.getTime(), floor));
+}
+
+/**
+ * Who is doing the adding, which is what decides whether anyone is ASKED.
+ *
+ * `ADMIN` covers every path that can pass `skipAuthorization` — an admin or
+ * booking officer adding on a member's behalf, the admin booking-copy, and (from
+ * MG4) the booking-request pipeline. Owner decision MG4-D-a makes those adds
+ * consent-free and always-notify, and the coherence review moved that rule
+ * forward into MG2 so there is never a released state where a copy mints a
+ * `PENDING` row that MG4 would then have had to migrate away.
+ */
+export type MemberGuestAddActor =
+  | { kind: "MEMBER" }
+  | { kind: "ADMIN"; adminMemberId: string };
+
+/** What the add path must send after the transaction commits. */
+export type MemberGuestAddNotification =
+  /** Approval-required member add: ask the target (or their delegate). */
+  | "CONSENT_REQUEST"
+  /** Notify-only, admin, copy or pipeline add: tell them, do not ask. */
+  | "ADDED_NOTICE"
+  /** Family scope (D-6) — nobody is told anything, exactly as today. */
+  | "NONE";
+
+export interface MemberGuestConsentWrite {
+  columns: MemberGuestConsentColumns;
+  notification: MemberGuestAddNotification;
+  /** The sub-state the columns are claimed to be, asserted by the caller's tests. */
+  subState: MemberGuestConsentSubStateId;
+}
+
+/**
+ * The single writer of consent columns for a newly created guest row.
+ *
+ * Every persisting call site goes through this, so the eight-shape table below
+ * is enforced by construction rather than by four call sites each remembering
+ * the rules. Returns the notification the caller owes as well as the columns,
+ * because the two are one decision: a row that was asked for gets a request
+ * email, a row nobody asked about gets a notice, and a family row gets neither.
+ */
+export function buildMemberGuestConsentWrite(params: {
+  scope: MemberGuestBoundaryScope;
+  /** `MemberGuestSettings.approvalRequired` (D-3: true is the shipped default). */
+  approvalRequired: boolean;
+  actor: MemberGuestAddActor;
+  now: Date;
+  /** Required for the approval-required member add; ignored otherwise. */
+  consentExpiresAt?: Date | null;
+}): MemberGuestConsentWrite {
+  const { scope, approvalRequired, actor, now, consentExpiresAt } = params;
+
+  // D-6: a family-scope add is consent-FREE, not consent-GIVEN. NULL and
+  // CONFIRMED must stay distinguishable forever.
+  if (scope === "FAMILY") {
+    return {
+      columns: { ...CONSENT_FREE_GUEST_COLUMNS },
+      notification: "NONE",
+      subState: "FAMILY_OR_LEGACY",
+    };
+  }
+
+  // MG4-D-a, brought forward: an admin (or copy, or pipeline) add is
+  // consent-free and always-notify. `respondedAt` + `respondedByMemberId` name
+  // the admin who stood behind it, which is where MG4's audit rides.
+  if (actor.kind === "ADMIN") {
+    return {
+      columns: {
+        consentStatus: "CONFIRMED",
+        consentRequestedAt: null,
+        consentRespondedAt: now,
+        consentRespondedByMemberId: actor.adminMemberId,
+        consentExpiresAt: null,
+      },
+      notification: "ADDED_NOTICE",
+      subState: "ADMIN_ASSIGNED",
+    };
+  }
+
+  // Notify-only (D-3 opt-down): auto-confirmed, never solicited. A null
+  // requestedAt AND a null respondedBy is the signature; a set expiresAt would
+  // look to the sweep like a hold with a deadline, so it stays null.
+  if (!approvalRequired) {
+    return {
+      columns: {
+        consentStatus: "CONFIRMED",
+        consentRequestedAt: null,
+        consentRespondedAt: null,
+        consentRespondedByMemberId: null,
+        consentExpiresAt: null,
+      },
+      notification: "ADDED_NOTICE",
+      subState: "NOTIFY_ONLY_AUTO_CONFIRMED",
+    };
+  }
+
+  if (!consentExpiresAt) {
+    // Not defensive padding: a PENDING row with no expiry is invisible to the
+    // sweep's partial index and would hold a bed forever. Refuse to write it.
+    throw new Error(
+      "buildMemberGuestConsentWrite: an approval-required member-guest add needs a consentExpiresAt",
+    );
+  }
+
+  return {
+    columns: {
+      consentStatus: "PENDING",
+      consentRequestedAt: now,
+      consentRespondedAt: null,
+      consentRespondedByMemberId: null,
+      consentExpiresAt,
+    },
+    notification: "CONSENT_REQUEST",
+    subState: "AWAITING_TARGET",
+  };
+}
 
 /**
  * Where a prospective guest sits relative to the booker's family boundary.
