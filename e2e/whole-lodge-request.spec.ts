@@ -579,7 +579,11 @@ test("the member sees no availability, price or capacity hint on the request for
   await expect(page.getByLabel(/roughly how many people/i)).toBeVisible();
   await expect(page.getByLabel(/who is the group/i)).toBeVisible();
 
-  const content = (await page.textContent("body")) ?? "";
+  // innerText, NOT textContent: textContent includes the text of inlined
+  // <script> and <style> elements (the theme bootstrap and the CSS custom
+  // properties), which no member ever reads and which trip a "$<digit>" price
+  // sweep on minified JS. innerText is what is actually rendered.
+  const content = await page.locator("body").innerText();
   expect(content).not.toMatch(/beds? (left|available|free)/i);
   expect(content).not.toMatch(/fully booked|at capacity|no beds/i);
   expect(content).not.toMatch(/exclusiv/i);
@@ -741,7 +745,11 @@ test("the approved booking tells its owner what is still owing, and never that t
   await expect(page.getByText(/reference/i).first()).toBeVisible();
 
   // And still nothing about exclusivity or occupancy (ADR-001 decision 6).
-  const content = (await page.textContent("body")) ?? "";
+  // innerText, NOT textContent: textContent includes the text of inlined
+  // <script> and <style> elements (the theme bootstrap and the CSS custom
+  // properties), which no member ever reads and which trip a "$<digit>" price
+  // sweep on minified JS. innerText is what is actually rendered.
+  const content = await page.locator("body").innerText();
   expect(content).not.toMatch(/exclusiv/i);
   expect(content).not.toMatch(/whole[- ]lodge hold/i);
 
