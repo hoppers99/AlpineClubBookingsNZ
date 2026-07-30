@@ -67,7 +67,10 @@ export function BookingAdditionalPaymentPanel({
     : null;
 
   return (
-    <Card className="border-warning-6 bg-warning-3">
+    <Card
+      className="border-warning-6 bg-warning-3"
+      data-testid="additional-payment-outstanding"
+    >
       <CardHeader>
         <CardTitle className="text-warning-11">
           Additional payment outstanding
