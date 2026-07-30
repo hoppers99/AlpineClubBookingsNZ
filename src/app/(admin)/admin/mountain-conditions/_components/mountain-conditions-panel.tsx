@@ -698,7 +698,7 @@ export function MountainConditionsPanel() {
                   ))}
                 </div>
 
-                <div className="mt-3 rounded-md border border-border bg-muted/40 p-3">
+                <div className="mt-3 rounded-md border border-border p-3">
                   <div className="flex flex-wrap items-center gap-2">
                     <Button
                       type="button"
