@@ -259,6 +259,46 @@ test.beforeAll(async ({ browser }) => {
  * of a fresh database there is nothing to clean, so a failure here is
  * information, not a reason to abandon the run.
  */
+/**
+ * Free the CLEAR window of anything a previous attempt of this file booked there.
+ *
+ * The approve test converts Alice's clear-window request into a CONFIRMED booking
+ * that HOLDS THE WHOLE LODGE. On a CI retry those nights are then fully occupied,
+ * so "the clear world is clear" fails and the file can never go green on attempt
+ * 2 or 3. Cancelling is safe and cheap: nothing was paid, so the credit-method
+ * cancel settles to nothing and simply releases the beds.
+ *
+ * Best-effort by design — on a first attempt there is nothing to find, so a
+ * failure here is information rather than a reason to abandon the run.
+ */
+async function releaseClearWindowBookings(admin: APIRequestContext) {
+  const month = CLEAR_WINDOW.checkIn.slice(0, 7);
+  const response = await admin.get(
+    `/api/admin/bookings?calendarMonth=${month}&status=all`,
+  );
+  if (!response.ok()) {
+    console.warn(
+      `[#2263] clear-window cleanup skipped: admin calendar returned ${response.status()}`,
+    );
+    return;
+  }
+  const body = (await response.json()) as {
+    bookings: Array<{ id: string; checkIn: string; status: string }>;
+  };
+  for (const booking of body.bookings) {
+    if (booking.checkIn !== CLEAR_WINDOW.checkIn) continue;
+    if (booking.status === "CANCELLED") continue;
+    const cancelled = await admin.post(`/api/bookings/${booking.id}/cancel`, {
+      data: { refundMethod: "credit", notifyMember: false },
+    });
+    if (!cancelled.ok()) {
+      console.warn(
+        `[#2263] could not release clear-window booking ${booking.id}: ${cancelled.status()}`,
+      );
+    }
+  }
+}
+
 async function clearLeftoverOpenRequests(admin: APIRequestContext) {
   const response = await admin.get(
     "/api/admin/booking-requests?status=VERIFIED&pageSize=100",
@@ -471,6 +511,15 @@ test("the acknowledgement is byte-identical whether the lodge is clear, full, or
   }
 
   // --- Worlds A and B verified from the admin side, BEFORE submitting -------
+  // Retry hygiene for the CLEAR world. A previous attempt that got as far as the
+  // approve test left a CONFIRMED, whole-lodge-HELD booking on these nights, so
+  // the clear window is no longer clear and this whole file could never pass on
+  // a retry. Cancel any booking this spec previously created there (nothing was
+  // ever paid, so the credit-method cancel is a no-op settlement that just frees
+  // the beds — the same teardown e2e/double-bed-sharing.spec.ts uses for its
+  // holding bookings). Best-effort: on a first attempt there is nothing to find.
+  await releaseClearWindowBookings(adminContext.request);
+
   const clearFree = await adminFreeBeds(
     adminContext.request,
     CLEAR_WINDOW.nights,

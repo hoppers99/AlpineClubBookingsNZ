@@ -2280,6 +2280,91 @@ describe("approveMemberWholeLodgeRequest (#2263)", () => {
   // The replay reports COMMITTED figures (#2263 review finding M4)
   // -------------------------------------------------------------------------
 
+  it("replays a SECOND approve of an already-CONVERTED row instead of 409ing it (the real HTTP shape)", async () => {
+    /*
+      This is what an officer double-clicking Approve actually sends: by the time
+      the second request arrives the row is CONVERTED, so the FIRST read the
+      service does already sees CONVERTED. The other replay tests in this file
+      stub the first read as VERIFIED and therefore only exercise the under-lock
+      idempotency claim — which a Playwright run proved was unreachable, because
+      the pre-lock status guard rejected CONVERTED before the transaction and the
+      route answered 409 "Only open member whole-lodge requests can be approved".
+      No second booking was ever created either way, but the documented replay was
+      dead code. This test is the one that fails if that regresses.
+    */
+    mockedFindUnique.mockResolvedValue(
+      memberWholeLodgeRequest({
+        status: BookingRequestStatus.CONVERTED,
+        convertedBookingId: "booking-wl",
+        convertedMemberId: "member-9",
+      }) as never
+    );
+    vi.mocked(prisma.booking.findUnique).mockResolvedValue({
+      finalPriceCents: 30000,
+      _count: { guests: 6 },
+    } as never);
+
+    const result = await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    expect(result).toMatchObject({
+      type: "approved",
+      bookingId: "booking-wl",
+      memberId: "member-9",
+      priceCents: 30000,
+      guestCount: 6,
+      invoiceMode: null,
+    });
+    // Nothing was written, priced, locked, invoiced or emailed a second time.
+    expect(mockedTransaction).not.toHaveBeenCalled();
+    expect(mockedAcquireLodgeLock).not.toHaveBeenCalled();
+    expect(prisma.booking.create).not.toHaveBeenCalled();
+    expect(prisma.payment.create).not.toHaveBeenCalled();
+    expect(mockedEnqueueInvoice).not.toHaveBeenCalled();
+    expect(sendBookingConfirmedEmail).not.toHaveBeenCalled();
+    expect(mockedLogAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "booking_request.member_whole_lodge_approve_idempotent_replay",
+      })
+    );
+  });
+
+  it("refuses a CONVERTED row that has no booking rather than replaying a phantom", async () => {
+    mockedFindUnique.mockResolvedValue(
+      memberWholeLodgeRequest({
+        status: BookingRequestStatus.CONVERTED,
+        convertedBookingId: null,
+      }) as never
+    );
+
+    await expect(
+      approveMemberWholeLodgeRequest({
+        requestId: "req-member",
+        adminMemberId: "admin-1",
+      })
+    ).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("still refuses a DECLINED or CANCELLED row", async () => {
+    for (const status of [
+      BookingRequestStatus.DECLINED,
+      BookingRequestStatus.CANCELLED,
+    ]) {
+      mockedFindUnique.mockResolvedValue(
+        memberWholeLodgeRequest({ status }) as never
+      );
+      await expect(
+        approveMemberWholeLodgeRequest({
+          requestId: "req-member",
+          adminMemberId: "admin-1",
+        }),
+        `${status} must not be approvable`
+      ).rejects.toMatchObject({ status: 409 });
+    }
+  });
+
   it("a replay reports the committed booking's total and guest count, not this call's recomputation", async () => {
     mockedFindUnique
       .mockResolvedValueOnce(memberWholeLodgeRequest() as never)

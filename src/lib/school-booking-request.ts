@@ -1485,6 +1485,73 @@ export async function approveMemberWholeLodgeRequest(input: {
       400
     );
   }
+  /*
+    ALREADY CONVERTED: replay, do not refuse.
+
+    This is what an officer double-clicking Approve actually hits, and it has to
+    be answered BEFORE the status guard below. The #1232 idempotency claim
+    (claimAlreadyConvertedBookingRequest, inside the transaction) was written to
+    handle it, but a CONVERTED row could never reach it: the pre-lock guard
+    rejected the status first, so the replay path was dead code and the second
+    approve answered 409 instead of naming the booking it had already made. No
+    money was ever at risk — the guard did stop a second booking, payment and
+    invoice — but a documented, unit-tested replay that the route can never
+    produce is worse than useless. It took a Playwright run to prove it never ran.
+
+    Handled here rather than by widening the guard because everything between the
+    guard and the transaction prices the stay, and a booking approved on a manual
+    price override in a season-less window would throw "cannot price this
+    whole-lodge booking" on the way to its own replay.
+
+    No lock is needed: a conversion is write-once (convertedBookingId and
+    convertedMemberId are set in the converting transaction and never rewritten),
+    so there is nothing here another writer can change underneath us. The
+    committed figures are read from the booking, never recomputed (finding M4).
+  */
+  if (request.status === BookingRequestStatus.CONVERTED) {
+    if (!request.convertedBookingId) {
+      throw new BookingRequestError(
+        "This booking request is marked converted but has no booking; it needs manual repair",
+        409
+      );
+    }
+    const committed = await prisma.booking.findUnique({
+      where: { id: request.convertedBookingId },
+      select: { finalPriceCents: true, _count: { select: { guests: true } } },
+    });
+    logAudit({
+      action: "booking_request.member_whole_lodge_approve_idempotent_replay",
+      memberId: input.adminMemberId,
+      actorMemberId: input.adminMemberId,
+      targetId: request.id,
+      entityType: "BookingRequest",
+      entityId: request.id,
+      category: "booking",
+      outcome: "success",
+      summary:
+        "Member whole-lodge request approve replayed idempotently; no second conversion",
+      metadata: {
+        bookingId: request.convertedBookingId,
+        requestId: request.id,
+        preLock: true,
+      },
+    });
+    return {
+      type: "approved",
+      requestId: request.id,
+      bookingId: request.convertedBookingId,
+      // isMemberWholeLodgeRequest above already proved requestedByMemberId is set.
+      memberId: request.convertedMemberId ?? request.requestedByMemberId!,
+      priceCents: committed?.finalPriceCents ?? 0,
+      guestCount: committed?._count?.guests ?? 0,
+      // Nothing was raised by THIS call, so no mode is claimed.
+      invoiceMode: null,
+      // Conflict surfacing belongs to the approval that actually granted the
+      // hold; a replay computes none rather than re-reporting a stale list.
+      exclusiveHoldConflicts: [],
+    };
+  }
+
   if (
     request.status !== BookingRequestStatus.VERIFIED &&
     request.status !== BookingRequestStatus.PRICED
