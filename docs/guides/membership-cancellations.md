@@ -22,6 +22,11 @@ allocated Xero credit note.
 ## When you'd use it
 
 - A member has requested to cancel their membership and you need to review it.
+- You need to cancel a membership on a member's behalf — for example someone
+  who rang the club, or a member with no login of their own (most family
+  dependants). Open their member page and use **Request Cancellation**: the
+  request is confirmed on their behalf and lands in the queue below for a
+  normal approval decision.
 - An admin has requested to archive a member and a *different* admin must approve.
 - You are auditing completed, rejected, or withdrawn lifecycle requests.
 
@@ -115,7 +120,8 @@ approval (checkbox).
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
 | Everything is read-only ("… can view membership cancellations but cannot approve or reject them") | Your admin role has membership view but not edit | Ask a full admin for membership edit access |
-| A participant can't be approved | Bookings are outstanding, or the member has not confirmed | Resolve the listed bookings; wait for the member to confirm their request |
+| A participant can't be approved | Bookings are outstanding, or the member has not confirmed their own inclusion (member-raised requests only — an admin-raised one is already confirmed) | Resolve the listed bookings; wait for the member to confirm their request |
+| A member's page shows no **Request Cancellation** action | Their membership is already cancelled or archived, is not active, or the account is not a member account (a lodge, school, or non-member record). A member having no login does *not* hide it | Check the member's status; if they are active and it is still missing, the account is not a member-level one |
 | Approve/Reject is disabled on an archive | You raised it — the two-admin rule needs a different reviewer | Ask another admin to review it |
 | A refund didn't happen on cancellation | Paid subscriptions are not refunded; unpaid/overdue invoices are cleared with a credit note | This is by policy — see [`CANCELLATIONS.md`](../CANCELLATIONS.md#refund-policy) |
 
