@@ -1,7 +1,23 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import ts from "typescript";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+/*
+  Every test here is pure static analysis: parse ~230 admin source files with
+  TypeScript's own parser, then walk the ASTs. That is CPU-bound with no I/O to
+  wait on, so its wall time scales with how many other vitest workers are
+  competing for the box — not with anything about the tree it is checking.
+
+  Standalone the whole file runs in about 3s. Inside a full `npm test` on a
+  loaded machine the same work measured 24s for the file and 5.4s for its
+  slowest test, which tripped vitest's 5s default: a red suite with no defect
+  behind it. The suite-level hoisting further down cut the real cost (6.5s -> 3s
+  of test time, slowest test 1.6s -> 1.1s), and this raises the ceiling so the
+  margin does not depend on machine load. Matches the convention in
+  `src/lib/__tests__/phase-b2.test.ts`.
+*/
+vi.setConfig({ testTimeout: 30_000 });
 
 /*
   #2160 contract test — the ONE invariant the banner rollout must never break.
