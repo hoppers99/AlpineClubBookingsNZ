@@ -745,23 +745,36 @@ describe("view-only section banner coverage (#2160)", () => {
           270  +1  #2259 adds the per-booking "No emails" switch.
           271  +1  #2247 adds "Restore built-in boards" to the display Templates
                page — a static opt-out under that page's existing banner.
-          273  +2  the Mountain Conditions "Source & selectors" panel adds
+          275  +4  #2249's Lodge Display setup wizard steps (restore the
+               built-in boards, turn the module on, save the lodge details,
+               pair the screen). All four KEEP their own reason: the banner
+               that covers them is rendered by the shared `IntegrationWizard`
+               shell, in another file, and the shell renders its step bodies
+               through a `render(context, helpers)` callback supplied by the
+               wizard CONFIG — so there is no render site at which a parent
+               could pass `ancestorRendersViewOnlyBanner`, and neither
+               coverage rule can see it. The per-button reason is the honest
+               state, not an oversight. (The Xero/Stripe/Google/backup wizard
+               steps sidestep this by using a plain disabled `Button`, which
+               says nothing at all; these say why.)
+          277  +2  the Mountain Conditions "Source & selectors" panel adds
                Preview and Save configuration ViewOnlyActionButtons — static
                opt-outs under the panel's existing AdminViewOnlySectionBanner,
                so callSites and staticOptOuts (and thus optOuts) each rise by
-               two while bannerComponents holds (no new banner component).
+               two while exceptions and bannerComponents hold (no new banner
+               component).
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into
       // the Admin tools card's layout — the same shape as the capacity- and
       // exclusive-hold controls beside it, so it keeps its own per-button
       // reason rather than opting out under a banner it cannot prove renders.
-      callSites: 273,
+      callSites: 277,
       optOuts: 239,
       staticOptOuts: 218,
       vouchedOptOuts: 21,
-      exceptions: 34,
-      exceptionFiles: 17,
+      exceptions: 38,
+      exceptionFiles: 18,
       bannerComponents: 78,
     });
 
@@ -822,8 +835,11 @@ describe("view-only section banner coverage (#2160)", () => {
       // view-only would get no banner at all.
       memberDetailCards: { controls: 4, files: 1 },
       separateA11yContainer: { controls: 9, files: 4 },
-      // +1 control / +1 file vs 20/11: the #2259 "No emails" switch, above.
-      leaves: { controls: 21, files: 12 },
+      // +1 control / +1 file vs 20/11: the #2259 "No emails" switch; then
+      // +4 controls / +1 file: the four #2249 display-wizard step controls,
+      // which the shell's render-callback indirection puts out of reach of
+      // both coverage rules (see the delta chain above).
+      leaves: { controls: 25, files: 13 },
     });
   });
 
