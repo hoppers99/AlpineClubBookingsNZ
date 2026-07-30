@@ -32,7 +32,7 @@ export const EMAIL_AUDIT_DEFAULTS = {
   },
   "booking-confirmed": {
     "defaultSubject": "Booking Confirmed - {{CLUB_LODGE_NAME}}",
-    "defaultBody": "Booking Confirmed\n\nHi {{firstName}}, your lodge booking has been confirmed!\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\nSubtotal: {{subtotal}}                  [only when discountCents > 0]\nDiscount ({{promoCode}}): -{{discount}} [only when promoCode exists]\nDiscount: -{{discount}}                 [only when discount exists without promoCode]\nTotal Paid: {{totalPaid}}\n\nPayment has been processed successfully.\n\n{{provisionalGuestsNote}} [only when non-member guests are held provisionally as a split linked booking]\n\nHow to get to the lodge\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\nDoor code: {{doorCode}} [only when a door code is set]\n\nYou can view your booking details and manage your stay from your account.\n\nView Booking: {{BASE_URL}}/bookings"
+    "defaultBody": "Booking Confirmed\n\nHi {{firstName}}, your lodge booking has been confirmed!\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\n{{promoSummary}}Total Paid: {{totalPaid}}\n\nPayment has been processed successfully.\n\n{{provisionalGuestsNote}}\n\nHow to get to the lodge\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\n{{doorCodeNote}}\n\nYou can view your booking details and manage your stay from your account.\n\nView Booking: {{BASE_URL}}/bookings"
   },
   "booking-pending": {
     "defaultSubject": "Booking Pending - {{CLUB_LODGE_NAME}}",
@@ -52,7 +52,7 @@ export const EMAIL_AUDIT_DEFAULTS = {
   },
   "booking-modified": {
     "defaultSubject": "Booking Modified - {{CLUB_LODGE_NAME}}",
-    "defaultBody": "Booking Modified\n\nHi {{firstName}}, your booking has been updated.\n\n{{modificationTypeLabel}}\n\nPrevious Dates: {{oldCheckIn}} – {{oldCheckOut}} [only when dates changed]\nNew Dates: {{newCheckIn}} – {{newCheckOut}}       [only when dates changed]\nDates: {{newCheckIn}} – {{newCheckOut}}           [when dates did not change]\nPrevious Guests: {{oldGuestCount}}                [only when guest count changed]\nNew Guests: {{newGuestCount}}                     [only when guest count changed]\nGuests: {{newGuestCount}}                         [when guest count did not change]\nPrevious Total: {{oldTotal}}                      [only when total changed]\nNew Total: {{newTotal}}                           [only when total changed]\nTotal: {{newTotal}}                               [when total did not change]\nChange Fee: {{changeFee}}                         [only when changeFeeCents > 0]\n\n{{paymentNote}}\n\nAdditional payment method: {{additionalPaymentMethod}} [only when additional payment is due]\nPayment reference: {{paymentReference}}              [only when provided]\nXero invoice number: {{xeroInvoiceNumber}}           [only when provided]\n\nYou can view your updated booking details from your account.\n\nView Booking: {{BASE_URL}}/bookings"
+    "defaultBody": "Booking Modified\n\nHi {{firstName}}, your booking has been updated.\n\n{{modificationTypeLabel}}\n\n{{changeSummary}}\n{{paymentNote}}\n\nYou can view your updated booking details from your account.\n\nView Booking: {{BASE_URL}}/bookings"
   },
   "checkin-reminder": {
     "defaultSubject": "Check-in Reminder - {{CLUB_LODGE_NAME}}",

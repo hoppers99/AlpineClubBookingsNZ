@@ -11,6 +11,10 @@ import {
   setupIntentFailedTemplate,
   preArrivalReminderTemplate,
   splitGuestPortionCancelledTemplate,
+  promoAdjustmentSummaryRows,
+  resolvePromoAdjustmentCents,
+  bookingModificationTypeLabel,
+  bookingModificationSummaryRows,
 } from "../email-templates";
 import { CLUB_NAME } from "@/config/club-identity";
 import { EMAIL_DEFAULT_LODGE_NAME } from "@/lib/email-message-settings";
@@ -56,12 +60,35 @@ export async function sendBookingConfirmedEmail(
   },
 ) {
   const settings = await loadEmailMessageSettingsForLodge(options?.lodgeId);
-  const promoAdjustmentCents =
-    options?.promoAdjustmentCents ??
-    (options?.discountCents && options.discountCents > 0
-      ? -options.discountCents
-      : 0);
+  // #2267: derived by the same shared helper the HTML template uses, so the
+  // two paths can never disagree about what the promo did to the price.
+  const promoAdjustmentCents = resolvePromoAdjustmentCents(options);
   const promoAdjustmentPrefix = promoAdjustmentCents > 0 ? "+" : "-";
+  // #2267: pre-composed {{promoSummary}} block for the admin-editable body —
+  // the provisionalGuestsNote precedent, built from the same rows as the HTML
+  // template so both paths always tell the same money story. Each row becomes
+  // a "Label: value" line WITH its own trailing newline, so the default body
+  // can write "{{promoSummary}}Total Paid: {{totalPaid}}" and render a clean
+  // contiguous block for a promo and no leftover blank line without one. The
+  // adjustment value carries its own sign (-$12.00 discount, +$1,370.00 for a
+  // price-raising FIXED_NIGHTLY/SET_PRICE promo), so the body must never
+  // prefix a minus of its own.
+  const promoSummary = promoAdjustmentSummaryRows(
+    totalCents,
+    promoAdjustmentCents,
+    options?.promoCode,
+  )
+    .map((row) => `${row.label}: ${row.value}\n`)
+    .join("");
+  // #2267: pre-composed {{doorCodeNote}} line, mirroring what the HTML
+  // arrival-instructions section does — the whole "Door code: 1234" line, or
+  // nothing at all for a lodge with no code recorded. The default body used to
+  // hardcode the "Door code: " label around the bare {{doorCode}} value, which
+  // left a dangling "Door code:" line in every confirmation a club without a
+  // door code sent.
+  const doorCodeNote = settings.doorCode?.trim()
+    ? `Door code: ${settings.doorCode.trim()}`
+    : "";
   const provisionalGuests = options?.provisionalGuests;
   // Composed sentence for the {{provisionalGuestsNote}} token — the same story
   // the FILE template renders, so an operator override keeps parity. Empty when
@@ -100,6 +127,12 @@ export async function sendBookingConfirmedEmail(
       checkOut: formatNZDate(checkOut),
       guestCount,
       provisionalGuestsNote,
+      promoSummary,
+      // Legacy per-piece promo tokens, kept supplied so a saved override that
+      // still references them keeps rendering (#2267). New bodies should use
+      // {{promoSummary}}: {{discount}} can only express a price cut (it is
+      // empty for a price-raising promo), which is exactly the bug that
+      // produced a dangling "Discount: -" line on surcharge promos.
       subtotal:
         promoAdjustmentCents !== 0
           ? formatMoneyCents(totalCents - promoAdjustmentCents)
@@ -115,6 +148,9 @@ export async function sendBookingConfirmedEmail(
           : "",
       totalPaid: formatMoneyCents(totalCents),
       total: formatMoneyCents(totalCents),
+      doorCodeNote,
+      // Legacy bare value, still supplied so an existing override that writes
+      // its own "Door code: {{doorCode}}" line keeps rendering (#2267).
       doorCode: settings.doorCode ?? "",
     },
     lodgeId: options?.lodgeId,
@@ -475,6 +511,14 @@ export async function sendBookingModifiedEmail(params: {
   lodgeId?: string | null;
 }) {
   const accountCreditAmountCents = params.accountCreditAmountCents ?? 0;
+  // #2267: pre-composed {{changeSummary}} block for the admin-editable body,
+  // built from the same rows as the HTML template — only what actually changed
+  // is shown as a Previous/New pair, and a change fee only when one was
+  // charged. Each row carries its own trailing newline (the {{promoSummary}}
+  // precedent) so the default body can place it as a single block.
+  const changeSummary = bookingModificationSummaryRows(params)
+    .map((row) => `${row.label}: ${row.value}\n`)
+    .join("");
   const xeroInvoicePaymentContext = params.xeroInvoiceNumber
     ? ` Xero invoice ${params.xeroInvoiceNumber} will be used for payment.`
     : " A Xero invoice and payment reference will be used for payment.";
@@ -500,7 +544,16 @@ export async function sendBookingModifiedEmail(params: {
     templateName: "booking-modified",
     templateData: {
       firstName: params.firstName,
-      modificationTypeLabel: params.modificationType,
+      // #2267: the same wording the HTML path shows — not the raw enum word an
+      // override-using club used to email members.
+      modificationTypeLabel: bookingModificationTypeLabel(
+        params.modificationType,
+      ),
+      changeSummary,
+      // Legacy per-piece change tokens, still supplied so an override saved
+      // before {{changeSummary}} existed keeps rendering (#2267). They cannot
+      // express "only show what changed", which is why the default body no
+      // longer builds its rows out of them.
       oldCheckIn: formatNZDate(params.oldCheckIn),
       oldCheckOut: formatNZDate(params.oldCheckOut),
       newCheckIn: formatNZDate(params.newCheckIn),

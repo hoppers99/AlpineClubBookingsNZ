@@ -22,6 +22,8 @@ interface BucketBoardProps {
   selectedBeds: Record<string, string>;
   onSelectBed: (bookingGuestId: string, bedId: string) => void;
   onAllocate: (group: BucketGuestGroup) => void;
+  // #2251 entry point 1: open the range dialog for this guest.
+  onAssignRange: (group: BucketGuestGroup) => void;
   pendingGuestIds: Set<string>;
   highlightedBookingId: string;
   // Tri-state (#2065): `undefined` while the client session resolves; the
@@ -37,6 +39,7 @@ export function BucketBoard({
   selectedBeds,
   onSelectBed,
   onAllocate,
+  onAssignRange,
   pendingGuestIds,
   highlightedBookingId,
   canEdit,
@@ -178,6 +181,7 @@ export function BucketBoard({
                     selectedBedId={selectedBeds[group.bookingGuestId] ?? ""}
                     onSelectBed={(bedId) => onSelectBed(group.bookingGuestId, bedId)}
                     onAllocate={() => onAllocate(group)}
+                    onAssignRange={() => onAssignRange(group)}
                     pending={pendingGuestIds.has(group.bookingGuestId)}
                     highlighted={highlighted}
                     canEdit={canEdit}

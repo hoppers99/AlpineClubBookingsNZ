@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import {
   listBookingPartnerSharingCandidates,
   mayShareDoubleBed,
+  mayShareDoubleBedWith,
 } from "@/lib/double-bed-sharing";
 import { canonicalPartnerPair } from "@/lib/member-partner-link-shared";
 
@@ -113,6 +114,107 @@ describe("mayShareDoubleBed", () => {
   it("rejects empty member ids without querying", async () => {
     const db = fakeDb([adult("a")]);
     await expect(mayShareDoubleBed("", "b", db)).resolves.toBe(false);
+    expect(db.member.findMany as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+  });
+});
+
+/*
+ * The batched form must answer exactly what the single-pair form answers, for
+ * every candidate, or the range path (#2251) would place partners the board
+ * would refuse. These cases are the ones above, asked all at once.
+ */
+describe("mayShareDoubleBedWith (batched)", () => {
+  function batchedDb(members: FakeMember[], links: FakePartnerLink[] = []) {
+    return {
+      member: {
+        findMany: vi.fn(async (args: { where: { id: { in: string[] } } }) => {
+          const ids = args.where.id.in;
+          return members.filter((member) => ids.includes(member.id));
+        }),
+      },
+      memberPartnerLink: {
+        findMany: vi.fn(
+          async (args: {
+            where: {
+              status: string;
+              OR: { memberAId: string; memberBId: string }[];
+            };
+          }) =>
+            links.filter(
+              (candidate) =>
+                candidate.status === args.where.status &&
+                args.where.OR.some(
+                  (pair) =>
+                    pair.memberAId === candidate.memberAId &&
+                    pair.memberBId === candidate.memberBId,
+                ),
+            ),
+        ),
+      },
+    } as unknown as NonNullable<Parameters<typeof mayShareDoubleBedWith>[2]>;
+  }
+
+  it("agrees with mayShareDoubleBed on every candidate, in ONE pair of queries", async () => {
+    const members = [
+      adult("anchor"),
+      adult("confirmed"),
+      adult("pending"),
+      adult("unlinked"),
+      { id: "minor", ageTier: "YOUTH", active: true },
+      { id: "inactive", ageTier: "ADULT", active: false },
+    ];
+    const links = [
+      link("anchor", "confirmed", "CONFIRMED"),
+      link("anchor", "pending", "PENDING"),
+      link("anchor", "minor", "CONFIRMED"),
+      link("anchor", "inactive", "CONFIRMED"),
+    ];
+    const candidates = [
+      "confirmed",
+      "pending",
+      "unlinked",
+      "minor",
+      "inactive",
+      "ghost",
+      "anchor",
+    ];
+
+    const batched = batchedDb(members, links);
+    const eligible = await mayShareDoubleBedWith("anchor", candidates, batched);
+
+    expect([...eligible].sort()).toEqual(["confirmed"]);
+    // Batched means batched: one member lookup, one link lookup, whatever the
+    // candidate count — that is the whole point of it.
+    expect(batched.member.findMany as ReturnType<typeof vi.fn>).toHaveBeenCalledTimes(1);
+    expect(
+      batched.memberPartnerLink.findMany as ReturnType<typeof vi.fn>,
+    ).toHaveBeenCalledTimes(1);
+
+    for (const candidate of candidates) {
+      const single = await mayShareDoubleBed(
+        "anchor",
+        candidate,
+        fakeDb(members, links),
+      );
+      expect(eligible.has(candidate)).toBe(single);
+    }
+  });
+
+  it("returns nothing when the anchor itself is not an active adult", async () => {
+    const db = batchedDb(
+      [{ id: "anchor", ageTier: "ADULT", active: false }, adult("confirmed")],
+      [link("anchor", "confirmed", "CONFIRMED")],
+    );
+    await expect(
+      mayShareDoubleBedWith("anchor", ["confirmed"], db),
+    ).resolves.toEqual(new Set());
+  });
+
+  it("queries nothing for an empty candidate list", async () => {
+    const db = batchedDb([adult("anchor")]);
+    await expect(mayShareDoubleBedWith("anchor", [], db)).resolves.toEqual(
+      new Set(),
+    );
     expect(db.member.findMany as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
   });
 });

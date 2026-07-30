@@ -77,12 +77,35 @@ interface BaseInput {
   // lodge when set; omitted resolves to the club's default lodge, so
   // single-lodge callers keep working unchanged.
   lodgeId?: string;
+  /**
+   * Account credit, in integer cents, that the member asked to put towards this
+   * booking.
+   *
+   * Deliberately declared on the SHARED base (#2265) rather than on the
+   * confirmed input alone. It used to live only on `ConfirmedBookingInput`,
+   * which let the route's two hand-built argument objects diverge: the draft
+   * branch simply never passed the field, the type system had nothing to say
+   * about it, and a member's credit election was silently discarded every time
+   * they saved a draft. Both services now accept it, and
+   * `issue-2265-booking-create-money-parity.test.ts` pins that both call sites keep
+   * passing it.
+   *
+   * The two services consume it differently, and that difference is the whole
+   * point of the design:
+   *  - `createConfirmedBooking` APPLIES it — the credit is consumed into the
+   *    MemberCredit ledger at create time, but only for a booking that is
+   *    actually reaching PAYMENT_PENDING.
+   *  - `createDraftBooking` only REMEMBERS it, on `Booking.creditElectionCents`.
+   *    A draft may be abandoned or expire, so no balance is tied up; the
+   *    election is applied (clamped to the live balance and price) when the
+   *    booking reaches PAYMENT_PENDING at the pay step.
+   */
+  applyCreditCents?: number;
 }
 
 export type DraftBookingInput = BaseInput;
 
 export interface ConfirmedBookingInput extends BaseInput {
-  applyCreditCents?: number;
   status: BookingStatus;
   shouldBePending: boolean;
   holdDays: number;

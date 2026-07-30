@@ -10,6 +10,21 @@ export const ADMIN_VIEW_ONLY_ACTION_REASON =
   "Your admin role can view this area but cannot make changes.";
 
 /**
+ * Reason for a control gated on FULL ADMIN rather than on an area's edit access
+ * (#2324).
+ *
+ * The integration setup wizards need this because their banner and their
+ * controls do not always describe the same permission. The shell's view-only
+ * banner states the wizard's own area (finance, support, lodge) and appears only
+ * when THAT area is view-only — but writing a provider credential additionally
+ * requires Full Admin. An admin with finance edit and no Full Admin therefore
+ * sees no banner and a dead Save button, so those controls keep their own
+ * reason and say which permission it is.
+ */
+export const ADMIN_FULL_ADMIN_ONLY_ACTION_REASON =
+  "This change needs Full Admin access, which your admin role does not have.";
+
+/**
  * Tri-state admin edit-access gate (#2065).
  *
  * Returns:
