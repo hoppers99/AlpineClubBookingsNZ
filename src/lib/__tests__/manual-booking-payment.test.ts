@@ -51,7 +51,9 @@ const mocks = vi.hoisted(() => ({
   checkCapacityForGuestRanges: vi.fn(),
   lockMemberCreditLedger: vi.fn(),
   deriveBookingAppliedCreditCents: vi.fn(),
+  getMemberCreditBalance: vi.fn(),
   restoreCreditFromBooking: vi.fn(),
+  auditLogFindFirst: vi.fn(),
   upsertPaymentIntentTransaction: vi.fn(),
   findPaymentTransactionByIntentId: vi.fn(),
   refundPaymentTransactions: vi.fn(),
@@ -100,6 +102,8 @@ vi.mock("@/lib/capacity", () => ({
 vi.mock("@/lib/member-credit", () => ({
   deriveBookingAppliedCreditCents: (...args: unknown[]) =>
     mocks.deriveBookingAppliedCreditCents(...args),
+  getMemberCreditBalance: (...args: unknown[]) =>
+    mocks.getMemberCreditBalance(...args),
   lockMemberCreditLedger: (...args: unknown[]) =>
     mocks.lockMemberCreditLedger(...args),
   restoreCreditFromBooking: (...args: unknown[]) =>
@@ -183,6 +187,9 @@ const tx = {
   xeroSyncOperation: {
     findFirst: (...args: unknown[]) => mocks.xeroSyncOperationFindFirst(...args),
   },
+  auditLog: {
+    findFirst: (...args: unknown[]) => mocks.auditLogFindFirst(...args),
+  },
 };
 
 const ADMIN_ID = "admin-1";
@@ -237,6 +244,10 @@ beforeEach(() => {
   mocks.acquireLodgeCapacityLock.mockResolvedValue(undefined);
   mocks.lockMemberCreditLedger.mockResolvedValue(undefined);
   mocks.deriveBookingAppliedCreditCents.mockResolvedValue(2000);
+  mocks.getMemberCreditBalance.mockResolvedValue(0);
+  // No prior manual settle on this payment unless a test says otherwise, so the
+  // reversal's election restore finds nothing to put back.
+  mocks.auditLogFindFirst.mockResolvedValue(null);
   mocks.checkCapacityForGuestRanges.mockResolvedValue({ available: true });
   mocks.bookingFindUnique.mockImplementation(async (args: { select?: unknown }) =>
     args.select ? { lodgeId: "lodge-1" } : bookingRow()
@@ -913,15 +924,30 @@ describe("#2262 — the reversal (direction unpaid)", () => {
 
 describe("#2262 door 3 — a stored credit election (#2265) is never silently stranded", () => {
   const UNAPPLIED_ACTION = "booking.credit_election.unapplied";
+  const MARK_PAID_ACTION = "booking-payment.manual-payment.mark-paid";
 
-  /** The settle-shaped booking read, carrying a stored, unconsumed election. */
+  /**
+   * The settle-shaped booking read, carrying a stored, unconsumed election.
+   *
+   * An unconsumed election means the election applied NOTHING, so the booking's
+   * price is entirely uncovered: applied credit 0, and the settlement takes the
+   * whole `finalPriceCents`. The suite-wide fixture (2000c of already-applied
+   * credit) describes a different booking, and baking it in here would have the
+   * reporter claiming a paid amount no election-carrying booking can produce.
+   */
   function primeSettleWithElection(electionCents: number | null = 4500) {
+    mocks.deriveBookingAppliedCreditCents.mockResolvedValue(0);
     mocks.bookingFindUnique.mockImplementation(
       async (args: { select?: unknown }) =>
         args.select
           ? { lodgeId: "lodge-1" }
           : bookingRow({ creditElectionCents: electionCents })
     );
+  }
+
+  /** The settle call for an election-carrying booking: nothing is pre-covered. */
+  function settleFullPrice() {
+    return settle({ expectedAmountCents: 12000 });
   }
 
   /** The reversal-shaped booking read (mirrors the sibling describe's helper). */
@@ -937,7 +963,7 @@ describe("#2262 door 3 — a stored credit election (#2265) is never silently st
               }),
               payment: {
                 id: "payment-1",
-                amountCents: 10000,
+                amountCents: 12000,
                 refundedAmountCents: 0,
                 xeroInvoiceId: null,
                 xeroRefundCreditNoteId: null,
@@ -950,13 +976,33 @@ describe("#2262 door 3 — a stored credit election (#2265) is never silently st
     );
   }
 
+  /**
+   * The mark-paid audit row the reversal reads back, as the settle wrote it.
+   * `clearedCreditElectionCents: null` is the shape of a settle that cleared
+   * nothing at all.
+   */
+  function primeStoredSettleAudit(clearedCreditElectionCents: number | null) {
+    mocks.auditLogFindFirst.mockResolvedValue({
+      metadata: { clearedCreditElectionCents },
+    });
+  }
+
   function unappliedAuditCalls() {
     return mocks.createAuditLog.mock.calls.filter(
       (call) => (call[0] as { action?: string })?.action === UNAPPLIED_ACTION
     );
   }
 
-  /** Every write's data payload, so "nothing touched the election" is provable. */
+  function markUnpaidAuditMetadata() {
+    const call = mocks.createAuditLog.mock.calls.find(
+      (entry) =>
+        (entry[0] as { action?: string })?.action ===
+        "booking-payment.manual-payment.mark-unpaid"
+    );
+    return (call?.[0] as { metadata?: Record<string, unknown> })?.metadata ?? {};
+  }
+
+  /** Every write's data payload that touches the election column. */
   function electionWritePayloads() {
     return [
       ...mocks.bookingUpdateMany.mock.calls,
@@ -964,6 +1010,33 @@ describe("#2262 door 3 — a stored credit election (#2265) is never silently st
     ]
       .map((call) => (call[0] as { data?: Record<string, unknown> })?.data ?? {})
       .filter((data) => "creditElectionCents" in data);
+  }
+
+  /** The election value a reversal actually wrote back, read off its own write. */
+  function restoredElectionFromReversalWrite(): number | null {
+    const write = mocks.bookingUpdateMany.mock.calls
+      .map(
+        (call) =>
+          call[0] as {
+            where?: Record<string, unknown>;
+            data?: Record<string, unknown>;
+          }
+      )
+      .find(
+        (args) =>
+          args.data != null &&
+          "creditElectionCents" in args.data &&
+          args.data.creditElectionCents != null
+      );
+    return (write?.data?.creditElectionCents as number | undefined) ?? null;
+  }
+
+  function reverse() {
+    return reverseManualBookingPayment({
+      bookingId: "booking-1",
+      actingAdminMemberId: ADMIN_ID,
+      note: null,
+    });
   }
 
   beforeEach(() => {
@@ -974,8 +1047,10 @@ describe("#2262 door 3 — a stored credit election (#2265) is never silently st
 
   it("CLEARS the election with the guarded claim, audits it on the mark-paid row, and reports the honest member-visible copy", async () => {
     primeSettleWithElection(4500);
+    // The member still holds the whole balance they elected.
+    mocks.getMemberCreditBalance.mockResolvedValue(4500);
 
-    const result = await settle();
+    const result = await settleFullPrice();
 
     // The guarded claim — the exact amount that was read moves to NULL, the
     // same discipline every #2319 door uses, so a consumer racing this settle
@@ -985,10 +1060,11 @@ describe("#2262 door 3 — a stored credit election (#2265) is never silently st
       data: { creditElectionCents: null },
     });
 
-    // The cleared cents ride the mark-paid audit row's own metadata...
+    // The cleared cents ride the mark-paid audit row's own metadata — the
+    // record the REVERSAL reads back to restore the member's election.
     expect(mocks.createAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
-        action: "booking-payment.manual-payment.mark-paid",
+        action: MARK_PAID_ACTION,
         metadata: expect.objectContaining({
           clearedCreditElectionCents: 4500,
         }),
@@ -998,7 +1074,8 @@ describe("#2262 door 3 — a stored credit election (#2265) is never silently st
 
     // ...and the shared #2319 reporter writes the member-visible row: the
     // booking history renders this exact action as "your credit was not used
-    // and is still available".
+    // and your balance was not reduced". `paidAmountCents` is the whole price,
+    // because an unconsumed election covered nothing.
     expect(mocks.createAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
         action: UNAPPLIED_ACTION,
@@ -1007,7 +1084,9 @@ describe("#2262 door 3 — a stored credit election (#2265) is never silently st
         metadata: expect.objectContaining({
           source: "manual-mark-paid",
           creditElectionCents: 4500,
-          paidAmountCents: 10000,
+          paidAmountCents: 12000,
+          availableCreditCents: 4500,
+          refundableCents: 4500,
           paymentId: "payment-1",
           actingAdminMemberId: ADMIN_ID,
         }),
@@ -1021,9 +1100,7 @@ describe("#2262 door 3 — a stored credit election (#2265) is never silently st
       expect.objectContaining({
         amountCents: 4500,
         paymentIntentId: "booking-1",
-        errorMessage: expect.stringContaining(
-          "account credit balance is untouched"
-        ),
+        errorMessage: expect.stringContaining("never debited"),
       })
     );
 
@@ -1048,50 +1125,230 @@ describe("#2262 door 3 — a stored credit election (#2265) is never silently st
           : { count: 1 }
     );
 
-    const result = await settle();
+    const result = await settleFullPrice();
 
     expect(unappliedAuditCalls()).toEqual([]);
     expect(vi.mocked(sendAdminPaymentFailureAlert)).not.toHaveBeenCalled();
     expect(result.staleCreditElectionCents).toBeNull();
+
+    // And the AUDIT ROW must say so too. A racing consumer spent the credit on
+    // this very booking, so a mark-paid row claiming cents were cleared here
+    // would be a false money trail — and, worse, the reversal reads that key
+    // back to decide what to restore, so a lie here resurrects an election the
+    // member already spent.
+    expect(mocks.createAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: MARK_PAID_ACTION,
+        metadata: expect.objectContaining({ clearedCreditElectionCents: null }),
+      }),
+      expect.anything()
+    );
   });
 
-  it("the reversal never resurrects a cleared election", async () => {
+  it("the reversal RESTORES exactly the election the matching settle cleared, under a null-guard", async () => {
     primeReversalRead();
+    primeStoredSettleAudit(4500);
 
-    await reverseManualBookingPayment({
-      bookingId: "booking-1",
-      actingAdminMemberId: ADMIN_ID,
-      note: null,
+    const reversal = await reverse();
+
+    // Read back from the settle's own audit row — not guessed, not recomputed.
+    expect(mocks.auditLogFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          action: MARK_PAID_ACTION,
+          entityType: "Payment",
+          entityId: "payment-1",
+        }),
+        orderBy: { createdAt: "desc" },
+      })
+    );
+    // Guarded write: only onto a column that is still NULL, so a legitimate
+    // writer that has set an election since is never clobbered.
+    expect(mocks.bookingUpdateMany).toHaveBeenCalledWith({
+      where: { id: "booking-1", creditElectionCents: null },
+      data: { creditElectionCents: 4500 },
     });
-
-    // No write on either row touches the column: the member was already told
-    // their credit is still available, and the restored booking's pay step
-    // asks about credit afresh.
-    expect(electionWritePayloads()).toEqual([]);
+    expect(reversal.restoredCreditElectionCents).toBe(4500);
+    expect(markUnpaidAuditMetadata()).toMatchObject({
+      restoredCreditElectionCents: 4500,
+      settleClearedCreditElectionCents: 4500,
+    });
   });
 
-  it("mark-paid -> reversal -> re-mark clears and reports exactly once — no double-clear, no resurrection", async () => {
+  it("the reversal writes nothing when the settle cleared no election", async () => {
+    primeReversalRead();
+    primeStoredSettleAudit(null);
+
+    const reversal = await reverse();
+
+    expect(electionWritePayloads()).toEqual([]);
+    expect(reversal.restoredCreditElectionCents).toBeNull();
+    expect(markUnpaidAuditMetadata()).toMatchObject({
+      restoredCreditElectionCents: null,
+      settleClearedCreditElectionCents: null,
+    });
+  });
+
+  it("the reversal does NOT clobber an election a legitimate writer has set since — the guard loses and says so", async () => {
+    primeReversalRead();
+    primeStoredSettleAudit(4500);
+    // The restore is the only write whose data SETS the column to a number;
+    // make exactly that one match no row, as a non-null column would.
+    mocks.bookingUpdateMany.mockImplementation(
+      async (args: { data?: Record<string, unknown> }) =>
+        args.data?.creditElectionCents != null ? { count: 0 } : { count: 1 }
+    );
+
+    const reversal = await reverse();
+
+    expect(reversal.restoredCreditElectionCents).toBeNull();
+    // The settle's figure is still recorded, so the trail says what was cleared
+    // AND that this reversal did not put it back.
+    expect(markUnpaidAuditMetadata()).toMatchObject({
+      restoredCreditElectionCents: null,
+      settleClearedCreditElectionCents: 4500,
+    });
+  });
+
+  it("mark-paid -> reversal -> re-mark clears and reports ONCE PER SETTLEMENT, on the election the reversal actually restored", async () => {
     // 1. The settle clears the election and reports it.
     primeSettleWithElection(4500);
-    await settle();
+    mocks.getMemberCreditBalance.mockResolvedValue(4500);
+    await settleFullPrice();
     expect(unappliedAuditCalls()).toHaveLength(1);
     expect(vi.mocked(sendAdminPaymentFailureAlert)).toHaveBeenCalledTimes(1);
 
-    // 2. The reversal restores the booking; the election stays NULL.
+    // 2. The reversal puts the election back, from the settle's audit row.
     primeReversalRead();
-    await reverseManualBookingPayment({
-      bookingId: "booking-1",
-      actingAdminMemberId: ADMIN_ID,
-      note: null,
-    });
+    primeStoredSettleAudit(4500);
+    mocks.bookingUpdateMany.mockClear();
+    const reversal = await reverse();
+    expect(reversal.restoredCreditElectionCents).toBe(4500);
 
-    // 3. The re-mark finds no election: nothing to clear, nothing to report.
-    primeSettleWithElection(null);
+    // 3. The re-mark sees whatever the REVERSAL actually wrote back — derived
+    // from its own write, never hard-coded, so this half cannot pass by
+    // assumption. Cash is taken a second time while the election stands, so it
+    // is cleared and reported a second time: once per settlement, which is the
+    // honest count. Reporting only once would leave the member's second
+    // full-price payment unexplained.
+    primeSettleWithElection(restoredElectionFromReversalWrite());
     mocks.paymentFindUnique.mockResolvedValue(paymentRow());
-    const remark = await settle();
+    const remark = await settleFullPrice();
 
-    expect(remark.staleCreditElectionCents).toBeNull();
-    expect(unappliedAuditCalls()).toHaveLength(1);
-    expect(vi.mocked(sendAdminPaymentFailureAlert)).toHaveBeenCalledTimes(1);
+    expect(remark.staleCreditElectionCents).toBe(4500);
+    expect(unappliedAuditCalls()).toHaveLength(2);
+    expect(vi.mocked(sendAdminPaymentFailureAlert)).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("#2262 delta MED-2 — the cleared-election copy can never overstate what is available", () => {
+  /**
+   * Elected long ago, spent since. The member's live balance — not the elected
+   * figure — is what the copy may quote, or a $450 election against a $50
+   * balance invites an operator to refund nine times what the account holds.
+   */
+  function primeSettleWithElection(electionCents: number) {
+    mocks.deriveBookingAppliedCreditCents.mockResolvedValue(0);
+    mocks.bookingFindUnique.mockImplementation(
+      async (args: { select?: unknown }) =>
+        args.select
+          ? { lodgeId: "lodge-1" }
+          : bookingRow({ creditElectionCents: electionCents })
+    );
+  }
+
+  function alertArgs() {
+    return vi.mocked(sendAdminPaymentFailureAlert).mock.calls[0]?.[0] as {
+      amountCents: number;
+      errorMessage: string;
+    };
+  }
+
+  function unappliedMetadata() {
+    const call = mocks.createAuditLog.mock.calls.find(
+      (entry) =>
+        (entry[0] as { action?: string })?.action ===
+        "booking.credit_election.unapplied"
+    );
+    return (call?.[0] as { metadata?: Record<string, unknown> })?.metadata ?? {};
+  }
+
+  beforeEach(() => {
+    vi.mocked(sendAdminPaymentFailureAlert).mockResolvedValue(
+      undefined as never
+    );
+  });
+
+  it("elected MORE than the live balance: both figures are clamped to the balance and the copy says it moved", async () => {
+    primeSettleWithElection(45000);
+    mocks.getMemberCreditBalance.mockResolvedValue(5000);
+
+    await settle({ expectedAmountCents: 12000 });
+
+    expect(unappliedMetadata()).toMatchObject({
+      creditElectionCents: 45000,
+      availableCreditCents: 5000,
+      refundableCents: 5000,
+    });
+    const alert = alertArgs();
+    // The headline figure an operator acts on is the refundable one.
+    expect(alert.amountCents).toBe(5000);
+    expect(alert.errorMessage).toContain("at most $50.00");
+    expect(alert.errorMessage).toContain("their balance has moved since");
+    // The elected figure survives only as a statement about the past.
+    expect(alert.errorMessage).toContain("had asked to put $450.00");
+  });
+
+  it("elected EXACTLY the live balance: the full election is refundable and nothing claims it moved", async () => {
+    primeSettleWithElection(5000);
+    mocks.getMemberCreditBalance.mockResolvedValue(5000);
+
+    await settle({ expectedAmountCents: 12000 });
+
+    expect(unappliedMetadata()).toMatchObject({
+      creditElectionCents: 5000,
+      availableCreditCents: 5000,
+      refundableCents: 5000,
+    });
+    const alert = alertArgs();
+    expect(alert.amountCents).toBe(5000);
+    expect(alert.errorMessage).toContain("at most $50.00");
+    expect(alert.errorMessage).not.toContain("balance has moved since");
+  });
+
+  it("balance spent to ZERO: the copy says there is nothing to refund rather than 'refund at most $0.00'", async () => {
+    primeSettleWithElection(45000);
+    mocks.getMemberCreditBalance.mockResolvedValue(0);
+
+    await settle({ expectedAmountCents: 12000 });
+
+    expect(unappliedMetadata()).toMatchObject({
+      creditElectionCents: 45000,
+      availableCreditCents: 0,
+      refundableCents: 0,
+    });
+    const alert = alertArgs();
+    expect(alert.amountCents).toBe(0);
+    expect(alert.errorMessage).toContain("nothing to refund");
+    expect(alert.errorMessage).not.toContain("at most");
+  });
+
+  it("the balance read failing omits every availability figure rather than falling back to the elected one", async () => {
+    primeSettleWithElection(45000);
+    mocks.getMemberCreditBalance.mockRejectedValue(new Error("db down"));
+
+    await settle({ expectedAmountCents: 12000 });
+
+    expect(unappliedMetadata()).toMatchObject({
+      creditElectionCents: 45000,
+      availableCreditCents: null,
+      refundableCents: null,
+    });
+    const alert = alertArgs();
+    expect(alert.errorMessage).toContain("could not be read");
+    // No availability FIGURE is quoted — the sentence tells the operator to go
+    // and look, rather than naming an amount it cannot stand behind.
+    expect(alert.errorMessage).not.toContain("at most $");
+    expect(alert.errorMessage).not.toContain("They now hold");
   });
 });

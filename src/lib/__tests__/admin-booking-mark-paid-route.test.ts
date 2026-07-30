@@ -67,6 +67,7 @@ beforeEach(() => {
     receipt: "not_requested",
     amountCents: 10000,
     bookingStatus: "PAID",
+    creditElectionCents: null,
   });
 });
 
@@ -196,5 +197,80 @@ describe("POST /api/admin/bookings/[id]/mark-paid", () => {
 
     expect(response.status).toBe(409);
     expect((await response.json()).error).toMatch(/outstanding Xero invoice/);
+  });
+
+  /**
+   * #2265 (#2262 door 3, delta LOW-e). The operator alert that also reports a
+   * moved credit election is gated on the club's `adminPaymentFailure`
+   * notification preference, which a club may have muted. The admin who has
+   * just taken the member's cash must be told at the till regardless, so the
+   * route says it in the response the dialog shows.
+   */
+  it("tells the admin synchronously when the settle CLEARED a stored credit election", async () => {
+    mocks.applyManualBookingPayment.mockResolvedValue({
+      bookingId: "booking-1",
+      paymentId: "payment-1",
+      direction: "paid",
+      memberNotified: false,
+      receipt: "not_requested",
+      amountCents: 12000,
+      bookingStatus: "PAID",
+      creditElectionCents: 4500,
+    });
+
+    const response = await POST(
+      makeRequest({
+        direction: "paid",
+        confirmed: true,
+        notifyMember: false,
+        expectedAmountCents: 12000,
+      }),
+      { params },
+    );
+
+    const message = (await response.json()).message as string;
+    expect(message).toContain("Payment recorded.");
+    expect(message).toContain("$45.00");
+    expect(message).toMatch(/cash cannot use it/);
+    expect(message).toMatch(/still on their account/);
+  });
+
+  it("tells the admin synchronously when a reversal RESTORED the member's election", async () => {
+    mocks.applyManualBookingPayment.mockResolvedValue({
+      bookingId: "booking-1",
+      paymentId: "payment-1",
+      direction: "unpaid",
+      memberNotified: false,
+      receipt: "not_requested",
+      amountCents: 12000,
+      bookingStatus: "PAYMENT_PENDING",
+      creditElectionCents: 4500,
+    });
+
+    const response = await POST(
+      makeRequest({ direction: "unpaid", confirmed: true }),
+      { params },
+    );
+
+    const message = (await response.json()).message as string;
+    expect(message).toContain("Manual payment reversed.");
+    expect(message).toContain("$45.00");
+    expect(message).toMatch(/put back on the booking/);
+  });
+
+  it("says nothing about credit on the ordinary settlement, which moves none", async () => {
+    const response = await POST(
+      makeRequest({
+        direction: "paid",
+        confirmed: true,
+        notifyMember: false,
+        expectedAmountCents: 10000,
+      }),
+      { params },
+    );
+
+    expect((await response.json()).message).toBe(
+      "Payment recorded. The member was not emailed.",
+    );
   });
 });
