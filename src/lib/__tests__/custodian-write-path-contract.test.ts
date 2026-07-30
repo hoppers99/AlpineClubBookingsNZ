@@ -1,4 +1,4 @@
-import { readFileSync } from "fs";
+import { readFileSync, readdirSync } from "fs";
 import path from "path";
 import { describe, expect, it } from "vitest";
 
@@ -21,6 +21,35 @@ function readRepoFile(relativePath: string) {
   // Test helper: reads a fixed repo file under process.cwd(); relativePath is test-controlled, not user input.
   // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   return readFileSync(path.resolve(process.cwd(), relativePath), "utf8");
+}
+
+/**
+ * Every `.ts`/`.tsx` file under `src/`, as repo-relative POSIX paths.
+ *
+ * The scan below used to look at three hand-listed files, which is exactly the
+ * hole this test exists to close: a `bedAllocation.create*` added anywhere else
+ * — a route handler, a script, a new service — would never have been seen. The
+ * walk is over the whole tree instead, so a new write site fails CI wherever it
+ * lands. Tests are excluded: a mock's `createMany` spy is not a write path.
+ */
+function allSourceFiles(): string[] {
+  const root = path.resolve(process.cwd(), "src");
+  const out: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === "__tests__" || entry.name === "node_modules") continue;
+        walk(full);
+        continue;
+      }
+      if (!/\.tsx?$/.test(entry.name)) continue;
+      if (/\.test\.tsx?$/.test(entry.name)) continue;
+      out.push(path.relative(process.cwd(), full).split(path.sep).join("/"));
+    }
+  };
+  walk(root);
+  return out.sort();
 }
 
 /**
@@ -64,8 +93,8 @@ const GUARDED_WRITE_SITES: Array<{
     file: "src/lib/bed-allocation-lifecycle.ts",
     statement: "bedAllocation.createMany",
     mechanism:
-      "autoAllocateMissingBedNights feeds custodian holds to the planner as #1768 unknown-occupant rows, which are blocking and never evictable — so no plan allocation and no displacement MOVE can target a held bed-night.",
-    evidence: "custodianOccupiedBedNightsForPlanner(custodianHolds",
+      "autoAllocateMissingBedNights feeds custodian holds to the planner as #1768 unknown-occupant rows (blocking, never evictable), AND re-filters the payload against the live holds on the writing client immediately before both createManys — the reconcile is routinely called post-commit and unlocked, so the plan-time read alone would let a hold created in between be written over.",
+    evidence: "dropRowsOnCustodianHeldBedNights(client, rows",
   },
   {
     file: "src/lib/bed-allocation-lifecycle.ts",
@@ -85,12 +114,9 @@ const GUARDED_WRITE_SITES: Array<{
 
 describe("custodian write-path contract (#2286)", () => {
   it("covers every BedAllocation write site that places a guest on a bed", () => {
-    // Rebuild the enumeration from source rather than trusting the list above.
-    const files = [
-      "src/lib/admin-bed-allocation.ts",
-      "src/lib/bed-allocation-lifecycle.ts",
-      "src/lib/bed-allocation.ts",
-    ];
+    // Rebuild the enumeration from the WHOLE source tree rather than trusting
+    // the list above — or a hand-picked list of three files.
+    const files = allSourceFiles();
     const found = new Set<string>();
     for (const file of files) {
       const source = readRepoFile(file);

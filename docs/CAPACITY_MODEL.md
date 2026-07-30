@@ -272,9 +272,13 @@ full lodge; on the hold's own admission path the group's headcount is checked
 for explicit admin confirmation instead of silently displacing them.
 
 **Enforcement is application code, not a constraint.** Owner decision, 28 Jul
-2026: exclusion happens at the allocation chokepoints under the per-lodge
-advisory lock (`src/lib/custodian-occupancy.ts`), with a board warning
-(`CUSTODIAN_BED_CONFLICT`) as the net and a write-path contract test as the
+2026: every allocation chokepoint re-reads the live holds on the client that is
+about to write, immediately before writing (`src/lib/custodian-occupancy.ts`),
+and every placement transaction the app opens itself takes the per-lodge
+advisory lock first so that read and the write serialise against the hold
+writer. A chokepoint running inside a caller's transaction inherits that
+caller's lock discipline and still re-filters at write time. A board warning
+(`CUSTODIAN_BED_CONFLICT`) is the net and a write-path contract test is the
 alarm. Representing the hold as nullable-FK `BedAllocation` rows was weighed and
 rejected: it breaks the old colour on a runtime-hot table during a deploy drain,
 needs a null-tolerance audit of ~30 read sites, and the lifecycle prune would

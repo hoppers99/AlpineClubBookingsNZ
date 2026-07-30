@@ -42,9 +42,13 @@ import { lodgeNullTolerantScope } from "./lodges";
  * Owner decision (28 Jul 2026): option (a), application-code exclusion. The
  * hold lives on the one assignment row; the allocation chokepoints call
  * {@link assertBedNightsFreeOfCustodianHold} / feed
- * {@link custodianOccupiedBedNightsForPlanner}, serialized against booking
- * admission by the existing per-lodge advisory lock
- * (`acquireLodgeCapacityLock`). Option (b) — nullable-FK `BedAllocation`
+ * {@link custodianOccupiedBedNightsForPlanner} — and, because a planner's read
+ * is not its write, every one of them ALSO re-reads the holds (via
+ * {@link custodianHeldBedNightKeys}) on the client that is about to write,
+ * immediately before writing. Each placement transaction the app opens itself
+ * takes the per-lodge advisory lock (`acquireLodgeCapacityLock`) first, so that
+ * re-read and the write serialise against booking admission and against the
+ * hold writer, which takes the same key. Option (b) — nullable-FK `BedAllocation`
  * rows — was weighed and rejected (blue/green break on a runtime-hot table,
  * ~30 read sites needing a null-tolerance audit, and the lifecycle prune
  * silently deleting custodian rows as orphans). See docs/CAPACITY_MODEL.md.

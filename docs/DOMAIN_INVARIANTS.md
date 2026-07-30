@@ -2808,12 +2808,27 @@ a **custodian occupancy** (#2286). The invariants:
 - **A whole-lodge hold and a custodian never contend.** The hold reserves the
   *bookable* lodge; the custodian's bed sits outside that pool. Neither refuses
   the other, and the ADR-001 held-night pin is unchanged.
-- **Exclusion is enforced in application code, under the per-lodge advisory
-  lock** (owner decision 28 Jul 2026, option (a)) — not by any database
-  constraint. Every `BedAllocation` write path that places a guest on a bed must
-  be covered: the manual funnel `allocateBedNight`, the range assign, the board
-  and lifecycle planner feeds, and `runAutoBedAllocation`'s in-transaction
-  re-filter. `custodian-write-path-contract.test.ts` fails CI when a new write
+- **Exclusion is enforced in application code, never by a database constraint**
+  (owner decision 28 Jul 2026, option (a)). Two things make that safe, and both
+  are required:
+  1. **Every** `BedAllocation` write path that places a guest on a bed re-reads
+     the live holds **on the same client, immediately before the write**, and
+     refuses or drops what would land on one: the manual funnel
+     `allocateBedNight`, the range assign's `CUSTODIAN_HOLD` classification,
+     `runAutoBedAllocation`'s in-transaction re-filter, and the lifecycle
+     reconcile's write-time re-filter (`dropRowsOnCustodianHeldBedNights`). A
+     read at plan time alone is NOT enough — a reconcile is routinely called
+     post-commit, so a hold committed between the plan and the write would
+     otherwise be written over.
+  2. Every placement transaction this code **opens itself** takes the per-lodge
+     advisory lock (`acquireLodgeCapacityLock`) as its first statement, sorted
+     when it can span several lodges, so that re-read and the write serialise
+     against the hold writer, which takes the same key. A reconcile running
+     inside a CALLER's transaction inherits that caller's lock discipline
+     instead of adding a key to an ordering it does not control; its write-time
+     re-filter still runs on that client.
+
+  `custodian-write-path-contract.test.ts` fails CI when a new write
   path appears undeclared, and `CUSTODIAN_BED_CONFLICT` on the allocation board
   surfaces any row that got through anyway.
 - **A held bed cannot be deactivated or deleted**, nor can its room, while the
