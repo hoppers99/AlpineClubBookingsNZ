@@ -201,7 +201,8 @@ export async function modifyBookingBatch({
       input.guestStayRanges?.length ||
       input.guestUpdates?.length ||
       input.promoCode ||
-      input.promoGuestIndexes?.length ||
+      input.promoGuestIds?.length ||
+      input.promoAddedGuestIndexes?.length ||
       input.removePromoCode ||
       // #2266: an explicit undefined-check — a 0-cent election is falsy.
       input.applyCreditCents !== undefined
@@ -281,8 +282,13 @@ export async function modifyBookingBatch({
       where: { id: bookingId },
       include: {
         // Per-night sets (issue #713): preserve unedited guests' gaps and
-        // re-sync edited guests' nights.
-        guests: { include: { nights: { select: { stayDate: true, priceCents: true } } } },
+        // re-sync edited guests' nights. Deterministic order (#2266 MED-4):
+        // pricing, promo targeting and the client's guest list must all agree
+        // on guest order, so never rely on the planner's unordered scan.
+        guests: {
+          include: { nights: { select: { stayDate: true, priceCents: true } } },
+          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        },
         payment: true,
         member: true,
         promoRedemption: {

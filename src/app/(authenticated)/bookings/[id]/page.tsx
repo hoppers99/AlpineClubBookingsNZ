@@ -154,7 +154,13 @@ export default async function BookingDetailPage({
   const booking = await prisma.booking.findUnique({
     where: { id },
     include: {
-      guests: { include: { nights: { select: { stayDate: true } } } },
+      // Deterministic order (#2266 MED-4): the edit panel derives promo
+      // beneficiary bindings and pricing rows from this list, so it must be
+      // the same order the modify/modify-quote fetches use.
+      guests: {
+        include: { nights: { select: { stayDate: true } } },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      },
       payment: true,
       member: { select: { firstName: true, lastName: true } },
       // Admin capacity hold (#1764): who placed it, for the admin tools card.

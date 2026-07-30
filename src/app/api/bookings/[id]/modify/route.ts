@@ -65,7 +65,11 @@ const batchModifySchema = z.object({
     )
     .optional(),
   promoCode: z.string().optional(),
-  promoGuestIndexes: z.array(z.number().int().min(0)).optional(),
+  // #2266 (MED-4): guest-targeted promo beneficiaries. Existing guests bind by
+  // bookingGuestId (stale ids refuse loudly); positional indexes exist only
+  // for TO-BE-ADDED guests within this same request, relative to addGuests.
+  promoGuestIds: z.array(z.string().min(1)).max(200).optional(),
+  promoAddedGuestIndexes: z.array(z.number().int().min(0)).max(200).optional(),
   removePromoCode: z.boolean().optional(),
   // #2266: credit election on the edit path — stored on the booking (#2265),
   // never applied here. Bounds mirror the create route's applyCreditCents.
@@ -96,7 +100,8 @@ const OVERRIDE_DATE_ONLY_FIELDS = [
   "guestStayRanges",
   "guestUpdates",
   "promoCode",
-  "promoGuestIndexes",
+  "promoGuestIds",
+  "promoAddedGuestIndexes",
   "removePromoCode",
   // #1746: partner-shared flags ride guest changes, never a date override.
   "partnerSharedGuests",

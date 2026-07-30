@@ -6,9 +6,11 @@ import { NextRequest } from "next/server";
 //
 //  (a) `availableCreditCents` on the response (the BOOKING OWNER's live
 //      balance), so the edit panel's credit card mirrors the create quote;
-//  (b) `promoGuestIndexes` on the request, threaded into the promo validator
-//      so a guest-targeted code previews against the same beneficiaries the
-//      apply route will redeem for;
+//  (b) promo beneficiaries on the request (MED-4: `promoGuestIds` for
+//      existing guests, `promoAddedGuestIndexes` for to-be-added ones),
+//      resolved and threaded into the promo validator so a guest-targeted
+//      code previews against the same beneficiaries the apply route will
+//      redeem for — and a stale id 400s at preview exactly as at apply;
 //
 // plus the price-preserving contract for a credit-only preview (no repricing,
 // no capacity check — a season-rate change must never surface a phantom price
@@ -87,13 +89,21 @@ vi.mock("@/lib/membership-type-policy", () => ({
   MembershipTypeBookingPolicyError: class extends Error {},
   getMembershipTypeBookingPolicyErrorBody: (e: Error) => ({ error: e.message }),
 }));
-vi.mock("@/lib/booking-modify", () => ({
-  isQuotePricedBooking: vi.fn().mockResolvedValue(false),
-  resolveGuestNameUpdates: vi.fn().mockReturnValue([]),
-  lockedNightPricesForGuest: vi.fn().mockReturnValue(null),
-  calculateModificationSettlementOptions: vi.fn().mockResolvedValue(null),
-  QUOTE_PRICED_EDIT_BLOCK_MESSAGE: "quote-priced",
-}));
+vi.mock("@/lib/booking-modify", async () => {
+  // The REAL beneficiary resolver (MED-4): id binding is the behaviour under
+  // test, so it must not be stubbed away.
+  const { resolvePromoBeneficiarySelection } = await vi.importActual<
+    typeof import("@/lib/booking-modify-plan")
+  >("@/lib/booking-modify-plan");
+  return {
+    isQuotePricedBooking: vi.fn().mockResolvedValue(false),
+    resolveGuestNameUpdates: vi.fn().mockReturnValue([]),
+    lockedNightPricesForGuest: vi.fn().mockReturnValue(null),
+    calculateModificationSettlementOptions: vi.fn().mockResolvedValue(null),
+    resolvePromoBeneficiarySelection,
+    QUOTE_PRICED_EDIT_BLOCK_MESSAGE: "quote-priced",
+  };
+});
 vi.mock("@/lib/booking-guests", () => ({
   resolveLinkedBookingMembers: vi.fn().mockResolvedValue([]),
   assertLinkedBookingMembersCanBeBooked: vi.fn().mockResolvedValue(undefined),
@@ -303,7 +313,7 @@ describe("POST /api/bookings/[id]/modify-quote — credit surfacing (#2266)", ()
 });
 
 describe("POST /api/bookings/[id]/modify-quote — promo guest targeting (#2266)", () => {
-  it("threads promoGuestIndexes into the promo validator", async () => {
+  it("resolves promoGuestIds to indexes and threads them into the promo validator", async () => {
     h.validatePromoCodeFull.mockResolvedValue({
       valid: true,
       promoCode: { code: "MATES50" },
@@ -312,7 +322,7 @@ describe("POST /api/bookings/[id]/modify-quote — promo guest targeting (#2266)
     });
 
     const res = await POST(
-      req({ promoCode: "MATES50", promoGuestIndexes: [0] }),
+      req({ promoCode: "MATES50", promoGuestIds: ["g1"] }),
       { params },
     );
 
@@ -327,6 +337,18 @@ describe("POST /api/bookings/[id]/modify-quote — promo guest targeting (#2266)
     expect(call[2]).toBe("b1"); // excludeBookingId: this booking
     expect(call[3]).toBe("lodge-1");
     expect(call[4]).toEqual({ selectedGuestIndexes: [0] });
+  });
+
+  it("400s a stale promoGuestId (the concurrent-edit drift scenario) instead of re-pointing it", async () => {
+    const res = await POST(
+      req({ promoCode: "MATES50", promoGuestIds: ["g-gone"] }),
+      { params },
+    );
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/no longer on this booking/);
+    expect(h.validatePromoCodeFull).not.toHaveBeenCalled();
   });
 
   it("surfaces requiresGuestSelection so the panel can re-open guest selection", async () => {

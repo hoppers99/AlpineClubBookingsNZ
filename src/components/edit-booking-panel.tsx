@@ -836,10 +836,29 @@ export function EditBookingPanel({
       body.removePromoCode = true;
     } else if (promoAction.type === "new") {
       body.promoCode = promoAction.code;
-      // #2266: beneficiary selection for guest-targeted codes, carried from
-      // the shared PromoCodeInput through quote and apply alike.
+      // #2266 (MED-4): beneficiary selection for guest-targeted codes, carried
+      // from the shared PromoCodeInput through quote and apply alike. The
+      // input's indexes are positional over [remaining guests..., added
+      // guests...]; convert EXISTING guests to their bookingGuestId so the
+      // server binds people, not positions — a concurrent edit by another
+      // session then refuses loudly instead of redeeming the discount for the
+      // wrong guest. Only TO-BE-ADDED guests (no id yet) stay positional,
+      // relative to this request's addGuests array.
       if (promoAction.guestIndexes?.length) {
-        body.promoGuestIndexes = promoAction.guestIndexes;
+        const promoGuestIds: string[] = [];
+        const promoAddedGuestIndexes: number[] = [];
+        for (const index of promoAction.guestIndexes) {
+          if (index < remainingGuests.length) {
+            const guest = remainingGuests[index];
+            if (guest) promoGuestIds.push(guest.id);
+          } else {
+            promoAddedGuestIndexes.push(index - remainingGuests.length);
+          }
+        }
+        if (promoGuestIds.length) body.promoGuestIds = promoGuestIds;
+        if (promoAddedGuestIndexes.length) {
+          body.promoAddedGuestIndexes = promoAddedGuestIndexes;
+        }
       }
     }
 

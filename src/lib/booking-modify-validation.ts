@@ -60,7 +60,14 @@ export type BatchModifyInput = {
     lastName: string;
   }>;
   promoCode?: string;
-  promoGuestIndexes?: number[];
+  // #2266 (MED-4): a guest-targeted promo's beneficiaries. EXISTING guests are
+  // bound by bookingGuestId — a positional index would be re-bound to whatever
+  // the guest list is at apply time, so a concurrent edit between preview and
+  // save could silently redeem the discount for the wrong guest. Indexes exist
+  // only for TO-BE-ADDED guests within this same request (no id exists yet),
+  // relative to the `addGuests` array. A stale bookingGuestId refuses loudly.
+  promoGuestIds?: string[];
+  promoAddedGuestIndexes?: number[];
   removePromoCode?: boolean;
   // #2266: the member's credit election, integer cents. The modify path never
   // moves credit itself — it stores the election on the booking

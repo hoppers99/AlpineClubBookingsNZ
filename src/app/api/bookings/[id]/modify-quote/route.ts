@@ -63,6 +63,7 @@ import {
   isQuotePricedBooking,
   QUOTE_PRICED_EDIT_BLOCK_MESSAGE,
   resolvePartnerSharedCapacity,
+  resolvePromoBeneficiarySelection,
 } from "@/lib/booking-modify";
 import {
   buildInProgressGuestRangePlan,
@@ -122,10 +123,12 @@ const modifyQuoteSchema = z.object({
     )
     .optional(),
   promoCode: z.string().optional(),
-  // #2266: beneficiary indexes for guest-targeted promo codes, positional over
-  // [remaining guests..., added guests...] — the same order the apply route's
-  // guestNightRates use, so preview and apply agree about who the code covers.
-  promoGuestIndexes: z.array(z.number().int().min(0)).optional(),
+  // #2266 (MED-4): beneficiaries for guest-targeted promo codes, mirroring the
+  // apply route — EXISTING guests bind by bookingGuestId (a stale id refuses
+  // loudly instead of re-pointing the discount), and positional indexes exist
+  // only for TO-BE-ADDED guests within this request, relative to addGuests.
+  promoGuestIds: z.array(z.string().min(1)).max(200).optional(),
+  promoAddedGuestIndexes: z.array(z.number().int().min(0)).max(200).optional(),
   removePromoCode: z.boolean().optional(),
   // #2266: the member's credit election, mirroring the create quote/create
   // routes. The preview never moves money — the apply route stores the election
@@ -156,7 +159,8 @@ const OVERRIDE_DATE_ONLY_QUOTE_FIELDS = [
   "guestStayRanges",
   "guestUpdates",
   "promoCode",
-  "promoGuestIndexes",
+  "promoGuestIds",
+  "promoAddedGuestIndexes",
   "removePromoCode",
   // #1746: partner-shared flags ride guest changes, never a date override.
   "partnerSharedGuests",
@@ -263,8 +267,13 @@ export async function POST(
   const booking = await prisma.booking.findUnique({
     where: { id: bookingId },
     include: {
-      // Per-night sets (issue #713): preserve unedited guests' gaps in the quote.
-      guests: { include: { nights: { select: { stayDate: true, priceCents: true } } } },
+      // Per-night sets (issue #713): preserve unedited guests' gaps in the
+      // quote. Deterministic order (#2266 MED-4): must match the apply path's
+      // fetch so preview and apply price and target the same guest order.
+      guests: {
+        include: { nights: { select: { stayDate: true, priceCents: true } } },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      },
       payment: true,
       promoRedemption: {
         include: {
@@ -314,7 +323,8 @@ export async function POST(
     guestStayRanges,
     guestUpdates,
     promoCode: newPromoCode,
-    promoGuestIndexes,
+    promoGuestIds,
+    promoAddedGuestIndexes,
     removePromoCode,
     applyCreditCents,
     pricingMode,
@@ -1262,15 +1272,35 @@ export async function POST(
     newPromoAdjustmentCents = 0;
     promoValidation = null;
   } else if (newPromoCode) {
-    // User wants to apply a new promo code. #2266: beneficiary indexes ride
-    // along so a guest-targeted code previews against the same selection the
-    // apply route (applyPromoCodeChanges) will redeem for.
+    // User wants to apply a new promo code. #2266 (MED-4): beneficiaries ride
+    // along bound the same way the apply route (applyPromoCodeChanges)
+    // resolves them — existing guests by bookingGuestId, added guests by
+    // request-local index — so preview and apply can never disagree about who
+    // the code covers, and a stale id 400s here exactly as it would on save.
+    const quoteGuestNightRates = getGuestNightRates();
+    let quoteSelectedGuestIndexes: number[] | undefined;
+    try {
+      quoteSelectedGuestIndexes = resolvePromoBeneficiarySelection({
+        guestNightRates: quoteGuestNightRates,
+        addedGuestCount: normalizedAddGuestsWithRanges?.length ?? 0,
+        promoGuestIds,
+        promoAddedGuestIndexes,
+      });
+    } catch (error) {
+      if (error instanceof ApiError) {
+        return NextResponse.json(
+          { error: error.message },
+          { status: error.status },
+        );
+      }
+      throw error;
+    }
     const validation = await validatePromoCodeFull(newPromoCode, {
       totalPriceCents: newTotalPriceCents,
       memberId: booking.memberId,
-      guests: getGuestNightRates(),
+      guests: quoteGuestNightRates,
     }, bookingId, bookingLodgeId, {
-      selectedGuestIndexes: promoGuestIndexes,
+      selectedGuestIndexes: quoteSelectedGuestIndexes,
     });
 
     if (validation.valid) {
