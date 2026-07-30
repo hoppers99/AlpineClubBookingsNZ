@@ -59,6 +59,13 @@ import {
   assertProposedDateEditClearsXeroLockDate,
 } from "@/lib/xero-period-lock-guard";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import { loadMemberGuestAddPolicy } from "@/lib/member-guest-add-policy";
+import {
+  matchMemberGuestNotificationRows,
+  sendMemberGuestAddNotifications,
+  type MemberGuestAddNotificationRow,
+} from "@/lib/member-guest-consent-notifications";
+import type { MemberGuestAddActor } from "@/lib/member-guest-consent";
 
 type ModifiedBooking = Booking & {
   guests: BookingGuest[];
@@ -99,6 +106,9 @@ type BatchModificationTransactionResult =
     // #1372: this edit newly dropped a paid (capacity-holding) booking into the
     // blocked minors-only review state, so the post-tx step alerts admins.
     minorsOnlyReviewNewlyFlagged: boolean;
+    // MG2 #2307: cross-family member guests added by this edit, to be told after
+    // the commit. Empty on every family-scope modification.
+    memberGuestNotificationRows: MemberGuestAddNotificationRow[];
   };
 
 export type BatchModificationResponse = {
@@ -238,6 +248,20 @@ export async function modifyBookingBatch({
     );
   }
 
+  // "+ Add Member Guest" (epic #2305, MG2 #2307). Read the module flag and the
+  // policy singleton HERE, before the transaction below takes the global money
+  // lock and the per-lodge capacity lock — see the ordering rule in
+  // `member-guest-add-policy.ts`. `prepareGuestPlan` takes the answer as a value,
+  // so there is no way for it to reach for the database itself.
+  const memberGuestPolicy = await loadMemberGuestAddPolicy();
+  // MG4-D-a, brought forward: an ADMIN actor is the one that passes
+  // `skipAuthorization`, so its cross-family adds are consent-free and
+  // always-notify, stamped with the acting admin.
+  const memberGuestActor: MemberGuestAddActor =
+    actor.role === "ADMIN"
+      ? { kind: "ADMIN", adminMemberId: actor.id }
+      : { kind: "MEMBER" };
+
   const result = await prisma.$transaction(async (tx) => {
     // Two-tier lock protocol (#1881). A batch modification moves money (reduction
     // refunds / additional charges, credit allocation) AND re-checks/claims
@@ -322,6 +346,7 @@ export async function modifyBookingBatch({
       editableFrom: dates.editableFrom,
       newCheckIn: dates.newCheckIn,
       newCheckOut: dates.newCheckOut,
+      memberGuestPolicy,
     });
     const guestNameUpdates = resolveGuestNameUpdates({
       booking,
@@ -408,7 +433,7 @@ export async function modifyBookingBatch({
       throw new ApiError("Choose a refund or account credit before saving", 400);
     }
 
-    await applyGuestChanges(tx, {
+    const { createdGuests } = await applyGuestChanges(tx, {
       bookingId,
       newCheckIn: dates.newCheckIn,
       newCheckOut: dates.newCheckOut,
@@ -619,8 +644,27 @@ export async function modifyBookingBatch({
       memberName: `${booking.member.firstName} ${booking.member.lastName}`,
       memberId: booking.memberId,
       bookingModificationId: bookingModification.id,
+      // MG2 #2307: the cross-family guests this modification added, matched to
+      // the rows it actually created, carried OUT of the transaction so the
+      // sends happen after the commit.
+      memberGuestNotificationRows: matchMemberGuestNotificationRows({
+        createdGuests,
+        entriesByMemberId: guestPlan.memberGuestEntries,
+      }),
     } satisfies BatchModificationTransactionResult;
   });
+
+  // AFTER the commit, and before the settlement work below, so a cross-family
+  // guest is asked as promptly as the booking-modified email is sent. Awaited: an
+  // unsent consent request leaves a bed held (D-4) for a member nobody asked. The
+  // dispatcher never rejects and returns immediately when nothing is owed.
+  if (result.memberGuestNotificationRows.length > 0) {
+    await sendMemberGuestAddNotifications({
+      bookingId,
+      rows: result.memberGuestNotificationRows,
+      actor: memberGuestActor,
+    });
+  }
 
   await drainSupersededPrimaryIntents({
     bookingId,

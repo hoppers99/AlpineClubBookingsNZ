@@ -63,9 +63,16 @@ import { isLikelyTypoCorrection } from "@/lib/guest-name-similarity";
 import {
   assertLinkedBookingMembersCanBeBooked,
   normalizeBookingGuestInputs,
-  resolveLinkedBookingMembers,
+  resolveLinkedBookingMembersWithBoundary,
   type BookingGuestInput,
 } from "@/lib/booking-guests";
+import {
+  planMemberGuestConsentWrites,
+  type MemberGuestAddPolicy,
+  type MemberGuestConsentGuestFields,
+  type MemberGuestConsentWritePlanEntry,
+} from "@/lib/member-guest-add-policy";
+import type { MemberGuestAddActor } from "@/lib/member-guest-consent";
 import {
   BookingGuestStayRangeValidationError,
   normalizeGuestStayRanges,
@@ -273,8 +280,18 @@ export type GuestPlan = {
   remainingGuests: BookingGuest[];
   proposedRemainingGuests: ProposedRemainingGuest[];
   removedGuests: BookingGuest[];
-  normalizedAddGuests: BookingGuestInput[] | undefined;
+  normalizedAddGuests:
+    | Array<BookingGuestInput & MemberGuestConsentGuestFields>
+    | undefined;
   guestsForPricing: ProposedGuestPricingInput[];
+  /**
+   * The cross-family member guests this modification adds, keyed by target member
+   * id ("+ Add Member Guest", epic #2305, MG2 #2307). The batch service matches
+   * these to the guest rows `applyGuestChanges` creates and sends the request or
+   * notice AFTER the transaction commits — nothing in this file mails anybody.
+   * Empty on every family-scope modification.
+   */
+  memberGuestEntries: Map<string, MemberGuestConsentWritePlanEntry>;
   totalGuestCount: number;
   requiresAdminReview: boolean;
   adminReviewReason: string | null;
@@ -311,6 +328,8 @@ export async function prepareGuestPlan(
     editableFrom,
     newCheckIn,
     newCheckOut,
+    memberGuestPolicy,
+    now = new Date(),
   }: {
     booking: LoadedBookingForModify;
     role: Role;
@@ -320,26 +339,59 @@ export async function prepareGuestPlan(
     editableFrom: Date | null;
     newCheckIn: Date;
     newCheckOut: Date;
+    /**
+     * MG2 (#2307). Read by the caller BEFORE it opened this transaction — see the
+     * ordering rule in `member-guest-add-policy.ts`. Optional so the existing
+     * unit tests of this planner keep compiling; a missing policy is MG1's
+     * behaviour, which is a refusal, not a silent consent-free add.
+     */
+    memberGuestPolicy?: MemberGuestAddPolicy;
+    now?: Date;
   },
 ): Promise<GuestPlan> {
-  const linkedMembers = await resolveLinkedBookingMembers(
-    tx,
-    booking.memberId,
-    (input.addGuests ?? []).map((guest) => guest.memberId),
-    { skipAuthorization: role === "ADMIN" },
-  );
+  // MG4-D-a, brought forward: `role === "ADMIN"` is exactly the condition that
+  // passes `skipAuthorization`, so an admin modification adds a cross-family guest
+  // consent-free and always-notify, stamped with the acting admin.
+  const memberGuestActor: MemberGuestAddActor =
+    role === "ADMIN" ? { kind: "ADMIN", adminMemberId: actorId } : { kind: "MEMBER" };
+  const { members: linkedMembers, boundary } =
+    await resolveLinkedBookingMembersWithBoundary(
+      tx,
+      booking.memberId,
+      (input.addGuests ?? []).map((guest) => guest.memberId),
+      {
+        skipAuthorization: role === "ADMIN",
+        memberGuestWideningEnabled: memberGuestPolicy?.wideningEnabled ?? false,
+      },
+    );
   await assertLinkedBookingMembersCanBeBooked(tx, linkedMembers, actorId, {
     actorRole: role,
     onBehalfOfMemberId: role === "ADMIN" ? booking.memberId : null,
+    // D-8: a blocked cross-family member is refused neutrally.
+    crossFamilyMemberIds: boundary.beyondFamilyMemberIds,
   });
-  const normalizedAddGuests = input.addGuests
-    ? normalizeBookingGuestInputs(input.addGuests, linkedMembers).map((guest, index) => ({
-        ...guest,
-        stayStart: input.addGuests?.[index]?.stayStart ?? null,
-        stayEnd: input.addGuests?.[index]?.stayEnd ?? null,
-        nights: input.addGuests?.[index]?.nights ?? null,
-      }))
-    : undefined;
+  const consentPlan = planMemberGuestConsentWrites({
+    guests: input.addGuests
+      ? normalizeBookingGuestInputs(input.addGuests, linkedMembers).map((guest, index) => ({
+          ...guest,
+          stayStart: input.addGuests?.[index]?.stayStart ?? null,
+          stayEnd: input.addGuests?.[index]?.stayEnd ?? null,
+          nights: input.addGuests?.[index]?.nights ?? null,
+        }))
+      : [],
+    boundary,
+    actor: memberGuestActor,
+    now,
+    bookingCheckIn: newCheckIn,
+    policy:
+      memberGuestPolicy ?? {
+        wideningEnabled: false,
+        approvalRequired: true,
+        pendingHoldExpiryDays: 0,
+      },
+  });
+  const memberGuestEntries = consentPlan.entriesByMemberId;
+  const normalizedAddGuests = input.addGuests ? consentPlan.guests : undefined;
 
   const removeSet = new Set(input.removeGuestIds ?? []);
   const remainingGuests = booking.guests.filter((g) => !removeSet.has(g.id));
@@ -420,6 +472,10 @@ export async function prepareGuestPlan(
       stayStart: g.stayStart,
       stayEnd: g.stayEnd,
       nights: g.nights,
+      // D-8 (MG2 #2307): this list is rebuilt field by field, so the marker is
+      // carried across explicitly — the in-transaction person-night guard below
+      // reads it to refuse a cross-family clash neutrally.
+      crossFamilyMemberGuest: g.crossFamilyMemberGuest,
     })),
   ];
 
@@ -479,6 +535,7 @@ export async function prepareGuestPlan(
     requiresAdminReview,
     adminReviewReason,
     reviewUpdate,
+    memberGuestEntries,
   };
 }
 
@@ -1280,6 +1337,10 @@ export async function applyGuestChanges(
           // Persist the resolved rate-type snapshot on the added guest (#1930,
           // E4).
           rateMembershipTypeId: g.rateMembershipTypeId,
+          // Member-guest consent (MG2 #2307), decided by
+          // `buildMemberGuestConsentWrite` and spread only when present, so a
+          // family-scope or non-member guest writes exactly what it wrote before.
+          ...(g.memberGuestConsent ?? {}),
         },
       });
       const envelope = await syncGuestNights(
@@ -1332,6 +1393,8 @@ export async function applyGuestChanges(
         // E4).
         rateMembershipTypeId: (bg as { rateMembershipTypeId?: string | null })
           .rateMembershipTypeId,
+        // Member-guest consent (MG2 #2307) — see the in-progress branch above.
+        ...(g.memberGuestConsent ?? {}),
       },
     });
     const envelope = await syncGuestNights(
