@@ -11,9 +11,9 @@ import { describe, expect, it } from "vitest";
  * write path added later, by someone who has never heard of custodians, would
  * silently punch a hole through the whole feature.
  *
- * This test is that alarm. It enumerates every place in `src/` that creates or
- * moves a `BedAllocation` onto a bed, and asserts each one is covered by a
- * named mechanism. Adding a new write site fails CI until it is listed here
+ * This test is that alarm. It enumerates every place in `src/` and `prisma/`
+ * that creates or moves a `BedAllocation` onto a bed, and asserts each one is
+ * covered by a named mechanism. Adding a new write site fails CI until it is listed here
  * with the mechanism that protects it.
  */
 
@@ -24,16 +24,17 @@ function readRepoFile(relativePath: string) {
 }
 
 /**
- * Every `.ts`/`.tsx` file under `src/`, as repo-relative POSIX paths.
+ * Every `.ts`/`.tsx` file under `src/` and `prisma/`, as repo-relative POSIX
+ * paths.
  *
  * The scan below used to look at three hand-listed files, which is exactly the
  * hole this test exists to close: a `bedAllocation.create*` added anywhere else
- * — a route handler, a script, a new service — would never have been seen. The
- * walk is over the whole tree instead, so a new write site fails CI wherever it
+ * — a route handler, a seed, a new service — would never have been seen. The
+ * walk is over both trees instead, so a new write site fails CI wherever it
  * lands. Tests are excluded: a mock's `createMany` spy is not a write path.
  */
 function allSourceFiles(): string[] {
-  const root = path.resolve(process.cwd(), "src");
+  const roots = ["src", "prisma"].map((dir) => path.resolve(process.cwd(), dir));
   const out: string[] = [];
   const walk = (dir: string) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -48,7 +49,7 @@ function allSourceFiles(): string[] {
       out.push(path.relative(process.cwd(), full).split(path.sep).join("/"));
     }
   };
-  walk(root);
+  for (const root of roots) walk(root);
   return out.sort();
 }
 
@@ -102,6 +103,13 @@ const GUARDED_WRITE_SITES: Array<{
     mechanism:
       "The displacement MOVE writes `bedId: displacement.toBedId`, and every displacement comes from the same planner run that was fed the custodian holds as never-evictable unknown occupants — so a MOVE can never target a held bed-night either.",
     evidence: "data: { bedId: displacement.toBedId, roomId: displacement.toRoomId }",
+  },
+  {
+    file: "prisma/demo-seed.ts",
+    statement: "bedAllocation.create",
+    mechanism:
+      "The demo seed builds a fresh demo database from nothing: it creates its own rooms, beds and bookings and creates NO HutLeaderAssignment with a bedId, so there is no hold for it to write over. Listed rather than excluded so that adding a seeded custodian hold later forces whoever does it to re-read this entry and order the seed correctly.",
+    evidence: "bedAllocation.create({",
   },
   {
     file: "src/lib/bed-allocation.ts",
