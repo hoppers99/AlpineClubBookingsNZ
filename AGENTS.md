@@ -344,7 +344,16 @@ At the successful end of a meaningful piece of work:
      with full evidence and wait.
 4. Merge eligible PRs with a merge commit (never squash, rebase-merge, or
    force-push). A linked issue may close only when its PR is eligible and merged.
-5. After merge, delete the merged branch and confirm `main` CI stays green.
+5. Close the linked issue at merge time (owner directive, 30 Jul 2026) with a
+   plain-English close-out comment on the issue: what shipped, the delivering
+   PR, what the review rounds found and how it was fixed (a sentence or two),
+   and any follow-up issues by number. Auto-close via a PR closing keyword does
+   not replace the comment. Every follow-up named anywhere (a PR comment, a
+   review finding, a close-out) must exist as a filed issue linked to its
+   parent PR and epic before the PR merges - comments do not get fixes done;
+   PRs do, and a filed issue is the only acceptable carry-forward vehicle (see
+   "Residual risks" above for when carrying forward is legitimate at all).
+6. After merge, delete the merged branch and confirm `main` CI stays green.
 
 ### Pre-authorisation and attributability
 

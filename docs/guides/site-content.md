@@ -58,6 +58,7 @@ one of the recognised `SITE_CONTENT_KEYS`.
 | Formatting looks different on the public site | The HTML was sanitised on save | Use the allowed tags shown in the toolbar; check the HTML Editor view |
 | Everything is read-only | Your admin role can view but not edit under the content area | Ask a full admin for content edit access |
 | Save is rejected as too long | The content exceeds the `SITE_CONTENT_LIMITS` cap | Shorten the column content |
+| The edit is saved but the public home page still shows the old text | The home page is cached for up to a minute for logged-out visitors | Wait a minute and reload, or check while signed in — signed-in views are never cached |
 
 ## Related links
 

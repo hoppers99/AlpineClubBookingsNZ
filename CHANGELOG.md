@@ -61,6 +61,56 @@ All notable public reference-release changes should be recorded here.
   the leftover is flagged on the Email Messages page as a stale override to
   clean up, so re-apply your wording to whichever one you want changed.
 
+- **The club logo is now stored as a real image instead of being baked into
+  every page, cutting a multi-megabyte home page down to roughly its content
+  size (#2322).** The logo used to be kept as text encoded directly inside the
+  page, and the same copy was repeated four times on every public page — in the
+  desktop header, the mobile menu, the footer, and once more in the data the
+  browser loads behind the scenes. On one club's live site that made the home
+  page **5.4MB** and gave it a six-second wait before anything appeared, almost
+  all of it the logo. Uploading a logo now sends the file to the server, which
+  shrinks it to at most 160 pixels tall and 640 pixels wide — never enlarging
+  a smaller one — converts it to a compact modern image format (keeping any
+  transparency), and stores it once. Pages then link to that
+  stored image the way any normal website does, so browsers fetch it a single
+  time and reuse it everywhere and on every later visit. Existing sites are not
+  disturbed: a logo saved the old way keeps displaying exactly as before until
+  someone uploads a new one, and the kiosk lodge display, the configuration
+  export/import bundles, and the admin preview all understand both forms. A
+  freshly uploaded logo replaces the old inline copy, and the same rule is
+  applied when a configuration bundle is imported, so the two forms can never
+  both be set and drift apart. Uploads accept PNG, JPEG, WebP, or GIF up to 2MB — a big
+  high-resolution original is fine, it gets resized for you — while SVG is
+  refused because scalable-vector files can carry active content. Clubs whose
+  logo is still stored the old way are unaffected in every direction: it keeps
+  displaying, and they can keep saving colour and font changes normally. The
+  old inline format remains accepted for automated callers and configuration
+  bundles, now capped at 64KB rather than 900KB, but that cap applies only to a
+  logo actually being changed — an existing large one is never rejected just
+  because some other setting was edited.
+
+- **The public home page is now cached for logged-out visitors, and the
+  website stops re-reading its theme on every request (#2322).** Two changes
+  aimed at how long the public site takes to load. First, a logged-out visitor
+  asking for the home page can now be served a copy cached for up to a minute
+  (and a slightly staler one for up to five minutes while a fresh copy is
+  fetched), instead of the site rebuilding the page from scratch for every
+  single visitor. Anyone who is signed in is never served a cached page — the
+  cache is keyed on the session cookie, so a member always gets their own
+  freshly rendered view with the right header. Only the home page is cached,
+  and deliberately so: every page that carries a login form, a sign-up form, or
+  a one-time link (joining, paying, password resets, chore and family
+  invitations, the PIN-gated hut leader instructions) is left exactly as it
+  was, because those must never be shared between visitors. The practical
+  trade-off is that a style or footer change can take up to a minute to show
+  up for logged-out visitors; both admin guides now say so in their
+  troubleshooting tables. Second, the public website was re-reading the club's
+  colours, fonts and logo from the database on **every** page view, while the
+  rest of the site had long since switched to a cached read that refreshes the
+  moment the style is saved. It now uses that same cached read, so saving the
+  style still updates the site immediately but ordinary page views no longer
+  pay for a database round trip.
+
 - **Beds can now be allocated and confirmed from inside a booking, without going
   to the board at all (#2252).** Until now, answering "where is this party
   sleeping, and is it settled?" meant leaving the booking, opening the
