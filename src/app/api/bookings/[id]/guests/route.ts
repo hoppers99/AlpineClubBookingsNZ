@@ -768,22 +768,20 @@ export async function POST(
       };
     });
 
-    // AFTER the commit. Awaited rather than fire-and-forget: an unsent consent
+    // AFTER the commit, and awaited rather than fire-and-forget: an unsent consent
     // request leaves a PENDING row holding a bed (D-4) that nobody was ever asked
-    // about, and the dispatcher never rejects, so there is nothing to guard
-    // against here. It returns immediately when nothing is owed.
+    // about, and a `void` promise is what a serverless freeze after the response
+    // drops.
     if (result.memberGuestNotificationRows.length > 0) {
-    // Loaded lazily on purpose: the sender pulls in the whole email/template
-    // graph, and only a booking that actually added a cross-family member guest
-    // needs it. A club with the module off never loads the mailer through this
-    // path at all.
-    const { sendMemberGuestAddNotifications } = await import(
-      "@/lib/member-guest-consent-notifications"
-    );
-    // Belt and braces around a function that is documented never to reject: the
-    // booking is ALREADY COMMITTED at this point, so an unexpected throw here
-    // would hand the member an error for a booking that exists and was paid for.
-    // A notification problem is logged, never surfaced as a booking failure.
+      // Loaded lazily: the sender pulls in the whole email/template graph, and
+      // only a booking that actually added a cross-family member guest needs it.
+      const { sendMemberGuestAddNotifications } = await import(
+        "@/lib/member-guest-consent-notifications"
+      );
+      // Belt and braces around a function documented never to reject: the booking
+      // is ALREADY COMMITTED here, so an unexpected throw would hand the member an
+      // error for a booking that exists. A notification problem is logged, never
+      // surfaced as a booking failure.
       try {
         await sendMemberGuestAddNotifications({
           bookingId,

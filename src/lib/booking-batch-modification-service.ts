@@ -655,8 +655,7 @@ export async function modifyBookingBatch({
 
   // AFTER the commit, and before the settlement work below, so a cross-family
   // guest is asked as promptly as the booking-modified email is sent. Awaited: an
-  // unsent consent request leaves a bed held (D-4) for a member nobody asked. The
-  // dispatcher never rejects and returns immediately when nothing is owed.
+  // unsent consent request leaves a bed held (D-4) for a member nobody asked.
   if (result.memberGuestNotificationRows.length > 0) {
     // Loaded lazily on purpose: the sender pulls in the whole email/template
     // graph, and only a booking that actually added a cross-family member guest
