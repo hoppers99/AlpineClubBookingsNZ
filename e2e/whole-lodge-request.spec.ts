@@ -116,10 +116,22 @@ let ibSettingsBefore: {
   minimumDaysBeforeCheckIn: number;
 } | null = null;
 
-/** Every member-origin whole-lodge request in the admin queue, any status. */
+/**
+ * Every member-origin whole-lodge request sitting in the officer queue.
+ *
+ * Scoped to `status=VERIFIED`, which is where a member request lives for its
+ * whole open life (it is created VERIFIED and the quote lifecycle is refused for
+ * it), and deliberately NOT `status=ALL`. `ALL` currently returns **500** on the
+ * seeded database: it includes the seeded CONVERTED school request, whose guests
+ * carry `lastName: ""`, and `parseBookingRequestGuests` rejects an empty name, so
+ * serialising the page throws. That is a PRE-EXISTING defect in the admin queue's
+ * "All" filter — nothing in #2263 touches the seed, `nameField`, or that parser —
+ * found by this spec and filed as #2342. Using the filter this spec actually
+ * needs keeps the two problems apart.
+ */
 async function listMemberOriginRequests(admin: APIRequestContext) {
   const response = await admin.get(
-    "/api/admin/booking-requests?status=ALL&pageSize=100",
+    "/api/admin/booking-requests?status=VERIFIED&pageSize=100",
   );
   // Status IN the message: a bare "expected true, received false" cannot tell a
   // 401 from a 400 from a 500, and this call is the spec's only window onto the
@@ -249,7 +261,7 @@ test.beforeAll(async ({ browser }) => {
  */
 async function clearLeftoverOpenRequests(admin: APIRequestContext) {
   const response = await admin.get(
-    "/api/admin/booking-requests?status=ALL&pageSize=100",
+    "/api/admin/booking-requests?status=VERIFIED&pageSize=100",
   );
   if (!response.ok()) {
     console.warn(
