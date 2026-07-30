@@ -331,7 +331,7 @@ describe("the three refusals are indistinguishable", () => {
       new Map([[OUTSIDER, incompleteMember(OUTSIDER)]]),
       BOOKER,
       { crossFamilyMemberIds: [OUTSIDER] },
-    ).catch((err: BookingGuestValidationError) => err);
+    ).catch((err: unknown) => err);
 
     const fromNightConflict = await findBookingMemberNightConflicts(
       conflictDb(OUTSIDER),
@@ -349,11 +349,15 @@ describe("the three refusals are indistinguishable", () => {
           },
         ],
       },
-    ).catch((err: BookingGuestValidationError) => err);
+    ).catch((err: unknown) => err);
 
-    expect(fromProfileGate.message).toBe(fromNightConflict.message);
-    expect(fromProfileGate.status).toBe(fromNightConflict.status);
+    expect(fromProfileGate).toBeInstanceOf(BookingGuestValidationError);
+    expect(fromNightConflict).toBeInstanceOf(BookingGuestValidationError);
+    const profileRefusal = fromProfileGate as BookingGuestValidationError;
+    const conflictRefusal = fromNightConflict as BookingGuestValidationError;
+    expect(profileRefusal.message).toBe(conflictRefusal.message);
+    expect(profileRefusal.status).toBe(conflictRefusal.status);
     // And the message says nothing at all about which invariant refused.
-    expect(fromProfileGate.message).toBe(MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE);
+    expect(profileRefusal.message).toBe(MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE);
   });
 });

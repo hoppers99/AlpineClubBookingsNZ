@@ -58,6 +58,8 @@ vi.mock("@/lib/logger", () => ({
   default: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: h.loggerError },
 }));
 
+import type { MemberGuestConsentStatus } from "@prisma/client";
+
 import { copyBookingToDraft } from "@/lib/admin-booking-copy";
 import { classifyMemberGuestConsent } from "@/lib/member-guest-consent";
 
@@ -157,7 +159,7 @@ describe("admin booking copy — consent is not transitive", () => {
     const guests = h.createDraftBooking.mock.calls[0][0].guests as Array<{
       memberId?: string;
       memberGuestConsent?: {
-        consentStatus: string | null;
+        consentStatus: MemberGuestConsentStatus | null;
         consentRequestedAt: Date | null;
         consentRespondedAt: Date | null;
         consentRespondedByMemberId: string | null;
