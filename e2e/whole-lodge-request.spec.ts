@@ -284,15 +284,20 @@ test("the acknowledgement is byte-identical whether the lodge is clear, full, or
   await clearLeftoverOpenRequests(adminContext.request);
 
   // --- World C setup: make HELD_WINDOW exclusively held ---------------------
-  // A member books the window as an ordinary stay, then an admin sets the
-  // exclusive whole-lodge hold on it. From that moment every OTHER member sees
-  // those nights as simply unavailable — the same word a genuinely full lodge
-  // gets, which is the rule this whole test exists to prove is not observable.
+  // An exclusive whole-lodge hold can only be granted to a booking that
+  // ACTUALLY HOLDS CAPACITY (issue #173): holding the lodge for a booking that
+  // reserves no bed would block nothing while the calendar stayed bookable. A
+  // member self-book with no payment method lands PAYMENT_PENDING, which is
+  // deliberately non-holding (#737), so the hold route refuses it — this spec
+  // learned that the hard way once it finally ran.
   //
-  // The booking is created from a MEMBER session with no payment method (the
-  // same shape e2e/waitlist.spec.ts uses): the admin on-behalf route's
-  // internet-banking branch is not enabled on the staging stack, and this world
-  // only needs a capacity-holding booking to hang the hold on.
+  // So the booking is created the way e2e/double-bed-sharing.spec.ts creates its
+  // capacity-holding anchors: an ADMIN on-behalf create with
+  // `paymentMethod: "internet_banking"`, which lands CONFIRMED without needing
+  // Stripe. Then the admin sets the exclusive hold on it. From that moment every
+  // OTHER member sees those nights as simply unavailable — the same word a
+  // genuinely full lodge gets, which is the rule this whole test exists to prove
+  // is not observable.
   //
   // On a CI retry Wanda already holds this window and the member-night lock
   // would refuse a second booking, so an existing one is reused. Read from the
@@ -315,36 +320,57 @@ test("the acknowledgement is byte-identical whether the lodge is clear, full, or
     (booking) =>
       booking.checkIn === HELD_WINDOW.checkIn &&
       booking.memberName === wandaFullName &&
-      booking.status !== "CANCELLED",
+      // Only a CONFIRMED booking can carry the exclusive hold, so only a
+      // CONFIRMED one is worth reusing on a retry.
+      booking.status === "CONFIRMED",
   )?.id;
 
   if (!holdBookingId) {
-    const holdBookingResponse = await wandaContext.request.post(
+    // Wanda's member id comes from her own session — the same way
+    // e2e/waitlist.spec.ts gets it — so no admin member search is needed.
+    const session = (await (
+      await wandaContext.request.get("/api/auth/session")
+    ).json()) as { user?: { id?: string } };
+    const wandaMemberId = session.user?.id;
+    expect(wandaMemberId, "could not resolve Wanda's member id").toBeTruthy();
+
+    const holdBookingResponse = await adminContext.request.post(
       "/api/bookings",
       {
         data: {
           checkIn: HELD_WINDOW.checkIn,
           checkOut: HELD_WINDOW.checkOut,
+          forMemberId: wandaMemberId,
+          // Lands CONFIRMED — and therefore capacity-holding — with no Stripe.
+          paymentMethod: "internet_banking",
           guests: [
             {
               firstName: WAITLISTER.firstName,
               lastName: WAITLISTER.lastName,
               ageTier: "ADULT",
               isMember: true,
+              memberId: wandaMemberId,
             },
           ],
         },
       },
     );
     expect(
-      holdBookingResponse.status(),
-      `could not create the booking to hold: ${await holdBookingResponse.text()}`,
-    ).toBe(201);
+      holdBookingResponse.ok(),
+      `could not create the booking to hold (${holdBookingResponse.status()}): ${await holdBookingResponse.text()}`,
+    ).toBe(true);
     const holdBooking = (await holdBookingResponse.json()) as {
-      booking?: { id?: string };
+      booking?: { id?: string; status?: string };
       id?: string;
+      status?: string;
     };
     holdBookingId = holdBooking.booking?.id ?? holdBooking.id;
+    // The whole point of the internet-banking branch: assert the status rather
+    // than hope, because a non-holding booking cannot take the hold below.
+    expect(
+      holdBooking.booking?.status ?? holdBooking.status,
+      "the booking to hold must be CONFIRMED (capacity-holding)",
+    ).toBe("CONFIRMED");
   }
   expect(holdBookingId).toBeTruthy();
 
@@ -386,9 +412,13 @@ test("the acknowledgement is byte-identical whether the lodge is clear, full, or
     WAITLIST_FULL_WINDOW.nights,
   );
   for (const night of WAITLIST_FULL_WINDOW.nights) {
-    expect(fullFree[night], `the "full" world has beds free on ${night}`).toBe(
-      0,
-    );
+    // The admin calendar reports `lodgeCapacity - occupied` UNFLOORED, and the
+    // seeded fill is deliberately 22 guests against a 20-bed lodge, so this is
+    // NEGATIVE rather than zero. What matters is that no bed is free.
+    expect(
+      fullFree[night],
+      `the "full" world has beds free on ${night}`,
+    ).toBeLessThanOrEqual(0);
   }
 
   // --- The three submissions, one member each -------------------------------
