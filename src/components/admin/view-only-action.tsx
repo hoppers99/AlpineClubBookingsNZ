@@ -32,6 +32,16 @@ import { cn } from "@/lib/utils";
  * by `__tests__/view-only-banner-contract.test.ts`; see that file for what each
  * rule closes off.
  *
+ * ONE further channel exists, for the guided-setup wizard shell only (#2324).
+ * `IntegrationWizard` renders each step through a `render(context, helpers)`
+ * callback it invokes from its own file, so no JSX render site exists at which
+ * it could pass this prop. It vouches on `WizardStepHelpers` instead — a
+ * required literal `true` — and a provider config forwards that at the step's
+ * render site. The contract test honours it ONLY inside a real
+ * `WizardStepConfig.render`, and only while the shell provably sets the flag and
+ * renders the banner in every branch. Steps consume it exactly as above, so
+ * there is still no third spelling of `describeReason`.
+ *
  * Scope matters: the banner an ancestor renders states ONE permission area. A
  * child gated on a DIFFERENT area must not take this prop from it — the banner
  * would not be describing that child's controls. `member-credit-card.tsx` is
@@ -57,9 +67,12 @@ interface ViewOnlyActionButtonProps extends ButtonProps {
    *
    * Since #2160 the DEFAULT is no longer the usual case — it is the fallback.
    * Most admin sections render an {@link AdminViewOnlySectionBanner} and pass
-   * `describeReason={false}` here (216 of 271 call sites), and since #2168 a
-   * further 21 pass `describeReason={!ancestorRendersViewOnlyBanner}` because a
-   * VOUCHING PARENT renders the banner instead — 237 opt-outs in total.
+   * `describeReason={false}` here (219 of 288 call sites), and a further 26 pass
+   * `describeReason={!ancestorRendersViewOnlyBanner}` because a VOUCHING PARENT
+   * renders the banner instead — 21 vouched at a JSX render site (#2168) and 5
+   * through the guided-setup shell's `WizardStepHelpers` channel (#2324), where
+   * the shell calls each step from another file and no render site exists.
+   * 245 opt-outs in total.
    * `view-only-banner-contract.test.ts` asserts every one of those figures, so
    * they are measured rather than counted by hand. The default survives in
    * three shapes:
@@ -72,10 +85,18 @@ interface ViewOnlyActionButtonProps extends ButtonProps {
    *    capacity/exclusive hold controls, the #2259 per-booking "No emails"
    *    switch, the non-member contact form), where
    *    nothing local proves an ancestor renders a banner. (`docs/ARCHITECTURE.md`
-   *    counts 21 controls here, but that bucket is the arithmetic remainder,
-   *    not a pure shape: 3 of the 21 are the FIRST shape — dialog contents
+   *    counts 30 controls here, but that bucket is the arithmetic remainder,
+   *    not a pure shape: 3 of the 30 are the FIRST shape — dialog contents
    *    inside `page-content-panel.tsx` and `site-banners-panel.tsx`, which are
-   *    themselves banner-bearing panels); and
+   *    themselves banner-bearing panels; and 9 are the #2324 SCOPE exceptions
+   *    below, sitting inside setup wizards that do render a banner); and
+   *
+   *  - in an integration setup wizard step whose control needs a NARROWER
+   *    permission than the wizard's banner states (#2324): the Xero, Stripe,
+   *    Google and backups credential-ish writes need Full Admin on top of the
+   *    wizard's area, and the Lodge Display module switch is `support`-gated
+   *    under a `lodge` banner. Their siblings gated on the wizard's OWN area do
+   *    opt out, through the shell's vouch; and
    *  - in `member-credit-card.tsx` (4 controls), the one member detail card
    *    #2168 did NOT vouch for. Its siblings take the page banner's coverage;
    *    it cannot, because it is gated on `finance` while that banner states
@@ -86,7 +107,10 @@ interface ViewOnlyActionButtonProps extends ButtonProps {
    * strictly worse than the per-button affordance it replaced. The ONE
    * sanctioned way to be covered from outside the file is
    * {@link AncestorViewOnlyBannerProps}, which replaces the missing local proof
-   * with a checked one rather than dropping the requirement. Both invariants —
+   * with a checked one rather than dropping the requirement — either vouched at
+   * a JSX render site (#2168) or, for a guided-setup wizard step the shell
+   * renders through a callback, down `WizardStepHelpers` (#2324). Both
+   * invariants —
    * and the fact that no THIRD spelling of `describeReason` is accepted — are
    * enforced by `__tests__/view-only-banner-contract.test.ts`.
    *

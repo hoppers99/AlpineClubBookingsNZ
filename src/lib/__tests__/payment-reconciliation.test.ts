@@ -23,6 +23,13 @@ const mocks = vi.hoisted(() => ({
   reconcileBedAllocationsForBooking: vi.fn(),
   lodgeFindFirst: vi.fn(),
   lodgeSettingsFindUnique: vi.fn(),
+  // #2265 (#2319): the audit row a cleared credit election writes, which the
+  // member's own booking history renders.
+  createAuditLog: vi.fn(),
+}));
+
+vi.mock("@/lib/audit", () => ({
+  createAuditLog: (...args: unknown[]) => mocks.createAuditLog(...args),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -156,6 +163,7 @@ describe("markBookingPaymentSucceeded", () => {
     mocks.restoreCreditFromBooking.mockResolvedValue(undefined);
     mocks.deriveBookingAppliedCreditCents.mockResolvedValue(0);
     mocks.sendAdminPaymentFailureAlert.mockResolvedValue(undefined);
+    mocks.createAuditLog.mockResolvedValue(undefined);
     mocks.refundPaymentTransactions.mockResolvedValue({ refunds: [] });
     mocks.planStripeRefundAllocation.mockResolvedValue({
       slices: [{ paymentTransactionId: "txn-1", amountCents: 10000 }],
@@ -171,6 +179,80 @@ describe("markBookingPaymentSucceeded", () => {
     mocks.recordCapacityClaimFailedRefundRecoveryInlineError.mockResolvedValue({
       count: 1,
     });
+  });
+
+  /**
+   * #2265 (#2319). This is the single settle door every card path funnels
+   * through, and by the time it runs the money has been captured for whatever
+   * the intent was minted at. A stored credit election therefore cannot be
+   * honoured any more — applying it would debit the member's balance for cash
+   * already taken — so it is cleared, and the clear is reported rather than left
+   * silent, because a member who chose to spend credit and then paid full price
+   * otherwise has no way to tell whether their balance was touched. It was not.
+   */
+  it("clears a stale credit election on the PAID claim and reports it (#2265)", async () => {
+    mocks.bookingFindUnique.mockResolvedValue({
+      ...makeStaggeredBooking(),
+      creditElectionCents: 6000,
+    });
+    mocks.bookingFindMany.mockResolvedValue([]);
+
+    const result = await markBookingPaymentSucceeded({
+      bookingId: "booking-1",
+      paymentIntentId: "pi_election",
+      amountCents: 10000,
+      paymentMethodId: "pm_1",
+    });
+
+    expect(result.outcome).toBe("paid");
+    // Guarded claim on the EXACT amount read, so a pay step that consumed the
+    // election a moment earlier is never clobbered.
+    expect(mocks.bookingUpdateMany).toHaveBeenCalledWith({
+      where: { id: "booking-1", creditElectionCents: 6000 },
+      data: { creditElectionCents: null },
+    });
+    // The member's note, keyed on the action booking-history renders.
+    expect(mocks.createAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "booking.credit_election.unapplied",
+        entityId: "booking-1",
+        subjectMemberId: "member-1",
+        category: "payment",
+        details: expect.stringContaining('"creditElectionCents":6000'),
+      })
+    );
+    // And the actionable half: an officer decides whether to refund the
+    // difference or leave the credit for the member's next stay.
+    expect(mocks.sendAdminPaymentFailureAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        amountCents: 6000,
+        paymentIntentId: "pi_election",
+        errorMessage: expect.stringContaining("account credit balance is untouched"),
+      })
+    );
+  });
+
+  it("writes nothing extra when the booking carries no election (#2265)", async () => {
+    mocks.bookingFindMany.mockResolvedValue([]);
+
+    await markBookingPaymentSucceeded({
+      bookingId: "booking-1",
+      paymentIntentId: "pi_no_election",
+      amountCents: 10000,
+      paymentMethodId: "pm_1",
+    });
+
+    // NULL is the column's "nothing outstanding" state, which every pre-#2265
+    // row is already in, so the overwhelming majority of settlements must cost
+    // nothing: not even an UPDATE that matches zero rows, and certainly no audit
+    // row or alert claiming a member's credit went unapplied.
+    expect(mocks.bookingUpdateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ creditElectionCents: null }),
+      })
+    );
+    expect(mocks.createAuditLog).not.toHaveBeenCalled();
+    expect(mocks.sendAdminPaymentFailureAlert).not.toHaveBeenCalled();
   });
 
   it("pays a staggered booking when only one bed is available on each active guest night", async () => {

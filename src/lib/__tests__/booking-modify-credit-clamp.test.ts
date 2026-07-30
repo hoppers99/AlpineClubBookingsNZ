@@ -14,6 +14,9 @@ const mockClamp = vi.fn();
 const mockDerive = vi.fn();
 const mockQueueSuperseded = vi.fn();
 const mockPaymentUpsert = vi.fn();
+// #2265 (#2319): the guarded claim that clears a stale credit election when this
+// reprice settles the booking at $0.
+const mockBookingUpdateMany = vi.fn();
 
 vi.mock("@/lib/member-credit", () => ({
   clampAppliedCreditToBookingPrice: (...args: unknown[]) => mockClamp(...args),
@@ -48,6 +51,7 @@ import { applyLifecycleTransitions } from "@/lib/booking-modify-settlement";
 function makeTx() {
   return {
     payment: { upsert: mockPaymentUpsert },
+    booking: { updateMany: mockBookingUpdateMany },
   } as any;
 }
 
@@ -74,6 +78,7 @@ describe("applyLifecycleTransitions — F20 applied-credit clamp (#1887)", () =>
     mockDerive.mockResolvedValue(0);
     mockQueueSuperseded.mockResolvedValue([]);
     mockPaymentUpsert.mockResolvedValue({ id: "pay-1" });
+    mockBookingUpdateMany.mockResolvedValue({ count: 1 });
   });
 
   it("refunds the over-consumed credit and auto-confirms at $0 when the reprice drops below applied credit", async () => {
@@ -228,5 +233,81 @@ describe("applyLifecycleTransitions — F20 applied-credit clamp (#1887)", () =>
         create: expect.objectContaining({ amountCents: 0, creditAppliedCents: 0 }),
       }),
     );
+  });
+});
+
+/**
+ * #2265 (#2319). The one arm that could genuinely land a SETTLED booking still
+ * carrying a stored credit election.
+ *
+ * A guest removal on a booking parked in AWAITING_REVIEW releases it to
+ * PAYMENT_PENDING with its election intact — correctly, because the pay step is
+ * supposed to consume it. But if that same removal reprices the stay to nothing,
+ * this function auto-pays it at $0 right here, and the election would ride into a
+ * PAID row that no consumer will ever read again.
+ *
+ * Cleared silently, and that is the honest treatment rather than an oversight:
+ * nothing is owed, so the election is MOOT, not unhonoured. No credit was
+ * consumed, the member's balance is exactly as it was, and there is no
+ * disappointed choice to explain to anybody — the same reasoning (and the same
+ * silence) as confirm-draft's $0 confirm.
+ */
+describe("applyLifecycleTransitions — stale credit election on a $0 settle (#2265)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDerive.mockResolvedValue(0);
+    mockQueueSuperseded.mockResolvedValue([]);
+    mockPaymentUpsert.mockResolvedValue({ id: "pay-1" });
+    mockBookingUpdateMany.mockResolvedValue({ count: 1 });
+  });
+
+  it("clears the election when the reprice settles the booking at $0", async () => {
+    const result = await applyLifecycleTransitions(makeTx(), {
+      booking: { ...baseBooking({ creditAppliedCents: 0 }), creditElectionCents: 7500 },
+      bookingId: "bk-1",
+      newCheckIn: new Date("2026-08-01"),
+      newFinalPriceCents: 0,
+      guestsForPricing: [{ isMember: true }],
+      skipBookingLifecycleRules: false,
+    });
+
+    expect(result.newStatus).toBe("PAID");
+    expect(result.zeroDollarAutoPaid).toBe(true);
+    // Guarded on the exact amount read, like every other consumer of the column.
+    expect(mockBookingUpdateMany).toHaveBeenCalledWith({
+      where: { id: "bk-1", creditElectionCents: 7500 },
+      data: { creditElectionCents: null },
+    });
+  });
+
+  it("leaves the election alone when the reprice does NOT settle the booking", async () => {
+    const result = await applyLifecycleTransitions(makeTx(), {
+      booking: { ...baseBooking({ creditAppliedCents: 0 }), creditElectionCents: 7500 },
+      bookingId: "bk-1",
+      newCheckIn: new Date("2026-08-01"),
+      newFinalPriceCents: 9000,
+      guestsForPricing: [{ isMember: true }],
+      skipBookingLifecycleRules: false,
+    });
+
+    // Still payable, so the election is still perfectly honourable — the pay step
+    // will apply it against the NEW price. Clearing it here would be the original
+    // #2265 bug all over again.
+    expect(result.newStatus).toBe("PAYMENT_PENDING");
+    expect(result.zeroDollarAutoPaid).toBe(false);
+    expect(mockBookingUpdateMany).not.toHaveBeenCalled();
+  });
+
+  it("costs nothing for a $0 settle on a booking that never made an election", async () => {
+    await applyLifecycleTransitions(makeTx(), {
+      booking: { ...baseBooking({ creditAppliedCents: 0 }), creditElectionCents: null },
+      bookingId: "bk-1",
+      newCheckIn: new Date("2026-08-01"),
+      newFinalPriceCents: 0,
+      guestsForPricing: [{ isMember: true }],
+      skipBookingLifecycleRules: false,
+    });
+
+    expect(mockBookingUpdateMany).not.toHaveBeenCalled();
   });
 });

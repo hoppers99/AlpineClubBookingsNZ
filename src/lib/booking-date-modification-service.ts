@@ -51,6 +51,7 @@ import {
   createBookingModificationCredit,
   deriveBookingAppliedCreditCents,
 } from "@/lib/member-credit";
+import { clearStaleCreditElection } from "@/lib/booking-credit-election";
 import {
   daysUntilDate,
   getNonMemberHoldPolicy,
@@ -708,6 +709,12 @@ export async function modifyBookingDates({
       if (effectivePriceCents === 0 && newStatus === "PAYMENT_PENDING") {
         newStatus = "PAID";
         zeroDollarAutoPaid = true;
+        // #2265 (#2319). Same as the batch-modify sibling in
+        // booking-modify-settlement.ts: a booking settling at $0 owes nothing, so
+        // a stored credit election is moot and must not ride into a PAID row.
+        // Silent by design — no credit was consumed and none is owed, so there is
+        // no unhonoured choice to report.
+        await clearStaleCreditElection(tx, booking);
         await tx.payment.upsert({
           where: { bookingId },
           create: {

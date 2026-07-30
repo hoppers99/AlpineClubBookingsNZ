@@ -4,6 +4,8 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IntegrationWizard } from "../integration-wizard";
 import type { WizardStepConfig } from "../types";
+import { ViewOnlyActionButton } from "@/components/admin/view-only-action";
+import { ADMIN_VIEW_ONLY_ACTION_REASON } from "@/hooks/use-admin-area-edit-access";
 
 interface Ctx {
   bReady: boolean;
@@ -291,5 +293,120 @@ describe("IntegrationWizard focus management (#2080 UX-F3)", () => {
       expect(active?.getAttribute("tabindex")).toBe("-1");
       expect(active?.textContent).toContain("Step A body");
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2324 — the shell's view-only vouch, checked BEHAVIOURALLY.
+//
+// `view-only-banner-contract.test.ts` proves the same property statically, by
+// reading this file's source. This is deliberately independent of that: it
+// renders the real shell and looks at what a view-only admin actually gets, so
+// a bug in the static analysis cannot make the guarantee vacuous.
+//
+// Three things, and all three are the vouch:
+//
+//  - the banner is mounted in EVERY branch, the loading one included, because
+//    that is the promise the flag makes on the shell's behalf;
+//  - the helpers really carry `ancestorRendersViewOnlyBanner === true`, so a
+//    step reading it gets a vouch rather than `undefined`;
+//  - a step control that uses the vouch drops its per-button reason and STAYS
+//    DISABLED, while the same control without it keeps the reason. Gating never
+//    depends on the flag; only who states the reason does.
+// ---------------------------------------------------------------------------
+
+describe("IntegrationWizard view-only vouch (#2324)", () => {
+  function vouchSteps(seen: { value?: unknown }): WizardStepConfig<Ctx>[] {
+    return [
+      {
+        id: "a",
+        title: "Step A",
+        isVerified: () => true,
+        render: (_ctx, helpers) => {
+          seen.value = helpers.ancestorRendersViewOnlyBanner;
+          return (
+            <div>
+              {/* TEST-ONLY shape. A real step body takes the vouch as a prop
+                  defaulting to false and writes `describeReason={!prop}`; the
+                  contract test rejects reading it straight off `helpers` like
+                  this (test files are outside its scan). Inlined here so this
+                  case depends on nothing but the shell. */}
+              <ViewOnlyActionButton
+                canEdit={helpers.canEdit}
+                describeReason={!helpers.ancestorRendersViewOnlyBanner}
+              >
+                Vouched action
+              </ViewOnlyActionButton>
+              <ViewOnlyActionButton canEdit={helpers.canEdit}>
+                Self-explaining action
+              </ViewOnlyActionButton>
+            </div>
+          );
+        },
+      },
+    ];
+  }
+
+  function renderVouchWizard(seen: { value?: unknown }, loading: boolean) {
+    return render(
+      <IntegrationWizard<Ctx>
+        wizardId="test"
+        title="Test wizard"
+        steps={vouchSteps(seen)}
+        context={{ bReady: true, cReady: true }}
+        contextLoading={loading}
+        onRefresh={() => {}}
+        canEdit={false}
+        viewOnlyBanner={<>you can look at this wizard</>}
+      />,
+    );
+  }
+
+  it("mounts the banner in the LOADING branch, before any step body exists", () => {
+    // No step body yet, but the live region is already registered and already
+    // saying why — that is what the vouch promises every step.
+    renderVouchWizard({}, true);
+    expect(screen.getByTestId("admin-view-only-banner")).toBeTruthy();
+    expect(screen.getByText(/you can look at this wizard/i)).toBeTruthy();
+  });
+
+  it("still mounts the banner once the step body is on screen", async () => {
+    renderVouchWizard({}, false);
+    await waitFor(() => screen.getByText("Vouched action"));
+    expect(screen.getByTestId("admin-view-only-banner")).toBeTruthy();
+    expect(screen.getByText(/you can look at this wizard/i)).toBeTruthy();
+  });
+
+  it("hands each step a literal true vouch", async () => {
+    const seen: { value?: unknown } = {};
+    renderVouchWizard(seen, false);
+    await waitFor(() => screen.getByText("Vouched action"));
+    expect(seen.value).toBe(true);
+  });
+
+  it("lets a step drop its own reason without dropping the gate", async () => {
+    const seen: { value?: unknown } = {};
+    renderVouchWizard(seen, false);
+
+    const vouched = (await screen.findByRole("button", {
+      name: /^Vouched action$/,
+    })) as HTMLButtonElement;
+    const unvouched = (await screen.findByRole("button", {
+      name: /Self-explaining action/i,
+    })) as HTMLButtonElement;
+
+    // Gating is identical; only the explanation moved.
+    expect(vouched.disabled).toBe(true);
+    expect(unvouched.disabled).toBe(true);
+
+    expect(vouched.getAttribute("title")).toBeNull();
+    expect(vouched.getAttribute("aria-describedby")).toBeNull();
+
+    expect(unvouched.getAttribute("title")).toBe(ADMIN_VIEW_ONLY_ACTION_REASON);
+    const describedBy = unvouched.getAttribute("aria-describedby");
+    expect(describedBy).toBeTruthy();
+    expect(document.getElementById(describedBy ?? "")?.textContent).toBe(
+      ADMIN_VIEW_ONLY_ACTION_REASON,
+    );
   });
 });

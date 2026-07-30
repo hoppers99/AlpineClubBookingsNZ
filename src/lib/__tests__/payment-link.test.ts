@@ -39,6 +39,9 @@ vi.mock("@/lib/stripe", () => ({
 }));
 
 vi.mock("@/lib/email", () => ({
+  // #2265 (#2319 door 1): the operator alert raised when a link refuses a
+  // booking that still carries an unconsumed credit election.
+  sendAdminPaymentFailureAlert: vi.fn().mockResolvedValue(undefined),
   sendBookingRequestApprovedEmail: vi
     .fn()
     .mockResolvedValue({ status: "sent", emailLogId: "log-1", messageId: null }),
@@ -90,6 +93,7 @@ import { markBookingPaymentSucceeded } from "@/lib/payment-reconciliation";
 import { checkCapacityForGuestRanges } from "@/lib/capacity";
 import { hashActionToken, issueActionToken } from "@/lib/action-tokens";
 import {
+  sendAdminPaymentFailureAlert,
   sendBookingRequestApprovedEmail,
   sendSplitGuestPaymentLinkEmail,
 } from "@/lib/email";
@@ -591,6 +595,79 @@ describe("createPaymentIntentForPaymentLink", () => {
     expect(queueXeroInvoiceForPaidBookingMock).toHaveBeenCalledWith({
       bookingId: "booking-1",
     });
+  });
+
+  /**
+   * #2265 (#2319 door 1). A stored credit election is a member's standing request
+   * to spend their own account-credit balance. This route is authenticated by a
+   * bearer token routinely held by SOMEONE ELSE — a booking requester, a group
+   * joiner, a non-member guest — with no member session and no surface on which
+   * to show the member that their election was clamped. So it refuses, rather
+   * than either charging the pre-credit price (which would ignore the choice) or
+   * consuming the credit (which would spend a member's balance on a third
+   * party's token). Refusing loses nothing: the member's own pay step still
+   * honours the election.
+   *
+   * No mint path in the app attaches a link to a booking that can carry an
+   * election, so this is an assertion of that invariant rather than a routine
+   * branch — which is exactly why it must alert loudly instead of failing quietly.
+   */
+  it("refuses to mint an intent for a booking carrying an unconsumed credit election (#2265)", async () => {
+    mockedFindUnique.mockResolvedValue(baseLink() as never);
+    vi.mocked(prisma.booking.findUnique).mockResolvedValue(
+      baseBooking({ guests: [{ id: "guest-1" }], creditElectionCents: 4500 }) as never
+    );
+
+    await expect(createPaymentIntentForPaymentLink(RAW_TOKEN)).rejects.toMatchObject({
+      status: 409,
+    });
+
+    // Nothing was charged and no Stripe object was even created.
+    expect(mockedFindOrCreateCustomer).not.toHaveBeenCalled();
+    expect(mockedCreatePaymentIntent).not.toHaveBeenCalled();
+    expect(vi.mocked(prisma.payment.upsert)).not.toHaveBeenCalled();
+    // The election is left exactly where it was: this route never writes the
+    // Booking row, so the member can still pay from their own bookings page and
+    // have the credit applied there. (The prisma double has no booking.update at
+    // all, so any attempt to clear it would have thrown.)
+    expect(prisma.booking).not.toHaveProperty("update");
+    // Loud: an officer is told, with the figure, because this state is not
+    // supposed to be reachable.
+    expect(vi.mocked(sendAdminPaymentFailureAlert)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        amountCents: 4500,
+        paymentIntentId: "booking-1",
+        errorMessage: expect.stringContaining("$45.00"),
+      })
+    );
+  });
+
+  it("mints normally for a booking whose election is explicitly NULL (#2265)", async () => {
+    mockedFindUnique.mockResolvedValue(baseLink() as never);
+    vi.mocked(prisma.booking.findUnique).mockResolvedValue(
+      baseBooking({ guests: [{ id: "guest-1" }], creditElectionCents: null }) as never
+    );
+    mockedFindOrCreateCustomer.mockResolvedValue({ id: "cus_1" } as never);
+    mockedCreatePaymentIntent.mockResolvedValue({
+      id: "pi_new",
+      client_secret: "secret_new",
+    } as never);
+    vi.mocked(prisma.payment.upsert).mockResolvedValue({ id: "pay-1" } as never);
+
+    const result = await createPaymentIntentForPaymentLink(RAW_TOKEN);
+
+    // NULL is the column's "nothing outstanding" state, which every pre-#2265
+    // row is already in — so the guard must be a no-op here, with the full price
+    // charged exactly as before.
+    expect(result).toEqual({
+      type: "clientSecret",
+      clientSecret: "secret_new",
+      paymentIntentId: "pi_new",
+    });
+    expect(mockedCreatePaymentIntent).toHaveBeenCalledWith(
+      expect.objectContaining({ amountCents: 12000 })
+    );
+    expect(vi.mocked(sendAdminPaymentFailureAlert)).not.toHaveBeenCalled();
   });
 
   it("revalidates capacity under the advisory lock and refuses when beds are gone", async () => {

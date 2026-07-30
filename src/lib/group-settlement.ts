@@ -615,7 +615,18 @@ async function commitChildrenToConfirmed(
 
       await tx.booking.update({
         where: { id: fresh.id },
-        data: { status: BookingStatus.CONFIRMED, draftExpiresAt: null },
+        data: {
+          status: BookingStatus.CONFIRMED,
+          draftExpiresAt: null,
+          // #2265 — a joiner's booking is settled by the organiser, so its
+          // `organiserSettled` flag permanently blocks the two paths that could
+          // ever consume a stored credit election (the card pay step and the
+          // Internet Banking switch both refuse an organiser-settled booking).
+          // The election can therefore never be honoured and must not linger on
+          // a committed booking pretending otherwise. Nothing is lost: no
+          // credit was consumed, so there is nothing to release.
+          creditElectionCents: null,
+        },
       });
       // CONFIRMED holds capacity, so the next child's check counts these beds.
       await reconcileBedAllocationsForBooking({
@@ -787,7 +798,14 @@ async function settleConfirmedChildrenAndNotify(
       // no-clobber guarantee structural against a racing reaper revert.
       const paid = await tx.booking.updateMany({
         where: { id: child.id, status: BookingStatus.CONFIRMED },
-        data: { status: BookingStatus.PAID, draftExpiresAt: null },
+        data: {
+          status: BookingStatus.PAID,
+          draftExpiresAt: null,
+          // #2265 — belt and braces with the commit flip above: no settled
+          // booking carries a non-NULL election. See the note there for why an
+          // organiser-settled joiner can never consume one.
+          creditElectionCents: null,
+        },
       });
       // Defense-in-depth (#1881, mirroring F1's markBookingPaymentSucceeded
       // claim): under lock(1) with the CONFIRMED-filtered read above this can
