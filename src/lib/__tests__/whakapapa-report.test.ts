@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   coerceWhakapapaCurlData,
   coerceWhakapapaSectionVisibility,
+  coerceWhakapapaSourceConfig,
   emptyWhakapapaSectionVisibility,
+  WHAKAPAPA_DEFAULT_SOURCE_URL,
 } from "@/lib/whakapapa-report";
 
 // Regression coverage for the Whakapapa report coercion helpers that back the
@@ -215,5 +217,46 @@ describe("coerceWhakapapaCurlData", () => {
       wheelRequirements: "",
       roadContent: "",
     });
+  });
+});
+
+describe("coerceWhakapapaSourceConfig (import/export round-trip)", () => {
+  it("accepts an exported file: keeps known non-empty selectors and a valid URL", () => {
+    const exported = {
+      type: "whakapapa-mountain-conditions-selectors",
+      version: 1,
+      sourceUrl: "https://www.whakapapa.com/report",
+      selectorOverrides: {
+        item: '[class*="row_"]',
+        itemName: "  .name  ",
+        bogusKey: "ignored",
+        blankValue: "",
+      },
+    };
+
+    const config = coerceWhakapapaSourceConfig(exported);
+
+    expect(config.sourceUrl).toBe("https://www.whakapapa.com/report");
+    // Unknown keys and blank values are dropped; whitespace is trimmed.
+    expect(config.selectorOverrides).toEqual({
+      item: '[class*="row_"]',
+      itemName: ".name",
+    });
+  });
+
+  it("falls back to the default URL when the imported URL is off-allowlist", () => {
+    const config = coerceWhakapapaSourceConfig({
+      sourceUrl: "https://evil.example.com/report",
+      selectorOverrides: { item: ".x" },
+    });
+
+    expect(config.sourceUrl).toBe(WHAKAPAPA_DEFAULT_SOURCE_URL);
+    expect(config.selectorOverrides).toEqual({ item: ".x" });
+  });
+
+  it("returns defaults for a non-object / garbage import", () => {
+    const config = coerceWhakapapaSourceConfig("not json");
+    expect(config.sourceUrl).toBe(WHAKAPAPA_DEFAULT_SOURCE_URL);
+    expect(config.selectorOverrides).toEqual({});
   });
 });

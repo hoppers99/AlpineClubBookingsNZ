@@ -1,14 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
   CircleHelp,
+  Download,
   Eye,
   LoaderCircle,
   RotateCcw,
   Save,
+  Upload,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -32,9 +34,11 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
+  coerceWhakapapaSourceConfig,
   emptyWhakapapaCurlData,
   emptyWhakapapaSectionVisibility,
   emptyWhakapapaSourceConfig,
+  validateWhakapapaSourceUrl,
   WHAKAPAPA_DEFAULT_SELECTORS,
   WHAKAPAPA_SELECTOR_KEYS,
   type WhakapapaCurlData,
@@ -153,6 +157,7 @@ export function MountainConditionsPanel() {
   const [showSelectors, setShowSelectors] = useState(false);
   const [previewJson, setPreviewJson] = useState<string | null>(null);
   const [error, setError] = useState<string>("");
+  const importInputRef = useRef<HTMLInputElement>(null);
   // Sampled whenever the record is (re)loaded so the frozen check below can
   // stay pure during render (Date.now() must not run mid-render).
   const [recordSyncedAt, setRecordSyncedAt] = useState(0);
@@ -311,6 +316,75 @@ export function MountainConditionsPanel() {
       }
     }
     return { sourceUrl: sourceUrl.trim(), selectorOverrides: overrides };
+  }
+
+  function exportConfig() {
+    const config = buildConfigPayload();
+    const file = {
+      type: "whakapapa-mountain-conditions-selectors",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      sourceUrl: config.sourceUrl,
+      selectorOverrides: config.selectorOverrides,
+    };
+    const blob = new Blob([JSON.stringify(file, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "whakapapa-mountain-conditions-selectors.json";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+    toast.success("Selector configuration exported.");
+  }
+
+  async function importConfigFromFile(file: File) {
+    try {
+      const parsed = JSON.parse(await file.text());
+
+      // Reuse the shared coercion so only known selector keys with non-empty
+      // string values are accepted (unknown/garbage keys are dropped).
+      const coerced = coerceWhakapapaSourceConfig(parsed);
+      const form = configToForm(coerced);
+      const imported = Object.values(form.overrides).filter(Boolean).length;
+      if (imported === 0) {
+        toast.error("No recognised selector fields were found in that file.");
+        return;
+      }
+
+      setSelectorOverrides(form.overrides);
+      // Only replace the URL when the file explicitly carries a valid one, so a
+      // selectors-only file does not reset the current Report URL.
+      const rawUrl =
+        parsed && typeof parsed === "object"
+          ? (parsed as { sourceUrl?: unknown }).sourceUrl
+          : undefined;
+      const urlCheck = validateWhakapapaSourceUrl(rawUrl);
+      if (urlCheck.ok) {
+        setSourceUrl(urlCheck.url);
+      }
+
+      setShowSelectors(true);
+      toast.success(
+        `Imported ${imported} selector${imported === 1 ? "" : "s"}. Review, then click Save configuration.`,
+      );
+    } catch {
+      toast.error("Could not import selectors: the file is not valid JSON.");
+    }
+  }
+
+  function handleImportFileChange(
+    event: React.ChangeEvent<HTMLInputElement>,
+  ) {
+    const file = event.target.files?.[0];
+    // Reset so selecting the same file again still fires onChange.
+    event.target.value = "";
+    if (file) {
+      void importConfigFromFile(file);
+    }
   }
 
   async function saveConfig() {
@@ -596,32 +670,81 @@ export function MountainConditionsPanel() {
               Advanced: element selectors
             </button>
             {showSelectors ? (
-              <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                {WHAKAPAPA_SELECTOR_KEYS.map((key) => (
-                  <div key={key} className="space-y-1">
-                    <Label
-                      htmlFor={`selector-${key}`}
-                      className="text-xs text-muted-foreground"
+              <>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  {WHAKAPAPA_SELECTOR_KEYS.map((key) => (
+                    <div key={key} className="space-y-1">
+                      <Label
+                        htmlFor={`selector-${key}`}
+                        className="text-xs text-muted-foreground"
+                      >
+                        {SELECTOR_LABELS[key]}
+                      </Label>
+                      <Input
+                        id={`selector-${key}`}
+                        value={selectorOverrides[key] ?? ""}
+                        onChange={(event) =>
+                          setSelectorOverrides((current) => ({
+                            ...current,
+                            [key]: event.target.value,
+                          }))
+                        }
+                        placeholder={WHAKAPAPA_DEFAULT_SELECTORS[key]}
+                        readOnly={!canEdit}
+                        spellCheck={false}
+                        className="font-mono text-xs"
+                      />
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-3 rounded-md border border-border bg-muted/40 p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={exportConfig}
                     >
-                      {SELECTOR_LABELS[key]}
-                    </Label>
-                    <Input
-                      id={`selector-${key}`}
-                      value={selectorOverrides[key] ?? ""}
-                      onChange={(event) =>
-                        setSelectorOverrides((current) => ({
-                          ...current,
-                          [key]: event.target.value,
-                        }))
-                      }
-                      placeholder={WHAKAPAPA_DEFAULT_SELECTORS[key]}
-                      readOnly={!canEdit}
-                      spellCheck={false}
-                      className="font-mono text-xs"
+                      <Download className="h-4 w-4" />
+                      Export selectors
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => importInputRef.current?.click()}
+                      disabled={!canEdit}
+                    >
+                      <Upload className="h-4 w-4" />
+                      Import selectors
+                    </Button>
+                    <input
+                      ref={importInputRef}
+                      type="file"
+                      accept="application/json,.json"
+                      className="hidden"
+                      onChange={handleImportFileChange}
                     />
                   </div>
-                ))}
-              </div>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Export saves the Report URL and selector overrides to a JSON
+                    file you can import on another site, so its admin does not
+                    have to re-enter them. Importing fills the fields above —
+                    review them, then click <b>Save configuration</b>.
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Need an up-to-date file? Contact the LWTC Admin at{" "}
+                    <a
+                      href="mailto:admin@lwtc.org.nz"
+                      className="font-medium underline"
+                    >
+                      admin@lwtc.org.nz
+                    </a>
+                    .
+                  </p>
+                </div>
+              </>
             ) : null}
           </div>
 
@@ -721,6 +844,14 @@ export function MountainConditionsPanel() {
               suffixes. <b>Preview</b> tests the current URL and selectors
               without saving; <b>Save configuration</b> stores them separately
               from the cached data, so an upstream refresh never wipes them.
+            </p>
+            <p>
+              Under <b>Advanced</b>, <i>Export selectors</i> downloads the URL
+              and overrides as a JSON file, and <i>Import selectors</i> loads
+              such a file into the fields — so another site&rsquo;s admin can
+              reuse a known-good configuration instead of re-entering it. After
+              importing, review the fields and click <b>Save configuration</b>.
+              Email the LWTC Admin at admin@lwtc.org.nz for an up-to-date file.
             </p>
           </div>
         </DialogContent>

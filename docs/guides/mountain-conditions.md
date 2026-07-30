@@ -68,6 +68,19 @@ upstream rebuild. When the page structure changes more deeply, use the
    and overrides are stored separately from the cached data, so an upstream
    refresh never wipes them.
 
+### Share selectors between sites (import / export)
+
+Under **Advanced: element selectors**:
+
+- **Export selectors** downloads the Report URL and selector overrides as a JSON
+  file.
+- **Import selectors** loads such a file back into the fields on another site,
+  so its admin does not have to re-enter the overrides by hand. Review the
+  imported fields, then click **Save configuration** to store them. An
+  off-allowlist URL in the file is ignored; unknown fields are dropped.
+
+Need an up-to-date file? Email the LWTC Admin at admin@lwtc.org.nz.
+
 ## Settings reference
 
 | Setting | What it controls | Default | Notes / constraints |
@@ -77,6 +90,7 @@ upstream rebuild. When the page structure changes more deeply, use the
 | Raw JSON payload | The stored conditions content | Upstream feed | Must be valid JSON; saving freezes auto-refresh for 12 hours |
 | Report URL | The page the scraper fetches | `https://www.whakapapa.com/report` | Must be https on whakapapa.com / snow.nz |
 | Element selectors (Advanced) | Per-section overrides used to locate content on the source page | Built-in hash-agnostic defaults | Blank = use default; test with **Preview** before saving |
+| Import / Export selectors (Advanced) | Transfer the URL + selector overrides between sites as a JSON file | — | Import fills the fields; review then **Save configuration**. Contact admin@lwtc.org.nz for a file |
 | `skifieldConditions` module | Whether this page and the public widget exist at all | On | Toggled at **Admin → Modules**; off hides both |
 
 ## Troubleshooting
