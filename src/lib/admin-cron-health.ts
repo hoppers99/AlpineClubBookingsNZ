@@ -178,6 +178,17 @@ export function getAdminCronJobDefinitions(
     ),
     defineCronJob(
       {
+        jobName: "additional-payment-reminders",
+        label: "Outstanding additional payment reminders",
+        schedule: "0 */3 * * *",
+        timezone: nzTimezone,
+        expectedLocalTime: "Every 3 hours at minute 0 in Pacific/Auckland",
+        staleAfterMinutes: THREE_HOURLY_STALE_AFTER_MINUTES,
+      },
+      globalDisabledReason
+    ),
+    defineCronJob(
+      {
         jobName: "pre-arrival-reminders",
         label: "Pre-arrival reminders",
         schedule: "0 */3 * * *",

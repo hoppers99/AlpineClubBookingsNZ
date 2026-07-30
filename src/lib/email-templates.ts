@@ -807,6 +807,10 @@ export function preArrivalReminderTemplate(params: {
   expectedArrivalTime?: string | null;
   lodgeTravelNote: string;
   doorCode?: string | null;
+  // #2350: extra still owing on this booking after an upward change, when the
+  // stay is about to start and it has not been collected. Zero/absent for the
+  // ordinary case, which renders exactly as before.
+  outstandingAdditionalAmountCents?: number;
 }): string {
   const rows: Array<{ label: string; value: string }> = [
     { label: "Check-in", value: formatNZDate(params.checkIn) },
@@ -825,11 +829,57 @@ export function preArrivalReminderTemplate(params: {
     ${heading("Upcoming Lodge Stay")}
     ${paragraph("Hi " + escapeHtml(params.firstName) + ", your lodge stay is coming up.")}
     ${infoTable(rows)}
+    ${outstandingAdditionalPaymentNote(params.outstandingAdditionalAmountCents)}
     ${arrivalInstructionsSection({
       travelNote: params.lodgeTravelNote,
       doorCode: params.doorCode,
     })}
     ${button("View Booking", BASE_URL + "/bookings")}
+  `);
+}
+
+/**
+ * The one-line "there is still money owing on this booking" block (#2350),
+ * shared by the pre-arrival reminder and the standalone additional-payment
+ * reminder so both say the same thing in the same words. Empty for a booking
+ * with nothing outstanding, so the surrounding template is unchanged.
+ */
+function outstandingAdditionalPaymentNote(amountCents: number | undefined): string {
+  if (!amountCents || amountCents <= 0) return "";
+  return alertBox(
+    `There is still ${formatCents(amountCents)} to pay on this booking after a change to your stay. Please pay it from your booking page before you arrive.`,
+    "warning",
+  );
+}
+
+/**
+ * F-#2350: standalone reminder that an additional payment raised by a booking
+ * change has not been collected. Sent automatically a few days after the change
+ * and again shortly before check-in, and by an admin on demand from the booking
+ * page. Carries no token or link secret, so its rendered body is retained
+ * normally.
+ */
+export function additionalPaymentReminderTemplate(params: {
+  firstName: string;
+  additionalAmountCents: number;
+  checkIn: Date;
+  checkOut: Date;
+  requestedOn: Date;
+}): string {
+  return layout(`
+    ${heading("Payment Still Needed")}
+    ${paragraph("Hi " + escapeHtml(params.firstName) + ", a change to your lodge booking increased the total, and the extra amount has not been paid yet.")}
+    ${infoTable([
+      { label: "Amount still to pay", value: formatCents(params.additionalAmountCents) },
+      { label: "Requested on", value: formatNZDate(params.requestedOn) },
+      { label: "Check-in", value: formatNZDate(params.checkIn) },
+      { label: "Check-out", value: formatNZDate(params.checkOut) },
+    ])}
+    ${alertBox(
+      "Open your booking and complete the outstanding payment. If you have already paid, or you think this is wrong, please contact the club.",
+      "warning",
+    )}
+    ${button("Pay Now", BASE_URL + "/bookings")}
   `);
 }
 

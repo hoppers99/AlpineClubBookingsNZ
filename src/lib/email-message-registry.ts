@@ -496,6 +496,12 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
     triggerSummary: "Pre-arrival reminder with current lodge access details",
     frequency: "Once per confirmed or paid booking in the reminder window",
   },
+  "additional-payment-reminder": {
+    triggerSummary:
+      "A booking change increased the total and the extra amount is still uncollected",
+    frequency:
+      "Twice per outstanding amount at most — a few days after the change, and once more shortly before check-in — plus any manual re-send an admin triggers from the booking page. The chase stops when the money arrives or the stay ends",
+  },
   "booking-request-verification": {
     triggerSummary: "Public booking request submitted",
     frequency: "Per booking request submission (and resend requests)",
@@ -893,6 +899,10 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "oldTotal",
   "operation",
   "operationType",
+  // #2350: pre-composed "there is still $X to pay on this booking" sentence for
+  // the pre-arrival reminder; empty when nothing is owed, so the body never
+  // carries a dangling claim (the {{doorCodeNote}} convention).
+  "outstandingAdditionalNote",
   "organiserName",
   "originalRecipient",
   "originalTemplateName",
@@ -940,6 +950,9 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "requestType",
   "requestedSummary",
   "requestedAmount",
+  // #2350: the day the uncollected additional payment was raised, so the
+  // reminder can say how long it has been outstanding.
+  "requestedOn",
   "requesterName",
   "rejoinProcessText",
   "resetUrl",

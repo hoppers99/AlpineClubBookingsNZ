@@ -1,4 +1,5 @@
 import { BookingStatus } from "@prisma/client";
+import { isAdditionalPaymentOwed } from "@/lib/additional-payment-chase";
 import {
   addDaysDateOnly,
   formatDateOnly,
@@ -45,6 +46,15 @@ export async function sendPreArrivalReminders(): Promise<PreArrivalReminderResul
     include: {
       member: true,
       guests: true,
+      // #2350: an upward booking change may have left money uncollected. The
+      // pre-arrival note is the last thing most members read before they
+      // travel, so it says so when that is true.
+      payment: {
+        select: {
+          additionalAmountCents: true,
+          additionalPaymentStatus: true,
+        },
+      },
     },
     orderBy: [{ checkIn: "asc" }, { createdAt: "asc" }],
   });
@@ -88,6 +98,11 @@ export async function sendPreArrivalReminders(): Promise<PreArrivalReminderResul
         guestCount: booking.guests.length,
         expectedArrivalTime: booking.expectedArrivalTime,
         lodgeId: booking.lodgeId,
+        outstandingAdditionalAmountCents: isAdditionalPaymentOwed(
+          booking.payment,
+        )
+          ? booking.payment?.additionalAmountCents ?? 0
+          : 0,
       });
       result.sentBookingIds.push(booking.id);
     } catch (err) {

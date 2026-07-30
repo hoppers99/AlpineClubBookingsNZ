@@ -10,6 +10,7 @@ import {
   bookingModifiedTemplate,
   setupIntentFailedTemplate,
   preArrivalReminderTemplate,
+  additionalPaymentReminderTemplate,
   splitGuestPortionCancelledTemplate,
   promoAdjustmentSummaryRows,
   resolvePromoAdjustmentCents,
@@ -491,8 +492,14 @@ export async function sendPreArrivalReminderEmail(params: {
   // default lodge — including its real door code, so always thread the
   // booking's own lodgeId.
   lodgeId?: string | null;
+  // #2350: extra still owing on this booking after an upward change. Passed by
+  // the pre-arrival cron when the delta is uncollected; zero/omitted otherwise,
+  // which leaves the message byte-for-byte as it was.
+  outstandingAdditionalAmountCents?: number;
 }) {
   const settings = await loadEmailMessageSettingsForLodge(params.lodgeId);
+  const outstandingAdditionalAmountCents =
+    params.outstandingAdditionalAmountCents ?? 0;
   await sendEmail({
     to: params.email,
     subject: `Pre-arrival Information - ${EMAIL_DEFAULT_LODGE_NAME}`,
@@ -510,6 +517,48 @@ export async function sendPreArrivalReminderEmail(params: {
       guestCount: params.guestCount,
       expectedArrivalTime: params.expectedArrivalTime ?? "",
       doorCode: settings.doorCode ?? "",
+      // Pre-composed so an admin override places one block rather than having
+      // to write the conditional itself (the {{doorCodeNote}} convention).
+      outstandingAdditionalNote:
+        outstandingAdditionalAmountCents > 0
+          ? `There is still ${formatMoneyCents(outstandingAdditionalAmountCents)} to pay on this booking after a change to your stay. Please pay it from your booking page before you arrive.`
+          : "",
+    },
+    lodgeId: params.lodgeId,
+  });
+}
+
+/**
+ * F-#2350: the extra owed after an upward booking change has not been paid.
+ *
+ * Sent automatically a few days after the change and once more shortly before
+ * check-in (src/lib/cron-additional-payment-reminders.ts), and on demand by an
+ * admin from the booking page. One template for all three so the member always
+ * reads the same wording, and so an admin override edits one message rather than
+ * three.
+ */
+export async function sendAdditionalPaymentReminderEmail(params: {
+  bookingId: string;
+  email: string;
+  firstName: string;
+  additionalAmountCents: number;
+  checkIn: Date;
+  checkOut: Date;
+  requestedOn: Date;
+  lodgeId?: string | null;
+}) {
+  await sendEmail({
+    to: params.email,
+    subject: `Payment Still Needed - ${EMAIL_DEFAULT_LODGE_NAME}`,
+    html: additionalPaymentReminderTemplate(params),
+    bookingContext: { bookingId: params.bookingId },
+    templateName: "additional-payment-reminder",
+    templateData: {
+      firstName: params.firstName,
+      additionalAmount: formatMoneyCents(params.additionalAmountCents),
+      requestedOn: formatNZDate(params.requestedOn),
+      checkIn: formatNZDate(params.checkIn),
+      checkOut: formatNZDate(params.checkOut),
     },
     lodgeId: params.lodgeId,
   });
