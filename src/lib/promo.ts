@@ -1154,18 +1154,12 @@ export async function validatePromoCodeFull(
   );
 
   if (application.error || !application.discount) {
+    // A guest-targeted code that needed a selection reports its plain error
+    // text; guest selection itself lives with /api/promo-codes/validate and
+    // PromoCodeInput, not with this validator's callers (#2266, INFO-9).
     return {
       valid: false,
       error: application.error ?? "Promo code could not be applied",
-      // #2266: propagated so a preview caller (modify-quote) can tell "pick
-      // which guests" apart from a hard rejection, the same distinction the
-      // /api/promo-codes/validate route already surfaces to PromoCodeInput.
-      ...(application.requiresGuestSelection
-        ? {
-            requiresGuestSelection: true,
-            selectableGuestIndexes: application.selectableGuestIndexes ?? [],
-          }
-        : {}),
     };
   }
 

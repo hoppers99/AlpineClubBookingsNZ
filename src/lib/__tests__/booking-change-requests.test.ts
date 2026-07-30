@@ -222,6 +222,38 @@ describe("booking change requests", () => {
     );
   });
 
+  it("refuses a change request against the member's own DRAFT (#2266 LOW-7)", async () => {
+    // A draft is directly member-editable, so a change-request queue entry for
+    // one is pure noise for admins — the route refuses it outright even for a
+    // request shape that would otherwise touch the locked period.
+    mocks.bookingFindUnique.mockResolvedValue(makeBooking({ status: "DRAFT" }));
+
+    const request = new NextRequest(
+      "http://localhost/api/bookings/booking-1/change-requests",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-forwarded-for": "127.0.0.1",
+        },
+        body: JSON.stringify({
+          checkOut: "2026-05-24",
+          reason: "Weather closed the road.",
+        }),
+      }
+    );
+
+    const response = await postBookingChangeRequest(request, {
+      params: Promise.resolve({ id: "booking-1" }),
+    });
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toMatch(/edited directly/i);
+    expect(mocks.bookingChangeRequestCreate).not.toHaveBeenCalled();
+    expect(mocks.sendAdminBookingChangeRequestAlert).not.toHaveBeenCalled();
+  });
+
   it("rejects request submissions for changes that remain self-service eligible", async () => {
     mocks.bookingFindUnique.mockResolvedValue(makeBooking());
 

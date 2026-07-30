@@ -442,11 +442,20 @@ export async function applyLifecycleTransitions(
     // amount (#1161): the payment page would hand back its stale
     // client_secret and Stripe would capture the old total. Supersede the
     // mismatched intents now; the pay-time paths mint a fresh one.
+    //
+    // Compare against the EFFECTIVE (credit-reduced) price (#2266, INFO-10):
+    // the pay page mints primary intents at finalPrice - appliedCredit, so a
+    // pending intent already at the correct effective amount is not stale and
+    // must not be swept (the old raw-price comparison cancelled it
+    // needlessly; benign — the pay page re-minted — but wasteful). Outside
+    // the pre-payment reprice arm appliedCreditCents is 0, so
+    // effectivePriceCents equals newFinalPriceCents and behaviour is
+    // unchanged there.
     supersededPrimaryPaymentIntents =
       await queueSupersededPrimaryIntentCancellations(tx, {
         bookingId,
         paymentId: booking.payment.id,
-        newFinalPriceCents,
+        newFinalPriceCents: effectivePriceCents,
       });
   }
 

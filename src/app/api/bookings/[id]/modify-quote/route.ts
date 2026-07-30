@@ -1244,9 +1244,6 @@ export async function POST(
     code?: string;
     discountCents?: number;
     promoAdjustmentCents?: number;
-    // #2266: set when a guest-targeted code needs (or got a stale) selection.
-    requiresGuestSelection?: boolean;
-    selectableGuestIndexes?: number[];
   } | null = null;
 
   // Helper: get per-night rates per guest for promo calculation
@@ -1313,17 +1310,14 @@ export async function POST(
         promoAdjustmentCents: validation.promoAdjustmentCents ?? 0,
       };
     } else {
+      // A guest-targeted code that still needs a selection surfaces here as
+      // its plain error text. The panel does not re-open guest selection from
+      // the quote (INFO-9): PromoCodeInput owns selection via
+      // /api/promo-codes/validate, and the panel resets an applied code
+      // whenever the guest set changes, so the member re-selects there.
       promoValidation = {
         valid: false,
         error: validation.error,
-        // #2266: distinguishes "pick which guests" from a hard rejection so
-        // the edit panel can re-open guest selection instead of dead-ending.
-        ...(validation.requiresGuestSelection
-          ? {
-              requiresGuestSelection: true,
-              selectableGuestIndexes: validation.selectableGuestIndexes ?? [],
-            }
-          : {}),
       };
       // Invalid new promo — discount stays 0, don't fall back to old promo
     }

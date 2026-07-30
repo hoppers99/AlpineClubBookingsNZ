@@ -343,6 +343,45 @@ describe("applyLifecycleTransitions — member DRAFT edits stay hold-free (#2266
     expect(result.clearDraftExpiresAt).toBe(false);
   });
 
+  it("sweeps superseded intents against the EFFECTIVE (credit-reduced) price (INFO-10)", async () => {
+    // A PAYMENT_PENDING card booking with $30.00 of applied credit reprices to
+    // $100.00: the pay page mints primary intents at the effective $70.00, so
+    // the stale-intent sweep must compare against 7000, not the raw 10000 —
+    // otherwise a pending intent already at the correct effective amount is
+    // cancelled needlessly.
+    mockDerive.mockResolvedValue(3_000);
+    mockClamp.mockResolvedValue({
+      appliedCreditCents: 3_000,
+      refundedExcessCents: 0,
+    });
+
+    await applyLifecycleTransitions(
+      { payment: { upsert: vi.fn() }, booking: { updateMany: vi.fn() } } as never,
+      {
+        booking: {
+          id: "bk-effective",
+          memberId: "m1",
+          status: "PAYMENT_PENDING",
+          nonMemberHoldUntil: null,
+          lodgeId: "lodge-1",
+          payment: { id: "pay-1" },
+          creditElectionCents: null,
+        } as never,
+        bookingId: "bk-effective",
+        newCheckIn: new Date("2999-01-10"),
+        newFinalPriceCents: 10_000,
+        guestsForPricing: [{ isMember: true }],
+        skipBookingLifecycleRules: false,
+      },
+    );
+
+    expect(mockQueueSuperseded).toHaveBeenCalledWith(expect.anything(), {
+      bookingId: "bk-effective",
+      paymentId: "pay-1",
+      newFinalPriceCents: 7_000,
+    });
+  });
+
   it("keeps the hold rail intact for a PENDING booking (control case)", async () => {
     const { calculateBookingHoldDecision } = await import(
       "@/lib/policies/booking-route-decisions"

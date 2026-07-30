@@ -351,22 +351,23 @@ describe("POST /api/bookings/[id]/modify-quote — promo guest targeting (#2266)
     expect(h.validatePromoCodeFull).not.toHaveBeenCalled();
   });
 
-  it("surfaces requiresGuestSelection so the panel can re-open guest selection", async () => {
+  it("surfaces a selection-needed refusal as its plain error text (INFO-9)", async () => {
+    // The panel does not re-open guest selection from the quote —
+    // PromoCodeInput owns selection via /api/promo-codes/validate and the
+    // panel resets an applied code when the guest set changes — so the quote
+    // carries no requiresGuestSelection machinery, only the honest error.
     h.validatePromoCodeFull.mockResolvedValue({
       valid: false,
       error: "Choose which guests should receive this promo code",
-      requiresGuestSelection: true,
-      selectableGuestIndexes: [0],
     });
 
     const res = await POST(req({ promoCode: "MATES50" }), { params });
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.promoValidation).toMatchObject({
+    expect(body.promoValidation).toEqual({
       valid: false,
-      requiresGuestSelection: true,
-      selectableGuestIndexes: [0],
+      error: "Choose which guests should receive this promo code",
     });
     // An invalid new promo contributes no discount.
     expect(body.newPromoAdjustmentCents).toBe(0);

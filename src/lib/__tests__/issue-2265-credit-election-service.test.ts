@@ -603,6 +603,44 @@ describe("#2319 clearStaleCreditElection", () => {
     expect(fixture.bookingUpdates).toEqual([{ creditElectionCents: null }]);
   });
 
+  it("conserves money across consume -> re-arm -> settle-door clear (#2266 LOW-8)", async () => {
+    // A member's election is consumed by a pay attempt (credit applied, intent
+    // minted, booking still PAYMENT_PENDING), the member then edits and
+    // RE-ARMS a fresh election, and the earlier intent finally captures: the
+    // settle door clears the re-armed election and fires the operator alert.
+    // The alert is accepted noise (see CREDIT_ELECTION_WRITABLE_STATUSES);
+    // what this test pins is that MONEY IS CONSERVED — the balance moved
+    // exactly once, at the consumption, and the clear debits nothing.
+    const fixture = makeTx({
+      ledger: [creditLot(5_000)],
+      booking: { finalPriceCents: 10_000, creditElectionCents: 3_000 },
+    });
+
+    // 1. Pay attempt consumes the election: $30.00 applied, $20.00 left.
+    const outcome = await run(fixture);
+    expect(outcome).toMatchObject({ requestedCents: 3_000, appliedCents: 3_000 });
+    expect(appliedTotal(fixture.rows)).toBe(3_000);
+    expect(balance(fixture.rows)).toBe(2_000);
+    expect(fixture.bookingRow.creditElectionCents).toBeNull();
+
+    // 2. An edit re-arms a fresh election while the booking is still
+    //    PAYMENT_PENDING (a writable status).
+    fixture.bookingRow.creditElectionCents = 2_000;
+
+    // 3. The earlier intent captures; the settle door clears the re-armed
+    //    election (and its caller alerts). Nothing further moves.
+    await expect(
+      clearStaleCreditElection(fixture.tx as never, {
+        id: BOOKING_ID,
+        creditElectionCents: 2_000,
+      }),
+    ).resolves.toBe(2_000);
+
+    expect(fixture.bookingRow.creditElectionCents).toBeNull();
+    expect(appliedTotal(fixture.rows)).toBe(3_000); // still exactly once
+    expect(balance(fixture.rows)).toBe(2_000); // the clear took nothing
+  });
+
   it("does nothing, and writes nothing, when there is no election", async () => {
     const fixture = makeTx({
       ledger: [creditLot(20_000)],

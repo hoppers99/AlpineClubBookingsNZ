@@ -250,6 +250,22 @@ export async function consumeStoredCreditElection(
  * likewise never stores an election for a hold-rail booking. Keeping PENDING
  * out preserves that invariant; the hold release lands the booking in
  * `PAYMENT_PENDING`, where the member can elect their credit.
+ *
+ * Known accepted noise (#2266, LOW-8): because `PAYMENT_PENDING` is writable,
+ * a member whose election was already CONSUMED by a pay attempt (intent
+ * minted, credit applied, booking still `PAYMENT_PENDING` until capture) can
+ * edit and RE-ARM a fresh election. If the earlier intent then captures, the
+ * settle doors (#2319) clear the re-armed election and fire the "unapplied
+ * election" operator alert even though the earlier sibling consumption
+ * already applied credit — a redundant alert for that case. This is accepted
+ * rather than suppressed: money conservation always holds (the clear debits
+ * nothing — pinned in issue-2265-credit-election-service.test.ts), and a
+ * ledger-based suppression ("credit was already applied to this booking")
+ * would also silence the genuinely informative case where the member
+ * re-elected MORE credit that the already-minted intent amount cannot honour
+ * — the member then paid full freight on the intent while holding an
+ * unhonoured request, which is exactly what the alert exists to surface. A
+ * sometimes-redundant alert is honest; a sometimes-wrongly-silent one is not.
  */
 const CREDIT_ELECTION_WRITABLE_STATUSES = new Set<string>([
   BookingStatus.DRAFT,
