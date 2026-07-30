@@ -827,8 +827,14 @@ export default async function BookingDetailPage({
   const paymentRequiredDescription = renderBookingMessage(
     "booking.detail.paymentRequired.description",
   );
+  // #2263: only the Xero-on wording may claim an invoice was emailed. With the
+  // module off nothing raises one, so the member is told the club will send it —
+  // which is exactly what the delivery-locked manual-invoice admin alert asks an
+  // officer to do. The reference and amount are true either way.
   const internetBankingPendingDescription = renderBookingMessage(
-    "booking.detail.internetBanking.pending",
+    modules.xeroIntegration
+      ? "booking.detail.internetBanking.pending"
+      : "booking.detail.internetBanking.pendingNoXero",
   );
   const switchToInternetBankingDescription = renderBookingMessage(
     "booking.detail.switchToInternetBanking",

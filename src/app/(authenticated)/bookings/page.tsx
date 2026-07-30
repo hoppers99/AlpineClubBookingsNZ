@@ -4,10 +4,46 @@ import Link from "next/link";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { MyBookingsList, type MyBookingItem } from "./_components/my-bookings-list";
+import { MyWholeLodgeRequests } from "./_components/my-whole-lodge-requests";
+import { toMyWholeLodgeRequestItem } from "@/lib/member-whole-lodge-requests";
 
 export default async function MyBookingsPage() {
   const session = await auth();
   if (!session) return null;
+
+  // #2263 — the member's own whole-lodge requests. Scoped by
+  // requestedByMemberId + exclusivityRequested, and projected through
+  // toMyWholeLodgeRequestItem, which is the ONE place a request row is reduced
+  // to something a member may see (strict allowlist + exhaustive status
+  // mapping). Nothing from the row reaches the client except those fields.
+  const wholeLodgeRequestRows = await prisma.bookingRequest.findMany({
+    where: {
+      requestedByMemberId: session.user.id,
+      exclusivityRequested: true,
+    },
+    select: {
+      id: true,
+      status: true,
+      checkIn: true,
+      checkOut: true,
+      createdAt: true,
+      convertedBookingId: true,
+      heldBookingId: true,
+      guests: true,
+    },
+    orderBy: { createdAt: "desc" },
+    // Bounded history: declined and withdrawn rows purge on the 90-day
+    // retention clock anyway (owner decision OD-B), and the section is a
+    // sidebar to My bookings, not an archive.
+    take: 20,
+  });
+
+  const wholeLodgeRequests = wholeLodgeRequestRows.map((row) =>
+    toMyWholeLodgeRequestItem({
+      ...row,
+      guestCount: Array.isArray(row.guests) ? row.guests.length : 0,
+    }),
+  );
 
   const bookings = await prisma.booking.findMany({
     where: {
@@ -99,6 +135,13 @@ export default async function MyBookingsPage() {
       ) : (
         <MyBookingsList bookings={items} />
       )}
+
+      {/* Hidden entirely when the member has no requests (D3). Decided HERE
+          rather than inside the component so the client bundle for it is not
+          even mounted for the ordinary member who has never used the feature. */}
+      {wholeLodgeRequests.length > 0 ? (
+        <MyWholeLodgeRequests requests={wholeLodgeRequests} />
+      ) : null}
     </div>
   );
 }

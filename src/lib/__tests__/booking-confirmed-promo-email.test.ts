@@ -114,6 +114,8 @@ async function captureConfirmedTemplateData(
     promoCode?: string;
     // Lodge door code for this send; null models a club that records none.
     doorCode?: string | null;
+    // #2263: a CONFIRMED-but-unpaid send (member whole-lodge approval).
+    paymentDue?: { reference: string; invoiceEmailed: boolean };
   },
 ): Promise<{ templateData: EmailTemplateData; html: string }> {
   if (options && "doorCode" in options) {
@@ -214,6 +216,46 @@ describe("booking-confirmed promo summary (#2267)", () => {
 
     expect(html).not.toContain("Subtotal");
     expect(html).not.toContain("Promo adjustment");
+  });
+
+  it("renders a confirmed-but-unpaid send as Total Due plus the owing sentence, never the processed line (#2263)", async () => {
+    // The member whole-lodge approval confirms a booking whose money is a
+    // PENDING internet-banking receivable. The default body's money story is
+    // the single pre-composed {{paymentOutcome}} block, so this send must
+    // render the amount OWING and the payment reference — and must not render
+    // "Total Paid" or "Payment has been processed successfully", both of which
+    // would be false.
+    const { templateData } = await captureConfirmedTemplateData(30000, {
+      paymentDue: { reference: "BOOKING-ABC123", invoiceEmailed: false },
+    });
+
+    expect(templateData.paymentOutcome).toBe(
+      "Total Due: $300.00\n\nThis booking is confirmed, but payment of $300.00 is still owing. Please pay by internet banking quoting reference BOOKING-ABC123. The club will send you an invoice for it.",
+    );
+    // The per-piece tokens stay honest for overrides that build their own
+    // lines: exactly one of the pair carries a figure.
+    expect(templateData.totalPaid).toBe("");
+    expect(templateData.totalDue).toBe("$300.00");
+    expect(templateData.paymentReference).toBe("BOOKING-ABC123");
+
+    const rendered = renderDefaultBody("booking-confirmed", templateData);
+    expect(rendered).toContain("Guests: 2\nTotal Due: $300.00");
+    expect(rendered).toContain("quoting reference BOOKING-ABC123");
+    expect(rendered).not.toContain("Total Paid");
+    expect(rendered).not.toContain("Payment has been processed");
+    expectCleanBody(rendered);
+  });
+
+  it("claims an emailed invoice only when one was actually raised (#2263)", async () => {
+    const { templateData } = await captureConfirmedTemplateData(30000, {
+      paymentDue: { reference: "BOOKING-ABC123", invoiceEmailed: true },
+    });
+    expect(templateData.paymentOutcome).toContain(
+      "An invoice has been emailed to you separately.",
+    );
+    expect(templateData.paymentOutcome).not.toContain(
+      "The club will send you an invoice for it.",
+    );
   });
 
   it("renders the whole door-code line when the lodge has a code", async () => {

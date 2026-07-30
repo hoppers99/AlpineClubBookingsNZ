@@ -284,7 +284,15 @@ describe("API route boundary metadata", () => {
     const violations = routeFiles.flatMap((routePath) => {
       if (expectedBoundaryFor(routePath) !== "member") return [];
 
-      const documentedMethods =
+      // Widened to a plain string-keyed record on purpose. `keyof` over the
+      // UNION of every entry's `methods` object is the INTERSECTION of their
+      // keys, so as soon as two documented routes share no HTTP method (which
+      // #2263's two single-POST entries made true), that key set collapses to
+      // `never` and the lookup below stops typechecking. The runtime behaviour
+      // is unchanged; only the index signature is loosened.
+      const documentedMethods: Partial<
+        Record<string, { boundary: string; reason: string }>
+      > =
         mixedMethodApiRoutes[routePath as keyof typeof mixedMethodApiRoutes]
           ?.methods ?? {};
       const bodies = extractMethodBodies(routeContents(routePath));
@@ -292,8 +300,7 @@ describe("API route boundary metadata", () => {
       return Object.entries(bodies).flatMap(([method, body]) => {
         if (hasMemberGuard(body) || /\bauth\s*\(/.test(body)) return [];
 
-        const documented =
-          documentedMethods[method as keyof typeof documentedMethods];
+        const documented = documentedMethods[method];
         if (documented && documented.boundary === "public") return [];
 
         return [
