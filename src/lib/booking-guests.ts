@@ -8,6 +8,10 @@ import {
   type MemberGuestBoundaryScope,
   type MemberGuestBoundaryState,
 } from "@/lib/member-guest-consent";
+import {
+  MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE,
+  MEMBER_GUEST_CROSS_FAMILY_REFUSAL_STATUS,
+} from "@/lib/member-guest-refusal";
 
 export type BookingGuestPricingInput = {
   ageTier: AgeTier;
@@ -114,6 +118,18 @@ export class BookingGuestProfileRequiredError extends BookingGuestValidationErro
 export type LinkedBookingMemberProfileGateContext = {
   actorRole?: string | null;
   onBehalfOfMemberId?: string | null;
+  /**
+   * The `BEYOND_FAMILY` member ids for this add, from
+   * `computeMemberGuestBoundary` (MG2 #2307, owner decision **D-8**).
+   *
+   * A blocked member in this set gets the one neutral refusal instead of the
+   * detailed `BookingGuestProfileRequiredError` body, which would otherwise hand
+   * the caller a stranger's name, the exact fields missing from their profile,
+   * and whether they hold a login. Absent or empty means "every requested member
+   * is inside the booker's family" and the gate behaves exactly as it did before
+   * MG2 — which is also what every non-widened call site passes.
+   */
+  crossFamilyMemberIds?: readonly string[];
 };
 
 function skipsMemberProfileGateForAdminOnBehalf(
@@ -525,6 +541,25 @@ export async function assertLinkedBookingMembersCanBeBooked(
   }
 
   if (blockedMembers.length > 0) {
+    // D-8 (MG2 #2307): a blocked CROSS-FAMILY member collapses the whole
+    // response to the one neutral refusal, and it wins over the detailed body
+    // even when a family-scope member is blocked in the same request.
+    //
+    // Winning is the deliberate choice, and the alternative was worse. Returning
+    // the detailed list for the family members alongside a neutral entry for the
+    // stranger would leak by omission — the caller learns which of the two
+    // members the club refused to talk about, and can iterate one id at a time to
+    // read the same oracle the detailed body used to hand over. Refusing
+    // wholesale costs the booker one extra round trip: they drop the member the
+    // club will not discuss, retry, and get the full, helpful detail for their
+    // own family exactly as before.
+    const crossFamilyIds = new Set(context?.crossFamilyMemberIds ?? []);
+    if (blockedMembers.some((member) => crossFamilyIds.has(member.memberId))) {
+      throw new BookingGuestValidationError(
+        MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE,
+        MEMBER_GUEST_CROSS_FAMILY_REFUSAL_STATUS,
+      );
+    }
     throw new BookingGuestProfileRequiredError(blockedMembers);
   }
 }
