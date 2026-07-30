@@ -1270,6 +1270,152 @@ describe("custodian bed holds block the reconcile planner (#2286)", () => {
     );
     expect(lockedKeys).toEqual(["lodge-alpha", "lodge-zulu"]);
   });
+
+  it("DRIFT on the DISPLACEMENT path: a hold created between the plan and the write writes no row, applies no displacement and audits nothing", async () => {
+    // Same one-bed displacement scenario as the sorted-lock test above: Z1 is
+    // provisionally occupied, so the held booking's guest can only be placed by
+    // displacing the provisional occupant — the branch that opens its own
+    // transaction and runs the IN-LOCK re-check (`recheckPayload(client)`)
+    // rather than the common-path one. The common-path drift test above cannot
+    // catch a bypass of this branch, so this test pins it separately: with the
+    // filter mutated out, createMany runs on the held bed AND the innocent
+    // provisional row is displaced for nothing.
+    const db = makeDb({
+      bedAllocationSettings: {
+        findUnique: vi.fn().mockResolvedValue({ autoAllocationEnabled: true }),
+      },
+      lodgeRoom: {
+        findMany: vi
+          .fn()
+          // 1st: the planner's room load. 2nd: the lock-key resolution.
+          .mockResolvedValueOnce([
+            {
+              id: "room-z",
+              name: "Room Z",
+              sortOrder: 1,
+              active: true,
+              beds: [
+                {
+                  id: "bed-z1",
+                  roomId: "room-z",
+                  name: "Z1",
+                  sortOrder: 1,
+                  active: true,
+                },
+              ],
+            },
+          ])
+          .mockResolvedValue([{ lodgeId: "lodge-zulu" }]),
+      },
+    });
+    db.booking.findUnique.mockResolvedValue({
+      id: "held-new",
+      status: BookingStatus.PAID,
+      deletedAt: null,
+      lodgeId: null,
+      checkIn: NIGHT,
+      checkOut: NIGHT_END,
+      guests: [
+        {
+          id: "hn-adult",
+          bookingId: "held-new",
+          ageTier: "ADULT",
+          stayStart: NIGHT,
+          stayEnd: NIGHT_END,
+          nights: [],
+        },
+      ],
+    });
+    db.booking.findMany.mockResolvedValue([
+      {
+        id: "held-new",
+        createdAt: new Date("2026-07-01T00:00:00.000Z"),
+        requestedRoomId: null,
+        status: BookingStatus.PAID,
+        deletedAt: null,
+        wholeLodgeHold: false,
+        originBookingRequest: null,
+        guests: [
+          {
+            id: "hn-adult",
+            bookingId: "held-new",
+            ageTier: "ADULT",
+            stayStart: NIGHT,
+            stayEnd: NIGHT_END,
+          },
+        ],
+      },
+      {
+        id: "prov-booking",
+        createdAt: new Date("2026-07-02T00:00:00.000Z"),
+        requestedRoomId: null,
+        status: BookingStatus.PENDING,
+        deletedAt: null,
+        wholeLodgeHold: false,
+        originBookingRequest: null,
+        guests: [],
+      },
+    ]);
+    db.bedAllocation.findMany.mockResolvedValue([
+      existingAllocation({
+        bedId: "bed-z1",
+        roomId: "room-z",
+        bookingId: "prov-booking",
+        bookingGuestId: "prov-g1",
+        status: BookingStatus.PENDING,
+        stayDate: NIGHT_UTC,
+      }),
+    ]);
+    // The planner feed sees no hold (so it plans the displacement onto Z1); the
+    // write-time re-read, inside the displacement transaction, sees the hold on
+    // Z1 that landed in between.
+    db.hutLeaderAssignment.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([
+        {
+          id: "assignment-z",
+          memberId: "member-1",
+          lodgeId: "lodge-zulu",
+          bedId: "bed-z1",
+          startDate: NIGHT,
+          endDate: NIGHT,
+          member: { firstName: "Sam", lastName: "Ranger", ageTier: "ADULT" },
+          bed: {
+            id: "bed-z1",
+            name: "Z1",
+            roomId: "room-z",
+            room: { id: "room-z", name: "Room Z" },
+          },
+        },
+      ]);
+
+    await reconcileBedAllocationsForBooking({
+      bookingId: "held-new",
+      db: db as any,
+    });
+
+    // The emptied payload abandons the whole apply: no row lands on the held
+    // bed-night...
+    expect(db.bedAllocation.createMany).not.toHaveBeenCalled();
+    // ...the innocent provisional occupant is NOT displaced for a write that
+    // never happened (no displacement-shaped updateMany/deleteMany — the
+    // prune's deleteMany is keyed by bookingId, never bookingGuestId)...
+    expect(db.bedAllocation.updateMany).not.toHaveBeenCalled();
+    for (const call of db.bedAllocation.deleteMany.mock.calls) {
+      expect(call[0]?.where?.bookingGuestId).toBeUndefined();
+    }
+    // ...and nothing is audited as displaced, because nothing was.
+    for (const call of db.auditLog.create.mock.calls) {
+      expect(call[0]?.data?.action).not.toBe(
+        "bed_allocation.provisional_displaced",
+      );
+    }
+    // The re-check ran on the transaction client: planner feed + write-time
+    // re-read.
+    expect(
+      db.hutLeaderAssignment.findMany.mock.calls.length,
+    ).toBeGreaterThanOrEqual(2);
+  });
 });
 
 // Issue #1387: capacity-holding bookings get first claim on beds. When only a
