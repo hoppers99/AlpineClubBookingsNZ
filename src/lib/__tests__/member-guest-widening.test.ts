@@ -257,27 +257,23 @@ const CONSENT_COLUMN_ALTERNATION = CONSENT_COLUMNS.join("|");
 const CONSENT_COLUMN_MENTION = new RegExp(`\\b(?:${CONSENT_COLUMN_ALTERNATION})\\b`);
 
 /**
- * A VALUE being given to a consent column, in any of the forms a writer could
- * use: `consentStatus: x`, `row.consentStatus = x`, `row["consentStatus"] = x`,
- * and the raw-SQL `SET "consentStatus" = x`. The `=(?!=)` tail means `=== null`
- * and `!== null` comparisons — and bare destructuring — are not matches.
+ * MG1 declared two further sweep patterns here, and MG2 DELETES both rather than
+ * leaving them unused, because each rests on a premise this release ends.
+ *
+ * `CONSENT_COLUMN_WRITE` was a write-shaped regex (`consentStatus: x`,
+ * `row.consentStatus = x`, the raw-SQL `SET` form). It is gone because it cannot
+ * tell a Prisma `data:` payload from a `select:` or a `where:` — now that MG2
+ * reads these columns in a dozen places it flagged every READER as a writer, and
+ * a sweep that mislabels readers is worse than one that simply lists everybody.
+ *
+ * `CONSENT_COLUMN_ALLOWLIST` named the only three files permitted to so much as
+ * MENTION a consent column. Its premise — that nothing may name one — is exactly
+ * what MG2 is.
+ *
+ * What replaced both is the declared census in "consent columns have exactly one
+ * writer" below: the same closed-world shape, built on `CONSENT_COLUMN_MENTION`,
+ * aimed at a claim that is still true.
  */
-const CONSENT_COLUMN_WRITE = new RegExp(
-  `\\b(?:${CONSENT_COLUMN_ALTERNATION})\\b["']?\\s*\\]?\\s*(?::|=(?!=))`,
-);
-
-/**
- * The only production files allowed to NAME a consent column in this release.
- * Each is a declaration or a comment, never a writer:
- *   * member-guest-consent.ts — the model (its type and its all-null constant);
- *   * booking-guests.ts       — the structural-rule comment on the boundary;
- *   * member-merge.ts         — the FK-less-member-id-scalar audit list.
- */
-const CONSENT_COLUMN_ALLOWLIST = new Set([
-  "src/lib/member-guest-consent.ts",
-  "src/lib/booking-guests.ts",
-  "src/lib/member-merge.ts",
-]);
 
 /**
  * Run a resolve and describe the outcome as plain, comparable data.
@@ -526,21 +522,35 @@ describe("the family boundary is computed on every path, including the admin one
 // Structural pins — read from the real source, not from behaviour
 // ---------------------------------------------------------------------------
 describe("call-site survey", () => {
-  /** Every production file under src/ that names the given helper as a call. */
+  /** Every production file under src/ that names either helper as a call. */
   function callersOf(helper: string): string[] {
     return productionFilesUnder("src")
       // booking-guests.ts is where both helpers are DEFINED.
       .filter((file) => file !== "src/lib/booking-guests.ts")
+      // A plain substring is enough and cannot misfire: the boundary variant's
+      // name does not CONTAIN `resolveLinkedBookingMembers(`, because the `(`
+      // only follows the longer name.
       .filter((file) => readRepoFile(file).includes(`${helper}(`))
       .sort();
   }
 
-  it("still has exactly seven files calling resolveLinkedBookingMembers, six of which can skip authorization", () => {
-    // SET EQUALITY, not "each declared file still contains the call". The old
-    // form only proved the seven known files had not stopped calling it: a
-    // planted EIGHTH caller passed it untouched, which is exactly the case MG2
-    // needs to hear about. (The original #2245 survey said six; it was seven.)
-    expect(callersOf("resolveLinkedBookingMembers")).toEqual([...CALL_SITE_FILES].sort());
+  /** Either helper: MG2 moves the persisting sites onto the boundary variant. */
+  function allCallers(): string[] {
+    return [
+      ...new Set([
+        ...callersOf("resolveLinkedBookingMembers"),
+        ...callersOf("resolveLinkedBookingMembersWithBoundary"),
+      ]),
+    ].sort();
+  }
+
+  it("still has exactly seven call-site files, six of which can skip authorization", () => {
+    // SET EQUALITY, not "each declared file still contains the call". The weaker
+    // form only proves the seven known files have not stopped calling it: a
+    // planted EIGHTH caller passes it untouched, and an eighth caller is a
+    // consent decision nobody made. The count was re-measured against `main` at
+    // ae0e6f64 with #2335 / #2332 / #2316 still open, and is unchanged at seven.
+    expect(allCallers()).toEqual([...CALL_SITE_FILES].sort());
     expect(new Set(CALL_SITE_FILES).size).toBe(CALL_SITE_FILES.length);
     expect(
       CALL_SITES.filter((site) =>
@@ -552,11 +562,14 @@ describe("call-site survey", () => {
   it("declares each call site's real authorization modes", () => {
     // Read the modes back off the source, so the table cannot claim a route is
     // member-only when it passes a runtime admin flag — the exact error the
-    // "four of seven" count came from.
+    // original "four of seven" count came from.
     for (const site of CALL_SITES) {
       const source = readRepoFile(site.file);
-      const at = source.indexOf("await resolveLinkedBookingMembers(");
-      expect(at, `${site.file}: no awaited resolveLinkedBookingMembers call`).toBeGreaterThan(-1);
+      const at = Math.max(
+        source.indexOf("await resolveLinkedBookingMembers("),
+        source.indexOf("await resolveLinkedBookingMembersWithBoundary("),
+      );
+      expect(at, `${site.file}: no awaited resolve call`).toBeGreaterThan(-1);
       const call = source.slice(at, source.indexOf(");", at));
 
       if (/skipAuthorization:\s*true\b/.test(call)) {
@@ -572,14 +585,23 @@ describe("call-site survey", () => {
     }
   });
 
-  it("changes no call site in this release", () => {
-    // MG1 deliberately leaves every caller on the map-only wrapper: the
-    // boundary-returning variant is MG2's to adopt. Also a set-equality sweep,
-    // so a NEW file adopting it early is caught, not just one of the seven.
-    // This also keeps MG1 off api/bookings/route.ts, shared with #2265.
-    expect(callersOf("resolveLinkedBookingMembersWithBoundary")).toEqual([]);
-    for (const file of CALL_SITE_FILES) {
-      expect(readRepoFile(file)).not.toContain("resolveLinkedBookingMembersWithBoundary");
+  it("gives every widening-capable call site the option, and group-booking none", () => {
+    // MG1's version of this case asserted the exact opposite — that NO file had
+    // adopted the boundary-returning variant yet, because adopting it was MG2's
+    // job. This is that assertion inverted, and it is the one that would catch
+    // the worst possible half-finished state: a call site that resolves a
+    // cross-family member WITHOUT a consent decision attached to the row it
+    // writes. Six sites must pass the widening option; `group-booking.ts` must
+    // pass neither it nor `skipAuthorization`, which is owner decision MG1-D-a
+    // and the reason the join stays family-scoped now that everything else is
+    // open.
+    for (const site of CALL_SITES) {
+      const source = readRepoFile(site.file);
+      if (site.file === "src/lib/group-booking.ts") {
+        expect(source, site.name).not.toContain("memberGuestWideningEnabled");
+        continue;
+      }
+      expect(source, site.name).toContain("memberGuestWideningEnabled");
     }
   });
 });
@@ -709,6 +731,11 @@ describe("consent columns have exactly one writer", () => {
         "deliberately NOT excluded — a data-subject export includes their own pending rows",
       "src/lib/email-templates.ts": "the consent email renderers",
       "src/lib/email/member-guest.ts": "the consent email senders",
+      // The per-request policy read and the pure write plan every add path uses.
+      "src/lib/member-guest-add-policy.ts": "the add paths' shared consent-write plan",
+      // The one post-commit notifier the four persisting paths share.
+      "src/lib/member-guest-consent-notifications.ts":
+        "the post-commit add notifier",
       "src/lib/email-message-audit-defaults.ts": "the consent templates' default bodies",
       "src/lib/email-message-registry.ts": "the consent templates' registry entries",
       // The narrow consent authority that lets a delegate decline and the sweep
@@ -832,19 +859,26 @@ describe("the module flag now gates the widening, and says so", () => {
 
 
 // ---------------------------------------------------------------------------
-// The admin-facing half of D-17 — the badge, not just the payload
+// The admin-facing half of D-17 — INVERTED, and the reason matters
 // ---------------------------------------------------------------------------
-describe("the admin Modules card never renders the stub as live (D-17)", () => {
-  // The tests above pin the SERVER payload. What CHANGELOG.md and
-  // CONFIGURATION.md actually promise an admin is about the CLIENT: "switching
-  // it on shows a Not available yet badge instead of the usual green Enabled
-  // one". That promise is kept by three helpers that are module-private to a
-  // "use client" page whose only export is the default component, so nothing
-  // could reach them — and a refactor that dropped the `not_available_yet` case
-  // from any of the three would leave the payload correct, the tests green, and
-  // the badge green over a feature that cannot run. They are pinned
-  // structurally, the same way this file pins booking-guests.ts and
-  // group-booking.ts.
+describe("the admin Modules card renders memberGuests as an ordinary module (D-17)", () => {
+  // MG1's verify pass added a block here pinning the CLIENT half of the
+  // "Not available yet" badge: readinessVariant must map it amber, readinessLabel
+  // must say "Not available yet", and getReadiness must return early for it so an
+  // optimistic re-render could not flash it green. Every one of those assertions
+  // was RIGHT for MG1 and is WRONG for MG2, so this block is their inverse rather
+  // than a deletion — and it keeps the insight that made MG1 write them, which is
+  // the part worth carrying forward.
+  //
+  // THAT INSIGHT: the three helpers are module-private to a `"use client"` page
+  // whose only export is the default component, so no behavioural test can reach
+  // them. MG1 found that a refactor dropping the `not_available_yet` case from any
+  // of the three would leave the server payload correct, every test green, and the
+  // badge green over a feature that could not run. The mirror-image hazard now
+  // applies: a `not_available_yet` case LEFT BEHIND in any of the three would
+  // badge a working feature amber and label it unavailable, and no behavioural
+  // test would notice that either. So the same three helpers are pinned
+  // structurally, in the opposite direction.
   const PAGE = "src/app/(admin)/admin/modules/page.tsx";
 
   /** The text of a top-level `function name(...) {...}` declaration. */
@@ -858,29 +892,39 @@ describe("the admin Modules card never renders the stub as live (D-17)", () => {
     return source.slice(at, end);
   }
 
-  it("badges it amber, never the green success variant", () => {
-    const body = functionBody("readinessVariant");
-    expect(body).toMatch(/"not_available_yet"\)\s*return "warning"/);
-    expect(body).not.toMatch(/"not_available_yet"\)\s*return "success"/);
-  });
+  it.each(["readinessVariant", "readinessLabel", "getReadiness"])(
+    "%s no longer special-cases the retired not_available_yet state",
+    (name) => {
+      expect(functionBody(name)).not.toContain("not_available_yet");
+    },
+  );
 
-  it("labels it 'Not available yet', never 'Enabled'", () => {
-    const body = functionBody("readinessLabel");
-    expect(body).toMatch(/"not_available_yet"\)\s*return "Not available yet"/);
-    expect(body).not.toMatch(/"not_available_yet"\)\s*return "Enabled"/);
-  });
-
-  it("keeps it out of the optimistic 'ready' re-render", () => {
-    // Ticking the box re-renders from draft state before the server answers, so
-    // this early return is what stops the badge flashing green in the meantime.
-    // If it moved below the `status: "ready"` block it would stop doing that,
-    // and no other assertion in the suite would notice.
-    const body = functionBody("getReadiness");
-    const earlyReturnAt = body.indexOf('"not_available_yet"');
-    const readyAt = body.indexOf('status: "ready"');
-    expect(earlyReturnAt, "getReadiness never mentions not_available_yet").toBeGreaterThan(-1);
-    expect(readyAt, "getReadiness has no ready branch").toBeGreaterThan(-1);
+  it("still special-cases credentials_missing, so the branch was not blanket-deleted", () => {
+    // The point of removing one state is not to flatten the readiness logic. A
+    // module that genuinely needs setup must still badge amber and must still
+    // survive the optimistic re-render, and that is the assertion which would
+    // fail if somebody "simplified" all three helpers at once.
+    expect(functionBody("readinessVariant")).toContain("credentials_missing");
+    expect(functionBody("readinessLabel")).toContain("credentials_missing");
+    const getReadiness = functionBody("getReadiness");
+    const earlyReturnAt = getReadiness.indexOf("credentials_missing");
+    const readyAt = getReadiness.indexOf('status: "ready"');
+    expect(earlyReturnAt).toBeGreaterThan(-1);
+    expect(readyAt).toBeGreaterThan(-1);
     expect(earlyReturnAt).toBeLessThan(readyAt);
+  });
+
+  it("badges memberGuests exactly like any other credential-free module", () => {
+    // The behavioural half, so the structural pins above cannot pass while the
+    // payload says something different.
+    const memberGuests = buildClubModuleSettingsPayload({ memberGuests: true }).modules.find(
+      (entry) => entry.key === "memberGuests",
+    );
+    const notices = buildClubModuleSettingsPayload({ memberNotices: true }).modules.find(
+      (entry) => entry.key === "memberNotices",
+    );
+    expect(memberGuests!.readiness.status).toBe(notices!.readiness.status);
+    expect(memberGuests!.readiness.status).toBe("ready");
   });
 });
 
