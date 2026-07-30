@@ -54,6 +54,227 @@ All notable public reference-release changes should be recorded here.
   style still updates the site immediately but ordinary page views no longer
   pay for a database round trip.
 
+- **Members can now ask to book the whole lodge (#2263).** Planning a course, a
+  club trip or a family gathering that needs the lodge to yourselves? Book a
+  Stay now has a "Need the whole lodge?" card leading to a short form: your
+  dates, roughly how many people, who the group is, and anything else the
+  booking officer should know. No guest names are needed yet, and an estimate of
+  the headcount is fine — the officer confirms the real number with you before
+  anything is charged. The ordinary four-step booking wizard is unchanged. This
+  is a request, not a booking: nothing is reserved and nothing is charged until
+  the officer confirms it, and you can withdraw a request while it is still
+  waiting. Requests appear under **My requests** on My bookings, showing whether
+  each one is still with the booking officer, approved (with a link straight to
+  the real booking), declined, or withdrawn; declined and withdrawn ones are
+  removed after 90 days. Two open requests at a time, so the queue stays honest.
+
+  The form deliberately shows no calendar, no "beds left" hint and no price. The
+  club's long-standing rule is that a lodge held for one group looks exactly
+  like a full lodge to everybody else, and a calendar on this form would give
+  that away. For the same reason the confirmation message you get back is the
+  same words every time, whatever you asked for and whatever else is booked.
+
+  For booking officers, whole-lodge requests land in the existing booking
+  requests queue alongside the school ones, tagged "Member" and "Whole lodge
+  requested" — the second tag now shows on school requests too, which it never
+  did before. Each one can be expanded to show, officer-side only, how full each
+  requested night already is, which nights are already held, and exactly which
+  bookings overlap. Set the headcount you are really pricing (and a total price
+  if no season rate covers those dates), then approve: the booking is confirmed
+  and the whole lodge is held for those nights. Approving never cancels anything
+  that is already booked — anything that overlaps is listed for you to sort out
+  with the people involved, as it always has been. Declining is one click through
+  the usual "email them or not?" prompt; any note you write is kept in the audit
+  log for the club's own record and is never shown to the member, who receives
+  the same fixed wording either way.
+
+  The money is handled the same way a school booking's is. Approving raises the
+  invoice: if your club uses the Xero integration the invoice goes out
+  automatically (with any account credit the member is holding allocated against
+  it), and if it does not, the club's administrators are emailed to invoice the
+  member by hand — including the exact payment reference the member was given, so
+  the two match. Either way the member's confirmation email is honest about it:
+  it says the booking is confirmed, states the amount still **owing**, and gives
+  them the internet-banking reference to pay against. It does not tell them a
+  payment has been processed, because none has. The booking page says the same
+  thing, and only mentions an emailed invoice when one was really sent.
+
+- **Every dead button in the five guided setup wizards now says why it is dead
+  (#2324).** The Xero, Stripe, Google sign-in, Backups and Lodge Display setup
+  paths all share one wizard frame, and that frame already showed a **"You have
+  view-only access to this area"** banner at the top. What it could not do was
+  let the controls inside a step lean on it: the frame calls each step from
+  another file, so nothing in the code proved the banner was really above them.
+  The result was a split — the Lodge Display steps repeated the reason on every
+  button, while the Xero, Stripe, Google and Backups steps had **Save** buttons
+  that were simply grey and silent. Both halves are fixed. The frame now vouches
+  for its steps, so a control gated on the same access the banner names stops
+  repeating it (restoring boards, saving lodge details and pairing a screen; and
+  turning nightly backups on and running a verification backup). And every
+  control that needs **more** than the banner's access now says so instead of
+  saying nothing: entering or replacing the Xero, Stripe, Google and S3
+  credentials, the Xero webhook key, the Stripe signing secret, the backup
+  destination and Google verification all need **Full Admin**, and each button
+  now carries that reason, because an admin who has the wizard's area but not
+  Full Admin never sees the banner at all. Turning the Lobby TV display module
+  on keeps its own reason for the same reason — it needs system-settings access,
+  not lodge access. Nothing about who can do what changed; only what a dead
+  button tells you. Three flickering sentences went with it. Two were in the
+  Backups wizard — "your admin role can view these settings but cannot change
+  them" beside the nightly-backups switch, and "you need support edit access"
+  beside the verification button. Both were saying exactly what the banner above
+  them already said, and both appeared for a moment even for admins who *can*
+  change those settings, because they were keyed off "not allowed yet" rather
+  than "not allowed". The third was the "Only a Full Admin can…" notice in the
+  Xero, Stripe and Google steps, which appeared and then vanished for actual Full
+  Admins, because the page read "still working out who you are" as "not a Full
+  Admin". All three are gone or now wait until they know. The published
+  banner-coverage figures were re-measured with it: **285**
+  gated admin controls, **242** of them covered by a banner (216 in their own
+  file, 26 by a verified vouching parent — 5 of those through the wizard frame),
+  and **43** across 23 files deliberately keeping their own reason.
+- **Choosing to use your account credit and then saving the booking as a draft
+  no longer throws that choice away (#2265).** Ticking "use my credit" in the
+  booking wizard and pressing **Save as draft** used to discard the amount you
+  chose without a word, and you were never asked again — when you came back to
+  pay, the full price was charged and your credit sat untouched. Your choice is
+  now remembered on the draft and applied the moment you go to pay, so the card
+  is charged only the remainder. Nothing is taken from your balance while the
+  booking is still a draft: if you abandon it, delete it, or let it expire, your
+  credit is exactly where you left it. If your balance has changed in the
+  meantime — you spent some of it on another booking, or you edited the draft to
+  a cheaper stay — as much as is still available and still owed is applied, and
+  the pay step reports what was applied and why it fell short rather than
+  quietly using less. A booking your credit covers in full is now simply
+  completed and confirmed at no charge instead of getting stuck at a payment
+  page it could never pass — as is a draft that was repriced to nothing while
+  you were looking at it. Choosing to pay by internet banking works the same
+  way: your credit is applied first and the invoice asks only for the
+  difference. And if the club held your booking for review before it could be
+  paid, your choice now survives the wait instead of being dropped while an
+  administrator decided.
+  In the rare case where a booking gets paid in full before the credit can be
+  applied — an invoice that had already gone out at the full price, for instance —
+  your credit is left untouched on your account and the booking's History now says
+  so in plain English, with the club told at the same time so they can refund the
+  difference if you would rather have it back. And a public payment link no longer
+  charges the full price on a booking with a saved credit choice: it asks you to
+  pay from your own bookings page instead, where the credit is applied.
+- **A guest can now be put in one bed for a whole long stay in a single action,
+  and the board can be browsed a month at a time (#2251).** The bed-allocation
+  board shows 31 nights at once, and until now that was also as far as you could
+  assign: a long stay meant dragging a guest onto a bed, moving the dates,
+  dragging again, over and over. Every guest awaiting a bed — and every guest
+  already placed on the board — now has an **Assign range…** action. Choose a
+  bed, a first night and a checkout date of any length (up to a year), and the
+  whole stay is written in one go.
+
+  It is deliberately all-or-nothing. If any night in the range is blocked,
+  **nothing is written at all** and you are shown exactly which nights and why,
+  split into three kinds that are never lumped together as "skipped": the bed is
+  already taken that night (the occupying guest is named, and an occupant whose
+  booking does not hold the night is badged **Provisional** — still a clash, so
+  nothing is overwritten behind your back); the guest is not booked that night,
+  which is not a clash at all but a sign the range or the guest is wrong; or this
+  booking itself holds the whole lodge, which needs no individual beds. Only
+  then, and only if you click the second button, does it write just the free
+  nights — it says how many before you commit, and writes exactly those, refusing
+  again with a fresh list if one of them has been taken in the meantime. If any
+  night was refused because the guest is not booked on it, that button asks you to
+  confirm first: it names how many nights are not part of the guest's booking and
+  will not be assigned, and how many will, and waits for a **Yes**. That refusal usually means
+  a typo in the dates, so going past it is something you read and agree to rather
+  than a click next to a warning. Either
+  way the operation leaves a **single** audit entry against the booking recording
+  the range you asked for, what was written and what was refused, so "who put
+  this guest in bed 4 for the winter?" has one answer rather than fragments. The
+  entry records dates and counts rather than other members' names, which stay on
+  your screen. If moving the guest left a partner alone on a shared double, all of
+  those promotions are recorded together in one further entry rather than one
+  entry per night. Assigning a range
+  confirms those beds immediately, which locks the member out of changing their
+  requested room; the dialog says so before you commit. Afterwards the board
+  tints the nights it wrote green and the nights it refused red so any gaps are
+  easy to spot.
+
+  The board itself gains **‹** and **›** arrows that step the window a calendar
+  month at a time, and it no longer quietly shortens a date range you type: a
+  window longer than 31 nights is refused with an explanation instead of
+  silently showing you something narrower than you asked for. Arriving from a
+  long booking's link, the board shows the first 31 nights and tells you it is
+  showing part of the stay. Finally, hand-placing a guest from a booking that
+  holds the whole lodge is now refused outright, matching the automatic
+  allocator (#2285) — previously such a placement was accepted and then quietly
+  cleaned away later.
+
+- **The booking-confirmed email now explains a promo that raises the price,
+  instead of a blank Discount line and an unexplained total (#2267).** A member
+  who booked with an exclusive-use flat-rate promo received a payment
+  confirmation whose Discount line trailed off after a minus sign, whose
+  authoring notes (`[only when …]`) rendered as body text, and whose subtotal
+  and total differed by $1,370 with nothing in between to say why — nothing was
+  mischarged, but the one token that could explain a price-*raising* promo was
+  not usable in the admin-editable body. The editable booking-confirmed body
+  now uses a single pre-composed `{{promoSummary}}` token that renders the
+  whole story — `Subtotal:` plus a signed `Promo adjustment (CODE):` line,
+  `-$30.00` for a discount and `+$1,370.00` for a surcharge — and renders
+  nothing at all when no promo applied, so there is never a ragged or empty
+  line. The flat body and the built-in HTML email now build that block from the
+  same code, so their money stories cannot drift apart again, and a test matrix
+  (discount, surcharge, no promo, door code set and unset) renders the shipped
+  default body end-to-end — through the same layout a member receives — and
+  fails on any line that trails off after a `-`, `+`, `–` or `:`. The door code
+  travels the same way: the body carries a pre-composed `{{doorCodeNote}}`
+  line, so a club that records no door code no longer emails a bare
+  `Door code:`. The booking-modified default body loses its 13 bracket
+  annotations the same way: a pre-composed `{{changeSummary}}` block, built by
+  the same code as the built-in HTML email, lists only what actually changed —
+  `Previous`/`New` pairs where something moved, a single line where it did not,
+  and a change fee only when one was charged — and the additional-payment story
+  arrives through the existing pre-composed `{{paymentNote}}`. That email also
+  names the change in words on both paths (a batch edit used to reach members
+  as the raw word `BATCH_MODIFY`). Admins can now also use
+  `{{promoAdjustment}}` (the signed value) in overrides — and the editor now
+  refuses a body that types its own `+` or `-` in front of it, explaining that
+  the token already carries its sign — while older overrides that reference
+  `{{subtotal}}`, `{{discount}}`, `{{promoCode}}`, `{{doorCode}}` or the
+  per-piece `Previous`/`New` tokens keep rendering and re-saving exactly as
+  before. Showing members the promo explanation is now **required** in a
+  booking-confirmed override, satisfied any of three ways — `{{promoSummary}}`,
+  the signed `{{promoAdjustment}}`, or the older `{{discount}}` the previous
+  default body used — so no override a club already saved is invalidated, while
+  an override that deletes the explanation altogether is refused instead of
+  quietly leaving a charged member with a total and no reason for it. (A
+  `{{subtotal}}` line on its own does not count: a subtotal with no adjustment
+  beside it is the confusing email this whole fix is about.) The editor now
+  prints that rule, and the tokens that satisfy it, under the token chips. When
+  a saved override is rejected, the editor also shows the specific reasons
+  instead of a bare "Invalid email template". Only clubs that saved an
+  override of these templates ever saw the broken email; clubs on the defaults
+  always got the correct built-in HTML version.
+- **Groundwork for adding another club member as a guest (#2306).** Members can
+  currently only put people from their own family group on a booking as linked
+  members. Work has started on letting a member add *any* club member as a
+  guest, with that member's consent. This first change lays the foundations —
+  the database columns that record whether a member agreed, a new
+  "Add another member as a guest" switch on Admin > Modules, and the settings
+  row that will hold the club's policy — and **deliberately changes nothing you
+  can see or do**. Adding somebody outside your own family group is still
+  declined exactly as before, whether the new module switch is on or off — and
+  the switch says so itself. Its description on **Admin → Modules** opens with
+  "Not available yet", and switching it on shows a **Not available yet** badge
+  instead of the usual green **Enabled** one, so nobody is left thinking a live
+  feature just came on. That is on purpose: the consent request
+  emails, the approval screen, and the timer that releases a held bed when
+  nobody answers all arrive together in the next change, so there is never a
+  version where turning the switch on could hold beds for approvals that
+  nothing can grant. The settings this will eventually use ship with sensible
+  defaults already chosen: consent is required by default, a held bed is
+  released after 7 days, and the two settings that would make the club's member
+  list browsable are off and never travel in a club config transfer, so
+  importing another club's settings can never widen your members' privacy
+  without your admin choosing it.
+
 - **Setting up a lodge TV is now one guided path instead of five cards and a
   guess (#2249).** **Admin → Lobby Display** leads with a **Guided setup** card
   whenever your club has no boards or no working screen, and it opens a six-step
@@ -109,7 +330,6 @@ All notable public reference-release changes should be recorded here.
   quietly ending. Nothing in the tree can be edited: it is a picture of the
   Parent Links, Partner, and Dependents cards below it, and changing those
   changes the tree.
-
 - **Exclusive whole-lodge bookings no longer collect hidden bed assignments
   (#2285).** A booking with an exclusive whole-lodge hold takes the entire
   lodge, so nobody in the group is assigned an individual bed — the

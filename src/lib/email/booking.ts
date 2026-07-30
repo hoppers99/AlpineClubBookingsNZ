@@ -11,6 +11,10 @@ import {
   setupIntentFailedTemplate,
   preArrivalReminderTemplate,
   splitGuestPortionCancelledTemplate,
+  promoAdjustmentSummaryRows,
+  resolvePromoAdjustmentCents,
+  bookingModificationTypeLabel,
+  bookingModificationSummaryRows,
 } from "../email-templates";
 import { CLUB_NAME } from "@/config/club-identity";
 import { EMAIL_DEFAULT_LODGE_NAME } from "@/lib/email-message-settings";
@@ -53,15 +57,48 @@ export async function sendBookingConfirmedEmail(
       guestCount: number;
       holdUntil: Date;
     };
+    // #2263: the booking is CONFIRMED but the money is NOT in — the member
+    // whole-lodge approval books a PENDING Internet Banking receivable. Pass
+    // this and the message states the amount OWING plus the internet-banking
+    // reference instead of claiming payment was processed. `invoiceEmailed`
+    // must be TRUE only when an invoice really was raised (Xero module on);
+    // otherwise the copy promises the club will send one by hand.
+    paymentDue?: {
+      reference: string;
+      invoiceEmailed: boolean;
+    };
   },
 ) {
   const settings = await loadEmailMessageSettingsForLodge(options?.lodgeId);
-  const promoAdjustmentCents =
-    options?.promoAdjustmentCents ??
-    (options?.discountCents && options.discountCents > 0
-      ? -options.discountCents
-      : 0);
+  // #2267: derived by the same shared helper the HTML template uses, so the
+  // two paths can never disagree about what the promo did to the price.
+  const promoAdjustmentCents = resolvePromoAdjustmentCents(options);
   const promoAdjustmentPrefix = promoAdjustmentCents > 0 ? "+" : "-";
+  // #2267: pre-composed {{promoSummary}} block for the admin-editable body —
+  // the provisionalGuestsNote precedent, built from the same rows as the HTML
+  // template so both paths always tell the same money story. Each row becomes
+  // a "Label: value" line WITH its own trailing newline, so the default body
+  // can write "{{promoSummary}}Total Paid: {{totalPaid}}" and render a clean
+  // contiguous block for a promo and no leftover blank line without one. The
+  // adjustment value carries its own sign (-$12.00 discount, +$1,370.00 for a
+  // price-raising FIXED_NIGHTLY/SET_PRICE promo), so the body must never
+  // prefix a minus of its own.
+  const promoSummary = promoAdjustmentSummaryRows(
+    totalCents,
+    promoAdjustmentCents,
+    options?.promoCode,
+  )
+    .map((row) => `${row.label}: ${row.value}\n`)
+    .join("");
+  // #2267: pre-composed {{doorCodeNote}} line, mirroring what the HTML
+  // arrival-instructions section does — the whole "Door code: 1234" line, or
+  // nothing at all for a lodge with no code recorded. The default body used to
+  // hardcode the "Door code: " label around the bare {{doorCode}} value, which
+  // left a dangling "Door code:" line in every confirmation a club without a
+  // door code sent.
+  const doorCodeNote = settings.doorCode?.trim()
+    ? `Door code: ${settings.doorCode.trim()}`
+    : "";
   const provisionalGuests = options?.provisionalGuests;
   // Composed sentence for the {{provisionalGuestsNote}} token — the same story
   // the FILE template renders, so an operator override keeps parity. Empty when
@@ -76,6 +113,28 @@ export async function sendBookingConfirmedEmail(
           provisionalGuests.holdUntil,
         )}, we'll automatically take that guest portion from your saved payment method and your guests are confirmed. If we can't take payment, we'll contact you to arrange it. If the lodge fills with member bookings first, that portion is not charged and those guests are bumped.`
       : "";
+  // #2263: the composed unpaid-confirmation sentence, byte-identical to the one
+  // the FILE template renders, so an operator override keeps parity (the same
+  // convention provisionalGuestsNote follows). Empty when the booking is paid.
+  const paymentDue = options?.paymentDue;
+  const paymentDueNote = paymentDue
+    ? `This booking is confirmed, but payment of ${formatMoneyCents(totalCents)} is still owing. Please pay by internet banking quoting reference ${paymentDue.reference}.` +
+      (paymentDue.invoiceEmailed
+        ? " An invoice has been emailed to you separately."
+        : " The club will send you an invoice for it.")
+    : "";
+  // #2263 × #2267: the whole money outcome as ONE pre-composed block for the
+  // default body ({{promoSummary}}'s convention — complete lines or nothing),
+  // because the paid and unpaid stories are mutually exclusive and a flat body
+  // cannot branch. Paid: the total-paid line plus the processed sentence.
+  // Unpaid (a member whole-lodge approval's PENDING internet-banking
+  // receivable): the total-due line plus the owing sentence above — never
+  // "Payment has been processed successfully" for money that has not moved.
+  // The legacy per-piece tokens (totalPaid, totalDue, paymentDueNote,
+  // paymentReference) stay supplied for overrides that build their own lines.
+  const paymentOutcome = paymentDue
+    ? `Total Due: ${formatMoneyCents(totalCents)}\n\n${paymentDueNote}`
+    : `Total Paid: ${formatMoneyCents(totalCents)}\n\nPayment has been processed successfully.`;
   await sendEmail({
     to: email,
     subject: `Booking Confirmed - ${EMAIL_DEFAULT_LODGE_NAME}`,
@@ -100,6 +159,12 @@ export async function sendBookingConfirmedEmail(
       checkOut: formatNZDate(checkOut),
       guestCount,
       provisionalGuestsNote,
+      promoSummary,
+      // Legacy per-piece promo tokens, kept supplied so a saved override that
+      // still references them keeps rendering (#2267). New bodies should use
+      // {{promoSummary}}: {{discount}} can only express a price cut (it is
+      // empty for a price-raising promo), which is exactly the bug that
+      // produced a dangling "Discount: -" line on surcharge promos.
       subtotal:
         promoAdjustmentCents !== 0
           ? formatMoneyCents(totalCents - promoAdjustmentCents)
@@ -113,8 +178,17 @@ export async function sendBookingConfirmedEmail(
         promoAdjustmentCents !== 0
           ? `${promoAdjustmentPrefix}${formatMoneyCents(Math.abs(promoAdjustmentCents))}`
           : "",
-      totalPaid: formatMoneyCents(totalCents),
+      // Exactly one of these carries a figure: an unpaid confirmation must not
+      // render a "Total Paid" line at all (#2263).
+      totalPaid: paymentDue ? "" : formatMoneyCents(totalCents),
+      totalDue: paymentDue ? formatMoneyCents(totalCents) : "",
       total: formatMoneyCents(totalCents),
+      paymentOutcome,
+      paymentDueNote,
+      paymentReference: paymentDue?.reference ?? "",
+      doorCodeNote,
+      // Legacy bare value, still supplied so an existing override that writes
+      // its own "Door code: {{doorCode}}" line keeps rendering (#2267).
       doorCode: settings.doorCode ?? "",
     },
     lodgeId: options?.lodgeId,
@@ -467,6 +541,14 @@ export async function sendBookingModifiedEmail(params: {
   lodgeId?: string | null;
 }) {
   const accountCreditAmountCents = params.accountCreditAmountCents ?? 0;
+  // #2267: pre-composed {{changeSummary}} block for the admin-editable body,
+  // built from the same rows as the HTML template — only what actually changed
+  // is shown as a Previous/New pair, and a change fee only when one was
+  // charged. Each row carries its own trailing newline (the {{promoSummary}}
+  // precedent) so the default body can place it as a single block.
+  const changeSummary = bookingModificationSummaryRows(params)
+    .map((row) => `${row.label}: ${row.value}\n`)
+    .join("");
   const xeroInvoicePaymentContext = params.xeroInvoiceNumber
     ? ` Xero invoice ${params.xeroInvoiceNumber} will be used for payment.`
     : " A Xero invoice and payment reference will be used for payment.";
@@ -492,7 +574,16 @@ export async function sendBookingModifiedEmail(params: {
     templateName: "booking-modified",
     templateData: {
       firstName: params.firstName,
-      modificationTypeLabel: params.modificationType,
+      // #2267: the same wording the HTML path shows — not the raw enum word an
+      // override-using club used to email members.
+      modificationTypeLabel: bookingModificationTypeLabel(
+        params.modificationType,
+      ),
+      changeSummary,
+      // Legacy per-piece change tokens, still supplied so an override saved
+      // before {{changeSummary}} existed keeps rendering (#2267). They cannot
+      // express "only show what changed", which is why the default body no
+      // longer builds its rows out of them.
       oldCheckIn: formatNZDate(params.oldCheckIn),
       oldCheckOut: formatNZDate(params.oldCheckOut),
       newCheckIn: formatNZDate(params.newCheckIn),

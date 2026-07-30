@@ -89,7 +89,7 @@ are the literal `1`.
 | **Global booking / money** | `1` (literal) | inline `tx.$executeRaw` | 2 | Booking-status + money side effects that must exclude across the whole booking regardless of lodge: cancel, capture/settle, hold-release, group-settlement reaper/settle/refund/organiser-cancel, refunds, credit restore. |
 | **Per-lodge capacity** | `hashtextextended(<lodgeId>, 0)` | `acquireLodgeCapacityLock(tx, lodgeId)` (`capacity.ts`) | 1 | Capacity claims/checks for one lodge. |
 | **Per-member night footprint** | `hashtext("booking-member-night"), hashtext(<memberId>)` | `lockBookingMemberNights(tx, guests)` (`booking-member-night-conflicts.ts`) | cross-lodge | Serialises the person-night guard ACROSS lodges (see below). |
-| **Per-member credit ledger** | `hashtext("member-credit-ledger"), hashtext(<memberId>)` | `lockMemberCreditLedger(memberId, tx)` (`member-credit.ts`) | — | A member's credit-ledger balance operations (spend, negative-adjustment validation, orphan-restore repair, the Xero inbound applied-credit repair, and the F20 pre-payment-reduction applied-credit clamp `clampAppliedCreditToBookingPrice`, taken inside the modification transaction only when the booking carries applied credit). |
+| **Per-member credit ledger** | `hashtext("member-credit-ledger"), hashtext(<memberId>)` | `lockMemberCreditLedger(memberId, tx)` (`member-credit.ts`) | — | A member's credit-ledger balance operations (spend, negative-adjustment validation, orphan-restore repair, the Xero inbound applied-credit repair, and the F20 pre-payment-reduction applied-credit clamp `clampAppliedCreditToBookingPrice`, taken inside the modification transaction only when the booking carries applied credit, and the #2265 stored-election consumption `consumeStoredCreditElection`, taken inside the `create-payment-intent` pay transaction and the Internet Banking switch transaction only when the booking carries an outstanding election). |
 | **Member lifecycle** | `hashtext("member-lifecycle:<memberId>")` | inline (`member-lifecycle-actions.ts`, `nomination.ts` approval mapping, `admin-family-group-requests-service.ts`, `member-merge.ts`) | — | Archive/delete of one member; overwrite of one member by application-approval mapping (E10, #1936); linking/removing one member into/from a family group on admin request review; and **member merge** (dual-lock on master + loser, E11 #1937, see below). |
 | **Membership application** | `hashtext(<application key>)` | `membershipApplicationLockKey` (`nomination.ts`) | — | State transitions of one membership application. |
 | **Membership applicant** | `hashtext(<applicant-email key>)` | `membershipApplicationApplicantLockKey` (`nomination.ts`) | — | Per-email applicant dedup at submit time. |
@@ -149,6 +149,59 @@ preserve queue order only while it has no snapshot/checkpoint; a manually
 requeued checkpointed PENDING row remains fenced, as do RUNNING and any
 provider-ambiguous failure states. Manual retry only CAS-requeues to PENDING;
 the outbox claim is the sole authority that may execute provider calls.
+
+The `create-payment-intent` pay transaction (#2265) does all three tiers of
+work — it flips a booking's status, it claims capacity, and it moves credit —
+so it takes all three locks, in the house order: the global booking lock(1)
+first, then the booking's per-lodge capacity lock, then (inside
+`consumeStoredCreditElection`) the per-member credit-ledger lock. lock(1) is
+what makes it mutually exclusive with cancel, capture and the settlement paths;
+without it the status writes could resurrect a just-cancelled booking. Every
+status, capacity and money decision consumes a post-lock re-read, never the
+pre-transaction snapshot.
+
+Both arms of that transaction take both booking-tier locks. The DRAFT arm
+capacity-checks (DRAFT-scoped exemption: a DRAFT can never carry a persisted
+override) and claims `DRAFT -> PAYMENT_PENDING` with a status-guarded
+`updateMany`. The already-`PAYMENT_PENDING` arm — an admin-released
+`AWAITING_REVIEW` booking — re-checks capacity too and honours a persisted
+override (#1771), which that arm CAN carry: it may settle the booking at $0
+below, and a settle without a capacity claim is exactly what the other settle
+paths refuse to do. On a capacity refusal it 409s; nothing was charged, so
+nothing is cancelled or refunded.
+
+The election itself is taken with a guarded claim: `updateMany` matching the
+booking id, `PAYMENT_PENDING`, and the exact amount that was read under the
+ledger lock, in the same transaction as the ledger write. Two racing consumers
+therefore cannot both apply the credit — the loser matches zero rows and
+returns "nothing to do" rather than a phantom outcome its caller would act on
+(a second confirmation email, a second Xero invoice, a second `MEMBER_PAID`
+event). The $0 settlement's `PAID` write is status-guarded the same way and
+throws on count 0, rolling the credit application back with it.
+
+The Internet Banking switch consumes the election under the same three locks it
+already held, after its capacity decision, so a refused switch leaves the
+election intact. Every provider call (the Stripe intent, the confirmation
+email, the Xero invoice queue, the superseded-intent drain) stays outside the
+transaction.
+
+The settlements CLEAR the election with the same guarded-claim discipline
+(#2319). `clearStaleCreditElection` moves the column from the exact amount read
+to NULL and reports whether the claim landed, so a settle running alongside a
+consumer never clobbers it: either the consumer already applied the credit (the
+claim matches nothing and the settle reports "nothing stale", which matters
+because a phantom clear would tell the member their credit went unapplied when it
+had just been applied) or the consumer has yet to run and is untouched. The three
+clearing writers all hold lock(1), which both consumers also take, so the guard
+is belt and braces rather than the primary defence — but the property no longer
+depends on that lock still being there. The writers are
+`markBookingPaymentSucceeded`'s `PAID` claim, the Internet Banking inbound
+reconcile's `PAID` and late-capacity-failure `CANCELLED` flips, and the
+repriced-to-$0 auto-pay in both modification services. Each clear's reporting —
+the audit row and the operator alert — runs POST-commit, outside the transaction,
+because it sends email; the public payment link's refusal for an election-bearing
+booking is signalled out of its transaction by a private error for exactly the
+same reason.
 
 Never-captured cancellation and Internet-Banking hold expiry acquire global
 booking lock(1) first and the per-member credit-ledger lock second. While

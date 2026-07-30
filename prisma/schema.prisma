@@ -652,6 +652,11 @@ model Member {
   bookingsCapacityOverridden                 Booking[]                                  @relation("BookingsCapacityOverridden")
   bookingsWholeLodgeHeld                     Booking[]                                  @relation("BookingsWholeLodgeHeld")
   bookingsNoEmailsSet                        Booking[]                                  @relation("BookingsNoEmailsSet")
+  // #2263: whole-lodge booking requests this signed-in member submitted. Only
+  // the authenticated member front-door stamps it; school/public requests leave
+  // it null. onDelete: SetNull, so deleting the account keeps the request row's
+  // history without a dangling owner.
+  bookingRequestsRequested                   BookingRequest[]                           @relation("BookingRequestRequester")
   approvedBedAllocations                     BedAllocation[]                            @relation("BedAllocationApprover")
   refundRequests                             RefundRequest[]
   issueReports                               IssueReport[]
@@ -1688,6 +1693,29 @@ model Booking {
   noEmails                     Boolean            @default(false)
   noEmailsAt                   DateTime?
   noEmailsByMemberId           String?
+  // Stored account-credit election (#2265, epic #2245 E1). The member may tick
+  // "use my credit" in the wizard and then Save as draft; credit is NOT consumed
+  // while the booking is a draft (a draft may be abandoned or expire, and tying
+  // up a balance against a booking that never happens is the exact behaviour the
+  // owner rejected), so the amount they asked for is REMEMBERED here instead and
+  // applied through the ordinary credit-application path the moment the booking
+  // reaches PAYMENT_PENDING. Money in integer cents.
+  //
+  // Nullable with no default so three states stay distinguishable: NULL = no
+  // election is outstanding (never made, or already consumed), 0 = the member
+  // explicitly chose to use none, > 0 = the amount they asked to apply. The
+  // column is single-consumption: the pay path clears it back to NULL in the
+  // same transaction that writes the credit ledger row, so it can never be
+  // applied twice. It is NOT a record of credit already applied — the
+  // authoritative applied total is always the MemberCredit ledger
+  // (deriveBookingAppliedCreditCents).
+  //
+  // Reality can move between the election and the confirmation (the balance may
+  // be spent elsewhere, the booking may be repriced by an edit), so the amount
+  // is CLAMPED to what is actually available and owed at confirmation time and
+  // the shortfall is surfaced in the pay-step response — never silently
+  // swallowed. See consumeStoredCreditElection in booking-credit-election.ts.
+  creditElectionCents          Int?
   createdAt                 DateTime           @default(now())
   updatedAt                 DateTime           @updatedAt
 
@@ -1815,6 +1843,54 @@ model BookingGuest {
   // forever. Deliberately a bare column (no FK): the snapshot must survive
   // even if a custom type is later deleted.
   rateMembershipTypeId String?
+  // Member-guest consent (epic #2305, decision D-7). The approval state of a
+  // MEMBER added as somebody else's guest lives here, on the guest row itself,
+  // not in a side table.
+  //
+  // NULL consentStatus = "no consent was ever needed": a family-scope add
+  // (D-6) or any pre-feature legacy row. NULL is NOT the same value as
+  // CONFIRMED and the two must stay distinguishable forever — MG2/MG4 read the
+  // difference to decide whether a consent record exists at all.
+  //
+  // The full sub-state discriminator table (which columns are set in each
+  // reachable combination) is the single source of truth in
+  // MEMBER_GUEST_CONSENT_SUB_STATES (src/lib/member-guest-consent.ts) and is
+  // mirrored in docs/DOMAIN_INVARIANTS.md. The eight lines below are GENERATED
+  // from that table by src/lib/__tests__/member-guest-consent.test.ts, which
+  // fails unless this comment contains each of them verbatim — so they cannot
+  // go stale. "null" = the column must be NULL, "set" = it must be non-NULL,
+  // "any" = either is legal, and target / other / admin say WHO the responder
+  // is:
+  //   FAMILY_OR_LEGACY: status NULL / requestedAt null / respondedAt null / respondedBy null / expiresAt null
+  //   AWAITING_TARGET: status PENDING / requestedAt set / respondedAt null / respondedBy null / expiresAt set
+  //   TARGET_APPROVED: status CONFIRMED / requestedAt set / respondedAt set / respondedBy target / expiresAt any
+  //   DELEGATE_APPROVED: status CONFIRMED / requestedAt set / respondedAt set / respondedBy other / expiresAt any
+  //   NOTIFY_ONLY_AUTO_CONFIRMED: status CONFIRMED / requestedAt null / respondedAt null / respondedBy null / expiresAt null
+  //   ADMIN_ASSIGNED: status CONFIRMED / requestedAt null / respondedAt set / respondedBy admin / expiresAt null
+  //   DECLINED: status DECLINED / requestedAt set / respondedAt set / respondedBy set / expiresAt any
+  //   EXPIRED: status EXPIRED / requestedAt set / respondedAt null / respondedBy null / expiresAt set
+  //
+  // In THIS release every one of these columns is inert: no code path writes a
+  // non-null consentStatus, because cross-family adds are still refused
+  // (MEMBER_GUEST_WIDENING_ENABLED === false in src/lib/member-guest-consent.ts).
+  // The widening, the approval surface, and the expiry sweep all land together
+  // in MG2 (#2307).
+  consentStatus              MemberGuestConsentStatus?
+  consentRequestedAt         DateTime?
+  consentRespondedAt         DateTime?
+  // WHO approved, audited distinctly from WHO was asked (D-5/D-10): a target
+  // without a login can be approved by a delegate, and an admin-assigned or
+  // copied row records the admin. May equal the target (self-approval) or
+  // differ (delegate/admin); nothing constrains it here — MG2's delegate
+  // predicate does. Deliberately a bare column (no FK): an FK here would put a
+  // validating constraint on BookingGuest, a HOT_TABLE_SQL_REGEX table, plus a
+  // Member lock. Same reasoning as rateMembershipTypeId above.
+  consentRespondedByMemberId String?
+  // When a PENDING hold lapses. Set from MemberGuestSettings.pendingHoldExpiryDays
+  // at request time by MG2; read by MG2's expiry sweep via the raw-SQL partial
+  // index BookingGuest_pendingConsent_expiresAt_idx (prisma/partial-unique-indexes.tsv
+  // — Prisma cannot express a predicated index).
+  consentExpiresAt           DateTime?
   arrivedAt  DateTime?
   departedAt DateTime?
   createdAt  DateTime  @default(now())
@@ -1837,6 +1913,21 @@ model BookingGuest {
   @@index([bookingId, stayStart, stayEnd])
   @@index([stayStart, stayEnd])
   @@index([memberId])
+}
+
+// Consent state of a MEMBER added as another member's guest ("+ Add Member
+// Guest", epic #2305, D-7). Provisioned here in MG1 (#2306) but UNREACHABLE
+// until MG2 (#2307): no code path in this release writes a non-null
+// BookingGuest.consentStatus, so no ROW ever carries one of these labels. (They
+// are not literally unused — the migration's partial index names 'PENDING' in
+// its predicate — but never being carried by data is the property that makes
+// the reverse blue/green direction safe.)
+// See docs/STATE_MACHINES.md for the transitions MG2 implements.
+enum MemberGuestConsentStatus {
+  PENDING
+  CONFIRMED
+  DECLINED
+  EXPIRED
 }
 
 // Per-night stay record for a booking guest (issue #713). One row per night
@@ -1991,12 +2082,23 @@ model BookingRequest {
   message          String?              @db.VarChar(1000)
 
   // Exclusive whole-lodge hold — request path (#117 / epic #116, ADR-001). A
-  // requester (school/group front-door) can ask for sole occupancy of the
+  // requester (school/group front-door, or — since #2263 — a signed-in member
+  // through the member whole-lodge door) can ask for sole occupancy of the
   // lodge. This is only the REQUEST signal; an admin approving the request may
   // set Booking.wholeLodgeHold on the resulting booking (the flag itself is the
   // admin capacity action). Booking-generic; "school" is just the wording.
   // Additive/expand-only; default false.
   exclusivityRequested Boolean            @default(false)
+
+  // Member attribution for the authenticated whole-lodge request front-door
+  // (#2263). Null for every public/school request (which have no account behind
+  // them); set from the SESSION only, never from a request body. It is the
+  // member-origin discriminator the whole feature keys on: "My requests", the
+  // withdraw authorisation check, the per-member open-request cap, the admin
+  // "Member" badge, and the member-origin approval/decline branches all read
+  // `requestedByMemberId != null`. Member-merge classifies it `move`
+  // (MEMBER_MERGE_RELATION_SPECS).
+  requestedByMemberId String?
 
   // SCHOOL variant only. The school is the invoiced party / Xero contact.
   schoolName         String?                   @db.VarChar(200)
@@ -2063,6 +2165,7 @@ model BookingRequest {
   version Int @default(0)
 
   lodge            Lodge?                @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
+  requestedByMember Member?              @relation("BookingRequestRequester", fields: [requestedByMemberId], references: [id], onDelete: SetNull)
   convertedBooking Booking?              @relation("BookingRequestConvertedBooking", fields: [convertedBookingId], references: [id], onDelete: SetNull)
   heldBooking      Booking?              @relation("BookingRequestHeldBooking", fields: [heldBookingId], references: [id], onDelete: SetNull)
   acceptedQuote    BookingRequestQuote?  @relation("BookingRequestAcceptedQuote", fields: [acceptedQuoteId], references: [id], onDelete: SetNull)
@@ -2077,6 +2180,9 @@ model BookingRequest {
   @@index([reviewedByMemberId])
   @@index([heldBookingId])
   @@index([acceptedQuoteId])
+  // #2263: "My requests" reads by member, and the open-request cap counts a
+  // member's non-terminal rows — both are (member, status) lookups.
+  @@index([requestedByMemberId, status])
 }
 
 // Versioned public booking request quotes. The raw response token is emailed
@@ -2145,6 +2251,57 @@ model BookingRequestSettings {
   updatedByMemberId                String?
   createdAt                        DateTime @default(now())
   updatedAt                        DateTime @updatedAt
+
+  @@index([updatedByMemberId])
+}
+
+// Member-guest policy singleton ("+ Add Member Guest", epic #2305). How the
+// module BEHAVES when it is on is policy, not a capability boolean, so it lives
+// here rather than as more columns on ClubModuleSettings — the same split
+// BookingRequestSettings uses, whose shape (including the FK-less
+// updatedByMemberId audit column) this model copies exactly.
+//
+// The row is created LAZILY on the first WRITE — reading it materialises
+// nothing, it synthesises the defaults on a miss (see loadMemberGuestSettings in
+// src/lib/member-guest-settings.ts). The migration deliberately seeds NO row:
+// the blue/green validator hard-blocks session-clock DML in migration INSERT
+// payloads, and a synthesised-on-miss read needs no row anyway.
+//
+// Every field here is INERT in this release: nothing reads any of them at
+// runtime yet. MG2 (#2307) ships the admin settings card + route that writes
+// them and the behaviour that reads them (D-17).
+model MemberGuestSettings {
+  id                             String   @id @default("default")
+
+  // D-3: approval-required is the shipped default — a member added as somebody
+  // else's guest must say yes first. Notify-only is an explicit admin opt-down.
+  approvalRequired               Boolean  @default(true)
+
+  // D-4: a PENDING cross-family guest HOLDS the bed for this many days, after
+  // which MG2's sweep expires them off the booking. 7 days by default (owner,
+  // 30 Jul, confirm-by-objection): long enough for a target to see the email
+  // over a weekend, short enough that a silent non-responder releases the bed
+  // well before most stays. Bounds 1..60, mirroring quoteResponseTtlDays.
+  pendingHoldExpiryDays          Int      @default(7)
+
+  // MG3-D-b (owner, 30 Jul). DEFAULT OFF: with this off, a booker can only
+  // resolve another member by typing their exact email address. Turning it on
+  // makes the club's member name list browsable to anyone who can start a
+  // booking. Provisioned here so MG3 needs no migration of its own; the
+  // type-ahead itself is MG3's. NEVER travels in config transfer (D-18).
+  openMemberSearchEnabled        Boolean  @default(false)
+
+  // MG3-D-b sub-setting (owner, 30 Jul). DEFAULT false = minors are EXCLUDED
+  // from the open type-ahead even when openMemberSearchEnabled is on. Named
+  // positively but shipped off; "off" means excluded. Load-bearing because D-9
+  // (as ticked) makes any active member — minors included — resolvable by a
+  // shared household email address. NEVER travels in config transfer (D-18).
+  openMemberSearchIncludesMinors Boolean  @default(false)
+
+  // Bare column, no FK — same as BookingRequestSettings.updatedByMemberId.
+  updatedByMemberId              String?
+  createdAt                      DateTime @default(now())
+  updatedAt                      DateTime @updatedAt
 
   @@index([updatedByMemberId])
 }
@@ -3534,6 +3691,16 @@ model ClubModuleSettings {
   // add as a defaulted column because every read narrows to
   // CLUB_MODULE_SETTINGS_COLUMN_SELECT.
   memberNotices           Boolean  @default(true)
+  // "+ Add Member Guest" (epic #2305, D-2). Default OFF: an existing club sees
+  // zero change until an admin turns it on. Safe to add as a defaulted column
+  // because every read narrows to CLUB_MODULE_SETTINGS_COLUMN_SELECT. In this
+  // release the flag is inert: no booking path reads it, so turning it ON
+  // changes no outcome at any of the seven resolveLinkedBookingMembers call
+  // sites (the refusal is gated on MEMBER_GUEST_WIDENING_ENABLED instead). The
+  // one thing it does change is the Modules card, which reports
+  // "Not available yet" rather than "Enabled" (D-17). The behaviour arrives in
+  // MG2 (#2307).
+  memberGuests            Boolean  @default(false)
   updatedByMemberId       String?
   createdAt               DateTime @default(now())
   updatedAt               DateTime @default(now()) @updatedAt

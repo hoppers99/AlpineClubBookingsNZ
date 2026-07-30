@@ -185,6 +185,15 @@ export const MEMBER_MERGE_RELATION_SPECS: readonly MemberMergeRelationSpec[] = [
   spec("BedAllocation", "approvedBy", "approvedByMemberId", "move"),
   spec("BookingChangeRequest", "requestedBy", "requestedByMemberId", "move"),
   spec("BookingChangeRequest", "reviewedBy", "reviewedByMemberId", "move"),
+  // #2263: who submitted an authenticated whole-lodge booking request. A
+  // nullable SetNull attribution column with no member unique constraint —
+  // the same shape as BookingChangeRequest.requestedByMemberId above — so it
+  // `move`s: the loser's requests re-point to the surviving member, who then
+  // owns them in "My requests" and may withdraw them.
+  spec("BookingRequest", "requestedByMember", "requestedByMemberId", "move", {
+    note:
+      "#2263 member whole-lodge requests; a merge can transiently push the master past the 2-open-request cap — the cap is a creation-time guard, not an invariant, so this is accepted (documented in docs/STATE_MACHINES.md)",
+  }),
 
   // --- Promos ---
   spec("PromoRedemption", "member", "memberId", "move"),
@@ -312,6 +321,27 @@ export const MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS: readonly string[] = [
   // immutable history when a loser's photo group is absorbed by the master.
   "MediaImage.uploadedByMemberId",
   "Member.photoUpdatedByMemberId",
+  // "+ Add Member Guest" (epic #2305, MG1 #2306). Two more FK-less member-id
+  // scalars, both deliberately bare columns:
+  //   * BookingGuest.consentRespondedByMemberId records WHO approved a
+  //     cross-family guest — the target themselves, their delegate, or an
+  //     admin. If that person is later merged away, the id stays as it was:
+  //     the audit answer to "who stood behind this add" is the person who did
+  //     it at the time, not whoever absorbed their record afterwards. An FK was
+  //     rejected on top of that because it would put a validating constraint on
+  //     the hot BookingGuest table plus a Member lock (see the schema comment).
+  //   * MemberGuestSettings.updatedByMemberId is the ordinary settings-audit
+  //     column, identical in kind to MembershipSubscriptionBillingSettings'.
+  //
+  // SEPARATE, AND NOT COVERED BY THIS LIST: BookingGuest.member is a real
+  // relation and is already classified `move` above, so merging A into B
+  // re-points A's guest rows onto B — INCLUDING their consent columns, so B
+  // inherits the consent A gave. That is the accepted consequence of the
+  // existing `move` classification; it is unreachable in this release (every
+  // consentStatus is NULL) and MG2 (#2307) owns testing it once rows can carry
+  // a status.
+  "BookingGuest.consentRespondedByMemberId",
+  "MemberGuestSettings.updatedByMemberId",
 ];
 
 // ---------------------------------------------------------------------------

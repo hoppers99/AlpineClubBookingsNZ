@@ -366,6 +366,9 @@ export default async function BookingDetailPage({
           "booking.payment.failed",
           "booking.modification.payment.confirmed",
           "booking.modification.payment.failed",
+          // #2265 (#2319 door 2): the settle-time note telling the member their
+          // saved credit choice was not applied and is still on their account.
+          "booking.credit_election.unapplied",
           "booking.cancel",
           "booking.delete.draft",
           "booking.delete.cancelled.soft",
@@ -823,8 +826,14 @@ export default async function BookingDetailPage({
   const paymentRequiredDescription = renderBookingMessage(
     "booking.detail.paymentRequired.description",
   );
+  // #2263: only the Xero-on wording may claim an invoice was emailed. With the
+  // module off nothing raises one, so the member is told the club will send it —
+  // which is exactly what the delivery-locked manual-invoice admin alert asks an
+  // officer to do. The reference and amount are true either way.
   const internetBankingPendingDescription = renderBookingMessage(
-    "booking.detail.internetBanking.pending",
+    modules.xeroIntegration
+      ? "booking.detail.internetBanking.pending"
+      : "booking.detail.internetBanking.pendingNoXero",
   );
   const switchToInternetBankingDescription = renderBookingMessage(
     "booking.detail.switchToInternetBanking",

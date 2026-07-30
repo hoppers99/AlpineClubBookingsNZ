@@ -184,6 +184,61 @@ provisional non-member portion story on a split parent and nothing otherwise
 booking-confirmed body must keep this token, or split-parent confirmations
 silently lose the "held provisionally / charged later" explanation.
 
+Promo pricing on the booking-confirmed email works the same way through the
+pre-composed `{{promoSummary}}` token: when a promo code changed the price it
+renders the whole explanatory block — a `Subtotal:` line plus a signed
+`Promo adjustment (CODE):` line (`-$30.00` for a discount, `+$1,370.00` for a
+promo such as an exclusive-use flat rate that *raises* the price) — and
+renders nothing at all when no promo applied. Each line carries its own
+trailing line break, so the default body places it hard against the money
+outcome (`{{promoSummary}}{{paymentOutcome}}`); keep that placement in an
+override or the block renders detached from the money it explains.
+
+The money outcome itself is the pre-composed `{{paymentOutcome}}` block: a paid
+booking renders `Total Paid:` plus the payment-processed sentence, while a
+booking confirmed with money still owing (a member whole-lodge approval's
+internet-banking receivable) renders `Total Due:` plus a sentence stating the
+amount owing and the payment reference — so the default body can never tell a
+member their payment was processed when it was not. An override may instead
+build its own money lines from the per-piece tokens (`{{totalPaid}}`,
+`{{totalDue}}`, `{{paymentDueNote}}`, `{{paymentReference}}`); exactly one of
+`{{totalPaid}}`/`{{totalDue}}` carries a figure on any given send.
+
+**The promo explanation is required, not advisory.** An override of the
+booking-confirmed body that shows a member no promo explanation at all is
+rejected on save, because a member charged a promo price would otherwise read a
+total with no reason for it. The rule is satisfied three ways, so it never
+invalidates an override a club already saved: keep `{{promoSummary}}`, or show
+the adjustment yourself with `{{promoAdjustment}}` (the signed value) or the
+older `{{discount}}` — the shape the previous default body shipped
+(`Subtotal: {{subtotal}}` above `Discount ({{promoCode}}): -{{discount}}`), so
+every override saved from that default keeps validating and re-saving. A
+`{{subtotal}}` line on its own does **not** satisfy it: a subtotal with no
+adjustment beside it is exactly the "two amounts that differ, with nothing in
+between to say why" email this rule exists to prevent. The editor prints the
+rule and its alternatives under the token chips, and a rejected save explains
+it in the same words.
+
+Of the three, only `{{promoSummary}}` handles all promo shapes cleanly —
+`{{discount}}` is empty for a price-raising promo, and `{{promoAdjustment}}`
+carries its own `+`/`-` sign, so never write a manual minus in front of it. The
+editor enforces that last point too: a body or subject that types `+` or `-`
+immediately before `{{promoSummary}}` or `{{promoAdjustment}}` is rejected on
+save with an explanation.
+
+Two other pre-composed tokens follow the same pattern. The booking-confirmed
+body's `{{doorCodeNote}}` renders the whole `Door code: 1234` line, and nothing
+at all for a lodge with no door code recorded — an override may instead write
+its own label around the bare `{{doorCode}}` value, and either form satisfies
+the "the door code must stay in the body" rule. The booking-modified body's
+`{{changeSummary}}` renders only the rows that actually changed
+(`Previous`/`New` pairs where something moved, a single `Dates:` / `Guests:` /
+`Total:` line where it did not, and a `Change Fee:` line only when a fee was
+charged), so an override that keeps it always matches the built-in HTML email.
+The per-piece `{{oldCheckIn}}`, `{{newTotal}}`, `{{changeFee}}` and siblings
+stay available for existing overrides, but they cannot express "only show what
+changed" — a body built from them lists every row on every modification.
+
 | Field                                              | Required | Description                                                                                                      |
 | -------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------- |
 | `name`                                             | yes      | Full public club name.                                                                                           |
@@ -1435,6 +1490,30 @@ cannot be read, optional modules fail closed.
 | Google sign-in | off | Lets members sign in with a Google account they have linked from their profile (additive to password login, never a replacement). Credentials are entered and verified **in-app** on the Google sign-in setup page (Admin → Integrations → Google) — no env vars, no restart. The module cannot be turned on until a real Google OAuth round-trip verifies (hard gate), and replacing a credential re-locks it until re-verified. The "Continue with Google" button appears only when the module is on AND credentials resolve. No account is ever created from Google, and an unlinked Google account is refused with a friendly message. See the Google sign-in section below. |
 | Google Analytics | off | Consent-gated GA4 tracking on public website and public account pages. Requires `NEXT_PUBLIC_GA_MEASUREMENT_ID`; GA scripts load only after a visitor accepts the analytics banner. |
 | AI help assistant | off | Free-text help questions answered by a paid AI model (Anthropic Claude Haiku), grounded strictly in each page's curated help content. The Anthropic API key is entered **in-app** on Admin → Integrations (encrypted vault, never an env var). Unlike Google sign-in there is **no** enable-gate on a present key — with the module on but no key, the ask box degrades to a structured fallback and curated page help still works. A monthly spend cap (default NZ$10) hard-stops AI answers for the rest of the month once reached. See the AI help assistant section below. |
+| Add another member as a guest | off | **Not available yet — this switch does nothing in this version.** Lets a member add another club member, outside their own family group, as a guest on their booking with that member's consent. Adding a member outside your own family group is still declined whether the module is on or off; the feature, its consent emails, and its settings arrive in a later update. Turning it on deliberately shows a **Not available yet** badge rather than the usual **Enabled** one, so the Modules page never presents an inert switch as a live feature. See the member-guest settings section below. |
+
+### Member-guest settings (not available yet)
+
+The "Add another member as a guest" module stores its policy in the
+`MemberGuestSettings` singleton (`id = "default"`), created lazily on first
+write. **No admin page writes it in this version** — the settings card and its
+API route ship in the same update as the behaviour they control, so an admin is
+never offered a live-looking control over a feature that cannot run. Every value
+below is inert today; they are listed so the defaults an update inherits are on
+the record.
+
+| Setting | Default | Travels in config transfer | Description |
+| --- | --- | --- | --- |
+| Approval required | on | yes | The member being added must agree before they appear on the booking. Turning it off means they are told rather than asked. |
+| Pending hold expiry (days) | 7 (range 1–60) | yes | How long a bed stays held for a member who has been asked and has not answered. After that the hold is released. |
+| Open member search | off | **no** | Off means a booker can only find another member by typing their exact email address. On makes the club's member name list browsable to anyone who can start a booking. |
+| Include minors in open member search | off | **no** | Off means minors are excluded from that browsable list even when open member search is on. |
+
+The two search settings deliberately **never travel** in a club config transfer
+(owner decision D-18): importing another club's bundle must not widen this
+club's member privacy without this club's admin choosing it, the same rule the
+sign-in method toggles follow. A fresh import keeps whatever this club already
+had, which for a new install is off.
 
 Cron-backed optional module schedules are still registered when
 `CRON_ENABLED=true`; each run checks the effective module state before doing

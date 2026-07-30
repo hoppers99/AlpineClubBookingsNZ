@@ -121,7 +121,14 @@ const createBookingSchema = z.object({
   // also accept. Only meaningful with waitlist: true; ignored otherwise.
   alternateLodgeIds: z.array(z.string().min(1)).max(20).optional(),
   cancelIfGuestsBumped: z.boolean().optional(),
-  applyCreditCents: z.number().int().min(0).optional(),
+  // Account credit the member asks to put towards this booking, integer cents.
+  // The upper bound is deliberately absurd rather than tight — the real limits
+  // are the member's balance and the booking price, enforced downstream — but
+  // it has to exist: without it a fat-fingered or hostile value sails past
+  // validation and only fails deep in the money path, as an opaque 400 or a
+  // 500, instead of as a plain field error on the credit input (#2265).
+  // $1,000,000 is far above any club booking or balance.
+  applyCreditCents: z.number().int().min(0).max(100_000_000).optional(),
   forMemberId: z.string().optional(),
   memberReviewJustification: z.string().trim().min(1).max(1000).optional(),
   paymentMethod: z
@@ -553,6 +560,15 @@ export async function POST(request: NextRequest) {
         expectedArrivalTime,
         requestedRoomId,
         cancelIfGuestsBumped,
+        // #2265 — the draft branch used to omit this field entirely, so a
+        // member who ticked "use my credit" and then saved a draft had their
+        // election silently discarded. The draft service does NOT consume the
+        // credit; it stores the election on the booking and the pay path
+        // applies it when the booking reaches PAYMENT_PENDING. Keep this key
+        // in step with the createConfirmedBooking call below —
+        // issue-2265-booking-create-money-parity.test.ts fails if the two argument
+        // objects diverge on a money-bearing field again.
+        applyCreditCents: parsed.data.applyCreditCents,
         groupDiscount,
         memberReviewJustification,
         lodgeId: parsed.data.lodgeId,

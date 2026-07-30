@@ -32,6 +32,9 @@ interface GuestChipProps {
   selectedBedId: string;
   onSelectBed: (bedId: string) => void;
   onAllocate: () => void;
+  // #2251: "Assign range…" — place this guest in one bed for a stay of any
+  // length, including nights outside the board's 31-night window.
+  onAssignRange: () => void;
   pending: boolean;
   highlighted?: boolean;
   // Tri-state (#2065): `undefined` while the client session resolves; the
@@ -46,6 +49,7 @@ export function GuestChip({
   selectedBedId,
   onSelectBed,
   onAllocate,
+  onAssignRange,
   pending,
   highlighted,
   canEdit,
@@ -167,6 +171,19 @@ export function GuestChip({
           title={canEdit === false ? ADMIN_VIEW_ONLY_ACTION_REASON : undefined}
         >
           Allocate
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={onAssignRange}
+          disabled={!canEdit || pending}
+          title={
+            canEdit === false
+              ? ADMIN_VIEW_ONLY_ACTION_REASON
+              : "Assign this guest to one bed across a range of any length"
+          }
+        >
+          Assign range…
         </Button>
         {group.stayDates.length > 1 ? (
           <Badge variant="outline">{group.stayDates.length} nights</Badge>

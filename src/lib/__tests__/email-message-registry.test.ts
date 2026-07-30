@@ -128,7 +128,7 @@ describe("email message registry", () => {
       templateName: "booking-confirmed",
       subject: "Your booking is confirmed",
       bodyText:
-        "Hi {{firstName}}, see you soon.\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\nDoor code: {{doorCode}}",
+        "Hi {{firstName}}, see you soon.\n\n{{promoSummary}}Total Paid: {{totalPaid}}\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\nDoor code: {{doorCode}}",
     });
 
     expect(validation.valid).toBe(true);
@@ -163,7 +163,8 @@ describe("email message registry", () => {
     const validation = validateEmailTemplateContent({
       templateName: "booking-confirmed",
       subject: "Door code {{doorCode}}",
-      bodyText: "{{CLUB_LODGE_TRAVEL_NOTE}}\n\nDoor code: {{doorCode}}",
+      bodyText:
+        "{{promoSummary}}Total Paid: {{totalPaid}}\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\nDoor code: {{doorCode}}",
     });
 
     expect(validation.valid).toBe(false);
@@ -298,6 +299,31 @@ describe("newly-registered hardcoded email templates (#1797)", () => {
 
   it("does not confuse two-factor-code as editable (stays hardcoded)", () => {
     expect(getEmailTemplateDefinition("two-factor-code")).toBeUndefined();
+  });
+
+  it("registers the #2263 whole-lodge manual-invoice alert as admin-facing and delivery-locked", () => {
+    // Its own registry entry rather than a variant of the school one: the copy
+    // names a MEMBER (the owner is a real signed-in account, not a non-login
+    // school contact) and carries the internet-banking reference the member was
+    // given. Locked for the same reason the school one is — disabling it lets an
+    // approved whole-lodge booking go un-invoiced while the member has already
+    // been told an invoice is coming, which is a direct money loss.
+    const definition = getEmailTemplateDefinition(
+      "admin-whole-lodge-manual-invoice",
+    );
+    if (!definition) throw new Error("missing admin-whole-lodge-manual-invoice");
+    expect(definition.audience).toBe("admin");
+    expect(definition.deliveryEditable).toBe(false);
+    expect(getDefaultDeliveryMode("admin-whole-lodge-manual-invoice")).toBe(
+      "always",
+    );
+    // The reference and the amount are what make the alert actionable, so both
+    // must be tokens an override cannot silently drop by accident.
+    expect(definition.allowedTokens).toContain("paymentReference");
+    expect(definition.allowedTokens).toContain("amount");
+    expect(definition.allowedTokens).toContain("memberName");
+    // And it must not describe the booking as a school group's.
+    expect(definition.defaultBody).not.toContain("School");
   });
 
   it("classifies admin-school-manual-invoice as an admin alert but keeps it delivery-locked", () => {

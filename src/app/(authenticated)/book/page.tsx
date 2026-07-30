@@ -144,6 +144,25 @@ export default function BookPage() {
         <h1 className="text-3xl font-bold">Book a Stay</h1>
       </div>
 
+      {/* #2263 — whole-lodge entry point. A separate door, not a wizard step:
+          the wizard books beds against live availability, while this asks the
+          booking officer for sole occupancy and shows the member no availability
+          at all (ADR-001 decision 6). Shown to every signed-in member. */}
+      <Card>
+        <CardContent className="flex flex-col gap-3 pt-6 sm:flex-row sm:items-center sm:justify-between">
+          <div className="space-y-1">
+            <h2 className="font-semibold">Need the whole lodge?</h2>
+            <p className="text-sm text-muted-foreground">
+              For a course, a club trip or a family gathering, ask the booking
+              officer about having the lodge to yourselves.
+            </p>
+          </div>
+          <Button asChild variant="outline" className="shrink-0">
+            <Link href="/book/whole-lodge">Book the whole lodge</Link>
+          </Button>
+        </CardContent>
+      </Card>
+
       {/* Subscription warning banner */}
       {!subscriptionLoading && subscriptionUnpaid && (
         <Alert variant="warning">

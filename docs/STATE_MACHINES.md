@@ -17,6 +17,43 @@ WAITLISTED -> WAITLIST_OFFERED -> CONFIRMED/PAID or WAITLISTED/CANCELLED
 AWAITING_REVIEW -> PENDING (quote accepted, #1254) or CONFIRMED/PAID or CANCELLED
 ```
 
+`DRAFT -> PAYMENT_PENDING` is also where a stored account-credit election is
+spent (#2265). A draft carries the member's election on
+`Booking.creditElectionCents` and consumes no credit while it may still be
+abandoned; the pay path (`create-payment-intent`) advances the status, applies
+the election clamped to the live balance and the price, and clears the column —
+all in one transaction, so the transition and the money move together and a
+retry cannot spend the election twice. When the election covers the whole price
+the same transaction continues straight to `PAID` with a $0 SUCCEEDED payment
+rather than minting a card intent — as does a draft that was repriced to $0
+while the member was looking at the pay step. Any booking held in
+`AWAITING_REVIEW` keeps its election through review and spends it on the
+`AWAITING_REVIEW -> PAYMENT_PENDING` release instead; that release path claims
+capacity before it settles, honouring a persisted capacity override (#1771),
+and refuses with a 409 (election intact, nothing charged) when the beds are
+gone. `confirm-draft` only ever settles a $0 booking, where credit has nothing
+to pay, so it clears the election without consuming any. Switching to Internet
+Banking consumes the election too, so the Xero invoice is raised for what the
+member actually owes; when credit covers the whole price there is nothing to
+invoice, so the switch is refused and the booking is settled at $0 on the pay
+step instead.
+
+Every transition INTO a settled status clears the election if one is somehow
+still on the row (#2319), because nothing reads the column after settlement and a
+non-NULL value there would advertise an outstanding request forever:
+`markBookingPaymentSucceeded`'s `PAID` claim (the door the Stripe webhook, the
+session confirm, the payment link, the saved-card charge and the auto-confirm
+cron share), the Internet Banking reconcile's `PAID` flip and its
+late-capacity-failure `CANCELLED` flip, and the repriced-to-$0 auto-pay in both
+modification services — the last of which is the one arm that can genuinely get
+there, when a guest removal releases a review-parked booking to `PAYMENT_PENDING`
+and reprices the stay to nothing in the same edit. A clear on a $0 settle is
+silent (nothing was owed); a clear where real money was taken writes a
+`booking.credit_election.unapplied` audit row that the member's booking history
+renders, plus an operator alert. `PENDING -> PAID` via the public payment link is
+the exception that never needs it: that route refuses a booking carrying an
+election outright rather than charging the pre-credit price.
+
 Waitlist confirmation and expiry serialize on the offered booking's lodge lock.
 Confirmation re-reads `WAITLIST_OFFERED` and the deadline after acquiring the
 lock and uses a status/deadline-guarded claim, so an expiry that wins first
@@ -592,6 +629,93 @@ a quote still reuses any existing hold idempotently. The hold scope covers every
 request-converted PENDING booking, including requests approved DIRECTLY without a
 quote — intended.
 
+### Member whole-lodge requests (#2263)
+
+A signed-in member may ask for sole occupancy of the lodge
+(`POST /api/booking-requests/whole-lodge`). The row is an ordinary
+`BookingRequest` — no new `BookingRequestType` and no new
+`BookingRequestStatus` — discriminated everywhere by
+`requestedByMemberId != null && exclusivityRequested`. It is the ONLY member-origin
+kind of booking request; a public or school request always has
+`requestedByMemberId` null.
+
+```text
+(member submits) -> VERIFIED   (no email verification: the requester is signed in,
+                                so no verification token is ever issued; verifiedAt
+                                is stamped at creation and the row lands straight
+                                in the officer queue holding NO capacity)
+VERIFIED -> APPROVED -> CONVERTED  (officer approves with a priced headcount; a
+                                CONFIRMED booking is created, owned by the
+                                requesting login member, with wholeLodgeHold
+                                stamped by the approving admin)
+PRICED   -> APPROVED -> CONVERTED  (same transition, defensive: see the note
+                                below — nothing sanctioned puts a member-origin
+                                row in PRICED, and the approval accepts it
+                                anyway rather than dead-ending a row that
+                                somehow got there)
+VERIFIED -> DECLINED           (officer declines; the note is audit-log-only)
+VERIFIED -> CANCELLED          (the MEMBER withdraws it)
+```
+
+**Why `PRICED` appears above when the prose below says these rows never reach it.**
+Both are true and the difference matters. Nothing sanctioned can price a
+member-origin row: `priceBookingRequest` throws `409` for it and the admin queue
+offers no price control. But `approveMemberWholeLodgeRequest`'s status guard, and
+its `updateMany` claim, both accept `{ VERIFIED, PRICED }`. That is deliberate
+tolerance rather than an admission that the state is reachable: if a future change
+(or a hand-run database fix) leaves such a row in `PRICED`, the officer can still
+approve it instead of meeting a `409` on a row with no other way forward. The
+guard is a wider door than the pipeline can currently reach — the narrow
+statement "these rows never reach `PRICED`" describes what the code PRODUCES, and
+this diagram line describes what the approval ACCEPTS.
+
+**The quote lifecycle is refused, at the service layer.** `createBookingRequestQuote`,
+`sendBookingRequestQuote`, `holdBookingRequestSlots` and `priceBookingRequest` each
+throw `409` for a member-origin whole-lodge row, and the admin queue hides their
+buttons. Hiding is the UX; the 409 is the guarantee. The reason is not tidiness:
+quote-send auto-holds capacity (#1280), the quote email is a member-visible
+pricing surface the design excludes, and requester-accept mints a duplicate
+non-login member for somebody who already has a login account. So these rows
+never reach `PRICED`/`QUOTED`/`QUOTE_SENT`/`QUERY_PENDING`/`MODIFICATION_REQUESTED`
+and never carry `heldBookingId` — the shared pipeline still handles those states
+if a row somehow acquires one, but nothing sanctioned produces one.
+
+**Withdrawal** (`POST /api/booking-requests/whole-lodge/[id]/withdraw`) is a
+status-guarded `updateMany` to `CANCELLED` whose WHERE also names
+`requestedByMemberId` (ownership is part of the claim, so another member's id
+behaves exactly like a non-existent one) **and `heldBookingId: null`**. That last
+clause is load-bearing: member withdraw has no hold-release machinery, so
+cancelling a row that holds beds would strand an `AWAITING_REVIEW` hold forever
+with nothing left to release it. The blocked member gets the fixed `409`; the
+resolution path is admin **decline**, which does release holds. Any stray `SENT`
+quote is retired to `SUPERSEDED` in the same transaction, request row locked
+first (the #1423 lock-ordering invariant). The loser of a
+withdraw-vs-approve/decline race gets the same `409`.
+
+**Decline** on a member-origin row keeps the officer's note in the audit metadata
+ONLY: `declineReason` stays null on the row, and the decline email renders its
+fixed generic body with no note and nothing derived from availability. The
+school/public `declineReason` is the field the requester is SHOWN, and an
+availability-derived sentence in it would be exactly the disclosure ADR-001
+decision 6 forbids. Not persisting is deliberately stronger than
+persist-and-filter: a null column cannot be leaked by a surface added later.
+
+**Retention (owner decision OD-B).** `purgeExpiredBookingRequests` hard-deletes
+member-origin `DECLINED` rows (already covered by the declined sweep) and
+member-origin `CANCELLED` rows on the same 90-day clock. The `CANCELLED` sweep is
+scoped to `requestedByMemberId != null` because a public request also reaches
+`CANCELLED` (a requester cancelling their own quote) and OD-B decided retention
+only for the member-origin flow. "My requests" therefore shows a bounded history,
+and its copy says so.
+
+**Member merge.** `BookingRequest.requestedByMemberId` is classified `move` in
+`MEMBER_MERGE_RELATION_SPECS`: a loser's requests re-point to the surviving
+member, who then owns them in "My requests" and may withdraw them. A merge can
+transiently push the master past the 2-open-request cap. That is accepted: the
+cap is a **creation-time guard, not an invariant** — it stops a member opening a
+third request, and nothing in the system reads it as a promise that no member
+ever holds more than two.
+
 Token-link outcomes the requester can see:
 
 - Valid `SENT` link: the quote is shown with options, price, and an expiry hint.
@@ -1018,9 +1142,48 @@ stay-level `ROOM_SWITCH` warning when a booking's rooms change between nights,
 plus a `MINOR_ADULT_MIX` warning on any persisted room-night that mixes one
 booking's minors with another booking's adults (#1768).
 
+**Range assignment (#2251).** "Assign range…" places ONE guest on ONE bed
+across a range of any length — the board's 31-night window bounds the read, not
+the write. The write is attempt-first (there is deliberately no dry-run/preview
+step) and atomic: any blocked night refuses the WHOLE range, nothing is written,
+and the refusal report names each blocked night in one of three distinct
+categories — the bed is already allocated that night (naming the occupying
+guest; a provisional occupant still counts, so nothing is silently overwritten),
+the guest is not booked that night (a **bad request**, never a silent skip —
+including a gap night of a non-contiguous stay, #713), or **the guest's own
+booking** holds the whole lodge (ADR-001's short-circuit — a held booking owns no
+per-bed rows, so the whole range is refused). Another booking's overlapping hold
+is NOT a blocker here: it is surfaced on the board as a banner and an
+`overlapsExclusiveHold` badge, exactly as it is for every other allocation path.
+A second, explicit "assign the N free nights" action re-sends the exact night
+list the report showed, and the server writes that set or refuses it with a fresh
+report. When the report contains nights the guest is not booked on, that action
+asks for an explicit confirmation first — naming how many nights are not part of
+the guest's booking and will NOT be assigned, and how many will — so a partial write is never
+one click away from a warning. Either way the operation records exactly one
+`BED_ALLOCATION_RANGE_SET`
+audit entry (`targetId` = the booking id, written inside the same transaction as
+the rows) carrying the requested range, what was written, and what was refused —
+as counts and night runs, without the other bookings' guest names, which stay in
+the response to the admin. If the move stranded partners on shared doubles, the
+same transaction adds ONE batched `BED_ALLOCATION_PARTNERS_PROMOTED` entry for
+all of them (capped list + exact count + truncation flag) rather than one entry
+per promotion, so a 366-night range writes a bounded number of audit rows as well
+as a bounded number of statements; the single-night and bulk board paths keep
+their per-promotion `BED_ALLOCATION_PARTNER_PROMOTED` entries. Range assignments
+**auto-approve**: their rows land with `approvedAt`/`approvedByMemberId` stamped
+rather than as drafts. Board single-night and drag placements are deliberately
+NOT auto-approved — draft-vs-approved remains the suggestion-vs-confirmation
+distinction. One consequence to state plainly: because
+`isBookingBedAllocationLocked` is "at least one approved row exists" (#776), the
+member's requested-room editing locks on the FIRST range assign, not at a later
+confirmation step; the assign dialog says so before the admin commits. Manual
+allocation of a whole-lodge-held booking is refused outright at the write
+chokepoint, matching the lifecycle prune (#2285).
+
 To verify: approval status representation, conflict handling, per-night guest
-uniqueness, room continuity and whole-booking displacement behavior, and
-module-disabled behavior.
+uniqueness, room continuity and whole-booking displacement behavior, range
+refusal categories and their single audit entry, and module-disabled behavior.
 
 ## Membership Application Lifecycle
 
@@ -1410,3 +1573,44 @@ admin edits the banner -> updatedAt changes -> dismissal invalidated, banner re-
 To verify: the admin page's current/upcoming/past split, the inclusive
 date-only comparison in NZ time, and dismissal invalidation keyed on
 `updatedAt`.
+
+## Member-Guest Consent Lifecycle (provisioned, unreachable until MG2)
+
+`BookingGuest.consentStatus` (`MemberGuestConsentStatus`) records whether a
+MEMBER added as somebody else's guest agreed to it ("+ Add Member Guest", epic
+#2305, decision D-7). The enum, its five companion columns, and the partial
+index the expiry sweep needs are all provisioned by MG1 (#2306).
+
+**Nothing in the MG1 release can reach any state below except the null one.**
+Cross-family adds are still refused (`MEMBER_GUEST_WIDENING_ENABLED` is `false`
+in `src/lib/member-guest-consent.ts`), so no code path writes a non-null
+`consentStatus` — the labels are registered a release ahead of the code that
+uses them. The transitions are documented here only once MG2 (#2307) implements
+them; do not treat the arrows below as live behaviour in this release.
+
+```text
+(null) = no consent was ever needed: a family-scope add (D-6) or a legacy row.
+         NOT the same value as CONFIRMED, and the two must stay distinguishable.
+
+cross-family add, approval-required policy  -> PENDING   (holds the bed until consentExpiresAt)
+cross-family add, notify-only policy        -> CONFIRMED (never solicited: requestedAt/respondedAt/respondedBy all null)
+admin add, admin booking-copy, pipeline row -> CONFIRMED (never solicited: respondedBy = the acting admin, requestedAt null)
+
+PENDING -> CONFIRMED  target (or their delegate) approves; respondedBy records WHICH
+PENDING -> DECLINED   target (or their delegate) refuses
+PENDING -> EXPIRED    the hold lapses with no answer; MG2's sweep releases the bed
+```
+
+Consent is **not transitive across bookings**: copying a booking re-stamps the
+copied guest as an admin assignment against the copying admin, and never
+inherits the source row's approval.
+
+The full column-by-column discriminator table — which of the five columns is set
+in each shape — is in `docs/DOMAIN_INVARIANTS.md` and is the single source of
+truth in `MEMBER_GUEST_CONSENT_SUB_STATES`
+(`src/lib/member-guest-consent.ts`), pinned by
+`src/lib/__tests__/member-guest-consent.test.ts`.
+
+To verify: `MEMBER_GUEST_WIDENING_ENABLED === false`, the classifier's refusal
+to name any shape the table does not define, and the dark-guarantee matrix in
+`src/lib/__tests__/member-guest-dark-guarantee.test.ts`.

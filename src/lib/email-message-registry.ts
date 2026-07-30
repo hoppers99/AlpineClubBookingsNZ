@@ -15,6 +15,9 @@ export interface EmailTemplateDefinition {
   defaultBody: string;
   allowedTokens: string[];
   requiredTokens: string[];
+  // #2267: per required token, the other tokens an override may use instead
+  // and still satisfy the requirement (see REQUIRED_TOKEN_ALTERNATIVES).
+  requiredTokenAlternatives: Record<string, string[]>;
   sampleData: Record<string, string>;
   triggerSummary: string;
   frequency: string;
@@ -66,6 +69,11 @@ const ADMIN_SYSTEM_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
   // plumbing: sendToAdmins, adminBookingRequest gating, NOT delivery-locked.
   "admin-booking-request-hold-cancelled",
   "admin-school-manual-invoice",
+  // #2263: the same money-critical alert for an approved MEMBER whole-lodge
+  // request converted while the Xero module is off. Its own registry entry
+  // rather than a variant of the school one — the wording names a member, not a
+  // school — and delivery-locked on the same grounds (see below).
+  "admin-whole-lodge-manual-invoice",
   // #1967/#1994: split non-member guest portion unpaid at hold expiry (no card
   // on file). Ships via sendToAdmins, so it classifies as an admin alert.
   // Deliberately NOT in LOCKED_DELIVERY_TEMPLATE_NAMES — it is an operational
@@ -90,6 +98,10 @@ const ADMIN_SYSTEM_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
 const LOCKED_DELIVERY_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
   "admin-email-failure",
   "admin-school-manual-invoice",
+  // #2263: same money risk, same lock — disabling it would let an approved
+  // member whole-lodge booking go un-invoiced while the member has been told an
+  // invoice is coming.
+  "admin-whole-lodge-manual-invoice",
 ]);
 
 const CONTENT_ONLY_DEFAULT_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
@@ -114,9 +126,53 @@ const EXTRA_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>> =
   "admin-capacity-warning": ["lodgeName"],
   // Split-booking parent (#738): a pre-composed sentence describing the
   // provisional non-member portion; empty for a non-split confirmation.
-  "booking-confirmed": ["provisionalGuestsNote"],
+  // #2267: the legacy per-piece promo and door-code tokens left the default
+  // body when it moved to the pre-composed {{promoSummary}} and
+  // {{doorCodeNote}} blocks, but the send still supplies them, so an existing
+  // saved override that references them stays valid and re-savable.
+  // {{promoAdjustment}} is the signed value ("-$12.00" / "+$1,370.00");
+  // {{discount}} can only express a price cut. The pre-composed tokens are
+  // listed here too (belt and braces): they are allowed for an override even
+  // if a later default-body rewrite stops using one of them.
+  "booking-confirmed": [
+    "discount",
+    "doorCode",
+    "doorCodeNote",
+    // #2263: the paid/unpaid money story is the pre-composed {{paymentOutcome}}
+    // in the default body; the per-piece tokens stay allowed so an override can
+    // build its own money lines (and so an override saved from the pre-#2267
+    // default, which wrote "Total Paid: {{totalPaid}}", keeps validating).
+    "paymentDueNote",
+    "paymentOutcome",
+    "paymentReference",
+    "promoAdjustment",
+    "promoCode",
+    "promoSummary",
+    "provisionalGuestsNote",
+    "subtotal",
+    "totalDue",
+    "totalPaid",
+  ],
+  // #2267: since the ragged "[only when …]" lines were removed, the default
+  // body leans on the pre-composed {{changeSummary}} (which rows changed) and
+  // {{paymentNote}} (the additional-payment story). Every per-piece token the
+  // old body built its rows from stays allowed — and supplied — so an override
+  // saved before this change keeps rendering and re-saving. The pre-composed
+  // tokens are listed too, so a later default-body rewrite cannot silently
+  // withdraw permission to use them in an override.
   "booking-modified": [
     "additionalPaymentMethod",
+    "changeFee",
+    "changeSummary",
+    "newCheckIn",
+    "newCheckOut",
+    "newGuestCount",
+    "newTotal",
+    "oldCheckIn",
+    "oldCheckOut",
+    "oldGuestCount",
+    "oldTotal",
+    "paymentNote",
     "paymentReference",
     "xeroInvoiceNumber",
   ],
@@ -179,8 +235,40 @@ const EXTRA_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>> =
   "booking-request-quote": ["respondUrl"],
 };
 
+// #2267: tokens an override may use INSTEAD of a required token and still
+// satisfy the requirement. The requirement is "this information must stay in
+// the body", not "this exact token" — the booking-confirmed body now carries
+// the pre-composed {{doorCodeNote}} line (which renders nothing when the club
+// has no door code), but an override saved before that change writes its own
+// "Door code: {{doorCode}}" line and must keep validating and re-saving.
+const REQUIRED_TOKEN_ALTERNATIVES: Partial<
+  Record<EmailAuditTemplateName, Record<string, string[]>>
+> = {
+  "booking-confirmed": {
+    doorCodeNote: ["doorCode"],
+    // #2267 (owner decision): the promo explanation is required content on a
+    // payment confirmation — an override that drops it leaves a member who was
+    // charged a promo price with a total and no reason for it. What must stay
+    // is the ADJUSTMENT itself, in whichever token form the override uses:
+    // the pre-composed {{promoSummary}} block, the signed {{promoAdjustment}}
+    // value, or the legacy {{discount}} (which the pre-#2267 default body
+    // wrote as "Discount ({{promoCode}}): -{{discount}}", so every override
+    // saved from that default keeps validating and re-saving).
+    //
+    // {{subtotal}} is deliberately NOT an alternative: a subtotal with no
+    // adjustment line beside it is the incident shape #2267 fixed — two
+    // amounts that differ with nothing in between to say why.
+    promoSummary: ["promoAdjustment", "discount"],
+  },
+};
+
 const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>> = {
-  "booking-confirmed": ["CLUB_LODGE_TRAVEL_NOTE", "doorCode"],
+  "booking-confirmed": [
+    "CLUB_LODGE_TRAVEL_NOTE",
+    "doorCodeNote",
+    // Satisfied by any of the promo-adjustment tokens above.
+    "promoSummary",
+  ],
   "pre-arrival-reminder": ["CLUB_LODGE_TRAVEL_NOTE", "doorCode"],
   "password-reset": ["token"],
   "admin-password-reset": ["token"],
@@ -496,6 +584,12 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
     frequency:
       "Once per conversion, to admins opted into public booking-request alerts",
   },
+  "admin-whole-lodge-manual-invoice": {
+    triggerSummary:
+      "Approved member whole-lodge request converted while the Xero module is off, so no invoice was raised for the confirmed booking",
+    frequency:
+      "Once per conversion, to admins opted into public booking-request alerts",
+  },
   "group-booking-join-verification": {
     triggerSummary:
       "Non-member used a join code to claim a group-booking spot and must confirm their email",
@@ -574,7 +668,52 @@ function sampleValue(token: string): string {
   }
   if (token === "LODGE_CAPACITY") return String(FALLBACK_LODGE_CAPACITY);
   if (token === "doorCode") return "1234";
+  // #2267: the whole pre-composed line, exactly as the send builds it, so the
+  // preview shows what a member reads (and shows nothing extra when a club has
+  // no door code — the live send renders this token empty).
+  if (token === "doorCodeNote") return "Door code: 1234";
   if (token === "expectedArrivalTime") return "16:30";
+  // #2267: mirror what sendBookingConfirmedEmail composes — each row carries
+  // its own trailing newline so the default body's
+  // "{{promoSummary}}Total Paid: …" previews as a contiguous block.
+  //
+  // The promo money samples deliberately reconcile against the generic
+  // "$123.45" that every *total* token falls through to below: $153.45 subtotal
+  // minus a $30.00 promo is $123.45 paid. A preview whose own arithmetic does
+  // not add up teaches an admin to distrust the preview.
+  if (token === "promoSummary") {
+    return "Subtotal: $153.45\nPromo adjustment (PROMO2026): -$30.00\n";
+  }
+  // #2263: the paid variant of the pre-composed money outcome, reconciling
+  // with the promo sample above ($153.45 − $30.00 = $123.45) so the preview's
+  // arithmetic adds up. The unpaid variant (Total Due + the owing sentence)
+  // only ever renders from a live send that really is unpaid.
+  if (token === "paymentOutcome") {
+    return "Total Paid: $123.45\n\nPayment has been processed successfully.";
+  }
+  // #2267: one coherent booking-modified sample — a 2-guest stay whose dates
+  // moved from 1–3 Jul to 8–10 Jul and whose price rose from $123.45 to
+  // $150.00 with no change fee, leaving $26.55 to pay. Every token below tells
+  // that same story, including the per-piece ones a legacy override uses, so
+  // an admin's preview reconciles instead of mixing three unrelated amounts.
+  if (token === "modificationTypeLabel") return "Dates Changed";
+  if (token === "paymentNote") {
+    return "An additional payment of $26.55 is required.";
+  }
+  if (token === "changeSummary") {
+    return "Previous Dates: 1 Jul 2026 – 3 Jul 2026\nNew Dates: 8 Jul 2026 – 10 Jul 2026\nGuests: 2\nPrevious Total: $123.45\nNew Total: $150.00\n";
+  }
+  if (token === "oldCheckIn") return "1 Jul 2026";
+  if (token === "oldCheckOut") return "3 Jul 2026";
+  if (token === "newCheckIn") return "8 Jul 2026";
+  if (token === "newCheckOut") return "10 Jul 2026";
+  if (token === "oldTotal") return "$123.45";
+  if (token === "newTotal") return "$150.00";
+  if (token === "changeFee") return "$0.00";
+  if (token === "promoAdjustment") return "-$30.00";
+  if (token === "promoCode") return "PROMO2026";
+  if (token === "discount") return "$30.00";
+  if (token === "subtotal") return "$153.45";
   if (token.endsWith("Email") || token === "email") return "member@example.org";
   if (token.endsWith("Url") || token.endsWith("URL")) {
     return "https://bookings.example.org/admin";
@@ -612,6 +751,8 @@ export const EMAIL_TEMPLATE_DEFINITIONS: EmailTemplateDefinition[] = (
     ...GLOBAL_EMAIL_TEMPLATE_TOKENS,
     ...extractTokensFromDefaults(defaults.defaultSubject, defaults.defaultBody),
     ...(EXTRA_TEMPLATE_TOKENS[key] ?? []),
+    // An accepted alternative to a required token is by definition allowed.
+    ...Object.values(REQUIRED_TOKEN_ALTERNATIVES[key] ?? {}).flat(),
   ]);
   const metadata = TEMPLATE_TRIGGER_METADATA[key] ?? {
     triggerSummary: "Audited application email",
@@ -626,6 +767,7 @@ export const EMAIL_TEMPLATE_DEFINITIONS: EmailTemplateDefinition[] = (
     defaultBody: defaults.defaultBody,
     allowedTokens,
     requiredTokens: REQUIRED_TEMPLATE_TOKENS[key] ?? [],
+    requiredTokenAlternatives: REQUIRED_TOKEN_ALTERNATIVES[key] ?? {},
     sampleData: Object.fromEntries(
       allowedTokens.map((token) => [token, sampleValue(token)]),
     ),
@@ -671,6 +813,9 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "bookingReference",
   "bumpedMemberName",
   "changeFee",
+  // #2267: pre-composed block of the booking-modification rows that actually
+  // changed (Previous/New pairs only where something moved).
+  "changeSummary",
   "checkIn",
   "checkOut",
   "childName",
@@ -690,6 +835,9 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "details",
   "discount",
   "doorCode",
+  // #2267: pre-composed "Door code: 1234" line; empty when the lodge has no
+  // door code recorded, so the body never carries a dangling label.
+  "doorCodeNote",
   "email",
   "endDate",
   "entityType",
@@ -757,13 +905,26 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "paymentIntentId",
   "paymentReference",
   "paymentNote",
+  // #2263 × #2267: the booking-confirmed money story as ONE pre-composed block
+  // (the {{promoSummary}} convention) — "Total Paid + processed" for a paid
+  // booking, "Total Due + the owing sentence" for a confirmed-but-unpaid one,
+  // so the default body can never claim money moved when it did not.
+  "paymentOutcome",
   "price",
   "percent",
   "participantName",
   "participantSummary",
   "pin",
   "position",
+  // #2267: signed promo value ("-$12.00" discount, "+$1,370.00" for a
+  // price-raising FIXED_NIGHTLY/SET_PRICE promo). Unusable by admins before
+  // #2267 even though the send supplied it — the one token that could explain
+  // a surcharge promo.
+  "promoAdjustment",
   "promoCode",
+  // #2267: pre-composed multi-line Subtotal + signed Promo adjustment block
+  // (empty without a promo); the provisionalGuestsNote precedent.
+  "promoSummary",
   "provisionalGuestsNote",
   "quoteOptions",
   "reason",
@@ -807,6 +968,12 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "token",
   "total",
   "totalAlerts",
+  // #2263: the two halves of an UNPAID confirmation. `totalDue` replaces
+  // `totalPaid` (exactly one of the pair ever carries a figure), and
+  // `paymentDueNote` is the pre-composed sentence naming the amount owing and
+  // the internet-banking reference.
+  "totalDue",
+  "paymentDueNote",
   "totalPaid",
   "triggeringMemberName",
   "verifyUrl",
@@ -830,6 +997,9 @@ const SENSITIVE_EMAIL_SUBJECT_TOKENS = [
   "confirmUrl",
   "confirmationUrl",
   "doorCode",
+  // #2267: carries the door code itself, so it is subject-forbidden exactly
+  // like the bare value.
+  "doorCodeNote",
   "loginUrl",
   "payUrl",
   "pin",

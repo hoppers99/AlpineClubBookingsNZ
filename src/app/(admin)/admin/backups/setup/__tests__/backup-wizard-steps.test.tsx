@@ -60,6 +60,10 @@ function makeHelpers(
     optional: false,
     acknowledged: false,
     skip: vi.fn(),
+    // Required, and typed as the literal `true` (#2324): the shell always
+    // renders the view-only banner above a step, so a step body is always
+    // covered when it is the shell rendering it.
+    ancestorRendersViewOnlyBanner: true,
     ...overrides,
   };
 }
@@ -212,7 +216,36 @@ describe("OperationalStep (#2227)", () => {
         ) as HTMLInputElement
       ).disabled,
     ).toBe(true);
-    expect(screen.getByText(/Support edit access is required/i)).toBeTruthy();
+    expect(
+      (screen.getByRole("button", { name: /^save$/i }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    // …and does NOT repeat the reason (#2324): the shell's view-only banner
+    // states this exact scope once at the top of the wizard, so the step body
+    // no longer carries its own "support edit access is required" sentence.
+    expect(screen.queryByText(/Support edit access is required/i)).toBeNull();
+  });
+
+  it("shows no view-only sentence while the session is still resolving", () => {
+    // The deleted sentence was keyed off `!canWrite`, which is also true for the
+    // tri-state resolving window (`canEdit === undefined`) — so it flashed at
+    // admins who CAN change these settings. Nothing is stated now; the control
+    // still stays disabled, which is the correct neutral (#2065).
+    render(
+      <OperationalStep
+        context={makeContext()}
+        helpers={makeHelpers({ canEdit: undefined })}
+      />,
+    );
+    expect(screen.queryByText(/Support edit access is required/i)).toBeNull();
+    expect(screen.queryByText(/cannot change them/i)).toBeNull();
+    expect(
+      (
+        screen.getByLabelText(
+          /Enable nightly database backups/i,
+        ) as HTMLInputElement
+      ).disabled,
+    ).toBe(true);
   });
 });
 

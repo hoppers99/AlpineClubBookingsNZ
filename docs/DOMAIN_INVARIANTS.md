@@ -447,7 +447,17 @@ Future reviews and issues should cite this file when proposing changes.
   (#1750) — the surviving partner is **auto-promoted** to primary on the vacated
   bed-night atomically with the removal on transactional paths, each with its own audit entry
   (`BED_ALLOCATION_PARTNER_PROMOTED`) because the partner may belong to a
-  different booking (sharing eligibility is member-level). Promotion is gated on
+  different booking (sharing eligibility is member-level). The one exception is
+  **range assignment** (#2251), which can vacate up to 366 bed-nights in a single
+  transaction: it records **one batched
+  `BED_ALLOCATION_PARTNERS_PROMOTED`** entry instead, targeted at the booking
+  whose range assignment caused the promotions and listing each promotion
+  (`{allocationId, bookingId, bookingGuestId, bedId, stayDate}`) up to
+  `MAX_AUDITED_RANGE_PARTNER_PROMOTIONS` (50, the audit sanitiser's array limit),
+  with the exact `promotedCount` and a `promotionsTruncated` flag alongside — so
+  the promoted partner's own booking is still named per promotion, and the audit
+  rows written inside that transaction stay bounded independently of the range
+  length. Promotion is gated on
   `isSecondOccupant` alone, never the denormalized `bedType` of the removed row or
   the survivor: an AUTO-allocated row on a real DOUBLE carries the SINGLE default,
   so trusting that type would strand the partner it needs to promote. The
@@ -578,9 +588,11 @@ Future reviews and issues should cite this file when proposing changes.
   immediately before the write, so a hold, cancel or soft delete landing
   between planning and writing cannot be undone by a re-insert. The manual
   board path is guarded separately, at the single allocation-write chokepoint
-  added by #2251 (stacked on #2285 and landing with it); until that lands, a
-  hand placement onto a held booking is not refused at the API. The
-  exclusive-hold toggle reconciles both directions (set prunes, release
+  added by #2251 (stacked on #2285 and landing with it): every manual path —
+  single-night board placement, the bulk multi-night drop and range assignment —
+  goes through `assertGuestAndBedForAllocation`, which refuses a held booking, so
+  a hand-placed row can no longer be created only to be swept by the next
+  reconcile. The exclusive-hold toggle reconciles both directions (set prunes, release
   re-plans), and a school approval granting exclusivity prunes after stamping
   the hold; both record the removed rows in their audit entry so a mistaken
   hold can be undone by hand. Divergence guard:
@@ -598,9 +610,143 @@ Future reviews and issues should cite this file when proposing changes.
   editor re-opens; the re-plan after a clear creates unapproved AUTO rows, so it
   stays open until an admin approves again. Intended: with no allocated beds
   there is nothing for the lock to protect.
+- **A range assignment writes all or nothing, and records itself once (#2251):**
+  `assignBedRange` scans, writes and audits inside one transaction. If any
+  requested night is blocked, NOTHING is written and the caller receives a
+  per-night refusal in one of three categories that are never merged —
+  `BED_TAKEN` (a clash; a provisional occupant counts, so nothing is silently
+  overwritten), `GUEST_NOT_BOOKED` (a bad request, never a silent skip, and it
+  includes a gap night of a non-contiguous stay, #713), and `EXCLUSIVE_HOLD` —
+  which here means **the guest's OWN booking** holds the lodge (ADR-001's
+  short-circuit, scoped to the held booking's own guests). Another booking's
+  overlapping hold is surfaced on the board (`overlapsExclusiveHold`), not
+  refused here: no allocation path in the domain hard-blocks on it, and this one
+  must not be the exception. A partial result exists only when a human sends the
+  explicit `nights` list they were shown — the server writes exactly that set or
+  refuses it with a fresh report, never a set it re-derived. Every attempt that
+  COMPLETES — applied or refused — produces exactly ONE
+  `BED_ALLOCATION_RANGE_SET` audit entry against the booking id, committed in the
+  same transaction as the rows; an attempt that THROWS (unknown guest/bed,
+  cancelled booking, deactivated bed, over-cap range, lost write race) rolls back
+  and records nothing, because nothing happened. That entry records shape, not
+  people: night counts and runs per category plus the involved booking ids, with
+  the occupying guests' names carried only in the API response to the admin who
+  asked. The only other row the transaction may write is the single batched
+  `BED_ALLOCATION_PARTNERS_PROMOTED` entry when the move stranded partners on
+  shared doubles (see the sharing invariant above), so **both the statement count
+  and the audit-row count are fixed whatever the night count**. Proceeding past
+  `GUEST_NOT_BOOKED` nights additionally requires an explicit on-screen
+  confirmation naming how many nights are not part of the guest's booking (never
+  "outside the stay" — a GAP night of a non-contiguous stay is inside the span and
+  still refused, #713) and how many
+  will be written, so a partial result is never one click from a warning. The
+  31-night `MAX_BED_ALLOCATION_RANGE_NIGHTS` bounds
+  the board's READ window, not this write: lodge capacity is the active bed
+  count and never reads `BedAllocation` rows, and no capacity or advisory lock
+  is taken on any allocation write path. The separate write bound
+  (`MAX_BED_ALLOCATION_ASSIGN_RANGE_NIGHTS`, 366) exists only to keep one
+  transaction finite, and is **refused at, never silently truncated to** — as is
+  every board window the admin types.
 
 ## Payment And Settlement
 
+- Account credit is consumed only by a booking that is actually reaching
+  `PAYMENT_PENDING`, never by one that is still provisional. A booking saved as
+  a draft therefore stores the member's ELECTION on
+  `Booking.creditElectionCents` (nullable integer cents, #2265) and consumes
+  nothing: NULL means no election is outstanding, `0` means the member
+  explicitly chose to use none, and a positive value is what they asked to
+  apply. A draft that is abandoned, deleted or expires leaves the balance
+  untouched, so no release path exists or is needed. The election is
+  single-consumption — the pay path clears it to NULL in the same transaction
+  that writes the `BOOKING_APPLIED` ledger row — and it is NEVER a record of
+  credit already applied: the authoritative applied total is always the
+  MemberCredit ledger (`deriveBookingAppliedCreditCents`). ANY booking held for
+  admin review keeps its election until an admin releases it to
+  `PAYMENT_PENDING` — a saved draft that landed in `AWAITING_REVIEW` and a
+  booking the confirmed-create path parked there via `blockForReview` alike.
+  Holding for review suppresses the SPEND, never the member's request.
+- The election is consumed by a guarded CLAIM, not a read-then-write (#2265):
+  the column is moved from the exact amount that was read to NULL with an
+  `updateMany` matching the booking id, `PAYMENT_PENDING` and that amount, in
+  the same transaction as the ledger write. Two concurrent consumers therefore
+  cannot both debit the member; the loser applies nothing and reports nothing,
+  because a phantom outcome would produce a second confirmation email, a second
+  Xero invoice and a second `MEMBER_PAID` event. There are exactly two
+  consumers — the card pay step and the Internet Banking switch — and both take
+  the per-member credit-ledger lock before the claim and refuse (leaving the
+  election intact) before consuming when capacity is gone. An
+  organiser-settled booking can never consume one, so group settlement clears
+  the column instead.
+- A stored credit election is CLAMPED at confirmation, never refused, and never
+  applied short in silence (#2265). Between the election and the confirmation
+  the balance may have been spent elsewhere and the booking may have been
+  repriced, so the amount applied is
+  `min(election, live balance, price not already covered by credit)` — the same
+  posture `clampAppliedCreditToBookingPrice` (#1887) takes when a modification
+  reprices a booking below its applied credit, and for the same reason: throwing
+  would leave the member unable to pay their own booking. The requested amount,
+  the applied amount, the shortfall and its cause are returned by the pay route
+  so the shortfall is always surfaced. `calculateBookingCreditApplication` keeps
+  its throw-on-over-request contract at booking-create, where the wizard
+  validated the balance in the same request and an over-request is a bug. The
+  reported reason names the bound that ACTUALLY bound — the lower of the two —
+  and reads `balance_and_price` only when the balance and the uncovered price
+  are equal and both below the request; a bound that sits under the request but
+  above the other decided nothing and is not reported.
+- A booking with nothing left to pay settles at $0 inside the pay transaction
+  rather than dead-ending at the card-intent effective-price guard (#2265):
+  status `PAID` plus one $0 `SUCCEEDED` Payment mirroring the applied credit,
+  the same zero-dollar shape booking-create and the modification engine use,
+  keeping `amountCents + creditAppliedCents = finalPriceCents`. This covers a
+  fully-covering election, a booking already covered by credit applied
+  elsewhere, and a draft repriced to $0 between the member rendering the pay
+  step and clicking it — the last of which previously committed
+  `DRAFT -> PAYMENT_PENDING` and only then refused, stranding a booking that
+  had left `DRAFT` and could never be paid. The settlement clears the Payment's
+  card-intent pointers but keeps `stripePaymentMethodId`, which a split
+  parent's deferred non-member guest charge falls back to.
+- No SETTLED booking carries a stored credit election (#2265, #2319). Once the
+  money has been taken for the amount the intent or the invoice was raised at,
+  the election can no longer be honoured: "applying" it then would debit the
+  member's balance for cash they have already handed over, inventing a charge
+  rather than honouring a choice. So every settlement CLEARS the column, with the
+  same guarded claim on the exact amount read (`clearStaleCreditElection`) that
+  the consumers use, so a consumer racing the settle is never clobbered:
+  - `markBookingPaymentSucceeded` — the single door the Stripe webhook, the
+    session confirm, the public payment link, the saved-card charge and the
+    auto-confirm cron all funnel through — clears on its `PAID` claim.
+  - The Internet Banking inbound reconcile clears on its `PAID` flip, and on the
+    late-capacity-failure `CANCELLED` flip in the same writer.
+  - The repriced-to-$0 auto-pay arms of both modification services clear, as
+    `confirm-draft`'s $0 confirm and group settlement already did.
+  Clearing is the answer ONLY once the money is taken. While a booking is still
+  payable the election remains honourable and must be consumed or left alone —
+  never discarded to make a charge simpler, which is the original #2265 bug in
+  another form. A reprice that leaves a booking payable therefore keeps its
+  election, and the public payment link REFUSES a booking that carries one
+  (below) rather than clearing it.
+- Whether the clear is reported depends on whether the member lost anything. A
+  clear on a $0 settlement is silent: nothing was owed, so the election was moot
+  rather than unhonoured. A clear on a settlement that took real money is
+  reported through `reportUnappliedCreditElection` — an audit row under
+  `booking.credit_election.unapplied`, which the member's own booking history
+  renders as a plain-English note ("your credit was not used and is still
+  available"), plus an operator alert so someone can decide whether to refund the
+  difference. A cleared column is invisible, and without the note a member who
+  chose to spend credit and then paid full price could not tell whether their
+  balance had been debited. It never is: a clear moves no money.
+- The public payment link never spends, and never ignores, a member's credit
+  election (#2319). `createPaymentIntentForPaymentLink` refuses (409) a booking
+  carrying one instead of minting an intent at the pre-credit price. The reason
+  is authorisation, not convenience: the election is a member's request to spend
+  their own account-credit balance, and that route is authenticated by a bearer
+  token routinely held by someone else (a booking requester, a group joiner, a
+  non-member guest), carries no member session, and has no surface on which to
+  report a clamped outcome. Nothing is lost by refusing — the member's own pay
+  step honours the election — and no mint path attaches a link to a booking that
+  can carry one, so the guard asserts that invariant rather than serving routine
+  traffic, and alerts an operator if it ever fires.
 - Stripe and Internet Banking/Xero settlement paths must remain distinct.
 - Stripe paths own PaymentIntents, SetupIntents, Stripe refunds, Stripe
   webhooks, and durable PaymentRecoveryOperation rows.
@@ -967,6 +1113,79 @@ Future reviews and issues should cite this file when proposing changes.
   refund mirror twice — the replay only ever writes a mirror to an
   already-CANCELLED plan child whose `refundedAmountCents` is still zero,
   via a conditional update. Alerts fire on retry exhaustion only.
+
+## Member-Guest Consent
+
+A MEMBER added as somebody else's guest may need that member's agreement first
+("+ Add Member Guest", epic #2305, decision D-7). The state lives in five
+columns on `BookingGuest` — `consentStatus`, `consentRequestedAt`,
+`consentRespondedAt`, `consentRespondedByMemberId`, `consentExpiresAt` — not in
+a side table.
+
+**In the MG1 release (#2306) every one of these columns is inert.** Cross-family
+adds are still refused, `MEMBER_GUEST_WIDENING_ENABLED` is `false`, and
+therefore no code path writes a non-null `consentStatus` in any module state for
+any actor. The invariants below are the contract MG2 (#2307) onwards must hold.
+
+- **`NULL` is not `CONFIRMED`.** A null `consentStatus` means *no consent was
+  ever needed* — a family-scope add (D-6) or a row written before the feature
+  existed. `CONFIRMED` means *somebody said yes*. Conflating them is
+  irreversible: once a family row is stamped `CONFIRMED`, nothing downstream can
+  recover the fact that nobody was ever asked. A family-scope add must never
+  write anything but nulls.
+- **A consent that was never solicited is recorded as such.** `consentRequestedAt`
+  is the discriminator: it is set only when the club actually asked. Notify-only
+  auto-confirms and admin/copy/pipeline rows are `CONFIRMED` with a null
+  `consentRequestedAt`, and are still *not* written as all-nulls, because the
+  guest genuinely is cross-family and that must stay visible. Neither shape is
+  waiting for an answer, so neither carries a `consentExpiresAt`: a settled row
+  with a live hold deadline on it is a broken row, not a variant.
+- **A refusal names who refused.** `DECLINED` requires a non-null
+  `consentRespondedByMemberId`. Declining is an attributed act — MG4's audit
+  reads that column to say who turned the add down — so an unattributed decline
+  is not an anonymous decline, it is a row no writer should produce.
+- **Who answered is audited separately from who was asked.**
+  `consentRespondedByMemberId` may equal the guest (self-approval), differ from
+  them (a delegate approving for a target with no login, D-5/D-10), or name the
+  acting admin (an admin assignment or a booking copy). MG4's admin-assigner
+  audit rides this column; no extra column exists or is needed.
+- **A `PENDING` row holds the bed** (D-4) until `consentExpiresAt`, which is set
+  from `MemberGuestSettings.pendingHoldExpiryDays` (default 7, bounds 1–60). A
+  `PENDING` row without an expiry would be an unbounded capacity hold and is not
+  a legal shape.
+- **Consent is not transitive across bookings.** A copied booking's guest never
+  inherits the source row's approval: the copy is re-stamped as an admin
+  assignment against the copying admin. Neither may it silently become
+  consent-free.
+- **A merged-away member's guest rows keep their consent.** `BookingGuest.member`
+  is classified `move` in `src/lib/member-merge.ts`, so merging A into B
+  re-points A's guest rows — consent columns included — onto B.
+  `consentRespondedByMemberId` is an FK-less snapshot and keeps the id of
+  whoever actually answered at the time, even after that member is merged away.
+
+The eight legal column shapes, and only those eight, are. In the four column
+cells, **null** means the column must be `NULL`, **set** means it must be
+non-`NULL`, and **any** means either is legal; where the responder's identity
+also matters it is named instead.
+
+| Sub-state | `consentStatus` | `requestedAt` | `respondedAt` | `respondedByMemberId` | `expiresAt` |
+| --- | --- | --- | --- | --- | --- |
+| `FAMILY_OR_LEGACY` | `NULL` | null | null | null | null |
+| `AWAITING_TARGET` | `PENDING` | set | null | null | set |
+| `TARGET_APPROVED` | `CONFIRMED` | set | set | the guest themselves | any |
+| `DELEGATE_APPROVED` | `CONFIRMED` | set | set | someone other than the guest | any |
+| `NOTIFY_ONLY_AUTO_CONFIRMED` | `CONFIRMED` | null | null | null | null |
+| `ADMIN_ASSIGNED` | `CONFIRMED` | null | set | the acting admin | null |
+| `DECLINED` | `DECLINED` | set | set | set | any |
+| `EXPIRED` | `EXPIRED` | set | null | null | set |
+
+This table is the same data as `MEMBER_GUEST_CONSENT_SUB_STATES` in
+`src/lib/member-guest-consent.ts`, whose `classifyMemberGuestConsent` returns
+`null` for any other combination. It is not merely "kept in step" by hand:
+`src/lib/__tests__/member-guest-consent.test.ts` GENERATES each row above from
+the code table (one mapping of set / null / any / the responder words) and fails
+unless this file contains it verbatim, so a shape that changes in code cannot
+leave a stale row here.
 
 ## Booking Modifications
 

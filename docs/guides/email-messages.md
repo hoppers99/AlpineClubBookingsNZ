@@ -73,7 +73,7 @@ Per-template editor:
 | Rule | Detail |
 | --- | --- |
 | Allowed tokens only | Only the chips shown for that template are accepted; unknown `{{tokens}}` are rejected |
-| Required tokens | The highlighted chip(s) must stay in the body — removing an essential bearer token (e.g. a `/pay/<token>` or sign-in link) is refused |
+| Required tokens | The highlighted chip(s) must stay in the body — removing an essential bearer token (e.g. a `/pay/<token>` or sign-in link), the lodge access details, or the promo explanation on a payment confirmation is refused. A sentence under the chips names the required tokens, and any older token that satisfies the same requirement instead (`{{promoSummary}}` **or** `{{promoAdjustment}}`/`{{discount}}`; `{{doorCodeNote}}` **or** your own label around `{{doorCode}}`) |
 | Subject safety | Sensitive token values (e.g. raw tokens) are never allowed in a subject line |
 | Override vs default | Saving stores an override; **Restore Default** deletes it and reverts to the built-in text |
 | Stale overrides | A count is shown if any stored overrides reference templates that no longer exist (a data-cleanup task) |
@@ -84,7 +84,7 @@ Per-template editor:
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
 | Everything is read-only | Your role has support view, not edit | Ask a full admin for Support & System edit access |
-| Save is rejected | You removed a required token, used an unknown token, or put a sensitive token in the subject | Re-add the highlighted token; use only the listed chips; keep tokens out of the subject |
+| Save is rejected | You removed a required token, used an unknown token, or put a sensitive token in the subject | Read the reason in the error — it names what the email must show and which tokens do it. Re-add the highlighted token (or one of its listed alternatives); use only the listed chips; keep tokens out of the subject |
 | A token shows literally to members | It is misspelled or not allowed for that template | Use the exact chip from the **Tokens** list |
 | I want the original wording back | An override is in place | Click **Restore Default** for that template |
 | The change didn't reach a lodge-specific value | Lodge name/travel note/door code are per-lodge now | Set them in [Lodges](../multi-lodge/README.md), not here |
