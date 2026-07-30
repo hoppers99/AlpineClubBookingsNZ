@@ -1,4 +1,5 @@
 import { logAudit } from "@/lib/audit";
+import { eachDateOnlyInRange } from "@/lib/date-only";
 import {
   sendMemberGuestAddedEmail,
   sendMemberGuestConsentRequestEmail,
@@ -217,13 +218,26 @@ export async function sendMemberGuestAddNotifications(params: {
       continue;
     }
 
+    if (row.notification === "CONSENT_REQUEST" && !guest.consentExpiresAt) {
+      // A PENDING row with no expiry is the one shape
+      // `buildMemberGuestConsentWrite` refuses to write, because the sweep's
+      // partial index cannot see it and it would hold a bed forever. Reaching
+      // here means something else wrote the row; refuse to send a request with no
+      // deadline in it rather than mail a member an open-ended ask.
+      logger.error(
+        { bookingId, guestId: row.bookingGuestId, targetMemberId: row.targetMemberId },
+        "Member-guest consent request not sent: the guest row has no consentExpiresAt",
+      );
+      result.failedGuestIds.push(row.bookingGuestId);
+      continue;
+    }
+
     let anySent = false;
     for (const recipient of recipients) {
       try {
         if (row.notification === "CONSENT_REQUEST") {
           await sendMemberGuestConsentRequestEmail({
             bookingId,
-            guestId: guest.id,
             lodgeId: context.lodgeId,
             email: recipient.email,
             firstName: recipient.firstName,
@@ -235,32 +249,45 @@ export async function sendMemberGuestAddNotifications(params: {
                   kind: "DELEGATE" as const,
                   guest: { firstName: guest.firstName, lastName: guest.lastName },
                 },
-            consentExpiresAt: guest.consentExpiresAt,
+            consentExpiresAt: guest.consentExpiresAt!,
+            consentUrl: buildMemberGuestConsentUrl(bookingId),
             bookerName: context.bookerName,
             checkIn: context.checkIn,
             checkOut: context.checkOut,
+            guestNights: guest.nights,
             party: context.party,
           });
         } else {
           await sendMemberGuestAddedEmail({
             bookingId,
-            guestId: guest.id,
             lodgeId: context.lodgeId,
             email: recipient.email,
+            // The recipient's OWN first name, so the greeting is right for a
+            // delegate as well as for the target.
+            //
+            // CROSS-LANE GAP, recorded rather than worked around: unlike the
+            // consent request, `member-guest-added` has no audience discriminator,
+            // so its composed sentence says "…has added YOU as a guest" whichever
+            // of the two is reading. For the D-9 normal case — a target with no
+            // login, whose family adult receives this — that sentence names the
+            // wrong person. The fix belongs in
+            // `composeMemberGuestAddedContextNote`, which needs the same
+            // `MemberGuestConsentAudience` treatment the ask already has; it is
+            // not fixable from here without printing a stranger's greeting.
             firstName: recipient.firstName,
             // ONE template, told apart by this value (MG4 reuses it for the
             // pipeline add). Taken from the actor, not re-derived from the
             // columns.
             context: actor.kind === "ADMIN" ? ("ADMIN" as const) : ("NOTIFY_ONLY" as const),
-            guest: { firstName: guest.firstName, lastName: guest.lastName },
             bookerName: context.bookerName,
             checkIn: context.checkIn,
             checkOut: context.checkOut,
+            guestNights: guest.nights,
             party: context.party,
             // `composeMemberGuestRemovalNote` calls the shared self-removal
             // predicate itself, so the email can never offer a control the server
             // would refuse (D-14). It needs the facts, not a verdict.
-            removalFacts: {
+            selfRemoval: {
               actorMemberId: row.targetMemberId,
               guestMemberId: row.targetMemberId,
               bookingOwnerMemberId: context.bookingOwnerMemberId,
@@ -298,6 +325,25 @@ export async function sendMemberGuestAddNotifications(params: {
   return result;
 }
 
+/**
+ * The link the request email's "Answer this request" button points at.
+ *
+ * Owner decision D-11 gives a member with a PENDING guest row full access to the
+ * booking page, so that is the surface for a target answering for themselves.
+ *
+ * CROSS-LANE GAP, recorded: a DELEGATE gets the same link and D-11 gives them no
+ * booking-page access (the consent endpoint's own doc comment is explicit that
+ * answering as a delegate grants no view of the booking), so a delegate following
+ * this link reaches a page they cannot open. A delegate-specific surface is not
+ * part of this work package; the sender's own parameter doc anticipates one ("the
+ * booking card, or the delegate page"). Until it exists the delegate's route in is
+ * the endpoint itself, and this link is the only member-facing URL that exists.
+ */
+function buildMemberGuestConsentUrl(bookingId: string): string {
+  const baseUrl = process.env.NEXTAUTH_URL || "http://localhost:3000";
+  return `${baseUrl}/bookings/${bookingId}`;
+}
+
 type NotificationContext = {
   lodgeId: string | null;
   checkIn: Date;
@@ -309,7 +355,14 @@ type NotificationContext = {
   party: Array<{ firstName: string; lastName: string }>;
   guestsById: Map<
     string,
-    { id: string; firstName: string; lastName: string; consentExpiresAt: Date | null }
+    {
+      id: string;
+      firstName: string;
+      lastName: string;
+      consentExpiresAt: Date | null;
+      /** This guest's own nights (#713), for the email's per-guest night label. */
+      nights: Date[];
+    }
   >;
 };
 
@@ -333,7 +386,10 @@ async function loadNotificationContext(
           id: true,
           firstName: true,
           lastName: true,
+          stayStart: true,
+          stayEnd: true,
           consentExpiresAt: true,
+          nights: { select: { stayDate: true } },
         },
       },
     },
@@ -356,7 +412,22 @@ async function loadNotificationContext(
     guestsById: new Map(
       booking.guests
         .filter((guest) => wanted.has(guest.id))
-        .map((guest) => [guest.id, guest]),
+        .map((guest) => [
+          guest.id,
+          {
+            id: guest.id,
+            firstName: guest.firstName,
+            lastName: guest.lastName,
+            consentExpiresAt: guest.consentExpiresAt,
+            // Night rows are the uniform model since #713, but a guest written by
+            // an older path may have none, so fall back to the stored envelope
+            // rather than mailing a member an empty night list.
+            nights:
+              guest.nights.length > 0
+                ? guest.nights.map((night) => night.stayDate)
+                : eachDateOnlyInRange(guest.stayStart, guest.stayEnd),
+          },
+        ]),
     ),
   };
 }
