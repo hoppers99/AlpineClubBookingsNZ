@@ -4,20 +4,20 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
-- **Admins can now cancel the membership of a family dependant or any member
-  without their own login (#2354).** Opening such a member's admin page used
-  to show no cancellation action at all — not greyed out, simply absent — so
-  a dependant's membership looked uncancellable, even for an adult recorded
-  as a dependant of their parent. The cause was the page borrowing a
-  permissions test to decide who is cancellable: members without a login
-  hold no permissions by design, so the test always failed for them, while
-  the underlying cancellation machinery has always supported dependants and
-  non-login adults (it classifies them as such, skips the own-confirmation
-  step a login-holder would get, and the admin review queue handles the rest
-  unchanged). The page now asks the same eligibility question the server
-  enforces — is this an active, not-yet-cancelled, not-archived member — so
-  the Request cancellation action appears for exactly the members it can
-  act on.
+- **Admins can now cancel the membership of a member who has no login of
+  their own (#2354).** Opening such a member's admin page used to show no
+  **Request Cancellation** action at all — not greyed out, simply absent —
+  so their membership looked uncancellable. Most family dependants are in
+  exactly this position, as is any adult the club records without giving
+  them a login. The cause was the page borrowing a permissions test to
+  decide who is cancellable: a member without a login holds no permissions
+  by design, so the test always failed for them, while the cancellation
+  machinery behind it has always accepted them — an admin-raised request
+  is confirmed on the member's behalf and goes straight to the review
+  queue, exactly as it does for anyone else. The page now asks the same
+  eligibility question the server enforces — is this an active,
+  not-yet-cancelled, not-archived member — so the action appears for
+  exactly the members it can act on.
 
 - **A custodian can now be given a bed for the season without booking it
   (#2286).** Clubs that keep someone on site all winter had no honest way to

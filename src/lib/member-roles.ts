@@ -73,22 +73,26 @@ export function isOperationalRole(
   );
 }
 
-
 /**
  * Whether an admin may open a membership-cancellation request for this
- * member. Mirrors the server-side validation in
- * createAdminMembershipCancellationRequest exactly: member-level role,
- * active, not already cancelled, not archived. Deliberately NOT an
- * access-role check — dependants and non-login adults resolve to zero
- * access roles (the canLogin clearing rule) yet their memberships are
- * cancellable, as participants classified "dependent"/"non_login_adult"
- * (#2354).
+ * member: member-level role, active, not already cancelled, not archived.
+ *
+ * Mirrors the member-state half of `createAdminMembershipCancellationRequest`
+ * (see the pointer beside its checks). The server additionally rejects a
+ * missing member and an existing open participant; a caller that can already
+ * see an open request must keep its own `!openCancellationRequest` conjunct,
+ * or the action it offers will 409.
+ *
+ * Deliberately NOT an access-role check (#2354): access roles are cleared for
+ * anyone who cannot log in, so dependants and non-login adults resolve to
+ * zero roles while their memberships remain cancellable. The admin path
+ * confirms every participant on their behalf, whatever their login state.
  */
 export function canAdminRequestMembershipCancellation(member: {
   role: string | null | undefined;
   active: boolean;
-  cancelledAt: unknown;
-  archivedAt: unknown;
+  cancelledAt: string | Date | null | undefined;
+  archivedAt: string | Date | null | undefined;
 }): boolean {
   return (
     isMemberLevelRole(member.role) &&

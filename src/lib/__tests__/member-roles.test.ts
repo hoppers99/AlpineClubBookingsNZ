@@ -99,7 +99,7 @@ describe("non-member booking-request roles", () => {
   });
 });
 
-describe("canAdminRequestMembershipCancellation (#2354)", () => {
+describe("admin membership-cancellation eligibility", () => {
   const base = {
     role: "USER",
     active: true,
@@ -107,16 +107,33 @@ describe("canAdminRequestMembershipCancellation (#2354)", () => {
     archivedAt: null,
   };
 
-  it("offers cancellation for a dependant / non-login adult (zero access roles)", () => {
-    // The regression: the page previously gated on hasAccessRole(member,
-    // "USER"), which is always false when canLogin is false, hiding the
-    // action for every dependant. Eligibility must ignore login/access
-    // roles entirely — the API path does.
+  it("offers cancellation for a dependant / non-login adult", () => {
+    // The regression: the page gated on hasAccessRole(member, "USER"), which
+    // is always false once canLogin is false (access roles are cleared for
+    // anyone who cannot log in), hiding the action for every dependant while
+    // the API accepted them. The extra fields here are the ones the old gate
+    // consulted — carried deliberately to document that eligibility ignores
+    // them. See membership-cancellation-gate-contract.test.ts for the call
+    // site, which is what a revert would break.
+    expect(
+      canAdminRequestMembershipCancellation({
+        ...base,
+        canLogin: false,
+        accessRoles: [],
+      } as typeof base),
+    ).toBe(true);
     expect(canAdminRequestMembershipCancellation(base)).toBe(true);
   });
 
   it("refuses non-member-level roles", () => {
-    for (const role of ["ADMIN", "LODGE", "NON_MEMBER", "SCHOOL", null]) {
+    for (const role of [
+      "ADMIN",
+      "LODGE",
+      "NON_MEMBER",
+      "SCHOOL",
+      null,
+      undefined,
+    ]) {
       expect(canAdminRequestMembershipCancellation({ ...base, role })).toBe(
         false,
       );
