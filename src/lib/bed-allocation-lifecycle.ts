@@ -579,6 +579,15 @@ async function autoAllocateMissingBedNights({
         status: { in: [...BED_ALLOCATABLE_BOOKING_STATUSES] },
         checkIn: { lt: range.checkOut },
         checkOut: { gt: range.checkIn },
+        // DELIBERATELY NOT consent-filtered, unlike the guest select below
+        // (owner decision D-12, #2307). This `some` decides which bookings the
+        // planner LOADS — the set it widens its load envelope from (#1677) and
+        // sees existing occupancy against (#1387) — not who it places. Narrowing
+        // it would make the planner blind to a neighbouring booking whose only
+        // overlapping guest happens to be unconsented, and that booking's
+        // already-written BedAllocation rows would still be occupying beds. Only
+        // the reconciled booking's guests are ever placed, and that list IS
+        // filtered, so nothing here can draft a bed for an absent guest.
         guests: {
           some: {
             stayStart: { lt: range.checkOut },

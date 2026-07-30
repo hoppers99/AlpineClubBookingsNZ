@@ -1173,6 +1173,14 @@ async function loadBookingRecords(
       status: { in: [...BED_ALLOCATABLE_BOOKING_STATUSES] },
       checkIn: { lt: range.to },
       checkOut: { gt: range.from },
+      // DELIBERATELY NOT consent-filtered, unlike the guest select below (owner
+      // decision D-12, #2307). This `some` decides which bookings the BOARD
+      // shows; the guest select decides who is placeable. An officer still needs
+      // to see a booking that overlaps their window — its held nights, its
+      // whole-lodge-hold flag, its existing allocations — even if every guest
+      // currently on it is awaiting consent. What they must not get is an
+      // unconsented guest in the awaiting-allocation queue, and that comes from
+      // the filtered select.
       guests: {
         some: {
           stayStart: { lt: range.to },
@@ -1811,6 +1819,11 @@ export async function countGuestsAwaitingBed(input: {
         wholeLodgeHold: false,
         checkIn: { lt: to },
         checkOut: { gt: from },
+        // Left broad for the same reason as `loadBookingRecords`' `some` above
+        // (D-12, #2307): this mirrors the board's booking-existence rule, and the
+        // exclusion that matters is on the guest select below. A booking whose
+        // only overlapping guests are unconsented loads here and contributes
+        // nobody, which is the right answer either way.
         guests: {
           some: {
             stayStart: { lt: to },
