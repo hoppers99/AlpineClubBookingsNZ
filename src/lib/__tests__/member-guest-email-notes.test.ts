@@ -8,7 +8,7 @@ import { getEmailTemplateDefinition } from "@/lib/email-message-registry";
 import {
   buildMemberGuestPartyList,
   composeGuestNightsLabel,
-  composeMemberGuestAddedContextNote,
+  composeMemberGuestAdded,
   composeMemberGuestConsentAsk,
   composeMemberGuestConsentOutcome,
   composeMemberGuestRemovalNote,
@@ -242,20 +242,23 @@ describe("composeMemberGuestConsentAsk (#2307, D-9)", () => {
   });
 });
 
-describe("composeMemberGuestAddedContextNote (#2307)", () => {
+describe("composeMemberGuestAdded (#2307)", () => {
+  const TARGET = { kind: "TARGET" } as const;
+  const DELEGATE = {
+    kind: "DELEGATE" as const,
+    guest: { firstName: "Tama", lastName: "Kaur" },
+  };
+
   it("tells the three no-consent paths apart", () => {
-    const notifyOnly = composeMemberGuestAddedContextNote({
-      context: "NOTIFY_ONLY",
-      bookerName: FIXTURE.bookerName,
-    });
-    const admin = composeMemberGuestAddedContextNote({
-      context: "ADMIN",
-      bookerName: FIXTURE.bookerName,
-    });
-    const pipeline = composeMemberGuestAddedContextNote({
-      context: "BOOKING_REQUEST",
-      bookerName: FIXTURE.bookerName,
-    });
+    const notes = (["NOTIFY_ONLY", "ADMIN", "BOOKING_REQUEST"] as const).map(
+      (context) =>
+        composeMemberGuestAdded({
+          context,
+          bookerName: FIXTURE.bookerName,
+          audience: TARGET,
+        }).contextNote,
+    );
+    const [notifyOnly, admin, pipeline] = notes;
 
     expect(notifyOnly).toContain("this club does not ask first");
     expect(admin).toContain("the club has added you");
@@ -263,11 +266,40 @@ describe("composeMemberGuestAddedContextNote (#2307)", () => {
     expect(pipeline).toContain("booking request");
     // Three genuinely different sentences: one template can only stand in for
     // three if the sentence that distinguishes them actually distinguishes them.
-    expect(new Set([notifyOnly, admin, pipeline]).size).toBe(3);
+    expect(new Set(notes).size).toBe(3);
     // Each one follows "Hi <name>, " in the body, so none may be empty.
-    for (const note of [notifyOnly, admin, pipeline]) {
+    for (const note of notes) {
       expect(note.length).toBeGreaterThan(0);
       expect(note).toContain(FIXTURE.bookerName);
+    }
+  });
+
+  it("addresses the member who was added directly", () => {
+    const copy = composeMemberGuestAdded({
+      context: "NOTIFY_ONLY",
+      bookerName: FIXTURE.bookerName,
+      audience: TARGET,
+    });
+    expect(copy.heading).toBe("You have been added to a lodge booking");
+    expect(copy.contextNote).toContain("has added you as a guest");
+  });
+
+  it("names the guest — not the reader — when a delegate is being told (D-9)", () => {
+    // The defect this parameter exists for: without it a parent reads "you have
+    // been added to a lodge booking" about their own child's place.
+    for (const context of ["NOTIFY_ONLY", "ADMIN", "BOOKING_REQUEST"] as const) {
+      const copy = composeMemberGuestAdded({
+        context,
+        bookerName: FIXTURE.bookerName,
+        audience: DELEGATE,
+      });
+
+      expect(copy.heading).toBe("Tama Kaur has been added to a lodge booking");
+      expect(copy.contextNote).toContain("Tama Kaur");
+      expect(copy.contextNote).not.toContain("added you as a guest");
+      expect(copy.contextNote).toContain(
+        "You are being told because Tama does not have a login of their own",
+      );
     }
   });
 });
@@ -305,9 +337,13 @@ describe("composeMemberGuestRemovalNote agrees with the shared predicate (#2307,
       canSelfRemove: true,
       blocker: null,
     });
-    expect(composeMemberGuestRemovalNote(BASE)).toBe(
-      MEMBER_GUEST_SELF_REMOVAL_OFFER,
-    );
+    expect(
+      composeMemberGuestRemovalNote({
+        facts: BASE,
+        audience: { kind: "TARGET" },
+        bookerName: "Dave Ngata",
+      }),
+    ).toBe(MEMBER_GUEST_SELF_REMOVAL_OFFER);
   });
 
   it.each(Object.keys(FACTS_BY_BLOCKER) as GuestSelfRemovalBlocker[])(
@@ -319,7 +355,11 @@ describe("composeMemberGuestRemovalNote agrees with the shared predicate (#2307,
       // assertion below would be testing the wrong branch and still pass.
       expect(evaluateGuestSelfRemoval(facts).blocker).toBe(blocker);
 
-      const note = composeMemberGuestRemovalNote(facts);
+      const note = composeMemberGuestRemovalNote({
+        facts,
+        audience: { kind: "TARGET" },
+        bookerName: "Dave Ngata",
+      });
       expect(note).toBe(MEMBER_GUEST_REMOVAL_NOTE_BY_BLOCKER[blocker]);
       expect(note).not.toBe(MEMBER_GUEST_SELF_REMOVAL_OFFER);
       expect(note).not.toContain("take yourself off the booking from your account");
@@ -331,7 +371,11 @@ describe("composeMemberGuestRemovalNote agrees with the shared predicate (#2307,
     // The shared describeGuestSelfRemovalBlocker wording ends "ask the person
     // who made the booking, or the club, to take you off it" — but the person
     // who made the booking CANNOT, so that is a dead end in an email.
-    const note = composeMemberGuestRemovalNote(FACTS_BY_BLOCKER.QUOTE_PRICED);
+    const note = composeMemberGuestRemovalNote({
+      facts: FACTS_BY_BLOCKER.QUOTE_PRICED,
+      audience: { kind: "TARGET" },
+      bookerName: "Dave Ngata",
+    });
     expect(note).toContain("Only the club can take you off");
     expect(note).toContain("re-quote the request");
   });
@@ -496,11 +540,14 @@ describe("registry preview samples mirror what the senders compose (#2307)", () 
   });
 
   it("matches the added notice's composed samples", () => {
+    const added = composeMemberGuestAdded({
+      context: "NOTIFY_ONLY",
+      bookerName: FIXTURE.bookerName,
+      audience: { kind: "TARGET" },
+    });
+    expect(sampleFor("member-guest-added", "addedHeading")).toBe(added.heading);
     expect(sampleFor("member-guest-added", "addedContextNote")).toBe(
-      composeMemberGuestAddedContextNote({
-        context: "NOTIFY_ONLY",
-        bookerName: FIXTURE.bookerName,
-      }),
+      added.contextNote,
     );
     expect(sampleFor("member-guest-added", "removalNote")).toBe(
       MEMBER_GUEST_SELF_REMOVAL_OFFER,

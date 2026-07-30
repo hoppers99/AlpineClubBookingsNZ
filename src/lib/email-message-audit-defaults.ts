@@ -419,8 +419,8 @@ export const EMAIL_AUDIT_DEFAULTS = {
     "defaultBody": "{{askHeading}}\n\nHi {{firstName}}, {{askContextNote}}\n\nLodge: {{CLUB_LODGE_NAME}}\nStay: {{checkIn}} - {{checkOut}}\nNights: {{guestNightsLabel}}\nBooked by: {{bookerName}}\nPlease answer by: {{consentExpiresAt}}\n\n{{partyListNote}}\n\nIf you do not answer by {{consentExpiresAt}}, the request lapses on its own, the bed is released, and {{bookerName}} is told. You do not have to do anything to decline.\n\nAnswer this request: {{consentUrl}}\n\nIf you were not expecting this, you can safely ignore it - the place is only confirmed if somebody answers yes."
   },
   "member-guest-added": {
-    "defaultSubject": "You have been added to a lodge booking - {{CLUB_LODGE_NAME}}",
-    "defaultBody": "You have been added to a lodge booking\n\nHi {{firstName}}, {{addedContextNote}}\n\nLodge: {{CLUB_LODGE_NAME}}\nStay: {{checkIn}} - {{checkOut}}\nYour nights: {{guestNightsLabel}}\n\n{{partyListNote}}\n\n{{removalNote}}\n\nView this booking: {{BASE_URL}}/bookings"
+    "defaultSubject": "{{addedHeading}} - {{CLUB_LODGE_NAME}}",
+    "defaultBody": "{{addedHeading}}\n\nHi {{firstName}}, {{addedContextNote}}\n\nLodge: {{CLUB_LODGE_NAME}}\nStay: {{checkIn}} - {{checkOut}}\nNights: {{guestNightsLabel}}\n\n{{partyListNote}}\n\n{{removalNote}}\n\nView this booking: {{BASE_URL}}/bookings"
   },
   "member-guest-consent-outcome": {
     "defaultSubject": "{{outcomeHeading}} - {{CLUB_LODGE_NAME}}",

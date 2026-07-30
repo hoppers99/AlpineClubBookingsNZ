@@ -3252,6 +3252,7 @@ function memberGuestStayRows(data: {
   nightsLabel: string;
 }): Array<{ label: string; value: string }> {
   return [
+    // The nights label can be audience-derived, so it is escaped like a value.
     { label: "Lodge", value: escapeHtml(data.lodgeName) },
     {
       label: "Stay",
@@ -3260,7 +3261,7 @@ function memberGuestStayRows(data: {
     ...(data.guestNightsLabel
       ? [
           {
-            label: data.nightsLabel,
+            label: escapeHtml(data.nightsLabel),
             value: escapeHtml(data.guestNightsLabel),
           },
         ]
@@ -3318,26 +3319,35 @@ export function memberGuestConsentRequestTemplate(data: {
 }
 
 /**
- * "You have been added to a lodge booking" — to the member, when nobody asked.
+ * "You have been added to a lodge booking" — to the member, when nobody asked, or
+ * to the family adult who is told on behalf of a member with no login (D-9).
  *
  * ONE template for notify-only, an admin add and a booking-request row;
  * `addedContextNote` is the single composed sentence that tells them apart, and
- * MG4 reuses this template unchanged. `removalNote` comes from the shared
- * self-removal predicate, so this email never offers a "take yourself off" link
- * the server would refuse (owner decision D-14).
+ * MG4 reuses this template unchanged. The heading is composed for the same reason
+ * the consent request's is: it names the guest rather than the reader when the two
+ * are not the same person. `removalNote` comes from the shared self-removal
+ * predicate, so this email never offers a "take yourself off" link the server
+ * would refuse (owner decision D-14).
  */
 export function memberGuestAddedTemplate(data: {
   firstName: string;
+  addedHeading: string;
   addedContextNote: string;
   lodgeName: string;
   checkIn: Date;
   checkOut: Date;
   guestNightsLabel: string;
+  /**
+   * "Your nights" only when the reader IS the guest; a neutral "Nights" when a
+   * delegate is reading, because they are not the person the bed is held for.
+   */
+  nightsLabel: string;
   partyList: MemberGuestPartyList;
   removalNote: string;
 }): string {
   return layout(`
-    ${heading("You have been added to a lodge booking")}
+    ${heading(escapeHtml(data.addedHeading))}
     ${paragraph(`Hi ${escapeHtml(data.firstName)}, ${escapeHtml(data.addedContextNote)}`)}
     ${infoTable(
       memberGuestStayRows({
@@ -3345,8 +3355,7 @@ export function memberGuestAddedTemplate(data: {
         checkIn: data.checkIn,
         checkOut: data.checkOut,
         guestNightsLabel: data.guestNightsLabel,
-        // This one always goes to the guest themselves, so "Your nights" holds.
-        nightsLabel: "Your nights",
+        nightsLabel: data.nightsLabel,
       }),
     )}
     ${data.partyList.html}

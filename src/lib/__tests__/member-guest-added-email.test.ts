@@ -50,7 +50,7 @@ import { memberGuestAddedTemplate } from "@/lib/email-templates";
 import { sendMemberGuestAddedEmail } from "@/lib/email/member-guest";
 import {
   buildMemberGuestPartyList,
-  composeMemberGuestAddedContextNote,
+  composeMemberGuestAdded,
   MEMBER_GUEST_REMOVAL_NOTE_BY_BLOCKER,
   MEMBER_GUEST_SELF_REMOVAL_OFFER,
   type MemberGuestRemovalFacts,
@@ -94,16 +94,20 @@ function visibleText(html: string): string {
 }
 
 describe("memberGuestAddedTemplate (#2307)", () => {
+  const added = composeMemberGuestAdded({
+    context: "NOTIFY_ONLY",
+    bookerName: "Dave Ngata",
+    audience: { kind: "TARGET" },
+  });
   const html = memberGuestAddedTemplate({
     firstName: "Hana",
-    addedContextNote: composeMemberGuestAddedContextNote({
-      context: "NOTIFY_ONLY",
-      bookerName: "Dave Ngata",
-    }),
+    addedHeading: added.heading,
+    addedContextNote: added.contextNote,
     lodgeName: "Silverpeak Lodge",
     checkIn: parseDateOnly("2026-08-08"),
     checkOut: parseDateOnly("2026-08-10"),
     guestNightsLabel: "8 Aug 2026, 9 Aug 2026 (2 nights)",
+    nightsLabel: "Your nights",
     partyList: buildMemberGuestPartyList(PARTY),
     removalNote: MEMBER_GUEST_SELF_REMOVAL_OFFER,
   });
@@ -129,14 +133,17 @@ describe("memberGuestAddedTemplate (#2307)", () => {
   it("prints the refusal wording verbatim when removal is blocked", () => {
     const blocked = memberGuestAddedTemplate({
       firstName: "Rewi",
-      addedContextNote: composeMemberGuestAddedContextNote({
+      addedHeading: "You have been added to a lodge booking",
+      addedContextNote: composeMemberGuestAdded({
         context: "ADMIN",
         bookerName: "Dave Ngata",
-      }),
+        audience: { kind: "TARGET" },
+      }).contextNote,
       lodgeName: "Silverpeak Lodge",
       checkIn: parseDateOnly("2026-08-08"),
       checkOut: parseDateOnly("2026-08-10"),
       guestNightsLabel: "8 Aug 2026 (1 night)",
+      nightsLabel: "Your nights",
       partyList: buildMemberGuestPartyList(PARTY),
       removalNote: MEMBER_GUEST_REMOVAL_NOTE_BY_BLOCKER.QUOTE_PRICED,
     });
@@ -151,11 +158,13 @@ describe("memberGuestAddedTemplate (#2307)", () => {
   it("escapes member-supplied names", () => {
     const escaped = memberGuestAddedTemplate({
       firstName: '<script>alert("x")</script>',
+      addedHeading: "You have been added to a lodge booking",
       addedContextNote: "somebody added you.",
       lodgeName: "Silverpeak Lodge",
       checkIn: parseDateOnly("2026-08-08"),
       checkOut: parseDateOnly("2026-08-10"),
       guestNightsLabel: "",
+      nightsLabel: "Your nights",
       partyList: buildMemberGuestPartyList([]),
       removalNote: MEMBER_GUEST_SELF_REMOVAL_OFFER,
     });
@@ -185,7 +194,7 @@ describe("member-guest-added registry entry (#2307)", () => {
     if (!definition) throw new Error(`missing ${TEMPLATE}`);
 
     expect(definition.requiredTokens).toEqual(
-      expect.arrayContaining(["addedContextNote", "removalNote"]),
+      expect.arrayContaining(["addedHeading", "addedContextNote", "removalNote"]),
     );
     for (const token of definition.requiredTokens) {
       expect(definition.defaultBody).toContain(`{{${token}}}`);
@@ -289,6 +298,36 @@ describe("sendMemberGuestAddedEmail (#2307)", () => {
     );
     // And the HTML says the same thing — one composer, two renderings.
     expect(blocked.html).toContain("Only the club can take you off");
+  });
+
+  it("tells a family delegate about the GUEST, not about themselves (D-9)", async () => {
+    await sendMemberGuestAddedEmail({
+      ...SEND_PARAMS,
+      email: "parent@example.nz",
+      firstName: "Aroha",
+      audience: {
+        kind: "DELEGATE",
+        guest: { firstName: "Tama", lastName: "Kaur" },
+      },
+    });
+
+    const call = sendEmailMock.mock.calls[0][0];
+    // Without the audience this email told a parent THEY were going to the lodge.
+    expect(call.subject).toContain("Tama Kaur has been added to a lodge booking");
+    expect(call.templateData.addedHeading).toBe(
+      "Tama Kaur has been added to a lodge booking",
+    );
+    expect(call.templateData.addedContextNote).toContain("Tama Kaur");
+    expect(call.templateData.addedContextNote).not.toContain("added you as a guest");
+    // A delegate cannot self-remove and neither can a member with no login, so
+    // the note names who actually can instead of offering a control to nobody.
+    expect(call.templateData.removalNote).toBe(
+      "If Tama would rather not go, ask Dave Ngata or the club to take them off this booking.",
+    );
+    // And the possessive nights label is dropped, because the nights are not the
+    // reader's.
+    expect(call.html).not.toContain("Your nights");
+    expect(call.html).toContain("Nights");
   });
 
   it("hands the flat body exactly the composed values the HTML shows", async () => {

@@ -5,7 +5,7 @@ import {
 import {
   buildMemberGuestPartyList,
   composeGuestNightsLabel,
-  composeMemberGuestAddedContextNote,
+  composeMemberGuestAdded,
   composeMemberGuestConsentAsk,
   composeMemberGuestConsentOutcome,
   composeMemberGuestRemovalNote,
@@ -145,12 +145,23 @@ export async function sendMemberGuestConsentRequestEmail(
 }
 
 export interface SendMemberGuestAddedEmailParams extends MemberGuestStayParams {
-  /** The member who was added. This email always goes to them. */
+  /**
+   * First name of WHOEVER IS BEING TOLD — the member who was added, or the family
+   * adult told on their behalf. Not necessarily the guest's own first name.
+   */
   firstName: string;
   /** The member whose booking it is (named even when an admin did the adding). */
   bookerName: string;
   /** Which of the three no-consent paths put them on the booking. */
   context: MemberGuestAddedContext;
+  /**
+   * Who is reading it. Defaults to the guest themselves, which is the only
+   * assumption that is safe to make silently — a delegate reader changes the
+   * heading, the opening sentence, the nights label and the removal advice, so
+   * pass it whenever the recipient is not the guest (owner decision D-9 makes
+   * that the NORMAL case, not an edge case).
+   */
+  audience?: MemberGuestConsentAudience;
   guestNights: readonly Date[];
   party: readonly MemberGuestPartyMember[];
   /**
@@ -165,24 +176,36 @@ export async function sendMemberGuestAddedEmail(
   params: SendMemberGuestAddedEmailParams,
 ): Promise<EmailSendOutcome> {
   const settings = await loadEmailMessageSettingsForLodge(params.lodgeId);
-  const addedContextNote = composeMemberGuestAddedContextNote({
+  const audience: MemberGuestConsentAudience = params.audience ?? {
+    kind: "TARGET",
+  };
+  const added = composeMemberGuestAdded({
     context: params.context,
     bookerName: params.bookerName,
+    audience,
   });
-  const removalNote = composeMemberGuestRemovalNote(params.selfRemoval);
+  const removalNote = composeMemberGuestRemovalNote({
+    facts: params.selfRemoval,
+    audience,
+    bookerName: params.bookerName,
+  });
   const partyList = buildMemberGuestPartyList(params.party);
   const guestNightsLabel = composeGuestNightsLabel(params.guestNights);
 
   return sendEmail({
     to: params.email,
-    subject: `You have been added to a lodge booking - ${EMAIL_DEFAULT_LODGE_NAME}`,
+    subject: `${added.heading} - ${EMAIL_DEFAULT_LODGE_NAME}`,
     html: memberGuestAddedTemplate({
       firstName: params.firstName,
-      addedContextNote,
+      addedHeading: added.heading,
+      addedContextNote: added.contextNote,
       lodgeName: settings.lodgeName,
       checkIn: params.checkIn,
       checkOut: params.checkOut,
       guestNightsLabel,
+      // A delegate is not the person the bed is held for, so the possessive
+      // label would be wrong for them; "Nights" is true either way.
+      nightsLabel: audience.kind === "TARGET" ? "Your nights" : "Nights",
       partyList,
       removalNote,
     }),
@@ -190,7 +213,8 @@ export async function sendMemberGuestAddedEmail(
     templateName: "member-guest-added",
     templateData: {
       firstName: params.firstName,
-      addedContextNote,
+      addedHeading: added.heading,
+      addedContextNote: added.contextNote,
       checkIn: formatNZDate(params.checkIn),
       checkOut: formatNZDate(params.checkOut),
       guestNightsLabel,

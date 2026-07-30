@@ -215,11 +215,58 @@ export type MemberGuestAddedContext =
   /** The row came from an approved public booking request (MG4-D-a). */
   | "BOOKING_REQUEST";
 
-export function composeMemberGuestAddedContextNote(params: {
+export interface MemberGuestAddedCopy {
+  /** `{{addedHeading}}` — the first block, and therefore the email's heading. */
+  heading: string;
+  /** `{{addedContextNote}}` — the sentence that tells the three paths apart. */
+  contextNote: string;
+}
+
+/**
+ * The added-notice's heading and opening sentence.
+ *
+ * TAKES AN AUDIENCE FOR THE SAME REASON THE CONSENT REQUEST DOES, and this was a
+ * real defect for one release-candidate's worth of work: owner decision D-9 makes
+ * a target with no login of their own the normal case, so this notice routinely
+ * lands in a family adult's inbox, and "you have been added to a lodge booking"
+ * then names the wrong person entirely — it tells a parent THEY are going to the
+ * lodge. The delegate wording names the guest and says why the reader is the one
+ * being told.
+ */
+export function composeMemberGuestAdded(params: {
   context: MemberGuestAddedContext;
   bookerName: string;
-}): string {
-  const { context, bookerName } = params;
+  audience: MemberGuestConsentAudience;
+}): MemberGuestAddedCopy {
+  const { context, bookerName, audience } = params;
+
+  if (audience.kind === "TARGET") {
+    return {
+      heading: "You have been added to a lodge booking",
+      contextNote: composeAddedContextNoteForTarget(context, bookerName),
+    };
+  }
+
+  const guestName = `${audience.guest.firstName} ${audience.guest.lastName}`.trim();
+  const guestFirstName = audience.guest.firstName;
+  // Composed once rather than repeated three times: the reason the DELEGATE is
+  // the one holding this email is the same whichever path created the row.
+  const whyYou =
+    ` You are being told because ${guestFirstName} does not have a login of their ` +
+    "own and you are an adult in their family group.";
+
+  return {
+    heading: `${guestName} has been added to a lodge booking`,
+    contextNote:
+      composeAddedContextNoteForDelegate(context, bookerName, guestName, guestFirstName) +
+      whyYou,
+  };
+}
+
+function composeAddedContextNoteForTarget(
+  context: MemberGuestAddedContext,
+  bookerName: string,
+): string {
   switch (context) {
     case "NOTIFY_ONLY":
       return (
@@ -231,6 +278,29 @@ export function composeMemberGuestAddedContextNote(params: {
     case "BOOKING_REQUEST":
       return (
         "the club has added you as a guest on a lodge booking created from " +
+        `${bookerName}'s booking request.`
+      );
+  }
+}
+
+function composeAddedContextNoteForDelegate(
+  context: MemberGuestAddedContext,
+  bookerName: string,
+  guestName: string,
+  guestFirstName: string,
+): string {
+  switch (context) {
+    case "NOTIFY_ONLY":
+      return (
+        `${bookerName} has added ${guestName} as a guest on a lodge booking. ` +
+        `${guestFirstName}'s place is already held — this club does not ask first ` +
+        "for member guests."
+      );
+    case "ADMIN":
+      return `the club has added ${guestName} as a guest on a lodge booking on behalf of ${bookerName}.`;
+    case "BOOKING_REQUEST":
+      return (
+        `the club has added ${guestName} as a guest on a lodge booking created from ` +
         `${bookerName}'s booking request.`
       );
   }
@@ -308,10 +378,29 @@ export type MemberGuestRemovalFacts = {
  * answer, so the email cannot promise a "take yourself off" link the server
  * would refuse: there is no second decision to get wrong. A test walks the whole
  * blocker matrix and asserts the note and the predicate never disagree.
+ *
+ * A DELEGATE READER IS NOT A SPECIAL CASE OF THE PREDICATE, IT IS OUTSIDE IT. The
+ * predicate answers "may THIS ACTOR take THIS GUEST off", and a delegate is
+ * neither: `evaluateGuestSelfRemoval` would refuse them `NOT_THEIR_OWN_GUEST`,
+ * and the guest they answer for has no login to do it with either. So there is no
+ * self-removal path to describe for them at all, and the honest note names the two
+ * people who CAN act. Note this is the one branch that does not consult the
+ * predicate — because it promises nothing the server would have to deliver.
  */
-export function composeMemberGuestRemovalNote(
-  facts: MemberGuestRemovalFacts,
-): string {
+export function composeMemberGuestRemovalNote(params: {
+  facts: MemberGuestRemovalFacts;
+  audience: MemberGuestConsentAudience;
+  bookerName: string;
+}): string {
+  const { facts, audience, bookerName } = params;
+
+  if (audience.kind === "DELEGATE") {
+    return (
+      `If ${audience.guest.firstName} would rather not go, ask ${bookerName} or the ` +
+      "club to take them off this booking."
+    );
+  }
+
   const { canSelfRemove, blocker } = evaluateGuestSelfRemoval(facts);
   if (canSelfRemove || !blocker) return MEMBER_GUEST_SELF_REMOVAL_OFFER;
   return MEMBER_GUEST_REMOVAL_NOTE_BY_BLOCKER[blocker];

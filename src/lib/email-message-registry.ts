@@ -304,7 +304,7 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
     "consentExpiresAt",
     "consentUrl",
   ],
-  "member-guest-added": ["addedContextNote", "removalNote"],
+  "member-guest-added": ["addedHeading", "addedContextNote", "removalNote"],
   "member-guest-consent-outcome": [
     "outcomeHeading",
     "outcomeSentence",
@@ -659,6 +659,7 @@ function sampleValue(token: string): string {
       "Nothing is settled until you answer - a bed is held for you in the meantime."
     );
   }
+  if (token === "addedHeading") return "You have been added to a lodge booking";
   if (token === "addedContextNote") {
     return (
       "Dave Ngata has added you as a guest on a lodge booking. Your place is " +
@@ -766,6 +767,9 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   // #2307: the one composed sentence that tells notify-only, an admin add and a
   // pipeline add apart in the single member-guest-added template.
   "addedContextNote",
+  // #2307: the added notice's heading, composed because it names the GUEST rather
+  // than the reader when a family delegate is the one being told (D-9).
+  "addedHeading",
   "additionalAmount",
   "additionalPaymentMethod",
   "adminEnteredBody",
