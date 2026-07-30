@@ -66,7 +66,13 @@ actually happens:
    of it as the lodge will see it (the preview opens in a new tab, so the wizard
    keeps your place). Nothing is bound to a screen yet, so browsing is safe.
 4. **Lodge details** — fill in the handful of values the boards print (Wi-Fi
-   name and password, checkout time, door code) and the on-screen notice. A
+   name and password, checkout time, door code) and the on-screen notice. The
+   footer also prints **who is in residence tonight** on its own, whenever a hut
+   leader has been given a bed on the [Hut Leaders](hut-leaders.md) page — you do
+   not configure that anywhere. It always reads **Custodian** (or *Custodians*
+   with a count, on a handover night when two people hold two beds), whatever
+   your club calls the role elsewhere in the admin area, and it never names a
+   child: if the person may not be named, the wall shows the role alone. A
    value the board asks for but the lodge has not saved renders as a visible
    `⟨config:key?⟩` placeholder on the wall. Anything beyond these is edited on
    the lodge's full display settings, linked from the step.

@@ -58,6 +58,8 @@ function state(overrides: Partial<DisplayState>): DisplayState {
     notice: null,
     config: {},
     capabilities: { bedAllocation: false, chores: false },
+    // #2286: no custodian in residence in the base fixture.
+    custodian: null,
     ...overrides,
   };
 }

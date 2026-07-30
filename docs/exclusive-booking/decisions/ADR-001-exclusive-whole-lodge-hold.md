@@ -355,6 +355,23 @@ Recorded as the children landed, to keep the design of record accurate:
     *separate* query so the capacity-holding conflict list's contract is
     unchanged for its other callers. Never-refuse and the settlement carve-out
     itself are unchanged; the officer just sees the future settle up front.
+- **Custodian bed holds never contend with a whole-lodge hold (2026-07-30,
+  #2286).** A `HutLeaderAssignment` may now hold one bed for a season with no
+  booking anywhere (docs/CAPACITY_MODEL.md). Under decision 2 above, an
+  exclusive hold reserves the **bookable** lodge; the custodian's bed sits
+  outside that pool, so the two never conflict in either direction. Setting a
+  hold runs no custodian check, and the set-time conflict lists
+  (`findOverlappingCapacityHoldingBookings` /
+  `findOverlappingOverriddenNonHoldingBookings`) inspect bookings only, so a
+  custodian can never appear in them. Creating or extending a custodian hold
+  over already-held nights is equally conflict-free. Capacity subtracts the
+  custodian bed on both sides: on a held night the decision-6 pin still presents
+  a full lodge (`occupied + available === capacity` holds), and on the hold's
+  own admission path the group's headcount is checked **with** the custodian
+  counted, so an over-size group surfaces as over-capacity for explicit admin
+  confirmation instead of silently displacing the custodian. The hard block
+  against other admissions on held nights (decision 5) is unchanged.
+
 - **Stale hold on terminal transition — released (#177).** Every terminal
   status flip that already spreads `RELEASE_ADMIN_CAPACITY_HOLD_UPDATE` now also
   spreads `RELEASE_WHOLE_LODGE_HOLD_UPDATE`, clearing

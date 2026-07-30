@@ -39,6 +39,9 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     lodgeBed: { create: lodgeBedCreate, delete: lodgeBedDelete },
     bedAllocation: { findMany: bedAllocationFindMany },
+    // #2286: the delete guard also refuses a bed a custodian holds. None here,
+    // so the pre-existing allocation-history mapping is what gets asserted.
+    hutLeaderAssignment: { findMany: vi.fn().mockResolvedValue([]) },
     $transaction: prismaTransaction,
   },
 }));
