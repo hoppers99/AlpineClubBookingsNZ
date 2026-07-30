@@ -741,6 +741,21 @@ describe("consent columns have exactly one writer", () => {
       // The narrow consent authority that lets a delegate decline and the sweep
       // expire — see its own doc comment for why it exists and what it refuses.
       "src/lib/booking-guest-removal-service.ts": "the consent removal authority",
+      // --- MG2's visible half (#2307). All READERS: not one of these writes a
+      // consent column. The endpoint above is still the only member-facing
+      // writer, and the sweep the only automatic one.
+      "src/lib/member-guest-consent-card.ts":
+        "the member surfaces' shared brain: which card to show, the predictable-refusal prediction, the badge wording",
+      "src/lib/member-guest-delegate-page.ts":
+        "the delegate page's authorization-first state resolver",
+      "src/lib/member-guest-consent-exceptions.ts":
+        "the admin exception list and the two consent chip counts",
+      "src/app/(authenticated)/bookings/[id]/page.tsx":
+        "the booking page reads the viewer's own consent row for the card, and every row for the badges",
+      "src/app/(authenticated)/bookings/consent/[guestId]/page.tsx":
+        "the delegate consent page",
+      "src/lib/admin-bookings-service.ts":
+        "the two consent filter chips' SQL narrowing on the bookings list",
     };
 
     const mentions = productionFilesUnder("src")
@@ -778,6 +793,11 @@ describe("the two open-search privacy toggles are inert and off", () => {
       "src/lib/member-guest-settings.ts",
       "src/lib/config-transfer/categories/club-settings.ts",
       "src/app/api/admin/member-guest-settings/route.ts",
+      // MG2's settings card (#2307, MG2-M-1). Also a WRITER surface, not a
+      // reader: it renders the two toggles and posts them to the route above.
+      // Nothing consults either value to decide who is discoverable — that
+      // still arrives with MG3's type-ahead.
+      "src/components/admin/member-guest-settings-card.tsx",
     ]);
     const readers = sourceFilesUnder("src")
       .filter((file) => !file.includes("__tests__"))
@@ -820,20 +840,25 @@ describe("the module flag now gates the widening, and says so", () => {
     expect(definition.description).toMatch(/family group/i);
   });
 
-  it("still warns that a member cannot accept until the accept screen ships", () => {
-    // The counterpart to the case above, and the reason MG2 does not simply
-    // delete MG1's warning. The module now gates REAL behaviour, so reporting it
-    // "not available" would be false — but the screen a member presses Yes on is
-    // held pending design sign-off, so reporting it as fully usable would be
-    // false in the other direction. The dependency bullet is where an admin reads
-    // "things to know before switching this on", so the caveat lives there.
+  it("no longer warns that a member cannot accept — the accept screen has shipped", () => {
+    // The inverse of the assertion this replaces, and the replacement its own
+    // comment asked for. While the accept screen was held for the owner's
+    // mockup sign-off, a dependency bullet warned an admin that a request could
+    // be sent but not accepted. The consent card and the delegate page ship in
+    // this release, so that warning is now the lie — and the assertion that
+    // demanded it has to go with it, or the copy can never be corrected.
     //
-    // THIS ASSERTION IS MEANT TO BE DELETED, together with the bullet, by the
-    // change that lands the accept screen. Until then it is what stops the copy
-    // drifting into a promise the release does not keep.
+    // What must SURVIVE is everything the bullet list is actually for: what
+    // switching this on does to other members, and what an admin should know
+    // before doing it.
     const dependencies = MODULE_DEFINITIONS.memberGuests.dependencies.join(" ");
-    expect(dependencies).toMatch(/not ready to turn on yet/i);
-    expect(dependencies).toMatch(/lapse/i);
+    expect(dependencies).not.toMatch(/not ready to turn on yet/i);
+    expect(dependencies).not.toMatch(/arrives in the next update/i);
+    // Asked-first by default, the pending guest's operational invisibility, and
+    // the name-search privacy posture all still have to be stated.
+    expect(dependencies).toMatch(/asked before they are added/i);
+    expect(dependencies).toMatch(/kiosk arrivals list/i);
+    expect(dependencies).toMatch(/browsable/i);
   });
 
   it("reports itself ready when switched on, and disabled when not", () => {
