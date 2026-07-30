@@ -37,21 +37,29 @@ import { waitForEmail } from "./helpers/mailpit";
       spec's. Fresh windows keep Nadia clear of the person-night guard.
     - The memberGuests module is switched on for this file and the previous
       module settings restored afterwards.
-    - RETRY-SAFE: each attempt books fresh windows only in the sense that the
-      same windows are reused — so the approve test tolerates the target
-      already being CONFIRMED-or-conflicted by a previous attempt by asserting
-      from the CREATE response it just made; a retried create that now hits
-      Nadia's person-night conflict from attempt one falls back to asserting
-      the neutral refusal instead of failing the suite. In practice attempt
-      one either never created (nothing held: PENDING lapses are swept
-      nightly, declines delete the row) or completed, and the windows differ
-      per test so the two tests cannot collide with each other.
+    - RETRY-SAFE by construction: every attempt books its OWN stay windows
+      (see approveWindow/declineWindow). CI retries this file up to twice, and
+      a retry reusing attempt one's nights would be refused — the PENDING row
+      attempt one created still holds Nadia's person-night, and that refusal
+      is collapsed to D-8's neutral 403, so the retry would fail on the
+      fixture rather than on the behaviour under test.
 */
 
 test.describe.configure({ mode: "serial" });
 
-const APPROVE_WINDOW = stayWindow(13);
-const DECLINE_WINDOW = stayWindow(14);
+// A WINDOW PER ATTEMPT, not a fixed pair. Attempt 1 leaves real rows behind —
+// a PENDING member guest holds a bed and a person-night (D-4) until the nightly
+// sweep expires it — so a retry booking the same nights for the same target
+// hits the member-night guard and gets D-8's neutral 403, failing on the
+// fixture rather than on the behaviour. Indices 0-9 belong to the other specs
+// and 11-12 to the whole-lodge spec; 13-18 are this file's, three attempts x
+// two tests.
+function approveWindow(retry: number) {
+  return stayWindow(13 + retry * 2);
+}
+function declineWindow(retry: number) {
+  return stayWindow(14 + retry * 2);
+}
 
 let adminContext: BrowserContext;
 let adminRequest: APIRequestContext;
@@ -158,8 +166,8 @@ test.afterAll(async () => {
 // by-then-settled guest row id.
 let approvedGuestId: string | null = null;
 
-test("the target approves on the booking page's consent card and the badge flips to Consented", async () => {
-  const booking = await createBookingWithMemberGuest(APPROVE_WINDOW);
+test("the target approves on the booking page's consent card and the badge flips to Consented", async ({}, testInfo) => {
+  const booking = await createBookingWithMemberGuest(approveWindow(testInfo.retry));
   approvedGuestId = pendingGuestOf(booking).id;
 
   // D-16: the ask is emailed to the target directly (she holds a login).
@@ -183,7 +191,8 @@ test("the target approves on the booking page's consent card and the badge flips
       `${NOMINATOR_TWO.firstName} ${NOMINATOR_TWO.lastName} — that's you`,
     ),
   ).toBeVisible();
-  await expect(content.getByText("Answer by")).toBeVisible();
+  // `exact` because the lapse sentence below also contains "answer by".
+  await expect(content.getByText("Answer by", { exact: true })).toBeVisible();
 
   await content.getByRole("button", { name: "Yes, add me" }).click();
   await expect(content.getByText("You're on this booking")).toBeVisible();
@@ -198,8 +207,8 @@ test("the target approves on the booking page's consent card and the badge flips
   ).toHaveCount(0);
 });
 
-test("the target declines on an unpaid booking and the booker's guest list no longer names them", async () => {
-  const booking = await createBookingWithMemberGuest(DECLINE_WINDOW);
+test("the target declines on an unpaid booking and the booker's guest list no longer names them", async ({}, testInfo) => {
+  const booking = await createBookingWithMemberGuest(declineWindow(testInfo.retry));
   const guest = pendingGuestOf(booking);
 
   // The TARGET following the delegate link is sent to her own surface — the

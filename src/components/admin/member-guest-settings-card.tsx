@@ -239,7 +239,7 @@ export function MemberGuestSettingsCard({
             <legend className="text-sm font-medium">
               Does the other member have to agree first?
             </legend>
-            <label className="flex items-start gap-3 rounded-md border border-border bg-muted/50 px-3 py-2">
+            <label className="flex items-start gap-3 rounded-md border border-border bg-muted px-3 py-2">
               <input
                 type="radio"
                 name="member-guest-approval"
@@ -256,7 +256,7 @@ export function MemberGuestSettingsCard({
                 </span>
               </span>
             </label>
-            <label className="flex items-start gap-3 rounded-md border border-border bg-muted/50 px-3 py-2">
+            <label className="flex items-start gap-3 rounded-md border border-border bg-muted px-3 py-2">
               <input
                 type="radio"
                 name="member-guest-approval"
@@ -306,7 +306,7 @@ export function MemberGuestSettingsCard({
             <legend className="text-sm font-medium">
               Finding the other member
             </legend>
-            <label className="flex items-start gap-3 rounded-md border border-border bg-muted/50 px-3 py-2">
+            <label className="flex items-start gap-3 rounded-md border border-border bg-muted px-3 py-2">
               <input
                 type="checkbox"
                 checked={draft.openMemberSearchEnabled}
@@ -331,7 +331,7 @@ export function MemberGuestSettingsCard({
               can type a few letters and see the names of other members who
               match. Leave it off unless your club has agreed to that.
             </p>
-            <label className="ml-6 flex items-start gap-3 rounded-md border border-border bg-muted/50 px-3 py-2">
+            <label className="ml-6 flex items-start gap-3 rounded-md border border-border bg-muted px-3 py-2">
               <input
                 type="checkbox"
                 checked={draft.openMemberSearchIncludesMinors}

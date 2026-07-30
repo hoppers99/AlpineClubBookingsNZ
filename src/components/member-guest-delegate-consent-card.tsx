@@ -154,7 +154,7 @@ export function MemberGuestDelegateConsentCard({
   }
 
   return (
-    <Card className="border-primary/40">
+    <Card className="border-primary">
       <CardHeader className="space-y-2">
         <div>
           <Badge
