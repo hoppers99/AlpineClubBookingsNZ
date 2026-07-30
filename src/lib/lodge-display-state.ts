@@ -12,7 +12,11 @@ import {
   getTodayDateOnly,
 } from "./date-only";
 import { getCachedClubIdentity } from "./public-layout-config";
-import { CLUB_THEME_ID } from "./club-theme-schema";
+import {
+  CLUB_THEME_ID,
+  sanitiseLogoDataUrl,
+  sanitiseLogoUrl,
+} from "./club-theme-schema";
 import { getSanitizedLodgeInstructions } from "./lodge-instructions";
 import { DISPLAY_RELEVANT_MODULE_KEYS } from "./lodge-display/conditions";
 import { lodgeNullTolerantScope } from "./lodges";
@@ -74,12 +78,38 @@ export interface DisplayStateBooking {
   stayEnd: string;
 }
 
+/**
+ * The kiosk's club-branding block (#2322).
+ *
+ * Sanitised HERE, not only on the write path: this surface reads the ClubTheme
+ * columns directly rather than through `normaliseThemeValues`, so a hand-edited
+ * row or an imported bundle could otherwise put an arbitrary string into an
+ * `<img src>` on an unattended public screen. Exported as a test seam.
+ */
+// test seam
+export function clubBrandingForDisplay(
+  name: string,
+  theme: { logoUrl?: string | null; logoDataUrl?: string | null } | null,
+): DisplayState["club"] {
+  return {
+    name,
+    logoUrl: sanitiseLogoUrl(theme?.logoUrl),
+    logoDataUrl: sanitiseLogoDataUrl(theme?.logoDataUrl),
+  };
+}
+
 export interface DisplayState {
   lodge: { name: string };
   /** Club branding for the header brand block (issue #56): the configured
-   * club name and the club-theme logo data URL — presentation-only fields
-   * already public on every website page. */
-  club: { name: string; logoDataUrl: string | null };
+   * club name and the club-theme logo — presentation-only fields already public
+   * on every website page. `logoUrl` (#2322) is the served-image form and wins
+   * over the legacy inlined `logoDataUrl`. Both are sanitised in
+   * `buildDisplayState` before they reach this payload. */
+  club: {
+    name: string;
+    logoUrl: string | null;
+    logoDataUrl: string | null;
+  };
   generatedAt: string;
   window: { start: string; days: number };
   rooms: Array<{ id: string; name: string }> | null;
@@ -583,7 +613,10 @@ export async function buildDisplayState(
   // Club branding is best-effort: a missing theme row must never take the
   // board down, so failures degrade to a text-only brand block.
   const theme = await prisma.clubTheme
-    .findUnique({ where: { id: CLUB_THEME_ID }, select: { logoDataUrl: true } })
+    .findUnique({
+      where: { id: CLUB_THEME_ID },
+      select: { logoUrl: true, logoDataUrl: true },
+    })
     .catch(() => null);
 
   // DB-first club name (E3 #1929, leak fixed C5 #1984): resolve through
@@ -596,7 +629,7 @@ export async function buildDisplayState(
 
   return {
     lodge: { name: lodge.name },
-    club: { name: clubIdentity.name, logoDataUrl: theme?.logoDataUrl ?? null },
+    club: clubBrandingForDisplay(clubIdentity.name, theme),
     generatedAt: new Date().toISOString(),
     window: { start: formatDateOnly(startDate), days },
     rooms,

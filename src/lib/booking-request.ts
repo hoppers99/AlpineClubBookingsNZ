@@ -22,6 +22,7 @@ import {
   BookingEventType,
   BookingRequestQuoteStatus,
   BookingRequestStatus,
+  BookingRequestType,
   BookingStatus,
   PaymentStatus,
   Prisma,
@@ -42,7 +43,7 @@ import {
   type OwnerSubstitution,
 } from "@/lib/booking-request-shared";
 import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "@/lib/capacity";
-import { getLodgeCapacity } from "@/lib/lodge-capacity";
+import { getDefaultLodgeCapacity, getLodgeCapacity } from "@/lib/lodge-capacity";
 import { loadSchoolGroupSoftCap } from "@/lib/lodge-settings";
 import { getNonMemberHoldDays } from "@/lib/cancellation";
 import { endOfDateOnlyForTimeZone, formatDateOnly } from "@/lib/date-only";
@@ -64,6 +65,10 @@ import {
   lodgeNullTolerantScope,
   lodgeOrderBy,
 } from "@/lib/lodges";
+// ONE definition of the open-status list, shared with the member DTO so the
+// Withdraw affordance is derived from the same list this file's WHERE clauses
+// name rather than restating it (#2263 review finding M3).
+import { MEMBER_WHOLE_LODGE_OPEN_STATUSES } from "@/lib/member-whole-lodge-requests";
 import { prisma } from "@/lib/prisma";
 import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
 import { nameField } from "@/lib/zod-helpers";
@@ -481,6 +486,362 @@ export async function createBookingRequest(input: CreateBookingRequestInput) {
   return request;
 }
 
+// ---------------------------------------------------------------------------
+// Member whole-lodge request (#2263, epic #2245)
+// ---------------------------------------------------------------------------
+
+/**
+ * Display-name prefix for the placeholder guests a member whole-lodge request
+ * carries. The member never names their party at request time (privacy decision
+ * D5 — the form asks for an approximate headcount only), but every existing
+ * reader of `BookingRequest.guests` assumes a list of that length, so the row
+ * stores "Guest 1..N" placeholders. Names are edited in later, on the converted
+ * booking, through the ordinary guest-edit path.
+ */
+const MEMBER_WHOLE_LODGE_GUEST_NAME_PREFIX = "Guest";
+
+/**
+ * How many whole-lodge requests one member may have open at a time (owner
+ * decision D3, #2263). A creation-time guard, not an invariant: a member merge
+ * can transiently re-point a loser's requests onto a master who then holds more
+ * than this (documented in docs/STATE_MACHINES.md and in the member-merge
+ * relation spec). Withdrawing frees a slot.
+ */
+export const MEMBER_WHOLE_LODGE_OPEN_REQUEST_CAP = 2;
+
+/**
+ * True when this row came through the authenticated member whole-lodge door
+ * (#2263) rather than the public or school front-doors. The single discriminator
+ * the whole feature keys on: it decides the admin badge, the direct-approve
+ * branch, the audit-log-only decline note, the quote-lifecycle rejections, and
+ * whether the row can appear in a member's "My requests".
+ */
+export function isMemberWholeLodgeRequest(
+  request: Pick<BookingRequest, "requestedByMemberId" | "exclusivityRequested">
+): boolean {
+  return request.requestedByMemberId != null && request.exclusivityRequested;
+}
+
+/**
+ * Build the placeholder guest list for an approximate headcount. Every guest is
+ * ADULT: the member gives no ages at request time either, and the approving
+ * officer prices the confirmed headcount before the booking exists.
+ */
+export function buildMemberWholeLodgePlaceholderGuests(
+  headcount: number
+): BookingRequestGuest[] {
+  return Array.from({ length: headcount }, (_, index) => ({
+    firstName: MEMBER_WHOLE_LODGE_GUEST_NAME_PREFIX,
+    lastName: String(index + 1),
+    ageTier: AgeTier.ADULT,
+  }));
+}
+
+/**
+ * Fold the member's two free-text fields into the single `message` column the
+ * request pipeline already has. CRLF is stripped (the column feeds emails and
+ * the converted booking's notes), so the two parts are joined inline.
+ */
+function buildMemberWholeLodgeMessage(
+  groupDescription: string,
+  notes?: string | null
+): string {
+  const group = cleanString(groupDescription);
+  const extra = cleanString(notes);
+  return extra ? `${group} — Notes: ${extra}` : group;
+}
+
+/**
+ * Count a member's open whole-lodge requests (the cap in D3). Reads only
+ * `BookingRequest` — account state, never availability.
+ */
+async function countOpenMemberWholeLodgeRequests(
+  memberId: string,
+  db: Pick<typeof prisma, "bookingRequest"> = prisma
+): Promise<number> {
+  return db.bookingRequest.count({
+    where: {
+      requestedByMemberId: memberId,
+      exclusivityRequested: true,
+      status: { in: [...MEMBER_WHOLE_LODGE_OPEN_STATUSES] },
+    },
+  });
+}
+
+/**
+ * Create a whole-lodge request on behalf of a signed-in member (#2263).
+ *
+ * Deliberately NOT an extension of `createBookingRequest`: the public GENERAL
+ * front-door's input type still has no exclusivity field, so no anonymous
+ * submission can ever ask for sole occupancy (ADR-001 decision 6 / the pinning
+ * tests in booking-request.test.ts).
+ *
+ * The row enters the existing admin pipeline at `VERIFIED` — the requester is
+ * authenticated, so there is nothing to email-verify and no verification token
+ * is minted — with `exclusivityRequested: true` and no capacity held. Nothing
+ * here queries availability, occupancy, seasons or pricing: the ONLY capacity
+ * touch is the static configured lodge capacity used to bound the headcount,
+ * exactly as the school door does. That is what makes the caller's
+ * acknowledgement uniform by construction rather than by padding — a full lodge,
+ * an empty lodge and an exclusively-held lodge all run the identical statements.
+ */
+export async function createMemberWholeLodgeRequest(input: {
+  /** ALWAYS from the session. Never read from a request body. */
+  memberId: string;
+  checkIn: Date;
+  checkOut: Date;
+  /** Approximate party size; bounded by the static lodge capacity. */
+  headcount: number;
+  /**
+   * Lodge the stay is requested at. Callers must validate it names an ACTIVE
+   * lodge (assertRequestedLodgeActive). Null/omitted means the club's default
+   * lodge (BookingRequest.lodgeId null semantics).
+   */
+  lodgeId?: string | null;
+  /** Who the group is, in the member's words. */
+  groupDescription: string;
+  notes?: string | null;
+}) {
+  const member = await prisma.member.findUnique({
+    where: { id: input.memberId },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      email: true,
+      phoneNumber: true,
+    },
+  });
+  if (!member) {
+    throw new BookingRequestError("Member not found", 404);
+  }
+
+  const groupDescription = cleanString(input.groupDescription);
+  if (!groupDescription) {
+    throw new BookingRequestError("Tell us who the group is", 422);
+  }
+
+  if (!Number.isInteger(input.headcount) || input.headcount < 1) {
+    throw new BookingRequestError("Enter how many people are coming", 422);
+  }
+
+  const requestedLodgeId = input.lodgeId ?? null;
+  // Static CONFIGURED capacity of the lodge — a property of the building, not of
+  // who is staying in it. Reading it tells the member nothing about occupancy.
+  const lodgeCapacity = requestedLodgeId
+    ? await getLodgeCapacity(requestedLodgeId)
+    : await getDefaultLodgeCapacity();
+  if (input.headcount > lodgeCapacity) {
+    throw new BookingRequestError(
+      `A whole-lodge request cannot exceed the lodge capacity of ${lodgeCapacity} guests`,
+      422
+    );
+  }
+
+  // Account-state guard (D3), not an availability guard: how many requests this
+  // member already has open. Runs before the write so the cap cannot be raced
+  // past by more than the usual single-request window.
+  const openRequests = await countOpenMemberWholeLodgeRequests(input.memberId);
+  if (openRequests >= MEMBER_WHOLE_LODGE_OPEN_REQUEST_CAP) {
+    // Audit the REFUSAL, not just the success. A member hammering this door is
+    // the cheapest signal that something is wrong (a broken client, or someone
+    // probing), and an audit trail that records only successes cannot show it.
+    // Carries no availability data — the cap is account state.
+    logAudit({
+      action: "booking_request.member_whole_lodge_refused",
+      memberId: member.id,
+      actorMemberId: member.id,
+      subjectMemberId: member.id,
+      entityType: "BookingRequest",
+      category: "booking",
+      outcome: "failure",
+      summary:
+        "Member whole-lodge request refused: the open-request cap was already reached",
+      metadata: {
+        reason: "open_request_cap",
+        openRequests,
+        cap: MEMBER_WHOLE_LODGE_OPEN_REQUEST_CAP,
+      },
+    });
+    throw new BookingRequestError(
+      `You already have ${MEMBER_WHOLE_LODGE_OPEN_REQUEST_CAP} whole-lodge requests waiting for a decision. Withdraw one before sending another.`,
+      409
+    );
+  }
+
+  const guests = buildMemberWholeLodgePlaceholderGuests(input.headcount);
+  const verifiedAt = new Date();
+
+  const request = await prisma.bookingRequest.create({
+    data: {
+      // Member requests stay GENERAL; the school door keeps SCHOOL. The
+      // member-origin discriminator is requestedByMemberId, not the type.
+      type: BookingRequestType.GENERAL,
+      // The ASK for sole occupancy. Only an approving admin turns it into a
+      // Booking.wholeLodgeHold (ADR-001: the flag is the admin capacity action).
+      exclusivityRequested: true,
+      // Enters the queue directly: an authenticated requester has nothing to
+      // verify, so no verification token is issued at all.
+      status: BookingRequestStatus.VERIFIED,
+      verifiedAt,
+      requestedByMemberId: member.id,
+      // Contact details are SNAPSHOT from the member row, never accepted from
+      // the body — the request must always be reachable at the account's own
+      // address.
+      contactFirstName: member.firstName,
+      contactLastName: member.lastName,
+      contactEmail: member.email,
+      contactPhone: member.phoneNumber,
+      checkIn: input.checkIn,
+      checkOut: input.checkOut,
+      guests,
+      message: buildMemberWholeLodgeMessage(groupDescription, input.notes),
+      lodgeId: requestedLodgeId,
+      // Deliberately absent: indicativePriceCents (the member is shown no price
+      // at request time) and every verification-token column.
+    },
+  });
+
+  logAudit({
+    action: "booking_request.member_whole_lodge_submitted",
+    memberId: member.id,
+    actorMemberId: member.id,
+    subjectMemberId: member.id,
+    targetId: request.id,
+    entityType: "BookingRequest",
+    entityId: request.id,
+    category: "booking",
+    outcome: "success",
+    summary: "Member submitted a whole-lodge booking request",
+    metadata: {
+      requestId: request.id,
+      checkIn: input.checkIn.toISOString(),
+      checkOut: input.checkOut.toISOString(),
+      headcount: input.headcount,
+      lodgeId: requestedLodgeId,
+      exclusivityRequested: true,
+    },
+  });
+
+  // Admin-audience alert. Admin alerts are never withheld by the per-booking
+  // "No emails" switch (#2258) — there is no booking here at all yet.
+  sendAdminBookingRequestPendingEmail({
+    requesterName: `${member.firstName} ${member.lastName}`,
+    checkIn: input.checkIn,
+    checkOut: input.checkOut,
+    guestCount: guests.length,
+  }).catch((err) =>
+    logger.error(
+      { err, bookingRequestId: request.id },
+      "Failed to send admin alert for a member whole-lodge booking request"
+    )
+  );
+
+  return request;
+}
+
+/**
+ * Withdraw a member's own pending whole-lodge request (D3, #2263).
+ *
+ * Owner-scoped: the WHERE names `requestedByMemberId`, so a member can only ever
+ * clear their own row and an id belonging to somebody else behaves exactly like
+ * an id that does not exist. Status-guarded, so the loser of a
+ * withdraw-vs-approve/decline race gets a clean 409 rather than clobbering a
+ * decision an officer already made.
+ *
+ * `heldBookingId: null` is load-bearing, not defensive noise: member withdraw has
+ * NO hold-release machinery. If a row somehow acquired a capacity hold, flipping
+ * it to CANCELLED here would strand an AWAITING_REVIEW hold booking forever with
+ * no path that releases it — the beds sterilised indefinitely. Such a row must go
+ * through admin decline instead, which does release holds.
+ */
+export async function withdrawMemberWholeLodgeRequest(input: {
+  requestId: string;
+  /** ALWAYS from the session. */
+  memberId: string;
+}) {
+  const cancelledAt = new Date();
+
+  // Claim the request row FIRST, then the quote rows — the #1423 lock-ordering
+  // invariant every BookingRequest+quote transaction must keep.
+  const claimed = await prisma.$transaction(async (tx) => {
+    const result = await tx.bookingRequest.updateMany({
+      where: {
+        id: input.requestId,
+        // Ownership is part of the claim, not a separate read: no TOCTOU window
+        // between "is it mine?" and "cancel it".
+        requestedByMemberId: input.memberId,
+        exclusivityRequested: true,
+        status: { in: [...MEMBER_WHOLE_LODGE_OPEN_STATUSES] },
+        // See the docstring: never withdraw a row that holds capacity.
+        heldBookingId: null,
+      },
+      data: {
+        status: BookingRequestStatus.CANCELLED,
+        version: { increment: 1 },
+      },
+    });
+    if (result.count === 0) {
+      return false;
+    }
+
+    // Belt and braces alongside the service-layer quote rejections: a withdrawn
+    // request must never leave an acceptable token quote live. SUPERSEDED, not
+    // CANCELLED — the same distinction the decline path draws.
+    await tx.bookingRequestQuote.updateMany({
+      where: {
+        bookingRequestId: input.requestId,
+        status: BookingRequestQuoteStatus.SENT,
+      },
+      data: {
+        status: BookingRequestQuoteStatus.SUPERSEDED,
+        supersededAt: cancelledAt,
+      },
+    });
+    return true;
+  });
+
+  if (!claimed) {
+    // Audit the refusal. The guarded claim deliberately cannot distinguish "not
+    // yours", "already decided" and "does not exist" — that indistinguishability
+    // IS the authorisation property — so the audit records the same three-way
+    // ambiguity rather than resolving it with a second read. Repeated failures
+    // against ids a member does not own are exactly what this row makes visible.
+    logAudit({
+      action: "booking_request.member_whole_lodge_withdraw_refused",
+      memberId: input.memberId,
+      actorMemberId: input.memberId,
+      subjectMemberId: input.memberId,
+      targetId: input.requestId,
+      entityType: "BookingRequest",
+      entityId: input.requestId,
+      category: "booking",
+      outcome: "failure",
+      summary:
+        "Member whole-lodge withdraw refused: the guarded claim matched nothing (not theirs, already decided, holding capacity, or no such request)",
+      metadata: { requestId: input.requestId, reason: "claim_matched_nothing" },
+    });
+    throw new BookingRequestError(
+      "This request can no longer be withdrawn. It may already have been decided — check My requests for its current state.",
+      409
+    );
+  }
+
+  logAudit({
+    action: "booking_request.member_whole_lodge_withdrawn",
+    memberId: input.memberId,
+    actorMemberId: input.memberId,
+    subjectMemberId: input.memberId,
+    targetId: input.requestId,
+    entityType: "BookingRequest",
+    entityId: input.requestId,
+    category: "booking",
+    outcome: "success",
+    summary: "Member withdrew their whole-lodge booking request",
+    metadata: { requestId: input.requestId },
+  });
+}
+
 type VerifyBookingRequestOutcome =
   | { outcome: "verified"; request: BookingRequest }
   | { outcome: "already_verified"; request: BookingRequest }
@@ -579,6 +940,18 @@ export async function priceBookingRequest(input: {
   if (!existing) {
     throw new BookingRequestError("Booking request not found", 404);
   }
+  // #2263: the officer-price op belongs to the quote lifecycle, which a member
+  // whole-lodge request never enters. Its price is set at approval instead (the
+  // priced-headcount field, or the price-override when no season covers the
+  // dates), so pricing one here would only strand it in PRICED with a number the
+  // approval path does not read. Refused at the service layer for the same
+  // reason as the quote ops (booking-request-quotes.ts).
+  if (isMemberWholeLodgeRequest(existing)) {
+    throw new BookingRequestError(
+      "Pricing is not available for a member's whole-lodge request. Set the priced headcount when you approve it.",
+      409
+    );
+  }
 
   const claimed = await prisma.bookingRequest.updateMany({
     where: {
@@ -648,7 +1021,19 @@ export async function declineBookingRequest(input: {
   }
 
   const reviewedAt = new Date();
-  const declineReason = cleanNullableString(input.reason);
+  const officerNote = cleanNullableString(input.reason);
+  // #2263 (privacy decision D11/D5): on a MEMBER-ORIGIN whole-lodge request the
+  // officer's note is an internal record only — it must never reach the member.
+  // The school/public path's `declineReason` is the field the requester is shown
+  // (it is interpolated into the decline email), and an availability-derived
+  // sentence in it — "we're holding the lodge for another group that week" — is
+  // precisely the disclosure ADR-001 decision 6 forbids. So for these rows the
+  // note is NOT persisted on the request at all: it lives only in the decline
+  // audit metadata below. Not persisting is deliberately stronger than
+  // persist-and-filter, because no present or future member-facing surface can
+  // leak a column that is null.
+  const memberOrigin = isMemberWholeLodgeRequest(request);
+  const declineReason = memberOrigin ? null : officerNote;
   // Claim the request AND retire any outstanding SENT quote in ONE interactive
   // transaction (#1423). Retiring the live quote is what makes the decline truly
   // final for a QUOTE_SENT request: `loadSentQuoteByToken` requires
@@ -716,6 +1101,9 @@ export async function declineBookingRequest(input: {
         firstName: request.contactFirstName,
         checkIn: request.checkIn,
         checkOut: request.checkOut,
+        // Null on a member-origin whole-lodge decline, so the template renders
+        // its one fixed generic body with no note and nothing derived from
+        // availability (#2263).
         reason: declineReason,
         lodgeId: request.lodgeId ?? null,
       });
@@ -744,7 +1132,16 @@ export async function declineBookingRequest(input: {
     category: "booking",
     outcome: "success",
     summary: "Booking request declined",
-    metadata: { reason: declineReason, ...notifyAuditFields },
+    metadata: {
+      // For a member-origin whole-lodge request this audit row is the ONLY
+      // place the officer's note exists (#2263): `declineReason` on the row is
+      // null and the member's email carries the fixed generic copy.
+      reason: officerNote,
+      ...(memberOrigin
+        ? { memberWholeLodgeRequest: true, declineNoteAuditOnly: true }
+        : {}),
+      ...notifyAuditFields,
+    },
   });
 
   // #1365 (F18): a declined request that still holds capacity — a held
@@ -1589,9 +1986,20 @@ export async function approveBookingRequest(input: {
 // ---------------------------------------------------------------------------
 
 /**
- * Permanently delete declined and never-verified requests once the
- * retention window has passed (Privacy Act 2020 — personal information
- * may only be kept while there is a lawful purpose).
+ * Permanently delete declined, member-withdrawn and never-verified requests once
+ * the retention window has passed (Privacy Act 2020 — personal information may
+ * only be kept while there is a lawful purpose).
+ *
+ * Member-origin whole-lodge requests (#2263) follow the SAME 90-day clock as
+ * everything else here (owner decision OD-B): a declined one is already covered
+ * by the declined sweep, and a member-withdrawn one — status `CANCELLED`, which
+ * nothing purged before — is swept alongside it. "My requests" therefore shows a
+ * bounded history rather than a permanent one, and its UI copy says so.
+ *
+ * The CANCELLED sweep is scoped to `requestedByMemberId != null` on purpose: a
+ * public/school request also reaches CANCELLED (a requester cancelling their own
+ * quote), and OD-B decided retention for the member-origin rows only. Widening it
+ * would silently change an unrelated flow's retention.
  */
 export async function purgeExpiredBookingRequests(
   now: Date = new Date(),
@@ -1599,7 +2007,7 @@ export async function purgeExpiredBookingRequests(
 ) {
   const cutoff = new Date(now.getTime() - BOOKING_REQUEST_RETENTION_DAYS * DAY_MS);
 
-  const [declined, neverVerified] = await Promise.all([
+  const [declined, neverVerified, memberWithdrawn] = await Promise.all([
     db.bookingRequest.deleteMany({
       where: {
         status: BookingRequestStatus.DECLINED,
@@ -1613,9 +2021,16 @@ export async function purgeExpiredBookingRequests(
         createdAt: { lte: cutoff },
       },
     }),
+    db.bookingRequest.deleteMany({
+      where: {
+        status: BookingRequestStatus.CANCELLED,
+        requestedByMemberId: { not: null },
+        updatedAt: { lte: cutoff },
+      },
+    }),
   ]);
 
-  if (declined.count > 0 || neverVerified.count > 0) {
+  if (declined.count > 0 || neverVerified.count > 0 || memberWithdrawn.count > 0) {
     logAudit({
       action: "booking_request.retention_purge",
       category: "privacy",
@@ -1624,6 +2039,7 @@ export async function purgeExpiredBookingRequests(
       metadata: {
         declinedPurged: declined.count,
         neverVerifiedPurged: neverVerified.count,
+        memberWithdrawnPurged: memberWithdrawn.count,
         retentionDays: BOOKING_REQUEST_RETENTION_DAYS,
       },
     });
@@ -1632,6 +2048,7 @@ export async function purgeExpiredBookingRequests(
   return {
     declinedPurged: declined.count,
     neverVerifiedPurged: neverVerified.count,
+    memberWithdrawnPurged: memberWithdrawn.count,
   };
 }
 
@@ -1689,6 +2106,13 @@ export function serializeBookingRequestForAdmin(
     // included the lodge relation.
     lodgeId: request.lodgeId,
     lodgeName: request.lodge?.name ?? null,
+    // Whole-lodge exclusivity (ADR-001). Emitted so the admin queue can badge
+    // it — for SCHOOL rows too, closing a display gap that predates #2263 — and
+    // so the member-origin approval branch can be selected at all.
+    exclusivityRequested: request.exclusivityRequested,
+    // Member attribution (#2263). Null for every public/school request. ADMIN
+    // payload only: no member-facing serialiser reads this function.
+    requestedByMemberId: request.requestedByMemberId,
     schoolName: request.schoolName,
     teachers: parseAdminTeachers(request.teachers),
     cateringPreference: request.cateringPreference,

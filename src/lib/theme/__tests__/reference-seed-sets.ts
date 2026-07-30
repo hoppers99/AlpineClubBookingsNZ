@@ -40,6 +40,7 @@ export const SYNTHETIC_CLUB_THEME_VALUES: ClubThemeValues = {
   brandSafety: "#e11d48",
   headingFontKey: "LEAGUE_SPARTAN",
   bodyFontKey: "INTER",
+  logoUrl: null,
   logoDataUrl: null,
   rawCss: "",
 };

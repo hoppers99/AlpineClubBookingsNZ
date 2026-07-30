@@ -382,6 +382,19 @@ export function bookingConfirmedTemplate(
       guestCount: number;
       holdUntil: Date;
     };
+    // #2263: a confirmation for a booking that is CONFIRMED but NOT yet paid —
+    // the member whole-lodge approval creates a PENDING Internet Banking
+    // receivable, so "Total Paid" and "Payment has been processed successfully"
+    // would both be false. When present, the money row states what is OWING and
+    // the alert box says how to pay it. Same template (and therefore the same
+    // operator override) as the paid confirmation, exactly as the split-parent
+    // `provisionalGuests` variant is (#738).
+    paymentDue?: {
+      /** Internet-banking reference the member must quote (never a bearer token). */
+      reference: string;
+      /** True once the club's accounting system actually emails the invoice. */
+      invoiceEmailed: boolean;
+    };
   }
 ): string {
   const promoAdjustmentCents = resolvePromoAdjustmentCents(options);
@@ -416,13 +429,31 @@ export function bookingConfirmedTemplate(
     rows.push({ label: escapeHtml(row.label), value: escapeHtml(row.value) });
   }
 
-  rows.push({ label: "Total Paid", value: formatCents(totalCents) });
+  const paymentDue = options?.paymentDue;
+  rows.push(
+    paymentDue
+      ? { label: "Total Due", value: formatCents(totalCents) }
+      : { label: "Total Paid", value: formatCents(totalCents) },
+  );
+
+  // One composed sentence, shared with the {{paymentDueNote}} token in
+  // sendBookingConfirmedEmail so an operator override tells the same story.
+  const paymentDueNote = paymentDue
+    ? `This booking is confirmed, but payment of ${formatCents(totalCents)} is still owing. Please pay by internet banking quoting reference ${escapeHtml(paymentDue.reference)}.` +
+      (paymentDue.invoiceEmailed
+        ? " An invoice has been emailed to you separately."
+        : " The club will send you an invoice for it.")
+    : "";
 
   return layout(`
     ${heading("Booking Confirmed")}
     ${paragraph("Hi " + escapeHtml(firstName) + ", your lodge booking has been confirmed!")}
     ${infoTable(rows)}
-    ${alertBox("Payment has been processed successfully.", "success")}
+    ${
+      paymentDue
+        ? alertBox(paymentDueNote, "warning")
+        : alertBox("Payment has been processed successfully.", "success")
+    }
     ${provisionalSection}
     ${arrivalInstructionsSection({
       travelNote: options?.lodgeTravelNote ?? CLUB_LODGE_TRAVEL_NOTE,
@@ -3090,6 +3121,43 @@ export function adminSchoolManualInvoiceTemplate(data: {
       { label: "Guests", value: String(data.guestCount) },
       { label: "Amount", value: formatCents(data.totalCents) },
     ])}
+    ${button("View Booking Requests", data.reviewUrl, { sameOrigin: true })}
+  `);
+}
+
+/**
+ * #2263 — an approved MEMBER whole-lodge request was converted into a CONFIRMED
+ * booking with a PENDING Internet Banking receivable while the Xero module is
+ * off, so nothing raised the invoice. Its own registered template rather than a
+ * reuse of `adminSchoolManualInvoiceTemplate`: that one names a school and
+ * addresses a non-login school contact, and this booking is owned by a real
+ * signed-in member. Same money-critical class, so it is delivery-locked on the
+ * same grounds — muting it would let a confirmed whole-lodge stay go
+ * un-invoiced.
+ */
+export function adminWholeLodgeManualInvoiceTemplate(data: {
+  memberName: string;
+  contactEmail: string;
+  checkIn: Date;
+  checkOut: Date;
+  guestCount: number;
+  totalCents: number;
+  paymentReference: string;
+  reviewUrl: string;
+}): string {
+  return layout(`
+    ${heading("Whole-Lodge Booking Needs a Manual Invoice")}
+    ${paragraph("A member's whole-lodge request has been approved and the booking is confirmed with the whole lodge held for their group. The Xero module is currently off, so no invoice was raised automatically. Please invoice the member manually and record the payment through the usual paths.")}
+    ${infoTable([
+      { label: "Member", value: escapeHtml(data.memberName) },
+      { label: "Contact email", value: escapeHtml(data.contactEmail) },
+      { label: "Check-in", value: formatNZDate(data.checkIn) },
+      { label: "Check-out", value: formatNZDate(data.checkOut) },
+      { label: "Guests", value: String(data.guestCount) },
+      { label: "Amount", value: formatCents(data.totalCents) },
+      { label: "Payment reference", value: escapeHtml(data.paymentReference) },
+    ])}
+    ${paragraph("The member has been told the booking is confirmed, that this amount is still owing, and that the club will send them an invoice — so please send one.")}
     ${button("View Booking Requests", data.reviewUrl, { sameOrigin: true })}
   `);
 }

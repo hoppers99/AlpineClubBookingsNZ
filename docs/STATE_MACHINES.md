@@ -629,6 +629,93 @@ a quote still reuses any existing hold idempotently. The hold scope covers every
 request-converted PENDING booking, including requests approved DIRECTLY without a
 quote — intended.
 
+### Member whole-lodge requests (#2263)
+
+A signed-in member may ask for sole occupancy of the lodge
+(`POST /api/booking-requests/whole-lodge`). The row is an ordinary
+`BookingRequest` — no new `BookingRequestType` and no new
+`BookingRequestStatus` — discriminated everywhere by
+`requestedByMemberId != null && exclusivityRequested`. It is the ONLY member-origin
+kind of booking request; a public or school request always has
+`requestedByMemberId` null.
+
+```text
+(member submits) -> VERIFIED   (no email verification: the requester is signed in,
+                                so no verification token is ever issued; verifiedAt
+                                is stamped at creation and the row lands straight
+                                in the officer queue holding NO capacity)
+VERIFIED -> APPROVED -> CONVERTED  (officer approves with a priced headcount; a
+                                CONFIRMED booking is created, owned by the
+                                requesting login member, with wholeLodgeHold
+                                stamped by the approving admin)
+PRICED   -> APPROVED -> CONVERTED  (same transition, defensive: see the note
+                                below — nothing sanctioned puts a member-origin
+                                row in PRICED, and the approval accepts it
+                                anyway rather than dead-ending a row that
+                                somehow got there)
+VERIFIED -> DECLINED           (officer declines; the note is audit-log-only)
+VERIFIED -> CANCELLED          (the MEMBER withdraws it)
+```
+
+**Why `PRICED` appears above when the prose below says these rows never reach it.**
+Both are true and the difference matters. Nothing sanctioned can price a
+member-origin row: `priceBookingRequest` throws `409` for it and the admin queue
+offers no price control. But `approveMemberWholeLodgeRequest`'s status guard, and
+its `updateMany` claim, both accept `{ VERIFIED, PRICED }`. That is deliberate
+tolerance rather than an admission that the state is reachable: if a future change
+(or a hand-run database fix) leaves such a row in `PRICED`, the officer can still
+approve it instead of meeting a `409` on a row with no other way forward. The
+guard is a wider door than the pipeline can currently reach — the narrow
+statement "these rows never reach `PRICED`" describes what the code PRODUCES, and
+this diagram line describes what the approval ACCEPTS.
+
+**The quote lifecycle is refused, at the service layer.** `createBookingRequestQuote`,
+`sendBookingRequestQuote`, `holdBookingRequestSlots` and `priceBookingRequest` each
+throw `409` for a member-origin whole-lodge row, and the admin queue hides their
+buttons. Hiding is the UX; the 409 is the guarantee. The reason is not tidiness:
+quote-send auto-holds capacity (#1280), the quote email is a member-visible
+pricing surface the design excludes, and requester-accept mints a duplicate
+non-login member for somebody who already has a login account. So these rows
+never reach `PRICED`/`QUOTED`/`QUOTE_SENT`/`QUERY_PENDING`/`MODIFICATION_REQUESTED`
+and never carry `heldBookingId` — the shared pipeline still handles those states
+if a row somehow acquires one, but nothing sanctioned produces one.
+
+**Withdrawal** (`POST /api/booking-requests/whole-lodge/[id]/withdraw`) is a
+status-guarded `updateMany` to `CANCELLED` whose WHERE also names
+`requestedByMemberId` (ownership is part of the claim, so another member's id
+behaves exactly like a non-existent one) **and `heldBookingId: null`**. That last
+clause is load-bearing: member withdraw has no hold-release machinery, so
+cancelling a row that holds beds would strand an `AWAITING_REVIEW` hold forever
+with nothing left to release it. The blocked member gets the fixed `409`; the
+resolution path is admin **decline**, which does release holds. Any stray `SENT`
+quote is retired to `SUPERSEDED` in the same transaction, request row locked
+first (the #1423 lock-ordering invariant). The loser of a
+withdraw-vs-approve/decline race gets the same `409`.
+
+**Decline** on a member-origin row keeps the officer's note in the audit metadata
+ONLY: `declineReason` stays null on the row, and the decline email renders its
+fixed generic body with no note and nothing derived from availability. The
+school/public `declineReason` is the field the requester is SHOWN, and an
+availability-derived sentence in it would be exactly the disclosure ADR-001
+decision 6 forbids. Not persisting is deliberately stronger than
+persist-and-filter: a null column cannot be leaked by a surface added later.
+
+**Retention (owner decision OD-B).** `purgeExpiredBookingRequests` hard-deletes
+member-origin `DECLINED` rows (already covered by the declined sweep) and
+member-origin `CANCELLED` rows on the same 90-day clock. The `CANCELLED` sweep is
+scoped to `requestedByMemberId != null` because a public request also reaches
+`CANCELLED` (a requester cancelling their own quote) and OD-B decided retention
+only for the member-origin flow. "My requests" therefore shows a bounded history,
+and its copy says so.
+
+**Member merge.** `BookingRequest.requestedByMemberId` is classified `move` in
+`MEMBER_MERGE_RELATION_SPECS`: a loser's requests re-point to the surviving
+member, who then owns them in "My requests" and may withdraw them. A merge can
+transiently push the master past the 2-open-request cap. That is accepted: the
+cap is a **creation-time guard, not an invariant** — it stops a member opening a
+third request, and nothing in the system reads it as a promise that no member
+ever holds more than two.
+
 Token-link outcomes the requester can see:
 
 - Valid `SENT` link: the quote is shown with options, price, and an expiry hint.
@@ -1093,6 +1180,27 @@ member's requested-room editing locks on the FIRST range assign, not at a later
 confirmation step; the assign dialog says so before the admin commits. Manual
 allocation of a whole-lodge-held booking is refused outright at the write
 chokepoint, matching the lifecycle prune (#2285).
+
+Draft rows still arise constantly, which is why a confirmation step remains a
+real affordance rather than a legacy one: board single-night and drag placements
+create them, auto-allocation writes `source: "AUTO"` suggestions as drafts, and a
+MOVE **re-drafts** an approved row (the upsert's update branch clears
+`approvedAt`/`approvedByMemberId`). From inside a booking (#2252) those drafts
+are approved with a **booking-scoped** approval: `approveBedAllocations` takes
+`bookingId` as a first-class selector, sufficient on its own, so confirming one
+booking can never stamp another booking's pending rows the way the `from`/`to`
+form would. It carries the panel's ADR-003 lodge scope too, so the write scope
+matches the lodge-scoped read the card displayed. That approval audits
+`BED_ALLOCATION_APPROVED` with `targetId` = the booking id, so the booking's own
+audit deep link finds it.
+
+The room-request lock is therefore **two-way**, and the surfaces say so. No
+un-approve action exists or is invented, but two existing paths take a booking's
+last approved row away and re-open the member's editor: the move re-draft above,
+and `deleteBedAllocation`. The in-booking panel warns before removing the last
+approved row for exactly that reason — deciding it from the booking's own
+approved-night count rather than the window on screen, because the panel pages a
+stay longer than 31 nights and cannot see the rest of it.
 
 To verify: approval status representation, conflict handling, per-night guest
 uniqueness, room continuity and whole-booking displacement behavior, range

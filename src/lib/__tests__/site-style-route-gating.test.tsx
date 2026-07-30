@@ -60,7 +60,13 @@ vi.mock("@/lib/site-banners", () => ({
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/public-layout-config", async () => {
   const { clubIdentity } = await import("@/config/club-identity");
-  return { getCachedClubIdentity: vi.fn(async () => clubIdentity) };
+  return {
+    getCachedClubIdentity: vi.fn(async () => clubIdentity),
+    // #2322: the (website) layout reads the theme through the tagged cache
+    // wrapper now. Delegate to the same stub so the existing "theme was read"
+    // assertion still means what it says.
+    getCachedWebsiteThemeRenderState: mocks.getWebsiteThemeRenderState,
+  };
 });
 
 vi.mock("@/lib/finance-auth", () => ({
@@ -133,6 +139,7 @@ describe("site style route-group gating", () => {
     mocks.getWebsiteThemeRenderState.mockResolvedValue({
       css: ":root{}",
       appCss: ".app-theme-scope{}",
+      logoUrl: null,
       logoDataUrl: null,
       isComplete: false,
       values: {},
@@ -159,6 +166,7 @@ describe("site style route-group gating", () => {
     mocks.getWebsiteThemeRenderState.mockResolvedValue({
       css: ":root{}",
       appCss: ".app-theme-scope{}",
+      logoUrl: null,
       logoDataUrl: null,
       isComplete: true,
       values: {},
@@ -174,6 +182,7 @@ describe("site style route-group gating", () => {
     mocks.getWebsiteThemeRenderState.mockResolvedValue({
       css: ":root{--success:red}",
       appCss: ".app-theme-scope{--brand-gold:#123456}",
+      logoUrl: null,
       logoDataUrl: null,
       isComplete: false,
       values: {},

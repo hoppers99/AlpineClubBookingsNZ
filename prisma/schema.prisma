@@ -652,6 +652,11 @@ model Member {
   bookingsCapacityOverridden                 Booking[]                                  @relation("BookingsCapacityOverridden")
   bookingsWholeLodgeHeld                     Booking[]                                  @relation("BookingsWholeLodgeHeld")
   bookingsNoEmailsSet                        Booking[]                                  @relation("BookingsNoEmailsSet")
+  // #2263: whole-lodge booking requests this signed-in member submitted. Only
+  // the authenticated member front-door stamps it; school/public requests leave
+  // it null. onDelete: SetNull, so deleting the account keeps the request row's
+  // history without a dangling owner.
+  bookingRequestsRequested                   BookingRequest[]                           @relation("BookingRequestRequester")
   approvedBedAllocations                     BedAllocation[]                            @relation("BedAllocationApprover")
   refundRequests                             RefundRequest[]
   issueReports                               IssueReport[]
@@ -2077,12 +2082,23 @@ model BookingRequest {
   message          String?              @db.VarChar(1000)
 
   // Exclusive whole-lodge hold — request path (#117 / epic #116, ADR-001). A
-  // requester (school/group front-door) can ask for sole occupancy of the
+  // requester (school/group front-door, or — since #2263 — a signed-in member
+  // through the member whole-lodge door) can ask for sole occupancy of the
   // lodge. This is only the REQUEST signal; an admin approving the request may
   // set Booking.wholeLodgeHold on the resulting booking (the flag itself is the
   // admin capacity action). Booking-generic; "school" is just the wording.
   // Additive/expand-only; default false.
   exclusivityRequested Boolean            @default(false)
+
+  // Member attribution for the authenticated whole-lodge request front-door
+  // (#2263). Null for every public/school request (which have no account behind
+  // them); set from the SESSION only, never from a request body. It is the
+  // member-origin discriminator the whole feature keys on: "My requests", the
+  // withdraw authorisation check, the per-member open-request cap, the admin
+  // "Member" badge, and the member-origin approval/decline branches all read
+  // `requestedByMemberId != null`. Member-merge classifies it `move`
+  // (MEMBER_MERGE_RELATION_SPECS).
+  requestedByMemberId String?
 
   // SCHOOL variant only. The school is the invoiced party / Xero contact.
   schoolName         String?                   @db.VarChar(200)
@@ -2149,6 +2165,7 @@ model BookingRequest {
   version Int @default(0)
 
   lodge            Lodge?                @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
+  requestedByMember Member?              @relation("BookingRequestRequester", fields: [requestedByMemberId], references: [id], onDelete: SetNull)
   convertedBooking Booking?              @relation("BookingRequestConvertedBooking", fields: [convertedBookingId], references: [id], onDelete: SetNull)
   heldBooking      Booking?              @relation("BookingRequestHeldBooking", fields: [heldBookingId], references: [id], onDelete: SetNull)
   acceptedQuote    BookingRequestQuote?  @relation("BookingRequestAcceptedQuote", fields: [acceptedQuoteId], references: [id], onDelete: SetNull)
@@ -2163,6 +2180,9 @@ model BookingRequest {
   @@index([reviewedByMemberId])
   @@index([heldBookingId])
   @@index([acceptedQuoteId])
+  // #2263: "My requests" reads by member, and the open-request cap counts a
+  // member's non-terminal rows — both are (member, status) lookups.
+  @@index([requestedByMemberId, status])
 }
 
 // Versioned public booking request quotes. The raw response token is emailed
@@ -3913,6 +3933,12 @@ model PageContent {
 enum MediaImageKind {
   CONTENT
   MEMBER_PHOTO
+  // #2322: club logos uploaded through the site-style wizard. Publicly served
+  // like CONTENT, but kept out of the content picker (which lists CONTENT only)
+  // and owned by the theme row — replacing or clearing the logo deletes exactly
+  // the prior LOGO blob. A CONTENT row is never deleted that way: page HTML may
+  // reference it.
+  LOGO
 }
 
 // Uploaded images for the page-content image picker, stored in the database
@@ -4994,6 +5020,12 @@ model ClubTheme {
   // (20260722140000_expand_club_theme_orphan_column_defaults) drained.
   headingFontKey ClubThemeFont @default(LEAGUE_SPARTAN)
   bodyFontKey    ClubThemeFont @default(INTER)
+  // #2322: the logo is stored as a served image URL (`/api/images/<MediaImage
+  // id>`, immutably cached) rather than inlined base64. `logoDataUrl` is kept
+  // for the deployments that already hold one — render precedence is
+  // logoUrl ?? logoDataUrl ?? text fallback, and saving a new logo clears the
+  // data-URI. Both nullable; neither is ever populated by default.
+  logoUrl        String?
   logoDataUrl    String?
   rawCss         String        @default("")
   completedAt    DateTime?

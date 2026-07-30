@@ -322,11 +322,11 @@ const NOTICE = "AdminViewOnlyNotice";
 */
 const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 287,
+  callSites: 290,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 244,
+  optOuts: 247,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 218,
+  staticOptOuts: 221,
   /** `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch. */
   vouchedOptOuts: 26,
   /** …of the vouched: proved at a parent's own JSX render site (#2168). */
@@ -340,7 +340,7 @@ const FIGURES = {
   leafControls: 30,
   leafFiles: 18,
   /** Components that render an `AdminViewOnlySectionBanner`. */
-  bannerComponents: 79,
+  bannerComponents: 80,
 } as const;
 
 const WIZARD_SHELL = "IntegrationWizard";
@@ -1114,10 +1114,6 @@ describe("view-only section banner coverage (#2160)", () => {
                Nothing else in the tree changed, and no call site was removed —
                the whole +10 is those four provider wizards' step files
                becoming visible to this suite for the first time.
-          287  +2  #2307's Member guests settings card on Bookings setup
-               (member-guest-settings-card.tsx): Edit + Save, both static
-               opt-outs under the card's own banner, so staticOptOuts and
-               optOuts move +2 with it and bannerComponents +1 (78 -> 79).
 
         And how the other figures moved with it, each re-measured:
 
@@ -1159,6 +1155,22 @@ describe("view-only section banner coverage (#2160)", () => {
           - the disabled `Input`s and `select`s inside the wizard steps. This
             suite polices `ViewOnlyActionButton`; text inputs have never been in
             its scope, and the display wizard has always left its own that way.
+
+        The ledger then resumes:
+
+          288  +3  #2252 adds the in-booking Bed allocation panel
+               (`booking-bed-allocation-panel.tsx`): Assign, Remove and the
+               booking-level Confirm, all static opt-outs under the panel's own
+               banner (+1 banner component, 78 -> 79). Its remove-confirmation
+               dialog keeps its own reason — a dialog is a separate
+               accessibility container the card's banner does not reach — and
+               is a plain Button rather than a ViewOnlyActionButton, matching
+               the shared range dialog (#2251), so it adds no call site and no
+               exception.
+          290  +2  #2307's Member guests settings card on Bookings setup
+               (member-guest-settings-card.tsx): Edit + Save, both static
+               opt-outs under the card's own banner, so staticOptOuts and
+               optOuts move +2 with it and bannerComponents +1 (79 -> 80).
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into

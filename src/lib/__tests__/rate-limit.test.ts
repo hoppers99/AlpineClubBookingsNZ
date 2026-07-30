@@ -342,6 +342,13 @@ describe("degraded-mode policy for auth-sensitive limiters (#1142)", () => {
       // 403 for every failure, so volume is the only probe — a degraded
       // shared-store fallback must not multiply that allowance.
       "memberGuestConsentRespond",
+      // Member whole-lodge request (#2263): the submission door for asking the
+      // club to sterilise every bed in the lodge. Marked auth-sensitive so a
+      // degraded shared-store fallback TIGHTENS the budget rather than letting
+      // one member (or one address) multiply their allowance across replicas.
+      // Its sibling `memberWholeLodgeWithdraw` is deliberately NOT marked: a
+      // member cancelling their own request holds nothing and reveals nothing.
+      "memberWholeLodgeRequest",
     ].sort();
 
     const marked = Object.entries(rateLimiters)
