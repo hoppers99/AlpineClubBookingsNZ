@@ -195,6 +195,13 @@ const ROUTE_AREA_PREFIXES: Array<{
       "/api/admin/occupancy",
       "/api/admin/waitlist",
       "/api/admin/booking-policies",
+      // Member-guest policy settings (epic #2305, MG2 #2307, owner decision
+      // D-17). Booking policy, not membership admin: it configures how a guest
+      // is added to a BOOKING (ask-first vs notify-only, how long a pending
+      // guest holds the bed), so it sits with booking-requests/settings and
+      // booking-policies rather than under /api/admin/member*. bookings:view
+      // reads the card, bookings:edit saves it.
+      "/api/admin/member-guest-settings",
       "/api/admin/seasons",
       "/api/admin/age-tier-settings",
       "/api/admin/promo-codes",

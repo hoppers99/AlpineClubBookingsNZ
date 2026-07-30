@@ -22,7 +22,10 @@ import { DEFAULT_MEMBER_GUEST_SETTINGS } from "@/config/club-settings-defaults";
  *
  * In particular `openMemberSearchEnabled` and `openMemberSearchIncludesMinors`
  * are read by NOTHING at runtime and must stay that way until MG3: they decide
- * whether the club's membership list becomes browsable, and both ship OFF.
+ * whether the club's membership list becomes browsable, and both ship OFF. MG2's
+ * admin route (`src/app/api/admin/member-guest-settings/route.ts`) lets a club's
+ * own admin set them, which is a write, not a read — nothing consults either
+ * value to decide who is discoverable until MG3's type-ahead lands.
  */
 
 export const MEMBER_GUEST_SETTINGS_ID = "default";
@@ -40,9 +43,13 @@ export type MemberGuestSettingsValues = {
 // / _MAX) so the config-transfer spec and MG2's admin route can enforce the same
 // two numbers without importing this Prisma-backed module.
 
-// The admin-payload shape (settings + updatedAt + updatedByMemberId) is
-// deliberately NOT built here: it belongs with the admin GET that returns it,
-// which ships in MG2 (#2307) with the settings card (D-17).
+// The admin-payload shape (settings + updatedAt + updatedByMemberId + the
+// view/manage capability signal) is deliberately NOT built here: it belongs with
+// the admin GET that returns it, which is now
+// src/app/api/admin/member-guest-settings/route.ts (MG2 #2307, D-17). That route
+// reads the row itself — it needs the audit columns, which this loader's value
+// type does not carry — and fills any miss through normalizeMemberGuestSettings
+// below, so the defaults reach an admin and a booking path by the same code.
 type MemberGuestSettingsRecord = Pick<
   MemberGuestSettings,
   keyof MemberGuestSettingsValues | "updatedAt" | "updatedByMemberId"

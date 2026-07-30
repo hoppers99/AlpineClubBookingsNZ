@@ -610,14 +610,19 @@ describe("the two open-search privacy toggles are inert and off", () => {
     expect(schema).toMatch(/openMemberSearchIncludesMinors\s+Boolean\s+@default\(false\)/);
   });
 
-  it("is read by no production code at all", () => {
-    // D.20. Until MG3 ships the type-ahead, the ONLY files allowed to name
-    // these columns are the schema, the shared defaults, the loader that fills
-    // them in, and the config-transfer spec that refuses to export them.
+  it("is named only by the files that store or administer them, never by a reader", () => {
+    // D.20. Until MG3 ships the type-ahead, the ONLY files allowed to name these
+    // columns are the schema, the shared defaults, the loader that fills them in,
+    // the config-transfer spec that refuses to export them — and, from MG2
+    // (#2307, owner decision D-17), the admin route that lets a club's own admin
+    // set them. That route is a WRITER, not a reader: it validates, persists and
+    // audits the two values, and still nothing anywhere consumes either of them
+    // to decide who is discoverable — that arrives with MG3's type-ahead.
     const allowed = new Set([
       "src/config/club-settings-defaults.ts",
       "src/lib/member-guest-settings.ts",
       "src/lib/config-transfer/categories/club-settings.ts",
+      "src/app/api/admin/member-guest-settings/route.ts",
     ]);
     const readers = sourceFilesUnder("src")
       .filter((file) => !file.includes("__tests__"))
