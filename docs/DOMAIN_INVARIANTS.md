@@ -1966,10 +1966,19 @@ edit path — including single-guest self-removal, which is never blocked for a
 written justification — flags the booking (`adminReviewStatus: PENDING`, with
 an automatic note on the removal path) so it lands in the admin review queue.
 Review parking moves a booking to AWAITING_REVIEW only from the pre-payment
-statuses (PENDING/PAYMENT_PENDING); a paid or confirmed booking is flagged in
-place, and approving it clears the review without re-opening the payment
-lifecycle. Rejection cancels through the shared cancellation flow, which
-refunds captured payments per the policy.
+statuses (DRAFT/PENDING/PAYMENT_PENDING — DRAFT parks in create parity, #2266,
+with `draftExpiresAt` nulled so the 72-hour expiry cannot sweep a booking out
+from under its reviewer); a paid or confirmed booking is flagged in place, and
+approving it clears the review without re-opening the payment lifecycle.
+Rejection cancels through the shared cancellation flow, which refunds captured
+payments per the policy (a legacy DRAFT-status queue entry — pre-#2266 rows
+only — is cancelled directly by the review route with a guarded
+DRAFT → CANCELLED flip, since a draft holds no capacity and has no payment).
+The invariant is also **enforced at the doors, not only at the writers**
+(#2266): `confirm-draft` and `create-payment-intent`'s DRAFT arm both refuse
+(409) any booking with `requiresAdminReview` and a non-APPROVED
+`adminReviewStatus`, so even a writer bug that leaves a review-flagged DRAFT
+behind cannot let a minors-only booking reach PAID with its review pending.
 
 Because a paid minors-only booking is deliberately **not** parked to
 AWAITING_REVIEW (Option A / F27, issue #1372 — parking a paid booking would

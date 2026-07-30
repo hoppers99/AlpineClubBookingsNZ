@@ -511,6 +511,10 @@ export async function modifyBookingBatch({
         hasNonMembers: lifecycle.hasNonMembers,
         nonMemberHoldUntil: lifecycle.newNonMemberHoldUntil,
         status: lifecycle.newStatus,
+        // #2266: a DRAFT parked to AWAITING_REVIEW must not be swept by the
+        // 72-hour draft expiry while an admin is deciding — create parity
+        // (booking-create nulls draftExpiresAt for review-parked drafts).
+        ...(lifecycle.clearDraftExpiresAt ? { draftExpiresAt: null } : {}),
         requiresAdminReview: guestPlan.reviewUpdate.requiresAdminReview,
         adminReviewReason: guestPlan.reviewUpdate.adminReviewReason,
         memberReviewJustification: guestPlan.reviewUpdate.memberReviewJustification,

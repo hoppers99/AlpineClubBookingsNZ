@@ -227,6 +227,89 @@ describe("applyLifecycleTransitions — member DRAFT edits stay hold-free (#2266
     expect(result.zeroDollarAutoPaid).toBe(false);
   });
 
+  it("parks a review-flagged DRAFT to AWAITING_REVIEW and clears its expiry (create parity)", async () => {
+    // The lens scenario's root cause: a member draft edit that trips the
+    // no-adult rule must park the booking exactly as booking-create parks a
+    // no-adult draft — AWAITING_REVIEW, with draftExpiresAt nulled so the
+    // 72-hour sweep cannot delete it mid-review. Before this fix the booking
+    // stayed DRAFT with adminReviewStatus PENDING, and the DRAFT pay/confirm
+    // doors did not check review fields.
+    const result = await applyLifecycleTransitions(
+      { payment: { upsert: vi.fn() }, booking: { updateMany: vi.fn() } } as never,
+      {
+        booking: {
+          id: "bk-draft",
+          memberId: "m1",
+          status: "DRAFT",
+          nonMemberHoldUntil: null,
+          lodgeId: "lodge-1",
+          payment: null,
+          creditElectionCents: null,
+        } as never,
+        bookingId: "bk-draft",
+        newCheckIn: new Date("2999-01-10"),
+        newFinalPriceCents: 10_000,
+        // Minors-only after the edit — the review rule tripped upstream.
+        guestsForPricing: [{ isMember: true }],
+        skipBookingLifecycleRules: false,
+        reviewUpdate: {
+          requiresAdminReview: true,
+          adminReviewReason: "No adult guest on the booking",
+          memberReviewJustification: "Youth trip",
+          adminReviewStatus: "PENDING",
+          adminReviewNotes: null,
+          adminReviewedById: null,
+          adminReviewedAt: null,
+          parkForReview: true,
+          releaseFromReview: false,
+        } as never,
+      },
+    );
+
+    expect(result.newStatus).toBe("AWAITING_REVIEW");
+    expect(result.clearDraftExpiresAt).toBe(true);
+    // Parked bookings never auto-settle and take no hold.
+    expect(result.zeroDollarAutoPaid).toBe(false);
+    expect(result.newNonMemberHoldUntil).toBeNull();
+    expect(mockGetHoldPolicy).not.toHaveBeenCalled();
+  });
+
+  it("does not clear the expiry when parking from PAYMENT_PENDING (non-draft park)", async () => {
+    const result = await applyLifecycleTransitions(
+      { payment: { upsert: vi.fn() }, booking: { updateMany: vi.fn() } } as never,
+      {
+        booking: {
+          id: "bk-pp",
+          memberId: "m1",
+          status: "PAYMENT_PENDING",
+          nonMemberHoldUntil: null,
+          lodgeId: "lodge-1",
+          payment: null,
+          creditElectionCents: null,
+        } as never,
+        bookingId: "bk-pp",
+        newCheckIn: new Date("2999-01-10"),
+        newFinalPriceCents: 10_000,
+        guestsForPricing: [{ isMember: true }],
+        skipBookingLifecycleRules: false,
+        reviewUpdate: {
+          requiresAdminReview: true,
+          adminReviewReason: "No adult guest on the booking",
+          memberReviewJustification: "Youth trip",
+          adminReviewStatus: "PENDING",
+          adminReviewNotes: null,
+          adminReviewedById: null,
+          adminReviewedAt: null,
+          parkForReview: true,
+          releaseFromReview: false,
+        } as never,
+      },
+    );
+
+    expect(result.newStatus).toBe("AWAITING_REVIEW");
+    expect(result.clearDraftExpiresAt).toBe(false);
+  });
+
   it("keeps the hold rail intact for a PENDING booking (control case)", async () => {
     const { calculateBookingHoldDecision } = await import(
       "@/lib/policies/booking-route-decisions"
