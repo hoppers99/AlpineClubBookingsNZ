@@ -179,23 +179,34 @@ test("the target approves on the booking page's consent card and the badge flips
   // D-11: the pending target opens the WHOLE booking page, card inside it.
   await nadiaPage.goto(`/bookings/${booking.id}#consent`);
   const content = nadiaPage.getByTestId("booking-detail-content");
+  // Scoped to the card's own anchor — the one the request email deep-links to
+  // — and matched EXACTLY. Both matter: the page is long and mostly
+  // conditional, and a substring match on a heading also matches every
+  // ancestor whose text is just that heading, which is a strict-mode failure
+  // rather than a real ambiguity.
+  const card = content.locator("#consent");
   await expect(
-    content.getByText(
+    card.getByText(
       `${WAITLISTER.firstName} ${WAITLISTER.lastName} has added you to this booking`,
+      { exact: true },
     ),
   ).toBeVisible();
-  await expect(content.getByText("Waiting for your answer")).toBeVisible();
+  await expect(
+    card.getByText("Waiting for your answer", { exact: true }),
+  ).toBeVisible();
   // MG2-D-a's party listing, with the viewer's own row marked.
   await expect(
-    content.getByText(
+    card.getByText(
       `${NOMINATOR_TWO.firstName} ${NOMINATOR_TWO.lastName} — that's you`,
     ),
   ).toBeVisible();
-  // `exact` because the lapse sentence below also contains "answer by".
-  await expect(content.getByText("Answer by", { exact: true })).toBeVisible();
+  // `exact` again because the lapse sentence below also contains "answer by".
+  await expect(card.getByText("Answer by", { exact: true })).toBeVisible();
 
-  await content.getByRole("button", { name: "Yes, add me" }).click();
-  await expect(content.getByText("You're on this booking")).toBeVisible();
+  await card.getByRole("button", { name: "Yes, add me" }).click();
+  await expect(
+    content.getByText("You're on this booking", { exact: true }),
+  ).toBeVisible();
   await expect(content.getByText(/your place is confirmed/)).toBeVisible();
 
   // Reload: the question is gone and the guest list carries the ticked badge.
@@ -217,8 +228,10 @@ test("the target declines on an unpaid booking and the booker's guest list no lo
   await expect(nadiaPage).toHaveURL(new RegExp(`/bookings/${booking.id}`));
 
   const content = nadiaPage.getByTestId("booking-detail-content");
-  await content.getByRole("button", { name: "No thanks" }).click();
-  await expect(content.getByText("You've said no")).toBeVisible();
+  await content.locator("#consent").getByRole("button", { name: "No thanks" }).click();
+  await expect(
+    content.getByText("You've said no", { exact: true }),
+  ).toBeVisible();
   await expect(
     content.getByText(/The bed that was held for you has been released/),
   ).toBeVisible();
@@ -229,7 +242,9 @@ test("the target declines on an unpaid booking and the booker's guest list no lo
   // The booker's view: the party no longer includes the member who said no.
   await wandaPage.goto(`/bookings/${booking.id}`);
   const wandaView = wandaPage.getByTestId("booking-detail-content");
-  await expect(wandaView.getByText("Stay Details")).toBeVisible();
+  await expect(
+    wandaView.getByText("Stay Details", { exact: true }),
+  ).toBeVisible();
   await expect(
     wandaView.getByText(
       `${NOMINATOR_TWO.firstName} ${NOMINATOR_TWO.lastName}`,
@@ -245,7 +260,9 @@ test("the delegate page tells a non-delegate — even the booker — nothing, in
   if (approvedGuestId) {
     await wandaPage.goto(`/bookings/consent/${approvedGuestId}`);
     await expect(
-      wandaPage.getByText("There is nothing here for you to answer"),
+      wandaPage.getByText("There is nothing here for you to answer", {
+        exact: true,
+      }),
     ).toBeVisible();
     // No booking fact leaks onto the neutral page.
     await expect(wandaPage.getByText(/has added/)).toHaveCount(0);
@@ -255,7 +272,9 @@ test("the delegate page tells a non-delegate — even the booker — nothing, in
   // A fabricated id renders the SAME neutral page — the route is no oracle.
   await wandaPage.goto("/bookings/consent/does-not-exist");
   await expect(
-    wandaPage.getByText("There is nothing here for you to answer"),
+    wandaPage.getByText("There is nothing here for you to answer", {
+      exact: true,
+    }),
   ).toBeVisible();
   await expect(wandaPage.getByText("Booked by")).toHaveCount(0);
 });
