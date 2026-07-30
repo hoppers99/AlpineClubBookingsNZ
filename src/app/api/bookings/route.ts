@@ -28,8 +28,18 @@ import {
   BookingGuestValidationError,
   getBookingGuestValidationErrorResponse,
   normalizeBookingGuestInputs,
-  resolveLinkedBookingMembers,
+  resolveLinkedBookingMembersWithBoundary,
 } from "@/lib/booking-guests";
+import {
+  loadMemberGuestAddPolicy,
+  planMemberGuestConsentWrites,
+  type MemberGuestConsentWritePlanEntry,
+} from "@/lib/member-guest-add-policy";
+import {
+  matchMemberGuestNotificationRows,
+  sendMemberGuestAddNotifications,
+} from "@/lib/member-guest-consent-notifications";
+import type { MemberGuestAddActor } from "@/lib/member-guest-consent";
 import { nameField } from "@/lib/zod-helpers";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import {
@@ -322,13 +332,32 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  // "+ Add Member Guest" (epic #2305, MG2 #2307). Read the module flag and the
+  // policy singleton HERE — one read each, before any transaction is opened —
+  // then pass the answers down. The create service opens the booking transaction
+  // and takes the per-lodge capacity lock; a settings read in there would hold
+  // that lock across an extra query for nothing.
+  const memberGuestPolicy = await loadMemberGuestAddPolicy();
+  // MG4-D-a, brought forward into MG2: an on-behalf create is an ADMIN add, so a
+  // cross-family guest is consent-free and always-notify, stamped with the acting
+  // admin rather than left PENDING. `isAuthorizedOnBehalf` is exactly the flag
+  // that passes `skipAuthorization` below, so the two can never disagree.
+  const memberGuestActor: MemberGuestAddActor = isAuthorizedOnBehalf
+    ? { kind: "ADMIN", adminMemberId: session.user.id }
+    : { kind: "MEMBER" };
+  let memberGuestEntries = new Map<string, MemberGuestConsentWritePlanEntry>();
+
   try {
-    const linkedMembers = await resolveLinkedBookingMembers(
-      prisma,
-      effectiveMemberId,
-      guests.map((guest) => guest.memberId),
-      { skipAuthorization: isAuthorizedOnBehalf }
-    );
+    const { members: linkedMembers, boundary } =
+      await resolveLinkedBookingMembersWithBoundary(
+        prisma,
+        effectiveMemberId,
+        guests.map((guest) => guest.memberId),
+        {
+          skipAuthorization: isAuthorizedOnBehalf,
+          memberGuestWideningEnabled: memberGuestPolicy.wideningEnabled,
+        }
+      );
     await assertLinkedBookingMembersCanBeBooked(
       prisma,
       linkedMembers,
@@ -336,10 +365,23 @@ export async function POST(request: NextRequest) {
       {
         actorRole,
         onBehalfOfMemberId: isAuthorizedOnBehalf ? effectiveMemberId : null,
+        // D-8: a blocked cross-family member gets the one neutral refusal
+        // instead of their name, their missing profile fields and their login
+        // state.
+        crossFamilyMemberIds: boundary.beyondFamilyMemberIds,
       }
     );
     const normalizedGuests = normalizeBookingGuestInputs(guests, linkedMembers);
-    guestInputs = normalizeGuestStayRanges(normalizedGuests, { checkIn, checkOut });
+    const consentPlan = planMemberGuestConsentWrites({
+      guests: normalizeGuestStayRanges(normalizedGuests, { checkIn, checkOut }),
+      boundary,
+      actor: memberGuestActor,
+      now: new Date(),
+      bookingCheckIn: checkIn,
+      policy: memberGuestPolicy,
+    });
+    guestInputs = consentPlan.guests;
+    memberGuestEntries = consentPlan.entriesByMemberId;
   } catch (error) {
     if (error instanceof BookingGuestValidationError) {
       return NextResponse.json(
@@ -353,13 +395,54 @@ export async function POST(request: NextRequest) {
     throw error;
   }
 
-  const memberNightConflicts = await findBookingMemberNightConflicts(prisma, {
-    actorMemberId: session.user.id,
-    actorRole,
-    checkIn,
-    checkOut,
-    guests: guestInputs,
-  });
+  /**
+   * Tell the cross-family guests this create just added, AFTER it committed.
+   *
+   * AWAITED, not fire-and-forget, unlike the booking-confirmation email beside
+   * it. Two reasons: a lost consent request is not a lost courtesy but a bed held
+   * (D-4) for a member nobody ever asked, which only the nightly sweep will
+   * clear; and a `void` promise is exactly what a serverless freeze after the
+   * response drops. The dispatcher never rejects and returns immediately when
+   * there is nothing owed, so every booking without a cross-family guest — which
+   * is nearly all of them — pays nothing for this.
+   */
+  const notifyMemberGuestAdds = async (created: {
+    id: string;
+    guests: Array<{ id: string; memberId: string | null }>;
+  }) => {
+    const rows = matchMemberGuestNotificationRows({
+      createdGuests: created.guests,
+      entriesByMemberId: memberGuestEntries,
+    });
+    if (rows.length === 0) return;
+    await sendMemberGuestAddNotifications({
+      bookingId: created.id,
+      rows,
+      actor: memberGuestActor,
+    });
+  };
+
+  // D-8: with a cross-family guest in the party this refuses NEUTRALLY rather
+  // than returning the conflict body, because that body would name the nights a
+  // member the caller may never have met is already booked for.
+  let memberNightConflicts;
+  try {
+    memberNightConflicts = await findBookingMemberNightConflicts(prisma, {
+      actorMemberId: session.user.id,
+      actorRole,
+      checkIn,
+      checkOut,
+      guests: guestInputs,
+    });
+  } catch (error) {
+    if (error instanceof BookingGuestValidationError) {
+      return NextResponse.json(
+        getBookingGuestValidationErrorResponse(error),
+        { status: error.status },
+      );
+    }
+    throw error;
+  }
   if (memberNightConflicts.length > 0) {
     return NextResponse.json(
       getBookingMemberNightConflictResponse(memberNightConflicts),
@@ -490,11 +573,25 @@ export async function POST(request: NextRequest) {
   // Subscription gate for member guests (skipped only for authorized
   // on-behalf bookings — self-bookings always enforce it, #1442).
   if (!isAuthorizedOnBehalf) {
-    const unpaidMemberGuests = await findUnpaidMemberGuests(prisma, {
-      bookingMemberId: effectiveMemberId,
-      checkIn,
-      guests: guestInputs,
-    });
+    // D-8: for a cross-family guest this throws the one neutral refusal instead
+    // of returning the member's name, subscription status, invoice number and a
+    // link to their invoice.
+    let unpaidMemberGuests;
+    try {
+      unpaidMemberGuests = await findUnpaidMemberGuests(prisma, {
+        bookingMemberId: effectiveMemberId,
+        checkIn,
+        guests: guestInputs,
+      });
+    } catch (error) {
+      if (error instanceof BookingGuestValidationError) {
+        return NextResponse.json(
+          getBookingGuestValidationErrorResponse(error),
+          { status: error.status },
+        );
+      }
+      throw error;
+    }
 
     if (unpaidMemberGuests.length > 0) {
       const unpaidMemberNames = unpaidMemberGuests.map((member) => member.name);
@@ -557,8 +654,17 @@ export async function POST(request: NextRequest) {
         memberReviewJustification,
         lodgeId: parsed.data.lodgeId,
       });
+      await notifyMemberGuestAdds(newBooking);
       return NextResponse.json(newBooking, { status: 201 });
     } catch (err) {
+      if (err instanceof BookingGuestValidationError) {
+        // The in-transaction person-night guard's D-8 refusal (the pre-flight
+        // check above ran before the lock, so a race lands here).
+        return NextResponse.json(
+          getBookingGuestValidationErrorResponse(err),
+          { status: err.status },
+        );
+      }
       if (err instanceof MembershipTypeBookingPolicyError) {
         return NextResponse.json(
           getMembershipTypeBookingPolicyErrorBody(err),
@@ -687,6 +793,7 @@ export async function POST(request: NextRequest) {
     });
 
     if (outcome.type === "created") {
+      await notifyMemberGuestAdds(outcome.booking);
       return NextResponse.json(outcome.booking, { status: 201 });
     }
 
@@ -724,8 +831,15 @@ export async function POST(request: NextRequest) {
         alternateLodgeIds: parsed.data.alternateLodgeIds,
         notifyMember: parsed.data.notifyMember,
       });
+      await notifyMemberGuestAdds(waitlisted.booking);
       return NextResponse.json(waitlisted.booking, { status: 201 });
     } catch (waitlistErr) {
+      if (waitlistErr instanceof BookingGuestValidationError) {
+        return NextResponse.json(
+          getBookingGuestValidationErrorResponse(waitlistErr),
+          { status: waitlistErr.status },
+        );
+      }
       if (waitlistErr instanceof MembershipTypeBookingPolicyError) {
         return NextResponse.json(
           getMembershipTypeBookingPolicyErrorBody(waitlistErr),
@@ -760,6 +874,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Failed to create waitlisted booking" }, { status: 500 });
     }
   } catch (err) {
+    if (err instanceof BookingGuestValidationError) {
+      // The in-transaction person-night guard's D-8 refusal, reached on a race
+      // with the pre-flight check above.
+      return NextResponse.json(
+        getBookingGuestValidationErrorResponse(err),
+        { status: err.status },
+      );
+    }
     if (err instanceof MembershipTypeBookingPolicyError) {
       return NextResponse.json(
         getMembershipTypeBookingPolicyErrorBody(err),

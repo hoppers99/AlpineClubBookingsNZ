@@ -29,8 +29,13 @@ import {
   getBookingGuestValidationErrorResponse,
   type BookingGuestPricingInput,
   normalizeBookingGuestPricingInputs,
-  resolveLinkedBookingMembers,
+  resolveLinkedBookingMembersWithBoundary,
 } from "@/lib/booking-guests";
+import {
+  loadMemberGuestAddPolicy,
+  markCrossFamilyMemberGuests,
+  type MemberGuestConsentGuestFields,
+} from "@/lib/member-guest-add-policy";
 import {
   BookingGuestStayRangeValidationError,
   type NormalizedBookingGuestStayRange,
@@ -98,7 +103,15 @@ export async function POST(request: NextRequest) {
 
   const { checkIn, checkOut } = parsed.data;
   const rawGuests: BookingGuestPricingInput[] = parsed.data.guests;
-  let guests: Array<BookingGuestPricingInput & NormalizedBookingGuestStayRange>;
+  // The MG2 field set is part of the declared type rather than smuggled through
+  // at runtime, so the D-8 marker is visible to the type system all the way to
+  // the person-night guard instead of being an untyped property a refactor could
+  // silently drop.
+  let guests: Array<
+    BookingGuestPricingInput &
+      NormalizedBookingGuestStayRange &
+      MemberGuestConsentGuestFields
+  >;
 
   if (checkOut <= checkIn) {
     return NextResponse.json({ error: "Check-out must be after check-in" }, { status: 400 });
@@ -125,13 +138,26 @@ export async function POST(request: NextRequest) {
     ? parsed.data.forMemberId!
     : session.user.id;
 
+  // "+ Add Member Guest" (epic #2305, MG2 #2307). THIS ROUTE PERSISTS NOTHING, so
+  // it plans no consent and notifies nobody — but it must resolve a cross-family
+  // member all the same, or it prices the party wrongly. A member guest prices at
+  // member rates and counts toward the group discount and the non-member hold
+  // decision, so a quote that refused them would show the booker a total the
+  // create path immediately contradicts. Only the module flag is needed here; the
+  // policy singleton decides how a row is WRITTEN, and there is no row.
+  const memberGuestPolicy = await loadMemberGuestAddPolicy();
+
   try {
-    const linkedMembers = await resolveLinkedBookingMembers(
-      prisma,
-      effectiveMemberId,
-      rawGuests.map((guest) => guest.memberId),
-      { skipAuthorization: isAuthorizedOnBehalf }
-    );
+    const { members: linkedMembers, boundary } =
+      await resolveLinkedBookingMembersWithBoundary(
+        prisma,
+        effectiveMemberId,
+        rawGuests.map((guest) => guest.memberId),
+        {
+          skipAuthorization: isAuthorizedOnBehalf,
+          memberGuestWideningEnabled: memberGuestPolicy.wideningEnabled,
+        }
+      );
     await assertLinkedBookingMembersCanBeBooked(
       prisma,
       linkedMembers,
@@ -139,11 +165,18 @@ export async function POST(request: NextRequest) {
       {
         actorRole,
         onBehalfOfMemberId: isAuthorizedOnBehalf ? effectiveMemberId : null,
+        // D-8, and this route needs it most: a quote is side-effect-free and
+        // rate-limited as a read, so it is the cheapest surface on which to probe
+        // a stranger's profile, occupancy or subscription status.
+        crossFamilyMemberIds: boundary.beyondFamilyMemberIds,
       }
     );
-    guests = normalizeGuestStayRanges(
-      normalizeBookingGuestPricingInputs(rawGuests, linkedMembers),
-      { checkIn, checkOut }
+    guests = markCrossFamilyMemberGuests(
+      normalizeGuestStayRanges(
+        normalizeBookingGuestPricingInputs(rawGuests, linkedMembers),
+        { checkIn, checkOut }
+      ),
+      boundary,
     );
   } catch (error) {
     if (error instanceof BookingGuestValidationError) {
@@ -191,14 +224,26 @@ export async function POST(request: NextRequest) {
   }
 
   // Duplicate member nights (upstream #80cbdf4c): a member cannot hold two
-  // bookings covering the same night.
-  const memberNightConflicts = await findBookingMemberNightConflicts(prisma, {
-    actorMemberId: session.user.id,
-    actorRole,
-    checkIn,
-    checkOut,
-    guests,
-  });
+  // bookings covering the same night. D-8: for a cross-family guest this refuses
+  // neutrally instead of returning that member's already-booked nights.
+  let memberNightConflicts;
+  try {
+    memberNightConflicts = await findBookingMemberNightConflicts(prisma, {
+      actorMemberId: session.user.id,
+      actorRole,
+      checkIn,
+      checkOut,
+      guests,
+    });
+  } catch (error) {
+    if (error instanceof BookingGuestValidationError) {
+      return NextResponse.json(
+        getBookingGuestValidationErrorResponse(error),
+        { status: error.status },
+      );
+    }
+    throw error;
+  }
   if (memberNightConflicts.length > 0) {
     return NextResponse.json(
       getBookingMemberNightConflictResponse(memberNightConflicts),
