@@ -206,6 +206,51 @@ export function planMemberGuestConsentWrites<Guest extends GuestWithMemberId>(pa
   return { guests: plannedGuests, entriesByMemberId };
 }
 
+/** One committed guest row and the notification it owes. */
+export interface MemberGuestAddNotificationRow {
+  bookingGuestId: string;
+  targetMemberId: string;
+  notification: MemberGuestAddNotification;
+}
+
+/**
+ * Match a plan built before the write to the guest rows the write created.
+ *
+ * The persisting paths know WHICH MEMBER owes a notification — the plan is keyed
+ * by member id, because that is what the family boundary is computed over — but
+ * only learn the guest ROW ids once the rows exist. Matching on `memberId` is
+ * exact: `resolveLinkedBookingMembers` de-duplicates the requested ids, so one add
+ * creates at most one row per member, and the plan carries only cross-family
+ * members, so a family-scope guest for the same member cannot collide because it
+ * is not in the plan at all. Rows created for members not in the plan are ignored,
+ * so a caller may pass its whole created-guest list without filtering.
+ *
+ * WHY THIS LIVES HERE AND NOT WITH THE DISPATCHER. It is pure, and it is called
+ * from INSIDE the transaction (that is the only place the created rows are in
+ * hand), whereas the dispatcher pulls in the whole email/template graph. Keeping
+ * the two apart lets every persisting call site import this statically and load
+ * the sender with a dynamic import only when a notification is actually owed —
+ * so a club with the module off, or any ordinary family booking, never loads the
+ * mailer at all.
+ */
+export function matchMemberGuestNotificationRows(params: {
+  createdGuests: ReadonlyArray<{ id: string; memberId: string | null }>;
+  entriesByMemberId: ReadonlyMap<string, { notification: MemberGuestAddNotification }>;
+}): MemberGuestAddNotificationRow[] {
+  const rows: MemberGuestAddNotificationRow[] = [];
+  for (const guest of params.createdGuests) {
+    if (!guest.memberId) continue;
+    const entry = params.entriesByMemberId.get(guest.memberId);
+    if (!entry || entry.notification === "NONE") continue;
+    rows.push({
+      bookingGuestId: guest.id,
+      targetMemberId: guest.memberId,
+      notification: entry.notification,
+    });
+  }
+  return rows;
+}
+
 /**
  * The quote-path half: mark the cross-family guests for D-8 and write nothing.
  *

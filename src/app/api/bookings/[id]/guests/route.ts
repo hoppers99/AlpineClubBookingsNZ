@@ -53,14 +53,11 @@ import {
 } from "@/lib/booking-guests";
 import {
   loadMemberGuestAddPolicy,
+  matchMemberGuestNotificationRows,
   planMemberGuestConsentWrites,
   type MemberGuestConsentGuestFields,
   type MemberGuestConsentWritePlanEntry,
 } from "@/lib/member-guest-add-policy";
-import {
-  matchMemberGuestNotificationRows,
-  sendMemberGuestAddNotifications,
-} from "@/lib/member-guest-consent-notifications";
 import type { MemberGuestAddActor } from "@/lib/member-guest-consent";
 import { findUnpaidMemberGuestNames } from "@/lib/booking-member-guest-subscriptions";
 import {
@@ -776,6 +773,13 @@ export async function POST(
     // about, and the dispatcher never rejects, so there is nothing to guard
     // against here. It returns immediately when nothing is owed.
     if (result.memberGuestNotificationRows.length > 0) {
+    // Loaded lazily on purpose: the sender pulls in the whole email/template
+    // graph, and only a booking that actually added a cross-family member guest
+    // needs it. A club with the module off never loads the mailer through this
+    // path at all.
+    const { sendMemberGuestAddNotifications } = await import(
+      "@/lib/member-guest-consent-notifications"
+    );
       await sendMemberGuestAddNotifications({
         bookingId,
         rows: result.memberGuestNotificationRows,

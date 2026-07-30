@@ -15,12 +15,9 @@ import {
 } from "@/lib/booking-guests";
 import {
   loadMemberGuestAddPolicy,
+  matchMemberGuestNotificationRows,
   planMemberGuestConsentWrites,
 } from "@/lib/member-guest-add-policy";
-import {
-  matchMemberGuestNotificationRows,
-  sendMemberGuestAddNotifications,
-} from "@/lib/member-guest-consent-notifications";
 import type { MemberGuestAddActor } from "@/lib/member-guest-consent";
 import {
   addDaysDateOnly,
@@ -212,6 +209,13 @@ export async function copyBookingToDraft({
     entriesByMemberId: consentPlan.entriesByMemberId,
   });
   if (memberGuestRows.length > 0) {
+    // Loaded lazily on purpose: the sender pulls in the whole email/template
+    // graph, and only a booking that actually added a cross-family member guest
+    // needs it. A club with the module off never loads the mailer through this
+    // path at all.
+    const { sendMemberGuestAddNotifications } = await import(
+      "@/lib/member-guest-consent-notifications"
+    );
     await sendMemberGuestAddNotifications({
       bookingId: booking.id,
       rows: memberGuestRows,

@@ -59,12 +59,11 @@ import {
   assertProposedDateEditClearsXeroLockDate,
 } from "@/lib/xero-period-lock-guard";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
-import { loadMemberGuestAddPolicy } from "@/lib/member-guest-add-policy";
 import {
+  loadMemberGuestAddPolicy,
   matchMemberGuestNotificationRows,
-  sendMemberGuestAddNotifications,
   type MemberGuestAddNotificationRow,
-} from "@/lib/member-guest-consent-notifications";
+} from "@/lib/member-guest-add-policy";
 import type { MemberGuestAddActor } from "@/lib/member-guest-consent";
 
 type ModifiedBooking = Booking & {
@@ -659,6 +658,13 @@ export async function modifyBookingBatch({
   // unsent consent request leaves a bed held (D-4) for a member nobody asked. The
   // dispatcher never rejects and returns immediately when nothing is owed.
   if (result.memberGuestNotificationRows.length > 0) {
+    // Loaded lazily on purpose: the sender pulls in the whole email/template
+    // graph, and only a booking that actually added a cross-family member guest
+    // needs it. A club with the module off never loads the mailer through this
+    // path at all.
+    const { sendMemberGuestAddNotifications } = await import(
+      "@/lib/member-guest-consent-notifications"
+    );
     await sendMemberGuestAddNotifications({
       bookingId,
       rows: result.memberGuestNotificationRows,

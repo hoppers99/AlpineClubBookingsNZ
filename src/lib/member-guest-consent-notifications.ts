@@ -9,10 +9,8 @@ import {
   familyAdultDelegateResolver,
   type MemberGuestConsentDelegateResolver,
 } from "@/lib/member-guest-delegate";
-import type {
-  MemberGuestAddActor,
-  MemberGuestAddNotification,
-} from "@/lib/member-guest-consent";
+import type { MemberGuestAddNotificationRow } from "@/lib/member-guest-add-policy";
+import type { MemberGuestAddActor } from "@/lib/member-guest-consent";
 import { prisma } from "@/lib/prisma";
 
 /**
@@ -57,17 +55,6 @@ import { prisma } from "@/lib/prisma";
  * oversight, and do not "fix" it by looping — a loop with no persisted marker
  * sends duplicates on the next deploy, not fewer.
  */
-
-/** One committed guest row and the notification it owes. */
-export interface MemberGuestAddNotificationRow {
-  bookingGuestId: string;
-  targetMemberId: string;
-  /**
-   * `"NONE"` is accepted and skipped so a caller can pass its whole plan through
-   * without filtering: a family-scope row owes nothing (D-6).
-   */
-  notification: MemberGuestAddNotification;
-}
 
 export interface MemberGuestAddNotificationResult {
   /** Rows where at least one recipient was emailed successfully. */
@@ -430,36 +417,4 @@ async function loadNotificationContext(
         ]),
     ),
   };
-}
-
-/**
- * Match a plan built before the write to the guest rows the write created.
- *
- * The persisting paths know WHICH MEMBER owes a notification (the plan is keyed by
- * member id, because that is what the boundary is computed over) but only learn
- * the guest ROW ids once the rows exist. Matching on `memberId` is exact here:
- * `resolveLinkedBookingMembers` de-duplicates the requested ids, so one add
- * creates at most one row per member, and the plan carries only cross-family
- * members — a family-scope guest for the same member cannot collide because it is
- * not in the plan at all.
- *
- * Rows created for members NOT in the plan are ignored, so a caller may pass its
- * whole created-guest list without filtering.
- */
-export function matchMemberGuestNotificationRows(params: {
-  createdGuests: ReadonlyArray<{ id: string; memberId: string | null }>;
-  entriesByMemberId: ReadonlyMap<string, { notification: MemberGuestAddNotification }>;
-}): MemberGuestAddNotificationRow[] {
-  const rows: MemberGuestAddNotificationRow[] = [];
-  for (const guest of params.createdGuests) {
-    if (!guest.memberId) continue;
-    const entry = params.entriesByMemberId.get(guest.memberId);
-    if (!entry || entry.notification === "NONE") continue;
-    rows.push({
-      bookingGuestId: guest.id,
-      targetMemberId: guest.memberId,
-      notification: entry.notification,
-    });
-  }
-  return rows;
 }

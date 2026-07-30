@@ -32,13 +32,10 @@ import {
 } from "@/lib/booking-guests";
 import {
   loadMemberGuestAddPolicy,
+  matchMemberGuestNotificationRows,
   planMemberGuestConsentWrites,
   type MemberGuestConsentWritePlanEntry,
 } from "@/lib/member-guest-add-policy";
-import {
-  matchMemberGuestNotificationRows,
-  sendMemberGuestAddNotifications,
-} from "@/lib/member-guest-consent-notifications";
 import type { MemberGuestAddActor } from "@/lib/member-guest-consent";
 import { nameField } from "@/lib/zod-helpers";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
@@ -410,11 +407,23 @@ export async function POST(request: NextRequest) {
     id: string;
     guests: Array<{ id: string; memberId: string | null }>;
   }) => {
+    // Nothing was planned, so nothing was written and nobody is owed anything —
+    // the state of every booking on a club that has not turned the module on, and
+    // of every booking whose guests are all inside the booker's family. Checked
+    // first so the ordinary path does no work at all.
+    if (memberGuestEntries.size === 0) return;
     const rows = matchMemberGuestNotificationRows({
       createdGuests: created.guests,
       entriesByMemberId: memberGuestEntries,
     });
     if (rows.length === 0) return;
+    // Loaded lazily on purpose: the sender pulls in the whole email/template
+    // graph, and only a booking that actually added a cross-family member guest
+    // needs it. A club with the module off never loads the mailer through this
+    // path at all.
+    const { sendMemberGuestAddNotifications } = await import(
+      "@/lib/member-guest-consent-notifications"
+    );
     await sendMemberGuestAddNotifications({
       bookingId: created.id,
       rows,
