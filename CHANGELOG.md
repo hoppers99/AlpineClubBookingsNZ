@@ -27,7 +27,16 @@ All notable public reference-release changes should be recorded here.
   with the same status guards the pay step honours (never on a hold-rail
   PENDING booking, never once money is captured, never on an organiser-settled
   booking), and a credit-only edit is price-preserving by construction — it
-  can never reprice an untouched booking across a season-rate change.
+  can never reprice an untouched booking across a season-rate change. Review
+  hardening in the same change: a draft edit that leaves minors with no adult
+  parks the booking for admin review exactly as creating it that way would
+  (and the confirm/pay doors refuse an unresolved review outright); a promo
+  code's chosen guests are remembered by *who they are*, not by their position
+  in the list, so a simultaneous edit elsewhere can never quietly hand the
+  discount to the wrong guest; a saved credit choice is never rewritten just
+  because your balance happened to dip; and the price summary now shows the
+  credit figure the save will actually keep, any slice returning to your
+  balance, and the change fee inside "Remaining to pay".
 
 - **Every dead button in the five guided setup wizards now says why it is dead
   (#2324).** The Xero, Stripe, Google sign-in, Backups and Lodge Display setup
