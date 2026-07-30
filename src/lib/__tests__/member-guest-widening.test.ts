@@ -1,25 +1,36 @@
-// "+ Add Member Guest" (epic #2305) MG1 (#2306) — THE DARK GUARANTEE.
+// "+ Add Member Guest" (epic #2305) MG2 (#2307) — THE WIDENING CONTRACT.
 //
-// MG1 lands the data model, the module switch, the policy singleton, and the
-// consent-boundary plumbing, and changes NOTHING an actor can observe. This
-// file is the proof of that, and it is the file to break first when MG2 (#2307)
-// deliberately turns the feature on — every assertion here is written so that
-// flipping MEMBER_GUEST_WIDENING_ENABLED fails it loudly rather than silently.
+// THIS FILE IS THE DELIBERATE INVERSE OF MG1'S DARK-GUARANTEE SUITE, and the
+// inversion is the point rather than an accident of refactoring. MG1 (#2306)
+// proved that no request through any call site, in any module state, with any
+// actor, could widen the family boundary or write a non-null `consentStatus`.
+// MG2 turns that off. Every assertion MG1 wrote to fail loudly the moment the
+// widening moved HAS now failed, on purpose, and this file is what replaced it.
 //
-// The guarantee, stated exactly:
+// Renamed from `member-guest-dark-guarantee.test.ts` so the filename cannot
+// outlive the guarantee it named. Three specific MG1 assertions were rewritten
+// rather than deleted, and they are called out where they appear:
 //
-//   With MG1 merged, no request through any of the seven
-//   resolveLinkedBookingMembers call sites, in any module state, with any actor
-//   (member or admin), can create, read, update, or observe a BookingGuest row
-//   whose consentStatus is non-null.
+//   * A.1 — "module ON is byte-for-byte module OFF" is now "module OFF is
+//     byte-for-byte the pre-feature behaviour, and module ON widens".
+//   * A.2 — "a beyond-family add is refused with the module ON" is now "a
+//     beyond-family add SUCCEEDS with the module on, and is refused with the
+//     identical pre-existing error with it off".
+//   * E.22 — the mutation probe that asserted `MEMBER_GUEST_WIDENING_ENABLED`
+//     was `false` is replaced by its inverse: the widening is now an explicit
+//     per-call option that FAILS CLOSED, so the probe is that omitting it
+//     refuses, and hard-coding it true breaks the module-off case.
 //
-// Note what is NOT enough on its own: "the tests pass". In this release the
-// module flag is not read by the booking path at all, so a behavioural
-// ON-vs-OFF comparison would pass even if the plumbing were missing entirely.
-// So the behavioural matrix below is paired with structural assertions read
-// from the real source files — the call-site survey, the position of the
-// boundary computation, and the fact that nothing reads the two privacy
-// toggles.
+// What survives unchanged, because MG2 did not change it: an inactive member is
+// unresolvable in every module state; `group-booking.ts` stays family-scoped
+// (owner decision MG1-D-a); the boundary is computed on every path including
+// the admin ones; and neither open-search privacy toggle has a reader that
+// decides who is discoverable (that arrives with MG3).
+//
+// The behavioural matrix is still paired with structural assertions read from
+// the real source files, for the same reason as in MG1: some of these
+// properties — where the boundary is computed, which files may write a consent
+// column — cannot be observed from behaviour at all.
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 
@@ -33,7 +44,7 @@ import {
 } from "@/lib/booking-guests";
 import {
   CONSENT_FREE_GUEST_COLUMNS,
-  MEMBER_GUEST_WIDENING_ENABLED,
+  MEMBER_GUEST_MODULE_KEY,
 } from "@/lib/member-guest-consent";
 import {
   DEFAULT_MODULE_SETTINGS,
@@ -268,11 +279,18 @@ const CONSENT_COLUMN_ALLOWLIST = new Set([
   "src/lib/member-merge.ts",
 ]);
 
-/** Run a resolve and describe the outcome as plain, comparable data. */
+/**
+ * Run a resolve and describe the outcome as plain, comparable data.
+ *
+ * `memberGuestWideningEnabled` is deliberately OMITTED when false rather than
+ * passed as `false`, so every "module off" case below also exercises the
+ * fail-closed default — see the E.22-replacement probe.
+ */
 async function outcomeOf(
   db: FakeDb,
   memberIds: string[],
   skipAuthorization: boolean,
+  memberGuestWideningEnabled = false,
 ): Promise<
   | { kind: "resolved"; ids: string[] }
   | { kind: "refused"; message: string; status: number; className: string }
@@ -282,7 +300,10 @@ async function outcomeOf(
       asLookupDb(db),
       BOOKER,
       memberIds,
-      { skipAuthorization },
+      {
+        skipAuthorization,
+        ...(memberGuestWideningEnabled ? { memberGuestWideningEnabled: true } : {}),
+      },
     );
     return { kind: "resolved", ids: [...members.keys()].sort() };
   } catch (error) {
@@ -303,46 +324,72 @@ beforeEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// A.1 / A.2 — module ON is byte-for-byte module OFF, at every call site
+// A.1 (INVERTED) — module OFF is byte-for-byte the pre-feature behaviour;
+//                  module ON widens, at every call site
 // ---------------------------------------------------------------------------
-describe("dark guarantee: turning the memberGuests module on changes nothing", () => {
-  it("ships OFF by default, and the stub really does flip it", async () => {
-    // The premise of every case below. If this fails, the matrix is comparing
-    // "off" with "off" and proves nothing.
+describe("the memberGuests module now decides whether the boundary widens", () => {
+  it("still ships OFF by default, and the stub really does flip it", async () => {
+    // Owner decision D-2 survives MG2 unchanged: an existing club sees zero
+    // change until an admin turns the module on. If this fails, every "module
+    // off" case below is comparing "on" with "on" and proves nothing.
     expect(DEFAULT_MODULE_SETTINGS.memberGuests).toBe(false);
-    await expect(isEffectiveModuleEnabled("memberGuests", moduleClient(false))).resolves.toBe(false);
-    await expect(isEffectiveModuleEnabled("memberGuests", moduleClient(true))).resolves.toBe(true);
+    await expect(
+      isEffectiveModuleEnabled(MEMBER_GUEST_MODULE_KEY, moduleClient(false)),
+    ).resolves.toBe(false);
+    await expect(
+      isEffectiveModuleEnabled(MEMBER_GUEST_MODULE_KEY, moduleClient(true)),
+    ).resolves.toBe(true);
   });
 
   describe.each(CALL_SITE_RUNS)("$name", ({ skipAuthorization }) => {
     it.each([
       { label: "the booker themselves", ids: [BOOKER] },
       { label: "a family-group co-member", ids: [SIBLING] },
-      { label: "a member beyond the family boundary", ids: [OUTSIDER] },
-      { label: "a mixed family + beyond-family party", ids: [SIBLING, OUTSIDER] },
-      { label: "an inactive member beyond the boundary", ids: [INACTIVE] },
       { label: "no member guests at all", ids: [] },
-    ])("resolves $label identically with the module off and on", async ({ ids }) => {
-      // The module state is genuinely different across the two runs...
-      await expect(isEffectiveModuleEnabled("memberGuests", moduleClient(false))).resolves.toBe(false);
-      const off = await outcomeOf(makeDb(), ids, skipAuthorization);
+    ])(
+      "resolves $label identically whether the module is off or on",
+      async ({ ids }) => {
+        // A.1's surviving half. Widening changes ONE thing — whether a
+        // beyond-family ACTIVE member resolves. Everything else must be
+        // untouched, and these four cases are what pins that: a family party's
+        // behaviour cannot drift just because the module was switched on.
+        const off = await outcomeOf(makeDb(), ids, skipAuthorization, false);
+        const on = await outcomeOf(makeDb(), ids, skipAuthorization, true);
+        expect(on).toEqual(off);
+      },
+    );
 
-      await expect(isEffectiveModuleEnabled("memberGuests", moduleClient(true))).resolves.toBe(true);
-      const on = await outcomeOf(makeDb(), ids, skipAuthorization);
+    it("refuses a beyond-family member with the module off and resolves them with it on", async () => {
+      // A.1's inverted half, run at every (call site, authorization mode) pair.
+      const off = await outcomeOf(makeDb(), [OUTSIDER], skipAuthorization, false);
+      const on = await outcomeOf(makeDb(), [OUTSIDER], skipAuthorization, true);
 
-      // ...and the booking outcome is not.
-      expect(on).toEqual(off);
+      if (skipAuthorization) {
+        // An admin path never enforced the boundary, so the module does not
+        // change its OUTCOME — it changes what consent state the row that
+        // follows carries. That is asserted where the writers live; here the
+        // point is that the admin path was already open and MG2 did not narrow
+        // it.
+        expect(off).toEqual({ kind: "resolved", ids: [OUTSIDER] });
+        expect(on).toEqual({ kind: "resolved", ids: [OUTSIDER] });
+        return;
+      }
+
+      expect(off).toMatchObject({ kind: "refused", status: 403 });
+      expect(on).toEqual({ kind: "resolved", ids: [OUTSIDER] });
     });
   });
 
-  it("still refuses a beyond-family add with the exact pre-existing error, module ON", async () => {
-    // A.2. The message and the status code are the load-bearing part: a new
-    // message or a new status would make module-on observable and would
-    // pre-empt D-8, which reserves the design of the neutral cross-family
-    // refusal surface for MG2.
-    await expect(isEffectiveModuleEnabled("memberGuests", moduleClient(true))).resolves.toBe(true);
+  it("refuses a beyond-family add with the exact pre-existing error, module OFF", async () => {
+    // A.2, INVERTED. The message and the status code are still the load-bearing
+    // part, but the claim has moved: a club that has NOT opted in must see the
+    // byte-for-byte pre-feature refusal, with no hint that a member-guest
+    // feature exists at all.
+    await expect(
+      isEffectiveModuleEnabled(MEMBER_GUEST_MODULE_KEY, moduleClient(false)),
+    ).resolves.toBe(false);
 
-    const outcome = await outcomeOf(makeDb(), [OUTSIDER], false);
+    const outcome = await outcomeOf(makeDb(), [OUTSIDER], false, false);
     expect(outcome).toEqual({
       kind: "refused",
       message: "Invalid guest member reference",
@@ -351,30 +398,60 @@ describe("dark guarantee: turning the memberGuests module on changes nothing", (
     });
   });
 
-  it("refuses the whole party when one member is beyond the boundary", async () => {
+  it("keeps the refusal neutral even with the module ON", async () => {
+    // Owner decision D-8: the reasons a particular cross-family member cannot be
+    // added are collapsed to one neutral response, so no refusal here may name
+    // the member, their household, or their financial state. With the module on
+    // a resolvable member resolves, so the only refusal left on this path is the
+    // inactive one — and it must stay as anonymous as it is today.
+    const outcome = await outcomeOf(makeDb(), [INACTIVE], false, true);
+    expect(outcome).toMatchObject({ kind: "refused" });
+    if (outcome.kind === "refused") {
+      expect(outcome.message).not.toContain(INACTIVE);
+      expect(outcome.message.toLowerCase()).not.toMatch(/subscription|unpaid|family/);
+    }
+  });
+
+  it("refuses the whole party when one member is beyond the boundary, module OFF", async () => {
     // No partial success: a mixed party is all-or-nothing, as today.
-    const outcome = await outcomeOf(makeDb(), [SIBLING, OUTSIDER], false);
+    const outcome = await outcomeOf(makeDb(), [SIBLING, OUTSIDER], false, false);
     expect(outcome).toMatchObject({ kind: "refused", status: 403 });
+  });
+
+  it("resolves a mixed family + beyond-family party with the module ON", async () => {
+    const outcome = await outcomeOf(makeDb(), [SIBLING, OUTSIDER], false, true);
+    expect(outcome).toEqual({ kind: "resolved", ids: [OUTSIDER, SIBLING].sort() });
   });
 
   it("never resolves an inactive member, in either module state or either authorization mode", async () => {
     // A.5. Inactive-ness is enforced after the boundary, so an admin path that
     // skips authorization must still be refused here.
     for (const skipAuthorization of [false, true]) {
-      const outcome = await outcomeOf(makeDb(), [INACTIVE], skipAuthorization);
-      expect(outcome).toMatchObject({ kind: "refused" });
+      for (const widening of [false, true]) {
+        const outcome = await outcomeOf(
+          makeDb(),
+          [INACTIVE],
+          skipAuthorization,
+          widening,
+        );
+        expect(outcome).toMatchObject({ kind: "refused" });
+      }
     }
   });
 
   it("keeps the group-booking join family-scoped (MG1-D-a)", async () => {
-    // group-booking.ts passes NO options, so authorization is enforced: a
-    // joiner can still only bring their own family. Owner decision MG1-D-a
-    // keeps it that way in v1 even once the rest of the feature is live.
+    // group-booking.ts passes NO options at all, so authorization is enforced
+    // AND the widening option is absent — which, because the option fails
+    // closed, is exactly what keeps the join family-scoped now that the feature
+    // is live. Owner decision MG1-D-a. Both halves are asserted: the source
+    // passes neither option, and the behaviour still refuses.
     const source = readRepoFile("src/lib/group-booking.ts");
     const call = source.slice(source.indexOf("resolveLinkedBookingMembers("));
-    expect(call.slice(0, call.indexOf(");"))).not.toContain("skipAuthorization");
+    const args = call.slice(0, call.indexOf(");"));
+    expect(args).not.toContain("skipAuthorization");
+    expect(args).not.toContain("memberGuestWideningEnabled");
 
-    const outcome = await outcomeOf(makeDb(), [OUTSIDER], false);
+    const outcome = await outcomeOf(makeDb(), [OUTSIDER], false, false);
     expect(outcome).toMatchObject({ kind: "refused", status: 403 });
   });
 });
@@ -524,17 +601,72 @@ describe("the boundary computation sits outside the authorization branch", () =>
   });
 });
 
-describe("nothing in this release can write a non-null consentStatus", () => {
-  it("keeps the widening predicate off", () => {
-    // E.22's target. MG2 flips this; when it does, the ON/OFF matrix and the
-    // beyond-family refusal above all fail, which is the intended alarm.
-    expect(MEMBER_GUEST_WIDENING_ENABLED).toBe(false);
+describe("E.22 replaced: the widening option fails closed", () => {
+  // MG1's E.22 asserted `MEMBER_GUEST_WIDENING_ENABLED === false` and existed to
+  // make the flip impossible to land quietly. It has done its job and is gone.
+  // Its replacement asserts the property that now carries the same weight: the
+  // widening is a per-call option with NO safe default other than "refuse", so a
+  // call site that forgets it, or a future call site nobody remembers to update,
+  // keeps the pre-feature behaviour instead of silently minting consent-free
+  // cross-family guest rows.
+  it("refuses a beyond-family member when the option is omitted entirely", async () => {
+    const outcome = await resolveLinkedBookingMembers(
+      asLookupDb(makeDb()),
+      BOOKER,
+      [OUTSIDER],
+      // Deliberately only skipAuthorization: false — no widening key at all.
+      { skipAuthorization: false },
+    ).then(
+      (members) => ({ kind: "resolved" as const, ids: [...members.keys()] }),
+      (error: unknown) => ({
+        kind: "refused" as const,
+        status: error instanceof BookingGuestValidationError ? error.status : 0,
+      }),
+    );
+
+    expect(outcome).toEqual({ kind: "refused", status: 403 });
   });
 
-  it("declares the only consent shape a guest row can carry today", () => {
-    // A.3. Family adds are consent-FREE, not consent-GIVEN: null must never be
-    // written as CONFIRMED, or MG2/MG4 lose the ability to tell "nobody had to
-    // be asked" from "somebody said yes".
+  it("refuses on any falsy or non-true value, not just on absence", async () => {
+    // The guard is written as `!== true` rather than `=== false` on purpose: a
+    // caller that threads an `undefined` or a `null` through from a settings read
+    // that failed must land on refuse, not on widen.
+    for (const value of [undefined, null, false, 0, ""]) {
+      const outcome = await resolveLinkedBookingMembers(
+        asLookupDb(makeDb()),
+        BOOKER,
+        [OUTSIDER],
+        {
+          skipAuthorization: false,
+          memberGuestWideningEnabled: value as unknown as boolean | undefined,
+        },
+      ).then(
+        () => "resolved",
+        () => "refused",
+      );
+      expect(outcome, `value ${String(value)} must not widen`).toBe("refused");
+    }
+  });
+
+  it("names the module key once, in the file that explains what it gates", () => {
+    // MUTATION PROBE (the inverse of MG1's): hard-code the guard in
+    // booking-guests.ts to `true` and the "module OFF" cases above fail. Delete
+    // the guard entirely and they fail too. This assertion pins the structural
+    // half — that the option is read from the options object and not from a
+    // module lookup smuggled into the resolver, which would put a settings read
+    // inside a booking transaction.
+    expect(MEMBER_GUEST_MODULE_KEY).toBe("memberGuests");
+    const source = readRepoFile("src/lib/booking-guests.ts");
+    expect(source).toContain("options?.memberGuestWideningEnabled !== true");
+    expect(source).not.toContain("isEffectiveModuleEnabled");
+  });
+});
+
+describe("consent columns have exactly one writer", () => {
+  it("declares the consent-free shape unchanged", () => {
+    // MG1's A.3 survives verbatim: a family-scope add is consent-FREE, not
+    // consent-GIVEN. NULL must never be written as CONFIRMED, or the model loses
+    // the ability to tell "nobody had to be asked" from "somebody said yes".
     expect(CONSENT_FREE_GUEST_COLUMNS).toEqual({
       consentStatus: null,
       consentRequestedAt: null,
@@ -544,56 +676,52 @@ describe("nothing in this release can write a non-null consentStatus", () => {
     });
   });
 
-  it("has no production file outside the allowlist that even names a consent column", () => {
-    // Layer one of two. The previous single sweep looked for `consentX\s*:`,
-    // which saw an object-literal property and nothing else: planted mutants
-    // writing `guest.consentStatus = "PENDING"`, `data["consentStatus"] = x`,
-    // and a raw-SQL `SET "consentStatus" = 'PENDING'` all passed it. This layer
-    // is deliberately blunt instead — a BARE-WORD match on the column names —
-    // so any new file that so much as mentions one has to be classified here.
-    const offenders = productionFilesUnder("src")
-      .filter((file) => !CONSENT_COLUMN_ALLOWLIST.has(file))
-      .filter((file) => CONSENT_COLUMN_MENTION.test(readRepoFile(file)));
-    expect(offenders).toEqual([]);
-  });
+  it("keeps every production file that touches a consent column on a declared census", () => {
+    // MG1's blunt "no production file may even NAME a consent column" sweep
+    // cannot survive MG2 — MG2 is the release that reads and writes them. What
+    // replaces it is the same closed-world shape aimed at the property that still
+    // matters: the set of files that touch consent AT ALL is short, declared, and
+    // reviewed. A new file cannot start reading or writing a consent column
+    // without somebody adding it here and saying, in one line, why.
+    //
+    // Deliberately the MENTION regex, not a write-shaped one. A write-shaped
+    // regex cannot tell a Prisma `data:` payload from a `select:` or a `where:` —
+    // it flagged every reader too — and a census that silently mislabels readers
+    // as writers is worse than one that just lists everybody.
+    const census: Record<string, string> = {
+      // The model: the eight-shape table, the classifier, the presence predicate,
+      // and the single `buildMemberGuestConsentWrite` every add path goes through.
+      "src/lib/member-guest-consent.ts": "the model",
+      // The state machine: the status-guarded claim and nothing else.
+      "src/lib/member-guest-consent-service.ts": "the state machine",
+      // The sweep's candidate query.
+      "src/lib/cron-member-guest-consent-expiry.ts": "the expiry sweep's candidate scan",
+      // Reads the target id before a decline deletes the row.
+      "src/app/api/bookings/[id]/guests/[guestId]/consent/route.ts":
+        "the consent response endpoint",
+      // The structural-rule comment on the boundary computation.
+      "src/lib/booking-guests.ts": "a comment about where the boundary is computed",
+      // The FK-less-member-id-scalar audit list.
+      "src/lib/member-merge.ts": "the merge classification of consentRespondedByMemberId",
+      // D-12 exclusion sites and the one deliberate non-exclusion.
+      "src/lib/double-bed-sharing.ts": "D-12: pending guests do not anchor an offer",
+      "src/app/api/member/data-export/route.ts":
+        "deliberately NOT excluded — a data-subject export includes their own pending rows",
+      "src/lib/email-templates.ts": "the consent email renderers",
+      "src/lib/email/member-guest.ts": "the consent email senders",
+      "src/lib/email-message-audit-defaults.ts": "the consent templates' default bodies",
+      "src/lib/email-message-registry.ts": "the consent templates' registry entries",
+      // The narrow consent authority that lets a delegate decline and the sweep
+      // expire — see its own doc comment for why it exists and what it refuses.
+      "src/lib/booking-guest-removal-service.ts": "the consent removal authority",
+    };
 
-  it("has no production line anywhere that gives a consent column a value", () => {
-    // Layer two: even the three allowlisted files may not WRITE one. The
-    // pattern catches the property form, a bare assignment, a computed or
-    // quoted key, and the raw-SQL form, while `=== null` / `!== null`
-    // comparisons and destructuring are not matches. member-guest-consent.ts
-    // is the one file that legitimately contains write-shaped lines, and it is
-    // checked below rather than skipped.
-    const offenders = productionFilesUnder("src")
-      .filter((file) => file !== "src/lib/member-guest-consent.ts")
-      .filter((file) => CONSENT_COLUMN_WRITE.test(readRepoFile(file)));
-    expect(offenders).toEqual([]);
-  });
+    const mentions = productionFilesUnder("src")
+      .map((file) => file.split("\\").join("/"))
+      .filter((file) => CONSENT_COLUMN_MENTION.test(readRepoFile(file)))
+      .filter((file) => !(file in census));
 
-  it("writes nothing but null even inside the consent model itself", () => {
-    // Not "skip the model's own file" — that is where a writer would hide. The
-    // five type-declaration lines are identified as such, and every OTHER
-    // value-position occurrence in the file must be `null`, i.e. must be part
-    // of CONSENT_FREE_GUEST_COLUMNS.
-    const source = readRepoFile("src/lib/member-guest-consent.ts");
-    const declarationAt = source.indexOf("export interface MemberGuestConsentColumns {");
-    expect(declarationAt).toBeGreaterThan(-1);
-    const declarationEnd = source.indexOf("}", declarationAt);
-    const declaration = source.slice(declarationAt, declarationEnd);
-    const rest = source.slice(0, declarationAt) + source.slice(declarationEnd);
-
-    // The declaration names all five columns, each of them nullable.
-    for (const column of CONSENT_COLUMNS) {
-      expect(declaration, column).toMatch(new RegExp(`${column}:[^;]*\\| null;`));
-    }
-
-    const writes = [
-      ...rest.matchAll(new RegExp(`${CONSENT_COLUMN_WRITE.source}\\s*([^,;\\n]*)`, "g")),
-    ];
-    expect(writes).toHaveLength(CONSENT_COLUMNS.length);
-    for (const write of writes) {
-      expect(write[1].trim(), write[0]).toBe("null");
-    }
+    expect(mentions).toEqual([]);
   });
 });
 
@@ -632,34 +760,44 @@ describe("the two open-search privacy toggles are inert and off", () => {
   });
 });
 
-describe("the module flag itself gates nothing yet", () => {
-  it("is a real module key with no reader in the booking path", () => {
+describe("the module flag now gates the widening, and says so", () => {
+  it("is read by the booking path, which is the whole change", () => {
+    // THE INVERSE of MG1's assertion. MG1 required that NO production file check
+    // `isEffectiveModuleEnabled("memberGuests")`, because module-on had to be
+    // unobservable. MG2 requires the opposite: the persisting call sites read it
+    // and pass the answer down. An empty reader list here would mean the module
+    // switch is decorative again.
     expect(MODULE_KEYS).toContain("memberGuests");
-    // Deliberate: the refusal is gated on MEMBER_GUEST_WIDENING_ENABLED, never
-    // on the module. If a `memberGuests` module check appears in a booking
-    // path, module-on becomes observable and the whole matrix above is void.
     const readers = sourceFilesUnder("src")
       .filter((file) => !file.includes("__tests__"))
-      .filter((file) => /isEffectiveModuleEnabled\(\s*["']memberGuests["']/.test(readRepoFile(file)));
-    expect(readers).toEqual([]);
+      .filter((file) =>
+        /isEffectiveModuleEnabled\(\s*(?:["']memberGuests["']|MEMBER_GUEST_MODULE_KEY)/.test(
+          readRepoFile(file),
+        ),
+      );
+    expect(readers.length).toBeGreaterThan(0);
   });
 
-  it("tells an admin plainly that the switch does nothing yet (D-17)", () => {
+  it("no longer tells an admin the switch does nothing (D-17)", () => {
+    // MG1 shipped the switch with a "Not available yet" prefix on its
+    // description and a dependency note saying the same, precisely so nobody
+    // would turn it on over an inert feature. MG2 is the release that makes it
+    // real, so that copy MUST be gone — leaving it would be a worse lie than
+    // shipping it was.
     const definition = MODULE_DEFINITIONS.memberGuests;
     expect(definition.key).toBe("memberGuests");
     expect(definition.label.length).toBeGreaterThan(0);
-    // The DESCRIPTION has to say it too, not just the dependency note: it is the
-    // first line on the card, above the badge and the note.
-    expect(definition.description).toMatch(/^Not available yet — /);
-    expect(definition.dependencies.join(" ")).toMatch(/not available yet/i);
+    expect(definition.description).not.toMatch(/not available yet/i);
+    expect(definition.dependencies.join(" ")).not.toMatch(/not available yet/i);
+    // And it must still explain what it does, in plain English, to an admin who
+    // is deciding whether to turn it on.
+    expect(definition.description).toMatch(/family group/i);
   });
 
-  it("never reports itself ready, even switched on (D-17)", () => {
-    // The stub module is the one place an admin can SEE this feature, so it must
-    // not look live. Without this, switching it on produced the ordinary
-    // "... is enabled." message and a green badge over a feature that cannot
-    // run — which is what made the CHANGELOG and CONFIGURATION sentences about
-    // the switch saying so "plainly" not quite true as written.
+  it("reports itself ready when switched on, and disabled when not", () => {
+    // MG1's `not_available_yet` readiness branch existed for one release and is
+    // deleted here, in the same change that flips the widening — its own comment
+    // said to. A module whose behaviour has shipped must read as ready.
     const statusFor = (memberGuests: boolean) => {
       const found = buildClubModuleSettingsPayload({ memberGuests }).modules.find(
         (entry) => entry.key === "memberGuests",
@@ -672,18 +810,26 @@ describe("the module flag itself gates nothing yet", () => {
 
     const on = statusFor(true);
     expect(on.adminEnabled).toBe(true);
-    expect(on.readiness.status).toBe("not_available_yet");
-    expect(on.readiness.message).toMatch(/not available in this version/i);
-    expect(on.readiness.status).not.toBe("ready");
+    expect(on.readiness.status).toBe("ready");
+    expect(on.readiness.status).not.toBe("not_available_yet");
+  });
 
-    // ...and the branch is one module wide, not a blanket over the registry: an
-    // ordinary credential-free module switched on is still "ready".
-    const notices = buildClubModuleSettingsPayload({ memberNotices: true }).modules.find(
-      (entry) => entry.key === "memberNotices",
-    );
-    expect(notices!.readiness.status).toBe("ready");
+  it("has no producer of the retired `not_available_yet` readiness state", () => {
+    // Structural, because a leftover branch for a DIFFERENT module key would be
+    // invisible to the behavioural case above. The check is for a producer — a
+    // `status:` assignment — not for the string, so the comment recording why the
+    // state was retired is allowed to name it.
+    for (const file of [
+      "src/lib/module-settings.ts",
+      "src/app/(admin)/admin/modules/page.tsx",
+    ]) {
+      expect(readRepoFile(file), file).not.toMatch(
+        /status:\s*["']not_available_yet["']/,
+      );
+    }
   });
 });
+
 
 // ---------------------------------------------------------------------------
 // Local file walker (kept at the bottom; it is plumbing, not the point)

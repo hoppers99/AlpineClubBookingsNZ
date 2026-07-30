@@ -278,15 +278,18 @@ export const MODULE_DEFINITIONS: Record<ModuleKey, ModuleDefinition> = {
   memberGuests: {
     key: "memberGuests",
     label: "Add another member as a guest",
-    // The "Not available yet" prefix is load-bearing, not decoration (D-17).
-    // The description is the FIRST thing on the Modules card, above the
-    // readiness badge, so an admin reads it before anything else — and
-    // readinessMessage() in module-settings.ts refuses to report this module
-    // "ready" even when it is switched on, for the same reason.
+    // MG1 (#2306) shipped this switch with a "Not available yet" prefix because
+    // it genuinely gated nothing. MG2 (#2307) is the release that makes it real,
+    // so that copy is gone — leaving it would be a worse lie than shipping it
+    // was. What replaces it is the one thing an admin needs before flipping it:
+    // that turning this on lets members reach OTHER households, and that the
+    // other member is asked first by default.
     description:
-      "Not available yet — this switch does nothing in this version. Lets a member add another club member, outside their own family group, as a guest on their booking with that member's consent.",
+      "Lets a member add another club member, outside their own family group, as a guest on their booking. By default the other member is emailed and asked first, and a bed is held for them until they answer or the request lapses.",
     dependencies: [
-      "Not available yet: this switch does nothing in this version. Adding a member outside your own family group is still declined whether it is on or off. The feature, its consent emails, and its settings arrive in a later update.",
+      "The other member is asked before they are added, unless you change that on the member-guest settings. Set how long a request waits there too.",
+      "A member who has been asked but has not answered yet holds a bed, and is deliberately left off the kiosk arrivals list, the chore roster and the arrival emails until they accept.",
+      "Finding another member is by exact email address unless you switch on name search — which makes your membership list browsable to any member. It ships off.",
     ],
   },
 };
