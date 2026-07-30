@@ -19,6 +19,7 @@ import {
   assertMappableOwnerContact,
   BookingRequestError,
   getBookingRequestSettings,
+  isMemberWholeLodgeRequest,
   linkedGuestMemberMap,
   parseBookingRequestGuests,
   splitPriceAcrossGuests,
@@ -43,6 +44,35 @@ import { approveSchoolBookingRequest } from "@/lib/school-booking-request";
 import { getSeasonYear } from "@/lib/utils";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The member whole-lodge door (#2263) has exactly one admin lifecycle:
+ * direct approve, or decline. The quote lifecycle is refused outright, at the
+ * SERVICE layer rather than by hiding buttons, because "the buttons are hidden"
+ * is not a guarantee — the admin API routes are reachable directly, and every
+ * one of these operations does something the design forbids for a member:
+ *
+ *   - sending a quote AUTO-HOLDS capacity (#1280), so an officer could
+ *     sterilise the whole lodge from a surface the member request never
+ *     authorised;
+ *   - the quote email carries PRICES to the requester, and a member-visible
+ *     pricing surface for a whole-lodge ask is exactly what the design excludes;
+ *   - requester-accept mints a duplicate NON-LOGIN member for somebody who
+ *     already holds a login account, splitting their booking history.
+ *
+ * One guard per service function, so no future caller can route around it.
+ */
+export function assertNotMemberWholeLodgeRequest(
+  request: { requestedByMemberId: string | null; exclusivityRequested: boolean },
+  operation: string
+): void {
+  if (!isMemberWholeLodgeRequest(request)) return;
+  throw new BookingRequestError(
+    `${operation} is not available for a member's whole-lodge request. Approve it directly with a priced headcount, or decline it.`,
+    409
+  );
+}
+
 const quoteableStatuses = [
   BookingRequestStatus.VERIFIED,
   BookingRequestStatus.PRICED,
@@ -441,6 +471,7 @@ export async function createBookingRequestQuote(input: {
   if (!request) {
     throw new BookingRequestError("Booking request not found", 404);
   }
+  assertNotMemberWholeLodgeRequest(request, "Quoting");
   if (!quoteableStatuses.includes(request.status as never)) {
     throw new BookingRequestError("This booking request cannot be quoted", 409);
   }
@@ -571,6 +602,11 @@ export async function sendBookingRequestQuote(input: {
   if (!quote) {
     throw new BookingRequestQuoteError("Create a quote before sending it", 409);
   }
+  // Unreachable in practice (createBookingRequestQuote refuses to mint a quote
+  // for one of these rows), and kept anyway: a row that acquired a quote through
+  // some future path must still never be sent one. The auto-hold inside the send
+  // is guarded separately in holdBookingRequestSlots.
+  assertNotMemberWholeLodgeRequest(quote.bookingRequest, "Sending a quote");
 
   // A sent quote must reserve the beds/guest-nights so they cannot disappear
   // before the requester accepts (issue #1254, owner decision (a)). Place the
@@ -1123,6 +1159,7 @@ export async function holdBookingRequestSlots(input: {
   if (!request) {
     throw new BookingRequestError("Booking request not found", 404);
   }
+  assertNotMemberWholeLodgeRequest(request, "Holding beds");
   if (!holdableStatuses.includes(request.status as never)) {
     throw new BookingRequestError("This booking request cannot be held", 409);
   }

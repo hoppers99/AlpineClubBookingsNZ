@@ -306,6 +306,44 @@ describe("email-templates", () => {
       const html = bookingConfirmedTemplate("Test", checkIn, checkOut, 2, 10000);
       expect(html).not.toContain("held provisionally");
     });
+
+    // #2263: the member whole-lodge approval confirms a booking on which NOTHING
+    // has been paid (a PENDING Internet Banking receivable). Telling that member
+    // "Total Paid" and "Payment has been processed successfully" is false, and
+    // there is no PaymentLink on that path — so the reference is the only way
+    // they can pay and it has to be in the message.
+    it("states the amount OWING and the internet-banking reference for an unpaid confirmation", () => {
+      const html = bookingConfirmedTemplate("Test", checkIn, checkOut, 6, 30000, {
+        paymentDue: { reference: "TAC-ABC123", invoiceEmailed: true },
+      });
+
+      expect(html).toContain("Total Due");
+      expect(html).not.toContain("Total Paid");
+      expect(html).not.toContain("Payment has been processed successfully");
+      expect(html).toContain("$300.00");
+      expect(html).toContain("TAC-ABC123");
+      expect(html).toContain("An invoice has been emailed to you separately.");
+    });
+
+    it("promises a club-sent invoice rather than an emailed one when none was raised", () => {
+      const html = bookingConfirmedTemplate("Test", checkIn, checkOut, 6, 30000, {
+        paymentDue: { reference: "TAC-ABC123", invoiceEmailed: false },
+      });
+
+      // With the Xero module off nothing raises an invoice, so claiming one has
+      // been emailed is a promise the member cannot act on.
+      expect(html).not.toContain("An invoice has been emailed");
+      expect(html).toContain("The club will send you an invoice for it.");
+      expect(html).toContain("TAC-ABC123");
+    });
+
+    it("keeps the paid confirmation exactly as it was when no payment is due", () => {
+      const html = bookingConfirmedTemplate("Test", checkIn, checkOut, 2, 10000);
+      expect(html).toContain("Total Paid");
+      expect(html).toContain("Payment has been processed successfully.");
+      expect(html).not.toContain("Total Due");
+      expect(html).not.toContain("still owing");
+    });
   });
 
   describe("bookingPendingTemplate", () => {

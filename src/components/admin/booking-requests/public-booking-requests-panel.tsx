@@ -38,6 +38,11 @@ import {
   BookingRequestContactPicker,
   type OwnerContactChoice,
 } from "@/components/admin/booking-requests/booking-request-contact-picker";
+import {
+  MemberWholeLodgeApprovalFields,
+  WholeLodgeAvailabilityStrip,
+  WholeLodgeRequestBadges,
+} from "@/components/admin/booking-requests/whole-lodge-request-controls";
 
 // Bulk child tiers a school group is counted in. Teachers/parent helpers are
 // ADULT and are not adjusted here.
@@ -125,6 +130,13 @@ interface PublicBookingRequestData {
     | "CANCELLED"
     | "CONVERTED";
   schoolName: string | null;
+  // #2263: the whole-lodge exclusivity ask, and — for a request that came from a
+  // signed-in account — who made it. `requestedByMemberId` is the member-origin
+  // discriminator; a member whole-lodge request is `type: "GENERAL"`, so the
+  // type alone cannot identify one.
+  exclusivityRequested: boolean;
+  requestedByMemberId: string | null;
+  requestedByMemberName: string | null;
   // Null lodgeId means the club's default lodge (pre-multi-lodge rows and
   // single-lodge submissions).
   lodgeId: string | null;
@@ -223,6 +235,16 @@ const LINKING_EDITOR_STATUSES = new Set<PublicBookingRequestData["status"]>([
   "QUERY_PENDING",
   "MODIFICATION_REQUESTED",
 ]);
+
+/**
+ * #2263: a request submitted through the authenticated member whole-lodge door.
+ * Mirrors `isMemberWholeLodgeRequest` in src/lib/booking-request.ts — the client
+ * copy exists because the panel only ever sees the serialised row, and it must
+ * agree with the server exactly or the wrong approval branch is offered.
+ */
+function isMemberWholeLodgeRequest(request: PublicBookingRequestData) {
+  return Boolean(request.requestedByMemberId) && request.exclusivityRequested;
+}
 
 function formatDate(value: string) {
   return formatNZDate(new Date(value));
@@ -338,6 +360,15 @@ export function PublicBookingRequestsPanel({
     Record<string, Record<SchoolChildTier, string>>
   >({});
   const [declineReasons, setDeclineReasons] = useState<Record<string, string>>({});
+  // #2263: per-request approval inputs for a member whole-lodge request — the
+  // officer-confirmed headcount, and the manual total that is the mandatory
+  // fallback when no season covers the dates.
+  const [wholeLodgeHeadcounts, setWholeLodgeHeadcounts] = useState<
+    Record<string, string>
+  >({});
+  const [wholeLodgePrices, setWholeLodgePrices] = useState<Record<string, string>>(
+    {},
+  );
   // Per-request owner-contact decision (issue #1255): default is to create a new
   // non-login contact; the admin may instead map to an existing one.
   const [ownerChoices, setOwnerChoices] = useState<Record<string, OwnerContactChoice>>({});
@@ -818,6 +849,29 @@ export function PublicBookingRequestsPanel({
       if (ownerContactMemberId) {
         payload.ownerContactMemberId = ownerContactMemberId;
       }
+      // #2263: the member whole-lodge approval carries its own two fields. The
+      // headcount is only sent when the officer actually changed it; the price
+      // override only when they typed one.
+      if (isMemberWholeLodgeRequest(request)) {
+        const headcountRaw = wholeLodgeHeadcounts[request.id];
+        if (headcountRaw != null && headcountRaw.trim() !== "") {
+          const headcount = Number(headcountRaw);
+          if (!Number.isInteger(headcount) || headcount < 1) {
+            throw new Error("Enter a whole number of guests to price");
+          }
+          if (headcount !== request.guests.length) {
+            payload.pricedHeadcount = headcount;
+          }
+        }
+        const priceRaw = wholeLodgePrices[request.id];
+        if (priceRaw != null && priceRaw.trim() !== "") {
+          const cents = dollarsToCents(priceRaw);
+          if (cents == null) {
+            throw new Error("Enter the price override as a dollar amount");
+          }
+          payload.priceOverrideCents = cents;
+        }
+      }
       const hasBody = Object.keys(payload).length > 0;
       const response = await fetch(`/api/admin/booking-requests/${request.id}/approve`, {
         method: "POST",
@@ -839,7 +893,37 @@ export function PublicBookingRequestsPanel({
         }
         throw new Error(data.error || "Failed to approve request");
       }
-      if (data.type === "SCHOOL") {
+      if (data.type === "MEMBER_WHOLE_LODGE") {
+        // #2263: the conflict list is ADMIN-ONLY and never reaches the member.
+        // It is surfaced here, after the fact, because ADR-001 decision 1 grants
+        // the hold regardless — the officer is told what now overlaps so they
+        // can sort it out, not asked to approve again.
+        const conflicts = Array.isArray(data.exclusiveHoldConflicts)
+          ? data.exclusiveHoldConflicts
+          : [];
+        // What actually happened to the money, stated plainly (school parity).
+        // The booking is CONFIRMED but unpaid, so the officer needs to know
+        // whether an invoice went out or whether they have to raise it.
+        const invoiceSentence =
+          data.invoiceMode === "xero"
+            ? " The Xero invoice has been raised and the member has been emailed the amount owing and their payment reference."
+            : data.invoiceMode === "manual"
+              ? " The Xero module is off, so admins have been emailed to invoice the member manually — the member has been told an invoice is coming."
+              : " This approval was an idempotent replay, so no new invoice or email was raised.";
+        if (conflicts.length > 0) {
+          toast.warning(
+            `Whole-lodge booking confirmed and the lodge is now held for this group. ${
+              conflicts.length === 1
+                ? "1 existing booking overlaps"
+                : `${conflicts.length} existing bookings overlap`
+            } these nights — they were NOT cancelled. Sort them out with the people involved.${invoiceSentence}`,
+          );
+        } else {
+          toast.success(
+            `Whole-lodge booking confirmed. The lodge is now held for this group.${invoiceSentence}`,
+          );
+        }
+      } else if (data.type === "SCHOOL") {
         toast.success(
           data.invoiceMode === "xero"
             ? "School booking confirmed. The Xero invoice has been emailed to the school and the teacher PIN email sent."
@@ -968,6 +1052,12 @@ export function PublicBookingRequestsPanel({
         <div className="space-y-4">
           {requests.map((request) => {
             const isActioning = actioningId === request.id;
+            // #2263: a member whole-lodge request has ONE admin lifecycle —
+            // approve directly with a priced headcount, or decline. The quote,
+            // officer-price and hold-slots controls are hidden below, and the
+            // service layer refuses them too (booking-request-quotes.ts):
+            // hiding is the UX, the 409 is the guarantee.
+            const memberWholeLodge = isMemberWholeLodgeRequest(request);
 
             return (
               <Card
@@ -1012,6 +1102,15 @@ export function PublicBookingRequestsPanel({
                           School
                         </Badge>
                       ) : null}
+                      {/* #2263: "Member" marks a request from a signed-in
+                          account; "Whole lodge requested" marks the exclusivity
+                          ask and renders for SCHOOL rows too, closing a display
+                          gap that predates this feature. */}
+                      <WholeLodgeRequestBadges
+                        memberOrigin={isMemberWholeLodgeRequest(request)}
+                        exclusivityRequested={request.exclusivityRequested}
+                        requesterName={request.requestedByMemberName}
+                      />
                       <Badge variant="outline" className={statusBadgeClass(request.status)}>
                         {request.status}
                       </Badge>
@@ -1073,6 +1172,14 @@ export function PublicBookingRequestsPanel({
                     </p>
                   ) : null}
 
+                  {/* #2263: admin-only availability + conflict preview for any
+                      whole-lodge request, before the decision rather than after
+                      it. Advisory: approving never displaces anything. */}
+                  {request.exclusivityRequested &&
+                  LINKING_EDITOR_STATUSES.has(request.status) ? (
+                    <WholeLodgeAvailabilityStrip requestId={request.id} />
+                  ) : null}
+
                   {request.latestQuote ? (
                     <div className="rounded-md border bg-muted p-3 text-sm text-muted-foreground">
                       <p className="font-medium">
@@ -1114,7 +1221,10 @@ export function PublicBookingRequestsPanel({
                   {LINKING_EDITOR_STATUSES.has(request.status) ? (
                     canEdit ? (
                     <div className="space-y-3 rounded-md border border-border p-3">
-                      {request.heldBookingId ? (
+                      {/* #2263: a member whole-lodge booking is owned by the
+                          member's own login account, so there is no non-login
+                          contact to map or create, and no hold to release. */}
+                      {memberWholeLodge ? null : request.heldBookingId ? (
                         <div className="space-y-2 rounded-md border bg-muted p-3 text-sm text-muted-foreground">
                           <p>
                             Booking contact was set when slots were held. Release
@@ -1226,6 +1336,13 @@ export function PublicBookingRequestsPanel({
                         </div>
                       ) : null}
 
+                      {/* #2263: the quote editor is the requester-facing pricing
+                          surface. A member whole-lodge request never gets one —
+                          it is priced at approval and the member is shown no
+                          price at request time — so the whole block is hidden,
+                          and the service layer refuses a quote for these rows
+                          even if something POSTs one directly. */}
+                      {memberWholeLodge ? null : (
                       <div className="grid gap-3 md:grid-cols-[220px_1fr]">
                         <div className="space-y-1">
                           <Label htmlFor={`pricing-mode-${request.id}`}>Pricing mode</Label>
@@ -1313,7 +1430,25 @@ export function PublicBookingRequestsPanel({
                           ))}
                         </div>
                       </div>
+                      )}
 
+                      {/* #2263: the member's party is unnamed placeholders by
+                          design (no guest names are collected), so there is
+                          nobody to link here.
+
+                          After approval, an officer works on the BOOKING. A
+                          placeholder can be renamed through the ordinary
+                          guest-edit path, but renaming does not change the rate:
+                          member linkage cannot be edited onto an existing guest
+                          row at all (booking-modify-plan.ts refuses any update
+                          touching a member guest, so a rename can never quietly
+                          transfer who a booking is for). To put a real member on
+                          the booking at their own rate the officer REMOVES the
+                          placeholder and ADDS the member as a new guest, which
+                          re-prices and settles through BookingModification
+                          (owner decision OD-A, as corrected in ADR-001's dated
+                          entry). */}
+                      {memberWholeLodge ? null : (
                       <div className="space-y-2">
                         <p className="text-sm font-medium">Linked member guests</p>
                         {linkConflicts[request.id]?.length ? (
@@ -1423,9 +1558,39 @@ export function PublicBookingRequestsPanel({
                           })}
                         </div>
                       </div>
+                      )}
+
+                      {memberWholeLodge ? (
+                        <MemberWholeLodgeApprovalFields
+                          requestId={request.id}
+                          submittedHeadcount={request.guests.length}
+                          headcount={
+                            wholeLodgeHeadcounts[request.id] ??
+                            String(request.guests.length)
+                          }
+                          onHeadcountChange={(value) =>
+                            setWholeLodgeHeadcounts((prev) => ({
+                              ...prev,
+                              [request.id]: value,
+                            }))
+                          }
+                          priceDollars={wholeLodgePrices[request.id] ?? ""}
+                          onPriceChange={(value) =>
+                            setWholeLodgePrices((prev) => ({
+                              ...prev,
+                              [request.id]: value,
+                            }))
+                          }
+                          disabled={isActioning}
+                        />
+                      ) : null}
 
                       <div className="space-y-1">
-                        <Label htmlFor={`decline-reason-${request.id}`}>Decline reason (optional)</Label>
+                        <Label htmlFor={`decline-reason-${request.id}`}>
+                          {memberWholeLodge
+                            ? "Decline note — audit log only, never shown to the member (optional)"
+                            : "Decline reason (optional)"}
+                        </Label>
                         <Textarea
                           id={`decline-reason-${request.id}`}
                           value={declineReasons[request.id] ?? ""}
@@ -1433,11 +1598,31 @@ export function PublicBookingRequestsPanel({
                             setDeclineReasons((prev) => ({ ...prev, [request.id]: event.target.value }))
                           }
                           maxLength={2000}
-                          placeholder="Shown to the requester in the decline email"
+                          placeholder={
+                            memberWholeLodge
+                              ? "Recorded in the audit log for the club's own record"
+                              : "Shown to the requester in the decline email"
+                          }
                         />
+                        {memberWholeLodge ? (
+                          // #2263: on a member whole-lodge request this note is
+                          // NOT persisted on the request and NOT interpolated
+                          // into any email. A note like "we're holding that week
+                          // for another group" would otherwise tell a member
+                          // exactly what ADR-001 decision 6 says they are never
+                          // told, so the member's email carries one fixed
+                          // sentence with no note at all.
+                          <p className="text-xs text-muted-foreground">
+                            The member is emailed the same fixed wording whatever
+                            you write here — never the note, and never anything
+                            about who else has the lodge.
+                          </p>
+                        ) : null}
                       </div>
 
                       <div className="flex flex-wrap gap-2">
+                        {memberWholeLodge ? null : (
+                          <>
                         <Button
                           size="sm"
                           variant="outline"
@@ -1453,6 +1638,8 @@ export function PublicBookingRequestsPanel({
                         >
                           Send quote
                         </Button>
+                          </>
+                        )}
                         {/*
                           #1385: the manual Hold slots entry is SCHOOL-only.
                           Sending a quote auto-holds the beds across the whole
@@ -1472,18 +1659,30 @@ export function PublicBookingRequestsPanel({
                             {request.heldBookingId ? "Slots held" : "Hold slots"}
                           </Button>
                         ) : null}
+                        {/* #2263 captioned style deviation (owner-approved in
+                            the mockup sign-off): Approve is the SOLID PRIMARY
+                            button on the member whole-lodge path. Everywhere
+                            else in this queue approve is one of several
+                            equal-weight steps; here it is the ONLY forward
+                            action — there is no quote, no price step and no
+                            hold — so the button that does the thing should look
+                            like it. */}
                         <Button
                           size="sm"
-                          variant="outline"
+                          variant={memberWholeLodge ? "default" : "outline"}
                           onClick={() => handleApprove(request)}
                           disabled={
                             isActioning ||
-                            (request.type !== "SCHOOL" && request.status !== "PRICED")
+                            (!memberWholeLodge &&
+                              request.type !== "SCHOOL" &&
+                              request.status !== "PRICED")
                           }
                         >
-                          {request.type === "SCHOOL"
-                            ? "Approve & invoice school"
-                            : "Approve & send payment link"}
+                          {memberWholeLodge
+                            ? "Approve & hold the whole lodge"
+                            : request.type === "SCHOOL"
+                              ? "Approve & invoice school"
+                              : "Approve & send payment link"}
                         </Button>
                         <Button
                           size="sm"
@@ -1494,7 +1693,17 @@ export function PublicBookingRequestsPanel({
                           Decline
                         </Button>
                       </div>
-                      {request.type === "SCHOOL" ? (
+                      {memberWholeLodge ? (
+                        <p className="text-xs text-muted-foreground">
+                          Approving confirms the booking, charges the priced
+                          headcount at non-member rates, and holds the whole
+                          lodge for these nights. It never cancels an existing
+                          booking — anything already on these nights is listed
+                          above and stays yours to sort out. There is no quote
+                          step on this path: the member has not been shown a
+                          price.
+                        </p>
+                      ) : request.type === "SCHOOL" ? (
                         <p className="text-xs text-muted-foreground">
                           Hold slots reserves the beds for this school request
                           before it is approved or quoted — approving a school
@@ -1514,7 +1723,7 @@ export function PublicBookingRequestsPanel({
                           below what is booked.
                         </p>
                       )}
-                      {request.status === "VERIFIED" ? (
+                      {request.status === "VERIFIED" && !memberWholeLodge ? (
                         <p className="text-xs text-muted-foreground">
                           {request.type === "SCHOOL"
                             ? "Adjust group numbers if needed, then save and send a quote so the school can accept or request changes."
@@ -1607,6 +1816,21 @@ export function PublicBookingRequestsPanel({
               receives the standard decline email — your choice is recorded in
               the audit log.
             </DialogDescription>
+            {/* #2263: the whole-lodge consequence is folded INTO this dialog
+                rather than chained after it as a second dialog — one decision,
+                one prompt. It states what the member will and will not be told,
+                because the officer writing the note needs to know the note is
+                not what gets sent. */}
+            {declineChoice && isMemberWholeLodgeRequest(declineChoice) ? (
+              <p className="text-sm text-muted-foreground">
+                This is a whole-lodge request. Declining it releases nothing and
+                changes no capacity — the lodge was never held for it. If you
+                email the member they receive one fixed sentence saying the
+                whole lodge was not available for those dates: never your note,
+                and never anything about who else has the lodge. Your note is
+                kept in the audit log.
+              </p>
+            ) : null}
           </DialogHeader>
           <DialogFooter className="gap-2 sm:gap-2">
             <Button
