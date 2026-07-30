@@ -632,6 +632,10 @@ export default async function BookingDetailPage({
           refundedAmountCents: booking.payment.refundedAmountCents,
           additionalAmountCents: booking.payment.additionalAmountCents,
           additionalPaymentStatus: booking.payment.additionalPaymentStatus,
+          // #2350: dates the "additional payment requested" timeline entry from
+          // the obligation itself rather than the payment row's last touch.
+          latestAdditionalTransactionCreatedAt:
+            booking.payment.transactions[0]?.createdAt ?? null,
           createdAt: booking.payment.createdAt,
           updatedAt: booking.payment.updatedAt,
         }
@@ -1747,6 +1751,7 @@ export default async function BookingDetailPage({
       {nonOwnerAdminViewer && !isDeleted && booking.payment ? (
         <BookingAdditionalPaymentPanel
           bookingId={booking.id}
+          bookingStatus={booking.status}
           payment={booking.payment}
           requestedOn={additionalPaymentEpisodeStartedAt({
             paymentCreatedAt: booking.payment.createdAt,

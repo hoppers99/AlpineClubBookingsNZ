@@ -1,3 +1,4 @@
+import { additionalPaymentEpisodeStartedAt } from "@/lib/additional-payment-chase";
 import { hasCapturedPayment } from "@/lib/booking-payment-state";
 import { formatCents } from "@/lib/utils";
 
@@ -16,6 +17,16 @@ interface BookingHistoryPayment {
   refundedAmountCents: number;
   additionalAmountCents: number;
   additionalPaymentStatus: string | null;
+  /**
+   * When the CURRENT additional-payment obligation was raised — the latest
+   * ADDITIONAL PaymentTransaction's creation (#2350). The timeline dates the
+   * "still awaiting payment" entry from this rather than from the payment row's
+   * `updatedAt`, which moves every time anything touches the row (a reminder
+   * stamp, a Xero link, a refund) and would slide the entry back to the top of
+   * the timeline each time. Optional: callers that do not load the transactions
+   * fall back to the payment's own creation, which is stable.
+   */
+  latestAdditionalTransactionCreatedAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -422,6 +433,11 @@ export function buildBookingHistoryItems({
   // payment but none for one that is simply still awaiting the member, which is
   // the state an outstanding delta spends nearly all of its life in. Without
   // this entry the moment the price went up left no mark on the timeline at all.
+  //
+  // Dated from the obligation itself, not `payment.updatedAt`: the reminder cron
+  // writes its stamps to this row every time it chases the member, and dating
+  // the entry from the row's last touch would march it up the timeline on every
+  // nudge, claiming the price changed when nothing about the booking did.
   if (
     payment &&
     payment.additionalAmountCents > 0 &&
@@ -429,7 +445,11 @@ export function buildBookingHistoryItems({
   ) {
     items.push({
       id: "payment-additional-pending",
-      occurredAt: payment.updatedAt,
+      occurredAt: additionalPaymentEpisodeStartedAt({
+        paymentCreatedAt: payment.createdAt,
+        latestAdditionalTransactionCreatedAt:
+          payment.latestAdditionalTransactionCreatedAt ?? null,
+      }),
       category: "Payment",
       title: "Additional payment requested",
       detail:

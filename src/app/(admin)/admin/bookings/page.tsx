@@ -37,7 +37,6 @@ import { APP_TIME_ZONE } from "@/config/operational";
 import {
   AlertTriangle,
   CalendarX2,
-  CheckCircle2,
   CircleDollarSign,
   CreditCard,
   Eye,
@@ -96,8 +95,11 @@ function paymentChip(source: AdminBookingRow["operational"]["paymentSource"]): {
  * amount was invisible everywhere. The booking status chip beside this one is
  * deliberately left alone; this reports SETTLEMENT, not lifecycle.
  *
- * Returns null when there is nothing settled to report — an unpaid booking's
- * status chip already says so, and a second chip repeating it would be noise.
+ * Returns null whenever settlement and lifecycle agree — including the fully
+ * settled case. A booking whose money has all arrived already carries a "Paid"
+ * status chip in the column beside this one, and a second identical chip on
+ * every paid row is the exact noise this function exists to avoid; the only
+ * thing worth saying here is the disagreement.
  */
 function paymentSettlementChip(booking: AdminBookingRow): {
   tone: ChipTone;
@@ -106,9 +108,6 @@ function paymentSettlementChip(booking: AdminBookingRow): {
 } | null {
   if (booking.operational.outstandingAdditionalCents > 0) {
     return { tone: "warning", icon: CircleDollarSign, label: "Partly paid" };
-  }
-  if (booking.payment?.status === "SUCCEEDED") {
-    return { tone: "success", icon: CheckCircle2, label: "Paid" };
   }
   return null;
 }

@@ -228,9 +228,18 @@ export async function GET(request: NextRequest) {
     // #2350: upward changes whose extra was never collected. Counted separately
     // — it is already inside totalRevenueCents (finalPriceCents includes the
     // increase), so subtracting this from that is what "collected" looks like.
+    //
+    // Scoped by the SHARED owed predicate, which narrows this further than the
+    // revenue figure beside it: `activeBookings` is everything except CANCELLED
+    // and BUMPED, so it also holds DRAFT / PENDING / PAYMENT_PENDING /
+    // WAITLISTED / AWAITING_REVIEW bookings whose delta is not a collectable
+    // obligation. Using the predicate keeps this number equal to the one the
+    // dashboard card, the sidebar badge, the bookings list and the chase cron
+    // all report.
     const outstandingAdditional = activeBookings.reduce(
       (acc, b) => {
-        if (!isAdditionalPaymentOwed(b.payment)) return acc;
+        if (!isAdditionalPaymentOwed({ bookingStatus: b.status, payment: b.payment }))
+          return acc;
         return {
           bookings: acc.bookings + 1,
           cents: acc.cents + (b.payment?.additionalAmountCents ?? 0),

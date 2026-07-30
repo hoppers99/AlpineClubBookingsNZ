@@ -109,6 +109,9 @@ describe("buildBookingHistoryItems", () => {
     function build(
       additionalPaymentStatus: string | null,
       additionalAmountCents = 21_000,
+      latestAdditionalTransactionCreatedAt: Date | null = new Date(
+        "2026-04-05T11:00:00Z",
+      ),
     ) {
       return buildBookingHistoryItems({
         createdAt: new Date("2026-04-01T09:00:00Z"),
@@ -118,7 +121,11 @@ describe("buildBookingHistoryItems", () => {
           refundedAmountCents: 0,
           additionalAmountCents,
           additionalPaymentStatus,
+          latestAdditionalTransactionCreatedAt,
           createdAt: new Date("2026-04-01T09:00:00Z"),
+          // Deliberately later than everything else: the reminder cron writes
+          // its stamps to this row, so `updatedAt` moves every time the member
+          // is chased.
           updatedAt: new Date("2026-04-08T14:00:00Z"),
         },
         modifications: [],
@@ -127,6 +134,12 @@ describe("buildBookingHistoryItems", () => {
       });
     }
 
+    /*
+      Dated from the obligation, never from the payment row's last touch. The
+      #2350 reminder cron stamps this very row each time it chases the member,
+      so dating the entry from `updatedAt` marched it up the timeline on every
+      nudge, claiming the price had just changed when nothing had.
+    */
     it("records the request with its amount and the moment it was raised", () => {
       const item = build("PENDING").find(
         (entry) => entry.id === "payment-additional-pending",
@@ -138,8 +151,16 @@ describe("buildBookingHistoryItems", () => {
         amountDisplay: "$210.00",
         tone: "warning",
       });
-      expect(item?.occurredAt.toISOString()).toBe("2026-04-08T14:00:00.000Z");
+      expect(item?.occurredAt.toISOString()).toBe("2026-04-05T11:00:00.000Z");
       expect(item?.detail).toContain("has not been paid yet");
+    });
+
+    it("falls back to the payment's own creation, not its last touch", () => {
+      const item = build("PENDING", 21_000, null).find(
+        (entry) => entry.id === "payment-additional-pending",
+      );
+
+      expect(item?.occurredAt.toISOString()).toBe("2026-04-01T09:00:00.000Z");
     });
 
     it("does not claim a request when the extra was collected or failed", () => {

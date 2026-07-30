@@ -424,11 +424,11 @@ export default async function AdminDashboardPage() {
                   Bookings With Unpaid Additions
                 </p>
                 <p className="text-sm text-warning-11 mt-1">
-                  {unsettledAdditionsTotal} paid booking
+                  {unsettledAdditionsTotal} confirmed booking
                   {unsettledAdditionsTotal === 1 ? "" : "s"} with an additional
                   payment still owing ({stats.unsettledAdditionalUpcomingStays}{" "}
-                  upcoming &middot; {stats.unsettledAdditionalFinishedStays}{" "}
-                  finished). Collect the outstanding amount or adjust the
+                  upcoming, {stats.unsettledAdditionalFinishedStays} finished).
+                  Collect the outstanding amount or adjust the
                   booking.
                 </p>
               </div>

@@ -25,6 +25,12 @@ import { formatCents } from "@/lib/utils";
  */
 export interface BookingAdditionalPaymentPanelProps {
   bookingId: string;
+  /**
+   * The booking's lifecycle status. Part of the owed test, not decoration: a
+   * cancelled booking keeps its delta columns, and this panel must not tell an
+   * admin that a cancelled booking still owes money (or offer to chase it).
+   */
+  bookingStatus: string;
   payment: Pick<
     AdditionalPaymentChasePayment,
     | "additionalAmountCents"
@@ -50,12 +56,15 @@ function formatNzDateTime(value: Date) {
 
 export function BookingAdditionalPaymentPanel({
   bookingId,
+  bookingStatus,
   payment,
   requestedOn,
   canResend,
   now = new Date(),
 }: BookingAdditionalPaymentPanelProps) {
-  if (!isAdditionalPaymentOwed(payment) || !payment) return null;
+  if (!isAdditionalPaymentOwed({ bookingStatus, payment }) || !payment) {
+    return null;
+  }
 
   const failed = payment.additionalPaymentStatus === "FAILED";
   const lastChasedAt =
@@ -126,8 +135,9 @@ export function BookingAdditionalPaymentPanel({
           </div>
         </dl>
         <p>
-          The member is reminded automatically while the stay is still ahead. Use
-          the button to send the request again now.
+          The member is reminded automatically while the stay is still ahead.
+          Sending the request now takes the place of the reminder that was
+          coming, so they get one message rather than two.
         </p>
         {canResend ? (
           <ResendAdditionalPaymentButton bookingId={bookingId} />

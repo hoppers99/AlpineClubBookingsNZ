@@ -208,6 +208,20 @@ describe("admin reports route", () => {
             additionalPaymentStatus: "PENDING",
           },
         },
+        {
+          // #2350: not cancelled, but not a collectable obligation either. The
+          // revenue figure counts every non-cancelled booking; the shortfall
+          // uses the SHARED owed predicate, so this figure equals the one the
+          // dashboard card, the sidebar badge and the chase cron report.
+          createdAt: new Date("2026-04-11T10:00:00Z"),
+          finalPriceCents: 15_000,
+          status: "PAYMENT_PENDING",
+          guests: [{ isMember: true }],
+          payment: {
+            additionalAmountCents: 7_000,
+            additionalPaymentStatus: "PENDING",
+          },
+        },
       ])
       .mockResolvedValueOnce([]);
 
@@ -225,7 +239,9 @@ describe("admin reports route", () => {
     );
     const data = await response.json();
 
-    expect(data.summary.totalRevenueCents).toBe(60_000);
+    // The PAYMENT_PENDING booking is inside booked revenue…
+    expect(data.summary.totalRevenueCents).toBe(75_000);
+    // …and outside the shortfall, which follows the shared owed predicate.
     expect(data.summary.outstandingAdditionalCents).toBe(25_000);
     expect(data.summary.outstandingAdditionalBookings).toBe(2);
   }, 15_000);

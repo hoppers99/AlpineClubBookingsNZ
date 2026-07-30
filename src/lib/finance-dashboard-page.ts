@@ -417,8 +417,12 @@ async function buildBookingsDashboard(
         metrics.paymentSummary.outstandingAdditionalCents,
       ),
       description:
-        "Extra owed after an upward booking change and not yet collected.",
-      footnote: `${formatNumber(metrics.paymentSummary.outstandingAdditionalBookings)} booking${metrics.paymentSummary.outstandingAdditionalBookings === 1 ? "" : "s"} awaiting or failed payment.`,
+        "Extra owed after an upward booking change and not yet collected, for bookings in the selected range.",
+      // Window-scoped, unlike the admin dashboard card and sidebar badge (which
+      // count every owing booking, whenever it stays) and the reports summary
+      // (which counts the report's own date range). Say so, or the three
+      // numbers look like a contradiction rather than three questions.
+      footnote: `${formatNumber(metrics.paymentSummary.outstandingAdditionalBookings)} booking${metrics.paymentSummary.outstandingAdditionalBookings === 1 ? "" : "s"} awaiting or failed payment in this range.`,
     },
   ];
 

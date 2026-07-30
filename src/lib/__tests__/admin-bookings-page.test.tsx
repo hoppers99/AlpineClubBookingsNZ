@@ -638,8 +638,11 @@ describe("AdminBookingsPage", () => {
       };
     }
 
-    async function renderRow(payment: Record<string, unknown> | null) {
-      installAdminBookingsDbMock([makeBooking({ payment })]);
+    async function renderRow(
+      payment: Record<string, unknown> | null,
+      bookingOverrides: Record<string, unknown> = {},
+    ) {
+      installAdminBookingsDbMock([makeBooking({ payment, ...bookingOverrides })]);
       return renderToStaticMarkup(
         await AdminBookingsPage({ searchParams: Promise.resolve({}) }),
       );
@@ -689,6 +692,35 @@ describe("AdminBookingsPage", () => {
 
       expect(html).not.toContain("Partly paid");
       expect(html).not.toContain("due");
+    });
+
+    /*
+      A cancelled booking keeps its delta columns exactly as they were, so an
+      amount-only owed test put an amber "$210.00 due" beside a Cancelled status
+      chip — the row contradicting itself about whether the club wants money.
+    */
+    it("says nothing is due on a booking whose lifecycle ended the obligation", async () => {
+      const html = await renderRow(
+        paidPayment({
+          additionalAmountCents: 21_000,
+          additionalPaymentStatus: "FAILED",
+        }),
+        { status: "CANCELLED" },
+      );
+
+      expect(html).not.toContain("Partly paid");
+      expect(html).not.toContain("$210.00 due");
+    });
+
+    /*
+      Settlement reports the DISAGREEMENT with lifecycle, nothing else: a fully
+      paid row already carries a "Paid" status chip, and a second identical chip
+      immediately beside it in the next column is pure noise.
+    */
+    it("does not repeat the Paid chip when settlement agrees with lifecycle", async () => {
+      const html = await renderRow(paidPayment());
+
+      expect(html.match(/>Paid</g) ?? []).toHaveLength(1);
     });
   });
 

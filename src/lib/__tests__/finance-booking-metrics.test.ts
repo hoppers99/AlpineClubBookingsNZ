@@ -537,6 +537,43 @@ describe("finance-booking-metrics", () => {
     expect(metrics.paymentSummary.capturedAdditionalCents).toBe(9_000);
   });
 
+  /*
+    #2350: a legacy row written before `additionalPaymentStatus` was populated
+    still carries a real uncollected delta. The owed total counted it while the
+    status split filed it under NONE, so a legacy club read "Awaiting 0,
+    Failed 0" beside a non-zero total — the split contradicting its own sum.
+  */
+  it("files a legacy null-status addition as awaiting, matching the total", async () => {
+    mockPrisma.booking.findMany.mockResolvedValue([
+      {
+        id: "booking-legacy-extra",
+        checkIn: new Date("2026-04-10T00:00:00.000Z"),
+        checkOut: new Date("2026-04-11T00:00:00.000Z"),
+        status: BookingStatus.PAID,
+        finalPriceCents: 30_000,
+        guests: [{ id: "g-1" }],
+        payment: {
+          status: PaymentStatus.SUCCEEDED,
+          amountCents: 9_000,
+          refundedAmountCents: 0,
+          creditAppliedCents: 0,
+          changeFeeCents: 0,
+          additionalAmountCents: 21_000,
+          additionalPaymentStatus: null,
+        },
+      },
+    ]);
+
+    const metrics = await getFinanceBookingMetrics({
+      realized: { from: "2026-04-10", to: "2026-04-11" },
+    });
+
+    expect(metrics.paymentSummary.outstandingAdditionalCents).toBe(21_000);
+    expect(
+      metrics.paymentSummary.additionalPaymentStatusBreakdown,
+    ).toMatchObject({ PENDING: 1, NONE: 0 });
+  });
+
   it("rejects an empty query", async () => {
     await expect(getFinanceBookingMetrics({})).rejects.toThrow(
       "At least one finance booking metrics section is required"

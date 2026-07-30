@@ -35,6 +35,7 @@ function render(props: Partial<Parameters<typeof BookingAdditionalPaymentPanel>[
   return renderToStaticMarkup(
     <BookingAdditionalPaymentPanel
       bookingId="booking-1"
+      bookingStatus="PAID"
       payment={payment()}
       requestedOn={RAISED_AT}
       canResend
@@ -82,6 +83,29 @@ describe("BookingAdditionalPaymentPanel", () => {
     ).toBe("");
     expect(render({ payment: payment({ additionalAmountCents: 0 }) })).toBe("");
     expect(render({ payment: null })).toBe("");
+  });
+
+  /*
+    A cancelled booking keeps its delta columns exactly as they were, so without
+    the lifecycle half of the owed test this panel would tell an admin that a
+    cancelled booking still owes money — and offer them a button to chase the
+    member for it.
+  */
+  it("renders nothing on a booking whose lifecycle ended the obligation", () => {
+    for (const bookingStatus of ["CANCELLED", "BUMPED", "PAYMENT_PENDING"]) {
+      expect(
+        render({
+          bookingStatus,
+          payment: payment({ additionalPaymentStatus: "FAILED" }),
+        }),
+      ).toBe("");
+    }
+  });
+
+  it("tells the officer the re-send replaces the automatic reminder", () => {
+    // The button writes the stamp that suppresses the pending automatic nudge,
+    // so the person pressing it has to know the member gets one message.
+    expect(render()).toContain("takes the place of");
   });
 
   it("offers the re-send only to an admin who may write", () => {

@@ -1,4 +1,5 @@
 import type { Prisma } from "@prisma/client";
+import { ADDITIONAL_OWED_BOOKING_STATUSES } from "@/lib/additional-payment-chase";
 
 /**
  * Unpaid finished stays (#1709): bookings still PAYMENT_PENDING whose
@@ -31,20 +32,17 @@ export function buildUnpaidFinishedStaysHref(todayKey: string): string {
   return `/admin/bookings?status=PAYMENT_PENDING&checkOutTo=${todayKey}`;
 }
 
-/**
- * Settled-lifecycle statuses that can carry an unsettled upward modification
- * delta without being PAYMENT_PENDING (which the primary predicate above
- * already counts — keeping the sets disjoint means the two queue counts can
- * be summed without double-counting a booking). COMPLETED matters most: the
- * completion cron advances PAID bookings once their check-out day has passed
- * (#2029), so a finished paid stay has usually already left PAID by the time
- * its delta lingers.
+/*
+ * The settled-lifecycle statuses that can carry an unsettled upward
+ * modification delta (CONFIRMED / PAID / COMPLETED) live in
+ * src/lib/additional-payment-chase.ts so the SQL predicate below and its
+ * in-memory twin `isAdditionalPaymentOwed` are built from ONE list. They are
+ * disjoint from PAYMENT_PENDING (which the primary predicate above already
+ * counts), so the two queue counts can be summed without double-counting a
+ * booking. COMPLETED matters most: the completion cron advances PAID bookings
+ * once their check-out day has passed (#2029), so a finished paid stay has
+ * usually already left PAID by the time its delta lingers.
  */
-const ADDITIONAL_OWED_BOOKING_STATUSES = [
-  "CONFIRMED",
-  "PAID",
-  "COMPLETED",
-] as const;
 
 /**
  * Booking-level fragment for "an upward modification delta is still owed on
@@ -68,6 +66,30 @@ export function buildAdditionalOwedWhere(): Prisma.BookingWhereInput {
         ],
       },
     },
+  };
+}
+
+/**
+ * The SAME owed test, expressed against the `Payment` row rather than the
+ * booking, for the guarded claims that stamp a reminder before it is sent
+ * (src/lib/cron-additional-payment-reminders.ts and
+ * src/lib/additional-payment-resend-service.ts).
+ *
+ * The read that decided to send is advisory; this is the WHERE that actually
+ * decides, so it re-states every part of the test — including the booking's
+ * lifecycle status, which is what stops a cancellation landing between the read
+ * and the claim from turning into a "Payment Still Needed" email. Composed
+ * inside an `AND` array by its callers so the nested OR cannot collide with the
+ * other guards they add.
+ */
+export function buildAdditionalOwedPaymentWhere(): Prisma.PaymentWhereInput {
+  return {
+    additionalAmountCents: { gt: 0 },
+    OR: [
+      { additionalPaymentStatus: null },
+      { additionalPaymentStatus: { not: "SUCCEEDED" } },
+    ],
+    booking: { is: { status: { in: [...ADDITIONAL_OWED_BOOKING_STATUSES] } } },
   };
 }
 

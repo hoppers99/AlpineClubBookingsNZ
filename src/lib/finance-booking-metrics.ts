@@ -555,7 +555,13 @@ function getAdditionalPaymentStatusKey(
   booking: BookingMetricsRecord
 ): FinanceAdditionalPaymentStatusKey {
   if (!booking.payment?.additionalPaymentStatus) {
-    return "NONE";
+    // A legacy row written before the status column was populated still carries
+    // a real uncollected delta, and the owed test counts it. Reading it as NONE
+    // let the panel show "Awaiting 0, Failed 0" beside a non-zero outstanding
+    // total — the split contradicting its own sum. It is awaiting payment.
+    return (booking.payment?.additionalAmountCents ?? 0) > 0
+      ? "PENDING"
+      : "NONE";
   }
 
   if (booking.payment.additionalPaymentStatus === "PENDING") {
@@ -604,7 +610,9 @@ function summarizePayments(
 
     summary.capturedPrimaryCents += capturedPrimaryCents;
     summary.capturedAdditionalCents += capturedAdditionalCents;
-    if (isAdditionalPaymentOwed(payment)) {
+    if (
+      isAdditionalPaymentOwed({ bookingStatus: booking.status, payment })
+    ) {
       summary.outstandingAdditionalCents += payment.additionalAmountCents;
       summary.outstandingAdditionalBookings += 1;
     }

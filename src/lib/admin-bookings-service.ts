@@ -776,7 +776,10 @@ function deriveBookingOperationalState(
 
   return {
     paymentSource,
-    outstandingAdditionalCents: isAdditionalPaymentOwed(booking.payment)
+    outstandingAdditionalCents: isAdditionalPaymentOwed({
+      bookingStatus: booking.status,
+      payment: booking.payment,
+    })
       ? booking.payment?.additionalAmountCents ?? 0
       : 0,
     xeroState: deriveXeroState({ invoiceExpected, invoiceLinked, activity }),

@@ -98,9 +98,10 @@ export async function sendPreArrivalReminders(): Promise<PreArrivalReminderResul
         guestCount: booking.guests.length,
         expectedArrivalTime: booking.expectedArrivalTime,
         lodgeId: booking.lodgeId,
-        outstandingAdditionalAmountCents: isAdditionalPaymentOwed(
-          booking.payment,
-        )
+        outstandingAdditionalAmountCents: isAdditionalPaymentOwed({
+          bookingStatus: booking.status,
+          payment: booking.payment,
+        })
           ? booking.payment?.additionalAmountCents ?? 0
           : 0,
       });
