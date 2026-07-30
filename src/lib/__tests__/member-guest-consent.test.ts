@@ -25,7 +25,6 @@ import type { MemberGuestConsentStatus } from "@prisma/client";
 import {
   CONSENT_FREE_GUEST_COLUMNS,
   MEMBER_GUEST_CONSENT_SUB_STATES,
-  MEMBER_GUEST_WIDENING_ENABLED,
   OPERATIONALLY_PRESENT_GUEST_WHERE,
   classifyMemberGuestConsent,
   isOperationallyPresentConsent,
@@ -69,12 +68,27 @@ describe("consent sub-state table", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("marks exactly one shape as reachable in this release", () => {
-    // The dark guarantee, expressed as data: a member-guest row created by MG1
-    // is consent-FREE, and every other shape needs code MG1 does not ship.
-    const reachable = MEMBER_GUEST_CONSENT_SUB_STATES.filter((s) => s.reachableInMg1);
-    expect(reachable.map((s) => s.id)).toEqual(["FAMILY_OR_LEGACY"]);
-    expect(MEMBER_GUEST_WIDENING_ENABLED).toBe(false);
+  it("records which shapes predate the feature going live", () => {
+    // MG1's version of this case asserted the dark guarantee as data: exactly one
+    // shape reachable, and MEMBER_GUEST_WIDENING_ENABLED false. MG2 (#2307)
+    // deliberately breaks both halves, so what is pinned now is the historical
+    // fact the field actually records — only the consent-FREE shape existed
+    // before the widening, and every other shape arrived with it.
+    const byRelease = (release: string) =>
+      MEMBER_GUEST_CONSENT_SUB_STATES.filter((s) => s.firstReachableIn === release).map(
+        (s) => s.id,
+      );
+
+    expect(byRelease("MG1")).toEqual(["FAMILY_OR_LEGACY"]);
+    expect(byRelease("MG2")).toEqual([
+      "AWAITING_TARGET",
+      "TARGET_APPROVED",
+      "DELEGATE_APPROVED",
+      "NOTIFY_ONLY_AUTO_CONFIRMED",
+      "ADMIN_ASSIGNED",
+      "DECLINED",
+      "EXPIRED",
+    ]);
   });
 
   it("gives every shape a written note", () => {
@@ -503,12 +517,24 @@ describe("migrations", () => {
       expect(phase).toBe("expand");
       expect(oldCodeCompatible).toBe("yes");
     }
-    // The hot-table row has to argue BOTH blue/green directions; the reverse
-    // one is only true because this release is dark.
+    // The hot-table row has to argue BOTH blue/green directions. MG1 could
+    // argue the reverse one away entirely, because nothing in that colour could
+    // write an enum label. MG2 (#2307) falsified that, so the row was REWRITTEN
+    // rather than left standing, and what is pinned here is that it now names the
+    // real reverse-direction risk and the real mitigation — which is the module
+    // flag, not the schema.
     const hotPlan = rows[1][4];
     expect(hotPlan.length).toBeGreaterThan(1000);
     expect(hotPlan).toContain("HOT_TABLE_SQL_REGEX");
-    expect(hotPlan).toContain("MEMBER_GUEST_WIDENING_ENABLED");
+    expect(hotPlan, "the row must not still claim the release is dark").not.toMatch(
+      /ships DARK/i,
+    );
+    expect(hotPlan, "the row must name the rollback mitigation").toMatch(
+      /turn the memberGuests module OFF first/i,
+    );
+    expect(hotPlan, "the row must be honest that PENDING rows hold beds on rollback").toMatch(
+      /hold their beds/i,
+    );
 
     // Lock honesty. The plan used to say the index build "briefly takes a SHARE
     // lock" and to offer CREATE INDEX CONCURRENTLY as the fix if BookingGuest

@@ -327,7 +327,13 @@ export interface MemberGuestConsentColumns {
  * for themselves from a delegate or an admin answering for them, which is why
  * MG4's admin-assigner audit needs no extra column.
  *
- * NONE of these is reachable in this release except `FAMILY_OR_LEGACY`.
+ * `firstReachableIn` records the release in which each shape first became
+ * possible, and it is a fact about history rather than a switch: MG1 (#2306)
+ * could only ever write `FAMILY_OR_LEGACY`, because a cross-family add was
+ * refused before any row existed. MG2 (#2307) makes the other seven reachable.
+ * The field is kept because it is the cheapest way for a reviewer to see which
+ * shapes predate the feature — a row carrying an MG1 shape needs no explanation,
+ * a row carrying any other one was written by code in this file's care.
  */
 export const MEMBER_GUEST_CONSENT_SUB_STATES = [
   {
@@ -338,7 +344,7 @@ export const MEMBER_GUEST_CONSENT_SUB_STATES = [
     respondedAt: "null",
     respondedBy: "null",
     expiresAt: "null",
-    reachableInMg1: true,
+    firstReachableIn: "MG1",
     note:
       "No consent was ever needed. NULL is NOT the same value as CONFIRMED and " +
       "the two must stay distinguishable forever: CONFIRMED means somebody said " +
@@ -352,7 +358,7 @@ export const MEMBER_GUEST_CONSENT_SUB_STATES = [
     respondedAt: "null",
     respondedBy: "null",
     expiresAt: "set",
-    reachableInMg1: false,
+    firstReachableIn: "MG2",
     note:
       "Holds the bed (D-4) until expiresAt, which MG2 sets from " +
       "MemberGuestSettings.pendingHoldExpiryDays. MG2's sweep reads exactly this " +
@@ -366,7 +372,7 @@ export const MEMBER_GUEST_CONSENT_SUB_STATES = [
     /** Equals the guest's own memberId. */
     respondedBy: "target",
     expiresAt: "any",
-    reachableInMg1: false,
+    firstReachableIn: "MG2",
     note: "The member who was asked said yes themselves.",
   },
   {
@@ -377,7 +383,7 @@ export const MEMBER_GUEST_CONSENT_SUB_STATES = [
     /** Differs from the guest's memberId (D-5/D-10: a target with no login). */
     respondedBy: "other",
     expiresAt: "any",
-    reachableInMg1: false,
+    firstReachableIn: "MG2",
     note:
       "A delegate answered for a target who cannot log in. Audited distinctly " +
       "from TARGET_APPROVED — that distinction is the whole reason " +
@@ -391,7 +397,7 @@ export const MEMBER_GUEST_CONSENT_SUB_STATES = [
     respondedAt: "null",
     respondedBy: "null",
     expiresAt: "null",
-    reachableInMg1: false,
+    firstReachableIn: "MG2",
     note:
       "The club runs notify-only (approvalRequired false): the add is allowed " +
       "immediately and the target is told, not asked. CONFIRMED with a null " +
@@ -411,7 +417,7 @@ export const MEMBER_GUEST_CONSENT_SUB_STATES = [
     /** The acting admin — MG4's audit rides this column, no new column needed. */
     respondedBy: "admin",
     expiresAt: "null",
-    reachableInMg1: false,
+    firstReachableIn: "MG2",
     note:
       "Admin adds, admin booking-copy, and pipeline rows are consent-free by " +
       "owner decision (MG4-D-a/b) but are NOT recorded as FAMILY_OR_LEGACY: the " +
@@ -430,7 +436,7 @@ export const MEMBER_GUEST_CONSENT_SUB_STATES = [
     /** Non-null, but the model does not care WHICH of them refused. */
     respondedBy: "set",
     expiresAt: "any",
-    reachableInMg1: false,
+    firstReachableIn: "MG2",
     note:
       "The target (or their delegate) said no. Terminal for that request. A " +
       "refusal is an ATTRIBUTED act, so respondedBy must name somebody: MG4's " +
@@ -444,7 +450,7 @@ export const MEMBER_GUEST_CONSENT_SUB_STATES = [
     respondedAt: "null",
     respondedBy: "null",
     expiresAt: "set",
-    reachableInMg1: false,
+    firstReachableIn: "MG2",
     note:
       "The hold lapsed with no answer and MG2's sweep released the bed. " +
       "Distinct from DECLINED: nobody refused, the clock ran out.",
