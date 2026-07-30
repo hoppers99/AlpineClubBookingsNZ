@@ -99,7 +99,7 @@ function paymentChip(source: AdminBookingRow["operational"]["paymentSource"]): {
  * Returns null when there is nothing settled to report — an unpaid booking's
  * status chip already says so, and a second chip repeating it would be noise.
  */
-export function paymentSettlementChip(booking: AdminBookingRow): {
+function paymentSettlementChip(booking: AdminBookingRow): {
   tone: ChipTone;
   icon: LucideIcon;
   label: string;

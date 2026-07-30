@@ -71,12 +71,50 @@ date-only lodge night (no times), matching the rules in
    (total and how many are non-members), the price, the status chip, and the
    payment method. A **Review** chip on the Status cell links straight to the
    Approvals queue for that booking.
+3. The Payment cell also says how much of the money has actually arrived. A
+   fully settled booking reads **Paid**. One where a later change pushed the
+   price up and the extra was never collected reads **Partly paid**, with an
+   amber **"$210.00 due"** chip naming the shortfall. The booking's own status
+   chip still reads **Paid** in that case, and that is correct — the stay is
+   confirmed; it is the money that is short.
 
 ### Start a booking on a member's behalf
 
 1. Click **+ Create Booking** (top right) to open the
    [Book on Behalf](book.md) wizard. If your admin role is view-only for
    bookings, this button is disabled.
+
+### Chase money still owed after a booking change
+
+When a change increases a booking's price after it has been paid — adding a
+non-member guest to a paid booking, say — the difference becomes an **additional
+payment** the member has to make from their own booking page. It is easy for
+that to be quietly forgotten by everybody.
+
+1. Find the bookings that owe something: the **Bookings With Unpaid Additions**
+   card on the admin dashboard, or the **Unpaid Stay Additions** entry in the
+   sidebar's Needs Attention menu. Both count stays that are still ahead as well
+   as ones that have finished ("3 upcoming, 1 finished") and open the bookings
+   list filtered to **Additional Payment: Still owing**.
+2. Open a booking from that list. The **Additional payment outstanding** panel
+   states the amount, when the change was made and how long ago that was,
+   whether the last attempt to charge the member's card failed, and when the
+   member was last emailed about it. It is read-only — you cannot take, waive,
+   or zero the money from here; collecting it stays with the member's own card
+   or with an ordinary booking change.
+3. The member is chased automatically while the stay is still ahead: once a few
+   days after the change, and once more shortly before check-in. The pre-arrival
+   message names the amount too. Nothing is ever cancelled or expired because of
+   an unpaid addition, and the automatic chasing stops once the stay is over —
+   from then on it is a conversation, which is what the dashboard card is for.
+4. To chase now, click **Resend payment request email**. It sends the same
+   message the automatic reminders send. If the member was already emailed
+   within the last hour — by you, by another officer, or by the automatic
+   reminder — you are told so and nothing is sent, so nobody is chased twice
+   over. Every re-send is recorded in the audit log.
+5. If the booking has the **No emails** switch on (below), the re-send is
+   refused outright with an explanation rather than silently withheld. Turn the
+   switch off first if the member should hear from the club.
 
 ### Turn off all emails for one booking
 
@@ -175,6 +213,9 @@ lives in [`STATE_MACHINES.md`](../STATE_MACHINES.md#booking-lifecycle).
 | No bookings show | Filters are too narrow, or you are viewing the wrong month | Click **Clear**, then re-apply one filter at a time |
 | A booking you expect is missing | It may be soft-deleted or in another lodge | Under **More filters** set Deleted to "Include deleted", and (multi-lodge) check the Lodge filter |
 | A row shows a **Review** chip | The booking needs admin review (for example a minor without an adult) | Click the chip to open the [Booking Requests → Approvals](booking-requests.md) queue |
+| A row reads **Partly paid** with an amount due | A change raised the price after payment and the extra was never collected | Open the booking and work through the **Additional payment outstanding** panel |
+| **Resend payment request email** says one was already sent | Someone — or the automatic reminder — emailed the member within the last hour | Wait for the hour to pass; the panel shows when the member was last emailed |
+| **Resend payment request email** is refused for a silenced booking | The booking has the **No emails** switch on | Turn the switch off, or contact the member yourself |
 | The Beds filter is missing | The bed-allocation module is off | Enable it under **Admin → Setup → Modules** (`bedAllocation`) — see [`CONFIGURATION.md`](../../CONFIGURATION.md#module-controls-and-admin-modules) |
 | **+ Create Booking** is greyed out | Your admin role can view bookings but not edit them | Ask a full admin to grant bookings edit access |
 | A member says they never got a confirmation, reminder, or cancellation notice | The booking may have the **No emails** switch on | Open the booking; if the withheld-emails banner is there — **red** while emails are off, **amber** once they are back on — it lists exactly what was held back. Relay it, and check **Admin → Email deliverability** too for messages that failed for other reasons |

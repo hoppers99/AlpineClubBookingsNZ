@@ -434,6 +434,8 @@ Known change request statuses: `REQUESTED`, `APPROVED`, `REJECTED`.
 ```text
 member/admin starts edit -> quoted delta -> local booking mutation
 positive delta -> additional payment or supplementary Xero invoice
+uncollected additional payment -> reminder at +3 days, reminder 2 days before
+  check-in, admin re-send on demand; stops at check-out (never auto-cancelled)
 negative delta -> Stripe refund or source-linked member credit
 admin review path -> REQUESTED -> APPROVED or REJECTED
 ```

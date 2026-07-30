@@ -1939,6 +1939,49 @@ helpers so the surfaces can never drift):
   `/admin/bookings?additionalOwed=owed&checkOutTo=<today>` via the bookings
   list's `additionalOwed` filter (AND-composed, so explicit status/date
   filters in the same URL still narrow).
+- **Unsettled additions on a stay still ahead** (#2350): the same predicate
+  with `checkOut > today` instead of `checkOut <= today`, so the two halves are
+  disjoint by construction and their counts sum without double-counting. This
+  is the half that can still be chased while the member is paying attention;
+  the finished half is a follow-up conversation. The dashboard shows one card
+  with a split label ("N upcoming, M finished") and the sidebar badge shows the
+  sum, both deep-linking to `/admin/bookings?additionalOwed=owed` - the whole
+  queue, with no date bound, because the bookings list has no upcoming-only
+  filter to point at.
+
+### Chasing an outstanding additional payment (#2350)
+
+Until #2350 nothing chased the member for an uncollected upward change and no
+admin surface showed one. Four rules now hold:
+
+- **What the member is told.** While the stay is still ahead, the member is
+  emailed at most twice per obligation: `ADDITIONAL_PAYMENT_REMINDER_DAYS`
+  (3) days after the extra was raised, and
+  `ADDITIONAL_PAYMENT_FINAL_REMINDER_DAYS_BEFORE_CHECK_IN` (2) days before
+  check-in. The pre-arrival reminder also names the amount when one is owing.
+  Nothing is ever auto-cancelled or auto-expired, and the chase stops the
+  moment `checkOut <= today` - a finished stay belongs to the queue above.
+- **What makes it idempotent.** Two nullable stamps on `Payment`,
+  `additionalReminderSentAt` and `additionalFinalReminderSentAt`, written by a
+  guarded `updateMany` BEFORE each send, so a cron rerun (or two runners
+  racing) claims nothing and sends nothing. The stamps are read RELATIVE to the
+  current obligation - which starts at the latest ADDITIONAL
+  `PaymentTransaction.createdAt`, falling back to the payment row's own
+  creation for legacy rows - so a stamp left by an earlier, settled delta never
+  suppresses the chase for a later one, and no writer has to reset them.
+- **One clock for automatic and manual.** An admin can re-send the same email
+  from the booking page (`POST
+  /api/admin/bookings/[id]/additional-payment-reminder`, `bookings:edit`,
+  audited). It writes the SAME day-N stamp, so a manual send suppresses the
+  automatic nudge and an automatic nudge inside
+  `ADDITIONAL_PAYMENT_RESEND_COOLDOWN_MINUTES` (60) refuses a manual one with a
+  429. On a send failure the stamp is given back, so a failed re-send never
+  silently disarms the automatic chase.
+- **Silence is refused, not swallowed.** A booking with the "No emails" switch
+  on is skipped by the cron with no stamp burned (so the reminder is still due
+  once the switch comes off) and refused outright by the manual re-send with an
+  explanation - an admin standing at the screen must not read a silent withhold
+  as a successful send. Both fail CLOSED if the switch cannot be read.
 
 Three side doors into the finished-unpaid state are closed at the door
 (owner decisions 2026-07-11, #1723):

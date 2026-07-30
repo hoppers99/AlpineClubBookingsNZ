@@ -44,6 +44,11 @@ The booking metrics response includes:
 - additional payment status counts plus `NONE`
 - `capturedPrimaryCents`
 - `capturedAdditionalCents`
+- `outstandingAdditionalCents` and `outstandingAdditionalBookings` (#2350): the
+  money and booking count behind an upward change that was never collected -
+  `additionalAmountCents` where `additionalPaymentStatus` is anything other
+  than `SUCCEEDED`. It is already inside the booked revenue figure, so
+  subtracting it is what "collected" looks like
 - `refundedCents`
 - `netCollectedCents`
 - `creditAppliedCents`
