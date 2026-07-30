@@ -33,8 +33,21 @@ All notable public reference-release changes should be recorded here.
   it, you are told exactly which nights are in the way rather than having anyone
   quietly moved. If the hold tips the lodge past its capacity you are asked to
   confirm — which is often the right answer, because the custodian really is
-  sleeping there. Ending or shortening the assignment frees the bed
-  immediately. The hold covers the night of the end date itself, so an
+  sleeping there; that question lists the nights and, separately, any live
+  booking those figures could not count, so you are never confirming a smaller
+  number than the real one. Ending or shortening the assignment frees the bed
+  immediately, and each row of the assignments table now has its own
+  **Release bed** and **Change bed** buttons, so you never have to delete an
+  assignment (and its coverage record and kiosk PIN) to hand a bed back. Release
+  keeps working even if bed allocation is later turned off, because a bed held
+  while it was on still has someone in it. Those buttons also work on the rows
+  the nightly job creates, which never come with a bed.
+
+  Everywhere in the admin area the role is called whatever your club calls it —
+  the band on the board, the refusal in the range dialog, the picker, the page.
+  The lodge TV is the one exception: it prints the fixed word **Custodian** (or
+  *Custodians* with a count, on a handover night when two people hold two beds)
+  so a visitor reads it without knowing your club's vocabulary. The hold covers the night of the end date itself, so an
   assignment whose dates came from the automatic job (which ends on a guest's
   departure day) should have its end date trimmed by a day first — the form and
   the guide both say so.
