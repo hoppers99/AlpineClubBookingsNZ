@@ -419,6 +419,12 @@ describe("PUT /api/admin/refund-requests/[id]", () => {
 
       expect(response.status).toBe(200);
       expect(mocks.sendEmail).toHaveBeenCalledTimes(1);
+      // #2321: the approve arm must send the APPROVED-outcome template —
+      // swapping the two template calls or renaming either key in the route
+      // goes red here, not in a member's inbox.
+      expect(mocks.sendEmail).toHaveBeenCalledWith(
+        expect.objectContaining({ templateName: "refund-request-approved" })
+      );
       expect(mocks.refundPaymentTransactions).toHaveBeenCalledWith(EXPECTED_REFUND);
       expect(mocks.enqueueXeroRefundCreditNoteOperation).toHaveBeenCalled();
       expect(auditMetadata("refund-request.approve")).not.toHaveProperty(
@@ -469,6 +475,10 @@ describe("PUT /api/admin/refund-requests/[id]", () => {
 
       expect(response.status).toBe(200);
       expect(mocks.sendEmail).toHaveBeenCalledTimes(1);
+      // #2321: outcome-template pinning (see the default-notify approve case).
+      expect(mocks.sendEmail).toHaveBeenCalledWith(
+        expect.objectContaining({ templateName: "refund-request-approved" })
+      );
       expect(mocks.refundPaymentTransactions).toHaveBeenCalledWith(EXPECTED_REFUND);
       expect(auditMetadata("refund-request.approve")).not.toHaveProperty(
         "notifyMember"
@@ -503,6 +513,11 @@ describe("PUT /api/admin/refund-requests/[id]", () => {
 
       expect(response.status).toBe(200);
       expect(mocks.sendEmail).toHaveBeenCalledTimes(1);
+      // #2321: the reject arm must send the DECLINED-outcome template — the
+      // exact wiring whose absence let a declined member be told "approved".
+      expect(mocks.sendEmail).toHaveBeenCalledWith(
+        expect.objectContaining({ templateName: "refund-request-declined" })
+      );
       // Reject never refunds; only the claiming updateMany runs.
       expect(mocks.refundPaymentTransactions).not.toHaveBeenCalled();
       expect(mocks.refundRequestUpdateMany).toHaveBeenCalledWith(
@@ -555,6 +570,10 @@ describe("PUT /api/admin/refund-requests/[id]", () => {
 
       expect(response.status).toBe(200);
       expect(mocks.sendEmail).toHaveBeenCalledTimes(1);
+      // #2321: outcome-template pinning (see the default-notify reject case).
+      expect(mocks.sendEmail).toHaveBeenCalledWith(
+        expect.objectContaining({ templateName: "refund-request-declined" })
+      );
       expect(auditMetadata("refund-request.reject")).not.toHaveProperty(
         "notifyMember"
       );
