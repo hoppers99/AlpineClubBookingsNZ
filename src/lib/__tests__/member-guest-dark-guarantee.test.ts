@@ -681,6 +681,59 @@ describe("the module flag itself gates nothing yet", () => {
 });
 
 // ---------------------------------------------------------------------------
+// The admin-facing half of D-17 — the badge, not just the payload
+// ---------------------------------------------------------------------------
+describe("the admin Modules card never renders the stub as live (D-17)", () => {
+  // The tests above pin the SERVER payload. What CHANGELOG.md and
+  // CONFIGURATION.md actually promise an admin is about the CLIENT: "switching
+  // it on shows a Not available yet badge instead of the usual green Enabled
+  // one". That promise is kept by three helpers that are module-private to a
+  // "use client" page whose only export is the default component, so nothing
+  // could reach them — and a refactor that dropped the `not_available_yet` case
+  // from any of the three would leave the payload correct, the tests green, and
+  // the badge green over a feature that cannot run. They are pinned
+  // structurally, the same way this file pins booking-guests.ts and
+  // group-booking.ts.
+  const PAGE = "src/app/(admin)/admin/modules/page.tsx";
+
+  /** The text of a top-level `function name(...) {...}` declaration. */
+  function functionBody(name: string): string {
+    const source = readRepoFile(PAGE);
+    const at = source.indexOf(`function ${name}(`);
+    expect(at, `${name} is not declared in the Modules page`).toBeGreaterThan(-1);
+    // Top-level declarations close on a brace in column one.
+    const end = source.indexOf("\n}", at);
+    expect(end, `${name} has no closing brace`).toBeGreaterThan(at);
+    return source.slice(at, end);
+  }
+
+  it("badges it amber, never the green success variant", () => {
+    const body = functionBody("readinessVariant");
+    expect(body).toMatch(/"not_available_yet"\)\s*return "warning"/);
+    expect(body).not.toMatch(/"not_available_yet"\)\s*return "success"/);
+  });
+
+  it("labels it 'Not available yet', never 'Enabled'", () => {
+    const body = functionBody("readinessLabel");
+    expect(body).toMatch(/"not_available_yet"\)\s*return "Not available yet"/);
+    expect(body).not.toMatch(/"not_available_yet"\)\s*return "Enabled"/);
+  });
+
+  it("keeps it out of the optimistic 'ready' re-render", () => {
+    // Ticking the box re-renders from draft state before the server answers, so
+    // this early return is what stops the badge flashing green in the meantime.
+    // If it moved below the `status: "ready"` block it would stop doing that,
+    // and no other assertion in the suite would notice.
+    const body = functionBody("getReadiness");
+    const earlyReturnAt = body.indexOf('"not_available_yet"');
+    const readyAt = body.indexOf('status: "ready"');
+    expect(earlyReturnAt, "getReadiness never mentions not_available_yet").toBeGreaterThan(-1);
+    expect(readyAt, "getReadiness has no ready branch").toBeGreaterThan(-1);
+    expect(earlyReturnAt).toBeLessThan(readyAt);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Local file walker (kept at the bottom; it is plumbing, not the point)
 // ---------------------------------------------------------------------------
 function sourceFilesUnder(dir: string): string[] {
