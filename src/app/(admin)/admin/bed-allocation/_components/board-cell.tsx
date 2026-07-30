@@ -1,7 +1,7 @@
 "use client";
 
 import { useDroppable } from "@dnd-kit/core";
-import { Focus } from "lucide-react";
+import { CheckCircle2, Focus, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AllocationChip } from "./allocation-chip";
 import {
@@ -35,6 +35,11 @@ interface BoardCellProps {
   bedOptionGroups?: BedOptionGroup[];
   onReassignBed: (allocation: DashboardAllocation, bedId: string) => void;
   onRemove: (allocation: DashboardAllocation) => void;
+  onAssignRange: (allocation: DashboardAllocation) => void;
+  // #2251 decision 3: the outcome of the last range operation on THIS bed —
+  // written nights tint green, refused nights red, until dismissed. Redundantly
+  // labelled so it is never colour-only.
+  rangeTone?: "written" | "refused";
   pendingAllocationIds: Set<string>;
   highlightedBookingId: string;
   activeDragLane?: boolean;
@@ -52,6 +57,8 @@ export function BoardCell({
   bedOptionGroups = [],
   onReassignBed,
   onRemove,
+  onAssignRange,
+  rangeTone,
   pendingAllocationIds,
   highlightedBookingId,
   activeDragLane,
@@ -76,6 +83,8 @@ export function BoardCell({
         BED_ALLOCATION_COLUMN_WIDTH_CLASS,
         "overflow-hidden border p-1 align-top",
         activeDragLane && "bg-accent",
+        rangeTone === "written" && "bg-success-muted ring-2 ring-inset ring-success/40",
+        rangeTone === "refused" && "bg-danger-muted ring-2 ring-inset ring-danger/40",
         highlighted &&
           !isOver &&
           "border-2 border-dashed border-warning bg-warning-muted",
@@ -86,6 +95,21 @@ export function BoardCell({
         <span className="mb-1 inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-warning">
           <Focus aria-hidden className="h-3 w-3" />
           Focused
+        </span>
+      ) : null}
+      {rangeTone ? (
+        <span
+          className={cn(
+            "mb-1 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide",
+            rangeTone === "written" ? "text-success" : "text-danger",
+          )}
+        >
+          {rangeTone === "written" ? (
+            <CheckCircle2 aria-hidden className="h-3 w-3" />
+          ) : (
+            <XCircle aria-hidden className="h-3 w-3" />
+          )}
+          {rangeTone === "written" ? "Assigned" : "Refused"}
         </span>
       ) : null}
       {allocations.length > 0 ? (
@@ -103,6 +127,7 @@ export function BoardCell({
                 bedOptionGroups={bedOptionGroups}
                 onReassignBed={(targetBedId) => onReassignBed(allocation, targetBedId)}
                 onRemove={() => onRemove(allocation)}
+                onAssignRange={() => onAssignRange(allocation)}
                 pending={pendingAllocationIds.has(allocation.id)}
                 canEdit={canEdit}
               />
