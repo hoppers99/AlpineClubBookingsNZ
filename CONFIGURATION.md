@@ -184,6 +184,61 @@ provisional non-member portion story on a split parent and nothing otherwise
 booking-confirmed body must keep this token, or split-parent confirmations
 silently lose the "held provisionally / charged later" explanation.
 
+Promo pricing on the booking-confirmed email works the same way through the
+pre-composed `{{promoSummary}}` token: when a promo code changed the price it
+renders the whole explanatory block — a `Subtotal:` line plus a signed
+`Promo adjustment (CODE):` line (`-$30.00` for a discount, `+$1,370.00` for a
+promo such as an exclusive-use flat rate that *raises* the price) — and
+renders nothing at all when no promo applied. Each line carries its own
+trailing line break, so the default body places it hard against the money
+outcome (`{{promoSummary}}{{paymentOutcome}}`); keep that placement in an
+override or the block renders detached from the money it explains.
+
+The money outcome itself is the pre-composed `{{paymentOutcome}}` block: a paid
+booking renders `Total Paid:` plus the payment-processed sentence, while a
+booking confirmed with money still owing (a member whole-lodge approval's
+internet-banking receivable) renders `Total Due:` plus a sentence stating the
+amount owing and the payment reference — so the default body can never tell a
+member their payment was processed when it was not. An override may instead
+build its own money lines from the per-piece tokens (`{{totalPaid}}`,
+`{{totalDue}}`, `{{paymentDueNote}}`, `{{paymentReference}}`); exactly one of
+`{{totalPaid}}`/`{{totalDue}}` carries a figure on any given send.
+
+**The promo explanation is required, not advisory.** An override of the
+booking-confirmed body that shows a member no promo explanation at all is
+rejected on save, because a member charged a promo price would otherwise read a
+total with no reason for it. The rule is satisfied three ways, so it never
+invalidates an override a club already saved: keep `{{promoSummary}}`, or show
+the adjustment yourself with `{{promoAdjustment}}` (the signed value) or the
+older `{{discount}}` — the shape the previous default body shipped
+(`Subtotal: {{subtotal}}` above `Discount ({{promoCode}}): -{{discount}}`), so
+every override saved from that default keeps validating and re-saving. A
+`{{subtotal}}` line on its own does **not** satisfy it: a subtotal with no
+adjustment beside it is exactly the "two amounts that differ, with nothing in
+between to say why" email this rule exists to prevent. The editor prints the
+rule and its alternatives under the token chips, and a rejected save explains
+it in the same words.
+
+Of the three, only `{{promoSummary}}` handles all promo shapes cleanly —
+`{{discount}}` is empty for a price-raising promo, and `{{promoAdjustment}}`
+carries its own `+`/`-` sign, so never write a manual minus in front of it. The
+editor enforces that last point too: a body or subject that types `+` or `-`
+immediately before `{{promoSummary}}` or `{{promoAdjustment}}` is rejected on
+save with an explanation.
+
+Two other pre-composed tokens follow the same pattern. The booking-confirmed
+body's `{{doorCodeNote}}` renders the whole `Door code: 1234` line, and nothing
+at all for a lodge with no door code recorded — an override may instead write
+its own label around the bare `{{doorCode}}` value, and either form satisfies
+the "the door code must stay in the body" rule. The booking-modified body's
+`{{changeSummary}}` renders only the rows that actually changed
+(`Previous`/`New` pairs where something moved, a single `Dates:` / `Guests:` /
+`Total:` line where it did not, and a `Change Fee:` line only when a fee was
+charged), so an override that keeps it always matches the built-in HTML email.
+The per-piece `{{oldCheckIn}}`, `{{newTotal}}`, `{{changeFee}}` and siblings
+stay available for existing overrides, but they cannot express "only show what
+changed" — a body built from them lists every row on every modification.
+
 | Field                                              | Required | Description                                                                                                      |
 | -------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------- |
 | `name`                                             | yes      | Full public club name.                                                                                           |
