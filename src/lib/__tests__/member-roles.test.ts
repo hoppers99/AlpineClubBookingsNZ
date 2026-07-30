@@ -4,6 +4,7 @@ import {
   MEMBER_LEVEL_ROLE_VALUES,
   NON_MEMBER_ROLE_VALUES,
   OPERATIONAL_ROLE_VALUES,
+  canAdminRequestMembershipCancellation,
   isMemberLevelRole,
   isOperationalRole,
 } from "@/lib/member-roles";
@@ -95,5 +96,48 @@ describe("non-member booking-request roles", () => {
       "NOT_REQUIRED",
     );
     expect(effectiveSubscriptionBehavior(null, "SCHOOL")).toBe("NOT_REQUIRED");
+  });
+});
+
+describe("canAdminRequestMembershipCancellation (#2354)", () => {
+  const base = {
+    role: "USER",
+    active: true,
+    cancelledAt: null,
+    archivedAt: null,
+  };
+
+  it("offers cancellation for a dependant / non-login adult (zero access roles)", () => {
+    // The regression: the page previously gated on hasAccessRole(member,
+    // "USER"), which is always false when canLogin is false, hiding the
+    // action for every dependant. Eligibility must ignore login/access
+    // roles entirely — the API path does.
+    expect(canAdminRequestMembershipCancellation(base)).toBe(true);
+  });
+
+  it("refuses non-member-level roles", () => {
+    for (const role of ["ADMIN", "LODGE", "NON_MEMBER", "SCHOOL", null]) {
+      expect(canAdminRequestMembershipCancellation({ ...base, role })).toBe(
+        false,
+      );
+    }
+  });
+
+  it("refuses inactive, already-cancelled, and archived members", () => {
+    expect(
+      canAdminRequestMembershipCancellation({ ...base, active: false }),
+    ).toBe(false);
+    expect(
+      canAdminRequestMembershipCancellation({
+        ...base,
+        cancelledAt: new Date(),
+      }),
+    ).toBe(false);
+    expect(
+      canAdminRequestMembershipCancellation({
+        ...base,
+        archivedAt: new Date(),
+      }),
+    ).toBe(false);
   });
 });

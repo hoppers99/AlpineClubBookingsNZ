@@ -4,6 +4,21 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Admins can now cancel the membership of a family dependant or any member
+  without their own login (#2354).** Opening such a member's admin page used
+  to show no cancellation action at all — not greyed out, simply absent — so
+  a dependant's membership looked uncancellable, even for an adult recorded
+  as a dependant of their parent. The cause was the page borrowing a
+  permissions test to decide who is cancellable: members without a login
+  hold no permissions by design, so the test always failed for them, while
+  the underlying cancellation machinery has always supported dependants and
+  non-login adults (it classifies them as such, skips the own-confirmation
+  step a login-holder would get, and the admin review queue handles the rest
+  unchanged). The page now asks the same eligibility question the server
+  enforces — is this an active, not-yet-cancelled, not-archived member — so
+  the Request cancellation action appears for exactly the members it can
+  act on.
+
 - **A custodian can now be given a bed for the season without booking it
   (#2286).** Clubs that keep someone on site all winter had no honest way to
   record it: the custodian had to be given a real booking, usually with a
