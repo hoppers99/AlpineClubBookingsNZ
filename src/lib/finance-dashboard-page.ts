@@ -408,6 +408,18 @@ async function buildBookingsDashboard(
         ? selection.forwardWindow.label
         : "Forward window unavailable.",
     },
+    {
+      // #2350: the payment summary has always counted these; nothing rendered
+      // them, so an upward booking change whose extra was never collected was
+      // invisible on every finance surface.
+      title: "Outstanding additional payments",
+      value: formatDollarsDisplay(
+        metrics.paymentSummary.outstandingAdditionalCents,
+      ),
+      description:
+        "Extra owed after an upward booking change and not yet collected.",
+      footnote: `${formatNumber(metrics.paymentSummary.outstandingAdditionalBookings)} booking${metrics.paymentSummary.outstandingAdditionalBookings === 1 ? "" : "s"} awaiting or failed payment.`,
+    },
   ];
 
   const trends: FinanceDashboardTrend[] = [];
@@ -520,6 +532,39 @@ function buildBookingStatusPanels(
           detail: `${formatNumber(summary.bookingCount)} bookings, ${formatDollarsDisplay(summary.bookedRevenueCents)}`,
         })
       ),
+    });
+  }
+  // #2350: the additional-payment status split, alongside the existing
+  // realized/forward panels. Rendered only when something is actually
+  // outstanding — an all-clear panel of zeroes is noise on a busy dashboard.
+  const additionalBreakdown =
+    metrics.paymentSummary.additionalPaymentStatusBreakdown;
+  if (metrics.paymentSummary.outstandingAdditionalBookings > 0) {
+    panels.push({
+      title: "Outstanding additional payments",
+      description:
+        "Bookings whose price went up after payment, with the extra still uncollected.",
+      badgeLabel: "Owing",
+      badgeTone: "secondary",
+      items: [
+        {
+          label: "Awaiting payment",
+          value: formatNumber(additionalBreakdown.PENDING),
+          detail: "Charge not yet completed by the member.",
+        },
+        {
+          label: "Payment failed",
+          value: formatNumber(additionalBreakdown.FAILED),
+          detail: "The last attempt to charge the card did not succeed.",
+        },
+        {
+          label: "Total outstanding",
+          value: formatDollarsDisplay(
+            metrics.paymentSummary.outstandingAdditionalCents
+          ),
+          detail: `Across ${formatNumber(metrics.paymentSummary.outstandingAdditionalBookings)} booking${metrics.paymentSummary.outstandingAdditionalBookings === 1 ? "" : "s"}.`,
+        },
+      ],
     });
   }
   if (metrics.forward) {

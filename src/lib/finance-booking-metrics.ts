@@ -1,4 +1,5 @@
 import { BookingStatus, PaymentStatus, Prisma } from "@prisma/client";
+import { isAdditionalPaymentOwed } from "@/lib/additional-payment-chase";
 import { getDefaultLodgeCapacity, getLodgeCapacity } from "@/lib/lodge-capacity";
 import { getDefaultLodgeId, lodgeNullTolerantScope } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
@@ -178,6 +179,13 @@ interface FinanceBookingMetricsPaymentSummary {
   >;
   capturedPrimaryCents: number;
   capturedAdditionalCents: number;
+  /**
+   * #2350: upward booking changes whose extra was never collected (PENDING,
+   * FAILED, or a legacy null status). Priced into the booking total, so it is
+   * money the club has counted as booked but does not hold.
+   */
+  outstandingAdditionalCents: number;
+  outstandingAdditionalBookings: number;
   refundedCents: number;
   netCollectedCents: number;
   creditAppliedCents: number;
@@ -295,6 +303,8 @@ function createZeroPaymentSummary(): FinanceBookingMetricsPaymentSummary {
     ),
     capturedPrimaryCents: 0,
     capturedAdditionalCents: 0,
+    outstandingAdditionalCents: 0,
+    outstandingAdditionalBookings: 0,
     refundedCents: 0,
     netCollectedCents: 0,
     creditAppliedCents: 0,
@@ -594,6 +604,10 @@ function summarizePayments(
 
     summary.capturedPrimaryCents += capturedPrimaryCents;
     summary.capturedAdditionalCents += capturedAdditionalCents;
+    if (isAdditionalPaymentOwed(payment)) {
+      summary.outstandingAdditionalCents += payment.additionalAmountCents;
+      summary.outstandingAdditionalBookings += 1;
+    }
     summary.refundedCents += payment.refundedAmountCents;
     summary.creditAppliedCents += payment.creditAppliedCents;
     summary.changeFeeCents += payment.changeFeeCents;
