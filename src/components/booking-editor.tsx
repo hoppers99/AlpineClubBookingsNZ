@@ -20,7 +20,20 @@ interface Guest {
   stayEnd?: string | null;
   nights?: string[] | null;
   priceCents: number;
+  // #2307 (owner decision MG2-M-2): the member-guest consent badge, composed
+  // server-side (`describeMemberGuestConsentBadge`). Absent — not null-valued —
+  // for family and non-member rows, which get no badge and no layout change.
+  consent?: {
+    tone: "pending" | "ok" | "blocked";
+    label: string;
+  };
 }
+
+const consentBadgeToneClasses: Record<"pending" | "ok" | "blocked", string> = {
+  pending: "border-warning-6 bg-warning-3 text-warning-11",
+  ok: "border-success-6 bg-success-3 text-success-11",
+  blocked: "border-danger-6 bg-danger-3 text-danger-11",
+};
 
 interface PromoInfo {
   code: string;
@@ -217,6 +230,14 @@ export function BookingEditor({
                       Stay: {guest.stayStart ?? booking.checkIn} to{" "}
                       {guest.stayEnd ?? booking.checkOut}
                     </p>
+                  ) : null}
+                  {guest.consent ? (
+                    <Badge
+                      variant="outline"
+                      className={`mt-1 ${consentBadgeToneClasses[guest.consent.tone]}`}
+                    >
+                      {guest.consent.label}
+                    </Badge>
                   ) : null}
                 </div>
                 <p className="font-medium">{formatCents(guest.priceCents)}</p>

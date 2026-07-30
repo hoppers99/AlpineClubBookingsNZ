@@ -78,6 +78,18 @@ import { hasAdminAccess } from "@/lib/access-roles";
 import { SelfRemoveFromBookingCard } from "@/components/self-remove-from-booking-card";
 import { resolveBookingSelfRemovalCard } from "@/lib/booking-guest-self-removal";
 import { isQuotePricedBooking } from "@/lib/booking-modify-validation";
+import { MemberGuestConsentCard } from "@/components/member-guest-consent-card";
+import {
+  describeConsentDeclineRefusal,
+  describeConsentNightsCount,
+  describeMemberGuestConsentBadge,
+  formatConsentFullDate,
+  formatConsentNightsLabel,
+  formatConsentStayLabel,
+  formatConsentWeekdayDate,
+  resolveBookingConsentCard,
+} from "@/lib/member-guest-consent-card";
+import { eachDateOnlyInRange } from "@/lib/date-only";
 import {
   bookingManagementAuthorizationRole,
   hasAdminAreaAccess,
@@ -117,6 +129,9 @@ const narrativeBannerClasses: Record<string, string> = {
 // set here (rather than re-deriving each card's render condition) is safe.
 const BOOKING_SECTIONS: SectionNavItem[] = [
   { id: "details", label: "Booking Details" },
+  // #2307: the member-guest consent card — present only while the viewer's own
+  // consent is being asked for; the request email deep-links to #consent.
+  { id: "consent", label: "Consent" },
   { id: "non-member-guests", label: "Non-member Guests" },
   { id: "group", label: "Group Booking" },
   { id: "arrival", label: "Arrival Time" },
@@ -356,6 +371,77 @@ export default async function BookingDetailPage({
         isQuotePriced: await isQuotePricedBooking(prisma, booking.id),
       })
     : selfRemovalCandidate;
+
+  // #2307: the viewer's own member-guest consent state — the ask card while
+  // their consent is PENDING (owner decision D-11 gives that row this whole
+  // page, so the card sits inside it), or the told-not-asked notice for a
+  // notify-only add. Two-phase like the self-removal card above: the
+  // quote-priced lookup (one indexed query) only runs when the ask card will
+  // actually render, because its refusal prediction is the only consumer.
+  const consentCardInput = {
+    actorMemberId: session.user.id,
+    bookingDeletedAt: booking.deletedAt,
+    bookingStatus: booking.status,
+    bookingCheckIn: booking.checkIn,
+    guests: booking.guests,
+    selfRemovalCardPresent: Boolean(selfRemovalCard),
+  };
+  const consentCandidate = resolveBookingConsentCard({
+    ...consentCardInput,
+    isQuotePriced: false,
+  });
+  const consentIsQuotePriced =
+    consentCandidate?.kind === "PENDING_ASK"
+      ? await isQuotePricedBooking(prisma, booking.id)
+      : false;
+  const consentCard =
+    consentCandidate?.kind === "PENDING_ASK"
+      ? resolveBookingConsentCard({
+          ...consentCardInput,
+          isQuotePriced: consentIsQuotePriced,
+        })
+      : consentCandidate;
+  // The ask card names the lodge the way the request email does — the
+  // booking's own lodge identity. Loaded only when the card renders.
+  const consentLodgeName =
+    consentCard?.kind === "PENDING_ASK"
+      ? (await loadEmailMessageSettingsForLodge(booking.lodgeId)).lodgeName
+      : null;
+  const viewerConsentGuest =
+    consentCard?.kind === "PENDING_ASK"
+      ? booking.guests.find((guest) => guest.id === consentCard.guestId) ?? null
+      : null;
+  const viewerConsentNights = viewerConsentGuest
+    ? viewerConsentGuest.nights.length > 0
+      ? viewerConsentGuest.nights.map((night) => night.stayDate)
+      : eachDateOnlyInRange(viewerConsentGuest.stayStart, viewerConsentGuest.stayEnd)
+    : [];
+
+  // #2307 (owner decision MG2-M-2): the per-guest consent badge, shown to
+  // everyone who can see the guest list — member and admin read the same page.
+  // Family and non-member rows get no badge and no layout change. The delegate
+  // and admin badges name the responder, so those names are looked up once.
+  const consentResponderIds = [
+    ...new Set(
+      booking.guests
+        .filter((guest) => guest.consentStatus !== null)
+        .map((guest) => guest.consentRespondedByMemberId)
+        .filter((memberId): memberId is string => Boolean(memberId)),
+    ),
+  ];
+  const consentResponders =
+    consentResponderIds.length > 0
+      ? await prisma.member.findMany({
+          where: { id: { in: consentResponderIds } },
+          select: { id: true, firstName: true, lastName: true },
+        })
+      : [];
+  const consentResponderNameById = new Map(
+    consentResponders.map((member) => [
+      member.id,
+      `${member.firstName} ${member.lastName}`.trim(),
+    ]),
+  );
 
   const bookingAuditLogs = await prisma.auditLog.findMany({
     where: {
@@ -598,6 +684,18 @@ export default async function BookingDetailPage({
       stayEnd: g.stayEnd.toISOString().slice(0, 10),
       priceCents: g.priceCents,
       nights: g.nights.map((n) => n.stayDate.toISOString().slice(0, 10)),
+      // #2307 (MG2-M-2): null for family and non-member rows — no badge, no
+      // layout change. A conditional spread so those rows' serialised payload
+      // carries no `consent` key at all (React Flight serialises the key too).
+      ...(() => {
+        const consent = describeMemberGuestConsentBadge({
+          guest: g,
+          responderName: g.consentRespondedByMemberId
+            ? (consentResponderNameById.get(g.consentRespondedByMemberId) ?? null)
+            : null,
+        });
+        return consent ? { consent } : {};
+      })(),
     })),
     viewerRole: viewerAuthorizationRole,
     totalPriceCents: booking.totalPriceCents,
@@ -1188,6 +1286,73 @@ export default async function BookingDetailPage({
           canAdminOverride={canAdminOverride}
         />
       </section>
+
+      {/* #2307: the viewer's own member-guest consent. The ask card sits
+          immediately above the #2250 self-removal card, under the #consent
+          anchor the request email deep-links to; the notify-only notice has no
+          question to answer and only points at the #2250 card below it. */}
+      {consentCard?.kind === "PENDING_ASK" && viewerConsentGuest ? (
+        <section id="consent" className="scroll-mt-20">
+          <MemberGuestConsentCard
+            bookingId={booking.id}
+            guestId={consentCard.guestId}
+            bookerName={`${booking.member.firstName} ${booking.member.lastName}`.trim()}
+            bookerFirstName={booking.member.firstName}
+            lodgeName={consentLodgeName ?? ""}
+            stayLabel={formatConsentStayLabel(booking.checkIn, booking.checkOut)}
+            nightsLabel={formatConsentNightsLabel(viewerConsentNights)}
+            nightsCountLabel={describeConsentNightsCount(viewerConsentNights.length)}
+            answerByLabel={
+              consentCard.consentExpiresAt
+                ? formatConsentFullDate(consentCard.consentExpiresAt)
+                : "—"
+            }
+            lapseByLabel={
+              consentCard.consentExpiresAt
+                ? formatConsentWeekdayDate(consentCard.consentExpiresAt)
+                : "the deadline"
+            }
+            party={booking.guests.map((guest) => ({
+              name: `${guest.firstName} ${guest.lastName}`.trim(),
+              isViewer: guest.id === consentCard.guestId,
+            }))}
+            quotePriced={consentIsQuotePriced}
+            refusalWarning={
+              consentCard.refusalBlocker
+                ? describeConsentDeclineRefusal({
+                    blocker: consentCard.refusalBlocker,
+                    voice: { kind: "TARGET" },
+                    bookerFirstName: booking.member.firstName,
+                  })
+                : null
+            }
+          />
+        </section>
+      ) : consentCard?.kind === "NOTIFY_ONLY_NOTICE" ? (
+        <Card>
+          <CardHeader className="space-y-2">
+            <div>
+              <Badge
+                variant="outline"
+                className="border-success-6 bg-success-3 text-success-11"
+              >
+                You&apos;re on this booking
+              </Badge>
+            </div>
+            <CardTitle>
+              {`${booking.member.firstName} ${booking.member.lastName}`.trim()}{" "}
+              added you to this booking
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm text-muted-foreground">
+              Your place is already held — the club does not ask first for
+              member guests. If you would rather not go, take yourself off
+              below.
+            </p>
+          </CardContent>
+        </Card>
+      ) : null}
 
       {/* #2250: the member's own way off somebody else's booking. Only ever
           rendered for a linked guest viewer (never the owner, never an admin —
