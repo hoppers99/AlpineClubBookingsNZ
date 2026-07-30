@@ -201,8 +201,8 @@ before changing Next.js APIs or conventions.
   itself a load, it unmounts the very `PolicyScopeSelect` the admin just used,
   dropping keyboard focus to `<body>` mid-interaction. Started in the five
   Booking Policies sections (#2142) and rolled across most of the admin tree
-  (#2160, extended by #2168 and #2324): 242 of 285 `ViewOnlyActionButton` call
-  sites now opt out — 216 covered by a banner in the SAME file, 26 by a verified
+  (#2160, extended by #2168 and #2324): 245 of 288 `ViewOnlyActionButton` call
+  sites now opt out — 219 covered by a banner in the SAME file, 26 by a verified
   vouching parent (21 at a JSX render site, 5 through the guided-setup shell) —
   and 43 keep the per-button reason: dialog/popover contents, leaf toolbars,
   `member-credit-card.tsx`, whose finance scope differs from the member detail
@@ -344,7 +344,16 @@ At the successful end of a meaningful piece of work:
      with full evidence and wait.
 4. Merge eligible PRs with a merge commit (never squash, rebase-merge, or
    force-push). A linked issue may close only when its PR is eligible and merged.
-5. After merge, delete the merged branch and confirm `main` CI stays green.
+5. Close the linked issue at merge time (owner directive, 30 Jul 2026) with a
+   plain-English close-out comment on the issue: what shipped, the delivering
+   PR, what the review rounds found and how it was fixed (a sentence or two),
+   and any follow-up issues by number. Auto-close via a PR closing keyword does
+   not replace the comment. Every follow-up named anywhere (a PR comment, a
+   review finding, a close-out) must exist as a filed issue linked to its
+   parent PR and epic before the PR merges - comments do not get fixes done;
+   PRs do, and a filed issue is the only acceptable carry-forward vehicle (see
+   "Residual risks" above for when carrying forward is legitimate at all).
+6. After merge, delete the merged branch and confirm `main` CI stays green.
 
 ### Pre-authorisation and attributability
 
