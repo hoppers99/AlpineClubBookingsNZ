@@ -126,16 +126,19 @@ x-app-service: &app-service
   security_opt:
     - no-new-privileges:true
   mem_limit: 1g
-  # A cold page render costs seconds of V8 re-warm CPU work (measured ~3.5-5
-  # CPU-seconds per route on a production deployment, #2351, where per-route
-  # optimised code was flushed within ~10s of idleness), so an app slot needs
-  # roughly a dedicated core to serve sparse traffic without multi-second page
-  # loads — below ~1 CPU those renders CFS-throttle into 4-13s. This is a
-  # ceiling, not a reservation: idle slots consume ~nothing. Hosts with fewer
-  # than 2 cores MUST lower this — Docker refuses to create a container whose
-  # cpus limit exceeds the host's core count, so the stack will not start.
-  # See DEPLOYMENT.md ("App CPU sizing") before changing it.
-  cpus: 2
+  # Deliberately NO hard "cpus" cap here (#2351): a cold page render costs
+  # seconds of V8 re-warm CPU work (measured ~3.5-5 CPU-seconds per route on a
+  # production deployment, where per-route optimised code was flushed within
+  # ~10s of idleness), and that work parallelises across cores — so the app
+  # should burst into whatever cores the host has idle. A previous hard cap of
+  # 0.8 CFS-throttled those renders into 4-13s page loads. cpu_shares is a
+  # WEIGHT, not a limit: it only takes effect while containers are actually
+  # competing for CPU, sharing cores in proportion to each contender's weight
+  # (postgres/caddy keep their own small hard caps below, which their
+  # contention share comfortably exceeds). Works unchanged on any host size,
+  # 1-core VPS included. To reimpose an absolute ceiling (shared host), add a
+  # "cpus:" override in your fork — see DEPLOYMENT.md ("App CPU sizing").
+  cpu_shares: 1024
   healthcheck:
     test:
       [

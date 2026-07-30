@@ -4,22 +4,27 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
-- **Self-hosted sites get enough processing power out of the box to load pages
-  quickly (#2351).** The standard deployment recipe used to cap each app
-  container at eight-tenths of one processor core. That sounded like plenty,
-  but it isn't: the app rebuilds a page's optimised machinery whenever that
-  page hasn't been visited for about ten seconds, and that rebuild wants a few
-  seconds of a whole core to itself. Under the old cap the rebuild was rationed
-  into small slices, and on a quiet club site — where almost every visit is the
-  first one in a while — that turned into four-to-thirteen-second page loads
-  that looked like a slow server or database but were neither (a live
-  deployment measured exactly this before the fix, and dropped from over five
-  seconds to about 1.4 the moment the cap was lifted). The recipe now allots
-  two cores per app container, the deployment guide gains an "App CPU sizing"
-  section explaining the budget, the why, and two mitigations for genuinely
-  small servers (a keep-warm pinger, and the planned pre-rendered public pages
-  of #2352), and the compose file says in place why the number should not be
-  casually lowered.
+- **Self-hosted sites now use whatever processing power the server has free,
+  instead of being rationed to a fraction of one core (#2351).** The standard
+  deployment recipe used to cap each app container at eight-tenths of a
+  processor core. That sounded like plenty, but it isn't: the app rebuilds a
+  page's optimised machinery whenever that page hasn't been visited for about
+  ten seconds, and that rebuild wants a few seconds of a whole core — more
+  than one core if available, since it splits the work across them. Under the
+  old cap the rebuild was rationed into small slices, and on a quiet club site
+  — where almost every visit is the first one in a while — that turned into
+  four-to-thirteen-second page loads that looked like a slow server or
+  database but were neither (a live deployment measured exactly this, and
+  dropped from over five seconds to about 1.4 the moment the cap was lifted).
+  The recipe now sets no cap at all: it gives the app a *priority weight*
+  instead, so pages can spread across every core the server has spare — a
+  one-core budget server and an eight-core machine both simply use what they
+  have — while the database and the web proxy are still guaranteed their
+  share whenever things genuinely compete. The deployment guide gains an
+  "App CPU sizing" section explaining the arrangement, the measurements
+  behind it, how to reimpose a hard cap on a shared server, and two
+  mitigations for genuinely starved machines (a keep-warm pinger, and the
+  planned pre-rendered public pages of #2352).
 
 - **The club logo is now stored as a real image instead of being baked into
   every page, cutting a multi-megabyte home page down to roughly its content
