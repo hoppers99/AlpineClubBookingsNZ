@@ -381,3 +381,167 @@ describe("every widened call site also collapses its refusals", () => {
     expect(groupBooking).not.toContain("memberGuestWideningEnabled");
   });
 });
+
+// ---------------------------------------------------------------------------
+// The batch-modification write, exercised directly
+// ---------------------------------------------------------------------------
+
+describe("applyGuestChanges persists the planned consent columns", () => {
+  const NEW_CHECK_IN = new Date("2026-09-10T00:00:00.000Z");
+  const NEW_CHECK_OUT = new Date("2026-09-12T00:00:00.000Z");
+  const CONSENT = {
+    consentStatus: "PENDING" as const,
+    consentRequestedAt: new Date("2026-08-01T09:00:00.000Z"),
+    consentRespondedAt: null,
+    consentRespondedByMemberId: null,
+    consentExpiresAt: new Date("2026-08-06T09:00:00.000Z"),
+  };
+
+  function fakeTx() {
+    const created: Array<Record<string, unknown>> = [];
+    return {
+      created,
+      tx: {
+        bookingGuest: {
+          create: vi.fn(async (args: { data: Record<string, unknown> }) => {
+            created.push(args.data);
+            return {
+              id: `bg-${created.length}`,
+              stayStart: NEW_CHECK_IN,
+              stayEnd: NEW_CHECK_OUT,
+              memberId: args.data.memberId ?? null,
+            };
+          }),
+          update: vi.fn(async () => ({})),
+          delete: vi.fn(async () => ({})),
+        },
+        bookingGuestNight: {
+          deleteMany: vi.fn(async () => ({ count: 0 })),
+          createMany: vi.fn(async () => ({ count: 0 })),
+        },
+        choreAssignment: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+      },
+    };
+  }
+
+  const guestWithConsent = {
+    firstName: "Tam",
+    lastName: "Target",
+    ageTier: "ADULT" as const,
+    isMember: true,
+    memberId: OUTSIDER,
+    stayStart: NEW_CHECK_IN,
+    stayEnd: NEW_CHECK_OUT,
+    memberGuestConsent: CONSENT,
+    crossFamilyMemberGuest: true,
+  };
+  const familyGuest = {
+    firstName: "Kid",
+    lastName: "Booker",
+    ageTier: "CHILD" as const,
+    isMember: true,
+    memberId: "m-kid",
+    stayStart: NEW_CHECK_IN,
+    stayEnd: NEW_CHECK_OUT,
+  };
+
+  const priceBreakdown = {
+    totalPriceCents: 2000,
+    guests: [
+      { priceCents: 1000, perNightCents: [500, 500], nightDates: [NEW_CHECK_IN] },
+      { priceCents: 1000, perNightCents: [500, 500], nightDates: [NEW_CHECK_IN] },
+    ],
+  };
+
+  it("writes the columns for a cross-family add and nothing for a family one", async () => {
+    const { applyGuestChanges } = await import("@/lib/booking-modify-plan");
+    const { tx, created } = fakeTx();
+
+    await applyGuestChanges(
+      tx as unknown as Parameters<typeof applyGuestChanges>[0],
+      {
+        bookingId: "bk-1",
+        newCheckIn: NEW_CHECK_IN,
+        newCheckOut: NEW_CHECK_OUT,
+        removedGuests: [],
+        remainingGuests: [],
+        proposedRemainingGuests: [],
+        normalizedAddGuests: [guestWithConsent, familyGuest],
+        priceBreakdown,
+        inProgressPlan: null,
+      },
+    );
+
+    expect(created).toHaveLength(2);
+    expect(created[0]).toMatchObject(CONSENT);
+    expect(classifyMemberGuestConsent(
+      created[0] as unknown as Parameters<typeof classifyMemberGuestConsent>[0],
+      OUTSIDER,
+    )).toBe("AWAITING_TARGET");
+    // Neither the marker nor the wrapper object is ever a database column.
+    expect(created[0]).not.toHaveProperty("crossFamilyMemberGuest");
+    expect(created[0]).not.toHaveProperty("memberGuestConsent");
+    // The family row is written exactly as it was before MG2.
+    expect(created[1]).not.toHaveProperty("consentStatus");
+  });
+
+  it("writes them on the in-progress-edit add path too", async () => {
+    // The in-progress path builds its guests through buildInProgressGuestRangePlan
+    // rather than from normalizedAddGuests, which is exactly how it could have
+    // become the one add that quietly wrote a consent-free cross-family row.
+    const { applyGuestChanges } = await import("@/lib/booking-modify-plan");
+    const { tx, created } = fakeTx();
+
+    await applyGuestChanges(
+      tx as unknown as Parameters<typeof applyGuestChanges>[0],
+      {
+        bookingId: "bk-1",
+        newCheckIn: NEW_CHECK_IN,
+        newCheckOut: NEW_CHECK_OUT,
+        removedGuests: [],
+        remainingGuests: [],
+        proposedRemainingGuests: [],
+        normalizedAddGuests: undefined,
+        priceBreakdown,
+        inProgressPlan: {
+          proposedExistingGuests: [],
+          proposedAddedGuests: [
+            {
+              guest: { ...guestWithConsent, rateMembershipTypeId: "mt-1" },
+              stayStart: NEW_CHECK_IN,
+              stayEnd: NEW_CHECK_OUT,
+              priceCents: 1000,
+            },
+          ],
+          remainingGuests: [],
+          removedGuests: [],
+          newTotalPriceCents: 1000,
+          newDiscountCents: 0,
+          newPromoAdjustmentCents: 0,
+          newFinalPriceCents: 1000,
+          priceDiffCents: 0,
+          capacityGuestRanges: [],
+        } as unknown as Parameters<typeof applyGuestChanges>[1]["inProgressPlan"],
+      },
+    );
+
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject(CONSENT);
+    expect(classifyMemberGuestConsent(
+      created[0] as unknown as Parameters<typeof classifyMemberGuestConsent>[0],
+      OUTSIDER,
+    )).toBe("AWAITING_TARGET");
+  });
+});
+
+describe("the add-guests route write", () => {
+  it("spreads the planned consent columns onto the row it creates", () => {
+    // Behaviourally this route needs the whole HTTP + pricing + capacity stack; the
+    // one line that matters is asserted directly instead, next to the create call.
+    const source = readRepoFile("src/app/api/bookings/[id]/guests/route.ts");
+    const create = source.indexOf("tx.bookingGuest.create({");
+    expect(create).toBeGreaterThan(-1);
+    const createBlock = source.slice(create, source.indexOf("createdGuests.push", create));
+    expect(createBlock).toContain("...(normalizedNewGuests[i].memberGuestConsent ?? {})");
+  });
+});
