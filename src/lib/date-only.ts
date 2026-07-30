@@ -173,6 +173,69 @@ export function addDaysDateOnly(date: Date, days: number): Date {
   return result;
 }
 
+/**
+ * Build a UTC date-only value from calendar parts, WITHOUT `Date.UTC`.
+ *
+ * `Date.UTC` applies the legacy two-digit-year rule: years 0-99 are mapped onto
+ * 1900-1999, so `Date.UTC(47, 0, 1)` is 1947, not 0047. `setUTCFullYear` has no
+ * such rule, so every date-only value derived from parts is built this way.
+ * `monthIndex` and `day` may be out of range and roll over as usual (month 12 is
+ * January of the next year; day 0 is the last day of the previous month).
+ */
+export function dateOnlyFromParts(
+  year: number,
+  monthIndex: number,
+  day: number,
+): Date {
+  const result = new Date(0);
+  result.setUTCFullYear(year, monthIndex, day);
+  result.setUTCHours(0, 0, 0, 0);
+  return result;
+}
+
+// Steps a date-only value by whole calendar months (#2251, the bed-allocation
+// board's month stepper). Pure UTC date-only arithmetic — no time zone
+// conversion, matching addDaysDateOnly. The day-of-month is clamped to the
+// target month's length so the result is always a real date: 31 Jan + 1 month
+// is 28 Feb (29 in a leap year), never an overflow into March. Clamping means
+// the operation is NOT reversible for such days (31 Jan → 28 Feb → 28 Jan);
+// callers that need to step back and forth should keep their own anchor.
+export function addMonthsDateOnly(date: Date, months: number): Date {
+  if (Number.isNaN(date.getTime())) return new Date(NaN);
+
+  const day = date.getUTCDate();
+  const target = dateOnlyFromParts(
+    date.getUTCFullYear(),
+    date.getUTCMonth() + months,
+    1,
+  );
+  // Day 0 of the following month is the last day of the target month.
+  const daysInTargetMonth = dateOnlyFromParts(
+    target.getUTCFullYear(),
+    target.getUTCMonth() + 1,
+    0,
+  ).getUTCDate();
+  target.setUTCDate(Math.min(day, daysInTargetMonth));
+  return target;
+}
+
+/**
+ * How many nights a date-only range covers, WITHOUT materialising them.
+ *
+ * Both ends are UTC midnight, so the span is an exact whole number of days and
+ * no time-zone or DST correction applies. Every cap on a range length checks
+ * this first (#2251): `eachDateOnlyInRange` on a mistyped year-3000 date-out
+ * would build a million `Date` objects before anyone could refuse it.
+ * Returns `NaN` for an invalid endpoint, which fails every comparison.
+ */
+export function countNightsDateOnly(
+  startInclusive: Date,
+  endExclusive: Date,
+): number {
+  const spanMs = endExclusive.getTime() - startInclusive.getTime();
+  return Number.isFinite(spanMs) ? Math.round(spanMs / 86_400_000) : NaN;
+}
+
 export function eachDateOnlyInRange(startInclusive: Date, endExclusive: Date): Date[] {
   const dates: Date[] = [];
 
