@@ -122,6 +122,8 @@ describe("listBookingPartnerSharingCandidates", () => {
     memberId: string | null;
     firstName: string;
     lastName: string;
+    // #2307: null for every ordinary guest (non-member, family scope, legacy).
+    consentStatus?: "PENDING" | "CONFIRMED" | "DECLINED" | "EXPIRED" | null;
   };
 
   function candidatesDb(
@@ -171,10 +173,15 @@ describe("listBookingPartnerSharingCandidates", () => {
     >;
   }
 
-  const guest = (memberId: string | null, name: string): FakeGuest => ({
+  const guest = (
+    memberId: string | null,
+    name: string,
+    consentStatus: FakeGuest["consentStatus"] = null,
+  ): FakeGuest => ({
     memberId,
     firstName: name,
     lastName: "Guest",
+    consentStatus,
   });
   const namedAdult = (id: string, name: string) => ({
     ...adult(id),
@@ -231,5 +238,115 @@ describe("listBookingPartnerSharingCandidates", () => {
       (db as unknown as { memberPartnerLink: { findMany: ReturnType<typeof vi.fn> } })
         .memberPartnerLink.findMany,
     ).not.toHaveBeenCalled();
+  });
+
+  // --- D-12 (#2307): the two halves of one guest query --------------------
+  //
+  // This sweep is the surface where the naive filter does real damage. The one
+  // bookingGuest query seeds BOTH the ANCHORS (whose partners get offered) and
+  // the "already on this booking" EXCLUSION. Putting the consent predicate in
+  // the query's `where` gets the anchors right and breaks the exclusion in the
+  // same stroke — the PENDING member vanishes from the exclusion set and is
+  // offered as a brand-new candidate, so an officer can add a second guest row
+  // for the member who is already sitting on the booking holding a bed (D-4).
+  //
+  // Both halves are asserted, separately, because a regression in either one
+  // passes the other's test.
+
+  it("does not let an unconsented guest anchor a candidate offer (D-12)", async () => {
+    // Anna is PENDING: her partner Ben must NOT be offered off the back of her
+    // row. If this fails, the club is inviting a bed-share with a member who
+    // has not yet agreed to be on the booking at all.
+    const db = candidatesDb(
+      [guest("m-anna", "Anna", "PENDING")],
+      [link("m-anna", "m-ben", "CONFIRMED")],
+      [namedAdult("m-ben", "Ben")],
+    );
+    await expect(
+      listBookingPartnerSharingCandidates("b1", db),
+    ).resolves.toEqual([]);
+    // No anchors at all, so the link query is never even reached.
+    expect(
+      (db as unknown as { memberPartnerLink: { findMany: ReturnType<typeof vi.fn> } })
+        .memberPartnerLink.findMany,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("still counts an unconsented guest as already on the booking (D-12)", async () => {
+    // Cara is CONFIRMED and partnered with Anna, who is on the booking with
+    // PENDING consent. Anna must NOT come back as an offer: she is already a
+    // row here, and offering her again is a duplicate guest on a booking that
+    // is already holding her bed.
+    //
+    // This is the assertion a `where: OPERATIONALLY_PRESENT_GUEST_WHERE` on the
+    // guest query would break while every other test in this file still passed.
+    const db = candidatesDb(
+      [guest("m-cara", "Cara"), guest("m-anna", "Anna", "PENDING")],
+      [link("m-cara", "m-anna", "CONFIRMED")],
+      [namedAdult("m-anna", "Anna")],
+    );
+    await expect(
+      listBookingPartnerSharingCandidates("b1", db),
+    ).resolves.toEqual([]);
+  });
+
+  it("keeps offering the partner of a consented guest alongside a pending one", async () => {
+    // The mixed booking: Cara (null consent — an ordinary guest) anchors her
+    // partner Dan normally, and Anna's PENDING row changes nothing about that.
+    const db = candidatesDb(
+      [guest("m-cara", "Cara"), guest("m-anna", "Anna", "PENDING")],
+      [link("m-cara", "m-dan", "CONFIRMED")],
+      [namedAdult("m-dan", "Dan")],
+    );
+    await expect(
+      listBookingPartnerSharingCandidates("b1", db),
+    ).resolves.toEqual([
+      {
+        id: "m-dan",
+        firstName: "Dan",
+        lastName: "Member",
+        partnerOfMemberId: "m-cara",
+        partnerOfName: "Cara Guest",
+      },
+    ]);
+  });
+
+  it("treats a CONFIRMED-consent guest exactly like an ordinary one", async () => {
+    const db = candidatesDb(
+      [guest("m-anna", "Anna", "CONFIRMED")],
+      [link("m-anna", "m-ben", "CONFIRMED")],
+      [namedAdult("m-ben", "Ben")],
+    );
+    await expect(
+      listBookingPartnerSharingCandidates("b1", db),
+    ).resolves.toEqual([
+      {
+        id: "m-ben",
+        firstName: "Ben",
+        lastName: "Member",
+        partnerOfMemberId: "m-anna",
+        partnerOfName: "Anna Guest",
+      },
+    ]);
+  });
+
+  it("does not filter the guest query itself — the split happens in memory", async () => {
+    // Pins the structural decision, not just its outcome: the query must stay
+    // unfiltered so the exclusion set is complete. A future edit that moves the
+    // predicate into the `where` fails here as well as in the exclusion test
+    // above, and this one names the reason.
+    const db = candidatesDb(
+      [guest("m-anna", "Anna", "PENDING")],
+      [],
+      [],
+    );
+    await listBookingPartnerSharingCandidates("b1", db);
+    const findMany = (
+      db as unknown as { bookingGuest: { findMany: ReturnType<typeof vi.fn> } }
+    ).bookingGuest.findMany;
+    expect(findMany).toHaveBeenCalledTimes(1);
+    const where = findMany.mock.calls[0][0].where as Record<string, unknown>;
+    expect(where).not.toHaveProperty("OR");
+    expect(where).not.toHaveProperty("consentStatus");
   });
 });

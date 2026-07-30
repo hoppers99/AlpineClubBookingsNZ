@@ -20,11 +20,15 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import type { MemberGuestConsentStatus } from "@prisma/client";
+
 import {
   CONSENT_FREE_GUEST_COLUMNS,
   MEMBER_GUEST_CONSENT_SUB_STATES,
   MEMBER_GUEST_WIDENING_ENABLED,
+  OPERATIONALLY_PRESENT_GUEST_WHERE,
   classifyMemberGuestConsent,
+  isOperationallyPresentConsent,
   type MemberGuestConsentColumns,
 } from "@/lib/member-guest-consent";
 import { normalizeMemberGuestSettings } from "@/lib/member-guest-settings";
@@ -523,5 +527,92 @@ describe("migrations", () => {
     expect(hotPlan, "CONCURRENTLY is impossible in a Prisma migration").toMatch(
       /forbids it inside a transaction block/i,
     );
+  });
+});
+
+// --- MG2 (#2307): the operational-presence predicate ------------------------
+//
+// Owner decision D-12 says a non-consented guest is not operationally present:
+// no kiosk arrivals row, no chore, no bed, no name in an arrival email, no line
+// on the wall. Fourteen call sites spread across nine surfaces enforce that, and
+// every one of them spreads one of the two forms declared here. If the two forms
+// ever disagree, half the surfaces filter one way and half the other, and the
+// disagreement is invisible in review.
+//
+// The NULL case is pinned first and hardest because it is the trap: NULL is the
+// dominant value forever (every non-member guest, every family-scope add, every
+// row written before this feature existed), and the hand-written filter a
+// reviewer instinctively reaches for — { consentStatus: { not: "PENDING" } } —
+// evaluates to UNKNOWN for NULL in SQL, silently emptying the kiosk and the
+// arrival emails of every ordinary guest.
+describe("operational-presence predicate (D-12)", () => {
+  const ALL_STATUSES: Array<MemberGuestConsentStatus | null> = [
+    null,
+    "PENDING",
+    "CONFIRMED",
+    "DECLINED",
+    "EXPIRED",
+  ];
+
+  /**
+   * Evaluate the Prisma `where` fragment the way Postgres would, so the two
+   * forms are compared on the same input rather than by reading them.
+   *
+   * Deliberately written as an equality match per OR branch (never `!==`), which
+   * is exactly what Prisma emits for `{ consentStatus: null }` (IS NULL) and
+   * `{ consentStatus: "CONFIRMED" }` (= 'CONFIRMED').
+   */
+  function whereMatches(consentStatus: MemberGuestConsentStatus | null): boolean {
+    return OPERATIONALLY_PRESENT_GUEST_WHERE.OR.some(
+      (branch) => branch.consentStatus === consentStatus,
+    );
+  }
+
+  it("matches a NULL-consent guest — the Prisma-null trap", () => {
+    // Both forms. A regression in either one empties the kiosk of every
+    // ordinary guest, which is the single most expensive way this can fail.
+    expect(whereMatches(null)).toBe(true);
+    expect(isOperationallyPresentConsent(null)).toBe(true);
+
+    // An unselected column arrives as undefined rather than null; treat it the
+    // same, because a surface that forgot to select consentStatus must not
+    // thereby hide every guest it holds.
+    expect(isOperationallyPresentConsent(undefined)).toBe(true);
+
+    // The trap itself, stated as a test: the `not` form the OR replaces would
+    // have excluded NULL. This is what mutation probe 4 flips.
+    expect(OPERATIONALLY_PRESENT_GUEST_WHERE).not.toHaveProperty("consentStatus");
+    expect(JSON.stringify(OPERATIONALLY_PRESENT_GUEST_WHERE)).not.toContain("not");
+  });
+
+  it("agrees with isOperationallyPresentConsent over every column value", () => {
+    for (const status of ALL_STATUSES) {
+      expect(
+        isOperationallyPresentConsent(status),
+        `in-memory predicate disagrees with the where form for ${String(status)}`,
+      ).toBe(whereMatches(status));
+    }
+  });
+
+  it("admits NULL and CONFIRMED, and nothing else", () => {
+    expect(ALL_STATUSES.filter((status) => whereMatches(status))).toEqual([
+      null,
+      "CONFIRMED",
+    ]);
+    // PENDING is the one that holds a bed (D-4) while being absent from every
+    // operational surface (D-12); DECLINED and EXPIRED are rows that survived a
+    // failed removal and are not occupants either.
+    expect(isOperationallyPresentConsent("PENDING")).toBe(false);
+    expect(isOperationallyPresentConsent("DECLINED")).toBe(false);
+    expect(isOperationallyPresentConsent("EXPIRED")).toBe(false);
+  });
+
+  it("covers every status the enum can hold", () => {
+    // If MG3/MG4 adds a status, this fails until the table above names it —
+    // rather than the new status silently defaulting to "not present".
+    const declared = new Set(
+      MEMBER_GUEST_CONSENT_SUB_STATES.map((subState) => subState.status),
+    );
+    expect(new Set(ALL_STATUSES)).toEqual(declared);
   });
 });
