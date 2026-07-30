@@ -46,13 +46,19 @@ export function buildUnpaidFinishedStaysHref(todayKey: string): string {
 
 /**
  * Booking-level fragment for "an upward modification delta is still owed on
- * the card additional-payment flow" (#1723 path 2). Mirrors the member-facing
- * owed predicate (member-dashboard / booking detail / additional-payment-secret):
- * the payment summary columns track the LATEST ADDITIONAL transaction, and any
- * state other than SUCCEEDED — PENDING, FAILED (abandoned/auto-cancelled), or
- * a null status on legacy rows — means the recorded price increase was never
- * collected. Composed with AND by the bookings-list `additionalOwed` filter so
- * it cannot clobber explicit admin filter choices.
+ * the card additional-payment flow" (#1723 path 2): the payment summary columns
+ * track the LATEST ADDITIONAL transaction, and any state other than SUCCEEDED —
+ * PENDING, FAILED (abandoned/auto-cancelled), or a null status on legacy rows —
+ * means the recorded price increase was never collected. Composed with AND by
+ * the bookings-list `additionalOwed` filter so it cannot clobber explicit admin
+ * filter choices.
+ *
+ * `isAdditionalPaymentOwed` (src/lib/additional-payment-chase.ts) is the exact
+ * in-memory twin, sharing this status list. The member-facing surfaces (member
+ * dashboard, booking detail, additional-payment-secret) show a member their own
+ * outstanding amount over a WIDER lifecycle set — but never a cancelled booking,
+ * so no member is shown an obligation the club has stopped counting, and no
+ * admin surface is shown one it has.
  */
 export function buildAdditionalOwedWhere(): Prisma.BookingWhereInput {
   return {
