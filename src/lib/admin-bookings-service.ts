@@ -99,6 +99,12 @@ export const adminBookingsQuerySchema = z.object({
   // fragment is shared with that card's count via unpaid-finished-stays.ts.
   additionalOwed: z.enum(["all", "owed"]).optional().default("all"),
   changeState: z.enum(["all", "requiresReview", "pendingRequest", "hasModification", "creditGenerated"]).optional().default("all"),
+  // Member-guest consent queues (#2307, owner decision MG2-M-3 as ticked):
+  // "waiting" narrows to bookings holding an unanswered (PENDING) consent
+  // request; "attention" to bookings carrying a stuck DECLINED/EXPIRED row the
+  // system could not resolve (D-15's exception list — the page swaps in the
+  // per-guest attention table for that one).
+  consentState: z.enum(["all", "waiting", "attention"]).optional().default("all"),
   // Page number (1-based). Field-scoped `.catch(1)` so garbage (`page=abc`,
   // `0`, `-3`, `2.5`) coerces to page 1 instead of failing the whole parse and
   // dropping every other filter; an out-of-range page is clamped to the last
@@ -364,8 +370,23 @@ function buildBookingWhere(query: AdminBookingsQuery): Prisma.BookingWhereInput 
 
   // AND-composed so an explicit status/date choice in the same URL still
   // narrows the result instead of being overwritten by the queue fragment.
+  const andFragments: Prisma.BookingWhereInput[] = [];
   if (query.additionalOwed === "owed") {
-    where.AND = [buildAdditionalOwedWhere()];
+    andFragments.push(buildAdditionalOwedWhere());
+  }
+
+  // #2307 (MG2-M-3): the consent chips narrow in SQL, AND-composed like the
+  // additional-owed queue so they stack with any other filter in the URL.
+  if (query.consentState === "waiting") {
+    andFragments.push({ guests: { some: { consentStatus: "PENDING" } } });
+  } else if (query.consentState === "attention") {
+    andFragments.push({
+      guests: { some: { consentStatus: { in: ["DECLINED", "EXPIRED"] } } },
+    });
+  }
+
+  if (andFragments.length > 0) {
+    where.AND = andFragments;
   }
 
   if (query.lodgeId) {

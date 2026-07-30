@@ -28,6 +28,11 @@ import {
 } from "@/lib/admin-bookings-service";
 import { formatMemberPhone } from "@/lib/admin-member-detail-helpers";
 import { buildHrefWithReturnTo, buildPathWithSearch } from "@/lib/internal-return-path";
+import {
+  listMemberGuestConsentExceptions,
+  loadMemberGuestConsentQueueCounts,
+} from "@/lib/member-guest-consent-exceptions";
+import { formatConsentShortDate } from "@/lib/member-guest-consent-card";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { lodgeOrderBy } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
@@ -108,6 +113,7 @@ export default async function AdminBookingsPage({
     xeroState?: string;
     bedState?: string;
     changeState?: string;
+    consentState?: string;
     lodgeId?: string;
     page?: string;
   }>;
@@ -133,6 +139,22 @@ export default async function AdminBookingsPage({
     await listAdminBookings(query, {
       bedAllocationEnabled: showBedAllocation,
     });
+
+  // #2307 (owner decision MG2-M-3 as ticked): the member-guest consent queues
+  // are a FILTER on this list, not a new page. Each chip's number is the
+  // number of rows clicking it reveals — bookings for "waiting" (the filtered
+  // table lists bookings), stuck guest rows for "attention" (that chip swaps
+  // in the per-guest exception table). The chips stay visible while the module
+  // is off if anything is still stuck, because those rows need a human either
+  // way.
+  const consentQueues = await loadMemberGuestConsentQueueCounts();
+  const showConsentChips =
+    effectiveModules.memberGuests ||
+    consentQueues.waitingBookings > 0 ||
+    consentQueues.attentionGuests > 0;
+  const consentState = query.consentState;
+  const consentExceptions =
+    consentState === "attention" ? await listMemberGuestConsentExceptions() : [];
 
   function visibleSearchParams() {
     const currentSearchParams = new URLSearchParams();
@@ -172,6 +194,21 @@ export default async function AdminBookingsPage({
 
   function pageHref(targetPage: number) {
     return withPage(visibleSearchParams(), targetPage);
+  }
+
+  // Toggle a consent chip: clicking the active chip clears it, and any change
+  // of queue resets to page 1 (a different result set).
+  function consentChipHref(target: "waiting" | "attention") {
+    const nextParams = visibleSearchParams();
+    nextParams.delete("consentState");
+    if (consentState !== target) nextParams.set("consentState", target);
+    return withPage(nextParams, 1);
+  }
+
+  function consentChipClass(active: boolean) {
+    return active
+      ? "inline-flex items-center rounded-full border border-primary bg-primary px-3 py-1 text-sm font-medium text-primary-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      : "inline-flex items-center rounded-full border border-border bg-card px-3 py-1 text-sm text-muted-foreground hover:border-primary/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
   }
 
   // One sortable header wired to the URL-driven sort links this page has always
@@ -219,7 +256,90 @@ export default async function AdminBookingsPage({
 
       <AdminBookingCalendar />
 
-      {bookings.length === 0 ? (
+      {showConsentChips ? (
+        <div className="flex flex-wrap gap-2" aria-label="Consent queues">
+          <Link
+            href={consentChipHref("waiting")}
+            aria-current={consentState === "waiting" ? "true" : undefined}
+            className={consentChipClass(consentState === "waiting")}
+          >
+            Waiting for consent · {consentQueues.waitingBookings}
+          </Link>
+          <Link
+            href={consentChipHref("attention")}
+            aria-current={consentState === "attention" ? "true" : undefined}
+            className={consentChipClass(consentState === "attention")}
+          >
+            Consent needs attention · {consentQueues.attentionGuests}
+          </Link>
+        </div>
+      ) : null}
+
+      {consentState === "attention" ? (
+        consentExceptions.length === 0 ? (
+          <div className="rounded-lg border border-border bg-card">
+            <EmptyState
+              icon={CalendarX2}
+              title="Nothing needs attention"
+              description="Every declined or lapsed consent request has been resolved automatically. Rows land here only when a guest could not be removed without a human."
+            />
+          </div>
+        ) : (
+          <AdminDataTable
+            stickyFirstColumn
+            aria-label="Consent needs attention"
+            className="min-w-[56rem]"
+            toolbar={
+              <p>
+                {consentExceptions.length} stuck consent row
+                {consentExceptions.length === 1 ? "" : "s"} — each one needs a
+                human; nothing here resolves on its own.
+              </p>
+            }
+          >
+            <TableHeader>
+              <TableRow>
+                <TableHead>Booking</TableHead>
+                <TableHead>Guest</TableHead>
+                <TableHead>Why it is stuck</TableHead>
+                <TableHead>What fixes it</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {consentExceptions.map((row) => (
+                <TableRow key={`${row.bookingId}-${row.guestFirstName}-${row.guestLastName}`}>
+                  <TableCell>
+                    <Link
+                      href={buildHrefWithReturnTo(`/bookings/${row.bookingId}`, currentBookingsPath)}
+                      className="group inline-block rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <span className="block text-sm font-medium text-foreground group-hover:text-primary group-hover:underline">
+                        {row.lodgeName ? `${row.lodgeName} · ` : ""}
+                        {formatDate(row.checkIn)} – {formatDate(row.checkOut)}
+                      </span>
+                      <span className="block text-xs text-muted-foreground">
+                        {row.bookerName}
+                      </span>
+                    </Link>
+                  </TableCell>
+                  <TableCell>
+                    <span className="block text-sm font-medium">
+                      {row.guestFirstName} {row.guestLastName}
+                    </span>
+                    <span className="block text-xs text-muted-foreground">
+                      {row.status === "DECLINED"
+                        ? `Said no${row.statusAt ? `, ${formatConsentShortDate(row.statusAt)}` : ""}`
+                        : `Lapsed${row.statusAt ? ` ${formatConsentShortDate(row.statusAt)}` : ""}, never answered`}
+                    </span>
+                  </TableCell>
+                  <TableCell className="text-sm">{row.why}</TableCell>
+                  <TableCell className="text-sm">{row.fix}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </AdminDataTable>
+        )
+      ) : bookings.length === 0 ? (
         <div className="rounded-lg border border-border bg-card">
           <EmptyState
             icon={CalendarX2}

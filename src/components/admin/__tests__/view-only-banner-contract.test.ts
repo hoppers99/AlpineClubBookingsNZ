@@ -322,11 +322,11 @@ const NOTICE = "AdminViewOnlyNotice";
 */
 const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 285,
+  callSites: 287,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 242,
+  optOuts: 244,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 216,
+  staticOptOuts: 218,
   /** `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch. */
   vouchedOptOuts: 26,
   /** …of the vouched: proved at a parent's own JSX render site (#2168). */
@@ -340,7 +340,7 @@ const FIGURES = {
   leafControls: 30,
   leafFiles: 18,
   /** Components that render an `AdminViewOnlySectionBanner`. */
-  bannerComponents: 78,
+  bannerComponents: 79,
 } as const;
 
 const WIZARD_SHELL = "IntegrationWizard";
@@ -1114,6 +1114,10 @@ describe("view-only section banner coverage (#2160)", () => {
                Nothing else in the tree changed, and no call site was removed —
                the whole +10 is those four provider wizards' step files
                becoming visible to this suite for the first time.
+          287  +2  #2307's Member guests settings card on Bookings setup
+               (member-guest-settings-card.tsx): Edit + Save, both static
+               opt-outs under the card's own banner, so staticOptOuts and
+               optOuts move +2 with it and bannerComponents +1 (78 -> 79).
 
         And how the other figures moved with it, each re-measured:
 

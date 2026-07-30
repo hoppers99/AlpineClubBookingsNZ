@@ -4,6 +4,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     booking: { findMany: vi.fn(), count: vi.fn() },
+    // #2307 (MG2-M-3): the consent queue chips count stuck guest rows.
+    bookingGuest: { count: vi.fn().mockResolvedValue(0), findMany: vi.fn().mockResolvedValue([]) },
     xeroSyncOperation: { findMany: vi.fn() },
     xeroObjectLink: { findMany: vi.fn() },
     // Multi-lodge phase 8: the page loads active lodges for the lodge
