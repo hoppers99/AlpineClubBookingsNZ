@@ -131,6 +131,11 @@ export const MODULE_DEFINITIONS: Record<ModuleKey, ModuleDefinition> = {
     dependencies: [
       "Room and bed inventory is configured separately.",
       "When on, each lodge's capacity is its active bed count; set a lower per-lodge capacity on the lodge page to cap sleeping below the installed beds.",
+      // #2286 review M11: turning the module off does NOT release a custodian
+      // bed hold, and it must not — the bed is physically occupied whatever a
+      // feature flag says. State it here so an admin turning the module off is
+      // not surprised by capacity that stays reduced, and knows the way back.
+      "Turning this off does not release a bed already held for a hut leader: that bed is genuinely occupied, so it keeps counting. Release it with the Release bed button on Hut Leaders, which stays available while this module is off.",
     ],
   },
   internetBankingPayments: {

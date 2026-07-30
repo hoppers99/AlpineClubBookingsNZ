@@ -271,6 +271,25 @@ full lodge; on the hold's own admission path the group's headcount is checked
 *with* the custodian counted, so an over-size group surfaces as over-capacity
 for explicit admin confirmation instead of silently displacing them.
 
+### With the bed-allocation module OFF (#2286 review M11)
+
+A hold created while `bedAllocation` was on **keeps counting** after the module
+is turned off. That is deliberate, not an oversight: the module flag governs
+which admin surfaces exist, not whether a person is asleep in a bed. Capacity
+that silently un-reduced itself when a flag flipped would over-admit a lodge
+whose custodian is still living in it.
+
+So the off state is **recoverable rather than frozen**:
+
+- the module gate on the hut-leaders write routes guards only the **set**
+  direction — a new bed cannot be held while the module is off;
+- the **clear** direction is deliberately module-check-free, and the
+  *Release bed* control on the Hut Leaders page is rendered regardless, so a hold
+  can always be undone (`custodian-hut-leaders-route.test.ts` pins both
+  directions);
+- the module-settings copy for `bedAllocation` states this, so an admin turning
+  it off is told capacity stays reduced and where the way back is.
+
 **Enforcement is application code, not a constraint.** Owner decision, 28 Jul
 2026: every allocation chokepoint re-reads the live holds on the client that is
 about to write, immediately before writing (`src/lib/custodian-occupancy.ts`),

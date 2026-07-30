@@ -250,11 +250,27 @@ interface DisplayState {
   /** Display-relevant module flags only (bed-allocation, chores) — the
    *  capability conditions read these; the full club flag map never ships. */
   capabilities: Record<string, boolean>;
+  /** The custodian(s) in residence tonight (#2286), or null when there is none.
+   *  ONLY a bed-holding `HutLeaderAssignment` produces this — a role-only
+   *  assignment is not an occupancy and never appears. Read at all only when the
+   *  `hutLeaders` module is on.
+   *
+   *  `count` is a COUNT, not a flag: a handover night legitimately has two
+   *  custodians on two different beds, and a slot that answers "who is here"
+   *  must not report one of them.
+   *
+   *  `label` is the joined reduced names, or null whenever ANY of them must not
+   *  be individually named — under COUNTS_ONLY, and ALWAYS when a minor-age
+   *  custodian is among them at any granularity. All-or-nothing on purpose:
+   *  naming the adult beside "Custodians" would identify the minor by
+   *  elimination. No phone, no dates, no member id. */
+  custodian: { label: string | null; count: number } | null;
 }
 ```
 
 - **Privacy reduction happens here** (labels, counts-only mode, group
-  labelling, minors-as-family, the phone gate) — the serialiser is the single
+  labelling, minors-as-family, the phone gate, the custodian slot's
+  all-or-nothing naming) — the serialiser is the single
   enforcement point and the primary unit-test surface for privacy rules. Booking
   rows are split per (booking, room) and carry an opaque `key`, never the real
   booking id.
@@ -500,7 +516,7 @@ The twelve modules (descriptions mirror the registry):
 | `chores-board` | `{{module:chores-board}}` | Chores — **hides**; contributes `chores:enabled`, `chores:today` | The day's chore assignments. With the Chores flag off it hides entirely rather than showing an empty rail card. |
 | `lodge-rules` | `{{module:lodge-rules}}` | none | Lodge rules / arrival information: renders the sanitised lodge-instruction documents; only documents with content earn a card. |
 | `notice-board` | `{{module:notice-board}}` | none | The committee notice: free text posted by permitted admins, rendered as plain text nodes (never HTML). An empty notice renders nothing. |
-| `info-footer` *(furniture)* | `{{module:info-footer}}` | none | Editable page furniture: Wi-Fi, contact email, and a footer note. Each item is shown only when its `{{config:…}}` value is set. |
+| `info-footer` *(furniture)* | `{{module:info-footer}}` | none | Editable page furniture: the custodian in residence, Wi-Fi, contact email, and a footer note. Each `{{config:…}}` item is shown only when its value is set. The custodian item is shown only when `state.custodian` is non-null, and its role word is the **fixed** string "Custodian"/"Custodians" for every club — deliberately NOT the per-club `hutLeaderLabel` the admin surface uses (owner decision, 29 Jul 2026). When `label` is null the item renders the role word and, on a handover night, the count. |
 
 **Embed grammar.** A module is embedded by the **bare token
 `{{module:<name>}}`** — no whitespace, no arguments. Module options (e.g.
