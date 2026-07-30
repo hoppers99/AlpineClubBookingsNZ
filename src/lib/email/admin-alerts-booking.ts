@@ -10,6 +10,7 @@ import {
   adminBookingChangeRequestTemplate,
   adminBookingRequestPendingTemplate,
   adminSchoolManualInvoiceTemplate,
+  adminWholeLodgeManualInvoiceTemplate,
   adminBookingRequestHoldExpiredTemplate,
   adminBookingRequestHoldCancelledTemplate,
   adminSplitSettlementUnpaidTemplate,
@@ -557,6 +558,53 @@ export async function sendAdminSchoolManualInvoiceEmail(data: {
       guestCount: data.guestCount,
       totalCents: data.totalCents,
       amount: formatMoneyCents(data.totalCents),
+      reviewUrl,
+    },
+    preferenceKey: "adminBookingRequest",
+  });
+}
+
+/**
+ * #2263 — approved MEMBER whole-lodge request confirmed with an unpaid Internet
+ * Banking receivable while the Xero module is off. Sibling of
+ * sendAdminSchoolManualInvoiceEmail with member-appropriate wording (the owner
+ * is a real signed-in member, not a non-login school contact) and carrying the
+ * payment reference the member was told to quote, so the hand-written invoice
+ * matches what they will pay against.
+ */
+export async function sendAdminWholeLodgeManualInvoiceEmail(data: {
+  memberName: string;
+  contactEmail: string;
+  checkIn: Date;
+  checkOut: Date;
+  guestCount: number;
+  totalCents: number;
+  paymentReference: string;
+}) {
+  const baseUrl = process.env.NEXTAUTH_URL || "http://localhost:3000";
+  const reviewUrl = `${baseUrl}${buildBookingRequestsHref("public", {})}`;
+
+  await sendToAdmins({
+    subject: `Whole-lodge booking needs a manual invoice: ${data.memberName}`,
+    html: adminWholeLodgeManualInvoiceTemplate({
+      memberName: data.memberName,
+      contactEmail: data.contactEmail,
+      checkIn: data.checkIn,
+      checkOut: data.checkOut,
+      guestCount: data.guestCount,
+      totalCents: data.totalCents,
+      paymentReference: data.paymentReference,
+      reviewUrl,
+    }),
+    templateName: "admin-whole-lodge-manual-invoice",
+    templateData: {
+      memberName: data.memberName,
+      contactEmail: data.contactEmail,
+      checkIn: formatNZDate(data.checkIn),
+      checkOut: formatNZDate(data.checkOut),
+      guestCount: data.guestCount,
+      amount: formatMoneyCents(data.totalCents),
+      paymentReference: data.paymentReference,
       reviewUrl,
     },
     preferenceKey: "adminBookingRequest",

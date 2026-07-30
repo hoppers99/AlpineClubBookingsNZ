@@ -190,9 +190,19 @@ renders the whole explanatory block — a `Subtotal:` line plus a signed
 `Promo adjustment (CODE):` line (`-$30.00` for a discount, `+$1,370.00` for a
 promo such as an exclusive-use flat rate that *raises* the price) — and
 renders nothing at all when no promo applied. Each line carries its own
-trailing line break, so the default body places it hard against the total line
-(`{{promoSummary}}Total Paid: {{totalPaid}}`); keep that placement in an
+trailing line break, so the default body places it hard against the money
+outcome (`{{promoSummary}}{{paymentOutcome}}`); keep that placement in an
 override or the block renders detached from the money it explains.
+
+The money outcome itself is the pre-composed `{{paymentOutcome}}` block: a paid
+booking renders `Total Paid:` plus the payment-processed sentence, while a
+booking confirmed with money still owing (a member whole-lodge approval's
+internet-banking receivable) renders `Total Due:` plus a sentence stating the
+amount owing and the payment reference — so the default body can never tell a
+member their payment was processed when it was not. An override may instead
+build its own money lines from the per-piece tokens (`{{totalPaid}}`,
+`{{totalDue}}`, `{{paymentDueNote}}`, `{{paymentReference}}`); exactly one of
+`{{totalPaid}}`/`{{totalDue}}` carries a figure on any given send.
 
 **The promo explanation is required, not advisory.** An override of the
 booking-confirmed body that shows a member no promo explanation at all is

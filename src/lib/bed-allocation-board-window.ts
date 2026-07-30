@@ -8,9 +8,20 @@ import {
   parseDateOnly,
 } from "@/lib/date-only";
 
+/*
+ * Read-window arithmetic for every bed-allocation surface.
+ *
+ * Lives in src/lib (moved out of the board's `_components/` by #2252) for the
+ * same reason the range dialog does: the in-booking Bed allocation panel pages
+ * its reads through the identical 31-night bound, and a client component under
+ * src/components must not reach into the admin route tree for it. One module,
+ * two surfaces — not a second copy of the same limit drifting apart.
+ */
+
 // Mirrors MAX_BED_ALLOCATION_RANGE_NIGHTS in src/lib/admin-bed-allocation.ts.
-// This is the board's READ window only. Assignment writes are bounded
-// separately and far more generously — see MAX_RANGE_ASSIGN_NIGHTS (#2251).
+// This is the READ window only (the dashboard GET 400s above it). Assignment
+// writes are bounded separately and far more generously — see
+// MAX_RANGE_ASSIGN_NIGHTS (#2251).
 export const MAX_RANGE_NIGHTS = 31;
 
 /*
@@ -99,4 +110,92 @@ export function stepBoardWindowByMonths(
     toDate: fitted.toDate,
     narrowed: fitted.narrowed,
   };
+}
+
+/**
+ * One page of a stay's nights, for the in-booking Bed allocation panel (#2252).
+ *
+ * A booking has no maximum length, and the dashboard read refuses anything over
+ * {@link MAX_RANGE_NIGHTS}, so a long stay cannot be read in one go. The panel
+ * therefore PAGES the stay — and the page is always labelled on screen with the
+ * night numbers and the dates it covers, so what is missing from the rows is
+ * never silently missing. Same rule as the board's `narrowed` note: no window
+ * is ever quietly shortened.
+ *
+ * Unlike the board's calendar-month steppers, paging is anchored to the stay
+ * itself: a page never wanders outside `checkIn` → `checkOut`, because nothing
+ * outside the stay belongs to this booking.
+ */
+export interface StayWindowPage {
+  fromDate: string;
+  toDate: string;
+  /** 0-based page. */
+  pageIndex: number;
+  pageCount: number;
+  totalNights: number;
+  /** 1-based inclusive night numbers, for the on-screen label. */
+  firstNight: number;
+  lastNight: number;
+}
+
+export function stayWindowPage(
+  checkIn: string,
+  checkOut: string,
+  pageIndex: number,
+): StayWindowPage | null {
+  if (!isDateOnlyString(checkIn) || !isDateOnlyString(checkOut)) return null;
+  const start = parseDateOnly(checkIn);
+  const end = parseDateOnly(checkOut);
+  if (end <= start) return null;
+
+  // Counted arithmetically, never enumerated — a stay is bounded by nothing, so
+  // building a Date per night just to count them is not an option.
+  const totalNights = countNightsDateOnly(start, end);
+  const pageCount = Math.ceil(totalNights / MAX_RANGE_NIGHTS);
+  const page = Math.min(Math.max(pageIndex, 0), pageCount - 1);
+
+  const from = addDaysDateOnly(start, page * MAX_RANGE_NIGHTS);
+  const nightsOnPage = Math.min(
+    MAX_RANGE_NIGHTS,
+    totalNights - page * MAX_RANGE_NIGHTS,
+  );
+  const to = addDaysDateOnly(from, nightsOnPage);
+
+  return {
+    fromDate: formatDateOnly(from),
+    toDate: formatDateOnly(to),
+    pageIndex: page,
+    pageCount,
+    totalNights,
+    firstNight: page * MAX_RANGE_NIGHTS + 1,
+    lastNight: page * MAX_RANGE_NIGHTS + nightsOnPage,
+  };
+}
+
+/**
+ * Collapse a sorted night list into contiguous runs, as inclusive first/last
+ * night pairs. The panel shows "3 Jun → 9 Jun" rather than seven identical
+ * rows, which is the only way a 90-night stay stays readable.
+ */
+export function collapseNightRuns(
+  nights: string[],
+): { firstNight: string; lastNight: string; nights: string[] }[] {
+  const sorted = [...new Set(nights)].sort();
+  const runs: { firstNight: string; lastNight: string; nights: string[] }[] = [];
+
+  for (const night of sorted) {
+    const current = runs[runs.length - 1];
+    if (
+      current &&
+      formatDateOnly(addDaysDateOnly(parseDateOnly(current.lastNight), 1)) ===
+        night
+    ) {
+      current.lastNight = night;
+      current.nights.push(night);
+      continue;
+    }
+    runs.push({ firstNight: night, lastNight: night, nights: [night] });
+  }
+
+  return runs;
 }

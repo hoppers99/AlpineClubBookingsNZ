@@ -76,6 +76,11 @@ const ADMIN_SYSTEM_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
   // plumbing: sendToAdmins, adminBookingRequest gating, NOT delivery-locked.
   "admin-booking-request-hold-cancelled",
   "admin-school-manual-invoice",
+  // #2263: the same money-critical alert for an approved MEMBER whole-lodge
+  // request converted while the Xero module is off. Its own registry entry
+  // rather than a variant of the school one — the wording names a member, not a
+  // school — and delivery-locked on the same grounds (see below).
+  "admin-whole-lodge-manual-invoice",
   // #1967/#1994: split non-member guest portion unpaid at hold expiry (no card
   // on file). Ships via sendToAdmins, so it classifies as an admin alert.
   // Deliberately NOT in LOCKED_DELIVERY_TEMPLATE_NAMES — it is an operational
@@ -100,6 +105,10 @@ const ADMIN_SYSTEM_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
 const LOCKED_DELIVERY_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
   "admin-email-failure",
   "admin-school-manual-invoice",
+  // #2263: same money risk, same lock — disabling it would let an approved
+  // member whole-lodge booking go un-invoiced while the member has been told an
+  // invoice is coming.
+  "admin-whole-lodge-manual-invoice",
 ]);
 
 const CONTENT_ONLY_DEFAULT_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
@@ -161,11 +170,20 @@ export const EXTRA_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, strin
     "discount",
     "doorCode",
     "doorCodeNote",
+    // #2263: the paid/unpaid money story is the pre-composed {{paymentOutcome}}
+    // in the default body; the per-piece tokens stay allowed so an override can
+    // build its own money lines (and so an override saved from the pre-#2267
+    // default, which wrote "Total Paid: {{totalPaid}}", keeps validating).
+    "paymentDueNote",
+    "paymentOutcome",
+    "paymentReference",
     "promoAdjustment",
     "promoCode",
     "promoSummary",
     "provisionalGuestsNote",
     "subtotal",
+    "totalDue",
+    "totalPaid",
   ],
   // #2267: since the ragged "[only when …]" lines were removed, the default
   // body leans on the pre-composed {{changeSummary}} (which rows changed) and
@@ -623,6 +641,12 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
     frequency:
       "Once per conversion, to admins opted into public booking-request alerts",
   },
+  "admin-whole-lodge-manual-invoice": {
+    triggerSummary:
+      "Approved member whole-lodge request converted while the Xero module is off, so no invoice was raised for the confirmed booking",
+    frequency:
+      "Once per conversion, to admins opted into public booking-request alerts",
+  },
   "group-booking-join-verification": {
     triggerSummary:
       "Non-member used a join code to claim a group-booking spot and must confirm their email",
@@ -779,6 +803,13 @@ export function sampleValue(token: string): string {
   // not add up teaches an admin to distrust the preview.
   if (token === "promoSummary") {
     return "Subtotal: $153.45\nPromo adjustment (PROMO2026): -$30.00\n";
+  }
+  // #2263: the paid variant of the pre-composed money outcome, reconciling
+  // with the promo sample above ($153.45 − $30.00 = $123.45) so the preview's
+  // arithmetic adds up. The unpaid variant (Total Due + the owing sentence)
+  // only ever renders from a live send that really is unpaid.
+  if (token === "paymentOutcome") {
+    return "Total Paid: $123.45\n\nPayment has been processed successfully.";
   }
   // #2267: one coherent booking-modified sample — a 2-guest stay whose dates
   // moved from 1–3 Jul to 8–10 Jul and whose price rose from $123.45 to
@@ -1042,6 +1073,11 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "paymentIntentId",
   "paymentReference",
   "paymentNote",
+  // #2263 × #2267: the booking-confirmed money story as ONE pre-composed block
+  // (the {{promoSummary}} convention) — "Total Paid + processed" for a paid
+  // booking, "Total Due + the owing sentence" for a confirmed-but-unpaid one,
+  // so the default body can never claim money moved when it did not.
+  "paymentOutcome",
   "price",
   "percent",
   "participantName",
@@ -1110,6 +1146,12 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "token",
   "total",
   "totalAlerts",
+  // #2263: the two halves of an UNPAID confirmation. `totalDue` replaces
+  // `totalPaid` (exactly one of the pair ever carries a figure), and
+  // `paymentDueNote` is the pre-composed sentence naming the amount owing and
+  // the internet-banking reference.
+  "totalDue",
+  "paymentDueNote",
   "totalPaid",
   "triggeringMemberName",
   "verifyUrl",

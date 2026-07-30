@@ -82,6 +82,9 @@ describe("general cron runner", () => {
         purgeExpiredBookingRequests: vi.fn(async () => ({
           declinedPurged: 1,
           neverVerifiedPurged: 2,
+          // #2263 / OD-B: member-withdrawn (CANCELLED) requests now purge on
+          // the same 90-day clock.
+          memberWithdrawnPurged: 0,
         })),
         sendQuoteExpiryReminders: vi.fn(async () => ({
           remindedCount: 1,
@@ -101,6 +104,9 @@ describe("general cron runner", () => {
     expect(result.bookingRequestPurge).toEqual({
       declinedPurged: 1,
       neverVerifiedPurged: 2,
+      // #2263 / OD-B: member-withdrawn (CANCELLED) requests purge on the same
+      // 90-day clock, so the cycle result carries their count too.
+      memberWithdrawnPurged: 0,
     });
     expect(result.quoteExpiryReminders).toEqual({
       remindedCount: 1,
@@ -172,6 +178,7 @@ describe("general cron runner", () => {
     }));
     const purgeExpiredBookingRequests = vi.fn(async () => ({
       declinedPurged: 0,
+      memberWithdrawnPurged: 0,
       neverVerifiedPurged: 0,
     }));
     const sendQuoteExpiryReminders = vi.fn(async () => ({
