@@ -8,11 +8,15 @@ import { Button } from "@/components/ui/button";
  * Re-send the "you still owe this" email for a booking's uncollected additional
  * payment (#2350).
  *
- * A plain `Button` rather than a `ViewOnlyActionButton`: the panel around it only
- * renders this control for an admin who already holds `bookings:edit`, and a
- * view-only admin is given the reason in prose instead — the same shape the
- * bed-allocation panel's confirmation dialog uses, and it keeps a leaf action out
- * of the view-only census.
+ * A plain `Button` rather than a `ViewOnlyActionButton`, which IS a divergence
+ * from how most top-level admin panel actions are built — noted here so the next
+ * reader does not copy it by accident. It is deliberate: the panel around this
+ * control renders it only for an admin who already holds `bookings:edit`, the
+ * route re-checks that permission server-side, and a view-only admin is told why
+ * the button is missing in prose, in reading order, rather than being shown a
+ * disabled control they have to hover to understand. What the view-only rule
+ * protects — that an admin without write access is never left guessing — is
+ * satisfied; the shared component would only add a control that cannot be used.
  *
  * The server refuses a second send inside the cooldown window, so double-clicking
  * cannot fan out; the refusal is surfaced verbatim rather than being retried.

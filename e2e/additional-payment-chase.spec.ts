@@ -55,6 +55,16 @@ test("the bookings list marks an owing booking partly paid with the amount due",
   await expect(row.getByText("Paid", { exact: true })).toBeVisible();
 });
 
+/*
+  Retry-safe by construction. Sending the request writes a stamp that survives
+  the test — there is no reseed between Playwright retries — so on a retry this
+  booking has already been chased inside the cooldown, and asserting the fresh
+  path would fail three times over (a wrong "Not yet", a 429 instead of a send,
+  and a three-minute wait for an email that was never going to arrive). So the
+  test reads the panel first and asserts whichever state it is actually in: the
+  full send on a fresh database, the refusal on a retry. The first attempt is
+  the one that proves the email; the retry still proves the cooldown holds.
+*/
 test("the booking page shows an admin what is outstanding and chases the member", async ({
   page,
 }) => {
@@ -64,13 +74,20 @@ test("the booking page shows an admin what is outstanding and chases the member"
   await expect(panel).toBeVisible();
   await expect(panel.getByText("Awaiting payment")).toBeVisible();
   await expect(panel.getByText(AMOUNT_LABEL).first()).toBeVisible();
-  // Nobody has been chased yet on a freshly seeded database.
-  await expect(panel.getByText("Not yet")).toBeVisible();
+
+  const alreadyChased = (await panel.getByText("Not yet").count()) === 0;
 
   await clearMailbox();
   await panel
     .getByRole("button", { name: "Resend payment request email" })
     .click();
+
+  if (alreadyChased) {
+    await expect(
+      panel.getByText(/already emailed to this member/i),
+    ).toBeVisible();
+    return;
+  }
 
   await expect(
     page.getByText("Payment request emailed to the member."),

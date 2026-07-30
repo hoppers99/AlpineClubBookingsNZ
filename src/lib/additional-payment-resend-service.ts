@@ -1,14 +1,19 @@
 import {
   ADDITIONAL_PAYMENT_RESEND_COOLDOWN_MINUTES,
   additionalPaymentEpisodeStartedAt,
+  isAdditionalOwedBookingStatus,
   isAdditionalPaymentOwed,
   isWithinAdditionalPaymentResendCooldown,
+  resolveAdditionalPaymentChase,
 } from "@/lib/additional-payment-chase";
 import { createAuditLog } from "@/lib/audit";
 import { readBookingNoEmails } from "@/lib/booking-email-suppression";
+import { normalizeDateOnlyForTimeZone } from "@/lib/date-only";
 import { sendAdditionalPaymentReminderEmail } from "@/lib/email";
+import type { EmailSendOutcome } from "@/lib/email/core";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
+import { buildAdditionalOwedPaymentWhere } from "@/lib/unpaid-finished-stays";
 
 /**
  * Admin re-send of the "you still owe this" email (#2350).
@@ -18,19 +23,27 @@ import { prisma } from "@/lib/prisma";
  * the message in front of them now. It sends the SAME email the cron sends, so
  * an admin override of the wording applies to both.
  *
- * Three properties make it safe to give an admin a button that emails a member:
+ * Four properties make it safe to give an admin a button that emails a member:
  *
  *  1. **It cannot fan out.** The stamp that suppresses the automatic reminder is
  *     also the cooldown record, and it is written by a guarded `updateMany`
  *     BEFORE the send. Two clicks in the same second leave one winner; the loser
  *     is told the message just went out.
- *  2. **Auto and manual share one clock.** Because both write the same stamp, a
- *     cron reminder sent minutes ago blocks a re-send exactly as another
- *     re-send would, and a re-send suppresses the day-N nudge that was coming.
+ *  2. **Auto and manual share one clock, in both directions.** Because both
+ *     write the same stamps, a cron reminder sent minutes ago blocks a re-send
+ *     exactly as another re-send would — and a re-send suppresses whichever
+ *     automatic nudge was coming, INCLUDING the last-chance one when that is the
+ *     reminder currently due (it closes both stamps, as the cron's final branch
+ *     does). Stamping only the day-N column left the guarantee one-directional.
  *  3. **Silence is honoured up front.** A booking with the "No emails" switch on
  *     is refused with an explanation rather than being handed to the mailer to
  *     withhold — the admin is standing right there, and a silent withhold looks
  *     identical to a successful send.
+ *  4. **Only a send that actually went out reads as sent.** The mailer RETURNS
+ *     rather than throws when it withholds (suppressed address, walk-in
+ *     placeholder address, the switch flipping on after the check above), so the
+ *     outcome is inspected: anything other than "sent" gives the stamps back
+ *     where nothing will replay them and answers with what really happened.
  */
 
 export type ResendAdditionalPaymentEmailResult =
@@ -98,7 +111,21 @@ export async function resendAdditionalPaymentEmail(params: {
     };
   }
   const payment = booking.payment;
-  if (!isAdditionalPaymentOwed(payment) || !payment) {
+  if (!isAdditionalOwedBookingStatus(booking.status)) {
+    // A cancelled (or bumped, or not-yet-confirmed) booking keeps its delta
+    // columns untouched, so without this the button would email a member
+    // "Payment Still Needed" about a booking that no longer exists for them.
+    return {
+      ok: false,
+      status: 409,
+      error:
+        "This booking is not in a state where an additional payment can be collected, so nothing was sent.",
+    };
+  }
+  if (
+    !isAdditionalPaymentOwed({ bookingStatus: booking.status, payment }) ||
+    !payment
+  ) {
     return {
       ok: false,
       status: 409,
@@ -145,22 +172,57 @@ export async function resendAdditionalPaymentEmail(params: {
     };
   }
 
-  // The read above is advisory; this claim is the one that decides. Re-stating
-  // the cooldown and the owed test in the WHERE means two concurrent clicks (or
-  // a cron pass landing in between) cannot both send.
+  const episodeStartedAt = additionalPaymentEpisodeStartedAt({
+    paymentCreatedAt: payment.createdAt,
+    latestAdditionalTransactionCreatedAt:
+      payment.transactions[0]?.createdAt ?? null,
+  });
+
+  /*
+    Which automatic reminder is this manual send standing in for?
+
+    Writing only the day-N stamp made the cooldown one-directional: an admin
+    re-send inside the pre-arrival window was followed by the cron's near
+    identical last-chance email at the next three-hourly tick, which is exactly
+    what the shared-clock guarantee in this file's header promises cannot
+    happen. So when the last-chance reminder is the one currently due, the
+    manual send closes BOTH stamps — the same thing the cron's own final branch
+    does, and for the same reason: the member has now been told inside the
+    window and a second copy has nothing to add.
+  */
+  const standsInFor = resolveAdditionalPaymentChase({
+    now,
+    today: normalizeDateOnlyForTimeZone(now),
+    checkIn: booking.checkIn,
+    checkOut: booking.checkOut,
+    episodeStartedAt,
+    reminderSentAt: payment.additionalReminderSentAt,
+    finalReminderSentAt: payment.additionalFinalReminderSentAt,
+  });
+  const closesFinalReminder = standsInFor === "final";
+  const stamps = closesFinalReminder
+    ? { additionalReminderSentAt: now, additionalFinalReminderSentAt: now }
+    : { additionalReminderSentAt: now };
+
+  // The read above is advisory; this claim is the one that decides. It re-states
+  // the cooldown and the FULL owed test (booking lifecycle status included) and
+  // fences the obligation it read — the exact amount, and no ADDITIONAL
+  // transaction newer than this episode — so two concurrent clicks, a cron pass
+  // landing in between, a cancellation, or a fresh upward change cannot produce
+  // an email about the wrong obligation.
   const cooldownCutoff = new Date(
     now.getTime() - ADDITIONAL_PAYMENT_RESEND_COOLDOWN_MINUTES * 60_000,
   );
   const claimed = await prisma.payment.updateMany({
     where: {
       id: payment.id,
-      additionalAmountCents: { gt: 0 },
       AND: [
+        buildAdditionalOwedPaymentWhere(),
+        { additionalAmountCents: payment.additionalAmountCents },
         {
-          OR: [
-            { additionalPaymentStatus: null },
-            { additionalPaymentStatus: { not: "SUCCEEDED" } },
-          ],
+          transactions: {
+            none: { kind: "ADDITIONAL", createdAt: { gt: episodeStartedAt } },
+          },
         },
         {
           OR: [
@@ -176,24 +238,53 @@ export async function resendAdditionalPaymentEmail(params: {
         },
       ],
     },
-    data: { additionalReminderSentAt: now },
+    data: stamps,
   });
   if (claimed.count === 0) {
-    return {
-      ok: false,
-      status: 429,
-      error: `A payment request was already emailed to this member in the last ${ADDITIONAL_PAYMENT_RESEND_COOLDOWN_MINUTES} minutes. Please wait before sending another.`,
-    };
+    // A lost claim is not automatically "someone else just emailed them": the
+    // amount and the episode are fenced too. Re-read and say which it was,
+    // because "wait an hour" would be a lie if the delta simply moved.
+    return await explainLostClaim({
+      paymentId: payment.id,
+      readAmountCents: payment.additionalAmountCents,
+      readEpisodeStartedAt: episodeStartedAt,
+    });
   }
 
-  const episodeStartedAt = additionalPaymentEpisodeStartedAt({
-    paymentCreatedAt: payment.createdAt,
-    latestAdditionalTransactionCreatedAt:
-      payment.transactions[0]?.createdAt ?? null,
-  });
+  const restoreStamps = async (why: string) => {
+    // Give the stamp(s) back so the automatic chase is not silently disarmed by
+    // a send that never happened. Guarded on the values we wrote, so a reminder
+    // that landed in between is not clobbered.
+    await prisma.payment
+      .updateMany({
+        where: {
+          id: payment.id,
+          additionalReminderSentAt: now,
+          ...(closesFinalReminder
+            ? { additionalFinalReminderSentAt: now }
+            : {}),
+        },
+        data: {
+          additionalReminderSentAt: payment.additionalReminderSentAt,
+          ...(closesFinalReminder
+            ? {
+                additionalFinalReminderSentAt:
+                  payment.additionalFinalReminderSentAt,
+              }
+            : {}),
+        },
+      })
+      .catch((restoreErr) =>
+        logger.error(
+          { err: restoreErr, bookingId: booking.id, why },
+          "Failed to restore the additional-payment reminder stamp after a re-send that did not go out",
+        ),
+      );
+  };
 
+  let outcome;
   try {
-    await sendAdditionalPaymentReminderEmail({
+    outcome = await sendAdditionalPaymentReminderEmail({
       bookingId: booking.id,
       email: booking.member.email,
       firstName: booking.member.firstName,
@@ -204,20 +295,7 @@ export async function resendAdditionalPaymentEmail(params: {
       lodgeId: booking.lodgeId,
     });
   } catch (err) {
-    // Give the stamp back so the automatic chase is not silently disarmed by a
-    // send that never happened. Guarded on the value we wrote, so a reminder
-    // that landed in between is not clobbered.
-    await prisma.payment
-      .updateMany({
-        where: { id: payment.id, additionalReminderSentAt: now },
-        data: { additionalReminderSentAt: payment.additionalReminderSentAt },
-      })
-      .catch((restoreErr) =>
-        logger.error(
-          { err: restoreErr, bookingId: booking.id },
-          "Failed to restore the additional-payment reminder stamp after a failed re-send",
-        ),
-      );
+    await restoreStamps("transport_error");
     logger.error(
       { err, bookingId: booking.id },
       "Failed to re-send the additional-payment request email",
@@ -226,6 +304,34 @@ export async function resendAdditionalPaymentEmail(params: {
       ok: false,
       status: 502,
       error: "We could not send the payment request email. Please try again.",
+    };
+  }
+
+  if (outcome.status !== "sent") {
+    /*
+      The mailer RETURNS rather than throws when nothing was transmitted. An
+      admin standing at the booking must never be told "emailed" in that case:
+      a silent withhold looks identical to a successful send, and the stamp we
+      just wrote would also have spent the hour's cooldown on nothing.
+
+      The stamps go back for every case except an unreadable "No emails" switch,
+      which leaves a FAILED EmailLog the retry cron replays — restoring there
+      would risk the member getting a second copy.
+    */
+    const replayable =
+      outcome.status === "withheld_for_booking" &&
+      outcome.reason === "booking_flag_unreadable";
+    if (!replayable) {
+      await restoreStamps(outcome.status);
+    }
+    logger.warn(
+      { bookingId: booking.id, outcome: outcome.status },
+      "Additional-payment re-send was not transmitted",
+    );
+    return {
+      ok: false,
+      status: outcome.status === "withheld_for_booking" ? 409 : 422,
+      error: describeUntransmittedResend(outcome),
     };
   }
 
@@ -249,6 +355,9 @@ export async function resendAdditionalPaymentEmail(params: {
       requestedOn: episodeStartedAt.toISOString(),
       previousReminderSentAt:
         payment.additionalReminderSentAt?.toISOString() ?? null,
+      // Whether this send also closed the automatic last-chance reminder, so
+      // the audit trail explains why the member never got the cron's copy.
+      closedFinalReminder: closesFinalReminder,
     },
     requestId: params.auditRequest?.id,
     ipAddress: params.auditRequest?.ipAddress,
@@ -260,4 +369,102 @@ export async function resendAdditionalPaymentEmail(params: {
     sentAt: now,
     additionalAmountCents: payment.additionalAmountCents,
   };
+}
+
+/**
+ * Why did the guarded claim match nothing? Re-read and answer honestly.
+ *
+ * Three different things fail the same WHERE — someone else emailed the member
+ * inside the cooldown, the money stopped being owed (paid, or the booking was
+ * cancelled), or the obligation itself moved (a new upward change, or the member
+ * retrying a failed charge, which mints a fresh ADDITIONAL transaction). Only
+ * the first is a "wait an hour"; telling an admin to wait when the amount on
+ * their screen is simply out of date would send them back to press the same
+ * stale button.
+ */
+async function explainLostClaim(params: {
+  paymentId: string;
+  readAmountCents: number;
+  readEpisodeStartedAt: Date;
+}): Promise<ResendAdditionalPaymentEmailResult> {
+  const fresh = await prisma.payment
+    .findUnique({
+      where: { id: params.paymentId },
+      select: {
+        additionalAmountCents: true,
+        additionalPaymentStatus: true,
+        createdAt: true,
+        booking: { select: { status: true } },
+        transactions: {
+          where: { kind: "ADDITIONAL" },
+          select: { createdAt: true },
+          orderBy: { createdAt: "desc" },
+          take: 1,
+        },
+      },
+    })
+    .catch((err) => {
+      logger.error(
+        { err, paymentId: params.paymentId },
+        "Could not re-read the payment after a lost additional-payment re-send claim",
+      );
+      return null;
+    });
+
+  const cooldownAnswer: ResendAdditionalPaymentEmailResult = {
+    ok: false,
+    status: 429,
+    error: `A payment request was already emailed to this member in the last ${ADDITIONAL_PAYMENT_RESEND_COOLDOWN_MINUTES} minutes. Please wait before sending another.`,
+  };
+
+  if (!fresh) return cooldownAnswer;
+
+  if (
+    !isAdditionalPaymentOwed({
+      bookingStatus: fresh.booking.status,
+      payment: fresh,
+    })
+  ) {
+    return {
+      ok: false,
+      status: 409,
+      error:
+        "This booking no longer has an outstanding additional payment, so nothing was sent. Reload the booking to see its current state.",
+    };
+  }
+
+  const freshEpisodeStartedAt = additionalPaymentEpisodeStartedAt({
+    paymentCreatedAt: fresh.createdAt,
+    latestAdditionalTransactionCreatedAt:
+      fresh.transactions[0]?.createdAt ?? null,
+  });
+  if (
+    fresh.additionalAmountCents !== params.readAmountCents ||
+    freshEpisodeStartedAt.getTime() !== params.readEpisodeStartedAt.getTime()
+  ) {
+    return {
+      ok: false,
+      status: 409,
+      error:
+        "The outstanding amount changed while this was being sent, so no email went out. Reload the booking and send the request again.",
+    };
+  }
+
+  return cooldownAnswer;
+}
+
+/** Plain English for a send the mailer withheld rather than transmitted. */
+function describeUntransmittedResend(outcome: EmailSendOutcome): string {
+  switch (outcome.status) {
+    case "withheld_for_booking":
+      return outcome.reason === "booking_no_emails"
+        ? 'This booking has the "No emails" switch turned on, so nothing was sent. Turn it off first if the member should hear from us.'
+        : "We could not confirm this booking's email settings, so the message was held back rather than sent. Please try again shortly.";
+    case "suppressed":
+      return "This member's email address is blocked after a bounce or spam complaint, so nothing was sent. Contact them another way, or clear the suppression first.";
+    case "skipped_placeholder_recipient":
+      return "This member has no real email address on file (a walk-in placeholder), so nothing was sent.";
+    default:
+      return "The payment request was not sent. Please try again.";
+  }
 }

@@ -547,7 +547,11 @@ export async function sendAdditionalPaymentReminderEmail(params: {
   requestedOn: Date;
   lodgeId?: string | null;
 }) {
-  await sendEmail({
+  // Returns the outcome rather than swallowing it (#2350): both callers write a
+  // stamp BEFORE sending, and that stamp is also the 60-minute cooldown, so a
+  // withheld/suppressed/placeholder send — which returns, it does not throw —
+  // must not be mistaken for a delivered one.
+  return sendEmail({
     to: params.email,
     subject: `Payment Still Needed - ${EMAIL_DEFAULT_LODGE_NAME}`,
     html: additionalPaymentReminderTemplate(params),
