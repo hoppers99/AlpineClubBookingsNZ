@@ -120,6 +120,7 @@ describe("SkifieldWhakapapaWidget status styling", () => {
     ["Closed", "text-danger-11", "bg-danger-3"],
     ["Coming Soon", "text-muted-foreground", "bg-muted"],
     ["On Hold", "text-warning-11", "bg-warning-3"],
+    ["Unknown", "text-muted-foreground", "bg-muted"],
   ];
 
   it.each(CASES)(
