@@ -1107,6 +1107,28 @@ describe("#2262 door 3 — a stored credit election (#2265) is never silently st
     expect(result.staleCreditElectionCents).toBe(4500);
   });
 
+  it("reports the member's answer BEFORE the un-caught booking-event write, so a post-commit throw cannot lose it", async () => {
+    // Delta LOW-a. Everything after the commit is best-effort, but not equally
+    // recoverable: `recordBookingEvent` is awaited un-caught, so a throw there
+    // abandons the rest of the function — and the reporter's row is the ONLY
+    // place the member is ever told their credit was not spent. The event is an
+    // internal timeline fact an operator can reconstruct from the audit log.
+    primeSettleWithElection(4500);
+    const order: string[] = [];
+    mocks.createAuditLog.mockImplementation(
+      async (entry: { action?: string }) => {
+        if (entry?.action === UNAPPLIED_ACTION) order.push("member-report");
+      }
+    );
+    mocks.recordBookingEvent.mockImplementation(async () => {
+      order.push("booking-event");
+    });
+
+    await settleFullPrice();
+
+    expect(order).toEqual(["member-report", "booking-event"]);
+  });
+
   it("does nothing and reports nothing when the booking carries no election — the overwhelmingly common case", async () => {
     const result = await settle();
 
