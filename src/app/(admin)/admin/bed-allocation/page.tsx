@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useClubIdentity } from "@/components/club-identity-provider";
 import { LodgeSelect, useLodgeOptions } from "@/components/lodge-select";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
@@ -87,6 +88,9 @@ import { useSyncedScroll } from "./_components/use-synced-scroll";
 function describeBulkConflicts(
   guestName: string,
   conflicts: BulkAllocationConflict[],
+  // The club's own word for the role (#2286 review M8): admin copy is
+  // label-driven; only the lobby TV is pinned to the fixed word "Custodian".
+  hutLeaderLabel: string,
 ): string {
   const nightsFor = (reason: BulkAllocationConflict["reason"]) =>
     conflicts
@@ -100,7 +104,7 @@ function describeBulkConflicts(
   }
   if (custodian.length > 0) {
     clauses.push(
-      `that bed is held for a custodian on ${custodian.join(", ")} (change it on the Hut Leaders page)`,
+      `that bed is held for a ${hutLeaderLabel.toLowerCase()} on ${custodian.join(", ")} (change it on the ${hutLeaderLabel} Assignments page)`,
     );
   }
   return `${guestName}: ${clauses.join("; ")} — refreshing the board`;
@@ -278,6 +282,9 @@ export default function AdminBedAllocationPage() {
   const requestedTo = searchParams.get("to");
   const highlightedBookingId = searchParams.get("bookingId") || "";
   const canEditBookings = useAdminAreaEditAccess("bookings");
+  // Admin copy uses the club's own word for the hut-leader role (#2286 review
+  // M8); only the lobby TV is pinned to the fixed word "Custodian".
+  const { hutLeaderLabel } = useClubIdentity();
 
   const initialFrom = isDateOnlyString(requestedFrom ?? "")
     ? (requestedFrom as string)
@@ -660,7 +667,13 @@ export default function AdminBedAllocationPage() {
         };
 
         if (data.conflicts.length > 0) {
-          toast.warning(describeBulkConflicts(group.guestName, data.conflicts));
+          toast.warning(
+            describeBulkConflicts(
+              group.guestName,
+              data.conflicts,
+              hutLeaderLabel,
+            ),
+          );
         } else {
           toast.success("Allocation saved");
         }
@@ -804,7 +817,11 @@ export default function AdminBedAllocationPage() {
 
             if (data.conflicts.length > 0) {
               toast.warning(
-                describeBulkConflicts(allocation.guestName, data.conflicts),
+                describeBulkConflicts(
+                  allocation.guestName,
+                  data.conflicts,
+                  hutLeaderLabel,
+                ),
               );
             } else {
               toast.success("Visible guest nights moved");
@@ -1368,16 +1385,21 @@ export default function AdminBedAllocationPage() {
           {custodianHoldList.length > 0 ? (
             <Alert
               variant="info"
-              title="Bed held for a custodian — not available to allocate"
+              title={`Bed held for a ${hutLeaderLabel.toLowerCase()} — not available to allocate`}
             >
               <p className="mb-1">
-                {payload.custodianHolds.length === 1
+                {/* #2286 review L4: read the LENGTH from the same tolerant
+                    list this block is gated on, not from `payload.custodianHolds`
+                    — the comment above says exactly that, and a deploy-drain
+                    payload with no `custodianHolds` would crash the board here. */}
+                {custodianHoldList.length === 1
                   ? "This bed is"
                   : "These beds are"}{" "}
-                held for a custodian with no booking, so no guest can be placed
-                on them for those nights. Change the dates or the bed on the{" "}
+                held for a {hutLeaderLabel.toLowerCase()} with no booking, so no
+                guest can be placed on them for those nights. Change the dates or
+                the bed on the{" "}
                 <Link className="underline" href="/admin/hut-leaders">
-                  Hut Leaders
+                  {hutLeaderLabel} Assignments
                 </Link>{" "}
                 page.
               </p>

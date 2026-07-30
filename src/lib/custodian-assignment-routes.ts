@@ -18,7 +18,15 @@ import {
 export function custodianBedHoldErrorResponse(err: unknown) {
   if (err instanceof CustodianOverCapacityConfirmationRequiredError) {
     return NextResponse.json(
-      { error: err.message, code: err.code, nightDetails: err.nightDetails },
+      {
+        error: err.message,
+        code: err.code,
+        nightDetails: err.nightDetails,
+        // #2286 review M5: live bookings the per-night figures do not count, so
+        // the admin confirming an over-capacity night knows the real total may
+        // be higher.
+        nonHoldingBookings: err.nonHoldingBookings,
+      },
       { status: err.status },
     );
   }

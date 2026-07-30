@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { parseDateOnly } from "@/lib/date-only";
 
@@ -209,7 +210,7 @@ describe("chokepoint 5 — bed and room admin guards", () => {
       updateBedAllocationBed({ id: "bed-1", active: false, db: buildDb() }),
     ).rejects.toMatchObject({
       status: 409,
-      message: expect.stringContaining("held for a custodian"),
+      message: expect.stringContaining("held by a hut-leader assignment"),
     });
   });
 
@@ -243,7 +244,7 @@ describe("chokepoint 5 — bed and room admin guards", () => {
       deleteBedAllocationRoom({ id: "room-1", db }),
     ).rejects.toMatchObject({
       status: 409,
-      message: expect.stringContaining("held for a custodian"),
+      message: expect.stringContaining("held by a hut-leader assignment"),
     });
     // Nothing was deleted — the guard runs before the bulk bed delete.
     expect(
@@ -261,7 +262,7 @@ describe("chokepoint 5 — bed and room admin guards", () => {
       updateBedAllocationRoom({ id: "room-1", active: false, db: buildDb() }),
     ).rejects.toMatchObject({
       status: 409,
-      message: expect.stringContaining("held for a custodian"),
+      message: expect.stringContaining("held by a hut-leader assignment"),
     });
   });
 
@@ -269,6 +270,103 @@ describe("chokepoint 5 — bed and room admin guards", () => {
     await expect(
       updateBedAllocationRoom({ id: "room-1", active: false, db: buildDb() }),
     ).resolves.toMatchObject({ id: "room-1" });
+  });
+
+  /*
+   * The FK backstop, for the guard->delete race a concurrent hold can win. The
+   * ORDER of the classifier's tests is the whole point (#2286 review L1): the raw
+   * pg message for a HutLeaderAssignment_bedId_fkey violation names BOTH
+   * "hutleaderassignment" (the referencing table) and "lodgebed" (the table being
+   * modified), so a classifier that tested lodgebed first would answer "Refresh
+   * and try again" — a retry that can NEVER succeed, forever.
+   */
+  describe("P2003 classification when a hold lands mid-delete", () => {
+    function p2003(meta: Record<string, unknown>, message = "Foreign key constraint violated") {
+      const error = new Prisma.PrismaClientKnownRequestError(message, {
+        code: "P2003",
+        clientVersion: "test",
+      });
+      (error as { meta?: unknown }).meta = meta;
+      return error;
+    }
+
+    it("reads the structured field_name and steers to the Hut Leaders page", async () => {
+      const db = buildDb({
+        lodgeBed: {
+          findUnique: vi.fn().mockResolvedValue(bedRow()),
+          findMany: vi.fn().mockResolvedValue([{ id: "bed-1" }]),
+          deleteMany: vi
+            .fn()
+            .mockRejectedValue(
+              p2003({ field_name: "HutLeaderAssignment_bedId_fkey" }),
+            ),
+        },
+      });
+
+      await expect(
+        deleteBedAllocationRoom({ id: "room-1", db }),
+      ).rejects.toMatchObject({
+        status: 409,
+        message: expect.stringContaining("held by a hut-leader assignment"),
+      });
+    });
+
+    it("wins over the LodgeBed test when the raw message names BOTH tables", async () => {
+      // What the pg driver adapter actually produces once it has dropped the
+      // structured constraint field: one string naming both tables.
+      const db = buildDb({
+        lodgeBed: {
+          findUnique: vi.fn().mockResolvedValue(bedRow()),
+          findMany: vi.fn().mockResolvedValue([{ id: "bed-1" }]),
+          deleteMany: vi.fn().mockRejectedValue(
+            p2003(
+              {},
+              'update or delete on table "LodgeBed" violates foreign key constraint "HutLeaderAssignment_bedId_fkey" on table "HutLeaderAssignment"',
+            ),
+          ),
+        },
+      });
+
+      await expect(
+        deleteBedAllocationRoom({ id: "room-1", db }),
+      ).rejects.toMatchObject({
+        status: 409,
+        message: expect.stringContaining("held by a hut-leader assignment"),
+      });
+      // NOT the "a bed was just added, refresh" steer, which is unactionable
+      // here: the retry can never succeed while the hold exists.
+      await expect(
+        deleteBedAllocationRoom({ id: "room-1", db }),
+      ).rejects.not.toMatchObject({
+        message: expect.stringContaining("Refresh and try again"),
+      });
+    });
+
+    it("still steers a genuine mid-delete bed addition to a retry", async () => {
+      const db = buildDb({
+        lodgeBed: {
+          findUnique: vi.fn().mockResolvedValue(bedRow()),
+          findMany: vi.fn().mockResolvedValue([{ id: "bed-1" }]),
+          deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
+        lodgeRoom: {
+          findFirst: vi.fn().mockResolvedValue({ id: "room-1" }),
+          delete: vi.fn().mockRejectedValue(
+            p2003(
+              {},
+              'update or delete on table "LodgeRoom" violates foreign key constraint "LodgeBed_roomId_fkey" on table "LodgeBed"',
+            ),
+          ),
+        },
+      });
+
+      await expect(
+        deleteBedAllocationRoom({ id: "room-1", db }),
+      ).rejects.toMatchObject({
+        status: 409,
+        message: expect.stringContaining("Refresh and try again"),
+      });
+    });
   });
 });
 

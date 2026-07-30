@@ -20,6 +20,11 @@ const mocks = vi.hoisted(() => ({
   lodgeBedFindUnique: vi.fn(),
   bedAllocationFindMany: vi.fn(),
   bookingFindMany: vi.fn(),
+  // #2286 review M5: the over-capacity confirmation ALSO reads the live
+  // bookings its per-night figures cannot count (the #177 override-settle blind
+  // spot). Its own spy, dispatched on the `capacityOverriddenAt` filter, so the
+  // capacity-holding population stays exactly what each case sets.
+  overriddenBookingFindMany: vi.fn(),
   getLodgeCapacity: vi.fn(),
 }));
 
@@ -43,7 +48,12 @@ function db() {
     hutLeaderAssignment: { findMany: mocks.hutLeaderAssignmentFindMany },
     lodgeBed: { findUnique: mocks.lodgeBedFindUnique },
     bedAllocation: { findMany: mocks.bedAllocationFindMany },
-    booking: { findMany: mocks.bookingFindMany },
+    booking: {
+      findMany: (args: { where?: Record<string, unknown> }) =>
+        args?.where && "capacityOverriddenAt" in args.where
+          ? mocks.overriddenBookingFindMany(args)
+          : mocks.bookingFindMany(args),
+    },
   } as never;
 }
 
@@ -78,6 +88,7 @@ beforeEach(() => {
   mocks.hutLeaderAssignmentFindMany.mockResolvedValue([]);
   mocks.bedAllocationFindMany.mockResolvedValue([]);
   mocks.bookingFindMany.mockResolvedValue([]);
+  mocks.overriddenBookingFindMany.mockResolvedValue([]);
   mocks.getLodgeCapacity.mockResolvedValue(10);
 });
 
@@ -199,6 +210,59 @@ describe("validateCustodianBedHold", () => {
     await expect(validate()).rejects.toBeInstanceOf(
       CustodianOverCapacityConfirmationRequiredError,
     );
+  });
+
+  it("names the live bookings its own figures cannot count (#177 blind spot)", async () => {
+    // The per-night arithmetic uses capacityHoldingBookingFilter(), so an
+    // overridden PAYMENT_PENDING booking contributes NOTHING to the number the
+    // admin is asked to accept — yet the settlement carve-out will admit it onto
+    // exactly these nights. A confirmation that hides it understates what is
+    // being accepted.
+    mocks.getLodgeCapacity.mockResolvedValue(1);
+    mocks.bookingFindMany.mockResolvedValue([
+      {
+        checkIn: parseDateOnly("2026-07-02"),
+        checkOut: parseDateOnly("2026-07-03"),
+        guests: [
+          {
+            stayStart: parseDateOnly("2026-07-02"),
+            stayEnd: parseDateOnly("2026-07-03"),
+            nights: [],
+          },
+        ],
+      },
+    ]);
+    mocks.overriddenBookingFindMany.mockResolvedValue([
+      {
+        id: "booking-override",
+        checkIn: parseDateOnly("2026-07-03"),
+        checkOut: parseDateOnly("2026-07-05"),
+        status: "PAYMENT_PENDING",
+        member: { firstName: "Pat", lastName: "Payer", email: "pat@x.nz" },
+        _count: { guests: 3 },
+      },
+    ]);
+
+    await expect(validate()).rejects.toMatchObject({
+      code: "CUSTODIAN_OVER_CAPACITY_CONFIRM_REQUIRED",
+      nonHoldingBookings: [
+        {
+          id: "booking-override",
+          memberName: "Pat Payer",
+          checkIn: "2026-07-03",
+          checkOut: "2026-07-05",
+          guestCount: 3,
+          status: "PAYMENT_PENDING",
+        },
+      ],
+    });
+  });
+
+  it("does not pay for that extra read when the hold fits inside capacity", async () => {
+    // It only matters when we are ABOUT to ask, so an ordinary within-capacity
+    // hold must not run the query at all.
+    await expect(validate()).resolves.toBeUndefined();
+    expect(mocks.overriddenBookingFindMany).not.toHaveBeenCalled();
   });
 
   it("proceeds once the admin confirms the override", async () => {

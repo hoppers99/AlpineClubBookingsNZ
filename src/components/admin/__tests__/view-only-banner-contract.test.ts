@@ -757,15 +757,21 @@ describe("view-only section banner coverage (#2160)", () => {
                state, not an oversight. (The Xero/Stripe/Google/backup wizard
                steps sidestep this by using a plain disabled `Button`, which
                says nothing at all; these say why.)
+          278  +3  #2286 wires the Hut Leaders page's bed controls to the PUT
+               that already existed: "Release bed" and "Change bed" per
+               assignment row, plus "Confirm anyway" on the over-capacity
+               question. All three are STATIC opt-outs under that page's single
+               unconditional `AdminViewOnlySectionBanner`, which the two
+               existing row actions (reset PIN, delete) already opt out under.
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into
       // the Admin tools card's layout — the same shape as the capacity- and
       // exclusive-hold controls beside it, so it keeps its own per-button
       // reason rather than opting out under a banner it cannot prove renders.
-      callSites: 275,
-      optOuts: 237,
-      staticOptOuts: 216,
+      callSites: 278,
+      optOuts: 240,
+      staticOptOuts: 219,
       vouchedOptOuts: 21,
       exceptions: 38,
       exceptionFiles: 18,

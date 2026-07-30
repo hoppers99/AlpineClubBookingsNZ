@@ -697,7 +697,7 @@ export async function updateBedAllocationRoom(input: {
           (hold) => `${hold.startDate} to ${hold.endDate}`,
         );
         throw new BedAllocationAdminError(
-          `Cannot deactivate this room while one of its beds is held for a custodian (${ranges.join("; ")}). Clear the bed on the Hut Leaders page first.`,
+          `Cannot deactivate this room while one of its beds is held by a hut-leader assignment (${ranges.join("; ")}). Clear the bed on the Hut Leaders page first.`,
           409,
         );
       }
@@ -1119,7 +1119,7 @@ async function assertNoCustodianHoldsForBed(input: {
 
   const ranges = holds.map((hold) => `${hold.startDate} to ${hold.endDate}`);
   throw new BedAllocationAdminError(
-    `Cannot ${input.action} this bed while it is held for a custodian (${ranges.join("; ")}). Clear the bed on the Hut Leaders page first.`,
+    `Cannot ${input.action} this bed while it is held by a hut-leader assignment (${ranges.join("; ")}). Clear the bed on the Hut Leaders page first.`,
     409,
   );
 }
@@ -1158,7 +1158,7 @@ const ROOM_CHANGED_WHILE_DELETING_MESSAGE =
 // #2286: a custodian hold on one of the room's beds. Its own message, because
 // the fix is on a different page from either of the two above.
 const ROOM_HAS_CUSTODIAN_HOLD_MESSAGE =
-  "A bed in this room is held for a custodian, so the room cannot be deleted. Clear the bed on the Hut Leaders page first.";
+  "A bed in this room is held by a hut-leader assignment, so the room cannot be deleted. Clear the bed on the Hut Leaders page first.";
 
 // Classify a P2003 caught during the bed+room deletes. The pg driver adapter
 // can drop the structured constraint field (see booking-envelope-invariants),
@@ -1817,7 +1817,7 @@ export function buildBedAllocationWarnings(input: {
         bookingGuestId: allocation.bookingGuestId,
         stayDate: allocation.stayDate,
         roomId: allocation.roomId,
-        message: `${allocation.guestName} is allocated to ${hold.bedName} on ${allocation.stayDate}, which is held for custodian ${hold.memberName}. Remove the allocation or change the custodian's assignment.`,
+        message: `${allocation.guestName} is allocated to ${hold.bedName} on ${allocation.stayDate}, which is held by ${hold.memberName}'s hut-leader assignment. Remove the allocation or change that assignment.`,
       });
     }
   }

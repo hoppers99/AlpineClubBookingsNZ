@@ -320,7 +320,7 @@ export async function assertBedNightsFreeOfCustodianHold(input: {
   const held = await custodianHeldNightsForBed(input);
   if (held.length === 0) return;
   throw new CustodianHoldConflictError(
-    `That bed is held for a custodian on ${held.join(", ")}. Change the custodian's assignment on the Hut Leaders page first.`,
+    `That bed is held by a hut-leader assignment on ${held.join(", ")}. Change that assignment on the Hut Leaders page first.`,
     held,
   );
 }

@@ -280,6 +280,28 @@ describe("PUT /api/admin/hut-leaders/[id] — three-state bedId", () => {
     });
   });
 
+  it("RELEASES the bed even with the bedAllocation module OFF (#2286 review M11)", async () => {
+    // A hold created while the module was on still occupies a real bed after it
+    // is turned off — physical reality does not follow a feature flag. The
+    // module gate deliberately guards only the SET direction, so the hold can
+    // always be undone; gating the clear too would strand it with no route back.
+    mocks.isEffectiveModuleEnabled.mockResolvedValue(false);
+
+    const res = await PUT(putRequest({ bedId: null }), { params });
+    expect(res.status).toBe(200);
+    expect(mocks.assignmentUpdate.mock.calls[0][0].data).toMatchObject({
+      bedId: null,
+    });
+  });
+
+  it("still refuses to SET a bed with the module off", async () => {
+    mocks.isEffectiveModuleEnabled.mockResolvedValue(false);
+
+    const res = await PUT(putRequest({ bedId: "bed-9" }), { params });
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe("MODULE_DISABLED");
+  });
+
   it("A STRING sets the bed, under the lock, validated against the final dates and lodge", async () => {
     mocks.assignmentFindUnique.mockResolvedValue({
       id: "a1",

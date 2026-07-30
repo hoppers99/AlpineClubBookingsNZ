@@ -54,7 +54,7 @@ export function bedAllocationErrorResponse(error: unknown) {
         return NextResponse.json(
           {
             error:
-              "This bed is held for a custodian and cannot be deleted. Clear the bed on the Hut Leaders page first.",
+              "This bed is held by a hut-leader assignment and cannot be deleted. Clear the bed on the Hut Leaders page first.",
           },
           { status: 409 },
         );

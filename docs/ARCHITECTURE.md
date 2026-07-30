@@ -795,11 +795,11 @@ Booking Policies sections (#2142) and is now the **default across the admin
 tree** (#2160, extended by #2168) — not a claim that nothing is left. Measured
 on the current tree by `view-only-banner-contract.test.ts`, which asserts these
 figures rather than trusting a hand count: **78 components render a banner, and
-237 of the 275 `ViewOnlyActionButton` call sites opt out** of the per-button
+240 of the 278 `ViewOnlyActionButton` call sites opt out** of the per-button
 reason. (Earlier revisions of this page published 76/232/264/211 — those were
 upstream-historical and had drifted; the numbers here are the ones the contract
-test currently pins, which is the only authority.) Those 237 split by WHICH rule
-covers them: **216** pass the literal
+test currently pins, which is the only authority.) Those 240 split by WHICH rule
+covers them: **219** pass the literal
 `describeReason={false}` and are covered by a banner in the same file, and **21**
 pass `describeReason={!ancestorRendersViewOnlyBanner}` and are covered by a
 verified vouching parent (see *Vouching for a child's coverage* below). The

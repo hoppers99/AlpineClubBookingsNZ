@@ -1,6 +1,9 @@
 import type { Prisma } from "@prisma/client";
 import { capacityHoldingBookingFilter } from "@/lib/booking-status";
-import { getOccupiedBedsForNight } from "@/lib/capacity";
+import {
+  findOverlappingOverriddenNonHoldingBookings,
+  getOccupiedBedsForNight,
+} from "@/lib/capacity";
 import {
   custodianHeldNightsForBed,
   findCustodianBedHolds,
@@ -37,6 +40,25 @@ export interface CustodianOverCapacityNight {
   capacity: number;
 }
 
+/**
+ * A live booking over those nights that the arithmetic above does NOT count
+ * (#2286 review M5), following the #177 override-settle precedent.
+ *
+ * `occupiedBeds` is built from `capacityHoldingBookingFilter()`, so an overridden
+ * PAYMENT_PENDING booking — which the settlement carve-out will later admit onto
+ * exactly these nights — contributes nothing to the number the admin is asked to
+ * confirm. Naming it makes the confirmation honest: the ceiling may be breached
+ * by more than the figure shown. Informational only; it never refuses.
+ */
+export interface CustodianOverCapacityBooking {
+  id: string;
+  memberName: string;
+  checkIn: string;
+  checkOut: string;
+  guestCount: number;
+  status: string;
+}
+
 export class CustodianBedHoldError extends Error {
   constructor(
     message: string,
@@ -70,7 +92,14 @@ export class CustodianBedHoldError extends Error {
 export class CustodianOverCapacityConfirmationRequiredError extends Error {
   readonly status = 409;
   readonly code = "CUSTODIAN_OVER_CAPACITY_CONFIRM_REQUIRED";
-  constructor(readonly nightDetails: CustodianOverCapacityNight[]) {
+  constructor(
+    readonly nightDetails: CustodianOverCapacityNight[],
+    /**
+     * Live bookings over those nights that `nightDetails` does not count (#177
+     * shape, #2286 review M5). Empty in the ordinary case.
+     */
+    readonly nonHoldingBookings: CustodianOverCapacityBooking[] = [],
+  ) {
     super(
       "Holding that bed puts the lodge over capacity on at least one night. Confirm to proceed.",
     );
@@ -153,7 +182,7 @@ export async function validateCustodianBedHold(input: {
   });
   if (clashingNights.length > 0) {
     throw new CustodianBedHoldError(
-      `That bed is already held for another custodian on ${clashingNights.join(", ")}. A handover overlap is allowed, but only on different beds.`,
+      `That bed is already held by another hut-leader assignment on ${clashingNights.join(", ")}. A handover overlap is allowed, but only on different beds.`,
       409,
       "BED_HELD_BY_ANOTHER_CUSTODIAN",
       clashingNights,
@@ -226,7 +255,28 @@ export async function validateCustodianBedHold(input: {
     }
   }
   if (overCapacity.length > 0) {
-    throw new CustodianOverCapacityConfirmationRequiredError(overCapacity);
+    // The figures above come from the capacity-HOLDING population only, so an
+    // overridden non-holding booking (chiefly PAYMENT_PENDING, #1764/#1771) is
+    // invisible to them even though the settlement carve-out will admit it onto
+    // exactly these nights. Mirror #177's companion query so the confirmation
+    // names it: the admin is being asked to accept an over-capacity night, and
+    // must be told the true figure could be higher still. Read only when we are
+    // about to ask — an ordinary within-capacity hold pays nothing for this.
+    const nonHoldingBookings = await findOverlappingOverriddenNonHoldingBookings(
+      db,
+      { lodgeId, checkIn: startDate, checkOut: toExclusive },
+    );
+    throw new CustodianOverCapacityConfirmationRequiredError(
+      overCapacity,
+      nonHoldingBookings.map((booking) => ({
+        id: booking.id,
+        memberName: booking.memberName,
+        checkIn: booking.checkIn,
+        checkOut: booking.checkOut,
+        guestCount: booking.guestCount,
+        status: booking.status,
+      })),
+    );
   }
 }
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -13,7 +13,14 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Trash2, UserCheck, CalendarDays, KeyRound } from "lucide-react";
+import {
+  BedDouble,
+  Trash2,
+  UserCheck,
+  CalendarDays,
+  KeyRound,
+  Undo2,
+} from "lucide-react";
 import {
   addDaysDateOnly,
   formatDateOnly,
@@ -118,9 +125,33 @@ export default function HutLeadersPage() {
   // Set when the server answered CUSTODIAN_OVER_CAPACITY_CONFIRM_REQUIRED: the
   // hold is legitimate but tips the lodge past its ceiling on these nights, so
   // the admin re-confirms rather than discovering it later (#1668 precedent).
-  const [overCapacityNights, setOverCapacityNights] = useState<
-    Array<{ date: string; occupiedBeds: number; capacity: number }> | null
-  >(null);
+  //
+  // `confirm` is the action to re-run with the override — a NEW assignment from
+  // the form, or a bed CHANGE on an existing row (both PUT and POST can answer
+  // this), so the card asks the question once for either.
+  //
+  // `bookings` (#2286 review M5) are live bookings over those nights that the
+  // per-night figures do NOT count (the #177 override-settle blind spot):
+  // informational, but the admin is accepting an over-capacity night, so they
+  // must know the true total could be higher.
+  const [overCapacity, setOverCapacity] = useState<{
+    nights: Array<{ date: string; occupiedBeds: number; capacity: number }>;
+    bookings: Array<{
+      id: string;
+      memberName: string;
+      checkIn: string;
+      checkOut: string;
+      guestCount: number;
+      status: string;
+    }>;
+    confirm: () => void;
+  } | null>(null);
+  // Which assignment's bed is being changed inline in the table (#2286 review
+  // M7). One at a time: the picker re-reads availability for that row's dates.
+  const [bedEditAssignmentId, setBedEditAssignmentId] = useState<string | null>(
+    null,
+  );
+  const [savingBedForId, setSavingBedForId] = useState<string | null>(null);
   // Server-side privacy note: a minor custodian is never named on the lodge TV.
   const [minorCustodianNote, setMinorCustodianNote] = useState<string | null>(
     null,
@@ -131,6 +162,14 @@ export default function HutLeadersPage() {
   const { lodges, loading: lodgesLoading } = useLodgeOptions("admin");
   const [lodgeId, setLodgeId] = useState<string | null>(null);
   const showLodgeColumn = lodges.length > 1;
+
+  // The over-capacity question appears below the form after a declined save, so
+  // it takes focus when it arrives (#2286 review M6) — otherwise a keyboard or
+  // screen-reader admin has no idea a second step is waiting further down.
+  const overCapacityCardRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (overCapacity) overCapacityCardRef.current?.focus();
+  }, [overCapacity]);
 
   const [visibleMonthKey, setVisibleMonthKey] = useState(() =>
     monthKeyForDate(getTodayDateOnly()),
@@ -307,7 +346,13 @@ export default function HutLeadersPage() {
         // #2286 warn-and-confirm: not a failure, a question. Keep the form
         // exactly as it is and show the nights so the admin decides.
         if (data.code === "CUSTODIAN_OVER_CAPACITY_CONFIRM_REQUIRED") {
-          setOverCapacityNights(data.nightDetails ?? []);
+          setOverCapacity({
+            nights: data.nightDetails ?? [],
+            bookings: Array.isArray(data.nonHoldingBookings)
+              ? data.nonHoldingBookings
+              : [],
+            confirm: () => void handleConfirm(true),
+          });
           return;
         }
         setError({
@@ -323,12 +368,72 @@ export default function HutLeadersPage() {
       setSelection({ startDate: "", endDate: "" });
       setTarget(null);
       setSelectedBedId(null);
-      setOverCapacityNights(null);
+      setOverCapacity(null);
       fetchAssignments();
       fetchUnassignedDates();
       refreshOverlay(visibleMonthKey);
     } finally {
       setCreating(false);
+    }
+  }
+
+  /**
+   * Set, change or RELEASE the bed an existing assignment holds (#2286 review
+   * M7) — `PUT /api/admin/hut-leaders/[id]` with the route's three-state
+   * `bedId`: a string sets it, explicit `null` clears it.
+   *
+   * This is what makes every "clear the bed first" refusal elsewhere in the app
+   * actionable: before it, a hold could only be removed by DELETING the whole
+   * assignment, which also destroyed the coverage record and the kiosk PIN — and
+   * a hold on a cron-created assignment had no admin control at all.
+   */
+  async function handleSetBed(
+    assignment: HutLeaderAssignment,
+    bedId: string | null,
+    confirmOverCapacity = false,
+  ) {
+    setError(null);
+    setSavingBedForId(assignment.id);
+    try {
+      const res = await fetch(`/api/admin/hut-leaders/${assignment.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        // `bedId` is sent EXPLICITLY, including as null: omitting it means
+        // "leave the bed alone" to the route, which is the one thing a release
+        // must not do.
+        body: JSON.stringify({
+          bedId,
+          ...(confirmOverCapacity ? { confirmOverCapacity: true } : {}),
+        }),
+      });
+      if (!res.ok) {
+        if (res.status === 403) {
+          setError({ message: ADMIN_FORBIDDEN_SAVE_REASON, memberId: null });
+          return;
+        }
+        const data = await res.json().catch(() => null);
+        if (data?.code === "CUSTODIAN_OVER_CAPACITY_CONFIRM_REQUIRED") {
+          setOverCapacity({
+            nights: data.nightDetails ?? [],
+            bookings: Array.isArray(data.nonHoldingBookings)
+              ? data.nonHoldingBookings
+              : [],
+            confirm: () => void handleSetBed(assignment, bedId, true),
+          });
+          return;
+        }
+        setError({
+          message: data?.error || "Failed to update the bed",
+          memberId: null,
+        });
+        return;
+      }
+      setBedEditAssignmentId(null);
+      setOverCapacity(null);
+      fetchAssignments();
+      refreshOverlay(visibleMonthKey);
+    } finally {
+      setSavingBedForId(null);
     }
   }
 
@@ -604,43 +709,92 @@ export default function HutLeadersPage() {
             onChange={(bedId) => {
               setSelectedBedId(bedId);
               // A changed bed invalidates any pending over-capacity answer.
-              setOverCapacityNights(null);
+              setOverCapacity(null);
             }}
             canEdit={canEdit}
           />
         }
       />
 
-      {overCapacityNights && overCapacityNights.length > 0 && (
-        <Card className="border-warning/20 bg-warning-muted">
+      {overCapacity && overCapacity.nights.length > 0 && (
+        /*
+          #2160/#1549 convention on this page: anything the admin MUST read
+          before acting is announced, not merely rendered. This card is a
+          question — it appears after a save the server declined to complete —
+          so it is a `role="alert"` live region AND takes focus, otherwise a
+          screen-reader or keyboard admin presses Confirm, hears nothing, and
+          has no idea a second step appeared further down the page.
+        */
+        <Card
+          className="border-warning/20 bg-warning-muted"
+          role="alert"
+          aria-live="assertive"
+          tabIndex={-1}
+          ref={overCapacityCardRef}
+          data-testid="custodian-over-capacity-confirm"
+        >
           <CardContent className="space-y-3 p-4">
             <p className="text-sm font-medium text-warning">
               Holding that bed puts the lodge over capacity
             </p>
             <ul className="space-y-1 text-sm text-foreground">
-              {overCapacityNights.map((night) => (
+              {overCapacity.nights.map((night) => (
                 <li key={night.date}>
                   {night.date}: {night.occupiedBeds} people for {night.capacity}{" "}
                   bed{night.capacity === 1 ? "" : "s"}
                 </li>
               ))}
             </ul>
+            {overCapacity.bookings.length > 0 && (
+              /*
+                #2286 review M5 (the #177 blind spot). The figures above count
+                only capacity-HOLDING bookings, so an overridden booking that
+                will settle onto these very nights adds nothing to them. Naming
+                it here is the difference between an honest confirmation and one
+                that understates what the admin is accepting.
+              */
+              <div className="space-y-1" data-testid="custodian-over-capacity-bookings">
+                <p className="text-sm font-medium text-warning">
+                  Not counted above — these live bookings can still take those
+                  nights:
+                </p>
+                <ul className="space-y-1 text-sm text-foreground">
+                  {overCapacity.bookings.map((booking) => (
+                    <li key={booking.id}>
+                      {booking.memberName} · {booking.checkIn} → {booking.checkOut}{" "}
+                      · {booking.guestCount} guest
+                      {booking.guestCount === 1 ? "" : "s"} · {booking.status}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             <p className="text-xs text-muted-foreground">
-              The custodian genuinely sleeps in the lodge, so this can be
-              correct — confirm only if you know those nights work.
+              The {hutLeaderLabel.toLowerCase()} genuinely sleeps in the lodge,
+              so this can be correct — confirm only if you know those nights
+              work.
             </p>
             <div className="flex flex-wrap gap-2">
-              <Button
+              {/*
+                Defence in depth: the write route enforces lodge:edit, and this
+                card is only reachable from a save a view-only admin cannot
+                start — but every write control on this page goes through
+                ViewOnlyActionButton, and an exception is the thing a later
+                refactor copies.
+              */}
+              <ViewOnlyActionButton
+                canEdit={canEdit}
+                describeReason={false}
                 type="button"
-                onClick={() => void handleConfirm(true)}
-                disabled={creating}
+                onClick={overCapacity.confirm}
+                disabled={creating || savingBedForId !== null}
               >
-                {creating ? "Assigning..." : "Confirm anyway"}
-              </Button>
+                {creating || savingBedForId ? "Saving..." : "Confirm anyway"}
+              </ViewOnlyActionButton>
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => setOverCapacityNights(null)}
+                onClick={() => setOverCapacity(null)}
               >
                 Cancel
               </Button>
@@ -739,6 +893,34 @@ export default function HutLeadersPage() {
                         Role only
                       </span>
                     )}
+                    {/*
+                      #2286 review M7: the bed is editable in place, including on
+                      an assignment the auto-assign cron created — which
+                      previously had no bed control at all. Selecting a bed PUTs
+                      straight away; "No bed — role only" releases it.
+                    */}
+                    {bedEditAssignmentId === a.id ? (
+                      <div className="mt-2" data-testid={`bed-picker-${a.id}`}>
+                        <CustodianBedPicker
+                          lodgeId={a.lodgeId}
+                          startDate={a.startDate}
+                          endDate={a.endDate}
+                          assignmentId={a.id}
+                          value={a.bedId}
+                          onChange={(bedId) => void handleSetBed(a, bedId)}
+                          canEdit={canEdit && savingBedForId !== a.id}
+                        />
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="mt-1 text-xs"
+                          onClick={() => setBedEditAssignmentId(null)}
+                        >
+                          Done
+                        </Button>
+                      </div>
+                    ) : null}
                   </TableCell>
                   <TableCell>
                     {isActive ? (
@@ -751,6 +933,50 @@ export default function HutLeadersPage() {
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-1">
+                      {/*
+                        #2286 review M7. Two separate controls on purpose:
+                        RELEASE is the one every "clear the bed first" message
+                        elsewhere in the app tells the admin to use, so it is one
+                        click and is never buried inside a picker. It stays
+                        available even with the bedAllocation module off — a
+                        hold created while it was on still occupies a real bed,
+                        and the route's clear branch is deliberately
+                        module-check-free so it can always be undone.
+                      */}
+                      {a.bedId ? (
+                        <ViewOnlyActionButton
+                          canEdit={canEdit}
+                          describeReason={false}
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => void handleSetBed(a, null)}
+                          disabled={savingBedForId === a.id}
+                          className="text-muted-foreground hover:bg-muted hover:text-foreground"
+                          title="Release the bed (keep the assignment)"
+                        >
+                          <Undo2 className="h-4 w-4" />
+                          <span className="sr-only">Release bed</span>
+                        </ViewOnlyActionButton>
+                      ) : null}
+                      <ViewOnlyActionButton
+                        canEdit={canEdit}
+                        describeReason={false}
+                        variant="ghost"
+                        size="sm"
+                        onClick={() =>
+                          setBedEditAssignmentId((current) =>
+                            current === a.id ? null : a.id,
+                          )
+                        }
+                        disabled={savingBedForId === a.id}
+                        className="text-muted-foreground hover:bg-muted hover:text-foreground"
+                        title={a.bedId ? "Change the bed held" : "Hold a bed"}
+                      >
+                        <BedDouble className="h-4 w-4" />
+                        <span className="sr-only">
+                          {a.bedId ? "Change bed" : "Hold a bed"}
+                        </span>
+                      </ViewOnlyActionButton>
                       <ViewOnlyActionButton
                         canEdit={canEdit}
                         describeReason={false}

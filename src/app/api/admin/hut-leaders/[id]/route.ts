@@ -150,7 +150,7 @@ export async function PUT(
     return NextResponse.json(
       {
         error:
-          "Bed allocation is turned off for this club, so a bed cannot be held for a custodian.",
+          "Bed allocation is turned off for this club, so a bed cannot be held for a hut leader.",
         code: "MODULE_DISABLED",
       },
       { status: 400 },

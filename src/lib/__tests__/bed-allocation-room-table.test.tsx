@@ -2,6 +2,7 @@
 
 import "@testing-library/jest-dom/vitest";
 import { render, screen } from "@testing-library/react";
+import type { ComponentProps } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { RoomTable } from "@/app/(admin)/admin/bed-allocation/_components/room-table";
 import {
@@ -20,6 +21,13 @@ vi.mock("@dnd-kit/core", () => ({
     setNodeRef: vi.fn(),
     isOver: false,
   }),
+}));
+
+// #2286: the custodian band uses the club's own word for the role (only the
+// lobby TV is pinned to the fixed word "Custodian"), so the cell reads the club
+// identity. Stubbed rather than wrapped, matching the hut-leaders page tests.
+vi.mock("@/components/club-identity-provider", () => ({
+  useClubIdentity: () => ({ hutLeaderLabel: "Hut Leader" }),
 }));
 
 // Stub the draggable AllocationChip so the RoomTable/BoardCell test focuses on
@@ -362,3 +370,130 @@ describe("RoomTable range outcome tinting", () => {
   });
 });
 
+
+/*
+ * #2286 custodian band. The band used to be an EARLY RETURN that rendered its
+ * own <td>, which silently dropped every other signal the cell carries — the
+ * range-assign green/red tint, the ?bookingId= focus outline, the partner
+ * marker. It is now an overlay inside the one cell body, and these cases pin
+ * that: the promise that a refused range shows red, and that a deep link to a
+ * booking still finds its cell, must hold on a custodian-held bed-night too.
+ */
+describe("RoomTable custodian band (#2286)", () => {
+  const HOLD = {
+    assignmentId: "assignment-1",
+    memberName: "Sam Ranger",
+    bedId: "bed-1",
+    bedName: "Bed One",
+    roomId: "room-1",
+    roomName: "Example Room",
+    startDate: "2026-06-01",
+    endDate: "2026-09-30",
+    nights: ["2026-07-01"],
+  };
+
+  function renderWithHold(
+    extra: Partial<ComponentProps<typeof RoomTable>> = {},
+  ) {
+    return render(
+      <RoomTable
+        canEdit={true}
+        room={buildRoom()}
+        nights={["2026-07-01", "2026-07-02"]}
+        allocationByBedAndDate={new Map()}
+        bedOptions={[]}
+        onReassignBed={vi.fn()}
+        onRemove={vi.fn()}
+        onAssignRange={vi.fn()}
+        custodianHoldByBedAndDate={
+          new Map([["bed-1:2026-07-01", HOLD]])
+        }
+        pendingAllocationIds={new Set()}
+        highlightedBookingId=""
+        {...extra}
+      />,
+    );
+  }
+
+  it("marks the held cell with a pill and a hatch, never colour alone", () => {
+    const { container } = renderWithHold();
+
+    const held = container.querySelector(
+      'td[data-stay-date="2026-07-01"][data-custodian-hold="true"]',
+    );
+    expect(held).not.toBeNull();
+    // The club's own word for the role, not a hardcoded "Custodian".
+    expect(held).toHaveTextContent("Hut Leader");
+    // The hatch is a SECOND signal beside the pill, and it is inline-styled.
+    expect(
+      held!.querySelector<HTMLElement>('[style*="repeating-linear-gradient"]'),
+    ).not.toBeNull();
+    // The neighbouring night is untouched.
+    expect(
+      container.querySelector(
+        'td[data-stay-date="2026-07-02"][data-custodian-hold="true"]',
+      ),
+    ).toBeNull();
+  });
+
+  it("names the holder for a screen reader as well as in the tooltip", () => {
+    const { container } = renderWithHold();
+    const held = container.querySelector<HTMLElement>(
+      'td[data-custodian-hold="true"]',
+    );
+    expect(held!.getAttribute("title")).toContain("Sam Ranger");
+    expect(held!.querySelector(".sr-only")?.textContent).toContain("Sam Ranger");
+  });
+
+  it("KEEPS the refused-red range tint on a held bed-night", () => {
+    const { container } = renderWithHold({
+      rangeTint: {
+        bedId: "bed-1",
+        written: new Set<string>(),
+        refused: new Set(["2026-07-01"]),
+      },
+    });
+
+    const held = container.querySelector<HTMLElement>(
+      'td[data-custodian-hold="true"]',
+    );
+    // The word AND the tint — a refusal on the very bed-night that caused it is
+    // the most important place for this signal to survive.
+    expect(held).toHaveTextContent("Refused");
+    expect(held).toHaveClass("bg-danger-muted");
+  });
+
+  it("KEEPS the ?bookingId= focus outline on a held bed-night", () => {
+    const allocation: DashboardAllocation = {
+      id: "allocation-1",
+      bookingId: "booking-focused",
+      bookingGuestId: "guest-1",
+      guestName: "Focused Guest",
+      guestAgeTier: "ADULT",
+      roomId: "room-1",
+      roomName: "Example Room",
+      bedId: "bed-1",
+      bedName: "Bed One",
+      stayDate: "2026-07-01",
+      source: "MANUAL",
+      approvedAt: null,
+      approvedByName: null,
+      bookingStatus: "CONFIRMED",
+      holdsCapacity: true,
+      isSecondOccupant: false,
+    };
+    const { container } = renderWithHold({
+      allocationByBedAndDate: new Map([["bed-1:2026-07-01", [allocation]]]),
+      highlightedBookingId: "booking-focused",
+    });
+
+    const held = container.querySelector<HTMLElement>(
+      'td[data-custodian-hold="true"]',
+    );
+    expect(held).toHaveClass("border-dashed");
+    expect(held).toHaveTextContent("Focused");
+    // The row itself stays visible and removable: it is exactly the
+    // CUSTODIAN_BED_CONFLICT warning's subject.
+    expect(screen.getByText("Focused Guest")).toBeInTheDocument();
+  });
+});
