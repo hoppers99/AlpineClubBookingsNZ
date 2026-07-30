@@ -29,6 +29,11 @@ vi.mock("@/lib/prisma", () => ({
       createMany: vi.fn(),
     },
     payment: { create: vi.fn() },
+    // #2263: stubbed so "no PaymentLink is created" is a REAL assertion. Left
+    // off the mock it was vacuous — `expect(prisma.paymentLink).toBeUndefined()`
+    // passes because the mock lacks the delegate, not because the code declines
+    // to use it, and it would keep passing if the code started minting tokens.
+    paymentLink: { create: vi.fn(), findFirst: vi.fn(), updateMany: vi.fn() },
     hutLeaderAssignment: { create: vi.fn() },
     // #2285 review: an exclusivity approval reads the booking's per-bed rows
     // BEFORE pruning them, so the prune audit can list what it destroyed.
@@ -54,6 +59,13 @@ vi.mock("@/lib/email", () => ({
   sendBookingRequestVerificationEmail: vi.fn().mockResolvedValue(undefined),
   sendHutLeaderAssignmentEmail: vi.fn().mockResolvedValue(undefined),
   sendAdminSchoolManualInvoiceEmail: vi.fn().mockResolvedValue(undefined),
+  // #2263: the member whole-lodge sibling of the school manual-invoice alert,
+  // fired when the Xero module is off so the receivable is still invoiced.
+  sendAdminWholeLodgeManualInvoiceEmail: vi.fn().mockResolvedValue(undefined),
+  // #2263: the member whole-lodge approval sends the ordinary booking
+  // confirmation. Stub it under the partial mock or the approve path calls
+  // undefined → throw (mock-safety, see #1417).
+  sendBookingConfirmedEmail: vi.fn().mockResolvedValue(undefined),
   // #1377: the school approve path now fires an owner-substitution admin alert
   // on the substitute path. Stub it under the partial mock or the real approve
   // path calls undefined → throw (mock-safety, see #1417).
@@ -91,6 +103,12 @@ vi.mock("@/lib/xero-operation-outbox", () => ({
   enqueueXeroBookingInvoiceOperation: vi
     .fn()
     .mockResolvedValue({ queueOperationId: "op-1" }),
+  // #2263: the #1620 floating-credit parity op the member whole-lodge approval
+  // enqueues alongside the invoice (the school path's non-login contact never
+  // carries account credit, so the school block omits it).
+  enqueueXeroAppliedCreditAllocationOperation: vi
+    .fn()
+    .mockResolvedValue({ queueOperationId: "op-2" }),
   kickQueuedXeroOutboxOperationsIfConnected: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -136,7 +154,9 @@ import {
   sendBookingRequestVerificationEmail,
   sendHutLeaderAssignmentEmail,
   sendAdminSchoolManualInvoiceEmail,
+  sendAdminWholeLodgeManualInvoiceEmail,
   sendAdminOwnerSubstitutionAlert,
+  sendBookingConfirmedEmail,
 } from "@/lib/email";
 import {
   acquireLodgeCapacityLock,
@@ -145,10 +165,12 @@ import {
 } from "@/lib/capacity";
 import { createAuditLog, logAudit } from "@/lib/audit";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
-import { getLodgeCapacity } from "@/lib/lodge-capacity";
+import { getDefaultLodgeCapacity, getLodgeCapacity } from "@/lib/lodge-capacity";
 import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
 import {
+  enqueueXeroAppliedCreditAllocationOperation,
   enqueueXeroBookingInvoiceOperation,
+  kickQueuedXeroOutboxOperationsIfConnected,
 } from "@/lib/xero-operation-outbox";
 import { requiresAdultSupervisionReview } from "@/lib/booking-review";
 import { BookingRequestError } from "@/lib/booking-request";
@@ -157,6 +179,7 @@ import {
   BookingMemberNightConflictError,
 } from "@/lib/booking-member-night-conflicts";
 import {
+  approveMemberWholeLodgeRequest,
   approveSchoolBookingRequest,
   createSchoolBookingRequest,
   generateSchoolGuests,
@@ -175,6 +198,13 @@ const mockedEnqueueInvoice = vi.mocked(enqueueXeroBookingInvoiceOperation);
 const mockedSendVerification = vi.mocked(sendBookingRequestVerificationEmail);
 const mockedSendPin = vi.mocked(sendHutLeaderAssignmentEmail);
 const mockedSendManualInvoice = vi.mocked(sendAdminSchoolManualInvoiceEmail);
+const mockedSendWholeLodgeManualInvoice = vi.mocked(
+  sendAdminWholeLodgeManualInvoiceEmail,
+);
+const mockedEnqueueCreditAllocation = vi.mocked(
+  enqueueXeroAppliedCreditAllocationOperation,
+);
+const mockedKickOutbox = vi.mocked(kickQueuedXeroOutboxOperationsIfConnected);
 const mockedSendOwnerSubstitution = vi.mocked(sendAdminOwnerSubstitutionAlert);
 const mockedAssertNoConflicts = vi.mocked(assertNoBookingMemberNightConflicts);
 const mockedLogAudit = vi.mocked(logAudit);
@@ -1558,5 +1588,819 @@ describe("approveSchoolBookingRequest", () => {
     expect(prisma.member.create).not.toHaveBeenCalled();
     expect(prisma.booking.create).not.toHaveBeenCalled();
     expect(mockedEnqueueInvoice).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Member whole-lodge approval (#2263, epic #2245)
+// ---------------------------------------------------------------------------
+
+function memberWholeLodgeRequest(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: "req-member",
+    // A member request is type GENERAL — the discriminator is the member id,
+    // NOT the type. Everything downstream has to key on the right column.
+    type: BookingRequestType.GENERAL,
+    status: BookingRequestStatus.VERIFIED,
+    exclusivityRequested: true,
+    requestedByMemberId: "member-9",
+    schoolName: null,
+    teachers: null,
+    contactFirstName: "Ada",
+    contactLastName: "Lovelace",
+    contactEmail: "ada@example.com",
+    contactPhone: null,
+    checkIn: CHECK_IN,
+    checkOut: CHECK_OUT,
+    guests: [
+      { firstName: "Guest", lastName: "1", ageTier: "ADULT" },
+      { firstName: "Guest", lastName: "2", ageTier: "ADULT" },
+      { firstName: "Guest", lastName: "3", ageTier: "ADULT" },
+    ],
+    message: "Club alpine skills course",
+    indicativePriceCents: null,
+    priceCents: null,
+    lodgeId: null,
+    heldBookingId: null,
+    convertedBookingId: null,
+    convertedMemberId: null,
+    linkedGuestMembers: null,
+    createdAt: new Date("2026-06-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-06-01T00:00:00.000Z"),
+    version: 0,
+    ...overrides,
+  };
+}
+
+describe("approveMemberWholeLodgeRequest (#2263)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedTransaction.mockImplementation(
+      async (fn: (tx: typeof prisma) => Promise<unknown>) => fn(prisma)
+    );
+    mockedFindUnique.mockResolvedValue(memberWholeLodgeRequest() as never);
+    mockedUpdateMany.mockResolvedValue({ count: 1 } as never);
+    mockedCheckCapacity.mockResolvedValue({
+      available: true,
+      minAvailable: 30,
+      nightDetails: [],
+    } as never);
+    mockedSeasonFindMany.mockResolvedValue(seasonWithRates() as never);
+    mockedGroupDiscount.mockResolvedValue(null as never);
+    // clearAllMocks clears CALLS but keeps implementations, so the
+    // capacity-refusal case below would otherwise leak its capacity-of-4 stub
+    // into every test declared after it.
+    vi.mocked(getLodgeCapacity).mockResolvedValue(40 as never);
+    vi.mocked(getDefaultLodgeCapacity).mockResolvedValue(40 as never);
+    mockedModuleEnabled.mockResolvedValue(true as never);
+    vi.mocked(prisma.booking.findUnique).mockResolvedValue(null as never);
+    vi.mocked(prisma.lodge.findFirst).mockResolvedValue({ id: "lodge-1" } as never);
+    // The owner is the requesting LOGIN member — looked up, never created. The
+    // post-commit confirmation also reads their LIVE email/first name here, so
+    // the stub carries both and they deliberately DIFFER from the request-time
+    // snapshot (see the "live account email" test).
+    vi.mocked(prisma.member.findUnique).mockResolvedValue({
+      id: "member-9",
+      active: true,
+      email: "member.new@example.test",
+      firstName: "Mina",
+    } as never);
+    vi.mocked(prisma.booking.create).mockResolvedValue({ id: "booking-wl" } as never);
+    vi.mocked(prisma.payment.create).mockResolvedValue({} as never);
+    vi.mocked(prisma.bookingRequest.update).mockResolvedValue({} as never);
+    mockedAssertNoConflicts.mockResolvedValue(undefined as never);
+    vi.mocked(findOverlappingCapacityHoldingBookings).mockResolvedValue([] as never);
+  });
+
+  it("creates a CONFIRMED booking owned by the requesting member, holding the whole lodge", async () => {
+    const result = await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    expect(result.type).toBe("approved");
+
+    const data = vi.mocked(prisma.booking.create).mock.calls[0][0].data as Record<
+      string,
+      unknown
+    >;
+    // CONFIRMED is capacity-holding in its own right, so the hold does not
+    // depend on the PENDING originBookingRequest clause (school parity).
+    expect(data.status).toBe(BookingStatus.CONFIRMED);
+    // The owner is the member's OWN login account. No non-login member is
+    // minted — doing so would split a real person's booking history in two.
+    expect(data.memberId).toBe("member-9");
+    expect(prisma.member.create).not.toHaveBeenCalled();
+    // ADR-001: granting exclusivity is the ADMIN's capacity action, stamped
+    // with the approving admin, not the requester.
+    expect(data.wholeLodgeHold).toBe(true);
+    expect(data.wholeLodgeHoldByMemberId).toBe("admin-1");
+    expect(data.wholeLodgeHoldAt).toBeInstanceOf(Date);
+  });
+
+  it("prices the placeholder guests at NON-MEMBER rates and marks the booking hasNonMembers (OD-A)", async () => {
+    await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    const data = vi.mocked(prisma.booking.create).mock.calls[0][0].data as Record<
+      string,
+      unknown
+    >;
+    // Owner decision OD-A: unnamed, unlinked placeholder guests are the
+    // conservative revenue default — 3 ADULTs x 2 nights x $50 non-member.
+    expect(data.totalPriceCents).toBe(30000);
+    expect(data.finalPriceCents).toBe(30000);
+    expect(data.hasNonMembers).toBe(true);
+  });
+
+  it("stamps NO nonMemberHoldUntil on the confirmed whole-lodge booking", async () => {
+    await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    const data = vi.mocked(prisma.booking.create).mock.calls[0][0].data as Record<
+      string,
+      unknown
+    >;
+    /*
+      The hold clock belongs to the PENDING non-member path — it is what the
+      confirm-pending bump cron reads. Stamping a deadline onto a CONFIRMED
+      booking that holds the WHOLE LODGE would arm a bump clock against the one
+      booking that must never be bumped, and would be the first regression to
+      appear if that cron's PENDING guard were ever relaxed. School parity: a
+      school booking is hasNonMembers with no hold clock either.
+    */
+    expect(data).not.toHaveProperty("nonMemberHoldUntil");
+  });
+
+  it("creates a PENDING internet-banking payment and NO payment link or token email", async () => {
+    await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    const payment = vi.mocked(prisma.payment.create).mock.calls[0][0].data as Record<
+      string,
+      unknown
+    >;
+    expect(payment.status).toBe(PaymentStatus.PENDING);
+    expect(payment.source).toBe(PaymentSource.INTERNET_BANKING);
+    expect(payment.amountCents).toBe(30000);
+
+    // The tokenised payment-link flow is the GENERAL NON-LOGIN approval path.
+    // Emailing a signed-in member an anonymous payment token would be handing
+    // out a bearer credential to somebody who already has an account. The
+    // delegate IS mocked, so this fails the day the code starts minting one.
+    expect(prisma.paymentLink.create).not.toHaveBeenCalled();
+  });
+
+  it("prices from the admin override when one is given, split in integer cents", async () => {
+    await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+      override: { priceOverrideCents: 100_001 },
+    });
+
+    const data = vi.mocked(prisma.booking.create).mock.calls[0][0].data as {
+      totalPriceCents: number;
+      guests: { create: Array<{ priceCents: number }> };
+    };
+    expect(data.totalPriceCents).toBe(100_001);
+    // splitPriceAcrossGuests puts the remainder on the first guest so the rows
+    // sum EXACTLY to the total — no cent is invented or lost.
+    const perGuest = data.guests.create.map((guest) => guest.priceCents);
+    expect(perGuest.reduce((sum, cents) => sum + cents, 0)).toBe(100_001);
+    expect(perGuest).toEqual([33335, 33333, 33333]);
+  });
+
+  it("books and prices the officer-confirmed headcount, not the member's estimate", async () => {
+    await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+      override: { pricedHeadcount: 5 },
+    });
+
+    const data = vi.mocked(prisma.booking.create).mock.calls[0][0].data as {
+      totalPriceCents: number;
+      guests: { create: unknown[] };
+    };
+    expect(data.guests.create).toHaveLength(5);
+    expect(data.totalPriceCents).toBe(50000);
+
+    // The request snapshot is rewritten to match what was actually booked, so
+    // the queue and the booking cannot disagree about the party size.
+    const requestUpdate = vi.mocked(prisma.bookingRequest.update).mock.calls[0][0]
+      .data as Record<string, unknown>;
+    expect(requestUpdate.status).toBe(BookingRequestStatus.CONVERTED);
+    expect((requestUpdate.guests as unknown[]).length).toBe(5);
+  });
+
+  it("refuses a headcount above the lodge capacity before any write", async () => {
+    vi.mocked(getLodgeCapacity).mockResolvedValue(4 as never);
+    vi.mocked(getDefaultLodgeCapacity).mockResolvedValue(4 as never);
+
+    await expect(
+      approveMemberWholeLodgeRequest({
+        requestId: "req-member",
+        adminMemberId: "admin-1",
+        override: { pricedHeadcount: 5 },
+      })
+    ).rejects.toMatchObject({ status: 422 });
+
+    expect(prisma.booking.create).not.toHaveBeenCalled();
+  });
+
+  it("409s with the set-a-price message when no season covers the dates and no override is given", async () => {
+    mockedSeasonFindMany.mockResolvedValue([] as never);
+
+    await expect(
+      approveMemberWholeLodgeRequest({
+        requestId: "req-member",
+        adminMemberId: "admin-1",
+      })
+    ).rejects.toMatchObject({ status: 409 });
+
+    expect(prisma.booking.create).not.toHaveBeenCalled();
+  });
+
+  it("approves out-of-season dates when the officer supplies the price override", async () => {
+    // The mandatory fallback: there is no quote or officer-price op on this
+    // path (both are service-refused), so without the override an out-of-season
+    // whole-lodge request would be a dead end.
+    mockedSeasonFindMany.mockResolvedValue([] as never);
+
+    const result = await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+      override: { priceOverrideCents: 75000 },
+    });
+
+    expect(result).toMatchObject({ type: "approved", priceCents: 75000 });
+  });
+
+  it("returns capacityExceeded rather than admitting the booking over capacity", async () => {
+    mockedCheckCapacity.mockResolvedValue({
+      available: false,
+      minAvailable: -2,
+      nightDetails: [
+        { date: new Date("2026-08-01T00:00:00.000Z"), availableBeds: -2 },
+      ],
+    } as never);
+
+    const result = await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    // ADR-001 decision 1 governs what happens to OTHER bookings on the held
+    // nights (nothing). It does not license admitting THIS one over capacity.
+    expect(result).toEqual({
+      type: "capacityExceeded",
+      fullNights: ["2026-08-01"],
+    });
+  });
+
+  it("takes the per-lodge capacity lock before creating the booking", async () => {
+    await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    expect(mockedAcquireLodgeLock).toHaveBeenCalled();
+    expect(mockedAcquireLodgeLock.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(prisma.booking.create).mock.invocationCallOrder[0]
+    );
+  });
+
+  it("runs the ADR-001 bed-allocation reconcile so a held booking can own no per-bed rows (#2285 parity)", async () => {
+    await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    expect(reconcileBedAllocationsForBooking).toHaveBeenCalledWith(
+      expect.objectContaining({ bookingId: "booking-wl" })
+    );
+  });
+
+  it("audits the prune with its removed allocations when the reconcile actually deleted rows", async () => {
+    vi.mocked(prisma.bedAllocation.findMany).mockResolvedValue([
+      {
+        bookingGuestId: "guest-1",
+        roomId: "room-1",
+        bedId: "bed-1",
+        stayDate: new Date("2026-08-01T00:00:00.000Z"),
+        source: "ADMIN",
+        approvedAt: null,
+      },
+    ] as never);
+    vi.mocked(reconcileBedAllocationsForBooking).mockResolvedValue({
+      enabled: true,
+      deletedCount: 1,
+      createdCount: 0,
+      promotedCount: 0,
+    } as never);
+
+    await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    expect(createAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "BED_ALLOCATION_HELD_BOOKING_PRUNED",
+        metadata: expect.objectContaining({ issue: 2263, deletedCount: 1 }),
+      }),
+      expect.anything()
+    );
+  });
+
+  it("surfaces overlapping bookings to the ADMIN caller after the commit, and never refuses", async () => {
+    vi.mocked(findOverlappingCapacityHoldingBookings).mockResolvedValue([
+      {
+        id: "booking-other",
+        memberName: "Someone Else",
+        checkIn: "2026-08-01",
+        checkOut: "2026-08-02",
+        guestCount: 2,
+        status: "CONFIRMED",
+      },
+    ] as never);
+
+    const result = await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    // Informational, never a refusal (decision 1): the approval still succeeded.
+    expect(result).toMatchObject({ type: "approved" });
+    expect(
+      result.type === "approved" ? result.exclusiveHoldConflicts : []
+    ).toHaveLength(1);
+
+    // Computed AFTER the commit, outside the advisory lock.
+    expect(
+      vi.mocked(findOverlappingCapacityHoldingBookings).mock
+        .invocationCallOrder[0]
+    ).toBeGreaterThan(
+      vi.mocked(prisma.booking.create).mock.invocationCallOrder[0]
+    );
+
+    expect(mockedLogAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "booking.exclusiveHold.set",
+        metadata: expect.objectContaining({
+          source: "member_request_approval",
+          overlappingConflictCount: 1,
+        }),
+      })
+    );
+  });
+
+  it("emails the member a plain booking confirmation carrying nothing about occupancy", async () => {
+    vi.mocked(findOverlappingCapacityHoldingBookings).mockResolvedValue([
+      {
+        id: "booking-other",
+        memberName: "Someone Else",
+        checkIn: "2026-08-01",
+        checkOut: "2026-08-02",
+        guestCount: 2,
+        status: "CONFIRMED",
+      },
+    ] as never);
+
+    await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    expect(sendBookingConfirmedEmail).toHaveBeenCalled();
+    const args = vi.mocked(sendBookingConfirmedEmail).mock.calls[0];
+    // Booking-scoped, so the per-booking "No emails" switch can withhold it.
+    expect(args[0]).toEqual({ bookingId: "booking-wl" });
+    // A member is never told the lodge is exclusively held, and never told
+    // whose booking overlaps (ADR-001 decision 6). Nothing in the serialised
+    // arguments may mention either.
+    const serialised = JSON.stringify(args);
+    expect(serialised).not.toContain("booking-other");
+    expect(serialised).not.toContain("Someone Else");
+    expect(serialised.toLowerCase()).not.toContain("exclusiv");
+    expect(serialised.toLowerCase()).not.toContain("wholelodge");
+  });
+
+  it("replays idempotently: a second approve returns the first booking and re-emails nobody", async () => {
+    mockedFindUnique
+      .mockResolvedValueOnce(memberWholeLodgeRequest() as never)
+      // The locked re-read inside the transaction already shows the conversion.
+      .mockResolvedValueOnce(
+        memberWholeLodgeRequest({
+          status: BookingRequestStatus.CONVERTED,
+          convertedBookingId: "booking-wl",
+          convertedMemberId: "member-9",
+        }) as never
+      )
+      // claimAlreadyConvertedBookingRequest's own read.
+      .mockResolvedValueOnce({
+        convertedBookingId: "booking-wl",
+        convertedMemberId: "member-9",
+        status: BookingRequestStatus.CONVERTED,
+      } as never);
+
+    const result = await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    expect(result).toMatchObject({ type: "approved", bookingId: "booking-wl" });
+    // No second booking, no second payment, and above all no second email.
+    expect(prisma.booking.create).not.toHaveBeenCalled();
+    expect(prisma.payment.create).not.toHaveBeenCalled();
+    expect(sendBookingConfirmedEmail).not.toHaveBeenCalled();
+    expect(mockedLogAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "booking_request.member_whole_lodge_approve_idempotent_replay",
+      })
+    );
+  });
+
+  it("refuses a request that is not member-origin", async () => {
+    mockedFindUnique.mockResolvedValue(
+      memberWholeLodgeRequest({ requestedByMemberId: null }) as never
+    );
+
+    await expect(
+      approveMemberWholeLodgeRequest({
+        requestId: "req-member",
+        adminMemberId: "admin-1",
+      })
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("refuses a member request that somehow holds beds rather than silently taking an unimplemented branch", async () => {
+    mockedFindUnique.mockResolvedValue(
+      memberWholeLodgeRequest({ heldBookingId: "booking-held" }) as never
+    );
+
+    await expect(
+      approveMemberWholeLodgeRequest({
+        requestId: "req-member",
+        adminMemberId: "admin-1",
+      })
+    ).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("refuses to book for a member whose account is no longer active", async () => {
+    vi.mocked(prisma.member.findUnique).mockResolvedValue({
+      id: "member-9",
+      active: false,
+    } as never);
+
+    await expect(
+      approveMemberWholeLodgeRequest({
+        requestId: "req-member",
+        adminMemberId: "admin-1",
+      })
+    ).rejects.toMatchObject({ status: 409 });
+
+    expect(prisma.booking.create).not.toHaveBeenCalled();
+  });
+
+  it("409s a stale approval whose snapshot changed under it", async () => {
+    mockedFindUnique
+      .mockResolvedValueOnce(memberWholeLodgeRequest({ version: 0 }) as never)
+      .mockResolvedValueOnce(memberWholeLodgeRequest({ version: 1 }) as never)
+      .mockResolvedValueOnce(null as never);
+
+    await expect(
+      approveMemberWholeLodgeRequest({
+        requestId: "req-member",
+        adminMemberId: "admin-1",
+      })
+    ).rejects.toMatchObject({ status: 409 });
+
+    expect(prisma.booking.create).not.toHaveBeenCalled();
+  });
+
+  it("409s when a concurrent admin already claimed the request", async () => {
+    mockedUpdateMany.mockResolvedValue({ count: 0 } as never);
+
+    await expect(
+      approveMemberWholeLodgeRequest({
+        requestId: "req-member",
+        adminMemberId: "admin-1",
+      })
+    ).rejects.toMatchObject({ status: 409 });
+
+    expect(prisma.booking.create).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // The receivable is actually invoiced (#2263 review finding H4)
+  // -------------------------------------------------------------------------
+  // The approval mints a PENDING INTERNET_BANKING Payment. Before this, nothing
+  // was ever raised against it: no Xero invoice, no admin nudge. A confirmed
+  // booking with an uninvoiced receivable is money the club silently never
+  // collects, and the member had been emailed "Payment has been processed".
+
+  it("enqueues the Xero booking invoice AND the #1620 applied-credit allocation when the module is on", async () => {
+    mockedModuleEnabled.mockResolvedValue(true as never);
+
+    const result = await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    expect(mockedEnqueueInvoice).toHaveBeenCalledWith("booking-wl", {
+      createdByMemberId: "admin-1",
+    });
+    // #1620 parity with the Internet Banking create path: the owner here is a
+    // real member who may be carrying floating credit notes, so they must be
+    // allocated against this invoice or the member is asked for the gross
+    // amount while holding a credit balance.
+    expect(mockedEnqueueCreditAllocation).toHaveBeenCalledWith("booking-wl", {
+      createdByMemberId: "admin-1",
+    });
+    // Ordering matters: the allocation op must be enqueued AFTER the invoice op
+    // so its older createdAt puts the invoice first through the outbox.
+    expect(mockedEnqueueInvoice.mock.invocationCallOrder[0]).toBeLessThan(
+      mockedEnqueueCreditAllocation.mock.invocationCallOrder[0],
+    );
+    expect(mockedKickOutbox).toHaveBeenCalledWith({ limit: 2 });
+    // No manual-invoice nudge when Xero has it.
+    expect(mockedSendWholeLodgeManualInvoice).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ type: "approved", invoiceMode: "xero" });
+  });
+
+  it("everything about the invoice happens AFTER the commit, never inside the transaction", async () => {
+    mockedModuleEnabled.mockResolvedValue(true as never);
+
+    await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    // A provider call inside a database transaction holds the capacity lock for
+    // the length of a network round trip (docs/CONCURRENCY_AND_LOCKING.md).
+    expect(mockedEnqueueInvoice.mock.invocationCallOrder[0]).toBeGreaterThan(
+      vi.mocked(prisma.bookingRequest.update).mock.invocationCallOrder[0],
+    );
+  });
+
+  it("fires the delivery-locked manual-invoice admin alert when the Xero module is off", async () => {
+    mockedModuleEnabled.mockResolvedValue(false as never);
+
+    const result = await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    expect(mockedEnqueueInvoice).not.toHaveBeenCalled();
+    expect(mockedEnqueueCreditAllocation).not.toHaveBeenCalled();
+    expect(mockedSendWholeLodgeManualInvoice).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contactEmail: "ada@example.com",
+        totalCents: 30000,
+        guestCount: 3,
+        // The officer must be told the SAME reference the member was given, or
+        // the hand-written invoice cannot be reconciled against their payment.
+        paymentReference: expect.any(String),
+      }),
+    );
+    const alert = mockedSendWholeLodgeManualInvoice.mock.calls[0][0];
+    const payment = vi.mocked(prisma.payment.create).mock.calls[0][0]
+      .data as Record<string, unknown>;
+    expect(alert.paymentReference).toBe(payment.reference);
+    // It is the SCHOOL wording that must not be reused — the owner is a real
+    // signed-in member, not a non-login school contact.
+    expect(mockedSendManualInvoice).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ type: "approved", invoiceMode: "manual" });
+  });
+
+  it("raises no second invoice and no second alert on an idempotent replay", async () => {
+    mockedModuleEnabled.mockResolvedValue(true as never);
+    mockedFindUnique
+      .mockResolvedValueOnce(memberWholeLodgeRequest() as never)
+      .mockResolvedValueOnce(
+        memberWholeLodgeRequest({
+          status: BookingRequestStatus.CONVERTED,
+          convertedBookingId: "booking-wl",
+          convertedMemberId: "member-9",
+        }) as never
+      )
+      .mockResolvedValueOnce({
+        convertedBookingId: "booking-wl",
+        convertedMemberId: "member-9",
+        status: BookingRequestStatus.CONVERTED,
+      } as never);
+
+    const result = await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    // The double-charge guard (#1232) has to cover the INVOICE too, not just the
+    // booking and payment rows: a second Xero invoice is a second demand for
+    // money against one stay.
+    expect(mockedEnqueueInvoice).not.toHaveBeenCalled();
+    expect(mockedEnqueueCreditAllocation).not.toHaveBeenCalled();
+    expect(mockedSendWholeLodgeManualInvoice).not.toHaveBeenCalled();
+    // And it reports no mode rather than fabricating one it did not use.
+    expect(result).toMatchObject({ type: "approved", invoiceMode: null });
+  });
+
+  // -------------------------------------------------------------------------
+  // The member-facing copy is true (#2263 review finding H4b)
+  // -------------------------------------------------------------------------
+
+  it("tells the member the amount is OWING with the internet-banking reference, never that it was paid", async () => {
+    mockedModuleEnabled.mockResolvedValue(true as never);
+
+    await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    const args = vi.mocked(sendBookingConfirmedEmail).mock.calls[0];
+    const options = args[7] as {
+      paymentDue?: { reference: string; invoiceEmailed: boolean };
+    };
+    // Nothing has been paid: the confirmation MUST carry the payment-due shape,
+    // which is what turns "Total Paid" into "Total Due" and replaces "Payment
+    // has been processed successfully" with the amount owing.
+    expect(options.paymentDue).toBeDefined();
+    const payment = vi.mocked(prisma.payment.create).mock.calls[0][0]
+      .data as Record<string, unknown>;
+    // There is no PaymentLink on this path, so the reference is the ONLY way the
+    // member can pay — and it must be the reference on their own Payment row.
+    expect(options.paymentDue!.reference).toBe(payment.reference);
+    expect(options.paymentDue!.reference).toBeTruthy();
+    // The Xero module is on, so an invoice really is being emailed.
+    expect(options.paymentDue!.invoiceEmailed).toBe(true);
+    // The total is still passed as the money figure.
+    expect(args[6]).toBe(30000);
+  });
+
+  it("does not claim an invoice was emailed when the Xero module is off", async () => {
+    mockedModuleEnabled.mockResolvedValue(false as never);
+
+    await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    const options = vi.mocked(sendBookingConfirmedEmail).mock.calls[0][7] as {
+      paymentDue?: { invoiceEmailed: boolean };
+    };
+    // With nothing raising invoices, promising one has been emailed is a lie the
+    // member cannot act on. The copy says the club will send one instead — which
+    // is exactly what the admin alert above asks an officer to do.
+    expect(options.paymentDue?.invoiceEmailed).toBe(false);
+  });
+
+  it("emails the OWNER's live account address, not the request-time snapshot", async () => {
+    await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    const args = vi.mocked(sendBookingConfirmedEmail).mock.calls[0];
+    // The booking belongs to a live account. A snapshot taken when the request
+    // was submitted can be months stale, and this message carries the payment
+    // reference — sending it to an address the member no longer reads is the
+    // same as not sending it.
+    expect(args[1]).toBe("member.new@example.test");
+    expect(args[1]).not.toBe("ada@example.com");
+    expect(args[2]).toBe("Mina");
+  });
+
+  // -------------------------------------------------------------------------
+  // The replay reports COMMITTED figures (#2263 review finding M4)
+  // -------------------------------------------------------------------------
+
+  it("replays a SECOND approve of an already-CONVERTED row instead of 409ing it (the real HTTP shape)", async () => {
+    /*
+      This is what an officer double-clicking Approve actually sends: by the time
+      the second request arrives the row is CONVERTED, so the FIRST read the
+      service does already sees CONVERTED. The other replay tests in this file
+      stub the first read as VERIFIED and therefore only exercise the under-lock
+      idempotency claim — which a Playwright run proved was unreachable, because
+      the pre-lock status guard rejected CONVERTED before the transaction and the
+      route answered 409 "Only open member whole-lodge requests can be approved".
+      No second booking was ever created either way, but the documented replay was
+      dead code. This test is the one that fails if that regresses.
+    */
+    mockedFindUnique.mockResolvedValue(
+      memberWholeLodgeRequest({
+        status: BookingRequestStatus.CONVERTED,
+        convertedBookingId: "booking-wl",
+        convertedMemberId: "member-9",
+      }) as never
+    );
+    vi.mocked(prisma.booking.findUnique).mockResolvedValue({
+      finalPriceCents: 30000,
+      _count: { guests: 6 },
+    } as never);
+
+    const result = await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    expect(result).toMatchObject({
+      type: "approved",
+      bookingId: "booking-wl",
+      memberId: "member-9",
+      priceCents: 30000,
+      guestCount: 6,
+      invoiceMode: null,
+    });
+    // Nothing was written, priced, locked, invoiced or emailed a second time.
+    expect(mockedTransaction).not.toHaveBeenCalled();
+    expect(mockedAcquireLodgeLock).not.toHaveBeenCalled();
+    expect(prisma.booking.create).not.toHaveBeenCalled();
+    expect(prisma.payment.create).not.toHaveBeenCalled();
+    expect(mockedEnqueueInvoice).not.toHaveBeenCalled();
+    expect(sendBookingConfirmedEmail).not.toHaveBeenCalled();
+    expect(mockedLogAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "booking_request.member_whole_lodge_approve_idempotent_replay",
+      })
+    );
+  });
+
+  it("refuses a CONVERTED row that has no booking rather than replaying a phantom", async () => {
+    mockedFindUnique.mockResolvedValue(
+      memberWholeLodgeRequest({
+        status: BookingRequestStatus.CONVERTED,
+        convertedBookingId: null,
+      }) as never
+    );
+
+    await expect(
+      approveMemberWholeLodgeRequest({
+        requestId: "req-member",
+        adminMemberId: "admin-1",
+      })
+    ).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("still refuses a DECLINED or CANCELLED row", async () => {
+    for (const status of [
+      BookingRequestStatus.DECLINED,
+      BookingRequestStatus.CANCELLED,
+    ]) {
+      mockedFindUnique.mockResolvedValue(
+        memberWholeLodgeRequest({ status }) as never
+      );
+      await expect(
+        approveMemberWholeLodgeRequest({
+          requestId: "req-member",
+          adminMemberId: "admin-1",
+        }),
+        `${status} must not be approvable`
+      ).rejects.toMatchObject({ status: 409 });
+    }
+  });
+
+  it("a replay reports the committed booking's total and guest count, not this call's recomputation", async () => {
+    mockedFindUnique
+      .mockResolvedValueOnce(memberWholeLodgeRequest() as never)
+      .mockResolvedValueOnce(
+        memberWholeLodgeRequest({
+          status: BookingRequestStatus.CONVERTED,
+          convertedBookingId: "booking-wl",
+          convertedMemberId: "member-9",
+        }) as never
+      )
+      .mockResolvedValueOnce({
+        convertedBookingId: "booking-wl",
+        convertedMemberId: "member-9",
+        status: BookingRequestStatus.CONVERTED,
+      } as never);
+    // What the FIRST approval actually wrote: 4 guests at $123.45 total.
+    vi.mocked(prisma.booking.findUnique).mockResolvedValue({
+      finalPriceCents: 12345,
+      payment: { reference: "IB-COMMITTED" },
+      _count: { guests: 4 },
+    } as never);
+
+    const result = await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+      // A replay carrying DIFFERENT instructions. Echoing these back would show
+      // the officer a total and a party size that exist nowhere in the database.
+      override: { pricedHeadcount: 5, priceOverrideCents: 999_999 },
+    });
+
+    expect(result).toMatchObject({
+      type: "approved",
+      bookingId: "booking-wl",
+      priceCents: 12345,
+      guestCount: 4,
+    });
+    expect(prisma.booking.create).not.toHaveBeenCalled();
   });
 });

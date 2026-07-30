@@ -89,6 +89,9 @@ vi.mock("@/lib/lodge-capacity", () => ({
   getLodgeCapacity: vi.fn(async (lodgeId: string) =>
     lodgeId === "lodge-2" ? 40 : 20,
   ),
+  // #2263: the member whole-lodge door bounds its headcount against the
+  // CONFIGURED capacity of the club's default lodge.
+  getDefaultLodgeCapacity: vi.fn(async () => 20),
 }));
 vi.mock("@/lib/lodge-settings", () => ({
   loadSchoolGroupSoftCap: vi.fn(async (_db: unknown, lodgeId: string) =>
@@ -236,6 +239,10 @@ function baseRequest(overrides: Partial<Record<string, unknown>> = {}) {
     declineReason: null,
     convertedBookingId: null,
     convertedMemberId: null,
+    // #2263: the public/school default — no account behind the request and no
+    // exclusivity ask. Member whole-lodge tests override both.
+    requestedByMemberId: null,
+    exclusivityRequested: false,
     createdAt: new Date("2026-06-01T00:00:00.000Z"),
     updatedAt: new Date("2026-06-01T00:00:00.000Z"),
     version: 0,
@@ -445,12 +452,25 @@ describe("createBookingRequest", () => {
     expect(createArgs.lodgeId).toBe("lodge-2");
   });
 
-  it("never sets exclusivityRequested: the whole-lodge request front-door is school-only (#121)", async () => {
-    // Owner decision (ADR-001, 2026-07-14): exclusivity may only be REQUESTED via
-    // the school booking-request path. The general path must not write the flag,
-    // so it defaults to false in the DB. The input type has no such field, so an
-    // attempt to pass it would not even typecheck; here we assert the persisted
-    // create payload carries no exclusivityRequested key at all.
+  it("never sets exclusivityRequested: the PUBLIC front-door may not ask for the whole lodge (#121, superseded for members by #2263)", async () => {
+    /*
+      This test replaces the original "the whole-lodge request front-door is
+      school-only (#121)" pin, which ADR-001's dated 2026-07-30 entry supersedes:
+      a signed-in member may now ask for sole occupancy too (owner decision D11,
+      issue #2263).
+
+      What is superseded is the SCHOOL-ONLY part. What is NOT superseded — and is
+      what this test now pins — is that the ANONYMOUS public door may never ask.
+      An unauthenticated stranger who could set the flag would be asking the club
+      to sterilise every bed in the lodge on a date of their choosing, with no
+      account behind the request and no cap on how often they did it.
+
+      Asserted on the persisted payload rather than on the input type: the type
+      already has no such field (so passing one would not compile), and a
+      write-site added later inside the function would slip past a type check but
+      not past this. The companion source-scan test
+      (exclusivity-request-write-sites.test.ts) proves no THIRD door exists.
+    */
     await createBookingRequest({
       contactFirstName: "Tara",
       contactLastName: "Tester",
@@ -462,6 +482,9 @@ describe("createBookingRequest", () => {
 
     const createArgs = mockedCreate.mock.calls[0][0].data as Record<string, unknown>;
     expect(createArgs).not.toHaveProperty("exclusivityRequested");
+    // ...and it is not a member request either: nothing on the public door may
+    // attribute a row to an account.
+    expect(createArgs).not.toHaveProperty("requestedByMemberId");
   });
 });
 
@@ -736,6 +759,89 @@ describe("declineBookingRequest", () => {
     );
     expect(mockedLogAudit).toHaveBeenCalledWith(
       expect.objectContaining({ action: "booking_request.declined" })
+    );
+  });
+
+  it("keeps a member whole-lodge decline note in the AUDIT LOG ONLY, never on the row and never in the email (#2263)", async () => {
+    /*
+      The school/public path's `declineReason` is the field the requester is
+      SHOWN — it is interpolated into the decline email. An officer writing
+      "sorry, we're holding that week for another group" into it would be telling
+      a member exactly what ADR-001 decision 6 says they are never told, with a
+      keyboard rather than an exploit.
+
+      So on a member-origin whole-lodge request the note is not persisted at all.
+      Not persisted rather than persisted-and-filtered: a null column cannot be
+      leaked by a surface somebody adds next year.
+    */
+    const memberRequest = baseRequest({
+      status: BookingRequestStatus.VERIFIED,
+      requestedByMemberId: "member-9",
+      exclusivityRequested: true,
+    });
+    mockedFindUnique
+      .mockResolvedValueOnce(memberRequest as never)
+      .mockResolvedValueOnce(
+        baseRequest({ status: BookingRequestStatus.DECLINED }) as never,
+      );
+    mockedUpdateMany.mockResolvedValue({ count: 1 } as never);
+
+    await declineBookingRequest({
+      requestId: "req-1",
+      adminMemberId: "admin-1",
+      reason: "Holding that week for the school group",
+    });
+
+    // The row keeps nothing.
+    const claimData = mockedUpdateMany.mock.calls[0][0].data as Record<
+      string,
+      unknown
+    >;
+    expect(claimData.declineReason).toBeNull();
+
+    // The email carries the template's fixed generic body, with no note.
+    expect(mockedSendDeclined).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: null }),
+    );
+
+    // The officer's words survive exactly once: in the audit log.
+    expect(mockedLogAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "booking_request.declined",
+        metadata: expect.objectContaining({
+          reason: "Holding that week for the school group",
+          declineNoteAuditOnly: true,
+          memberWholeLodgeRequest: true,
+        }),
+      }),
+    );
+  });
+
+  it("still persists and emails the decline reason on a NON member-origin request", async () => {
+    // The change above must be scoped to the member door. A school or public
+    // requester still gets the officer's explanation, exactly as before.
+    mockedFindUnique
+      .mockResolvedValueOnce(
+        baseRequest({ status: BookingRequestStatus.PRICED }) as never,
+      )
+      .mockResolvedValueOnce(
+        baseRequest({ status: BookingRequestStatus.DECLINED }) as never,
+      );
+    mockedUpdateMany.mockResolvedValue({ count: 1 } as never);
+
+    await declineBookingRequest({
+      requestId: "req-1",
+      adminMemberId: "admin-1",
+      reason: "Fully booked",
+    });
+
+    const claimData = mockedUpdateMany.mock.calls[0][0].data as Record<
+      string,
+      unknown
+    >;
+    expect(claimData.declineReason).toBe("Fully booked");
+    expect(mockedSendDeclined).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "Fully booked" }),
     );
   });
 
@@ -2029,13 +2135,20 @@ describe("purgeExpiredBookingRequests", () => {
     vi.useRealTimers();
   });
 
-  it("purges declined and never-verified requests past the retention window and audits the result", async () => {
-    mockedDeleteMany.mockResolvedValueOnce({ count: 2 } as never).mockResolvedValueOnce({ count: 3 } as never);
+  it("purges declined, never-verified and member-withdrawn requests past the retention window and audits the result", async () => {
+    mockedDeleteMany
+      .mockResolvedValueOnce({ count: 2 } as never)
+      .mockResolvedValueOnce({ count: 3 } as never)
+      .mockResolvedValueOnce({ count: 4 } as never);
 
     const now = new Date("2026-09-01T00:00:00.000Z");
     const result = await purgeExpiredBookingRequests(now);
 
-    expect(result).toEqual({ declinedPurged: 2, neverVerifiedPurged: 3 });
+    expect(result).toEqual({
+      declinedPurged: 2,
+      neverVerifiedPurged: 3,
+      memberWithdrawnPurged: 4,
+    });
 
     const cutoff = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
     expect(mockedDeleteMany).toHaveBeenNthCalledWith(1, {
@@ -2048,10 +2161,27 @@ describe("purgeExpiredBookingRequests", () => {
         createdAt: { lte: cutoff },
       },
     });
+    // #2263 / owner decision OD-B: a member-WITHDRAWN whole-lodge request
+    // (CANCELLED) now purges on the same 90-day clock as a declined one, so
+    // "My requests" is a bounded history rather than a permanent record. Scoped
+    // to member-origin rows: a PUBLIC request also reaches CANCELLED (the
+    // requester cancelling their own quote) and OD-B did not decide retention
+    // for that flow, so widening the sweep would silently change it.
+    expect(mockedDeleteMany).toHaveBeenNthCalledWith(3, {
+      where: {
+        status: BookingRequestStatus.CANCELLED,
+        requestedByMemberId: { not: null },
+        updatedAt: { lte: cutoff },
+      },
+    });
     expect(mockedLogAudit).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "booking_request.retention_purge",
-        metadata: expect.objectContaining({ declinedPurged: 2, neverVerifiedPurged: 3 }),
+        metadata: expect.objectContaining({
+          declinedPurged: 2,
+          neverVerifiedPurged: 3,
+          memberWithdrawnPurged: 4,
+        }),
       })
     );
   });
@@ -2061,7 +2191,11 @@ describe("purgeExpiredBookingRequests", () => {
 
     const result = await purgeExpiredBookingRequests(new Date("2026-09-01T00:00:00.000Z"));
 
-    expect(result).toEqual({ declinedPurged: 0, neverVerifiedPurged: 0 });
+    expect(result).toEqual({
+      declinedPurged: 0,
+      neverVerifiedPurged: 0,
+      memberWithdrawnPurged: 0,
+    });
     expect(mockedLogAudit).not.toHaveBeenCalled();
   });
 });
