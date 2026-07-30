@@ -4,6 +4,7 @@ import {
   MEMBER_LEVEL_ROLE_VALUES,
   NON_MEMBER_ROLE_VALUES,
   OPERATIONAL_ROLE_VALUES,
+  canAdminRequestMembershipCancellation,
   isMemberLevelRole,
   isOperationalRole,
 } from "@/lib/member-roles";
@@ -95,5 +96,65 @@ describe("non-member booking-request roles", () => {
       "NOT_REQUIRED",
     );
     expect(effectiveSubscriptionBehavior(null, "SCHOOL")).toBe("NOT_REQUIRED");
+  });
+});
+
+describe("admin membership-cancellation eligibility", () => {
+  const base = {
+    role: "USER",
+    active: true,
+    cancelledAt: null,
+    archivedAt: null,
+  };
+
+  it("offers cancellation for a dependant / non-login adult", () => {
+    // The regression: the page gated on hasAccessRole(member, "USER"), which
+    // is always false once canLogin is false (access roles are cleared for
+    // anyone who cannot log in), hiding the action for every dependant while
+    // the API accepted them. The extra fields here are the ones the old gate
+    // consulted — carried deliberately to document that eligibility ignores
+    // them. See membership-cancellation-gate-contract.test.ts for the call
+    // site, which is what a revert would break.
+    expect(
+      canAdminRequestMembershipCancellation({
+        ...base,
+        canLogin: false,
+        accessRoles: [],
+      } as typeof base),
+    ).toBe(true);
+    expect(canAdminRequestMembershipCancellation(base)).toBe(true);
+  });
+
+  it("refuses non-member-level roles", () => {
+    for (const role of [
+      "ADMIN",
+      "LODGE",
+      "NON_MEMBER",
+      "SCHOOL",
+      null,
+      undefined,
+    ]) {
+      expect(canAdminRequestMembershipCancellation({ ...base, role })).toBe(
+        false,
+      );
+    }
+  });
+
+  it("refuses inactive, already-cancelled, and archived members", () => {
+    expect(
+      canAdminRequestMembershipCancellation({ ...base, active: false }),
+    ).toBe(false);
+    expect(
+      canAdminRequestMembershipCancellation({
+        ...base,
+        cancelledAt: new Date(),
+      }),
+    ).toBe(false);
+    expect(
+      canAdminRequestMembershipCancellation({
+        ...base,
+        archivedAt: new Date(),
+      }),
+    ).toBe(false);
   });
 });

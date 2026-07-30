@@ -714,6 +714,11 @@ export async function createAdminMembershipCancellationRequest({
     throw new MembershipCancellationRequestError("Member not found", 404);
   }
 
+  // The next four member-state checks are mirrored client-side by
+  // canAdminRequestMembershipCancellation (src/lib/member-roles.ts) so the
+  // admin UI offers the action exactly where this function accepts it (#2354).
+  // Keep them in step; the distinct status codes and messages here are why
+  // this stays inline rather than calling the helper.
   if (!isMemberLevelRole(target.role)) {
     throw new MembershipCancellationRequestError(
       "Only member accounts can be cancelled",

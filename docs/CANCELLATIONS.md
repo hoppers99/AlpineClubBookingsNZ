@@ -1,9 +1,14 @@
 # Membership Cancellation Policy
 
-Membership cancellation is a member-initiated account lifecycle process. Members
-or their family managers can request cancellation, adult participants confirm
-their own inclusion where required, and admins approve or reject each
-participant.
+Membership cancellation is an account lifecycle process with two entry points.
+Usually it is member-initiated: members or their family managers request
+cancellation, adult participants confirm their own inclusion where required,
+and admins approve or reject each participant. An admin can also raise a
+request directly against any active member from that member's admin page —
+including a member who has no login of their own, such as most family
+dependants — in which case the request is confirmed on the member's behalf at
+creation and goes straight to the same review queue. Either way, approval is a
+separate admin decision per participant.
 
 ## Refund Policy
 
