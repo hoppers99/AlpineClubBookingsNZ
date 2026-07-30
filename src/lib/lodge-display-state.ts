@@ -16,6 +16,7 @@ import { CLUB_THEME_ID } from "./club-theme-schema";
 import { getSanitizedLodgeInstructions } from "./lodge-instructions";
 import { DISPLAY_RELEVANT_MODULE_KEYS } from "./lodge-display/conditions";
 import { lodgeNullTolerantScope } from "./lodges";
+import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "./member-guest-consent";
 import { loadEffectiveModuleFlags } from "./module-settings";
 import { canServeMemberPhoneOnLodgeSurface, formatXeroPhone } from "./phone";
 import type { ModuleKey } from "@/config/modules";
@@ -267,6 +268,7 @@ export async function buildDisplayState(
           some: {
             stayStart: { lte: endInclusive },
             stayEnd: { gte: startDate },
+            ...OPERATIONALLY_PRESENT_GUEST_WHERE,
           },
         },
       },
@@ -283,6 +285,20 @@ export async function buildDisplayState(
           select: { firstName: true, lastName: true, ageTier: true },
         },
         guests: {
+          // Owner decision D-12 (#2307): the wall describes who is actually at
+          // the lodge, so an unconsented member guest is not in this set.
+          //
+          // THIS CHANGES HOW A LODGE IS LABELLED, deliberately. The guest set
+          // feeds the sole-occupancy whole-lodge heuristic (guestCount >=
+          // WHOLE_LODGE_MIN_GUESTS) and the containsMinors decision, both of
+          // which gate whether individual names may be shown at all. A booking
+          // that reaches the group threshold only by counting a PENDING guest is
+          // not a group on the wall, and a booking whose only minor is a PENDING
+          // guest has no minor present. That is the consistent reading of D-12:
+          // the board describes the lodge as it will be, not as the capacity
+          // ledger holds it. A dedicated test makes the threshold flip visible
+          // rather than incidental.
+          where: { ...OPERATIONALLY_PRESENT_GUEST_WHERE },
           select: {
             id: true,
             firstName: true,
@@ -346,7 +362,14 @@ export async function buildDisplayState(
                 member: {
                   select: { firstName: true, lastName: true, ageTier: true },
                 },
-                guests: { select: { ageTier: true } },
+                // D-12 (#2307): the chore panel re-derives containsMinors and
+                // the group headcount for its own assignee label, so it has to
+                // read the SAME guest set as the booking rows above or the two
+                // panels would label one booking two different ways on one wall.
+                guests: {
+                  where: { ...OPERATIONALLY_PRESENT_GUEST_WHERE },
+                  select: { ageTier: true },
+                },
               },
             },
           },
