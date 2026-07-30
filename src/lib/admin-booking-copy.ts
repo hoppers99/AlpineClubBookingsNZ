@@ -205,10 +205,16 @@ export async function copyBookingToDraft({
   // AFTER the draft's transaction has committed. Awaited so a copy that could not
   // reach anybody has already been logged and audited by the time the caller
   // returns.
-  const memberGuestRows = matchMemberGuestNotificationRows({
-    createdGuests: booking.guests,
-    entriesByMemberId: consentPlan.entriesByMemberId,
-  });
+  // Nothing planned means nothing written and nobody owed — every copy on a club
+  // with the module off, and every copy whose guests are all inside the owner's
+  // family. Checked first so the ordinary copy does no work at all.
+  const memberGuestRows =
+    consentPlan.entriesByMemberId.size === 0
+      ? []
+      : matchMemberGuestNotificationRows({
+          createdGuests: booking.guests,
+          entriesByMemberId: consentPlan.entriesByMemberId,
+        });
   if (memberGuestRows.length > 0) {
     // Loaded lazily on purpose: the sender pulls in the whole email/template
     // graph, and only a booking that actually added a cross-family member guest
