@@ -62,6 +62,11 @@ export type BatchModifyInput = {
   promoCode?: string;
   promoGuestIndexes?: number[];
   removePromoCode?: boolean;
+  // #2266: the member's credit election, integer cents. The modify path never
+  // moves credit itself — it stores the election on the booking
+  // (Booking.creditElectionCents, #2265) for the pay step to consume, exactly
+  // like a saved draft. `0` clears a stored election; absent leaves it alone.
+  applyCreditCents?: number;
   memberReviewJustification?: string;
   settlementMethod?: BookingModificationSettlementMethod;
   // Admin-only date override (issue #1668). Only honoured for role === "ADMIN";

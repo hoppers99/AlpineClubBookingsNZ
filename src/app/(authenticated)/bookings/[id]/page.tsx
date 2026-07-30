@@ -61,6 +61,10 @@ import {
   getRemainingRefundableCents,
   hasCapturedPayment,
 } from "@/lib/booking-payment-state";
+import {
+  deriveBookingAppliedCreditCents,
+  getMemberCreditBalance,
+} from "@/lib/member-credit";
 import { isBookingFullyPaidForGuestNameEdits } from "@/lib/booking-modify";
 import {
   bookingHoldsCapacity,
@@ -581,6 +585,27 @@ export default async function BookingDetailPage({
     duplicateCaptureRefunds,
   });
 
+  // #2266: the edit panel's account-credit card (its own card above the
+  // Return-method radio — owner-decided placement). Only statuses whose stored
+  // election (#2265) a pay-time consumer will honour are eligible; PENDING is
+  // deliberately out (see CREDIT_ELECTION_WRITABLE_STATUSES in
+  // booking-credit-election.ts), as are organiser-settled bookings and anything
+  // with captured money. The balance shown is the BOOKING OWNER's, so an admin
+  // editing on behalf offers the member's credit, not their own.
+  const creditElectionEligible =
+    canModify &&
+    !isDeleted &&
+    ["DRAFT", "AWAITING_REVIEW", "PAYMENT_PENDING"].includes(booking.status) &&
+    !booking.organiserSettled &&
+    !hasCapturedPayment(booking.payment);
+  const editorCredit = creditElectionEligible
+    ? {
+        availableCents: await getMemberCreditBalance(booking.memberId),
+        electionCents: booking.creditElectionCents,
+        appliedCents: await deriveBookingAppliedCreditCents(booking.id),
+      }
+    : null;
+
   const editorData: BookingEditorData = {
     id: booking.id,
     checkIn: new Date(booking.checkIn).toISOString().split("T")[0],
@@ -648,6 +673,15 @@ export default async function BookingDetailPage({
       checkInEditable: editPolicy.checkInEditable,
       adminOverrideAvailable: canAdminOverride,
     },
+    // #2266: null (rather than omitted) when ineligible, so the panel renders
+    // no credit card at all for a booking whose election nothing would honour.
+    credit: editorCredit,
+    // #2266: the booking OWNER's member id — the shared PromoCodeInput
+    // validates on-behalf promo entry against the member's assignments, not
+    // the acting admin's.
+    memberId: booking.memberId,
+    // #2266: promo lodge restrictions validate against THIS booking's lodge.
+    lodgeId: booking.lodgeId,
   };
   const backHref = resolveInternalReturnPath(
     query.returnTo,
@@ -1178,6 +1212,30 @@ export default async function BookingDetailPage({
               your guests are confirmed and paid for closer to your stay.
             </p>
           )}
+        </div>
+      ) : null}
+
+      {/* #2266 (absorbing #2265's notice surface): a stored credit election is
+          a promise the pay step keeps, and the member must see that promise on
+          every re-entry — draft save lands here, Resume lands here. Wording is
+          the owner-decided sentence from the signed-off mockup. Only shown
+          while a consumer will still honour the election (the same statuses
+          the edit path may write one onto), and never on a deleted booking. */}
+      {!isDeleted &&
+      booking.creditElectionCents != null &&
+      booking.creditElectionCents > 0 &&
+      ["DRAFT", "AWAITING_REVIEW", "PAYMENT_PENDING"].includes(booking.status) ? (
+        <div className="space-y-1 rounded-md border border-success-6 bg-success-3 px-4 py-3 text-sm text-success-11">
+          <p className="font-medium">
+            {nonOwnerAdminViewer
+              ? `The member's ${formatCents(booking.creditElectionCents)} credit choice is saved and will be applied when they confirm.`
+              : `Your ${formatCents(booking.creditElectionCents)} credit choice is saved and will be applied when you confirm.`}
+          </p>
+          <p className="opacity-80">
+            {nonOwnerAdminViewer
+              ? "No credit has been taken from their balance yet — it is applied at payment, against the balance and price at that moment."
+              : "Nothing has been taken from your balance yet — your credit is applied when you pay, against your balance and the price at that moment."}
+          </p>
         </div>
       ) : null}
 

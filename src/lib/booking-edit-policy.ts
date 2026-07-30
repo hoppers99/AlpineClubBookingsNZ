@@ -6,11 +6,21 @@ const MEMBER_FUTURE_EDIT_STATUSES = new Set<string>([
   BookingStatus.PAYMENT_PENDING,
   BookingStatus.CONFIRMED,
   BookingStatus.PAID,
+  // #2266: a member may edit their OWN draft. The dashboard's Resume button has
+  // always landed on the booking page, but the page offered a plain member no
+  // Edit button at all — the reporter only reached the editor because they were
+  // an admin. A draft edit moves no money and claims no capacity: it has no
+  // change fee (calculateModificationChangeFee), writes no hold dates
+  // (applyLifecycleTransitions), and has no settlement — confirm-draft / the
+  // pay step enforce capacity and holds when the draft becomes real. A member
+  // draft edit still gets the same over-capacity CHECK the wizard applies
+  // before saving a draft (#1767), because member edits do not skip the
+  // lifecycle machinery the way admin edits of non-lifecycle statuses do.
+  BookingStatus.DRAFT,
 ]);
 
 const ADMIN_FUTURE_EDIT_STATUSES = new Set<string>([
   ...MEMBER_FUTURE_EDIT_STATUSES,
-  BookingStatus.DRAFT,
   BookingStatus.WAITLISTED,
   BookingStatus.WAITLIST_OFFERED,
   BookingStatus.BUMPED,
@@ -151,6 +161,22 @@ export function canModifyBookingStatusForRole(status: string, role: string): boo
   return isFutureEditStatusAllowed(status, role) || isInProgressEditStatusAllowed(status);
 }
 
+// #2266: frozen to an explicit list rather than derived from
+// MEMBER_FUTURE_EDIT_STATUSES, which now includes DRAFT. A DRAFT booking must
+// stay lifecycle-INERT however it is edited (no capacity re-check on apply for
+// admins, no hold recompute, no zero-dollar auto-pay, no credit clamp) — it
+// holds no capacity and owes no money until confirm-draft or the pay step makes
+// it real, and those doors enforce capacity/holds themselves. Deriving this set
+// would have silently flipped admin draft edits from "skip lifecycle rules" to
+// "run them" the day DRAFT joined the member set.
+const ACTIVE_BOOKING_EDIT_LIFECYCLE_STATUSES = new Set<string>([
+  BookingStatus.PENDING,
+  BookingStatus.PAYMENT_PENDING,
+  BookingStatus.CONFIRMED,
+  BookingStatus.PAID,
+  BookingStatus.COMPLETED,
+]);
+
 export function usesActiveBookingEditLifecycle(status: string): boolean {
-  return MEMBER_FUTURE_EDIT_STATUSES.has(status) || status === BookingStatus.COMPLETED;
+  return ACTIVE_BOOKING_EDIT_LIFECYCLE_STATUSES.has(status);
 }

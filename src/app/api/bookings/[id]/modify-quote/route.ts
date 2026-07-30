@@ -81,6 +81,7 @@ import {
   findBookingMemberNightConflicts,
   getBookingMemberNightConflictResponse,
 } from "@/lib/booking-member-night-conflicts";
+import { getMemberCreditBalance } from "@/lib/member-credit";
 import logger from "@/lib/logger";
 
 const modifyQuoteSchema = z.object({
@@ -121,7 +122,17 @@ const modifyQuoteSchema = z.object({
     )
     .optional(),
   promoCode: z.string().optional(),
+  // #2266: beneficiary indexes for guest-targeted promo codes, positional over
+  // [remaining guests..., added guests...] — the same order the apply route's
+  // guestNightRates use, so preview and apply agree about who the code covers.
+  promoGuestIndexes: z.array(z.number().int().min(0)).optional(),
   removePromoCode: z.boolean().optional(),
+  // #2266: the member's credit election, mirroring the create quote/create
+  // routes. The preview never moves money — the apply route stores the election
+  // on the booking (Booking.creditElectionCents, #2265) and the pay step
+  // consumes it — so the preview only has to keep the request price-preserving
+  // when credit is the ONLY change.
+  applyCreditCents: z.number().int().min(0).max(100_000_000).optional(),
   // Admin-only date override (issue #1668). The preview mirrors apply exactly.
   adminOverride: z.boolean().optional(),
   pricingMode: z.enum(["shift", "recalculate"]).optional(),
@@ -145,6 +156,7 @@ const OVERRIDE_DATE_ONLY_QUOTE_FIELDS = [
   "guestStayRanges",
   "guestUpdates",
   "promoCode",
+  "promoGuestIndexes",
   "removePromoCode",
   // #1746: partner-shared flags ride guest changes, never a date override.
   "partnerSharedGuests",
@@ -302,7 +314,9 @@ export async function POST(
     guestStayRanges,
     guestUpdates,
     promoCode: newPromoCode,
+    promoGuestIndexes,
     removePromoCode,
+    applyCreditCents,
     pricingMode,
     confirmOverCapacity,
   } = parsed.data;
@@ -348,10 +362,13 @@ export async function POST(
   }
   if (
     adminOverride &&
-    OVERRIDE_DATE_ONLY_QUOTE_FIELDS.some((field) => {
+    (OVERRIDE_DATE_ONLY_QUOTE_FIELDS.some((field) => {
       const value = parsed.data[field];
       return Array.isArray(value) ? value.length > 0 : Boolean(value);
-    })
+    }) ||
+      // #2266: checked explicitly — `Boolean(0)` is false, so a credit
+      // election of 0 cents would otherwise slip past the date-only contract.
+      applyCreditCents !== undefined)
   ) {
     return NextResponse.json(
       { error: "Admin override edits change dates only" },
@@ -441,13 +458,28 @@ export async function POST(
   );
   const requestIsIdentityOnly =
     !requestedStructuralChange && Boolean(guestUpdates?.length);
+  // #2266: a credit election with nothing structural is price-preserving by the
+  // same argument as an identity-only name fix — the apply route only writes
+  // Booking.creditElectionCents (#2265) and touches neither price nor capacity,
+  // so the preview must echo the stored money rather than reprice at current
+  // rates (a season-rate change would otherwise surface a phantom price diff).
+  const requestIsCreditElectionOnly =
+    !requestedStructuralChange &&
+    !guestUpdates?.length &&
+    applyCreditCents !== undefined;
   const quotePriced = await isQuotePricedBooking(prisma, bookingId);
-  if (!requestIsIdentityOnly && quotePriced) {
+  if (!requestIsIdentityOnly && !requestIsCreditElectionOnly && quotePriced) {
     return NextResponse.json(
       { error: QUOTE_PRICED_EDIT_BLOCK_MESSAGE },
       { status: 400 },
     );
   }
+
+  // #2266: the member's live credit balance rides every non-shift preview, the
+  // same field the create-flow quote returns (api/bookings/quote/route.ts) —
+  // the edit panel's credit card keys off it. The BOOKING OWNER's balance, not
+  // the actor's: an admin editing on behalf must see the member's credit.
+  const availableCreditCents = await getMemberCreditBalance(booking.memberId);
 
   let normalizedAddGuests: NormalizedAddGuest[] | undefined = addGuests;
   let guestNameUpdates: ReturnType<typeof resolveGuestNameUpdates> = [];
@@ -471,9 +503,11 @@ export async function POST(
 
   // Identity-only preview (#1099): a name fix never reprices, so the quote is
   // the stored state with zero deltas — no pricing engine, no capacity check,
-  // safe for quoted and legacy bookings alike.
-  if (requestIsIdentityOnly) {
+  // safe for quoted and legacy bookings alike. #2266 routes a credit-only
+  // election through the same echo for the same reason.
+  if (requestIsIdentityOnly || requestIsCreditElectionOnly) {
     return NextResponse.json({
+      availableCreditCents,
       newTotalPriceCents: booking.totalPriceCents,
       newDiscountCents: booking.discountCents,
       newPromoAdjustmentCents: booking.promoAdjustmentCents,
@@ -1097,7 +1131,15 @@ export async function POST(
   const checkInChanged =
     newCheckIn.getTime() !== new Date(booking.checkIn).getTime();
 
-  if (!skipBookingLifecycleRules && checkInChanged && !isInProgressEdit) {
+  // #2266: no change fee on a DRAFT — nothing has been committed to, exactly
+  // like fiddling with dates in the wizard before saving. Mirrors the
+  // calculateModificationChangeFee guard on the apply path.
+  if (
+    !skipBookingLifecycleRules &&
+    checkInChanged &&
+    !isInProgressEdit &&
+    booking.status !== "DRAFT"
+  ) {
     const now = new Date();
     const policy = await loadCancellationPolicy(booking.checkIn, bookingLodgeId);
     const feeResult = calculateChangeFee({
@@ -1192,6 +1234,9 @@ export async function POST(
     code?: string;
     discountCents?: number;
     promoAdjustmentCents?: number;
+    // #2266: set when a guest-targeted code needs (or got a stale) selection.
+    requiresGuestSelection?: boolean;
+    selectableGuestIndexes?: number[];
   } | null = null;
 
   // Helper: get per-night rates per guest for promo calculation
@@ -1217,12 +1262,16 @@ export async function POST(
     newPromoAdjustmentCents = 0;
     promoValidation = null;
   } else if (newPromoCode) {
-    // User wants to apply a new promo code
+    // User wants to apply a new promo code. #2266: beneficiary indexes ride
+    // along so a guest-targeted code previews against the same selection the
+    // apply route (applyPromoCodeChanges) will redeem for.
     const validation = await validatePromoCodeFull(newPromoCode, {
       totalPriceCents: newTotalPriceCents,
       memberId: booking.memberId,
       guests: getGuestNightRates(),
-    }, bookingId, bookingLodgeId);
+    }, bookingId, bookingLodgeId, {
+      selectedGuestIndexes: promoGuestIndexes,
+    });
 
     if (validation.valid) {
       newDiscountCents = validation.discountCents ?? 0;
@@ -1237,6 +1286,14 @@ export async function POST(
       promoValidation = {
         valid: false,
         error: validation.error,
+        // #2266: distinguishes "pick which guests" from a hard rejection so
+        // the edit panel can re-open guest selection instead of dead-ending.
+        ...(validation.requiresGuestSelection
+          ? {
+              requiresGuestSelection: true,
+              selectableGuestIndexes: validation.selectableGuestIndexes ?? [],
+            }
+          : {}),
       };
       // Invalid new promo — discount stays 0, don't fall back to old promo
     }
@@ -1313,6 +1370,9 @@ export async function POST(
     changeFeeCents,
     netChargeCents,
     settlementOptions,
+    // #2266: create-flow parity (api/bookings/quote/route.ts) — the member's
+    // live balance so the edit panel can offer credit against the new price.
+    availableCreditCents,
     capacityAvailable: capacity.available,
     minimumStayValid: minimumStayViolations.length === 0,
     minimumStayViolations,

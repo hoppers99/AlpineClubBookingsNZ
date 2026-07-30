@@ -1115,7 +1115,12 @@ export async function validatePromoCodeFull(
   code: string,
   bookingDetails: BookingDetailsForPromo,
   excludeBookingId?: string,
-  lodgeId?: string | null
+  lodgeId?: string | null,
+  // #2266: guest-targeted codes (assigned + not-own-nights-only) need the
+  // caller's chosen beneficiary indexes, exactly as /api/promo-codes/validate
+  // and the create/modify apply paths pass them. Optional so every existing
+  // caller keeps its behaviour byte-for-byte.
+  options?: { selectedGuestIndexes?: number[] }
 ): Promise<PromoValidationResult> {
   const normalizedCode = code.toUpperCase().trim();
 
@@ -1141,11 +1146,27 @@ export async function validatePromoCodeFull(
     promoCode,
     bookingDetails,
     assignedMemberIds,
-    { excludeBookingId, lodgeId }
+    {
+      excludeBookingId,
+      lodgeId,
+      selectedGuestIndexes: options?.selectedGuestIndexes,
+    }
   );
 
   if (application.error || !application.discount) {
-    return { valid: false, error: application.error ?? "Promo code could not be applied" };
+    return {
+      valid: false,
+      error: application.error ?? "Promo code could not be applied",
+      // #2266: propagated so a preview caller (modify-quote) can tell "pick
+      // which guests" apart from a hard rejection, the same distinction the
+      // /api/promo-codes/validate route already surfaces to PromoCodeInput.
+      ...(application.requiresGuestSelection
+        ? {
+            requiresGuestSelection: true,
+            selectableGuestIndexes: application.selectableGuestIndexes ?? [],
+          }
+        : {}),
+    };
   }
 
   const result = application.discount;

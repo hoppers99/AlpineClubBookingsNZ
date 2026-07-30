@@ -296,7 +296,14 @@ export async function applyLifecycleTransitions(
     newStatus = "PAYMENT_PENDING";
   }
 
-  if (!skipBookingLifecycleRules && hasNonMembers) {
+  // #2266: a DRAFT never carries a hold — it holds no capacity and owes no
+  // money until the pay step (or $0 confirm-draft) makes it real, and THAT
+  // door computes the hold rail. Member draft edits reach here with
+  // skipBookingLifecycleRules false (only admin edits of non-lifecycle
+  // statuses skip), so without this guard a member editing a draft with
+  // non-member guests would stamp a meaningless nonMemberHoldUntil onto it.
+  const isDraftEdit = booking.status === BookingStatus.DRAFT;
+  if (!skipBookingLifecycleRules && hasNonMembers && !isDraftEdit) {
     const holdPolicy = await getNonMemberHoldPolicy(newCheckIn, booking.lodgeId);
     const holdDecision = calculateBookingHoldDecision({
       hasNonMembers,
@@ -315,7 +322,7 @@ export async function applyLifecycleTransitions(
         newStatus = "PAYMENT_PENDING";
       }
     }
-  } else if (!skipBookingLifecycleRules) {
+  } else if (!skipBookingLifecycleRules && !isDraftEdit) {
     newNonMemberHoldUntil = null;
   }
 

@@ -6,6 +6,7 @@
 
 import {
   AdminReviewStatus,
+  BookingStatus,
   type AgeTier,
   type BookingGuest,
   type Prisma,
@@ -1163,6 +1164,12 @@ export async function calculateModificationChangeFee({
   skipBookingLifecycleRules: boolean;
 }): Promise<number> {
   if (skipBookingLifecycleRules || !checkInChanged) {
+    return 0;
+  }
+  // #2266: no change fee on a DRAFT — nothing has been committed to, exactly
+  // like moving the dates in the wizard before saving. Member draft edits do
+  // not take the admin skip above, so the guard must be explicit.
+  if (booking.status === BookingStatus.DRAFT) {
     return 0;
   }
   const now = new Date();

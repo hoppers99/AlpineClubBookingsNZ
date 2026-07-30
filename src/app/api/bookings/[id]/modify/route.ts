@@ -67,6 +67,9 @@ const batchModifySchema = z.object({
   promoCode: z.string().optional(),
   promoGuestIndexes: z.array(z.number().int().min(0)).optional(),
   removePromoCode: z.boolean().optional(),
+  // #2266: credit election on the edit path — stored on the booking (#2265),
+  // never applied here. Bounds mirror the create route's applyCreditCents.
+  applyCreditCents: z.number().int().min(0).max(100_000_000).optional(),
   memberReviewJustification: z.string().trim().min(1).max(1000).optional(),
   settlementMethod: z.enum(["card", "credit"]).optional(),
   // Admin-only date override (issue #1668).
@@ -188,10 +191,13 @@ export async function PUT(
   }
   if (
     adminOverride &&
-    OVERRIDE_DATE_ONLY_FIELDS.some((field) => {
+    (OVERRIDE_DATE_ONLY_FIELDS.some((field) => {
       const value = parsed.data[field];
       return Array.isArray(value) ? value.length > 0 : Boolean(value);
-    })
+    }) ||
+      // #2266: checked explicitly — `Boolean(0)` is false, so a credit
+      // election of 0 cents would otherwise slip past the date-only contract.
+      parsed.data.applyCreditCents !== undefined)
   ) {
     return NextResponse.json(
       { error: "Admin override edits change dates only" },

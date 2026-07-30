@@ -20,6 +20,7 @@ import { formatCents } from "@/lib/utils";
 import { getAgeTierLabel, useAgeTierOptions } from "@/lib/use-age-tier-options";
 import { GuestNightGrid } from "@/components/guest-night-grid";
 import { BookingNoEmailsNotice } from "@/components/booking-no-emails-notice";
+import { PromoCodeInput, type PromoResult } from "@/components/promo-code-input";
 import { useScrollToFeedback } from "@/hooks/use-scroll-to-feedback";
 
 // #2104: mirror of requiresAdultSupervisionReview (src/lib/booking-review.ts).
@@ -121,6 +122,27 @@ interface BookingData {
   // member must not learn the switch exists — and the panel only reads it on
   // the admin (`actingAsAdmin`) dialog path.
   noEmails?: boolean;
+  // #2266: the account-credit card (owner-decided: its own card above the
+  // Return-method radio). Null/absent when this booking cannot carry a credit
+  // election — the card is then not rendered at all. `electionCents` is the
+  // stored #2265 election; `appliedCents` is ledger credit already applied.
+  credit?: {
+    availableCents: number;
+    electionCents: number | null;
+    appliedCents: number;
+  } | null;
+  // #2266: booking OWNER's member id, for on-behalf promo validation.
+  memberId?: string;
+  // #2266: the booking's lodge, so promo lodge restrictions validate against
+  // the right lodge in the shared PromoCodeInput.
+  lodgeId?: string | null;
+}
+
+// #2266: an eligible promo chip, as returned by GET /api/promo-codes/available
+// (the same endpoint and shape the create wizard's review step consumes).
+interface AvailablePromoCode {
+  code: string;
+  description: string | null;
 }
 
 interface NewGuest {
@@ -174,6 +196,8 @@ interface QuoteResult {
   changeFeeCents: number;
   netChargeCents: number;
   settlementOptions: SettlementOptions | null;
+  // #2266: the member's live credit balance (create-flow quote parity).
+  availableCreditCents?: number;
   capacityAvailable: boolean;
   // #1746: why a partner-shared admission was rejected (shown verbatim).
   partnerSharedReason?: string | null;
@@ -306,9 +330,32 @@ export function EditBookingPanel({
     PartnerSharingCandidate[]
   >([]);
   const [promoAction, setPromoAction] = useState<
-    { type: "keep" } | { type: "remove" } | { type: "new"; code: string }
+    | { type: "keep" }
+    | { type: "remove" }
+    // #2266: guestIndexes carries a guest-targeted code's beneficiary
+    // selection (from the shared PromoCodeInput), positional over
+    // [remaining guests..., added guests...] — the order the server prices.
+    | { type: "new"; code: string; guestIndexes?: number[] }
   >({ type: "keep" });
-  const [newPromoInput, setNewPromoInput] = useState("");
+  // #2266: the old blind promo text field is gone — the shared PromoCodeInput
+  // owns entry + validation of a NEW code (guest selection included).
+  const [appliedNewPromo, setAppliedNewPromo] = useState<PromoResult | null>(
+    null,
+  );
+  const [availablePromoCodes, setAvailablePromoCodes] = useState<
+    AvailablePromoCode[]
+  >([]);
+  const [prefillPromoCode, setPrefillPromoCode] = useState<string | undefined>(
+    undefined,
+  );
+
+  // #2266: account credit. `useCredit` is seeded from the stored election
+  // (#2265) so re-opening a draft shows the saved choice; `creditTouched`
+  // separates "the member changed their mind" from "the panel recomputed".
+  const credit = booking.credit ?? null;
+  const storedElectionCents = credit?.electionCents ?? 0;
+  const [useCredit, setUseCredit] = useState(storedElectionCents > 0);
+  const [creditTouched, setCreditTouched] = useState(false);
 
   // Issue #1668: admin date override. When enabled, the member-facing date
   // locks are bypassed and the admin chooses how pricing is handled. Every
@@ -420,6 +467,29 @@ export function EditBookingPanel({
       cancelled = true;
     };
   }, [booking.id, booking.viewerRole]);
+
+  // #2266: surface the member's eligible promo codes as chips (create-flow
+  // parity — review-step fetches the same endpoint). Members only: the
+  // endpoint returns the SESSION user's assignments, so an admin editing on
+  // behalf would see their own codes, not the member's — the admin create
+  // wizard offers no chips either.
+  useEffect(() => {
+    if (booking.viewerRole === "ADMIN") return;
+    let cancelled = false;
+    fetch("/api/promo-codes/available")
+      .then((res) => (res.ok ? res.json() : []))
+      .then((codes) => {
+        if (!cancelled) {
+          setAvailablePromoCodes(Array.isArray(codes) ? codes : []);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setAvailablePromoCodes([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [booking.viewerRole]);
 
   // Check if anything has changed
   const remainingGuests = useMemo(
@@ -570,6 +640,42 @@ export function EditBookingPanel({
       const current = existingGuestNights[guest.id] ?? original;
       return current.join(",") !== original.join(",");
     });
+  // #2266: account-credit derivations. The checkbox carries the create-flow
+  // semantics — "put my credit towards this booking, up to its price" — so the
+  // elected amount is always min(balance, what is still uncovered), recomputed
+  // as the quote reprices. The election is STORED on the booking (#2265) and
+  // consumed at payment; nothing moves here.
+  const quoteFinalPriceCents =
+    quote?.newFinalPriceCents ?? booking.finalPriceCents;
+  const availableCreditCents =
+    quote?.availableCreditCents ?? credit?.availableCents ?? 0;
+  const ledgerAppliedCreditCents = credit?.appliedCents ?? 0;
+  const uncoveredPriceCents = Math.max(
+    0,
+    quoteFinalPriceCents - ledgerAppliedCreditCents,
+  );
+  const desiredElectionCents = useCredit
+    ? Math.min(availableCreditCents, uncoveredPriceCents)
+    : 0;
+  // Send the election when the member changed it, or when a stored election
+  // must follow a reprice (untouched but the min() moved) — never invent one.
+  const includeCreditInPayload =
+    Boolean(credit) &&
+    !overrideEnabled &&
+    desiredElectionCents !== storedElectionCents &&
+    (creditTouched || storedElectionCents > 0);
+  const creditChanged =
+    Boolean(credit) &&
+    !overrideEnabled &&
+    creditTouched &&
+    desiredElectionCents !== storedElectionCents;
+  const creditCardVisible =
+    Boolean(credit) &&
+    !overrideEnabled &&
+    (availableCreditCents > 0 ||
+      storedElectionCents > 0 ||
+      ledgerAppliedCreditCents > 0);
+
   const hasChanges =
     checkIn !== booking.checkIn ||
     checkOut !== booking.checkOut ||
@@ -578,7 +684,8 @@ export function EditBookingPanel({
     guestRangesChanged ||
     guestNightsChanged ||
     guestNamesChanged ||
-    promoAction.type !== "keep";
+    promoAction.type !== "keep" ||
+    creditChanged;
 
   // Debounced quote fetch
   const quoteTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -719,6 +826,17 @@ export function EditBookingPanel({
       body.removePromoCode = true;
     } else if (promoAction.type === "new") {
       body.promoCode = promoAction.code;
+      // #2266: beneficiary selection for guest-targeted codes, carried from
+      // the shared PromoCodeInput through quote and apply alike.
+      if (promoAction.guestIndexes?.length) {
+        body.promoGuestIndexes = promoAction.guestIndexes;
+      }
+    }
+
+    // #2266: the credit election (#2265) — stored on the booking, applied when
+    // the member confirms. 0 clears a saved election.
+    if (includeCreditInPayload) {
+      body.applyCreditCents = desiredElectionCents;
     }
 
     return body;
@@ -740,6 +858,8 @@ export function EditBookingPanel({
     overrideEnabled,
     overridePricingMode,
     confirmOverCapacity,
+    includeCreditInPayload,
+    desiredElectionCents,
   ]);
 
   const fetchQuote = useCallback(
@@ -896,12 +1016,53 @@ export function EditBookingPanel({
     setAddedGuests((prev) => prev.filter((g) => g.key !== key));
   }
 
-  function handleApplyPromo() {
+  // #2266: the shared PromoCodeInput validated (or cleared) a new code.
+  function handleNewPromoApplied(result: PromoResult | null) {
     if (promoLocked) return;
-    if (!newPromoInput.trim()) return;
-    setPromoAction({ type: "new", code: newPromoInput.trim() });
-    setNewPromoInput("");
+    setAppliedNewPromo(result);
+    setPrefillPromoCode(undefined);
+    if (result?.code) {
+      setPromoAction({
+        type: "new",
+        code: result.code,
+        guestIndexes: result.selectedGuestIndexes,
+      });
+    } else {
+      // Cleared: fall back to the stored promo (kept) or no promo at all.
+      setPromoAction({ type: "keep" });
+    }
   }
+
+  // #2266: a guest-targeted promo's beneficiary indexes are positional over
+  // [remaining guests..., added guests...]; changing that list silently
+  // re-points them at different people. Reset the applied code instead and let
+  // the member re-apply it against the new guest list.
+  const promoGuestSetSignature = useMemo(
+    () =>
+      JSON.stringify([
+        booking.guests
+          .filter((guest) => !removedGuestIds.has(guest.id))
+          .map((guest) => guest.id),
+        addedGuests.map((guest) => guest.key),
+      ]),
+    [booking.guests, removedGuestIds, addedGuests],
+  );
+  const appliedPromoGuestSignatureRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!(promoAction.type === "new" && promoAction.guestIndexes?.length)) {
+      appliedPromoGuestSignatureRef.current = null;
+      return;
+    }
+    if (appliedPromoGuestSignatureRef.current === null) {
+      appliedPromoGuestSignatureRef.current = promoGuestSetSignature;
+      return;
+    }
+    if (appliedPromoGuestSignatureRef.current !== promoGuestSetSignature) {
+      appliedPromoGuestSignatureRef.current = null;
+      setAppliedNewPromo(null);
+      setPromoAction({ type: "keep" });
+    }
+  }, [promoAction, promoGuestSetSignature]);
 
   // Issue #1696: an admin/booking-officer save goes through the notify dialog
   // first (on EVERY edit, not just overrides); the dialog's two actions call
@@ -1153,7 +1314,12 @@ export function EditBookingPanel({
                     setExistingGuestRanges(seedExistingGuestRanges());
                     setExistingGuestNights(seedExistingGuestNights());
                     setPromoAction({ type: "keep" });
-                    setNewPromoInput("");
+                    setAppliedNewPromo(null);
+                    setPrefillPromoCode(undefined);
+                    // #2266: credit is not part of a date-only override edit —
+                    // restore the stored election's state.
+                    setUseCredit(storedElectionCents > 0);
+                    setCreditTouched(false);
                     setShowAddForm(false);
                   } else {
                     setOverridePricingMode(null);
@@ -1753,51 +1919,169 @@ export function EditBookingPanel({
             </div>
           )}
 
-          {promoAction.type === "new" && (
-            <div className="flex items-center justify-between">
-              <div>
-                <span className="font-medium text-success-11">{promoAction.code.toUpperCase()}</span>
-                {quote?.promoValidation?.valid && quote.promoValidation.promoAdjustmentCents !== undefined && (
-                  <span className={`text-sm ml-2 ${(quote.promoValidation.promoAdjustmentCents ?? 0) > 0 ? "text-warning-11" : "text-success-11"}`}>
-                    ({formatSignedCents(quote.promoValidation.promoAdjustmentCents ?? 0)})
-                  </span>
-                )}
-                {quote?.promoValidation && !quote.promoValidation.valid && (
-                  <span className="text-sm text-danger-11 ml-2">
-                    {quote.promoValidation.error}
-                  </span>
-                )}
-              </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-danger-11 hover:text-danger-11"
-                onClick={() => setPromoAction(booking.promo ? { type: "keep" } : { type: "remove" })}
-              >
-                Remove
-              </Button>
-            </div>
-          )}
-
-          {(promoAction.type === "remove" || (!booking.promo && promoAction.type === "keep")) && (
-            <div className="flex gap-2">
-              <Input
-                placeholder="Enter promo code"
-                value={newPromoInput}
-                onChange={(e) => setNewPromoInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleApplyPromo()}
+          {/* #2266: entry area — eligible-code chips plus the shared
+              PromoCodeInput (validation, guest selection, applied display),
+              replacing the old blind text field. Shown whenever a new code may
+              be entered, and while one is applied (the input renders the
+              applied chip itself). */}
+          {(promoAction.type === "remove" ||
+            promoAction.type === "new" ||
+            (!booking.promo && promoAction.type === "keep")) && (
+            <div className="space-y-3">
+              {availablePromoCodes.length > 0 && !appliedNewPromo && (
+                <div className="app-callout-brand p-4">
+                  <p className="mb-2 text-sm font-medium text-foreground">
+                    You have promo codes available:
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {availablePromoCodes.map((pc) => (
+                      <button
+                        key={pc.code}
+                        type="button"
+                        onClick={() => setPrefillPromoCode(pc.code)}
+                        className="app-chip-brand font-mono"
+                      >
+                        {pc.code}
+                        {pc.description && (
+                          <span className="font-sans font-normal text-brand-charcoal">
+                            — {pc.description}
+                          </span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <PromoCodeInput
+                checkIn={new Date(`${checkIn}T00:00:00`)}
+                checkOut={new Date(`${checkOut}T00:00:00`)}
+                guests={[
+                  ...remainingGuests.map((g) => ({
+                    firstName: g.firstName,
+                    lastName: g.lastName,
+                    ageTier: g.ageTier,
+                    isMember: g.isMember,
+                    memberId: g.memberId ?? undefined,
+                    ...(perGuestDatesEnabled && !isInProgressEdit
+                      ? getExistingGuestRange(g)
+                      : {}),
+                  })),
+                  ...addedGuests.map((g) => ({
+                    firstName: g.firstName,
+                    lastName: g.lastName,
+                    ageTier: g.ageTier as string,
+                    isMember: g.isMember,
+                    memberId: g.memberId,
+                    ...(perGuestDatesEnabled &&
+                    !isInProgressEdit &&
+                    g.stayStart &&
+                    g.stayEnd
+                      ? { stayStart: g.stayStart, stayEnd: g.stayEnd }
+                      : {}),
+                  })),
+                ]}
+                onPromoApplied={handleNewPromoApplied}
+                appliedPromo={appliedNewPromo}
+                forMemberId={
+                  booking.viewerRole === "ADMIN" ? booking.memberId : undefined
+                }
+                lodgeId={booking.lodgeId}
+                prefillCode={prefillPromoCode}
               />
-              <Button
-                variant="outline"
-                onClick={handleApplyPromo}
-                disabled={!newPromoInput.trim()}
-              >
-                Apply
-              </Button>
+              {/* The booking-aware re-validation (modify-quote) can refuse a
+                  code the standalone validator accepted (e.g. already redeemed
+                  against this booking's dates); surface that honestly. */}
+              {promoAction.type === "new" &&
+                quote?.promoValidation &&
+                !quote.promoValidation.valid && (
+                  <p className="text-sm text-danger-11">
+                    {quote.promoValidation.error}
+                  </p>
+                )}
             </div>
           )}
         </CardContent>
       </Card>
+      )}
+
+      {/* Account credit (#2266). Owner-decided placement: its own card, above
+          the Return-method radio (which lives in the Price Summary below). The
+          direction tag distinguishes this card (spending credit on the
+          booking) from the settlement radio (money coming back to you). The
+          checkbox is the create flow's election, stored on the booking (#2265)
+          and applied when the member confirms — nothing moves at save time. */}
+      {creditCardVisible && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <CardTitle>Account credit</CardTitle>
+              <span className="rounded-full bg-success-3 px-2 py-0.5 text-xs font-medium text-success-11">
+                Credit → booking
+              </span>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {ledgerAppliedCreditCents > 0 && (
+              <p className="text-sm text-muted-foreground">
+                {formatCents(ledgerAppliedCreditCents)} of account credit is
+                already applied to this booking.
+              </p>
+            )}
+            <p className="text-sm text-success-11">
+              {actingAsAdmin ? "The member has" : "You have"}{" "}
+              <strong>{formatCents(availableCreditCents)}</strong> in account
+              credit
+            </p>
+            {(useCredit ||
+              (availableCreditCents > 0 && uncoveredPriceCents > 0)) && (
+              <label className="flex cursor-pointer items-center gap-2 text-sm text-success-11">
+                <input
+                  type="checkbox"
+                  checked={useCredit}
+                  disabled={
+                    !useCredit &&
+                    !(availableCreditCents > 0 && uncoveredPriceCents > 0)
+                  }
+                  onChange={(e) => {
+                    setUseCredit(e.target.checked);
+                    setCreditTouched(true);
+                  }}
+                  className="h-4 w-4 rounded border-success-6"
+                />
+                Apply credit to this booking
+              </label>
+            )}
+            {useCredit && desiredElectionCents > 0 && (
+              <p className="text-sm font-medium text-success-11">
+                {(() => {
+                  const whose = actingAsAdmin
+                    ? `The member's ${formatCents(desiredElectionCents)} credit choice`
+                    : `Your ${formatCents(desiredElectionCents)} credit choice`;
+                  const confirmer = actingAsAdmin ? "they confirm" : "you confirm";
+                  return creditChanged || storedElectionCents === 0
+                    ? `${whose} will be saved with these changes and applied when ${confirmer}.`
+                    : `${whose} is saved and will be applied when ${confirmer}.`;
+                })()}
+              </p>
+            )}
+            {useCredit &&
+              desiredElectionCents > 0 &&
+              desiredElectionCents >= uncoveredPriceCents && (
+                <p className="text-sm font-medium text-success-11">
+                  Credit covers the entire booking — no card payment needed
+                </p>
+              )}
+            {useCredit && desiredElectionCents === 0 && (
+              <p className="text-sm text-warning-11">
+                {availableCreditCents === 0
+                  ? actingAsAdmin
+                    ? "The member's credit balance is currently $0.00, so this choice cannot be applied right now. It will only apply if credit returns to their account before they pay — or untick it."
+                    : "Your credit balance is currently $0.00, so this choice cannot be applied right now. It will only apply if credit returns to your account before you pay — or untick it."
+                  : "There is nothing left for account credit to cover on this booking."}
+              </p>
+            )}
+          </CardContent>
+        </Card>
       )}
 
       {/* Price Summary */}
@@ -1920,6 +2204,39 @@ export function EditBookingPanel({
                     <span>New price</span>
                     <span>{formatCents(quote.newFinalPriceCents)}</span>
                   </div>
+                  {/* #2266: the mockup's credit lines — what account credit
+                      already covers, what the saved election will cover at
+                      confirmation, and what is then left to pay. */}
+                  {(ledgerAppliedCreditCents > 0 ||
+                    (useCredit && desiredElectionCents > 0)) && (
+                    <>
+                      {ledgerAppliedCreditCents > 0 && (
+                        <div className="flex justify-between text-sm text-success-11">
+                          <span>Account credit applied</span>
+                          <span>-{formatCents(ledgerAppliedCreditCents)}</span>
+                        </div>
+                      )}
+                      {useCredit && desiredElectionCents > 0 && (
+                        <div className="flex justify-between text-sm text-success-11">
+                          <span>Account credit (when you confirm)</span>
+                          <span>-{formatCents(desiredElectionCents)}</span>
+                        </div>
+                      )}
+                      <div className="flex justify-between font-medium">
+                        <span>Remaining to pay</span>
+                        <span>
+                          {formatCents(
+                            Math.max(
+                              0,
+                              quote.newFinalPriceCents -
+                                ledgerAppliedCreditCents -
+                                (useCredit ? desiredElectionCents : 0),
+                            ),
+                          )}
+                        </span>
+                      </div>
+                    </>
+                  )}
                 </div>
 
                 {/* Net charge/refund */}
@@ -1945,7 +2262,15 @@ export function EditBookingPanel({
 
                 {quote.netChargeCents < 0 && quote.settlementOptions && (
                   <div className="space-y-2 rounded-md border p-3 text-sm">
-                    <p className="font-medium">Return method</p>
+                    <div className="flex items-center justify-between">
+                      <p className="font-medium">Return method</p>
+                      {/* #2266: direction tag pairing with the credit card's
+                          "Credit → booking" — this section is money coming
+                          back to the member. */}
+                      <span className="rounded-full bg-info-3 px-2 py-0.5 text-xs font-medium text-info-11">
+                        Booking → you
+                      </span>
+                    </div>
                     {quote.settlementOptions.requiresSettlementMethod ? (
                       <div className="space-y-2">
                         <label className="flex cursor-pointer items-start gap-2">
