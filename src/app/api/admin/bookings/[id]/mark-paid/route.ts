@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import logger from "@/lib/logger";
 import { requireAdmin } from "@/lib/session-guards";
+import { formatCents } from "@/lib/utils";
 import {
   applyManualBookingPayment,
   ManualBookingPaymentError,
@@ -26,6 +27,22 @@ const bodySchema = z
     expectedAmountCents: z.number().int().optional(),
   })
   .strict();
+
+/**
+ * The credit-election receipt appended to the admin's toast (#2265, #2262 door
+ * 3). Empty for the overwhelming majority of settlements, which move no
+ * election at all.
+ */
+function creditElectionNote(
+  direction: "paid" | "unpaid",
+  creditElectionCents: number | null
+): string {
+  if (creditElectionCents == null) return "";
+  const amount = formatCents(creditElectionCents);
+  return direction === "paid"
+    ? ` This member had asked to put ${amount} of account credit towards the booking; cash cannot use it, so that credit is untouched and still on their account. They have been told.`
+    : ` Their ${amount} account-credit request has been put back on the booking, so it can be used when the booking is paid again.`;
+}
 
 /**
  * POST /api/admin/bookings/[id]/mark-paid
@@ -140,13 +157,18 @@ export async function POST(
       // placeholder address or an outright failure all come back as
       // not_delivered and say so.
       message:
-        result.direction === "paid"
+        (result.direction === "paid"
           ? result.receipt === "queued"
             ? "Payment recorded. A booking confirmation is being emailed to the member."
             : result.receipt === "not_delivered"
               ? "Payment recorded, but the confirmation could not be sent — check the booking's email settings and the member's address."
               : "Payment recorded. The member was not emailed."
-          : "Manual payment reversed. The booking is unpaid again and was not cancelled.",
+          : "Manual payment reversed. The booking is unpaid again and was not cancelled.") +
+        // #2265 (#2262 door 3): the credit election, reported to the admin
+        // SYNCHRONOUSLY. The operator alert that also reports it is gated on the
+        // club's `adminPaymentFailure` preference, which a club may have muted,
+        // so the person who just took the cash must hear it here regardless.
+        creditElectionNote(result.direction, result.creditElectionCents),
     });
   } catch (error) {
     if (error instanceof ManualBookingPaymentError) {

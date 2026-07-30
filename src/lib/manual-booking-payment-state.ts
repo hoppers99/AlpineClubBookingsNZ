@@ -31,6 +31,11 @@ export async function getBookingManualPaymentState(
       status: true,
       finalPriceCents: true,
       organiserSettled: true,
+      // #2265 (#2262 delta MED-3): the member's stored, unconsumed credit
+      // election. Advisory only — the settle re-reads it under the locks — but
+      // the dialog must be able to warn BEFORE the cash is recorded, because
+      // that click is the last preventable moment.
+      creditElectionCents: true,
       payment: {
         select: {
           id: true,
@@ -157,6 +162,7 @@ export async function getBookingManualPaymentState(
 
   return {
     amountOwingCents,
+    storedCreditElectionCents: booking.creditElectionCents,
     canMarkPaid: markPaidBlockedReason === null,
     markPaidBlockedReason,
     manuallyMarkedPaidAt: manuallyMarkedPaidAt

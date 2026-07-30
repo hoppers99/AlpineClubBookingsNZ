@@ -1163,7 +1163,7 @@ async function settleBookingPaymentInTransaction(
 
       await createAuditLog(
         {
-          action: "booking-payment.manual-payment.mark-paid",
+          action: MANUAL_MARK_PAID_AUDIT_ACTION,
           memberId: settlement.actingAdminMemberId,
           actorMemberId: settlement.actingAdminMemberId,
           subjectMemberId: booking.memberId,
@@ -1189,7 +1189,10 @@ async function settleBookingPaymentInTransaction(
             // member-visible report rides the shared
             // UNAPPLIED_CREDIT_ELECTION_AUDIT_ACTION row written post-commit;
             // this key keeps the money trail complete on the mark-paid entry
-            // itself.
+            // itself — AND it is the record the reversal reads back to restore
+            // the member's election (see `reverseManualBookingPayment`), which
+            // is why it must record exactly what THIS settle cleared and null
+            // when it cleared nothing.
             clearedCreditElectionCents: staleCreditElectionCents,
             // #2260 honesty rule: record the email decision BOTH ways, so a
             // reader can tell "chose not to email" from "no choice was offered".
@@ -1587,6 +1590,39 @@ export async function markBookingPaymentSucceeded({
   };
 }
 
+/**
+ * The audit action the manual cash / off-Xero settle writes (#2262 door 3).
+ *
+ * One constant rather than a literal per call site, because the REVERSAL reads
+ * these rows back: it restores the credit election that the matching settle
+ * cleared, and it finds that settle by this exact action string. A typo'd
+ * literal on either side would silently strand the member's election, which is
+ * precisely the failure the restoration exists to prevent.
+ */
+export const MANUAL_MARK_PAID_AUDIT_ACTION =
+  "booking-payment.manual-payment.mark-paid";
+
+/**
+ * Read `clearedCreditElectionCents` back off a mark-paid audit row's metadata.
+ *
+ * Defensive on purpose: `metadata` is free-form JSON, and rows written before
+ * this key existed (or by a future writer that drops it) must read as "nothing
+ * was cleared" rather than throw or restore a nonsense figure. Only a positive
+ * integer counts — money stays in integer cents, and a zero or negative
+ * "election" is not one.
+ */
+function readClearedCreditElectionCents(
+  metadata: Prisma.JsonValue | null | undefined
+): number | null {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    return null;
+  }
+  const raw = (metadata as Prisma.JsonObject).clearedCreditElectionCents;
+  return typeof raw === "number" && Number.isInteger(raw) && raw > 0
+    ? raw
+    : null;
+}
+
 export type ManualBookingSettlementResult = {
   bookingId: string;
   paymentId: string;
@@ -1650,25 +1686,6 @@ export async function markBookingPaymentManuallySettled({
     );
   }
 
-  // The single durable "paid" fact, recorded by the same helper and with the
-  // same event types every other settlement path uses — with the ACTING ADMIN
-  // as the actor, so the history says who recorded it.
-  await recordBookingEvent({
-    bookingId,
-    type: reconciliation.booking.parentBookingId
-      ? BookingEventType.NON_MEMBER_CONFIRMED
-      : BookingEventType.MEMBER_PAID,
-    actorMemberId: actingAdminMemberId,
-    amountCents: reconciliation.effectiveAmountCents,
-    reason: "manual_mark_paid",
-    snapshot: {
-      kind: "manual_mark_paid",
-      actingAdminMemberId,
-      note,
-      effectiveAmountCents: reconciliation.effectiveAmountCents,
-    },
-  });
-
   // #2265 (#2262 door 3). The settle cleared a stored credit election this cash
   // settlement could not honour — the admin collected the full amount owing
   // outside the app while the member held credit they had asked to spend, so
@@ -1676,6 +1693,17 @@ export async function markBookingPaymentManuallySettled({
   // the shared reporter, post-commit and best-effort by design, so the member's
   // booking history and the operator alert read identically however the clear
   // was reached (Stripe capture, Xero inbound, or this door).
+  //
+  // FIRST among the post-commit steps, deliberately. Everything after the commit
+  // is best-effort, but they are not equally recoverable: `recordBookingEvent`
+  // below is un-caught, so a throw there would abandon the rest of this function
+  // — and the row this reporter writes is the ONLY place the member is ever told
+  // their credit was not spent. The event, by contrast, is an internal timeline
+  // fact an operator can reconstruct from the audit log. Ordering the member's
+  // answer ahead of it shrinks the window in which a post-commit failure loses
+  // the one thing the member reads. The reporter is itself internally
+  // best-effort (it catches its own audit and email failures), so putting it
+  // first cannot cost the event either.
   if (reconciliation.staleCreditElectionCents != null) {
     await reportUnappliedCreditElection({
       bookingId,
@@ -1696,6 +1724,25 @@ export async function markBookingPaymentManuallySettled({
       },
     });
   }
+
+  // The single durable "paid" fact, recorded by the same helper and with the
+  // same event types every other settlement path uses — with the ACTING ADMIN
+  // as the actor, so the history says who recorded it.
+  await recordBookingEvent({
+    bookingId,
+    type: reconciliation.booking.parentBookingId
+      ? BookingEventType.NON_MEMBER_CONFIRMED
+      : BookingEventType.MEMBER_PAID,
+    actorMemberId: actingAdminMemberId,
+    amountCents: reconciliation.effectiveAmountCents,
+    reason: "manual_mark_paid",
+    snapshot: {
+      kind: "manual_mark_paid",
+      actingAdminMemberId,
+      note,
+      effectiveAmountCents: reconciliation.effectiveAmountCents,
+    },
+  });
 
   // Best-effort Stripe cancels, OUTSIDE the transaction. The durable
   // CANCEL_PAYMENT_INTENT operations committed with the settlement, so a
@@ -1731,6 +1778,13 @@ export type ManualBookingReversalResult = {
   reversedAmountCents: number;
   closedRecoveryOperationIds: string[];
   clearedInternetBankingHold: boolean;
+  /**
+   * #2262 door 3 / #2265: the stored credit election this reversal put BACK on
+   * the booking, in integer cents — exactly what the matching mark-paid had
+   * cleared. Null when that settle cleared nothing, or when the guarded restore
+   * declined because a legitimate writer had already set an election since.
+   */
+  restoredCreditElectionCents: number | null;
 };
 
 const MANUAL_REVERSAL_REFUSAL =
@@ -1917,14 +1971,56 @@ export async function reverseManualBookingPayment({
       },
     });
 
-    // #2265 (#2262 door 3): a credit election the settle cleared is
-    // deliberately NOT resurrected here. The clear was reported to the member
-    // ("your credit is still available") and their balance was never touched,
-    // so restoring the column would advertise a stale request the member was
-    // already told is over; the restored booking is payable again and the pay
-    // step asks about credit afresh. A re-mark after this reversal therefore
-    // finds no election and reports nothing — no double-clear, no double alert.
+    // #2265 (#2262 door 3): RESTORE the credit election this settlement
+    // cleared, so the reversal genuinely undoes the settle rather than leaving
+    // the member's choice behind.
     //
+    // Why restoring is the only honest answer. The election is stored on the
+    // booking and there is NO post-create control that can put it back: the
+    // only writer of `creditElectionCents` outside these settlement paths is
+    // booking-create (`applyCreditCents` at creation time), and the pay route's
+    // body is booking-id-only. So a member whose booking was marked paid and
+    // then reversed would hold credit they had asked to spend, on a booking
+    // that is payable again, with no way to re-elect it — they would be quietly
+    // charged the full price a second time.
+    //
+    // Exactly what this settle cleared, and nothing else. The amount comes from
+    // the mark-paid audit row's `clearedCreditElectionCents` (recorded
+    // in-transaction by the settle, so it is the value that settle actually took
+    // off the column, not a guess), and the restore is a GUARDED write matching
+    // `creditElectionCents: null` — the mirror image of `clearStaleCreditElection`
+    // in the settle. If a legitimate writer has since put an election on this
+    // booking, the guard matches nothing and their value stands untouched. If
+    // the settle cleared nothing, there is nothing to restore and no write
+    // happens at all.
+    //
+    // The member is not re-notified: they were told the credit was not used and
+    // is still available, which stays true throughout. A re-mark after this
+    // reversal finds the restored election, clears it again and reports again —
+    // once per settlement that took cash while the election stood, which is the
+    // honest count.
+    const lastManualSettleAudit = await tx.auditLog.findFirst({
+      where: {
+        action: MANUAL_MARK_PAID_AUDIT_ACTION,
+        entityType: "Payment",
+        entityId: payment.id,
+      },
+      orderBy: { createdAt: "desc" },
+      select: { metadata: true },
+    });
+    const clearedCreditElectionCents = readClearedCreditElectionCents(
+      lastManualSettleAudit?.metadata
+    );
+    let restoredCreditElectionCents: number | null = null;
+    if (clearedCreditElectionCents != null) {
+      const restored = await tx.booking.updateMany({
+        where: { id: booking.id, creditElectionCents: null },
+        data: { creditElectionCents: clearedCreditElectionCents },
+      });
+      restoredCreditElectionCents =
+        restored.count === 1 ? clearedCreditElectionCents : null;
+    }
+
     // A stored DRAFT deliberately restores as PAYMENT_PENDING (owner-decided
     // 28 Jul). This is code-necessary, not taste: DRAFT is a payable status, so
     // a DRAFT booking CAN be settled, and the PAID claim cleared
@@ -2050,6 +2146,15 @@ export async function reverseManualBookingPayment({
           closedRecoveryOperationIds,
           closedRecoveryOperations,
           clearedInternetBankingHold: clearInternetBankingHold,
+          // #2265 (#2262 door 3). The member's credit election, put back on the
+          // booking by this reversal — recorded BOTH ways, like the email
+          // decision below: the cents restored, and the cents the matching
+          // settle had cleared. They differ only when the restore's guard
+          // declined (a legitimate writer had already put an election back),
+          // in which case the settle's figure is the record of what was cleared
+          // and the null says plainly that this reversal did not write it back.
+          restoredCreditElectionCents,
+          settleClearedCreditElectionCents: clearedCreditElectionCents,
           // #2260: a reversal never emails the member. Recorded under its own
           // key so a raw metadata render cannot be misread as an admin having
           // declined a choice they were never offered.
@@ -2067,6 +2172,7 @@ export async function reverseManualBookingPayment({
       reversedAmountCents: payment.amountCents,
       closedRecoveryOperationIds,
       clearedInternetBankingHold: clearInternetBankingHold,
+      restoredCreditElectionCents,
     };
   });
 
@@ -2099,6 +2205,7 @@ export async function reverseManualBookingPayment({
     reversedAmountCents: reversal.reversedAmountCents,
     closedRecoveryOperationIds: reversal.closedRecoveryOperationIds,
     clearedInternetBankingHold: reversal.clearedInternetBankingHold,
+    restoredCreditElectionCents: reversal.restoredCreditElectionCents,
   };
 }
 

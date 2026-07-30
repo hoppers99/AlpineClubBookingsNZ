@@ -856,10 +856,19 @@ Future reviews and issues should cite this file when proposing changes.
     (`clearedCreditElectionCents`) and reported post-commit through the shared
     reporter with source `manual-mark-paid`, referencing the booking id (this
     door has no Stripe intent and no Xero invoice by definition). The reversal
-    deliberately does NOT resurrect a cleared election — the member was already
-    told their credit is still available, and the restored booking's pay step
-    asks afresh — so a re-mark after a reversal finds no election and reports
-    nothing: no double-clear, no double alert.
+    RESTORES exactly what that settle cleared: it reads
+    `clearedCreditElectionCents` back off the mark-paid audit row and writes it
+    to `Booking.creditElectionCents` under a guard matching `null`, so a
+    legitimate writer that has since set an election is never clobbered and a
+    settle that cleared nothing restores nothing. Restoration is required, not
+    optional: nothing outside booking-create can set that column, so a reversal
+    that left it null would strand a member holding credit they had elected on a
+    booking that is payable again, with no way to re-elect it. A re-mark after a
+    reversal therefore finds the restored election, clears it and reports it
+    again — once per settlement that took cash while the election stood. Both
+    figures are recorded on the mark-unpaid audit row
+    (`restoredCreditElectionCents`, `settleClearedCreditElectionCents`), and the
+    admin's own response reports the move synchronously either way.
   Clearing is the answer ONLY once the money is taken. While a booking is still
   payable the election remains honourable and must be consumed or left alone —
   never discarded to make a charge simpler, which is the original #2265 bug in
@@ -871,11 +880,24 @@ Future reviews and issues should cite this file when proposing changes.
   rather than unhonoured. A clear on a settlement that took real money is
   reported through `reportUnappliedCreditElection` — an audit row under
   `booking.credit_election.unapplied`, which the member's own booking history
-  renders as a plain-English note ("your credit was not used and is still
-  available"), plus an operator alert so someone can decide whether to refund the
-  difference. A cleared column is invisible, and without the note a member who
-  chose to spend credit and then paid full price could not tell whether their
-  balance had been debited. It never is: a clear moves no money.
+  renders as a plain-English note ("your credit was not used for this booking and
+  your balance was not reduced"), plus an operator alert so someone can decide
+  whether to refund anything. A cleared column is invisible, and without the note
+  a member who chose to spend credit and then paid full price could not tell
+  whether their balance had been debited. It never is: a clear moves no money.
+- Neither report may quote the ELECTED figure as if it were still available. The
+  election records a choice made when the booking was created, which can be
+  months and several bookings ago, so a member who elected $450 and has since
+  spent down to $50 still carries a $450 election. The shared reporter therefore
+  reads the member's LIVE balance once (`getMemberCreditBalance`) and records it
+  on the audit row as `availableCreditCents`, with
+  `refundableCents = min(election, balance)`. The member's history note quotes the
+  live balance; the operator alert's headline Amount is the refundable figure, it
+  says plainly when the balance has moved since, and it says "there is nothing to
+  refund" rather than "refund at most $0.00" when the balance is gone. If the
+  balance read fails the copy omits every availability figure rather than falling
+  back to the overstating one. This binds all three doors — Stripe capture, Xero
+  invoice-paid and the manual mark-paid — because it lives in the one reporter.
 - The public payment link never spends, and never ignores, a member's credit
   election (#2319). `createPaymentIntentForPaymentLink` refuses (409) a booking
   carrying one instead of minting an intent at the pre-credit price. The reason

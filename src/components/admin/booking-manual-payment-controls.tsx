@@ -26,6 +26,16 @@ const NOTE_MAX_LENGTH = 500;
 export interface BookingManualPaymentState {
   /** Amount owing right now, in integer cents — the figure the server re-derives. */
   amountOwingCents: number;
+  /**
+   * #2265 (#2262 delta MED-3): the member asked to put this much account credit
+   * towards the booking and it has not been applied yet. Null on the
+   * overwhelming majority of bookings. Recording cash CANNOT honour it — the
+   * money has already changed hands outside the app — so the settle clears it
+   * and tells the member their credit is untouched. That is a legitimate
+   * outcome, not an error, but the admin holding the cash deserves to know
+   * before they click rather than after.
+   */
+  storedCreditElectionCents: number | null;
   /** Whether this booking can be recorded as settled at all. */
   canMarkPaid: boolean;
   /** Why not, when it cannot — shown instead of the action. */
@@ -219,6 +229,21 @@ export function BookingManualPaymentControls({
                   created or emailed.
                 </DialogDescription>
               </DialogHeader>
+              {state.storedCreditElectionCents != null ? (
+                <p
+                  className="rounded-md border border-warning-6 bg-warning-3 px-3 py-2 text-sm text-warning-11"
+                  data-testid="manual-payment-credit-election-warning"
+                >
+                  {memberName} asked to put{" "}
+                  {formatCents(state.storedCreditElectionCents)} of their account
+                  credit towards this booking, and it has not been applied yet.
+                  Recording cash cannot use it — the money has already changed
+                  hands — so that credit will stay unused and remain available on
+                  their account, and they will be told so. Take the full{" "}
+                  {formatCents(state.amountOwingCents)} only if that is what they
+                  have actually handed over.
+                </p>
+              ) : null}
               <div className="space-y-2">
                 <Label htmlFor="manual-booking-payment-note">
                   Note (optional)

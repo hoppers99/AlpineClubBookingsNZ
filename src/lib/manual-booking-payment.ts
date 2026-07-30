@@ -90,6 +90,18 @@ export type ApplyManualBookingPaymentResult = {
   amountCents: number;
   /** Booking status after the action. */
   bookingStatus: string;
+  /**
+   * #2265 (#2262 door 3): the stored credit election this action moved, in
+   * integer cents, or null when there was none.
+   *
+   * On "paid" it is what the settle CLEARED — the member had asked to spend
+   * this much credit and the cash settlement could not honour it. On "unpaid"
+   * it is what the reversal RESTORED. Returned synchronously so the admin
+   * standing at the till is told at once, rather than only through the
+   * post-commit operator alert, which a club that has muted the
+   * `adminPaymentFailure` preference will never receive.
+   */
+  creditElectionCents: number | null;
 };
 
 function normaliseNote(note: string | null | undefined): string | null {
@@ -117,6 +129,7 @@ export async function applyManualBookingPayment(
       receipt: "not_requested",
       amountCents: reversal.reversedAmountCents,
       bookingStatus: reversal.restoredStatus,
+      creditElectionCents: reversal.restoredCreditElectionCents,
     };
   }
 
@@ -226,6 +239,7 @@ export async function applyManualBookingPayment(
     receipt,
     amountCents: settlement.effectiveAmountCents,
     bookingStatus: "PAID",
+    creditElectionCents: settlement.staleCreditElectionCents,
   };
 }
 

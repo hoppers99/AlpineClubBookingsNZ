@@ -248,7 +248,7 @@ export const EMAIL_AUDIT_DEFAULTS = {
   },
   "admin-payment-failure": {
     "defaultSubject": "Payment Failed — {{CLUB_BOOKINGS_NAME}}",
-    "defaultBody": "Payment Failed\n\nA payment has failed and may require manual attention.\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nAmount: {{amount}}\nError: {{errorMessage}}\nStripe PI: {{paymentIntentId}}\n\nView Payments: {{BASE_URL}}/admin/payments"
+    "defaultBody": "Payment Failed\n\nA payment has failed and may require manual attention.\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nAmount: {{amount}}\nError: {{errorMessage}}\nReference: {{paymentIntentId}}\n\nView Payments: {{BASE_URL}}/admin/payments"
   },
   "admin-duplicate-capture-refund": {
     "defaultSubject": "Duplicate capture auto-refunded: {{memberName}}",

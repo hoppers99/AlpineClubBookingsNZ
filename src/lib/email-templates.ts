@@ -999,6 +999,16 @@ export function adminPaymentFailureTemplate(data: {
   checkOut: Date;
   amountCents: number;
   errorMessage: string;
+  /**
+   * The searchable identifier for whatever raised this alert. USUALLY a Stripe
+   * payment intent id — but this template is the club's general payment-anomaly
+   * alert and its senders also pass a Xero invoice id, or (on the cash /
+   * off-Xero mark-paid, which has neither by definition) the booking id. The
+   * row is therefore labelled "Reference", not "Stripe PI": a label that names
+   * the wrong system sends an officer hunting in Stripe for something that was
+   * never there. The parameter keeps its historical name because every caller
+   * uses it.
+   */
   paymentIntentId: string;
 }): string {
   return layout(`
@@ -1010,7 +1020,7 @@ export function adminPaymentFailureTemplate(data: {
       { label: "Check-out", value: formatNZDate(data.checkOut) },
       { label: "Amount", value: formatCents(data.amountCents) },
       { label: "Error", value: escapeHtml(data.errorMessage) },
-      { label: "Stripe PI", value: escapeHtml(data.paymentIntentId) },
+      { label: "Reference", value: escapeHtml(data.paymentIntentId) },
     ])}
     ${button("View Payments", BASE_URL + "/admin/payments")}
   `);

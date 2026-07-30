@@ -69,14 +69,27 @@ bank transfer for a club that does not use Xero invoicing.
    payment would. Nothing is sent to Xero: no invoice is created, and none is
    emailed.
 
-If the member had saved a choice to put account credit towards this booking
-(ticked "use my credit" and saved the booking as a draft) and that credit was
-never applied, recording the cash clears the saved choice rather than spending
-their credit — the money you collected settled the booking in full, so their
-credit balance is untouched. The booking's history tells the member their
-credit was not used and is still available, and the admins are alerted so
-someone can decide whether to refund the difference or leave the credit for
-their next stay.
+**When the member had asked to use their account credit.** If they ticked "use
+my credit" and saved the booking as a draft, and that credit was never applied,
+the dialog warns you before you record anything: it names the amount they asked
+to put towards the stay and says plainly that taking cash cannot use it. That is
+not a reason to refuse the money — if they have handed you the full amount, take
+it. Recording the cash clears the saved choice rather than spending their
+credit, because the money you collected settled the booking in full, so their
+credit balance is untouched.
+
+Afterwards, the confirmation you see on screen repeats the amount and confirms
+the credit is still on their account, the booking's history tells the member the
+same thing, and the admins are alerted. That alert quotes their **live** credit
+balance, not the amount they elected — the two often differ, because the choice
+may have been made months and several bookings ago — and it states the most that
+could sensibly be refunded against this booking, which is never more than the
+account actually holds. If the balance has been spent since, it says there is
+nothing to refund.
+
+Reversing the payment (below) puts the saved choice back on the booking, so the
+member can use their credit when they pay it properly. Your screen confirms that
+too.
 
 Needs finance **edit** access. It is refused — with the reason shown — when the
 booking already has a Xero invoice (or one queued), when it was settled as part
@@ -86,7 +99,9 @@ against the Xero invoice in Xero is the right move in the first case.
 
 **Reversing it.** If you recorded it against the wrong booking, use **Reverse
 manual payment** on the same card. The booking goes back to unpaid — it is *not*
-cancelled — and the member is not emailed. A booking restored to
+cancelled — and the member is not emailed. Any account-credit choice the
+original recording cleared is put back on the booking, so the member can spend
+that credit when the booking is paid for real. A booking restored to
 awaiting-payment stops holding its beds, so other bookings can take them, and
 recording the payment again later can be refused if the lodge has filled in the
 meantime. This is only possible while nothing has happened since that a
