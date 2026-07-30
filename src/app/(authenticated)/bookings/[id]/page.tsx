@@ -66,6 +66,7 @@ import {
   getMemberCreditBalance,
 } from "@/lib/member-credit";
 import { isBookingFullyPaidForGuestNameEdits } from "@/lib/booking-modify";
+import { resolveCreditElectionNoticeAudience } from "@/lib/booking-credit-election";
 import {
   bookingHoldsCapacity,
   isPaymentOwedBookingStatus,
@@ -1220,24 +1221,39 @@ export default async function BookingDetailPage({
           every re-entry — draft save lands here, Resume lands here. Wording is
           the owner-decided sentence from the signed-off mockup. Only shown
           while a consumer will still honour the election (the same statuses
-          the edit path may write one onto), and never on a deleted booking. */}
-      {!isDeleted &&
-      booking.creditElectionCents != null &&
-      booking.creditElectionCents > 0 &&
-      ["DRAFT", "AWAITING_REVIEW", "PAYMENT_PENDING"].includes(booking.status) ? (
-        <div className="space-y-1 rounded-md border border-success-6 bg-success-3 px-4 py-3 text-sm text-success-11">
-          <p className="font-medium">
-            {nonOwnerAdminViewer
-              ? `The member's ${formatCents(booking.creditElectionCents)} credit choice is saved and will be applied when they confirm.`
-              : `Your ${formatCents(booking.creditElectionCents)} credit choice is saved and will be applied when you confirm.`}
-          </p>
-          <p className="opacity-80">
-            {nonOwnerAdminViewer
-              ? "No credit has been taken from their balance yet — it is applied at payment, against the balance and price at that moment."
-              : "Nothing has been taken from your balance yet — your credit is applied when you pay, against your balance and the price at that moment."}
-          </p>
-        </div>
-      ) : null}
+          the edit path may write one onto), and never on a deleted booking.
+
+          Audience (MED-2): the OWNER hears the second-person promise, an
+          admin-type viewer the third-person one; a linked-guest viewer sees
+          nothing at all — the election is the owner's money, and every other
+          money surface on this page is likewise withheld from linked guests
+          (see resolveCreditElectionNoticeAudience). */}
+      {(() => {
+        const creditNoticeAudience = resolveCreditElectionNoticeAudience({
+          isBookingOwner,
+          isNonOwnerAdminViewer: nonOwnerAdminViewer,
+        });
+        return !isDeleted &&
+          creditNoticeAudience !== null &&
+          booking.creditElectionCents != null &&
+          booking.creditElectionCents > 0 &&
+          ["DRAFT", "AWAITING_REVIEW", "PAYMENT_PENDING"].includes(
+            booking.status,
+          ) ? (
+          <div className="space-y-1 rounded-md border border-success-6 bg-success-3 px-4 py-3 text-sm text-success-11">
+            <p className="font-medium">
+              {creditNoticeAudience === "admin"
+                ? `The member's ${formatCents(booking.creditElectionCents)} credit choice is saved and will be applied when they confirm.`
+                : `Your ${formatCents(booking.creditElectionCents)} credit choice is saved and will be applied when you confirm.`}
+            </p>
+            <p className="opacity-80">
+              {creditNoticeAudience === "admin"
+                ? "No credit has been taken from their balance yet — it is applied at payment, against the balance and price at that moment."
+                : "Nothing has been taken from your balance yet — your credit is applied when you pay, against your balance and the price at that moment."}
+            </p>
+          </div>
+        ) : null;
+      })()}
 
       <section id="details" className="scroll-mt-20">
         <BookingEditor

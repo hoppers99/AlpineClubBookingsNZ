@@ -640,10 +640,17 @@ export function EditBookingPanel({
       const current = existingGuestNights[guest.id] ?? original;
       return current.join(",") !== original.join(",");
     });
-  // #2266: account-credit derivations. The checkbox carries the create-flow
-  // semantics — "put my credit towards this booking, up to its price" — so the
-  // elected amount is always min(balance, what is still uncovered), recomputed
-  // as the quote reprices. The election is STORED on the booking (#2265) and
+  // #2266: account-credit derivations. When the member TOUCHES the control,
+  // the checkbox carries the create-flow semantics — "put my credit towards
+  // this booking, up to its price" — so the newly elected amount is
+  // min(balance, what is still uncovered). An UNTOUCHED stored election is
+  // different (MED-3): it is the member's saved choice, stored RAW with the
+  // clamp living at the pay-time consumer (#2265/#2319), so the panel may
+  // follow only the booking-local PRICE (a reprice this very edit causes) and
+  // NEVER the live balance — otherwise an unrelated guest-name fix while the
+  // balance happened to be low would silently rewrite (or clear) the stored
+  // value, contradicting the card's own "it will only apply if credit returns
+  // before you pay" copy. The election is STORED on the booking (#2265) and
   // consumed at payment; nothing moves here.
   const quoteFinalPriceCents =
     quote?.newFinalPriceCents ?? booking.finalPriceCents;
@@ -655,10 +662,13 @@ export function EditBookingPanel({
     quoteFinalPriceCents - ledgerAppliedCreditCents,
   );
   const desiredElectionCents = useCredit
-    ? Math.min(availableCreditCents, uncoveredPriceCents)
+    ? creditTouched
+      ? Math.min(availableCreditCents, uncoveredPriceCents)
+      : Math.min(storedElectionCents, uncoveredPriceCents)
     : 0;
   // Send the election when the member changed it, or when a stored election
-  // must follow a reprice (untouched but the min() moved) — never invent one.
+  // must follow a reprice (untouched but the price cap moved) — never invent
+  // one, and never rewrite a stored value for a balance change.
   const includeCreditInPayload =
     Boolean(credit) &&
     !overrideEnabled &&
@@ -2080,6 +2090,19 @@ export function EditBookingPanel({
                   : "There is nothing left for account credit to cover on this booking."}
               </p>
             )}
+            {/* MED-3: an untouched saved election is never rewritten for a
+                balance dip — but the member deserves to know the balance is
+                currently short of it. The saved choice stays whole; the pay
+                step clamps and reports (#2265). */}
+            {useCredit &&
+              desiredElectionCents > 0 &&
+              availableCreditCents < desiredElectionCents && (
+                <p className="text-sm text-warning-11">
+                  {actingAsAdmin
+                    ? `The member's credit balance is currently ${formatCents(availableCreditCents)} — below this saved choice. The choice stays saved in full; only the credit in their account when they pay will be applied.`
+                    : `Your credit balance is currently ${formatCents(availableCreditCents)} — below this saved choice. The choice stays saved in full; only the credit in your account when you pay will be applied.`}
+                </p>
+              )}
           </CardContent>
         </Card>
       )}
@@ -2206,37 +2229,75 @@ export function EditBookingPanel({
                   </div>
                   {/* #2266: the mockup's credit lines — what account credit
                       already covers, what the saved election will cover at
-                      confirmation, and what is then left to pay. */}
+                      confirmation, and what is then left to pay.
+
+                      MED-5 honesty: when this edit reprices the booking below
+                      the credit already applied, the server clamps the applied
+                      slice to the new price and refunds the excess to the
+                      member's balance (F20, #1887) — so the panel shows the
+                      CLAMPED figure and says where the excess goes, instead of
+                      advertising a credit line the save will not keep.
+
+                      LOW-6: the late-notice change fee rides the invoice /
+                      additional charge, so "Remaining to pay" includes it —
+                      with its own line so the sum is transparent. */}
                   {(ledgerAppliedCreditCents > 0 ||
-                    (useCredit && desiredElectionCents > 0)) && (
-                    <>
-                      {ledgerAppliedCreditCents > 0 && (
-                        <div className="flex justify-between text-sm text-success-11">
-                          <span>Account credit applied</span>
-                          <span>-{formatCents(ledgerAppliedCreditCents)}</span>
-                        </div>
-                      )}
-                      {useCredit && desiredElectionCents > 0 && (
-                        <div className="flex justify-between text-sm text-success-11">
-                          <span>Account credit (when you confirm)</span>
-                          <span>-{formatCents(desiredElectionCents)}</span>
-                        </div>
-                      )}
-                      <div className="flex justify-between font-medium">
-                        <span>Remaining to pay</span>
-                        <span>
-                          {formatCents(
-                            Math.max(
-                              0,
-                              quote.newFinalPriceCents -
-                                ledgerAppliedCreditCents -
-                                (useCredit ? desiredElectionCents : 0),
-                            ),
+                    (useCredit && desiredElectionCents > 0)) &&
+                    (() => {
+                      const displayedAppliedCreditCents = Math.min(
+                        ledgerAppliedCreditCents,
+                        quote.newFinalPriceCents,
+                      );
+                      const creditReturnedCents =
+                        ledgerAppliedCreditCents - displayedAppliedCreditCents;
+                      return (
+                        <>
+                          {ledgerAppliedCreditCents > 0 && (
+                            <div className="flex justify-between text-sm text-success-11">
+                              <span>Account credit applied</span>
+                              <span>
+                                -{formatCents(displayedAppliedCreditCents)}
+                              </span>
+                            </div>
                           )}
-                        </span>
-                      </div>
-                    </>
-                  )}
+                          {creditReturnedCents > 0 && (
+                            <div className="flex justify-between text-sm text-success-11">
+                              <span>
+                                {actingAsAdmin
+                                  ? `${formatCents(creditReturnedCents)} returns to the member's account credit`
+                                  : `${formatCents(creditReturnedCents)} returns to your account credit`}
+                              </span>
+                              <span />
+                            </div>
+                          )}
+                          {useCredit && desiredElectionCents > 0 && (
+                            <div className="flex justify-between text-sm text-success-11">
+                              <span>Account credit (when you confirm)</span>
+                              <span>-{formatCents(desiredElectionCents)}</span>
+                            </div>
+                          )}
+                          {quote.changeFeeCents > 0 && (
+                            <div className="flex justify-between text-sm">
+                              <span>Late-notice change fee</span>
+                              <span>+{formatCents(quote.changeFeeCents)}</span>
+                            </div>
+                          )}
+                          <div className="flex justify-between font-medium">
+                            <span>Remaining to pay</span>
+                            <span>
+                              {formatCents(
+                                Math.max(
+                                  0,
+                                  quote.newFinalPriceCents -
+                                    displayedAppliedCreditCents -
+                                    (useCredit ? desiredElectionCents : 0),
+                                ) + quote.changeFeeCents,
+                              )}
+                            </span>
+                          </div>
+                        </>
+                      );
+                    })()}
                 </div>
 
                 {/* Net charge/refund */}

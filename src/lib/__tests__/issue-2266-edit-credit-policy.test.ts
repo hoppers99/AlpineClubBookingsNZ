@@ -16,6 +16,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   CreditElectionNotAllowedError,
+  resolveCreditElectionNoticeAudience,
   resolveCreditElectionUpdate,
 } from "@/lib/booking-credit-election";
 import {
@@ -114,6 +115,38 @@ describe("resolveCreditElectionUpdate (#2266)", () => {
     expect(() =>
       resolveCreditElectionUpdate({ ...baseInput, requestedCents: 12.5 }),
     ).toThrow(CreditElectionNotAllowedError);
+  });
+});
+
+describe("resolveCreditElectionNoticeAudience (#2266 MED-2)", () => {
+  it("addresses the booking owner in the second person", () => {
+    expect(
+      resolveCreditElectionNoticeAudience({
+        isBookingOwner: true,
+        isNonOwnerAdminViewer: false,
+      }),
+    ).toBe("owner");
+  });
+
+  it("gives an admin-type viewer the third-person phrasing", () => {
+    expect(
+      resolveCreditElectionNoticeAudience({
+        isBookingOwner: false,
+        isNonOwnerAdminViewer: true,
+      }),
+    ).toBe("admin");
+  });
+
+  it("shows a linked-guest viewer nothing — the election is the owner's money", () => {
+    // A linked guest is neither the owner nor an admin-type viewer; they must
+    // not be addressed in the second person about the owner's money, and the
+    // owner's elected amount must not be disclosed to them at all.
+    expect(
+      resolveCreditElectionNoticeAudience({
+        isBookingOwner: false,
+        isNonOwnerAdminViewer: false,
+      }),
+    ).toBeNull();
   });
 });
 

@@ -327,6 +327,34 @@ export function resolveCreditElectionUpdate({
 }
 
 /**
+ * Who the booking page's saved-election notice may address (#2266 MED-2).
+ *
+ * The stored election is the OWNER's money: the amount and the second-person
+ * promise ("your credit choice…") belong to the booking owner alone, and the
+ * admin viewer gets the established third-person phrasing. A linked-guest
+ * viewer (a member listed on somebody else's booking) gets NOTHING — not even
+ * a neutral third-person line — matching how every other money surface on the
+ * booking page is gated (`showCreditApplied` on canManageBooking, the payment
+ * cards owner-positive per #1303/#1289): linked guests keep second-person
+ * framing for stay copy, but the owner's financial affairs are never
+ * disclosed to them, and a notice without the amount would still disclose
+ * that the owner elected credit while offering the guest nothing actionable.
+ *
+ * Pure so the three viewer classes are unit-testable away from the page.
+ */
+export function resolveCreditElectionNoticeAudience({
+  isBookingOwner,
+  isNonOwnerAdminViewer,
+}: {
+  isBookingOwner: boolean;
+  isNonOwnerAdminViewer: boolean;
+}): "owner" | "admin" | null {
+  if (isBookingOwner) return "owner";
+  if (isNonOwnerAdminViewer) return "admin";
+  return null;
+}
+
+/**
  * The audit action a settlement writes when it CLEARS a stored credit election
  * it could not honour (#2265, #2319 doors 1 and 2).
  *
