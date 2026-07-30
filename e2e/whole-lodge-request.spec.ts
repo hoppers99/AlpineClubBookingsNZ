@@ -155,6 +155,42 @@ async function listMemberOriginRequests(admin: APIRequestContext) {
 }
 
 /**
+ * OCCUPIED beds per night as ANOTHER MEMBER sees them, plus the raw payloads.
+ *
+ * `/api/availability` takes a ZERO-BASED month and answers one month at a time,
+ * so this fetches every month the nights span — a two-night window can cross a
+ * month boundary, and a single-month fetch would report `undefined` for the rest
+ * rather than a number.
+ */
+async function memberOccupiedBeds(
+  context: BrowserContext,
+  nights: string[],
+): Promise<{ occupied: Record<string, number>; payloads: unknown[] }> {
+  const occupied: Record<string, number> = {};
+  const payloads: unknown[] = [];
+  for (const month of new Set(nights.map((night) => night.slice(0, 7)))) {
+    const [year, monthNumber] = month.split("-").map(Number);
+    const response = await context.request.get(
+      `/api/availability?year=${year}&month=${monthNumber - 1}`,
+    );
+    // Asserted unconditionally: a skipped assertion is not an assertion.
+    expect(
+      response.ok(),
+      `GET /api/availability for ${month} returned ${response.status()}: ${await response.text()}`,
+    ).toBe(true);
+    const body = (await response.json()) as {
+      availability: Record<string, number>;
+    };
+    payloads.push(body);
+    for (const night of nights) {
+      if (night.slice(0, 7) !== month) continue;
+      occupied[night] = body.availability[night];
+    }
+  }
+  return { occupied, payloads };
+}
+
+/**
  * Free beds per night from the ADMIN calendar, which reports
  * `lodgeCapacity - occupiedBeds`. A whole-lodge-held night reads 0 there just
  * like a genuinely full one — that pin is the subject of its own test below —
@@ -741,26 +777,24 @@ test("the approved whole-lodge booking is indistinguishable from a full lodge on
     ).toBe(true);
   }
 
-  // Now the member side. The endpoint is /api/availability with a ZERO-BASED
-  // month, and its `availability` map is OCCUPIED beds per night.
-  const [year, month] = CLEAR_WINDOW.checkIn.split("-").map(Number);
-  const availability = await wandaContext.request.get(
-    `/api/availability?year=${year}&month=${month - 1}`,
+  // Now the member side, read PER MONTH. A stay window can straddle a month
+  // boundary (this one is 30 Nov -> 1 Dec), and /api/availability returns one
+  // month at a time, so a single fetch silently reports `undefined` for the
+  // nights in the other month — which is not "indistinguishable from full", it
+  // is no answer at all.
+  const { occupied, payloads } = await memberOccupiedBeds(
+    wandaContext,
+    CLEAR_WINDOW.nights,
   );
-  // Asserted unconditionally: a skipped assertion is not an assertion.
-  expect(availability.ok(), await availability.text()).toBe(true);
-  const memberView = (await availability.json()) as {
-    availability: Record<string, number>;
-  };
   for (const night of CLEAR_WINDOW.nights) {
     expect(
-      memberView.availability[night],
+      occupied[night],
       `held night ${night} must read as a FULL lodge to another member`,
     ).toBe(adminView.lodgeCapacity);
   }
 
   // And nothing in the payload names the mechanism.
-  const text = JSON.stringify(memberView).toLowerCase();
+  const text = JSON.stringify(payloads).toLowerCase();
   expect(text).not.toContain("exclusiv");
   expect(text).not.toContain("wholelodge");
   expect(text).not.toContain("whole_lodge");
