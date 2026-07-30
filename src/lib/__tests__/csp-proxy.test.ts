@@ -14,7 +14,11 @@ import {
 import { REQUEST_PATH_HEADER } from "@/lib/internal-return-path";
 import { FEATURE_ROUTE_RULES } from "@/config/feature-routes";
 import { MODULE_KEYS } from "@/config/modules";
-import proxy, { config, getFeatureFlagBlockResponse } from "../../proxy";
+import proxy, {
+  config,
+  getAnonymousPageCacheControl,
+  getFeatureFlagBlockResponse,
+} from "../../proxy";
 import type { FeatureFlags } from "@/config/schema";
 
 const allFeaturesOn = Object.fromEntries(
@@ -478,6 +482,143 @@ describe("CSP proxy", () => {
         unstable_doesProxyMatch({ config, nextConfig: {}, url }),
         `middleware matcher must run for ${url} (gated API route)`,
       ).toBe(true);
+    }
+  });
+});
+
+describe("anonymous public-page cache headers (#2322)", () => {
+  function requestWithCookie(url: string, cookie?: string, method = "GET") {
+    return new NextRequest(url, {
+      method,
+      ...(cookie ? { headers: { cookie } } : {}),
+    });
+  }
+
+  it("marks an anonymous GET of an allow-listed page cacheable by shared caches", async () => {
+    const response = await proxy(new NextRequest("https://example.org/"));
+
+    expect(response.headers.get("Cache-Control")).toBe(
+      "public, max-age=60, s-maxage=60, stale-while-revalidate=300",
+    );
+    // Without Vary: Cookie a shared cache would hand the stored anonymous
+    // render to a member who has a session.
+    expect(response.headers.get("Vary")).toContain("Cookie");
+  });
+
+  it("leaves the framework default in place for a request carrying a session", async () => {
+    const response = await proxy(
+      requestWithCookie("https://example.org/", "authjs.session-token=abc"),
+    );
+
+    expect(response.headers.get("Cache-Control")).toBeNull();
+  });
+
+  it.each([
+    ["plain v5", "authjs.session-token=abc"],
+    ["__Secure- prefixed v5", "__Secure-authjs.session-token=abc"],
+    ["chunked v5", "authjs.session-token.0=abc"],
+    ["__Secure- chunked v5", "__Secure-authjs.session-token.1=abc"],
+    // Legacy v4 cookies are treated as "maybe authenticated" here on purpose:
+    // the cost is a cache miss, the opposite error would cache a session page.
+    ["legacy v4", "next-auth.session-token=abc"],
+    ["legacy v4 __Secure-", "__Secure-next-auth.session-token=abc"],
+  ])("suppresses caching for a %s session cookie", (_label, cookie) => {
+    expect(
+      getAnonymousPageCacheControl(requestWithCookie("https://example.org/", cookie)),
+    ).toBeNull();
+  });
+
+  it("still caches when only unrelated cookies are present", () => {
+    expect(
+      getAnonymousPageCacheControl(
+        requestWithCookie("https://example.org/", "theme=dark; locale=en-NZ"),
+      ),
+    ).toBe("public, max-age=60, s-maxage=60, stale-while-revalidate=300");
+  });
+
+  it.each([
+    ["RSC", "RSC"],
+    ["Next-Router-State-Tree", "Next-Router-State-Tree"],
+    ["Next-Router-Prefetch", "Next-Router-Prefetch"],
+    ["Next-Router-Segment-Prefetch", "Next-Router-Segment-Prefetch"],
+  ])("never caches a flight request carrying %s (#2322)", (_label, header) => {
+    // A flight response is a different body under the SAME URL. On stable Next
+    // builds the RSC-header validation is off, so a crafted `RSC: 1` GET would
+    // otherwise be handed a cacheable flight body under the HTML's cache key.
+    const request = new NextRequest("https://example.org/", {
+      headers: { [header]: "1" },
+    });
+
+    expect(getAnonymousPageCacheControl(request)).toBeNull();
+  });
+
+  it("still caches a plain document request with no flight headers", () => {
+    expect(
+      getAnonymousPageCacheControl(new NextRequest("https://example.org/")),
+    ).toBe("public, max-age=60, s-maxage=60, stale-while-revalidate=300");
+  });
+
+  it("never caches a non-GET request", () => {
+    expect(
+      getAnonymousPageCacheControl(
+        requestWithCookie("https://example.org/", undefined, "POST"),
+      ),
+    ).toBeNull();
+  });
+
+  it("caches the home page, the one allow-listed route", () => {
+    expect(getAnonymousPageCacheControl(new NextRequest("https://example.org/"))).toBe(
+      "public, max-age=60, s-maxage=60, stale-while-revalidate=300",
+    );
+  });
+
+  // The allow list is matched after trailing-slash normalisation, so a future
+  // entry cannot be silently bypassed by a trailing slash the way the CSP
+  // allowlists could before #2246.
+  it("normalises a trailing slash before matching the allow list", () => {
+    expect(
+      getAnonymousPageCacheControl(new NextRequest("https://example.org/about/")),
+    ).toBeNull();
+  });
+
+  it("never caches token-, form-, or session-bearing routes", () => {
+    // (public) is entirely token/auth/form pages; /join and /contact are
+    // public but form-bearing; the CMS catch-all is excluded because
+    // middleware cannot resolve it without a database read.
+    const uncacheable = [
+      "/login",
+      "/logout",
+      "/register",
+      "/forgot-password",
+      "/reset-password",
+      "/change-password",
+      "/verify-email",
+      "/pay/tok-123",
+      "/chores/tok-123",
+      "/family-invite/tok-123",
+      "/membership-cancellation/tok-123",
+      "/booking-requests",
+      "/school-bookings",
+      "/join",
+      "/join/apply",
+      "/contact",
+      // Public but per-assignment and PIN-gated (?a= from an assignment email).
+      "/hut-leader-instructions",
+      "/about",
+      "/admin",
+      "/admin/site-style",
+      "/dashboard",
+      "/book",
+      "/finance",
+      "/lodge",
+      "/display",
+    ];
+
+    for (const path of uncacheable) {
+      expect(
+        getAnonymousPageCacheControl(new NextRequest(`https://example.org${path}`)),
+        `${path} must not be publicly cacheable`,
+      ).toBeNull();
     }
   });
 });

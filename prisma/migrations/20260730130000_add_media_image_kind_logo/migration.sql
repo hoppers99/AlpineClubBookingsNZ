@@ -1,0 +1,29 @@
+-- Club-logo blobs get their own MediaImageKind so the theme can own their
+-- lifecycle without ever deleting a content-picker image (#2322).
+--
+-- Blue/green EXPAND migration (see docs/BLUE_GREEN_MIGRATION_SAFETY.tsv):
+--  * registers ONE new enum label. Catalog-only: this migration only adds the
+--    label and never USES it, so Prisma's per-migration transaction is safe
+--    (same pattern as 20260525000000 / 20260719130000 / 20260720130000 /
+--    20260727120000). No table is rewritten and no row is read or written.
+--  * Old-colour WRITE compatibility is total: the previously deployed client
+--    never writes LOGO, and the label defaults nowhere, so nothing it does can
+--    produce a row it cannot read back.
+--  * ACCEPTED READ RESIDUAL, same class as 20260727120000's EmailLog note. The
+--    old-colour `/api/images/[id]` route selects `kind` WITHOUT constraining it
+--    (`select: { data, contentType, kind }`), so during the migrate -> cutover
+--    drain an admin who uploads a logo on the new colour creates a row whose
+--    label the old-colour Prisma client cannot deserialise. A request for THAT
+--    image load-balanced to the old colour then errors — a transient 500 on the
+--    image request and a broken logo image on the page that embeds it. Bounded
+--    to the drain window, self-healing at cutover, affecting only images created
+--    inside it; no data loss and no effect on any pre-existing image. If a
+--    deploy wants zero exposure, ship this migration one release ahead of the
+--    upload route that writes the label.
+--  * No column drop/alter, no RENAME, no backfill DML, no foreign key, no
+--    session-clock write, and no external provider call.
+--  * No ledger row: docs/BLUE_GREEN_MIGRATION_SAFETY.tsv takes entries for the
+--    migrations validate-blue-green-migrations.sh flags (breaking SQL or a
+--    HOT_TABLE_SQL_REGEX match). MediaImage is neither, and both gates pass
+--    without a row — verified, not assumed.
+ALTER TYPE "MediaImageKind" ADD VALUE IF NOT EXISTS 'LOGO';

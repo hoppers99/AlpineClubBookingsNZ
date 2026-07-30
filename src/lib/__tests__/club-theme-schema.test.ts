@@ -330,7 +330,8 @@ describe("deriveAppMutedForeground (#2145)", () => {
     // relative form passing only because the `--foreground` branch never fires.
     expect(swept).toBeGreaterThan(20);
     expect(inheritedFailures).toBeGreaterThan(0);
-  });
+    // Exhaustive palette sweep; exceeds the 5s default under full-suite load.
+  }, 30_000);
 
   it("degrades to --foreground rather than ship a sub-AA tone", () => {
     // A mid-grey neutral-character seed derives a near-white page background, so

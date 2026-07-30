@@ -47,6 +47,10 @@ function responseTheme(values: ClubThemeValues, completedAt: string | null) {
   };
 }
 
+// Full-wizard jsdom renders routinely exceed vitest's 5s default under
+// parallel full-suite load; same ceiling as site-style-wizard-upload.test.tsx.
+vi.setConfig({ testTimeout: 45_000 });
+
 describe("site style wizard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -68,6 +72,7 @@ describe("site style wizard", () => {
                 brandSafety: body.brandSafety,
                 headingFontKey: body.headingFontKey,
                 bodyFontKey: body.bodyFontKey,
+                logoUrl: body.logoUrl,
                 logoDataUrl: body.logoDataUrl,
                 rawCss: body.rawCss ?? "",
               },
@@ -112,7 +117,7 @@ describe("site style wizard", () => {
     expect(lastCallBody.completeSetup).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(5);
     expect(refreshMock).toHaveBeenCalledTimes(5);
-  }, 15_000);
+  }, 45_000);
 
   it("explains and previews the editable brand and fixed semantic layers", () => {
     render(

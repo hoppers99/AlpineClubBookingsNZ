@@ -25,12 +25,14 @@ export async function GET(
     select: { data: true, contentType: true, kind: true },
   });
 
-  // Only CONTENT images are addressable through this public, unauthenticated,
-  // immutably-cached path. MEMBER_PHOTO blobs live in the same table but are a
-  // private data class served exclusively through the scoped, authorised
-  // `/api/members/[id]/photo` endpoint (ADR-001 decision 3). Returning the same
-  // 404 as a missing row keeps a member photo's existence non-disclosable here.
-  if (!image || image.kind !== "CONTENT") {
+  // Only CONTENT and LOGO images are addressable through this public,
+  // unauthenticated, immutably-cached path. Both are public branding/content by
+  // definition (#2322: the club logo renders on every public page). MEMBER_PHOTO
+  // blobs live in the same table but are a private data class served exclusively
+  // through the scoped, authorised `/api/members/[id]/photo` endpoint (ADR-001
+  // decision 3). Returning the same 404 as a missing row keeps a member photo's
+  // existence non-disclosable here.
+  if (!image || (image.kind !== "CONTENT" && image.kind !== "LOGO")) {
     return NextResponse.json({ error: "Image not found" }, { status: 404 });
   }
 

@@ -63,7 +63,20 @@ permission area.
    are not in that list, because text is not meant to sit on a divider.
 3. Use **Save and next** to move through **Fonts** (the public and app font
    choices), **Raw CSS** (advanced custom CSS), and **Logo** (upload the public
-   logo).
+   logo). Choosing a logo uploads it straight away: it is shrunk to at most
+   160px tall and 640px wide (never enlarged), converted to a compact web
+   image, and stored once, so the public pages link to it instead of carrying
+   a copy of the file. Upload a PNG, JPEG, WebP, or GIF up to 2MB — a large,
+   high-resolution original is fine and is shrunk for you.
+
+   ![The Logo step before a logo is chosen: Choose logo and Remove logo buttons above a note listing the accepted formats, the 2MB limit, and the shrink-to-fit behaviour](../images/admin/admin-site-style-logo.png)
+
+   After the upload lands, the preview shows the stored image exactly as the
+   public site will serve it, and a note reminds you the logo still saves with
+   the rest of the theme:
+
+   ![The Logo step after an upload: the resized logo rendering in the live preview, with the "Logo uploaded. Save to apply it to the site." confirmation](../images/admin/admin-site-style-logo-uploaded.png)
+
 4. On **Review**, confirm and save. The public site becomes visible once the
    style is saved.
 
@@ -77,7 +90,7 @@ permission area.
 | Fixed semantic layer | Success, warning, information, danger/error, and waitlist states | **Not editable** — curated light/dark pairs |
 | Fonts | The public and app font variables | Chosen from the wizard |
 | Raw CSS | Advanced custom CSS overrides | Optional; for advanced users |
-| Logo | The public logo image | Uploaded on the Logo step |
+| Logo | The public logo image | Uploaded on the Logo step. PNG, JPEG, WebP, or GIF, up to 2MB; shrunk server-side to at most 160px tall and 640px wide (never enlarged) and stored as a cached image. SVG is not accepted |
 
 ## Troubleshooting
 
@@ -88,6 +101,9 @@ permission area.
 | Everything is read-only | Your admin role can view but not edit under the content area | Ask a full admin for content edit access |
 | A colour looks low-contrast in the preview | The generator adjusted a pathological seed so the shipped scale stays accessible | This is expected — the wizard discloses the before → after adjustment; the preview and the swatch pair show what actually ships |
 | A configuration bundle from an older app won't import | Bundles moved to **format version 2** (three seeds) | Re-export from an app on this version; version 1 bundles are refused rather than importing stale colour columns |
+| A saved style change hasn't reached the public home page yet | The home page is cached for up to a minute for logged-out visitors | Wait a minute and reload, or check while signed in — signed-in views are never cached |
+| The logo upload is refused | The file is over 2MB, is an SVG, or is not a real image | Export a PNG, JPEG, WebP, or GIF under 2MB; it does not need to be small, it is resized for you |
+| The new logo doesn't replace the old one everywhere | The page is still showing a cached copy | Reload after a minute; the stored logo itself is replaced immediately on save |
 
 ## Related links
 
