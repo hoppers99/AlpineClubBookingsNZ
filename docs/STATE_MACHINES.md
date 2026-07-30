@@ -1152,6 +1152,64 @@ invariant (#1756): no future `isSecondOccupant` allocation may outlive its
 partner link or the active-adult precondition (see
 docs/DOMAIN_INVARIANTS.md, "Double-bed shared occupancy").
 
+## Member Guest Consent Lifecycle ("+ Add Member Guest", #2305 / MG2 #2307)
+
+Known `BookingGuest.consentStatus` values: `null`, `PENDING`, `CONFIRMED`,
+`DECLINED`, `EXPIRED`. **`null` is the dominant state and always will be** —
+every non-member guest, every family-scope guest (owner decision D-6), every row
+written before this feature existed. `null` is *consent-free*, not
+*consent-given*, and the two must stay distinguishable forever: `CONFIRMED`
+means somebody said yes, `null` means nobody had to be asked.
+
+```text
+add, module ON, cross-family, member acting, approvalRequired=true (the shipped default, D-3)
+    -> PENDING + consentRequestedAt + consentExpiresAt = min(now + N days, the day before check-in), floored at +2h; the target or their delegate is emailed
+add, module ON, cross-family, member acting, approvalRequired=false (notify-only opt-down)
+    -> CONFIRMED with NULL requestedAt/respondedAt/respondedBy/expiresAt ("auto-confirmed, never asked"); the target is told, not asked
+add, module ON, cross-family, ADMIN acting (on-behalf, admin booking-copy, pipeline)
+    -> CONFIRMED + consentRespondedAt + consentRespondedByMemberId = the acting admin (MG4-D-a, brought forward); always notify
+add, family scope, or module OFF
+    -> all five columns NULL (D-6, unchanged; module OFF refuses a cross-family add with the byte-for-byte pre-feature error)
+booking copy of an existing cross-family guest
+    -> re-stamped against the copying admin; consent is NOT transitive across bookings
+
+PENDING -> CONFIRMED   the target, or a delegate the resolver accepts (D-5/D-10); respondedAt + respondedBy recorded; bed allocations reconciled post-commit
+PENDING -> DECLINED    same actors; then the SHARED removal path (never a second delete)
+PENDING -> EXPIRED     the nightly sweep, when now >= consentExpiresAt; then the shared removal path, electing account credit (D-15); respondedBy stays NULL because nobody decided
+CONFIRMED              terminal. D-13: no later modification of the booking re-opens it, in either policy mode
+DECLINED / EXPIRED     terminal, and normally GONE — see below
+```
+
+**Every transition is a status-guarded `updateMany`** (`WHERE id = ? AND
+consentStatus = 'PENDING'`). A zero row count means somebody else won, and then
+there is **no email, no removal, no bed write, no audit entry** — which is what
+makes double-approve, approve-after-expire, decline-racing-the-sweep and two
+delegates answering at once all resolve to one winner and one set of effects.
+
+**Why `DECLINED` and `EXPIRED` rows are usually invisible.** The shared removal
+path deletes the guest row, so a successful decline leaves no `DECLINED` row
+behind; the durable record is the audit entry and the outcome email. The
+persisted status earns its keep in exactly one case: **the claim succeeded but the
+removal was refused.** That row is *blocked* — still holding a bed, needing a
+human — and appears on the admin exception list. Owner decision **D-14** makes
+this reachable on purpose: the ordinary self-removal blockers apply to a member
+who never consented, so a decline can be refused. Owner decision **D-15** keeps
+the list short by electing account credit on the sweep, so an ordinary paid
+booking always releases; only four reasons reach the list (last guest,
+quote-priced, a status that forbids guest changes, check-in already started).
+
+To verify: the status-guarded claim in `member-guest-consent-service.ts` (a bare
+`update` by id breaks a concurrency test); the two-lock order (global
+`pg_advisory_xact_lock(1)` for money/status, THEN the per-lodge capacity lock);
+read-key → lock → re-read, including the sweep's re-assertion of
+`consentExpiresAt` on the fresh row under the lock; the expiry clamp landing on
+the day BEFORE check-in (clamping to check-in itself would fire on a morning the
+removal path already refuses as `STAY_NOT_FUTURE`); the `consentAuthority`
+parameter authorizing exactly one guest id and only once that row already carries
+its terminal status; and `OPERATIONALLY_PRESENT_GUEST_WHERE`, which must match
+`null` and `CONFIRMED` and nothing else (see docs/DOMAIN_INVARIANTS.md, "Member
+guest consent").
+
 ## Lodge Induction Lifecycle
 
 Known induction statuses: `DRAFT`, `IN_PROGRESS`, `COMPLETED`, `VOIDED`.

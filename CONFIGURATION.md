@@ -1435,17 +1435,18 @@ cannot be read, optional modules fail closed.
 | Google sign-in | off | Lets members sign in with a Google account they have linked from their profile (additive to password login, never a replacement). Credentials are entered and verified **in-app** on the Google sign-in setup page (Admin → Integrations → Google) — no env vars, no restart. The module cannot be turned on until a real Google OAuth round-trip verifies (hard gate), and replacing a credential re-locks it until re-verified. The "Continue with Google" button appears only when the module is on AND credentials resolve. No account is ever created from Google, and an unlinked Google account is refused with a friendly message. See the Google sign-in section below. |
 | Google Analytics | off | Consent-gated GA4 tracking on public website and public account pages. Requires `NEXT_PUBLIC_GA_MEASUREMENT_ID`; GA scripts load only after a visitor accepts the analytics banner. |
 | AI help assistant | off | Free-text help questions answered by a paid AI model (Anthropic Claude Haiku), grounded strictly in each page's curated help content. The Anthropic API key is entered **in-app** on Admin → Integrations (encrypted vault, never an env var). Unlike Google sign-in there is **no** enable-gate on a present key — with the module on but no key, the ask box degrades to a structured fallback and curated page help still works. A monthly spend cap (default NZ$10) hard-stops AI answers for the rest of the month once reached. See the AI help assistant section below. |
-| Add another member as a guest | off | **Not available yet — this switch does nothing in this version.** Lets a member add another club member, outside their own family group, as a guest on their booking with that member's consent. Adding a member outside your own family group is still declined whether the module is on or off; the feature, its consent emails, and its settings arrive in a later update. Turning it on deliberately shows a **Not available yet** badge rather than the usual **Enabled** one, so the Modules page never presents an inert switch as a live feature. See the member-guest settings section below. |
+| Add another member as a guest | off | Lets a member add another club member, outside their own family group, as a guest on their booking. With the module off, a cross-family add is refused exactly as it was before this feature existed, so an existing club sees no change until an admin turns it on. With it on, the other member is emailed and asked first by default, and a bed is held for them until they answer or the request lapses. A member who has been asked but has not answered holds a bed and is deliberately kept off the kiosk arrivals list, the chore roster, bed allocation and the arrival emails until they accept. See the member-guest settings section below. |
 
-### Member-guest settings (not available yet)
+### Member-guest settings
 
 The "Add another member as a guest" module stores its policy in the
 `MemberGuestSettings` singleton (`id = "default"`), created lazily on first
-write. **No admin page writes it in this version** — the settings card and its
-API route ship in the same update as the behaviour they control, so an admin is
-never offered a live-looking control over a feature that cannot run. Every value
-below is inert today; they are listed so the defaults an update inherits are on
-the record.
+write. Admins read and write it through `GET`/`PUT
+/api/admin/member-guest-settings`, gated on the **bookings** permission area:
+view-level access reads the settings, edit-level access changes them, and the
+payload says which so a card never shows a Save button that would be refused.
+The row is created on the first save, so a club that has never opened the page is
+running on the defaults below and nothing has been written.
 
 | Setting | Default | Travels in config transfer | Description |
 | --- | --- | --- | --- |
@@ -1459,6 +1460,30 @@ The two search settings deliberately **never travel** in a club config transfer
 club's member privacy without this club's admin choosing it, the same rule the
 sign-in method toggles follow. A fresh import keeps whatever this club already
 had, which for a new install is off.
+
+**A request never outlives the stay.** Whatever the expiry days are set to, a
+pending request always lapses at the start of the day *before* check-in, and
+never sooner than two hours after it was made. The clamp is a day early on
+purpose: releasing a bed goes through the same path a member's own "take myself
+off" uses, and that path refuses once check-in is no longer in the future, so an
+expiry landing on check-in day would fire on a morning it could not act.
+
+**When a lapse cannot release the bed.** Expiry settles the reduction as account
+credit to the booking owner, so an ordinary paid booking always releases on time
+and no card refund is issued that nobody asked for. Four cases genuinely cannot
+be resolved automatically — the pending member is the booking's only guest, the
+booking was priced by hand as a quote, the booking's status forbids guest
+changes, or check-in has already started. Those stay on the booking, are counted
+separately by the nightly job, and appear to admins as consent needing attention
+with the actual remedy named (cancel the booking, or re-quote the request).
+
+**Consent email and the mute switches.** Being asked for consent is not treated
+as a mutable preference: consent-adjacent email ignores the per-action "notify the
+member" tick and ignores the member's own notification-category preferences,
+because a member who had muted a category would otherwise never be asked and
+would silently lapse off the booking days later. It **is** withheld by the
+per-booking **No emails** switch, and each withheld send is recorded on that
+booking's withheld list.
 
 Cron-backed optional module schedules are still registered when
 `CRON_ENABLED=true`; each run checks the effective module state before doing
