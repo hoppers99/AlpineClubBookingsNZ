@@ -24,7 +24,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useClubIdentity } from "@/components/club-identity-provider";
 import { ADMIN_VIEW_ONLY_ACTION_REASON } from "@/hooks/use-admin-area-edit-access";
+// Type-only, so the whole server module is erased at compile time and nothing
+// from admin-bed-allocation.ts (prisma, logger, audit) can reach this client
+// bundle. See the note beside the re-export below.
+import type {
+  BedRangeRefusal,
+  BedRangeRefusalCategory,
+} from "@/lib/admin-bed-allocation";
 import {
   countNightsDateOnly,
   eachDateOnlyInRange,
@@ -39,7 +47,7 @@ import {
  *
  * There is deliberately NO preview step (owner decision, 26 Jul 2026). Assign
  * attempts the whole range atomically; if anything blocks it, NOTHING is written
- * and the server's refusal report is rendered here in its three categories. Only
+ * and the server's refusal report is rendered here, one block per category. Only
  * then does a second, explicit "Assign the N free nights" action appear — and it
  * sends the EXACT night list this dialog is showing, not a "free nights only"
  * flag for the server to re-interpret. What the admin sees is what is written:
@@ -70,22 +78,17 @@ export interface RangeBedOptionGroup {
   beds: { id: string; bedName: string }[];
 }
 
-export type BedRangeRefusalCategory =
-  | "EXCLUSIVE_HOLD"
-  | "GUEST_NOT_BOOKED"
-  | "BED_TAKEN";
-
-export interface BedRangeRefusal {
-  stayDate: string;
-  category: BedRangeRefusalCategory;
-  occupiedBy?: {
-    guestName: string;
-    memberName: string;
-    bookingId: string;
-    holdsCapacity: boolean;
-  };
-  hold?: { bookingId: string; memberName: string; ownBooking: boolean };
-}
+/*
+ * The refusal shape is the SERVER's, imported at the top of this file rather
+ * than re-declared here (#2286 review). A structural mirror drifted the moment
+ * the server grew a fourth category: the dialog kept a three-member union,
+ * `CATEGORY_ORDER` never listed the new one, and CUSTODIAN_HOLD nights vanished
+ * from the report while the banner above still counted them — the admin was told
+ * N nights were blocked and then shown fewer than N. Re-exported so the two
+ * consumer surfaces (the board, and #2252's booking panel) keep importing the
+ * refusal types from the component they render.
+ */
+export type { BedRangeRefusal, BedRangeRefusalCategory };
 
 export interface BedRangeAssignResult {
   applied: boolean;
@@ -133,31 +136,52 @@ interface BedRangeAssignDialogProps {
 // is caught before a pointless round trip — it never shortens the range.
 export const MAX_RANGE_ASSIGN_NIGHTS = 366;
 
-// DISPLAY order, most actionable first — deliberately NOT the server's
-// resolution precedence (EXCLUSIVE_HOLD > GUEST_NOT_BOOKED > BED_TAKEN, which
-// decides which single category a night gets). A clash is the thing an admin can
-// do something about, so it leads; a whole-lodge hold is structural and blocks
-// the entire range anyway, so it reads last.
+// DISPLAY order. CUSTODIAN_HOLD leads and sits ABOVE BED_TAKEN, matching the
+// server's resolution precedence for those two (a held bed-night is classified
+// CUSTODIAN_HOLD before BED_TAKEN is even considered) and reading in the order
+// the admin must act: the fix is on another page entirely, so it must not be
+// buried under a list of clashes on this one. The remaining two are deliberately
+// NOT in server precedence order — a clash is the thing an admin can do
+// something about here, so it comes next, and a whole-lodge hold is structural
+// and blocks the entire range anyway, so it reads last.
 const CATEGORY_ORDER: BedRangeRefusalCategory[] = [
+  "CUSTODIAN_HOLD",
   "BED_TAKEN",
   "GUEST_NOT_BOOKED",
   "EXCLUSIVE_HOLD",
 ];
 
-const CATEGORY_TITLE: Record<BedRangeRefusalCategory, string> = {
-  BED_TAKEN: "Bed already allocated",
-  GUEST_NOT_BOOKED: "Guest is not booked that night",
-  EXCLUSIVE_HOLD: "Whole-lodge hold",
-};
+// Keyed by the SERVER's union, so a new category is a compile error here rather
+// than a night that silently disappears from the report.
+const CATEGORY_TITLE: Record<BedRangeRefusalCategory, (label: string) => string> =
+  {
+    CUSTODIAN_HOLD: (label) => `Held for a ${label.toLowerCase()}`,
+    BED_TAKEN: () => "Bed already allocated",
+    GUEST_NOT_BOOKED: () => "Guest is not booked that night",
+    EXCLUSIVE_HOLD: () => "Whole-lodge hold",
+  };
 
-const CATEGORY_EXPLANATION: Record<BedRangeRefusalCategory, string> = {
-  BED_TAKEN:
+const CATEGORY_EXPLANATION: Record<
+  BedRangeRefusalCategory,
+  (label: string) => string
+> = {
+  CUSTODIAN_HOLD: (label) =>
+    `This bed is held for a ${label.toLowerCase()} on these nights, with no booking behind it, so no guest can be placed on it. Change the dates or the bed on the ${label} Assignments page (Admin → ${label}s), or pick a different bed here.`,
+  BED_TAKEN: () =>
     "Someone else is in this bed on these nights. Nothing was overwritten.",
-  GUEST_NOT_BOOKED:
+  GUEST_NOT_BOOKED: () =>
     "This is not a clash — it means the range or the guest is wrong. Check the dates before going further.",
-  EXCLUSIVE_HOLD:
+  EXCLUSIVE_HOLD: () =>
     "This booking holds the whole lodge for these nights, so its guests take the lodge and are not placed on individual beds.",
 };
+
+// A category this bundle has never heard of. During a deploy drain a new server
+// can answer an old browser bundle, and an unknown category must still be SHOWN
+// — silently dropping it would print "12 of 14 nights are blocked" above a list
+// of ten, which is worse than an unstyled row.
+const UNKNOWN_CATEGORY_TITLE = "Blocked for another reason";
+const UNKNOWN_CATEGORY_EXPLANATION =
+  "This version of the page does not recognise the reason the server gave. The nights are listed so nothing is hidden; reload the page to get the full explanation.";
 
 export function nightsBetween(fromDate: string, toDate: string): string[] {
   if (!isDateOnlyString(fromDate) || !isDateOnlyString(toDate)) return [];
@@ -196,6 +220,11 @@ export function BedRangeAssignDialog({
   canEdit,
   onAssigned,
 }: BedRangeAssignDialogProps) {
+  // Admin client copy uses the club's own word for the role (#2286 review M8):
+  // only the lobby TV is pinned to the fixed word "Custodian". A club that calls
+  // them "Wardens" must read "Held for a warden" here, and be sent to the page
+  // that is actually in its sidebar.
+  const { hutLeaderLabel } = useClubIdentity();
   const [bedId, setBedId] = useState("");
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
@@ -242,6 +271,18 @@ export function BedRangeAssignDialog({
     }
     return map;
   }, [refusal]);
+
+  // Every category the report actually contains, in display order, with anything
+  // this bundle does not know about appended rather than dropped (deploy drain).
+  const renderedCategories = useMemo(() => {
+    const known = CATEGORY_ORDER.filter(
+      (category) => (refusalsByCategory.get(category)?.length ?? 0) > 0,
+    );
+    const unknown = [...refusalsByCategory.keys()].filter(
+      (category) => !CATEGORY_ORDER.includes(category),
+    );
+    return [...known, ...unknown];
+  }, [refusalsByCategory]);
 
   if (!target) return null;
 
@@ -449,9 +490,15 @@ export function BedRangeAssignDialog({
                   : "No night in this range is free, so there is nothing to assign."}
               </Alert>
 
-              {CATEGORY_ORDER.map((category) => {
+              {renderedCategories.map((category) => {
                 const items = refusalsByCategory.get(category) ?? [];
                 if (items.length === 0) return null;
+                const title = CATEGORY_TITLE[category]
+                  ? CATEGORY_TITLE[category](hutLeaderLabel)
+                  : UNKNOWN_CATEGORY_TITLE;
+                const explanation = CATEGORY_EXPLANATION[category]
+                  ? CATEGORY_EXPLANATION[category](hutLeaderLabel)
+                  : UNKNOWN_CATEGORY_EXPLANATION;
                 return (
                   <div
                     key={category}
@@ -463,11 +510,11 @@ export function BedRangeAssignDialog({
                         className="h-4 w-4 text-warning"
                         aria-hidden
                       />
-                      {CATEGORY_TITLE[category]} · {items.length} night
+                      {title} · {items.length} night
                       {items.length === 1 ? "" : "s"}
                     </div>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      {CATEGORY_EXPLANATION[category]}
+                      {explanation}
                     </p>
                     <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto text-xs">
                       {items.map((item) => (
