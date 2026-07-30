@@ -610,6 +610,35 @@ Future reviews and issues should cite this file when proposing changes.
   editor re-opens; the re-plan after a clear creates unapproved AUTO rows, so it
   stays open until an admin approves again. Intended: with no allocated beds
   there is nothing for the lock to protect.
+- **Approving beds is always scoped, and the booking is a first-class scope
+  (#2252):** `approveBedAllocations` stamps `approvedAt`/`approvedByMemberId`
+  only where `approvedAt: null`, and refuses outright when NONE of its three
+  selectors — `allocationIds`, a date `range`, or a `bookingId` — is given, so
+  an unselected approval can never stamp every pending row in the database.
+  `bookingId` is sufficient ON ITS OWN and only ever narrows when combined with
+  the others; it exists because the in-booking panel has no safe alternative
+  (`allocationIds` caps at 250 and a long stay can exceed it, and the `from`/`to`
+  form approves every pending allocation of every booking in the window). A
+  booking-scoped approval audits `BED_ALLOCATION_APPROVED` with
+  `targetId` = the booking id, because the booking page's audit deep link
+  searches `targetId` and never metadata. The booking selector honours the same
+  ADR-003 lodge scope the range selector does, so the approve can never reach
+  wider than the lodge-scoped read the officer was shown — an anomalous row of
+  the booking in another lodge's room is neither displayed nor confirmed.
+- **The requested-room lock is two-way, and nothing pretends otherwise
+  (#776, #2252):** no un-approve action exists and none is invented, but two
+  ordinary paths take a booking's last approved row away and re-open the
+  member's editor — a board MOVE re-drafts the row it updates (the upsert's
+  update branch clears `approvedAt`/`approvedByMemberId`), and
+  `deleteBedAllocation` removes it. The in-booking panel therefore warns before
+  removing the last approved row rather than describing the lock as permanent —
+  and that warning counts the booking's approved nights **booking-wide**
+  (`countApprovedBedAllocationNights`), never just the 31-night page on screen,
+  because a page-scoped count claims a re-open that a longer stay's other pages
+  disprove.
+  The same three paths (single-night/drag placements, `source: "AUTO"`
+  suggestions, and move re-drafts) are why draft rows persist under #2251's
+  auto-approve, and why a confirmation affordance stays meaningful.
 - **A range assignment writes all or nothing, and records itself once (#2251):**
   `assignBedRange` scans, writes and audits inside one transaction. If any
   requested night is blocked, NOTHING is written and the caller receives a
@@ -2949,8 +2978,63 @@ Assignment additionally requires the member to hold the standard
 `USER` access role: a member whose only roles are custom definition-backed rows
 (`role = null`) cannot be assigned as a hut leader, and the booking-derived
 picker only surfaces adult `USER` members with an operational booking
-overlapping the assignment range (see CONFIGURATION.md → "Hut Leaders" for the
-promo-code/book-on-behalf workaround that rosters a booking-less custodian).
+overlapping the assignment range, while the "Any member" tab rosters a
+booking-less custodian directly (see CONFIGURATION.md → "Hut Leaders").
+
+A `HutLeaderAssignment` may additionally hold ONE bed (`bedId`), which makes it
+a **custodian occupancy** (#2286). The invariants:
+
+- **Optional and inert by default.** `bedId = null` is a role only and has zero
+  capacity effect — the pre-#2286 behaviour, and what every
+  `hut-leader-auto-assign` cron row is. Only a bed-holding assignment reaches a
+  capacity or allocation consumer.
+- **Inclusive night semantics.** The hold covers the night of every date from
+  `startDate` to `endDate` **inclusive**, never the half-open booking envelope.
+  The bed is bookable again for the night after `endDate`.
+- **Counted as an occupant, never as a smaller lodge.** The capacity engines add
+  the per-night custodian **count** to `occupiedBeds` rather than reducing
+  `lodgeCapacity`, so `occupiedBeds + availableBeds === lodgeCapacity` still
+  holds on every night. It is a count, never a boolean: two custodians handing
+  over on different beds subtract two.
+- **No booking, no allocation row, no guest.** A custodian is not a
+  `BookingGuest`, so they are structurally absent from the chore roster, the
+  booking rows and the display occupancy counts. They may still make an ordinary
+  booking of their own anywhere, including at the same lodge, and capacity then
+  correctly counts both their held bed and their booked bed.
+- **Two assignments may never hold the SAME bed on an overlapping night.** The
+  one-day handover overlap assignments already permit is allowed only on
+  different beds; the same-bed case is refused at create and update.
+- **A whole-lodge hold and a custodian never contend.** The hold reserves the
+  *bookable* lodge; the custodian's bed sits outside that pool. Neither refuses
+  the other, and the ADR-001 held-night pin is unchanged.
+- **Exclusion is enforced in application code, never by a database constraint**
+  (owner decision 28 Jul 2026, option (a)). Two things make that safe, and both
+  are required:
+  1. **Every** `BedAllocation` write path that places a guest on a bed re-reads
+     the live holds **on the same client, immediately before the write**, and
+     refuses or drops what would land on one: the manual funnel
+     `allocateBedNight`, the range assign's `CUSTODIAN_HOLD` classification,
+     `runAutoBedAllocation`'s in-transaction re-filter, and the lifecycle
+     reconcile's write-time re-filter (`dropRowsOnCustodianHeldBedNights`). A
+     read at plan time alone is NOT enough — a reconcile is routinely called
+     post-commit, so a hold committed between the plan and the write would
+     otherwise be written over.
+  2. Every placement transaction this code **opens itself** takes the per-lodge
+     advisory lock (`acquireLodgeCapacityLock`) as its first statement, sorted
+     when it can span several lodges, so that re-read and the write serialise
+     against the hold writer, which takes the same key. A reconcile running
+     inside a CALLER's transaction inherits that caller's lock discipline
+     instead of adding a key to an ordering it does not control; its write-time
+     re-filter still runs on that client.
+
+  `custodian-write-path-contract.test.ts` fails CI when a new write
+  path appears undeclared, and `CUSTODIAN_BED_CONFLICT` on the allocation board
+  surfaces any row that got through anyway.
+- **A held bed cannot be deactivated or deleted**, nor can its room, while the
+  hold exists (`onDelete: Restrict` is the FK backstop behind the app guards).
+- **Minor privacy.** A minor-age custodian is never individually named on the
+  lobby display at any name-display granularity; the slot shows the role word
+  alone.
 
 Hard delete must remain limited to records that pass the eligibility checks for
 no durable booking, financial, family, Xero, or membership-history blockers.

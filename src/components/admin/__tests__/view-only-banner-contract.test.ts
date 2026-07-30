@@ -322,11 +322,11 @@ const NOTICE = "AdminViewOnlyNotice";
 */
 const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 287,
+  callSites: 293,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 244,
+  optOuts: 250,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 218,
+  staticOptOuts: 224,
   /** `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch. */
   vouchedOptOuts: 26,
   /** …of the vouched: proved at a parent's own JSX render site (#2168). */
@@ -340,7 +340,7 @@ const FIGURES = {
   leafControls: 30,
   leafFiles: 18,
   /** Components that render an `AdminViewOnlySectionBanner`. */
-  bannerComponents: 78,
+  bannerComponents: 79,
 } as const;
 
 const WIZARD_SHELL = "IntegrationWizard";
@@ -1143,15 +1143,6 @@ describe("view-only section banner coverage (#2160)", () => {
           bannerComponents 78, unchanged   #2324 adds no banner. The shell's
                existing one now covers more, which is the entire point.
 
-        Then the Mountain Conditions "Source & selectors" panel adds Preview and
-        Save configuration ViewOnlyActionButtons — two static opt-outs under the
-        panel's existing AdminViewOnlySectionBanner:
-          callSites      285 -> 287 (+2)
-          optOuts        242 -> 244 (+2)   both static
-          staticOptOuts  216 -> 218 (+2)
-          vouchedOptOuts / exceptions / exceptionFiles / bannerComponents all
-               unchanged (no new banner, no new exception).
-
         Not converted, deliberately, and each is a scope judgement no static
         rule can make:
 
@@ -1164,6 +1155,31 @@ describe("view-only section banner coverage (#2160)", () => {
           - the disabled `Input`s and `select`s inside the wizard steps. This
             suite polices `ViewOnlyActionButton`; text inputs have never been in
             its scope, and the display wizard has always left its own that way.
+
+        The ledger then resumes:
+
+          288  +3  #2252 adds the in-booking Bed allocation panel
+               (`booking-bed-allocation-panel.tsx`): Assign, Remove and the
+               booking-level Confirm, all static opt-outs under the panel's own
+               banner (+1 banner component, 78 -> 79). Its remove-confirmation
+               dialog keeps its own reason — a dialog is a separate
+               accessibility container the card's banner does not reach — and
+               is a plain Button rather than a ViewOnlyActionButton, matching
+               the shared range dialog (#2251), so it adds no call site and no
+               exception.
+          291  +3  #2286 wires the Hut Leaders page's bed controls to the PUT
+               that already existed: "Release bed" and "Change bed" per
+               assignment row, plus "Confirm anyway" on the over-capacity
+               question. All three are STATIC opt-outs under that page's single
+               unconditional `AdminViewOnlySectionBanner`, which the two
+               existing row actions (reset PIN, delete) already opt out under
+               (optOuts 245 -> 248, staticOptOuts 219 -> 222; nothing else
+               moves).
+          293  +2  the Mountain Conditions "Source & selectors" panel adds
+               Preview and Save configuration ViewOnlyActionButtons — two static
+               opt-outs under the panel's existing AdminViewOnlySectionBanner
+               (optOuts 248 -> 250, staticOptOuts 222 -> 224; vouched,
+               exceptions and bannerComponents all unchanged — no new banner).
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into

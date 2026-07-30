@@ -85,7 +85,12 @@ year in one go).
    member out of changing their requested room for that booking — the dialog
    warns you before you commit.
 4. If any night is blocked, **nothing is written** and the dialog lists every
-   blocked night under one of three headings:
+   blocked night under one of four headings:
+   - **Held for a hut leader** (your club's own word for the role) — that bed is
+     held for a hut leader on those nights, with no booking behind it, so no
+     guest can go on it. This one is fixed on a different page: change the dates
+     or the bed under **Hut Leader Assignments**, or pick another bed here. It is
+     listed first for exactly that reason.
    - **Bed already allocated** — someone else is in that bed. The occupying
      guest is named, and a **Provisional** badge marks an occupant whose
      booking does not hold the night. Provisional or not, it is a clash:
@@ -122,6 +127,69 @@ appear on screen for you, and are not filed away. If moving the guest left a
 partner alone on a shared double, one further entry records every partner
 promoted by that action together, rather than one entry per partner.
 
+### Allocate from inside a booking
+
+You do not have to go to the board at all. Open the booking (**Admin → Bookings
+→** the booking, or from anywhere that links to it) and scroll to the
+**Bed allocation** card, directly below **Room Request** — it also has its own
+entry, in that same position, in the section list down the side. Only admins who
+can edit bookings see it: members never do, not even the person whose booking it
+is, and the section list does not offer them the entry either.
+
+The card shows one row per guest on the booking — their stay window, how many of
+their nights have a bed and how many do not, and each bed they are on as a run
+of nights rather than a line per night.
+
+- **Assign…** opens the same range dialog the board uses, prefilled with that
+  guest's own stay. Everything above about ranges applies unchanged, including
+  the warning that assigning a range confirms those beds straight away.
+- **Remove** takes a run of nights off a bed. If those are the last confirmed
+  nights on the booking, the panel warns you first: removing them re-opens the
+  member's room request for editing. The room-request lock is not one-way. That
+  check counts the whole booking, not just the page on screen, so a long stay
+  with confirmed nights on another page does not get the warning by mistake.
+- **Confirm draft beds** approves every draft bed night on **this booking and no
+  other**, at the lodge whose beds the card is showing — it can never confirm a
+  bed you were not shown. It does not place anybody — if some nights still have nobody on a bed,
+  the card says so above the button — and it does not email anyone. What it does
+  do is lock the member out of changing their requested room, which under range
+  assignment may already have happened.
+- **Open on the board** takes you to the board for the same nights, with the
+  booking in focus, and back again.
+
+Some things the card deliberately will not pretend about:
+
+- **A stay longer than 31 nights is shown a page at a time**, because that is
+  the longest window the allocation read allows. The page is always labelled
+  ("Nights 32–61 of 61"), and **Confirm** says plainly that it covers the draft
+  nights on the pages you cannot currently see as well.
+- **A booking that cannot hold beds keeps the card** and says why — cancelled,
+  deleted, or a status that is never allocated beds. The card does not vanish
+  and leave you guessing. That note is about the booking's own status, so it says
+  the same thing whatever dates you are looking at.
+- **A page with none of the booking's nights on it says exactly that**, rather
+  than claiming the booking cannot hold beds. The rows and **Confirm draft beds**
+  stay available: on a long stay the booking's nights are simply on another page.
+- **The counts and the card's Draft/Confirmed badge are the page's**, and say
+  "(this page)" when the stay is paged, because that is all a single 31-night
+  read can honestly report.
+- **A booking with an exclusive whole-lodge hold** shows the hold instead of
+  rows, with no assign or confirm buttons at all: it takes the lodge, so it
+  needs no individual beds.
+- **A bed held for a hut leader** (your club's own word for the role) in the
+  nights on screen shows the same notice the board gives: the bed is held with
+  no booking behind it, no guest can be placed on it for those nights, and the
+  fix is under **Hut Leader Assignments**, not here. Trying it anyway in
+  **Assign…** gets the standard refusal report, exactly as on the board. And if
+  one of this booking's placed nights is somehow sitting on a held bed — which
+  the app itself never writes — that run is marked held rather than left
+  looking clean.
+- **Removing a run is one night at a time**, so if it stops half way the message
+  tells you exactly how many nights actually went.
+
+Confirming from a booking records a **BED_ALLOCATION_APPROVED** entry against
+that booking, so the booking's own **Audit log** link finds it.
+
 ## Settings reference
 
 | Control | What it does | Default | Notes / constraints |
@@ -136,6 +204,8 @@ promoted by that action together, rather than one entry per partner.
 | Approve Visible | Approve the visible draft allocations | — | Disabled when nothing is unapproved |
 | Select bed / Allocate | Place a guest on a chosen bed | — | Needs bookings edit access |
 | Refresh | Reload the board | — | — |
+| Bed allocation card (on a booking) | Assign, remove and confirm this booking's beds without leaving it | — | Admin-only; needs bookings edit access; long stays are paged 31 nights at a time |
+| Confirm draft beds (on a booking) | Approve every draft bed night on that booking | — | Never touches another booking's drafts; locks the member's room request |
 | Lodge selector | Which lodge's board is shown | first/only lodge | Only shown with more than one active lodge |
 
 Notes: bed types (single, bunk top/bottom, double) are descriptive and do not
@@ -162,10 +232,15 @@ you place them yourself.
 | A focused booking is "not on the board" | The deep-linked booking is outside the date range or was cancelled | Adjust Date In / Date Out to bring it into view |
 | "The board window is out of range" | You typed more than 31 nights, or a Date Out before Date In | Narrow the dates, or use ‹ › to step a month at a time |
 | "Showing part of this stay" | You followed a link for a booking longer than the board window | Step forward with › to see the rest of the stay |
-| A range assign says "Nothing was written" | At least one night is blocked — bed taken, guest not booked, or a whole-lodge hold | Read the three lists; fix the range, or use **Assign the N free nights** to take just the free ones (if any night is outside the guest's stay, you are asked to confirm that first) |
+| A range assign says "Nothing was written" | At least one night is blocked — held for a hut leader, bed taken, guest not booked, or a whole-lodge hold | Read the lists; fix the range, or use **Assign the N free nights** to take just the free ones (if any night is outside the guest's stay, you are asked to confirm that first). A hut-leader hold is cleared on the **Hut Leader Assignments** page, not here |
 | A range assign is refused on every night | This booking has an exclusive whole-lodge hold | Held bookings take the whole lodge and get no individual beds — remove the hold first if that is wrong |
 | "That took too long to save" | The range was large enough for the save to time out; nothing was written | Split it into shorter ranges and assign them one after the other |
 | The member says they can no longer change their requested room | A range assign approved their beds | That is expected: confirming beds locks the room request. Removing every approved allocation re-opens it |
+| The Bed allocation card is missing from a booking | The `bedAllocation` module is off, or your admin role can view but not edit bookings | Enable the module under **Admin → Setup → Modules**, or ask a full admin for bookings edit access — the board is still readable meanwhile |
+| The card says this booking "cannot hold beds" | The booking really is cancelled, deleted, or in a status that is never allocated beds — this is the booking's status, not a symptom of the dates you are looking at | Nothing to do — any beds it once held were released |
+| The card says "No nights of this booking on this page" | None of the booking's guests is booked on any night of the page shown. On a long stay its nights are on another page; otherwise check the guests' stay dates | Step through with › , or fix the guest stay dates. Assign and **Confirm draft beds** still work — Confirm covers the whole booking |
+| **Confirm draft beds** is greyed out | Nothing on this booking is still in draft | Everything is already confirmed; range assignments confirm as they are written |
+| The card shows fewer nights than the stay | The stay is longer than the 31-night read window, so it is paged | Step forward with › — the label tells you which nights you are looking at |
 
 ## Related links
 

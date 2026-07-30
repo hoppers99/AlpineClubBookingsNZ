@@ -190,19 +190,18 @@ function HeaderClock({
 }
 
 function LodgeHeader({ state }: DisplayModuleProps) {
+  // #2322: the served-image logo wins over the legacy inlined data URI.
+  const logoSrc = state.club.logoUrl || state.club.logoDataUrl;
+
   return (
     <div className="display-lodge-header">
       <div className="display-header-brand">
-        {state.club.logoDataUrl && (
+        {logoSrc && (
           // Decorative: the lodge name (and club name, when set) render as
           // adjacent visible text below, so an alt here would be redundant.
           // Empty alt is the correct WCAG treatment (#1947).
           // eslint-disable-next-line @next/next/no-img-element
-          <img
-            className="display-header-logo"
-            src={state.club.logoDataUrl}
-            alt=""
-          />
+          <img className="display-header-logo" src={logoSrc} alt="" />
         )}
         <div>
           <div className="display-lodge-name">{state.lodge.name}</div>
@@ -226,6 +225,30 @@ function InfoFooter({ state }: DisplayModuleProps) {
   const note = state.config["footer-note"];
   return (
     <div className="display-info-footer">
+      {/*
+        Custodian in residence (#2286). The role word is the FIXED string
+        "Custodian"/"Custodians" for every club — the owner's 29 Jul decision,
+        deliberately overriding the per-club `hutLeaderLabel` used everywhere
+        else in the admin surface. Do not swap this for the configurable label.
+
+        `label` null means the people must not be named (counts-only
+        granularity, or a minor-age custodian among them at any granularity):
+        the slot still appears, because the fact that someone is on site is the
+        useful part, but it shows the role and — on a handover night, where two
+        custodians hold two beds — the count, so the wall never implies one
+        person when two are here.
+      */}
+      {state.custodian && (
+        <span className="display-footer-item" data-testid="display-custodian">
+          <span className="display-footer-icon">🛎</span>
+          {state.custodian.count === 1 ? "Custodian" : "Custodians"}{" "}
+          {state.custodian.label ? (
+            <b>{state.custodian.label}</b>
+          ) : state.custodian.count > 1 ? (
+            <b>{state.custodian.count}</b>
+          ) : null}
+        </span>
+      )}
       {wifiCode && (
         <span className="display-footer-item">
           <span className="display-footer-icon">📶</span>

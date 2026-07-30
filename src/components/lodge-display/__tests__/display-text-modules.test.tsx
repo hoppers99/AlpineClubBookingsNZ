@@ -16,7 +16,7 @@ import { DISPLAY_MODULE_COMPONENTS } from "@/components/lodge-display/modules";
 function state(overrides: Partial<DisplayState>): DisplayState {
   return {
     lodge: { name: "Silverpeak Lodge" },
-    club: { name: "Alpine Sports Club", logoDataUrl: null },
+    club: { name: "Alpine Sports Club", logoUrl: null, logoDataUrl: null },
     generatedAt: "2026-04-13T00:00:00.000Z",
     window: { start: "2026-04-13", days: 3 },
     rooms: null,
@@ -29,6 +29,8 @@ function state(overrides: Partial<DisplayState>): DisplayState {
     notice: null,
     config: { "wifi-code": "alpine1234" },
     capabilities: { bedAllocation: false, chores: false },
+    // #2286: no custodian in residence in the base fixture.
+    custodian: null,
     ...overrides,
   };
 }

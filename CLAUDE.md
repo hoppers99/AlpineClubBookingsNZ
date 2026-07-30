@@ -37,7 +37,11 @@ written." Follow `AGENTS.md` → "Completion and Merge":
      Hand off with full evidence and wait.
 4. Merge eligible PRs with a **merge commit** — never squash, rebase-merge, or
    force-push. Close a linked issue only when its PR is eligible and merged.
-5. Delete the merged branch and confirm `main` CI stays green.
+5. Close the linked issue at merge time with a plain-English close-out comment:
+   what shipped, the delivering PR, what the reviews found and how it was
+   fixed, and any follow-up issues by number. A follow-up named anywhere must
+   exist as a filed issue before merge — never as comment prose only.
+6. Delete the merged branch and confirm `main` CI stays green.
 
 ## Orchestrate with subagents
 

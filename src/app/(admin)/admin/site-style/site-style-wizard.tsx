@@ -37,14 +37,12 @@ import {
   CLUB_THEME_COLOUR_FIELDS,
   CLUB_THEME_FONT_OPTIONS,
   DEFAULT_CLUB_THEME_VALUES,
-  MAX_LOGO_DATA_URL_BYTES,
   buildClubThemeCss,
   deriveAppMutedForeground,
   deriveBrandShims,
   fontCssVariable,
   fontLabel,
   getContrastWarnings,
-  isValidLogoDataUrl,
   themeSeedsFromValues,
   type ClubThemeColourKey,
   type ClubThemeFontKey,
@@ -74,6 +72,13 @@ type SiteStyleThemeResponse = ClubThemeValues & {
 type SiteStyleWizardProps = {
   initialTheme: SiteStyleThemeResponse;
 };
+
+/**
+ * Client-side guard mirroring MAX_MEDIA_IMAGE_BYTES on the upload route (#2322).
+ * Duplicated as a literal rather than imported so the server-only media helpers
+ * stay out of this client bundle; the server enforces the real cap regardless.
+ */
+const MAX_LOGO_UPLOAD_BYTES = 2 * 1024 * 1024;
 
 const steps = [
   { id: "colours", label: "Colours", icon: Palette },
@@ -180,12 +185,14 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
     brandSafety: initialTheme.brandSafety,
     headingFontKey: initialTheme.headingFontKey,
     bodyFontKey: initialTheme.bodyFontKey,
+    logoUrl: initialTheme.logoUrl ?? null,
     logoDataUrl: initialTheme.logoDataUrl,
     rawCss: initialTheme.rawCss ?? "",
   });
   const [completedAt, setCompletedAt] = useState(initialTheme.completedAt);
   const [step, setStep] = useState<StepId>("colours");
   const [saving, setSaving] = useState(false);
+  const [uploadingLogo, setUploadingLogo] = useState(false);
   const [error, setError] = useState("");
   const [savedMessage, setSavedMessage] = useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -201,12 +208,34 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
   const [fieldErrors, setFieldErrors] = useState<
     Record<string, string[] | undefined>
   >({});
+  const [logoBudget, setLogoBudget] = useState<{
+    isWithinBudget: (value: string) => boolean;
+    message: string;
+  } | null>(null);
+  /**
+   * The inlined logo as the SERVER last reported it (#2322). The 64KB budget
+   * applies only to a value the admin actually changed, so a deployment already
+   * storing a large data URI keeps saving normally; comparing against this ref
+   * (rather than current state) means editing and reverting does not trip it.
+   */
+  const serverLogoDataUrlRef = useRef<string | null>(
+    initialTheme.logoDataUrl ?? null,
+  );
+  /**
+   * Bumped on every upload start AND on Remove, so a response that lands after
+   * the admin moved on is discarded — a Remove clicked mid-upload must win.
+   */
+  const logoGenerationRef = useRef(0);
 
   useEffect(() => {
     let active = true;
     void import("@/lib/club-theme-update-schema").then((module) => {
       if (active) {
         setUpdateSchema(module.clubThemeUpdateSchema);
+        setLogoBudget(() => ({
+          isWithinBudget: module.isLogoDataUrlWithinWriteBudget,
+          message: module.LOGO_DATA_URL_WRITE_BUDGET_MESSAGE,
+        }));
       }
     });
     return () => {
@@ -220,8 +249,25 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
       return;
     }
     const parsed = updateSchema.safeParse(themePayload(values, false));
-    setFieldErrors(parsed.success ? {} : parsed.error.flatten().fieldErrors);
-  }, [updateSchema, values]);
+    const errors: Record<string, string[] | undefined> = parsed.success
+      ? {}
+      : parsed.error.flatten().fieldErrors;
+
+    // The zod layer is stateless and cannot know what is already stored, so the
+    // 64KB budget is checked here against the server's value — and on the server
+    // itself, which is authoritative.
+    const logo = values.logoDataUrl;
+    if (
+      logoBudget &&
+      logo &&
+      logo !== serverLogoDataUrlRef.current &&
+      !logoBudget.isWithinBudget(logo)
+    ) {
+      errors.logoDataUrl = [logoBudget.message];
+    }
+
+    setFieldErrors(errors);
+  }, [updateSchema, values, logoBudget]);
   const contrastWarnings = useMemo(() => getContrastWarnings(values), [values]);
   // #2187: a seed is never rejected for contrast — the generator adjusts a
   // pathological pick and the substrate clears the guarantee sweep by
@@ -280,9 +326,13 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
         brandSafety: theme.brandSafety,
         headingFontKey: theme.headingFontKey,
         bodyFontKey: theme.bodyFontKey,
+        logoUrl: theme.logoUrl ?? null,
         logoDataUrl: theme.logoDataUrl,
         rawCss: theme.rawCss ?? "",
       });
+      // The server is now the authority on what is stored, so the "unchanged"
+      // baseline for the 64KB budget moves with it (#2322).
+      serverLogoDataUrlRef.current = theme.logoDataUrl ?? null;
       setCompletedAt(theme.completedAt);
       setSavedMessage(
         completeSetup ? "Site style is complete." : "Site style saved.",
@@ -316,31 +366,73 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
   }
 
   function resetNeutral() {
+    // Resetting clears the logo along with everything else, so it must invalidate
+    // an in-flight upload the same way Remove does — otherwise a response landing
+    // afterwards would re-populate a logo the admin just reset away (#2322).
+    logoGenerationRef.current += 1;
+    setUploadingLogo(false);
     setValues(DEFAULT_CLUB_THEME_VALUES);
     setCompletedAt(null);
     setSavedMessage("");
     setError("");
   }
 
-  function readLogo(file: File) {
+  /**
+   * #2322: the logo is uploaded to the server, resized and stored as an image,
+   * and only its URL is kept on the theme. The old FileReader flow inlined the
+   * whole file as base64 and shipped it on every public page render.
+   */
+  async function uploadLogo(file: File) {
     setError("");
-    if (file.size > MAX_LOGO_DATA_URL_BYTES) {
-      setError("Logo must be 900KB or smaller.");
+    if (file.size > MAX_LOGO_UPLOAD_BYTES) {
+      setError("Logo must be 2MB or smaller.");
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = typeof reader.result === "string" ? reader.result : "";
-      if (!isValidLogoDataUrl(dataUrl)) {
-        setError("Logo must be a PNG, JPEG, WebP, or GIF image data URL.");
+    const generation = ++logoGenerationRef.current;
+    setUploadingLogo(true);
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      const response = await fetch("/api/admin/site-style/logo", {
+        method: "POST",
+        body,
+      });
+      const payload = await response.json().catch(() => null);
+
+      // The admin removed the logo (or started another upload) while this one
+      // was in flight — that action wins; discard this result entirely.
+      if (generation !== logoGenerationRef.current) {
         return;
       }
-      setValues((current) => ({ ...current, logoDataUrl: dataUrl }));
-      setSavedMessage("");
-    };
-    reader.onerror = () => setError("Logo could not be read.");
-    reader.readAsDataURL(file);
+
+      if (!response.ok) {
+        setError(
+          (payload as { error?: string } | null)?.error ??
+            "Logo could not be uploaded.",
+        );
+        return;
+      }
+
+      const logoUrl = (payload as { logoUrl?: string } | null)?.logoUrl;
+      if (!logoUrl) {
+        setError("Logo could not be uploaded.");
+        return;
+      }
+
+      // Clear any legacy inlined logo so the two can never disagree; the server
+      // enforces the same rule on save.
+      setValues((current) => ({ ...current, logoUrl, logoDataUrl: null }));
+      setSavedMessage("Logo uploaded. Save to apply it to the site.");
+    } catch {
+      if (generation === logoGenerationRef.current) {
+        setError("Logo could not be uploaded.");
+      }
+    } finally {
+      if (generation === logoGenerationRef.current) {
+        setUploadingLogo(false);
+      }
+    }
   }
 
   const activeStep = steps[stepIndex];
@@ -571,7 +663,7 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
                   onChange={(event) => {
                     const file = event.target.files?.[0];
                     if (file) {
-                      readLogo(file);
+                      void uploadLogo(file);
                     }
                     event.target.value = "";
                   }}
@@ -582,20 +674,29 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
                     describeReason={false}
                     type="button"
                     variant="outline"
+                    disabled={uploadingLogo}
                     onClick={() => fileInputRef.current?.click()}
                   >
                     <Upload className="mr-2 h-4 w-4" />
-                    Choose logo
+                    {uploadingLogo ? "Uploading…" : "Choose logo"}
                   </ViewOnlyActionButton>
-                  {values.logoDataUrl && (
+                  {(values.logoUrl || values.logoDataUrl) && (
                     <ViewOnlyActionButton
                       canEdit={canEdit}
                       describeReason={false}
                       type="button"
                       variant="outline"
+                      disabled={uploadingLogo}
                       onClick={() => {
+                        // Bumping the generation makes any in-flight upload
+                        // discard its result, so Remove cannot be undone by a
+                        // response that lands afterwards.
+                        logoGenerationRef.current += 1;
+                        setUploadingLogo(false);
+                        setError("");
                         setValues((current) => ({
                           ...current,
+                          logoUrl: null,
                           logoDataUrl: null,
                         }));
                         setSavedMessage("");
@@ -606,9 +707,14 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
                     </ViewOnlyActionButton>
                   )}
                 </div>
-                {fieldErrors.logoDataUrl?.[0] && (
+                <p className="text-sm text-muted-foreground">
+                  PNG, JPEG, WebP, or GIF, up to 2MB. Larger images are shrunk to
+                  at most 160px tall and 640px wide — never enlarged — so a
+                  high-resolution original is fine. SVG is not accepted.
+                </p>
+                {(fieldErrors.logoUrl?.[0] ?? fieldErrors.logoDataUrl?.[0]) && (
                   <p className="text-sm text-danger-11">
-                    {fieldErrors.logoDataUrl?.[0]}
+                    {fieldErrors.logoUrl?.[0] ?? fieldErrors.logoDataUrl?.[0]}
                   </p>
                 )}
               </div>
@@ -629,7 +735,7 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
                   <div className="rounded-md border p-4">
                     <p className="text-sm font-medium text-foreground">Logo</p>
                     <p className="mt-2 text-sm text-muted-foreground">
-                      {values.logoDataUrl
+                      {(values.logoUrl || values.logoDataUrl)
                         ? "Custom logo stored"
                         : "Club name fallback"}
                     </p>
@@ -664,10 +770,10 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
             >
               <div className="bg-brand-charcoal px-5 py-4 text-brand-snow">
                 <div className="flex items-center gap-3">
-                  {values.logoDataUrl ? (
+                  {(values.logoUrl || values.logoDataUrl) ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img
-                      src={values.logoDataUrl}
+                      src={values.logoUrl || values.logoDataUrl || ""}
                       alt="Logo preview"
                       className="h-10 max-w-36 object-contain"
                     />
@@ -798,6 +904,7 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
             describeReason={false}
             type="button"
             variant="outline"
+            disabled={uploadingLogo}
             onClick={resetNeutral}
           >
             <RotateCcw className="mr-2 h-4 w-4" />
@@ -818,7 +925,7 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
                 describeReason={false}
                 type="button"
                 onClick={goNext}
-                disabled={saving || saveBlocked}
+                disabled={saving || saveBlocked || uploadingLogo}
               >
                 {saving ? "Saving..." : "Save and next"}
               </ViewOnlyActionButton>
@@ -828,7 +935,7 @@ export function SiteStyleWizard({ initialTheme }: SiteStyleWizardProps) {
                 describeReason={false}
                 type="button"
                 onClick={finish}
-                disabled={saving || saveBlocked}
+                disabled={saving || saveBlocked || uploadingLogo}
               >
                 {saving ? "Saving..." : "Finish setup"}
               </ViewOnlyActionButton>

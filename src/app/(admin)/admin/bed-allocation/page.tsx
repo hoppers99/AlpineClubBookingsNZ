@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useClubIdentity } from "@/components/club-identity-provider";
 import { LodgeSelect, useLodgeOptions } from "@/components/lodge-select";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import {
   DndContext,
@@ -60,7 +62,7 @@ import {
   boardWindowError,
   fitBoardWindow,
   stepBoardWindowByMonths,
-} from "./_components/board-window";
+} from "@/lib/bed-allocation-board-window";
 import { BucketBoard } from "./_components/bucket-board";
 import { RoomTable } from "./_components/room-table";
 import {
@@ -69,6 +71,7 @@ import {
   type BucketGuestGroup,
   type BulkAllocationConflict,
   type DashboardAllocation,
+  type DashboardCustodianHold,
   type DashboardGuestNight,
   type DashboardPayload,
   type DragData,
@@ -76,6 +79,36 @@ import {
 } from "./_components/types";
 import { deriveActiveDragDates } from "./_components/active-drag-dates";
 import { useSyncedScroll } from "./_components/use-synced-scroll";
+
+// #2286: a bulk drop can now be refused for two different reasons on different
+// nights, and they need different fixes — "someone else is in that bed" (clear
+// it on this board) vs "a custodian holds that bed" (edit the assignment on the
+// Hut Leaders page). Merging them into one "just taken" sentence would send the
+// admin to the wrong place, so each reason gets its own clause.
+function describeBulkConflicts(
+  guestName: string,
+  conflicts: BulkAllocationConflict[],
+  // The club's own word for the role (#2286 review M8): admin copy is
+  // label-driven; only the lobby TV is pinned to the fixed word "Custodian".
+  hutLeaderLabel: string,
+): string {
+  const nightsFor = (reason: BulkAllocationConflict["reason"]) =>
+    conflicts
+      .filter((conflict) => conflict.reason === reason)
+      .map((conflict) => conflict.stayDate);
+  const taken = nightsFor("BED_TAKEN");
+  const custodian = nightsFor("CUSTODIAN_HOLD");
+  const clauses: string[] = [];
+  if (taken.length > 0) {
+    clauses.push(`that bed was just taken for ${taken.join(", ")}`);
+  }
+  if (custodian.length > 0) {
+    clauses.push(
+      `that bed is held for a ${hutLeaderLabel.toLowerCase()} on ${custodian.join(", ")} (change it on the ${hutLeaderLabel} Assignments page)`,
+    );
+  }
+  return `${guestName}: ${clauses.join("; ")} — refreshing the board`;
+}
 
 function todayDateOnly() {
   return formatDateOnly(getTodayDateOnly());
@@ -249,6 +282,9 @@ export default function AdminBedAllocationPage() {
   const requestedTo = searchParams.get("to");
   const highlightedBookingId = searchParams.get("bookingId") || "";
   const canEditBookings = useAdminAreaEditAccess("bookings");
+  // Admin copy uses the club's own word for the hut-leader role (#2286 review
+  // M8); only the lobby TV is pinned to the fixed word "Custodian".
+  const { hutLeaderLabel } = useClubIdentity();
 
   const initialFrom = isDateOnlyString(requestedFrom ?? "")
     ? (requestedFrom as string)
@@ -632,9 +668,11 @@ export default function AdminBedAllocationPage() {
 
         if (data.conflicts.length > 0) {
           toast.warning(
-            `${group.guestName}: that bed was just taken for ${data.conflicts
-              .map((conflict) => conflict.stayDate)
-              .join(", ")} — refreshing the board`,
+            describeBulkConflicts(
+              group.guestName,
+              data.conflicts,
+              hutLeaderLabel,
+            ),
           );
         } else {
           toast.success("Allocation saved");
@@ -779,9 +817,11 @@ export default function AdminBedAllocationPage() {
 
             if (data.conflicts.length > 0) {
               toast.warning(
-                `${allocation.guestName}: that bed was just taken for ${data.conflicts
-                  .map((conflict) => conflict.stayDate)
-                  .join(", ")}, refreshing the board`,
+                describeBulkConflicts(
+                  allocation.guestName,
+                  data.conflicts,
+                  hutLeaderLabel,
+                ),
               );
             } else {
               toast.success("Visible guest nights moved");
@@ -1035,6 +1075,25 @@ export default function AdminBedAllocationPage() {
   // until the admin dismisses it, so gaps left by a partial assign are visible
   // rather than something to hunt for. Not colour-only — each tinted cell also
   // carries an "Assigned" / "Refused" label.
+  // #2286: index the payload's custodian holds by bed-night so each cell can
+  // decide in O(1) whether it is a held band rather than a drop target.
+  const custodianHoldList = useMemo(
+    // Absent on an old-colour payload during a deploy drain (see the banner
+    // below), so never dereferenced without this fallback.
+    () => payload?.custodianHolds ?? [],
+    [payload],
+  );
+
+  const custodianHoldByBedAndDate = useMemo(() => {
+    const map = new Map<string, DashboardCustodianHold>();
+    for (const hold of custodianHoldList) {
+      for (const night of hold.nights) {
+        map.set(`${hold.bedId}:${night}`, hold);
+      }
+    }
+    return map;
+  }, [custodianHoldList]);
+
   const rangeTint = useMemo(() => {
     if (!rangeOutcome) return undefined;
     return {
@@ -1317,6 +1376,45 @@ export default function AdminBedAllocationPage() {
             </Alert>
           ) : null}
 
+          {/* Read through the indexed map, not `payload.custodianHolds`
+              directly: during a deploy drain a new-colour browser bundle can be
+              served a payload from the old colour, which has no custodianHolds
+              at all. Crashing the entire allocation board in that window would
+              be far worse than the drain exposure the feature already accepts,
+              so every client read of this field tolerates its absence. */}
+          {custodianHoldList.length > 0 ? (
+            <Alert
+              variant="info"
+              title={`Bed held for a ${hutLeaderLabel.toLowerCase()} — not available to allocate`}
+            >
+              <p className="mb-1">
+                {/* #2286 review L4: read the LENGTH from the same tolerant
+                    list this block is gated on, not from `payload.custodianHolds`
+                    — the comment above says exactly that, and a deploy-drain
+                    payload with no `custodianHolds` would crash the board here. */}
+                {custodianHoldList.length === 1
+                  ? "This bed is"
+                  : "These beds are"}{" "}
+                held for a {hutLeaderLabel.toLowerCase()} with no booking, so no
+                guest can be placed on them for those nights. Change the dates or
+                the bed on the{" "}
+                <Link className="underline" href="/admin/hut-leaders">
+                  {hutLeaderLabel} Assignments
+                </Link>{" "}
+                page.
+              </p>
+              <ul className="space-y-1">
+                {custodianHoldList.map((hold) => (
+                  <li key={hold.assignmentId}>
+                    <span className="font-medium">{hold.memberName}</span> ·{" "}
+                    {hold.roomName} · {hold.bedName} · {hold.startDate} →{" "}
+                    {hold.endDate}
+                  </li>
+                ))}
+              </ul>
+            </Alert>
+          ) : null}
+
           <Card>
             <CardHeader>
               <CardTitle className="text-base">
@@ -1435,6 +1533,7 @@ export default function AdminBedAllocationPage() {
                   onRemove={(allocation) => void removeAllocation(allocation)}
                   onAssignRange={openRangeForAllocation}
                   rangeTint={rangeTint}
+                  custodianHoldByBedAndDate={custodianHoldByBedAndDate}
                   pendingAllocationIds={pendingAllocationIds}
                   highlightedBookingId={highlightedBookingId}
                   activeDragDates={activeDragDates}

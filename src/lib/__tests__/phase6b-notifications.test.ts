@@ -56,6 +56,12 @@ const { mockPrisma, mockTransporter } = vi.hoisted(() => {
     booking: {
       findMany: vi.fn().mockResolvedValue([]),
     },
+    // #2286: the capacity-warnings cron INCLUDES custodian bed holds (its job
+    // is fullness). None in these fixtures, so the <=5-beds thresholds below
+    // are unchanged.
+    hutLeaderAssignment: {
+      findMany: vi.fn().mockResolvedValue([]),
+    },
     notificationPreference: {
       findUnique: vi.fn().mockResolvedValue(null),
       create: vi.fn().mockResolvedValue({
@@ -219,6 +225,58 @@ describe("N-03: checkCapacityWarnings", () => {
 
     expect(result.alertedDays).toBeGreaterThan(0);
     expect(mockPrisma.emailLog.create).toHaveBeenCalled();
+  }, 15000);
+
+  // #2286: the capacity-warnings cron INCLUDES custodian bed holds. Its whole
+  // job is to warn when a lodge is nearly full, and a bed held for a season by
+  // a custodian is genuinely unavailable — excluding it would under-fire the
+  // warning by the custodian count every night, all season.
+  it("counts a custodian bed hold toward fullness, so the warning fires at TRUE fullness", async () => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const dayAfter = new Date(today);
+    dayAfter.setDate(dayAfter.getDate() + 2);
+
+    // One bed above the threshold: LODGE_CAPACITY - 6 booked guests leaves 6
+    // free, and the cron only warns at <= 5.
+    mockPrisma.booking.findMany.mockResolvedValue([
+      {
+        id: "booking-1",
+        checkIn: today,
+        checkOut: dayAfter,
+        status: "CONFIRMED",
+        guests: Array.from({ length: LODGE_CAPACITY - 6 }, (_, i) => ({
+          id: `g-${i}`,
+        })),
+      },
+    ]);
+
+    const { checkCapacityWarnings } = await import("../cron-capacity-warnings");
+    const quiet = await checkCapacityWarnings();
+    expect(quiet.alertedDays).toBe(0);
+
+    // Add ONE custodian holding a bed across those nights: 5 free, exactly the
+    // threshold. The cron must now fire — the bed really is unavailable.
+    mockPrisma.hutLeaderAssignment.findMany.mockResolvedValue([
+      {
+        id: "assignment-1",
+        memberId: "member-1",
+        lodgeId: "lodge-1",
+        bedId: "bed-1",
+        startDate: today,
+        endDate: dayAfter,
+        member: { firstName: "Sam", lastName: "Ranger", ageTier: "ADULT" },
+        bed: {
+          id: "bed-1",
+          name: "A1",
+          roomId: "room-1",
+          room: { id: "room-1", name: "Kea" },
+        },
+      },
+    ]);
+
+    const loud = await checkCapacityWarnings();
+    expect(loud.alertedDays).toBeGreaterThan(0);
   }, 15000);
 
   it("does not alert when all days have > 5 beds remaining", async () => {

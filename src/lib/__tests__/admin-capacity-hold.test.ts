@@ -137,6 +137,11 @@ const capacityMocks = vi.hoisted(() => ({
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     booking: { findMany: capacityMocks.bookingFindMany },
+    // #2286: the capacity engines read bed-holding hut-leader assignments
+    // (custodian occupancy). None in these cases, so the arithmetic below is
+    // exactly what it was before that feature.
+    hutLeaderAssignment: { findMany: vi.fn().mockResolvedValue([]) },
+
     clubModuleSettings: {
       findUnique: capacityMocks.clubModuleSettingsFindUnique,
     },

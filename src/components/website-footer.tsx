@@ -33,9 +33,11 @@ const GRID_COLUMNS_CLASS: Record<number, string> = {
 };
 
 export async function WebsiteFooter({
+  logoUrl,
   logoDataUrl,
   pageSlug,
 }: {
+  logoUrl?: string | null;
   logoDataUrl?: string | null;
   pageSlug: string;
 }) {
@@ -68,6 +70,7 @@ export async function WebsiteFooter({
             <div className="mb-3">
               <WebsiteLogo
                 label={clubName}
+                logoUrl={logoUrl}
                 logoDataUrl={logoDataUrl}
                 className="max-h-10 max-w-40 brightness-110"
                 textClassName="text-brand-snow"

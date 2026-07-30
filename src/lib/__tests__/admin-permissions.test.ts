@@ -341,6 +341,150 @@ describe("booking detail write-surface gates (issue #1313 + option A2)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// In-booking Bed allocation panel (#2252, epic #2245 B2).
+//
+// Every affordance on that card is a WRITE — assign, remove, confirm — so it
+// sits behind the same admin-tooling cluster as the Admin tools card, not
+// behind bookings:view. That is a deliberate asymmetry with the board, which a
+// read-only admin can open read-only: it is one click away via the panel's own
+// "Open on the board" link, and a card of disabled controls tells a read-only
+// admin nothing the board does not tell them better.
+//
+// The predicate pin below is paired with a SOURCE pin on the render site,
+// because the identity logic being right is worthless if the page renders the
+// card outside it.
+// ---------------------------------------------------------------------------
+describe("in-booking bed allocation panel visibility (#2252)", () => {
+  const bookingPageSource = () =>
+    fs.readFileSync(
+      path.join(
+        process.cwd(),
+        "src/app/(authenticated)/bookings/[id]/page.tsx",
+      ),
+      "utf8",
+    );
+
+  const canSeePanel = (accessRoles: AppAccessRole[]) => {
+    const subject = { accessRoles };
+    return (
+      hasAdminAccess(subject) ||
+      hasAdminAreaAccess(subject, { area: "bookings", level: "edit" })
+    );
+  };
+
+  it("shows the panel to a Full Admin and to a Booking Officer", () => {
+    expect(canSeePanel(["ADMIN"])).toBe(true);
+    expect(canSeePanel(["ADMIN_BOOKINGS"])).toBe(true);
+  });
+
+  it("withholds it from a read-only admin, who gets the board instead", () => {
+    expect(canSeePanel(["ADMIN_READONLY"])).toBe(false);
+  });
+
+  it("withholds it from a plain member, including the booking's own owner", () => {
+    // Ownership grants nothing here: the panel is admin tooling, and the member
+    // never receives the component or the allocation data behind it.
+    expect(canSeePanel(["USER"])).toBe(false);
+  });
+
+  it("withholds it from an admin scoped away from bookings", () => {
+    expect(canSeePanel(["ADMIN_MEMBERSHIP"])).toBe(false);
+    expect(canSeePanel(["ADMIN_CONTENT"])).toBe(false);
+    expect(canSeePanel(["FINANCE_ADMIN"])).toBe(false);
+  });
+
+  it("renders the panel only behind canSeeAdminTools AND the bedAllocation module flag", () => {
+    const source = bookingPageSource();
+
+    // ONE named gate, defined as exactly that conjunction: the routes 404 when
+    // the module is off, and the member-invisibility half is this gate.
+    expect(source).toMatch(
+      /const showBedAllocationPanel =\s*canSeeAdminTools && modules\.bedAllocation;/,
+    );
+    // The render site is that gate and nothing looser…
+    expect(source).toMatch(
+      /\{showBedAllocationPanel && \(\s*<BookingBedAllocationPanel/,
+    );
+    // …and there is exactly one render site, so a second, ungated copy cannot
+    // creep in below the first.
+    expect(source.match(/<BookingBedAllocationPanel/g)).toHaveLength(1);
+  });
+
+  it("builds the section rail without the admin-only entry rather than pruning it after mount", () => {
+    // #2252 review: SectionNav prunes absent anchors in an EFFECT, so a member's
+    // server-rendered rail really did contain a "Bed Allocation" link until
+    // hydration removed it. The page knows both halves of the gate server-side,
+    // so the entry is filtered out before it is ever sent.
+    const source = bookingPageSource();
+
+    expect(source).toMatch(
+      /sections=\{BOOKING_SECTIONS\.filter\(\s*\(section\) =>\s*section\.id !== "bed-allocation" \|\| showBedAllocationPanel,\s*\)\}/,
+    );
+  });
+
+  it("renders the bed allocation card in the position BOOKING_SECTIONS declares for it", () => {
+    /*
+     * #2252 review: the card was rendering above every other anchored section
+     * while BOOKING_SECTIONS listed it sixth. SectionNav is presentation-only —
+     * it prunes candidates but never reorders — so a rail order that disagrees
+     * with the render order is simply a lie to the reader.
+     *
+     * This pins the general rule, not just the one anchor: every id declared in
+     * BOOKING_SECTIONS must appear in the page's markup in the declared order.
+     */
+    const source = bookingPageSource();
+
+    const declared = Array.from(
+      source
+        .slice(
+          source.indexOf("const BOOKING_SECTIONS"),
+          source.indexOf("export default async function BookingDetailPage"),
+        )
+        .matchAll(/\{ id: "([^"]+)", label:/g),
+    ).map((match) => match[1]);
+    expect(declared.length).toBeGreaterThan(5);
+    expect(declared).toContain("bed-allocation");
+
+    // Where each declared anchor is actually rendered. `id="details"` etc. are
+    // the section/card anchors; the panel owns its own id inside the component,
+    // so its render site is located by the component tag.
+    const renderedAt = declared.map((id) => {
+      const index =
+        id === "bed-allocation"
+          ? source.indexOf("<BookingBedAllocationPanel")
+          : source.indexOf(`id="${id}"`);
+      expect(index, `${id} is rendered somewhere`).toBeGreaterThan(-1);
+      return { id, index };
+    });
+
+    expect(renderedAt.map((entry) => entry.id)).toEqual(
+      [...renderedAt].sort((left, right) => left.index - right.index).map(
+        (entry) => entry.id,
+      ),
+    );
+  });
+
+  it("keys the panel's write controls off the same permission its APIs demand", () => {
+    // Assign/remove/confirm all POST or DELETE under /api/admin/bed-allocation,
+    // which resolves to bookings:edit — the same area/level the panel's
+    // useAdminAreaEditAccess("bookings") gate asks for, so no button is
+    // rendered enabled that the route would refuse.
+    for (const path of [
+      "/api/admin/bed-allocation/approve",
+      "/api/admin/bed-allocation/allocations/range",
+    ]) {
+      expect(getAdminRouteRequirement(path, "POST")).toEqual({
+        area: "bookings",
+        level: "edit",
+      });
+    }
+    expect(
+      getAdminRouteRequirement("/api/admin/bed-allocation/allocations/AID", "DELETE"),
+    ).toEqual({ area: "bookings", level: "edit" });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // bookingManagementAuthorizationRole (issue #1313 option A2): the single legacy
 // authorization Role the widened modify / modify-quote / change-requests paths
 // key their admin-on-behalf relaxations off. A Booking Officer maps onto the

@@ -2,10 +2,17 @@ import { revalidatePath } from "next/cache";
 import { NextRequest, NextResponse } from "next/server";
 import { logAudit } from "@/lib/audit";
 import {
+  MissingLogoImageError,
   getClubThemeForAdmin,
   saveClubTheme,
 } from "@/lib/club-theme";
-import { clubThemeUpdateSchema } from "@/lib/club-theme-update-schema";
+import {
+  LOGO_DATA_URL_WRITE_BUDGET_MESSAGE,
+  clubThemeUpdateSchema,
+  isLogoDataUrlWithinWriteBudget,
+} from "@/lib/club-theme-update-schema";
+import { CLUB_THEME_ID } from "@/lib/club-theme-schema";
+import { prisma } from "@/lib/prisma";
 import { primeEmailPalette } from "@/lib/email-theme";
 import logger from "@/lib/logger";
 import { requireAdmin } from "@/lib/session-guards";
@@ -13,6 +20,18 @@ import {
   invalidatePublicLayoutConfig,
   PUBLIC_LAYOUT_CACHE_TAGS,
 } from "@/lib/public-layout-cache";
+
+/**
+ * Prisma's transaction contention codes: P2028 (transaction API error, which
+ * covers an exhausted `maxWait`/`timeout`) and P2034 (write conflict / deadlock,
+ * retryable by definition).
+ */
+const TRANSACTION_CONTENTION_CODES = new Set(["P2028", "P2034"]);
+
+function isTransactionContentionError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" && TRANSACTION_CONTENTION_CODES.has(code);
+}
 
 export async function GET() {
   const guard = await requireAdmin({
@@ -43,6 +62,35 @@ export async function PUT(request: NextRequest) {
       { error: "Invalid input", details: parsed.error.flatten() },
       { status: 400 },
     );
+  }
+
+  // #2322: the 64KB inline-logo budget applies to a CHANGED value only. A
+  // deployment already storing a large data URI (~860KB in the field) round-trips
+  // it on every save — the wizard posts the whole theme — so a stateless check
+  // would lock that club out of editing its colours. Byte-identical means
+  // "unchanged", and the schema's 900KB read bound still applies to it.
+  const incomingLogoDataUrl = parsed.data.logoDataUrl;
+  if (incomingLogoDataUrl) {
+    const stored = await prisma.clubTheme.findUnique({
+      where: { id: CLUB_THEME_ID },
+      select: { logoDataUrl: true },
+    });
+    const unchanged = stored?.logoDataUrl === incomingLogoDataUrl;
+
+    if (!unchanged && !isLogoDataUrlWithinWriteBudget(incomingLogoDataUrl)) {
+      return NextResponse.json(
+        {
+          error: "Invalid input",
+          details: {
+            formErrors: [],
+            fieldErrors: {
+              logoDataUrl: [LOGO_DATA_URL_WRITE_BUDGET_MESSAGE],
+            },
+          },
+        },
+        { status: 400 },
+      );
+    }
   }
 
   // #2187: contrast is now guaranteed BY CONSTRUCTION — the three seeds feed the
@@ -81,12 +129,40 @@ export async function PUT(request: NextRequest) {
         },
         headingFontKey: theme.headingFontKey,
         bodyFontKey: theme.bodyFontKey,
-        hasLogo: Boolean(theme.logoDataUrl),
+        hasLogo: Boolean(theme.logoUrl ?? theme.logoDataUrl),
+        logoMode: theme.logoUrl ? "url" : theme.logoDataUrl ? "data-url" : "none",
       },
     });
 
     return NextResponse.json({ theme });
   } catch (error) {
+    // A stale tab referencing a logo blob a newer save already replaced. Not a
+    // server fault, and retrying the same payload will never work — the admin
+    // needs to re-upload.
+    if (error instanceof MissingLogoImageError) {
+      return NextResponse.json(
+        {
+          error:
+            "That logo is no longer available — re-upload it and save again.",
+        },
+        { status: 409 },
+      );
+    }
+
+    // Config-transfer apply holds the ClubTheme row for its whole bundle
+    // transaction, so a save landing mid-import legitimately exhausts the lock
+    // wait. That is a "try again", not a 500.
+    if (isTransactionContentionError(error)) {
+      logger.warn(
+        { err: error },
+        "Site style save contended with another transaction",
+      );
+      return NextResponse.json(
+        { error: "Another update is in progress — try again shortly." },
+        { status: 503 },
+      );
+    }
+
     logger.error({ err: error }, "Failed to save site style settings");
     return NextResponse.json(
       { error: "Failed to save site style settings" },

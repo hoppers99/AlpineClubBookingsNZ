@@ -301,6 +301,31 @@ describe("newly-registered hardcoded email templates (#1797)", () => {
     expect(getEmailTemplateDefinition("two-factor-code")).toBeUndefined();
   });
 
+  it("registers the #2263 whole-lodge manual-invoice alert as admin-facing and delivery-locked", () => {
+    // Its own registry entry rather than a variant of the school one: the copy
+    // names a MEMBER (the owner is a real signed-in account, not a non-login
+    // school contact) and carries the internet-banking reference the member was
+    // given. Locked for the same reason the school one is — disabling it lets an
+    // approved whole-lodge booking go un-invoiced while the member has already
+    // been told an invoice is coming, which is a direct money loss.
+    const definition = getEmailTemplateDefinition(
+      "admin-whole-lodge-manual-invoice",
+    );
+    if (!definition) throw new Error("missing admin-whole-lodge-manual-invoice");
+    expect(definition.audience).toBe("admin");
+    expect(definition.deliveryEditable).toBe(false);
+    expect(getDefaultDeliveryMode("admin-whole-lodge-manual-invoice")).toBe(
+      "always",
+    );
+    // The reference and the amount are what make the alert actionable, so both
+    // must be tokens an override cannot silently drop by accident.
+    expect(definition.allowedTokens).toContain("paymentReference");
+    expect(definition.allowedTokens).toContain("amount");
+    expect(definition.allowedTokens).toContain("memberName");
+    // And it must not describe the booking as a school group's.
+    expect(definition.defaultBody).not.toContain("School");
+  });
+
   it("classifies admin-school-manual-invoice as an admin alert but keeps it delivery-locked", () => {
     // It ships via sendToAdmins, so it must classify as an admin alert like its
     // siblings (audience "admin") rather than "member". It stays in
