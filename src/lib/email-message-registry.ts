@@ -263,13 +263,33 @@ export const EXTRA_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, strin
 const REQUIRED_TOKEN_ALTERNATIVES: Partial<
   Record<EmailAuditTemplateName, Record<string, string[]>>
 > = {
-  "booking-confirmed": { doorCodeNote: ["doorCode"] },
-  // #2268: the same swap on the pre-arrival reminder.
+  "booking-confirmed": {
+    doorCodeNote: ["doorCode"],
+    // #2267 (owner decision): the promo explanation is required content on a
+    // payment confirmation — an override that drops it leaves a member who was
+    // charged a promo price with a total and no reason for it. What must stay
+    // is the ADJUSTMENT itself, in whichever token form the override uses:
+    // the pre-composed {{promoSummary}} block, the signed {{promoAdjustment}}
+    // value, or the legacy {{discount}} (which the pre-#2267 default body
+    // wrote as "Discount ({{promoCode}}): -{{discount}}", so every override
+    // saved from that default keeps validating and re-saving).
+    //
+    // {{subtotal}} is deliberately NOT an alternative: a subtotal with no
+    // adjustment line beside it is the incident shape #2267 fixed — two
+    // amounts that differ with nothing in between to say why.
+    promoSummary: ["promoAdjustment", "discount"],
+  },
+  // #2268: the same door-code swap on the pre-arrival reminder.
   "pre-arrival-reminder": { doorCodeNote: ["doorCode"] },
 };
 
 const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>> = {
-  "booking-confirmed": ["CLUB_LODGE_TRAVEL_NOTE", "doorCodeNote"],
+  "booking-confirmed": [
+    "CLUB_LODGE_TRAVEL_NOTE",
+    "doorCodeNote",
+    // Satisfied by any of the promo-adjustment tokens above.
+    "promoSummary",
+  ],
   // #2268: pre-arrival-reminder gets the same treatment #2267 gave
   // booking-confirmed — the door-code line is composed by the sender, so the
   // body carries {{doorCodeNote}} instead of a bare "Door code:" heading that

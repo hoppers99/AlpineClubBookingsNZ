@@ -132,7 +132,7 @@ describe("email message registry", () => {
       templateName: "booking-confirmed",
       subject: "Your booking is confirmed",
       bodyText:
-        "Hi {{firstName}}, see you soon.\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\nDoor code: {{doorCode}}",
+        "Hi {{firstName}}, see you soon.\n\n{{promoSummary}}Total Paid: {{totalPaid}}\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\nDoor code: {{doorCode}}",
     });
 
     expect(validation.valid).toBe(true);
@@ -167,7 +167,8 @@ describe("email message registry", () => {
     const validation = validateEmailTemplateContent({
       templateName: "booking-confirmed",
       subject: "Door code {{doorCode}}",
-      bodyText: "{{CLUB_LODGE_TRAVEL_NOTE}}\n\nDoor code: {{doorCode}}",
+      bodyText:
+        "{{promoSummary}}Total Paid: {{totalPaid}}\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\nDoor code: {{doorCode}}",
     });
 
     expect(validation.valid).toBe(false);

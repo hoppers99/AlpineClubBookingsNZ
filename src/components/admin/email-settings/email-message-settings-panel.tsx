@@ -49,6 +49,9 @@ interface TemplateDefinition {
   defaultBody: string;
   allowedTokens: string[];
   requiredTokens: string[];
+  // Per required token, the other tokens that satisfy the same requirement
+  // (#2267). Optional here because the older fixtures/responses omit it.
+  requiredTokenAlternatives?: Record<string, string[]>;
   triggerSummary: string;
   frequency: string;
   override: TemplateOverride | null;
@@ -90,6 +93,29 @@ function templateErrorMessage(responseBody: unknown, fallback: string): string {
   return details.length > 0 ? `${headline}: ${details.join("; ")}` : headline;
 }
 
+// A filled chip is the only hint that a token is required, and it says nothing
+// about the tokens that satisfy the same requirement instead (#2267). Spell the
+// rule out under the chips so an admin learns it while editing, not from a
+// rejected save.
+export function requiredTokenSentence(
+  template: {
+    requiredTokens: string[];
+    requiredTokenAlternatives?: Record<string, string[]>;
+  } | null,
+): string | null {
+  const required = template?.requiredTokens ?? [];
+  if (required.length === 0) return null;
+  const parts = required.map((token) => {
+    const alternatives = template?.requiredTokenAlternatives?.[token] ?? [];
+    if (alternatives.length === 0) return `{{${token}}}`;
+    const alternativeText = alternatives
+      .map((alternative) => `{{${alternative}}}`)
+      .join(" or ");
+    return `{{${token}}} (or ${alternativeText})`;
+  });
+  return `Keep these in the body: ${parts.join(", ")}.`;
+}
+
 export function EmailMessageSettingsPanel() {
   const [settings, setSettings] = useState<EmailSettings | null>(null);
   const [templates, setTemplates] = useState<TemplateDefinition[]>([]);
@@ -110,6 +136,10 @@ export function EmailMessageSettingsPanel() {
   const currentTemplate = useMemo(
     () => templates.find((template) => template.key === selectedTemplate) ?? null,
     [selectedTemplate, templates],
+  );
+  const requirementSentence = useMemo(
+    () => requiredTokenSentence(currentTemplate),
+    [currentTemplate],
   );
 
   async function load() {
@@ -419,6 +449,11 @@ export function EmailMessageSettingsPanel() {
               cleanly when there is nothing to say. Never write notes to
               yourself into the body — they are sent to the recipient verbatim.
             </p>
+            {requirementSentence ? (
+              <p className="text-xs text-muted-foreground">
+                {requirementSentence}
+              </p>
+            ) : null}
           </div>
         ) : null}
 

@@ -192,17 +192,29 @@ promo such as an exclusive-use flat rate that *raises* the price) — and
 renders nothing at all when no promo applied. Each line carries its own
 trailing line break, so the default body places it hard against the total line
 (`{{promoSummary}}Total Paid: {{totalPaid}}`); keep that placement in an
-override or the block renders detached from the money it explains. An operator
-who overrides the booking-confirmed body should keep `{{promoSummary}}`, or
-members whose promo changed the price get a total with no explanation. The
-older per-piece tokens (`{{subtotal}}`, `{{discount}}`, `{{promoCode}}`,
-`{{promoAdjustment}}`) remain valid for existing overrides, but only
-`{{promoSummary}}` handles all promo shapes cleanly — `{{discount}}` is empty
-for a price-raising promo, and `{{promoAdjustment}}` carries its own `+`/`-`
-sign, so never write a manual minus in front of it. The editor enforces that
-last point: a body or subject that types `+` or `-` immediately before
-`{{promoSummary}}` or `{{promoAdjustment}}` is rejected on save with an
-explanation.
+override or the block renders detached from the money it explains.
+
+**The promo explanation is required, not advisory.** An override of the
+booking-confirmed body that shows a member no promo explanation at all is
+rejected on save, because a member charged a promo price would otherwise read a
+total with no reason for it. The rule is satisfied three ways, so it never
+invalidates an override a club already saved: keep `{{promoSummary}}`, or show
+the adjustment yourself with `{{promoAdjustment}}` (the signed value) or the
+older `{{discount}}` — the shape the previous default body shipped
+(`Subtotal: {{subtotal}}` above `Discount ({{promoCode}}): -{{discount}}`), so
+every override saved from that default keeps validating and re-saving. A
+`{{subtotal}}` line on its own does **not** satisfy it: a subtotal with no
+adjustment beside it is exactly the "two amounts that differ, with nothing in
+between to say why" email this rule exists to prevent. The editor prints the
+rule and its alternatives under the token chips, and a rejected save explains
+it in the same words.
+
+Of the three, only `{{promoSummary}}` handles all promo shapes cleanly —
+`{{discount}}` is empty for a price-raising promo, and `{{promoAdjustment}}`
+carries its own `+`/`-` sign, so never write a manual minus in front of it. The
+editor enforces that last point too: a body or subject that types `+` or `-`
+immediately before `{{promoSummary}}` or `{{promoAdjustment}}` is rejected on
+save with an explanation.
 
 Two other pre-composed tokens follow the same pattern. The booking-confirmed
 body's `{{doorCodeNote}}` renders the whole `Door code: 1234` line, and nothing

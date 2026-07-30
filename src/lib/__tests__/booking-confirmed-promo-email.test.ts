@@ -250,7 +250,7 @@ describe("booking-confirmed promo summary (#2267)", () => {
       templateName: "booking-confirmed",
       subject: "Booking Confirmed",
       bodyText:
-        "Hi {{firstName}}, you're confirmed.\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\nDoor code: {{doorCode}}",
+        "Hi {{firstName}}, you're confirmed.\n\n{{promoSummary}}Total Paid: {{totalPaid}}\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\nDoor code: {{doorCode}}",
     });
     expect(legacy.missingRequiredTokens).toEqual([]);
     expect(legacy.valid).toBe(true);
@@ -260,7 +260,7 @@ describe("booking-confirmed promo summary (#2267)", () => {
       templateName: "booking-confirmed",
       subject: "Booking Confirmed",
       bodyText:
-        "Hi {{firstName}}, you're confirmed.\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\n{{doorCodeNote}}",
+        "Hi {{firstName}}, you're confirmed.\n\n{{promoSummary}}Total Paid: {{totalPaid}}\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\n{{doorCodeNote}}",
     });
     expect(composed.valid).toBe(true);
 
@@ -268,10 +268,91 @@ describe("booking-confirmed promo summary (#2267)", () => {
     const missing = validateEmailTemplateContent({
       templateName: "booking-confirmed",
       subject: "Booking Confirmed",
-      bodyText: "Hi {{firstName}}, you're confirmed.\n\n{{CLUB_LODGE_TRAVEL_NOTE}}",
+      bodyText:
+        "Hi {{firstName}}, you're confirmed.\n\n{{promoSummary}}Total Paid: {{totalPaid}}\n\n{{CLUB_LODGE_TRAVEL_NOTE}}",
     });
     expect(missing.valid).toBe(false);
     expect(missing.missingRequiredTokens).toContain("doorCodeNote");
+  });
+
+  // The owner's decision on PR #2311: the promo explanation is required content
+  // on a payment confirmation, with the legacy tokens accepted in its place so
+  // no override a club already saved is invalidated.
+  it("requires the promo explanation in an override, and says how to satisfy it", () => {
+    const missing = validateEmailTemplateContent({
+      templateName: "booking-confirmed",
+      subject: "Booking Confirmed",
+      bodyText:
+        "Hi {{firstName}}, you're confirmed.\n\nTotal Paid: {{totalPaid}}\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\n{{doorCodeNote}}",
+    });
+    expect(missing.valid).toBe(false);
+    expect(missing.missingRequiredTokens).toEqual(["promoSummary"]);
+    const issue = missing.issues.find(
+      (candidate) => candidate.code === "missing_required_token",
+    );
+    // Plain English, and it names every token that satisfies the rule.
+    expect(issue?.message).toContain(
+      "must show members how a promo code changed their price",
+    );
+    for (const token of ["{{promoSummary}}", "{{promoAdjustment}}", "{{discount}}"]) {
+      expect(issue?.message).toContain(token);
+    }
+
+    // A subtotal with no adjustment beside it is the incident shape, not an
+    // explanation, so it does not satisfy the requirement.
+    const subtotalOnly = validateEmailTemplateContent({
+      templateName: "booking-confirmed",
+      subject: "Booking Confirmed",
+      bodyText:
+        "Hi {{firstName}}\n\nSubtotal: {{subtotal}}\nTotal Paid: {{totalPaid}}\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\n{{doorCodeNote}}",
+    });
+    expect(subtotalOnly.valid).toBe(false);
+    expect(subtotalOnly.missingRequiredTokens).toEqual(["promoSummary"]);
+  });
+
+  it.each([
+    {
+      shape: "the pre-composed block",
+      bodyText:
+        "Hi {{firstName}}\n\n{{promoSummary}}Total Paid: {{totalPaid}}\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\n{{doorCodeNote}}",
+    },
+    {
+      // The pre-#2267 shipped default body, promo lines and all: this is the
+      // exact shape of every override a club saved from it, so it must keep
+      // validating and re-saving.
+      shape: "the legacy shipped default's subtotal/discount pair",
+      bodyText:
+        "Hi {{firstName}}, your booking is confirmed.\n\nSubtotal: {{subtotal}}\nDiscount ({{promoCode}}): -{{discount}}\nTotal Paid: {{totalPaid}}\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\nDoor code: {{doorCode}}",
+    },
+    {
+      shape: "a hand-written subtotal and signed adjustment pair",
+      bodyText:
+        "Hi {{firstName}}\n\nSubtotal: {{subtotal}}\nPromo {{promoCode}}: {{promoAdjustment}}\nTotal Paid: {{totalPaid}}\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\n{{doorCodeNote}}",
+    },
+  ])("accepts an override that tells the promo story with $shape", ({ bodyText }) => {
+    const validation = validateEmailTemplateContent({
+      templateName: "booking-confirmed",
+      subject: "Booking Confirmed",
+      bodyText,
+    });
+    expect(validation.missingRequiredTokens).toEqual([]);
+    expect(validation.valid).toBe(true);
+  });
+
+  it("registers the promo requirement and its alternatives for the editor", () => {
+    const definition = getEmailTemplateDefinition("booking-confirmed");
+    if (!definition) throw new Error("missing booking-confirmed");
+    // The chips the editor renders mark it required, and the requirement
+    // sentence it prints under them is built from these two fields.
+    expect(definition.requiredTokens).toContain("promoSummary");
+    expect(definition.requiredTokenAlternatives.promoSummary).toEqual([
+      "promoAdjustment",
+      "discount",
+    ]);
+    // Every alternative must itself be usable in this template's body.
+    for (const alternative of definition.requiredTokenAlternatives.promoSummary) {
+      expect(definition.allowedTokens).toContain(alternative);
+    }
   });
 
   it("never lets the composed door-code line into a subject line", () => {
