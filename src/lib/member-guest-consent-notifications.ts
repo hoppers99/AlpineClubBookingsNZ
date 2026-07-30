@@ -251,17 +251,20 @@ export async function sendMemberGuestAddNotifications(params: {
             email: recipient.email,
             // The recipient's OWN first name, so the greeting is right for a
             // delegate as well as for the target.
-            //
-            // CROSS-LANE GAP, recorded rather than worked around: unlike the
-            // consent request, `member-guest-added` has no audience discriminator,
-            // so its composed sentence says "…has added YOU as a guest" whichever
-            // of the two is reading. For the D-9 normal case — a target with no
-            // login, whose family adult receives this — that sentence names the
-            // wrong person. The fix belongs in
-            // `composeMemberGuestAddedContextNote`, which needs the same
-            // `MemberGuestConsentAudience` treatment the ask already has; it is
-            // not fixable from here without printing a stranger's greeting.
             firstName: recipient.firstName,
+            // The same discriminator the consent request passes, and it matters
+            // for exactly the same reason: owner decision D-9 makes a target with
+            // no login the NORMAL case, so this mail is routinely read by a family
+            // adult rather than by the guest. Without it the composed sentence
+            // would say "…has added YOU as a guest" to somebody who is not on the
+            // booking, and the removal note would point them at a self-removal
+            // they cannot perform.
+            audience: recipient.isTarget
+              ? { kind: "TARGET" as const }
+              : {
+                  kind: "DELEGATE" as const,
+                  guest: { firstName: guest.firstName, lastName: guest.lastName },
+                },
             // ONE template, told apart by this value (MG4 reuses it for the
             // pipeline add). Taken from the actor, not re-derived from the
             // columns.

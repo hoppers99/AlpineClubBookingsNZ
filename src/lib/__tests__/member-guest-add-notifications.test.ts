@@ -211,6 +211,30 @@ describe("the added notice", () => {
     expect(result.sentGuestIds).toEqual([GUEST_ROW]);
   });
 
+  it("tells a family delegate whose place it is, not that they were added (D-9)", async () => {
+    await sendMemberGuestAddNotifications({
+      bookingId: BOOKING,
+      rows: [
+        { bookingGuestId: GUEST_ROW, targetMemberId: TARGET, notification: "ADDED_NOTICE" },
+      ],
+      actor: { kind: "MEMBER" },
+      db: db(),
+      delegateResolver: resolver(TWO_FAMILY_ADULTS),
+    });
+
+    expect(h.sendAdded).toHaveBeenCalledTimes(2);
+    for (const [params] of h.sendAdded.mock.calls) {
+      // The audience parameter defaults to the target, so passing it is the only
+      // thing that stops a parent reading "you have been added to a lodge booking"
+      // about their child's place.
+      expect(params.audience).toEqual({
+        kind: "DELEGATE",
+        guest: { firstName: "Tam", lastName: "Target" },
+      });
+    }
+    expect(h.sendAdded.mock.calls.map(([p]) => p.firstName)).toEqual(["Pat", "Robin"]);
+  });
+
   it("says an ADMIN put them there when an admin did (MG4-D-a)", async () => {
     await sendMemberGuestAddNotifications({
       bookingId: BOOKING,
