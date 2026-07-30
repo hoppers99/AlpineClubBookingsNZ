@@ -15,12 +15,23 @@ import {
   lodgeNullTolerantScope,
   resolveOptionalActiveLodgeId,
 } from "@/lib/lodges";
+import { acquireLodgeCapacityLock } from "@/lib/capacity";
+import { validateCustodianBedHold } from "@/lib/custodian-assignment";
+import { custodianBedHoldErrorResponse } from "@/lib/custodian-assignment-routes";
+import { isMinorAgeTier } from "@/lib/custodian-occupancy";
+import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
 
 const createSchema = z.object({
   memberId: z.string().min(1),
   startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   lodgeId: z.string().min(1).optional(),
+  // Custodian bed hold (#2286). Optional AND nullable: absent or null is the
+  // default "No bed — role only", which behaves exactly as it did before this
+  // feature and has zero capacity effect.
+  bedId: z.string().min(1).nullable().optional(),
+  // #1668-style explicit override of the over-capacity warning.
+  confirmOverCapacity: z.boolean().optional(),
 }).refine((data) => data.startDate <= data.endDate, {
   message: "startDate must be before or equal to endDate",
 });
@@ -42,6 +53,11 @@ export async function GET() {
       lodge: {
         select: { id: true, name: true },
       },
+      // Custodian bed hold (#2286): which bed (if any) this assignment holds,
+      // so the admin table can show it next to the dates.
+      bed: {
+        select: { id: true, name: true, room: { select: { name: true } } },
+      },
     },
     orderBy: { startDate: "desc" },
   });
@@ -57,6 +73,10 @@ export async function GET() {
       createdAt: a.createdAt.toISOString(),
       lodgeId: a.lodgeId,
       lodgeName: a.lodge?.name ?? null,
+      // #2286: null = role only, with no capacity effect at all.
+      bedId: a.bedId,
+      bedName: a.bed?.name ?? null,
+      bedRoomName: a.bed?.room.name ?? null,
     })),
   });
 }
@@ -92,6 +112,9 @@ export async function POST(req: NextRequest) {
       active: true,
       email: true,
       firstName: true,
+      // #2286: a minor custodian is never individually named on the lobby TV,
+      // so the admin is warned at assignment time.
+      ageTier: true,
       accessRoles: { select: { role: true } },
     },
   });
@@ -148,19 +171,64 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Custodian bed hold (#2286): a bed can only mean anything while the
+  // bed-allocation module is on — rooms and beds exist only under it.
+  const bedId = parsed.data.bedId ?? null;
+  if (bedId && !(await isEffectiveModuleEnabled("bedAllocation"))) {
+    return NextResponse.json(
+      {
+        error:
+          "Bed allocation is turned off for this club, so a bed cannot be held for a hut leader.",
+        code: "MODULE_DISABLED",
+      },
+      { status: 400 },
+    );
+  }
+
   try {
     const pin = generateHutLeaderPin();
     const hutLeaderPin = await hashHutLeaderPin(pin);
 
-    const assignment = await prisma.hutLeaderAssignment.create({
-      data: {
-        memberId: parsed.data.memberId,
-        startDate: newStart,
-        endDate: newEnd,
-        hutLeaderPin,
-        lodgeId,
-      },
-    });
+    // #2286: creating a BED-HOLDING assignment is a capacity-mutating write, so
+    // validation and the insert move into one transaction that takes the
+    // per-lodge advisory lock first — the same key booking admission and the
+    // allocation chokepoints take. A role-only assignment changes no capacity,
+    // so it keeps the plain unlocked create it has always used.
+    //
+    // The PIN email deliberately stays OUTSIDE the transaction (AGENTS.md: no
+    // external provider call inside a DB transaction), with its existing
+    // failure-tolerant `emailSent` handling untouched.
+    const assignment = bedId
+      ? await prisma.$transaction(async (tx) => {
+          await acquireLodgeCapacityLock(tx, lodgeId);
+          await validateCustodianBedHold({
+            bedId,
+            lodgeId,
+            startDate: newStart,
+            endDate: newEnd,
+            confirmOverCapacity: parsed.data.confirmOverCapacity,
+            db: tx,
+          });
+          return tx.hutLeaderAssignment.create({
+            data: {
+              memberId: parsed.data.memberId,
+              startDate: newStart,
+              endDate: newEnd,
+              hutLeaderPin,
+              lodgeId,
+              bedId,
+            },
+          });
+        })
+      : await prisma.hutLeaderAssignment.create({
+          data: {
+            memberId: parsed.data.memberId,
+            startDate: newStart,
+            endDate: newEnd,
+            hutLeaderPin,
+            lodgeId,
+          },
+        });
 
     let emailSent = true;
     try {
@@ -186,10 +254,23 @@ export async function POST(req: NextRequest) {
     );
 
     return NextResponse.json(
-      { id: assignment.id, emailSent },
+      {
+        id: assignment.id,
+        emailSent,
+        // #2286 privacy guard: a minor holding a bed is never individually
+        // named on the lobby TV (the display contract forbids it at every
+        // granularity), so the screen shows the role word alone. Tell the admin
+        // now rather than letting them expect a name that will never appear.
+        minorCustodianWarning:
+          bedId && isMinorAgeTier(member.ageTier)
+            ? "This member is a minor, so the lodge screen will show the custodian role only and never their name."
+            : null,
+      },
       { status: 201 }
     );
   } catch (err) {
+    const custodianResponse = custodianBedHoldErrorResponse(err);
+    if (custodianResponse) return custodianResponse;
     logger.error({ err }, "Error creating hut leader assignment");
     return NextResponse.json({ error: "Failed to create assignment" }, { status: 500 });
   }

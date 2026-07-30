@@ -851,22 +851,40 @@ access-role capability. Assignment is admin-controlled; completing a Hut Leader
 Induction only sets `Member.hutLeaderEligible` and never creates or dates an
 assignment.
 
-The New Assignment picker is **booking-derived**. It lists only adult members
-who both hold the standard member (`USER`) access role and have an operational
-booking overlapping the selected date range, so a season-long custodian who has
-no booking never appears — and the create API rejects any member who lacks the
-`USER` role.
+The New Assignment form has two member tabs. **Staying** is booking-derived: it
+lists adult members who hold the standard member (`USER`) access role and have
+an operational booking overlapping the selected dates. **Any member** searches
+every eligible member, so a season-long custodian with no booking of their own
+is assigned from there. The create API still rejects any member who lacks the
+`USER` role, so keep that role ticked on the custodian's account — a member
+whose only roles are custom (definition-backed) roles cannot be assigned.
 
-To roster a custodian who has no booking of their own (the ratified workaround):
+### Holding a bed for a custodian
 
-1. On Promo Codes, create a 100%-off code covering the custodian's stay.
-2. On Book on Behalf, book the custodian's lodge nights and apply the free code
-   so the stay costs nothing.
-3. Confirm the custodian's account still has the standard member (`USER`) role
-   ticked — a member whose only roles are custom (definition-backed) roles
-   cannot be assigned as hut leader.
-4. Return to `/admin/hut-leaders`, choose the matching dates, and assign the
-   custodian as normal; they now appear in the picker and receive a lodge PIN.
+An assignment can optionally **hold one bed** for its whole date range. That
+turns it into a *custodian occupancy*: for the night of every covered date the
+bed leaves the bookable pool and the allocation board, with **no booking
+anywhere**. The custodian is not a guest — they never appear on the chore
+roster, never count as a booking, and are never invoiced for the held bed.
+
+- Pick the bed in the **Hold a bed (optional)** step of the New Assignment form.
+  The default is **No bed — role only**, which behaves exactly as an assignment
+  always has and changes no capacity at all.
+- The hold covers `startDate` to `endDate` **inclusive** — including the night
+  of the end date itself. The bed is bookable again for the following night.
+- Members see one fewer bed on the availability calendar for those nights and
+  nothing else: there is deliberately no custodian-specific label on any
+  member-facing surface.
+- The lodge screen shows a **Custodian** line in its footer while the
+  assignment is running. A minor-age custodian is never named there, at any
+  name-display setting.
+- Beds and rooms cannot be deactivated or deleted while a custodian holds them,
+  and no guest can be allocated onto a held bed-night.
+
+This replaces the earlier free-promo-code workaround, which existed only to give
+a bookingless custodian a booking. Do not create a 100%-off booking for a
+custodian any more — it inflates the utilisation reports and puts them on the
+chore roster.
 
 ## Required Local Setup Variables
 
