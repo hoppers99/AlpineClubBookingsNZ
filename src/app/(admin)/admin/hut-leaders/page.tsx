@@ -214,11 +214,17 @@ export default function HutLeadersPage() {
         `/api/admin/hut-leaders/unassigned-dates?month=${monthKey}`,
       );
       if (res.ok) {
-        const data: { unassignedDates: UnassignedDate[] } = await res.json();
-        setRedDatesByMonth((prev) => ({
-          ...prev,
-          [monthKey]: data.unassignedDates.map((d) => d.date),
-        }));
+        const data: { unassignedDates?: UnassignedDate[] } = await res.json();
+        // Map EAGERLY, here, inside the try — never inside the state updater.
+        // React invokes an updater closure later, during render, where this
+        // function's own `catch` can no longer see it: an unexpected body then
+        // escaped as an unhandled error and took the page down instead of
+        // degrading a "non-essential overlay". Tolerate the shape as well, for
+        // the same reason the picker does (#2286 review).
+        const dates = Array.isArray(data?.unassignedDates)
+          ? data.unassignedDates.map((d) => d.date)
+          : [];
+        setRedDatesByMonth((prev) => ({ ...prev, [monthKey]: dates }));
       }
     } catch {
       // non-essential overlay

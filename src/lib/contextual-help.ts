@@ -394,8 +394,9 @@ const adminHelpEntries: HelpEntry[] = [
           details: [
             "Pick the nights the custodian is in residence, then choose them on the Any member tab.",
             "In Hold a bed (optional), choose their bed. Leave it as No bed — role only if they are not sleeping in the lodge.",
-            "A bed that already has guests allocated on it, or that another custodian holds, is listed with the exact nights that block it — clear those first on the bed allocation page.",
-            "If the hold puts the lodge over capacity on any night you are asked to confirm; that can be perfectly correct, because the custodian really is sleeping there.",
+            "A bed that already has guests allocated on it, or that another hut-leader assignment holds, is listed with the exact nights that block it — clear those first on the bed allocation page.",
+            "If the hold puts the lodge over capacity on any night you are asked to confirm; that can be perfectly correct, because the custodian really is sleeping there. That question also lists any live booking the per-night figures could not count, so read both before confirming.",
+            "To hand the bed back later, use Release bed on that assignment's row — it keeps the assignment, its coverage and its kiosk PIN. Change bed opens the picker for that row's own dates, and works on assignments the nightly job created too.",
           ],
         },
       ],
