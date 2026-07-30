@@ -162,6 +162,31 @@ export function planMemberGuestConsentWrites<Guest extends GuestWithMemberId>(pa
   const { guests, boundary, actor, now, bookingCheckIn, policy } = params;
   const entriesByMemberId = new Map<string, MemberGuestConsentWritePlanEntry>();
 
+  if (!policy.wideningEnabled) {
+    // MODULE OFF — plan NOTHING, on every path including the admin ones, and this
+    // is the case that needs stating because it is not the one it looks like.
+    //
+    // The widening flag gates RESOLUTION only on the paths that enforce
+    // authorization. A `skipAuthorization` path (an admin or officer acting on
+    // behalf, the admin booking-copy) has ALWAYS been able to resolve any member
+    // id — that is what skipping authorization means, and it was true throughout
+    // MG1. So without this early return, a club that never turned the module on
+    // would still get consent columns written the moment an admin copied a booking
+    // or added a guest on somebody's behalf, and MG1's promise — that a club which
+    // has not opted in sees NO change whatsoever — would hold for members and
+    // quietly fail for admins.
+    //
+    // The consequence, stated rather than hidden: with the module off, an admin
+    // add of a cross-family member writes the same all-null row it wrote before
+    // MG2 existed, so it is indistinguishable from a family-scope add. That is
+    // MG1's behaviour exactly, and it is the right trade — the alternative is
+    // writing feature data on a club that has not adopted the feature.
+    return {
+      guests: guests as Array<Guest & MemberGuestConsentGuestFields>,
+      entriesByMemberId,
+    };
+  }
+
   const plannedGuests = guests.map((guest) => {
     const memberId = crossFamilyMemberIdOf(guest, boundary);
     if (!memberId) {

@@ -17,6 +17,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { buildGuestCreateData } from "@/lib/booking-create-guests";
+import {
+  BookingGuestValidationError,
+  resolveLinkedBookingMembersWithBoundary,
+} from "@/lib/booking-guests";
 import { addDaysDateOnly, formatDateOnly, parseDateOnly } from "@/lib/date-only";
 import {
   classifyMemberGuestConsent,
@@ -403,5 +407,108 @@ describe("matchMemberGuestNotificationRows", () => {
         entriesByMemberId: new Map(),
       }),
     ).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The switch itself, on the paths that enforce authorization
+// ---------------------------------------------------------------------------
+
+describe("the widening flag on an authorized (non-admin) add", () => {
+  const FAMILY_LINKS: Record<string, string[]> = {
+    [BOOKER]: ["fg-1"],
+    [SIBLING]: ["fg-1"],
+    [OUTSIDER]: ["fg-2"],
+  };
+  const RECORDS: Record<string, { active: boolean }> = {
+    [BOOKER]: { active: true },
+    [SIBLING]: { active: true },
+    [OUTSIDER]: { active: true },
+    "m-inactive": { active: false },
+  };
+
+  function lookupDb() {
+    return {
+      familyGroupMember: {
+        findMany: async (args: {
+          where?: { memberId?: string; familyGroupId?: { in: string[] } };
+        }) => {
+          const where = args.where ?? {};
+          if (where.memberId) {
+            return (FAMILY_LINKS[where.memberId] ?? []).map((familyGroupId) => ({
+              familyGroupId,
+            }));
+          }
+          const groupIds = where.familyGroupId?.in ?? [];
+          return Object.entries(FAMILY_LINKS)
+            .filter(([, groups]) => groups.some((g) => groupIds.includes(g)))
+            .map(([memberId]) => ({ memberId }));
+        },
+      },
+      member: {
+        findMany: async (args: { where?: { id?: { in: string[] }; active?: boolean } }) => {
+          const ids = args.where?.id?.in ?? [];
+          return ids
+            .filter((id) => RECORDS[id] && (args.where?.active !== true || RECORDS[id].active))
+            .map((id) => ({
+              id,
+              ageTier: "ADULT",
+              active: RECORDS[id].active,
+              canLogin: true,
+              firstName: "Test",
+              lastName: id,
+              accessRoles: [],
+            }));
+        },
+      },
+    } as unknown as Parameters<typeof resolveLinkedBookingMembersWithBoundary>[0];
+  }
+
+  it("refuses a beyond-family member with the byte-for-byte pre-existing error when the module is off", async () => {
+    const error = await resolveLinkedBookingMembersWithBoundary(
+      lookupDb(),
+      BOOKER,
+      [OUTSIDER],
+      { memberGuestWideningEnabled: false },
+    ).catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(BookingGuestValidationError);
+    // Byte for byte: a club that has not opted in sees the same refusal it always
+    // saw, and no error text anywhere mentions member guests.
+    expect((error as BookingGuestValidationError).message).toBe(
+      "Invalid guest member reference",
+    );
+    expect((error as BookingGuestValidationError).status).toBe(403);
+  });
+
+  it("fails closed: a caller that forgets the option keeps MG1's refusal", async () => {
+    await expect(
+      resolveLinkedBookingMembersWithBoundary(lookupDb(), BOOKER, [OUTSIDER]),
+    ).rejects.toThrow("Invalid guest member reference");
+  });
+
+  it("resolves a beyond-family ACTIVE member when the module is on, and marks the boundary", async () => {
+    const { members, boundary } = await resolveLinkedBookingMembersWithBoundary(
+      lookupDb(),
+      BOOKER,
+      [SIBLING, OUTSIDER],
+      { memberGuestWideningEnabled: true },
+    );
+
+    expect([...members.keys()].sort()).toEqual([OUTSIDER, SIBLING].sort());
+    expect(boundary.beyondFamilyMemberIds).toEqual([OUTSIDER]);
+    expect(boundary.scopeByMemberId.get(SIBLING)).toBe("FAMILY");
+  });
+
+  it("keeps an INACTIVE member unresolvable in every module state", async () => {
+    for (const memberGuestWideningEnabled of [false, true]) {
+      await expect(
+        resolveLinkedBookingMembersWithBoundary(lookupDb(), BOOKER, ["m-inactive"], {
+          memberGuestWideningEnabled,
+          // Even on an admin path that skips authorization entirely.
+          skipAuthorization: true,
+        }),
+      ).rejects.toThrow("Linked member is inactive or not found");
+    }
   });
 });

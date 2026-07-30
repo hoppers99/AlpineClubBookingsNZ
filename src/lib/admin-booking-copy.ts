@@ -1,6 +1,7 @@
 import type { AgeTier } from "@prisma/client";
 
 import { logAudit } from "@/lib/audit";
+import logger from "@/lib/logger";
 import { ApiError } from "@/lib/api-error";
 import {
   createDraftBooking,
@@ -216,11 +217,22 @@ export async function copyBookingToDraft({
     const { sendMemberGuestAddNotifications } = await import(
       "@/lib/member-guest-consent-notifications"
     );
-    await sendMemberGuestAddNotifications({
-      bookingId: booking.id,
-      rows: memberGuestRows,
-      actor: memberGuestActor,
-    });
+    // Belt and braces around a function that is documented never to reject: the
+    // booking is ALREADY COMMITTED at this point, so an unexpected throw here
+    // would hand the member an error for a booking that exists and was paid for.
+    // A notification problem is logged, never surfaced as a booking failure.
+    try {
+      await sendMemberGuestAddNotifications({
+        bookingId: booking.id,
+        rows: memberGuestRows,
+        actor: memberGuestActor,
+      });
+    } catch (err) {
+      logger.error(
+        { err, bookingId: booking.id },
+        "Failed to dispatch member-guest add notifications",
+      );
+    }
   }
 
   logAudit({

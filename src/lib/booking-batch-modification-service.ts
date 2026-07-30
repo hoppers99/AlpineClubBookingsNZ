@@ -665,11 +665,22 @@ export async function modifyBookingBatch({
     const { sendMemberGuestAddNotifications } = await import(
       "@/lib/member-guest-consent-notifications"
     );
-    await sendMemberGuestAddNotifications({
-      bookingId,
-      rows: result.memberGuestNotificationRows,
-      actor: memberGuestActor,
-    });
+    // Belt and braces around a function that is documented never to reject: the
+    // booking is ALREADY COMMITTED at this point, so an unexpected throw here
+    // would hand the member an error for a booking that exists and was paid for.
+    // A notification problem is logged, never surfaced as a booking failure.
+    try {
+      await sendMemberGuestAddNotifications({
+        bookingId,
+        rows: result.memberGuestNotificationRows,
+        actor: memberGuestActor,
+      });
+    } catch (err) {
+      logger.error(
+        { err, bookingId },
+        "Failed to dispatch member-guest add notifications",
+      );
+    }
   }
 
   await drainSupersededPrimaryIntents({
