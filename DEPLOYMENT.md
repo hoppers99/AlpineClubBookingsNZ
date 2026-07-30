@@ -84,6 +84,57 @@ consumer, a much larger replica count, or enabling the audit-archive client via
 may lower both values, but keep the invariant above whenever you change a pool
 size, `max_connections`, or the replica count.
 
+## App CPU sizing
+
+The app containers ship with **no CPU control at all** in `docker-compose.yml`
+— no `cpus` cap, and deliberately no explicit `cpu_shares` weight either
+(#2351). The reasons, and how scheduling then behaves:
+
+Page renders are fully dynamic (nothing is prerendered — every page reads the
+per-request CSP nonce and session), and the JavaScript engine throws away a
+route's optimised code once that route sits idle briefly. The next request to
+the route then pays several CPU-seconds rebuilding it — most of it in the
+engine's background compiler threads, which parallelise across cores. The
+reference numbers, measured on a production deployment during issue #2351
+(Node 24, 1 GiB heap — expect them to drift across Node/Next upgrades, though
+the shape persists): optimised code flushed after **~10 seconds** of route
+idleness; **~3.5–5 CPU-seconds** per cold render. Uncapped, a cold render
+spreads across the idle cores and takes 1–2 seconds (warm ones take tens of
+milliseconds); under the hard `cpus: 0.8` cap earlier templates shipped, the
+same render was CFS-throttled into **4–13 second page loads** — a mysteriously
+slow site with an idle database (that deployment's container had been
+throttled in 64% of all scheduler periods). Low-traffic club sites feel this
+the most, because sparse visits mean *every* visit is a cold render.
+
+With no cap set, the app can use **all idle CPU** — on any host size, a
+1-core VPS included (there is no limit for Docker to validate, so nothing to
+adjust for small hosts). Only while containers genuinely compete does the
+kernel share CPU out by scheduler weight, and *unset* weights are equal by
+default on both cgroup versions — which is why no explicit `cpu_shares`
+value is written: an explicit value maps inconsistently between cgroup v1
+and v2 (on a v2 host — any modern distro — an explicit `1024` becomes
+`cpu.weight` 39 against the default 100, silently *deprioritising* the
+container it was meant to describe as "normal"). Under equal weights,
+contention splits CPU evenly across the runnable containers: on hosts with
+a few cores or more, `postgres`'s share of a fully-contended machine meets
+or exceeds the `cpus: 0.5` ceiling it runs under anyway; on a 1-core host
+everything necessarily shares the single core, exactly as it did under the
+old capped arrangement. The practical effect: renders get the whole machine
+when it is free, and the database and proxy still get a fair share when it
+is not.
+
+If you share the host with other workloads and need an absolute "the app may
+never use more than X cores" guarantee, add a `cpus:` override in your fork —
+but note that a numeric cap must not exceed the host's core count (Docker
+refuses to create the container), budget roughly one dedicated core minimum
+for the live web slot, and treat multi-second cold renders below ~1 CPU as
+the expected symptom, not a bug. Two mitigations for genuinely starved hosts:
+a keep-warm pinger (curl the key public routes on each app container every
+~8 seconds — warm renders are so cheap the pings cost ~1–2% of a core), and
+the structural fix tracked in #2352 (static/ISR public pages). Changing the
+app CPU arrangement also changes the load-testing baseline profile — see the
+note in `docs/LOAD_TESTING.md`.
+
 ## Prerequisites
 
 - A host sized for your traffic and runtime memory needs
