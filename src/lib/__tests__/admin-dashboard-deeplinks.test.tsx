@@ -190,7 +190,7 @@ describe("admin dashboard deep links", () => {
     // #2350: one link covering BOTH halves — the bookings list has no
     // upcoming-only filter, and the split is stated in the label instead.
     expect(html).toContain(`href="/admin/bookings?additionalOwed=owed"`);
-    expect(html).toContain("5 paid bookings");
+    expect(html).toContain("5 confirmed bookings");
     expect(html).toContain("2 upcoming");
     expect(html).toContain("3 finished");
 
