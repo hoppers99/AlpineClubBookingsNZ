@@ -243,6 +243,7 @@ export async function removeBookingGuestInTransaction({
   actorMemberId,
   actorRole,
   settlementMethod,
+  consentAuthority,
 }: {
   tx: Prisma.TransactionClient;
   bookingId: string;
@@ -250,6 +251,42 @@ export async function removeBookingGuestInTransaction({
   actorMemberId: string;
   actorRole: string;
   settlementMethod?: BookingModificationSettlementMethod;
+  /**
+   * Member-guest consent (#2307, epic #2305): the narrow authority that lets a
+   * DECLINE or an EXPIRY reach this function at all.
+   *
+   * Without it, two of the three consent removals are simply unauthorized here.
+   * The gate below admits the booking owner, an `ADMIN`, or the guest
+   * themselves — and a **delegate** answering for a target who cannot log in
+   * (owner decisions D-5/D-10) is none of the three, while the **expiry cron**
+   * has no actor at all.
+   *
+   * WHAT IT DOES, AND WHAT IT DELIBERATELY DOES NOT DO. It authorizes the
+   * removal of exactly the one guest id it names, and only once that row already
+   * carries the terminal consent status the caller claims — i.e. only after the
+   * status-guarded claim in `member-guest-consent-service.ts` has already
+   * succeeded **inside this same transaction**. From there the removal runs the
+   * *self-removal* gate set, not the owner gate set, so owner decision D-14 is
+   * honoured to the letter: a consent removal is refused in exactly the cases a
+   * member's own self-removal would be refused, and those refusals are what land
+   * a row on the admin exception list (D-15). It grants no new powers on any
+   * existing path and cannot remove any other guest — a test asserts that.
+   *
+   * `actorMemberId` stays the truthful actor. For a delegate decline it is the
+   * delegate, so the audit trail names who actually refused rather than writing
+   * the target's id into an act the target did not perform. For the cron there
+   * is no person, so the caller passes the **booking owner** — the party whose
+   * booking is being repriced and who receives the account credit — and the real
+   * actor is recorded separately as `cron:member-guest-consent-expiry` in the
+   * audit log. Neither case impersonates the target.
+   */
+  consentAuthority?: {
+    kind: "CONSENT_DECLINE" | "CONSENT_EXPIRY";
+    /** The only `BookingGuest` id this authority may remove. */
+    guestId: string;
+    /** Must equal that row's `memberId`, or the authority does not apply. */
+    targetMemberId: string;
+  };
 }): Promise<RemoveBookingGuestResult> {
   // Two-tier lock protocol (#1881). A single-guest removal computes a reduction
   // refund (money) AND re-checks capacity, so it takes BOTH locks: the global
@@ -303,14 +340,37 @@ export async function removeBookingGuestInTransaction({
   }
 
   const guestToRemove = booking.guests.find((guest) => guest.id === guestId);
-  const isOwnerOrAdmin = booking.memberId === actorMemberId || actorRole === "ADMIN";
+
+  // The consent authority (#2307) is checked against the POST-LOCK re-read, not
+  // against anything the caller told us: the guest id must be the one the
+  // authority names, the row must belong to the target it names, and the row
+  // must ALREADY carry the terminal consent status. That last conjunct is what
+  // binds this to the status-guarded claim earlier in the same transaction — an
+  // authority cannot be used to remove a live PENDING (or CONFIRMED) row.
+  const consentAuthorityApplies =
+    consentAuthority !== undefined &&
+    consentAuthority.guestId === guestId &&
+    guestToRemove !== undefined &&
+    guestToRemove.memberId !== null &&
+    guestToRemove.memberId === consentAuthority.targetMemberId &&
+    guestToRemove.consentStatus ===
+      (consentAuthority.kind === "CONSENT_DECLINE" ? "DECLINED" : "EXPIRED");
+
+  const isOwnerOrAdmin =
+    !consentAuthorityApplies &&
+    (booking.memberId === actorMemberId || actorRole === "ADMIN");
+  // A consent removal runs the SELF-REMOVAL gate set on purpose (D-14): the
+  // cases in which a never-consented member is trapped on a booking must be
+  // exactly the cases in which they could not have taken themselves off, and
+  // those refusals are what D-15 routes to the admin exception list.
   const isSelfRemoval =
-    !isOwnerOrAdmin && guestToRemove?.memberId === actorMemberId;
+    consentAuthorityApplies ||
+    (!isOwnerOrAdmin && guestToRemove?.memberId === actorMemberId);
   const isLinkedGuestViewer = booking.guests.some(
     (guest) => guest.memberId === actorMemberId,
   );
 
-  if (!isOwnerOrAdmin && !isLinkedGuestViewer) {
+  if (!isOwnerOrAdmin && !isSelfRemoval && !isLinkedGuestViewer) {
     throw new BookingGuestRemovalError("Forbidden", 403);
   }
 
