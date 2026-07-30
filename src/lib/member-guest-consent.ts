@@ -65,13 +65,31 @@ export const MEMBER_GUEST_MODULE_KEY = "memberGuests" as const;
  * test asserts a NULL-consent guest IS matched, and mutation probe 4 requires
  * flipping this to the `not:` form and watching a test fail.
  *
- * Typed as a plain object literal rather than `Prisma.BookingGuestWhereInput` so
- * it can be spread into a `where`, a `guests.some`, or an `include.guests.where`
- * without a cast at each site.
+ * DELIBERATELY NOT `as const`, and this cost a round of typecheck failures to
+ * learn: a `readonly` `OR` array is not assignable to Prisma's mutable
+ * `BookingGuestWhereInput[]`, so an `as const` version would have needed a cast
+ * at every one of the fourteen call sites — and fourteen casts is fourteen
+ * chances to cast to the wrong thing, on the exact filter whose whole job is to
+ * be right everywhere. The explicit mutable annotation below keeps every site
+ * cast-free.
+ *
+ * It is safe to share one frozen literal across fourteen `where` clauses because
+ * every site SPREADS it or passes it as a read-only filter; nothing mutates it,
+ * and `Object.freeze` makes an attempt to throw in development rather than
+ * silently change the kiosk, the roster and the arrival emails at once.
+ *
+ * Spread it: `where: { ...otherFilters, ...OPERATIONALLY_PRESENT_GUEST_WHERE }`,
+ * or use it directly in `guests: { some: OPERATIONALLY_PRESENT_GUEST_WHERE }`
+ * and `include: { guests: { where: OPERATIONALLY_PRESENT_GUEST_WHERE } }`.
  */
-export const OPERATIONALLY_PRESENT_GUEST_WHERE = {
-  OR: [{ consentStatus: null }, { consentStatus: "CONFIRMED" }],
-} as const;
+export const OPERATIONALLY_PRESENT_GUEST_WHERE: {
+  OR: { consentStatus: MemberGuestConsentStatus | null }[];
+} = Object.freeze({
+  OR: Object.freeze([
+    { consentStatus: null },
+    { consentStatus: "CONFIRMED" as MemberGuestConsentStatus },
+  ]) as { consentStatus: MemberGuestConsentStatus | null }[],
+});
 
 /**
  * The in-memory twin of `OPERATIONALLY_PRESENT_GUEST_WHERE`, for the surfaces
