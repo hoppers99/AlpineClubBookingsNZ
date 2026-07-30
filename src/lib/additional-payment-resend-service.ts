@@ -330,7 +330,15 @@ export async function resendAdditionalPaymentEmail(params: {
     );
     return {
       ok: false,
-      status: outcome.status === "withheld_for_booking" ? 409 : 422,
+      // 503 for the one case that is our own uncertainty rather than a fact
+      // about this booking or this member: the switch could not be read, so
+      // trying again shortly is the right advice. 409 for the switch being on
+      // (a state of the booking), 422 for an address that cannot receive mail.
+      status: replayable
+        ? 503
+        : outcome.status === "withheld_for_booking"
+          ? 409
+          : 422,
       error: describeUntransmittedResend(outcome),
     };
   }
