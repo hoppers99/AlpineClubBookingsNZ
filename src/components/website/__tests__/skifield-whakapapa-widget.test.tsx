@@ -100,3 +100,43 @@ describe("SkifieldWhakapapaWidget trails", () => {
     expect(screen.queryByText("Happy Valley Area")).toBeNull();
   });
 });
+
+describe("SkifieldWhakapapaWidget status styling", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  function payloadWithLiftStatus(status: string): WhakapapaCurlData {
+    const data = emptyWhakapapaCurlData();
+    data.updated = "2026-07-30T00:00:00.000Z";
+    data.lifts = [{ name: "Sky Waka", status }];
+    return data;
+  }
+
+  const CASES: [string, string, string][] = [
+    // [status, expected text-color class, expected bg class]
+    ["Open", "text-success-11", "bg-success-3"],
+    ["Closed", "text-danger-11", "bg-danger-3"],
+    ["Coming Soon", "text-muted-foreground", "bg-muted"],
+    ["On Hold", "text-warning-11", "bg-warning-3"],
+  ];
+
+  it.each(CASES)(
+    "styles the %s status badge with its matching colour",
+    async (status, textClass, bgClass) => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => payloadWithLiftStatus(status),
+        }),
+      );
+      render(<SkifieldWhakapapaWidget />);
+
+      const badge = await screen.findByText(status);
+      expect(badge.className).toContain(textClass);
+      expect(badge.className).toContain(bgClass);
+    },
+  );
+});

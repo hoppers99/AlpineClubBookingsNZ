@@ -37,6 +37,14 @@ function StatusCell({ status }: { status: string }) {
     );
   }
 
+  if (normalized === "on hold") {
+    return (
+      <span className="flex w-full justify-center rounded-full px-2 py-1 text-xs font-medium text-warning-11 bg-warning-3">
+        {status}
+      </span>
+    );
+  }
+
   if (normalized === "limited availability") {
     return (
       <span className="flex w-full justify-center rounded-full px-2 py-1 text-xs font-medium text-warning-11 bg-warning-3">
