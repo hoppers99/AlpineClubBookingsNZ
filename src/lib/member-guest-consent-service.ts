@@ -9,6 +9,11 @@ import type { MemberGuestConsentDelegateResolver } from "@/lib/member-guest-dele
 import { getDefaultLodgeId } from "@/lib/lodges";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import { logAudit } from "@/lib/audit";
+import {
+  sendMemberGuestConsentExpiredEmail,
+  sendMemberGuestConsentOutcomeEmail,
+} from "@/lib/email/member-guest";
+import type { GuestSelfRemovalBlocker } from "@/lib/booking-guest-self-removal";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 
@@ -60,8 +65,14 @@ export type MemberGuestConsentBlockedReason =
 
 export type MemberGuestConsentOutcome =
   | { outcome: "APPROVED" }
-  | { outcome: "DECLINED"; removed: true }
-  | { outcome: "EXPIRED"; removed: true }
+  /**
+   * `creditCents` is what the reduction actually settled as account credit, read
+   * off the shared removal path's own result rather than recomputed. The outcome
+   * email quotes it to the booking owner, so a second calculation here would be a
+   * second chance to tell them the wrong number.
+   */
+  | { outcome: "DECLINED"; removed: true; creditCents: number }
+  | { outcome: "EXPIRED"; removed: true; creditCents: number }
   /** Claimed, but the guest is still on the booking and an admin must act. */
   | {
       outcome: "BLOCKED";
@@ -178,11 +189,11 @@ async function removeClaimedConsentGuest(
     settlementMethod?: "credit";
   },
 ): Promise<
-  | { removed: true }
+  | { removed: true; creditCents: number }
   | { removed: false; reason: MemberGuestConsentBlockedReason; message: string }
 > {
   try {
-    await removeBookingGuestInTransaction({
+    const result = await removeBookingGuestInTransaction({
       tx,
       bookingId: params.bookingId,
       guestId: params.guestId,
@@ -195,7 +206,7 @@ async function removeClaimedConsentGuest(
         targetMemberId: params.targetMemberId,
       },
     });
-    return { removed: true };
+    return { removed: true, creditCents: result.accountCreditAmountCents ?? 0 };
   } catch (err) {
     if (err instanceof BookingGuestRemovalError) {
       return {
@@ -317,7 +328,13 @@ export async function respondToMemberGuestConsent(params: {
       kind: "CONSENT_DECLINE",
     });
 
-    if (removal.removed) return { outcome: "DECLINED", removed: true } as const;
+    if (removal.removed) {
+      return {
+        outcome: "DECLINED",
+        removed: true,
+        creditCents: removal.creditCents,
+      } as const;
+    }
     return {
       outcome: "BLOCKED",
       status: "DECLINED",
@@ -400,7 +417,13 @@ export async function expireMemberGuestConsent(params: {
       settlementMethod: "credit",
     });
 
-    if (removal.removed) return { outcome: "EXPIRED", removed: true } as const;
+    if (removal.removed) {
+      return {
+        outcome: "EXPIRED",
+        removed: true,
+        creditCents: removal.creditCents,
+      } as const;
+    }
     return {
       outcome: "BLOCKED",
       status: "EXPIRED",
@@ -479,6 +502,13 @@ export async function finaliseMemberGuestConsentTransition(params: {
     }
   }
 
+  await notifyMemberGuestConsentOutcome({
+    bookingId,
+    guestId,
+    targetMemberId,
+    outcome,
+  });
+
   try {
     await logAudit({
       action: `member_guest_consent_${outcome.outcome.toLowerCase()}`,
@@ -510,6 +540,191 @@ export async function finaliseMemberGuestConsentTransition(params: {
     logger.error(
       { err, bookingId, guestId },
       "Failed to audit a member-guest consent transition",
+    );
+  }
+}
+
+/**
+ * Map a blocked-consent reason back onto the self-removal blocker vocabulary the
+ * email copy speaks.
+ *
+ * The two vocabularies exist for different audiences — one names why an operator
+ * has work to do, the other is what a member reads — and this is the single place
+ * they are joined, so the copy cannot describe a different situation from the one
+ * the exception list is showing.
+ */
+function selfRemovalBlockerForConsentReason(
+  reason: MemberGuestConsentBlockedReason,
+): GuestSelfRemovalBlocker {
+  switch (reason) {
+    case "LAST_GUEST":
+      return "LAST_GUEST";
+    case "QUOTE_PRICED":
+      return "QUOTE_PRICED";
+    case "STAY_NOT_FUTURE":
+      return "STAY_NOT_FUTURE";
+    case "BOOKING_STATUS":
+    case "OTHER":
+      // An unclassified refusal is described with the booking-status wording,
+      // which is the honest general case: something about the booking's state
+      // stops it changing, and only the club can look at it.
+      return "BOOKING_STATUS";
+  }
+}
+
+/**
+ * Tell the people who need to know, after the transition has committed.
+ *
+ * Two audiences, and the split is deliberate. The person who MADE the booking
+ * always hears the outcome — it is their booking and, on a decline or a lapse,
+ * their money that moved. The member who was ASKED hears only that their request
+ * lapsed, and only when there was a request to lapse: a notify-only or
+ * admin-assigned row was never asked, so telling that member "your request has
+ * lapsed" would describe something that never happened.
+ *
+ * Every send is independently try/caught and `logger.error`-only. The consent
+ * decision is already committed; an email provider being down must not undo it,
+ * and must not stop the next row in a sweep. Owner decision **D-16** governs
+ * whether these are withheld at all: consent-adjacent mail ignores the per-action
+ * notify tick and the member's own notification preferences, and is withheld only
+ * by the per-booking No-emails switch — that logic lives in the sender and the
+ * suppression gate, not here.
+ */
+async function notifyMemberGuestConsentOutcome(params: {
+  bookingId: string;
+  guestId: string;
+  targetMemberId: string;
+  outcome: MemberGuestConsentOutcome;
+}): Promise<void> {
+  const { bookingId, guestId, targetMemberId, outcome } = params;
+  if (outcome.outcome === "ALREADY_RESOLVED") return;
+
+  try {
+    const booking = await prisma.booking.findUnique({
+      where: { id: bookingId },
+      select: {
+        id: true,
+        lodgeId: true,
+        checkIn: true,
+        checkOut: true,
+        member: { select: { id: true, email: true, firstName: true, lastName: true } },
+      },
+    });
+    if (!booking) return;
+
+    // The guest row is GONE on a successful decline or expiry — the removal path
+    // deleted it — so the target's name comes from the Member record, which is
+    // the only surviving source once the row is deleted.
+    const target = await prisma.member.findUnique({
+      where: { id: targetMemberId },
+      select: { id: true, email: true, firstName: true, lastName: true },
+    });
+
+    const guest = {
+      firstName: target?.firstName ?? "A member",
+      lastName: target?.lastName ?? "",
+    };
+
+    const emailOutcome =
+      outcome.outcome === "APPROVED"
+        ? ({ kind: "APPROVED" } as const)
+        : outcome.outcome === "DECLINED"
+          ? ({ kind: "DECLINED", creditCents: outcome.creditCents } as const)
+          : outcome.outcome === "EXPIRED"
+            ? ({
+                kind: "EXPIRED_REMOVED",
+                expiredAt: new Date(),
+                creditCents: outcome.creditCents,
+              } as const)
+            : ({
+                kind: "EXPIRED_STILL_ON_BOOKING",
+                expiredAt: new Date(),
+                blocker: selfRemovalBlockerForConsentReason(outcome.reason),
+              } as const);
+
+    if (booking.member?.email) {
+      try {
+        await sendMemberGuestConsentOutcomeEmail({
+          bookingId,
+          email: booking.member.email,
+          firstName: booking.member.firstName ?? "",
+          checkIn: booking.checkIn,
+          checkOut: booking.checkOut,
+          lodgeId: booking.lodgeId,
+          guest,
+          outcome: emailOutcome,
+        });
+      } catch (err) {
+        logger.error(
+          { err, bookingId, guestId },
+          "Failed to send the member-guest consent outcome email to the booking owner",
+        );
+      }
+    }
+
+    // Only a LAPSE gets a notice back to the member who was asked, and it reaches
+    // them through the SAME recipient rule the request did — themselves if they
+    // hold a login, otherwise the family adults who were asked on their behalf —
+    // so nobody is told a request lapsed that they never received.
+    //
+    // A decline needs no notice: they just made the decision themselves. And an
+    // EXPIRED row was necessarily PENDING, which by the model's own shape table
+    // means a request really was sent, so this cannot fire for a notify-only or
+    // admin-assigned row that nobody was ever asked about.
+    const lapsed =
+      outcome.outcome === "EXPIRED" ||
+      (outcome.outcome === "BLOCKED" && outcome.status === "EXPIRED");
+
+    if (lapsed) {
+      const bookerName =
+        [booking.member?.firstName, booking.member?.lastName]
+          .filter(Boolean)
+          .join(" ")
+          .trim() || "the person who made the booking";
+
+      const recipients = await familyAdultDelegateResolver
+        .resolveNotificationRecipients({ targetMemberId, db: prisma })
+        .catch((err: unknown) => {
+          logger.error(
+            { err, bookingId, guestId },
+            "Failed to resolve who to tell that a member-guest request lapsed",
+          );
+          return [];
+        });
+
+      if (recipients.length === 0) {
+        // Not silent: a target with no login and no family adult cannot be told,
+        // and an operator looking at the audit trail needs to know that rather
+        // than assume a mail went out.
+        logger.warn(
+          { bookingId, guestId, targetMemberId },
+          "A member-guest request lapsed with nobody to notify",
+        );
+      }
+
+      for (const recipient of recipients) {
+        try {
+          await sendMemberGuestConsentExpiredEmail({
+            bookingId,
+            email: recipient.email,
+            firstName: recipient.firstName,
+            bookerName,
+            checkIn: booking.checkIn,
+            checkOut: booking.checkOut,
+            lodgeId: booking.lodgeId,
+          });
+        } catch (err) {
+          logger.error(
+            { err, bookingId, guestId, recipient: recipient.memberId },
+            "Failed to send the member-guest lapse notice",
+          );
+        }
+      }
+    }
+  } catch (err) {
+    logger.error(
+      { err, bookingId, guestId },
+      "Failed to load booking context for a member-guest consent notification",
     );
   }
 }
