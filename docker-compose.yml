@@ -126,12 +126,15 @@ x-app-service: &app-service
   security_opt:
     - no-new-privileges:true
   mem_limit: 1g
-  # A cold page render costs ~3.5-5 CPU-seconds of V8 re-warm work (per-route
-  # optimised code is discarded within ~10s of idleness), so an app slot needs
+  # A cold page render costs seconds of V8 re-warm CPU work (measured ~3.5-5
+  # CPU-seconds per route on a production deployment, #2351, where per-route
+  # optimised code was flushed within ~10s of idleness), so an app slot needs
   # roughly a dedicated core to serve sparse traffic without multi-second page
-  # loads. Below ~1 CPU the renders get CFS-throttled into 4-13s (#2351).
-  # Lower this only for genuinely tiny hosts, with DEPLOYMENT.md ("App CPU
-  # sizing") in hand.
+  # loads — below ~1 CPU those renders CFS-throttle into 4-13s. This is a
+  # ceiling, not a reservation: idle slots consume ~nothing. Hosts with fewer
+  # than 2 cores MUST lower this — Docker refuses to create a container whose
+  # cpus limit exceeds the host's core count, so the stack will not start.
+  # See DEPLOYMENT.md ("App CPU sizing") before changing it.
   cpus: 2
   healthcheck:
     test:

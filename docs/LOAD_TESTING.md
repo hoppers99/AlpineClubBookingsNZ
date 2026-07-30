@@ -274,6 +274,14 @@ BASE_URL=http://localhost:3001 LOAD_TEST_CONFIRM_TARGET=1 \
   follow-up run may profile roughly 2 app CPUs, but it must be reported as a
   separate resource profile; do not raise thresholds, reduce bcrypt cost, or
   silently change the standard profile to manufacture a pass.
+- **Profile change (#2351, 30 Jul 2026):** the compose default the staging
+  stack inherits is now `cpus: 2` per app container (raised from 0.8 after
+  production measurement showed cold page renders CFS-throttling into
+  multi-second loads — see `DEPLOYMENT.md` → "App CPU sizing"). The recorded
+  baselines above predate this and describe the sub-one-CPU profile; the next
+  full run happens on the 2-CPU profile and must be labelled as such, per the
+  separate-resource-profile rule above. To reproduce the historical
+  constrained profile, override `cpus` back down for the run.
 - **Public layout reads:** module flags, theme, lodge capacity, and current
   banners use independent 15-second caches with tagged invalidation on their
   admin write paths, including lodge settings and configuration imports.

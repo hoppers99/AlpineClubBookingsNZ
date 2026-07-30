@@ -87,25 +87,41 @@ size, `max_connections`, or the replica count.
 ## App CPU sizing
 
 Each app container ships with `cpus: 2` in `docker-compose.yml`. Budget
-**roughly one dedicated core minimum per app slot that serves web traffic**,
-and prefer two: page renders are fully dynamic (nothing is prerendered — every
-page reads the per-request CSP nonce and session), and Node's JavaScript engine
-discards a route's optimised code within about ten seconds of that route going
-idle. The next request to the route then pays **~3.5–5 CPU-seconds** rebuilding
-it — most of it in the engine's background compiler threads, which parallelise
-across cores. With enough CPU that cold render is 1–2 seconds and a warm one is
-tens of milliseconds; capped below ~1 CPU the same render is CFS-throttled into
-**4–13 second page loads**, which presents as a mysteriously slow site with an
-idle database (measured in production, issue #2351 — the container had been
-throttled in 64% of all scheduler periods).
+**roughly one dedicated core minimum for the live web slot**, and prefer two:
+page renders are fully dynamic (nothing is prerendered — every page reads the
+per-request CSP nonce and session), and the JavaScript engine throws away a
+route's optimised code once that route sits idle briefly. The next request to
+the route then pays several CPU-seconds rebuilding it — most of it in the
+engine's background compiler threads, which parallelise across cores. The
+reference numbers, measured on a production deployment during issue #2351
+(Node 24, 1 GiB heap — expect them to drift across Node/Next upgrades, though
+the shape persists): optimised code flushed after **~10 seconds** of route
+idleness; **~3.5–5 CPU-seconds** per cold render. With enough CPU a cold
+render is 1–2 seconds and a warm one is tens of milliseconds; capped at the
+old `0.8` the same render was CFS-throttled into **4–13 second page loads** —
+a mysteriously slow site with an idle database (that deployment's container
+had been throttled in 64% of all scheduler periods).
 
-Low-traffic sites feel this the most, because sparse visits mean *every* visit
-is a cold render. Two mitigations if you cannot spare the CPU: a keep-warm
-pinger (curl the key public routes on each app container every ~8 seconds —
-warm renders are so cheap the pings cost ~1–2% of a core), and the structural
-fix tracked in #2352 (static/ISR public pages). A constrained-VPS fork may
-lower `cpus`, but treat multi-second anonymous page loads as the expected
-symptom, not a bug, and say so in your fork's docs.
+`cpus` is a **ceiling, not a reservation** — idle containers consume almost
+nothing, and in steady state only one blue/green web slot is hot while `app`
+(cron leader / warm fallback) and the other slot idle. So the shipped ceilings
+summing past your core count is normal and fine: a 2-core host runs the stack
+correctly with the hot slot able to use both cores; during a deploy window the
+two briefly-live web slots share them. **Hosts with fewer than two cores must
+lower `cpus`** — Docker refuses to create a container whose CPU limit exceeds
+the host's online core count, so on a 1-core VPS the stack will not start
+until you do — and should then expect the multi-second cold renders described
+above.
+
+Low-traffic sites feel the cold-render cost the most, because sparse visits
+mean *every* visit is a cold render. Two mitigations if you cannot spare the
+CPU: a keep-warm pinger (curl the key public routes on each app container
+every ~8 seconds — warm renders are so cheap the pings cost ~1–2% of a core),
+and the structural fix tracked in #2352 (static/ISR public pages). A
+constrained-VPS fork may lower `cpus`, but treat multi-second anonymous page
+loads as the expected symptom, not a bug, and say so in your fork's docs.
+Changing the app CPU limit also changes the load-testing baseline profile —
+see the note in `docs/LOAD_TESTING.md`.
 
 ## Prerequisites
 
