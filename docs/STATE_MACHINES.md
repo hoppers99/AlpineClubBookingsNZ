@@ -1486,3 +1486,44 @@ admin edits the banner -> updatedAt changes -> dismissal invalidated, banner re-
 To verify: the admin page's current/upcoming/past split, the inclusive
 date-only comparison in NZ time, and dismissal invalidation keyed on
 `updatedAt`.
+
+## Member-Guest Consent Lifecycle (provisioned, unreachable until MG2)
+
+`BookingGuest.consentStatus` (`MemberGuestConsentStatus`) records whether a
+MEMBER added as somebody else's guest agreed to it ("+ Add Member Guest", epic
+#2305, decision D-7). The enum, its five companion columns, and the partial
+index the expiry sweep needs are all provisioned by MG1 (#2306).
+
+**Nothing in the MG1 release can reach any state below except the null one.**
+Cross-family adds are still refused (`MEMBER_GUEST_WIDENING_ENABLED` is `false`
+in `src/lib/member-guest-consent.ts`), so no code path writes a non-null
+`consentStatus` — the labels are registered a release ahead of the code that
+uses them. The transitions are documented here only once MG2 (#2307) implements
+them; do not treat the arrows below as live behaviour in this release.
+
+```text
+(null) = no consent was ever needed: a family-scope add (D-6) or a legacy row.
+         NOT the same value as CONFIRMED, and the two must stay distinguishable.
+
+cross-family add, approval-required policy  -> PENDING   (holds the bed until consentExpiresAt)
+cross-family add, notify-only policy        -> CONFIRMED (never solicited: requestedAt/respondedAt/respondedBy all null)
+admin add, admin booking-copy, pipeline row -> CONFIRMED (never solicited: respondedBy = the acting admin, requestedAt null)
+
+PENDING -> CONFIRMED  target (or their delegate) approves; respondedBy records WHICH
+PENDING -> DECLINED   target (or their delegate) refuses
+PENDING -> EXPIRED    the hold lapses with no answer; MG2's sweep releases the bed
+```
+
+Consent is **not transitive across bookings**: copying a booking re-stamps the
+copied guest as an admin assignment against the copying admin, and never
+inherits the source row's approval.
+
+The full column-by-column discriminator table — which of the five columns is set
+in each shape — is in `docs/DOMAIN_INVARIANTS.md` and is the single source of
+truth in `MEMBER_GUEST_CONSENT_SUB_STATES`
+(`src/lib/member-guest-consent.ts`), pinned by
+`src/lib/__tests__/member-guest-consent.test.ts`.
+
+To verify: `MEMBER_GUEST_WIDENING_ENABLED === false`, the classifier's refusal
+to name any shape the table does not define, and the dark-guarantee matrix in
+`src/lib/__tests__/member-guest-dark-guarantee.test.ts`.
