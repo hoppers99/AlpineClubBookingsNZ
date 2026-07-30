@@ -415,3 +415,31 @@ describe("applyLifecycleTransitions — member DRAFT edits stay hold-free (#2266
     expect(result.newNonMemberHoldUntil).not.toBeNull();
   });
 });
+
+// The flag above is only half the guard: the batch-modification service must
+// actually TRANSLATE `lifecycle.clearDraftExpiresAt` into a `draftExpiresAt:
+// null` on the booking write. That wiring lives inside a transaction the pure
+// suites above never enter, so it is pinned here as a source contract — the
+// same technique `review-findings-contracts.test.ts` uses for lock ordering.
+// Without it, a review-parked draft would keep its 72-hour expiry stamp,
+// diverging from booking-create's review-parked drafts (which carry none).
+describe("#2266 — the parked-draft expiry clear is wired into the booking write", () => {
+  it("nulls draftExpiresAt on the batch modification update when the lifecycle asks for it", async () => {
+    const { readFileSync } = await import("fs");
+    const path = await import("path");
+    const source = readFileSync(
+      path.resolve(process.cwd(), "src/lib/booking-batch-modification-service.ts"),
+      "utf8",
+    );
+
+    // The single booking.update that writes the post-lifecycle status.
+    const updateStart = source.indexOf("const updatedBooking = await tx.booking.update(");
+    expect(updateStart).toBeGreaterThan(-1);
+    const updateBlock = source.slice(updateStart, source.indexOf("include: { guests: true, payment: true },", updateStart));
+
+    expect(updateBlock).toContain("status: lifecycle.newStatus,");
+    expect(updateBlock).toContain(
+      "...(lifecycle.clearDraftExpiresAt ? { draftExpiresAt: null } : {}),",
+    );
+  });
+});
