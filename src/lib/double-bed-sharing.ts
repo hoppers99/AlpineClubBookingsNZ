@@ -3,6 +3,7 @@ import {
   canonicalPartnerPair,
   PARTNER_LINK_CONFIRMED,
 } from "@/lib/member-partner-link-shared";
+import { isOperationallyPresentConsent } from "@/lib/member-guest-consent";
 
 // Structural minimum rather than `typeof prisma | Prisma.TransactionClient`:
 // callers hold differently-Omitted transaction clients (e.g. capacity.ts's,
@@ -52,38 +53,74 @@ export async function listBookingPartnerSharingCandidates(
   bookingId: string,
   db: Pick<typeof prisma, "bookingGuest" | "memberPartnerLink" | "member"> = prisma,
 ): Promise<PartnerSharingCandidate[]> {
+  // Fetched UNFILTERED on purpose — this one query does two different jobs, and
+  // owner decision D-12 (#2307) applies to only one of them.
+  //
+  // The naive fix is to put OPERATIONALLY_PRESENT_GUEST_WHERE in this `where`.
+  // It gets the first job right and the second one badly wrong. The ANCHORS
+  // (whose partners become offers) must exclude an unconsented guest: nobody
+  // should be offered a bed-share with a member who has not yet agreed to be on
+  // the booking at all. But the "already a guest here" EXCLUSION set must
+  // include them, because they ARE already a row on this booking — drop them
+  // from it and the admin is offered the very member who is sitting there
+  // PENDING, and adding them again is a duplicate guest row on a booking that
+  // is already holding their bed (D-4).
+  //
+  // So: one query, one full set for the exclusion, one filtered set for the
+  // anchors. Both halves are tested.
   const memberGuests = await db.bookingGuest.findMany({
     where: { bookingId, memberId: { not: null } },
-    select: { memberId: true, firstName: true, lastName: true },
+    select: {
+      memberId: true,
+      firstName: true,
+      lastName: true,
+      consentStatus: true,
+    },
   });
-  const guestMemberIds = [
+
+  // Job 2: every member already on this booking, consented or not.
+  const guestIdSet = new Set(
+    memberGuests
+      .map((guest) => guest.memberId)
+      .filter((id): id is string => Boolean(id)),
+  );
+
+  // Job 1: only the operationally present members may anchor an offer.
+  const anchorMemberIds = [
     ...new Set(
       memberGuests
+        .filter((guest) => isOperationallyPresentConsent(guest.consentStatus))
         .map((guest) => guest.memberId)
         .filter((id): id is string => Boolean(id)),
     ),
   ];
-  if (guestMemberIds.length === 0) return [];
+  if (anchorMemberIds.length === 0) return [];
 
   const links = await db.memberPartnerLink.findMany({
     where: {
       status: PARTNER_LINK_CONFIRMED,
       OR: [
-        { memberAId: { in: guestMemberIds } },
-        { memberBId: { in: guestMemberIds } },
+        { memberAId: { in: anchorMemberIds } },
+        { memberBId: { in: anchorMemberIds } },
       ],
     },
     select: { memberAId: true, memberBId: true },
   });
   if (links.length === 0) return [];
 
-  const guestIdSet = new Set(guestMemberIds);
   // Candidate id -> the booking member they share with. At most one confirmed
   // partner per member, so a candidate maps to exactly one anchor; a link
   // whose both sides are already booking guests offers no candidate.
+  //
+  // Note which set each side is tested against, because they are different sets
+  // (D-12, #2307): the ANCHOR side is identified from the filtered anchor set —
+  // every link here was fetched because at least one side is an anchor — while
+  // `other` is excluded against the FULL guest set, so a member already sitting
+  // on this booking with PENDING consent is never offered as a new candidate.
+  const anchorIdSet = new Set(anchorMemberIds);
   const candidateToAnchor = new Map<string, string>();
   for (const link of links) {
-    const [inBooking, other] = guestIdSet.has(link.memberAId)
+    const [inBooking, other] = anchorIdSet.has(link.memberAId)
       ? [link.memberAId, link.memberBId]
       : [link.memberBId, link.memberAId];
     if (!guestIdSet.has(other)) {

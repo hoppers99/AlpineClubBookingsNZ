@@ -89,6 +89,19 @@ export async function GET() {
         nonMemberHoldUntil: true,
         notes: true,
         createdAt: true,
+        // DELIBERATELY NOT CONSENT-FILTERED (owner decision D-12, #2307).
+        //
+        // D-12 keeps an unconsented guest off every OPERATIONAL surface — the
+        // kiosk, the roster, bed allocation, the arrival emails, the wall. A
+        // data-subject export is not one: it is this member's own record of
+        // their own bookings, and a row we are holding about them (including one
+        // still awaiting their guest's consent, which is holding a bed under
+        // D-4) belongs in it. Hiding it would make the export a summary rather
+        // than a disclosure.
+        //
+        // `consentStatus` is exported for the same reason: the honest answer to
+        // "what do you hold about me" includes WHICH state each guest row is in,
+        // not just that it exists.
         guests: {
           select: {
             firstName: true,
@@ -96,6 +109,7 @@ export async function GET() {
             ageTier: true,
             isMember: true,
             priceCents: true,
+            consentStatus: true,
           },
         },
         payment: {
@@ -243,6 +257,11 @@ export async function GET() {
           ageTier: g.ageTier,
           isMember: g.isMember,
           priceCents: g.priceCents,
+          // #2307: null for every ordinary guest — a non-member, a family-scope
+          // add, or any row written before member guests existed. A value means
+          // the row is a cross-family member guest and names where its consent
+          // stands.
+          consentStatus: g.consentStatus ?? null,
         })),
         payment: b.payment
           ? {
