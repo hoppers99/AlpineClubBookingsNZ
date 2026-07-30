@@ -32,6 +32,7 @@ const ZERO_COUNTS: AdminPendingCounts = {
   publicBookingRequests: 0,
   unpaidFinishedStays: 0,
   unsettledAdditionalFinishedStays: 0,
+  unsettledAdditionalUpcomingStays: 0,
   membershipCancellations: 0,
   archiveRequests: 0,
   deletionRequests: 0,
@@ -268,7 +269,11 @@ describe("AdminSidebar", () => {
   it("surfaces unsettled stay additions in Needs Attention with the dashboard deep link (#1723)", async () => {
     vi.stubGlobal(
       "fetch",
-      buildFetchMock({ unsettledAdditionalFinishedStays: 4 }),
+      buildFetchMock({
+        unsettledAdditionalFinishedStays: 4,
+        // #2350: the upcoming half is counted too, and the badge sums the pair.
+        unsettledAdditionalUpcomingStays: 3,
+      }),
     );
 
     render(<AdminSidebar features={allOn} />);
@@ -277,15 +282,32 @@ describe("AdminSidebar", () => {
       expect(screen.getByText("Needs Attention")).not.toBeNull(),
     );
     const link = screen.getByRole("link", { name: /Unpaid Stay Additions/ });
-    // Same deep link as the "Finished Stays With Unpaid Additions" dashboard
-    // card: the bookings list pre-filtered by the shared additionalOwed
-    // helper in unpaid-finished-stays.ts.
+    // Same deep link as the "Bookings With Unpaid Additions" dashboard card:
+    // the bookings list pre-filtered by the shared additionalOwed helper in
+    // unpaid-finished-stays.ts, with no date bound so both halves are listed.
     expect(link.getAttribute("href")).toBe(
-      `/admin/bookings?additionalOwed=owed&checkOutTo=${formatDateOnly(
-        getTodayDateOnly(),
-      )}`,
+      "/admin/bookings?additionalOwed=owed",
     );
-    expect(screen.getByText("4")).not.toBeNull();
+    expect(screen.getByText("7")).not.toBeNull();
+  });
+
+  // #2350: an upcoming stay with an uncollected addition is a queue item on its
+  // own — before this the badge only ever counted stays that had already ended.
+  it("counts an upcoming stay with an unpaid addition on its own", async () => {
+    vi.stubGlobal(
+      "fetch",
+      buildFetchMock({ unsettledAdditionalUpcomingStays: 2 }),
+    );
+
+    render(<AdminSidebar features={allOn} />);
+
+    await waitFor(() =>
+      expect(screen.getByText("Needs Attention")).not.toBeNull(),
+    );
+    expect(
+      screen.getByRole("link", { name: /Unpaid Stay Additions/ }),
+    ).not.toBeNull();
+    expect(screen.getByText("2")).not.toBeNull();
   });
 
   it("hides the unpaid stay additions link while nothing is owing", async () => {

@@ -100,10 +100,66 @@ describe("sendPreArrivalReminders", () => {
       checkOut: candidate.checkOut,
       guestCount: 2,
       expectedArrivalTime: "16:30",
+      // #2350: nothing owed on this booking, so the note is not composed.
+      outstandingAdditionalAmountCents: 0,
     });
     expect(result.sentBookingIds).toEqual(["booking-1"]);
     expect(result.windowStart).toBe("2026-06-11");
     expect(result.windowEndExclusive).toBe("2026-06-15");
+  });
+
+  // #2350: the pre-arrival note is the last message most members read before
+  // they travel, so it says when a booking change left money uncollected.
+  it("names an uncollected additional payment in the pre-arrival reminder", async () => {
+    mockPrisma.booking.findMany.mockResolvedValue([
+      booking({
+        payment: {
+          additionalAmountCents: 21_000,
+          additionalPaymentStatus: "PENDING",
+        },
+      }),
+    ]);
+
+    await sendPreArrivalReminders();
+
+    expect(mockSendPreArrivalReminderEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ outstandingAdditionalAmountCents: 21_000 }),
+    );
+  });
+
+  // FAILED rides along with PENDING everywhere the owed predicate is used.
+  it("treats a failed additional payment as still owing", async () => {
+    mockPrisma.booking.findMany.mockResolvedValue([
+      booking({
+        payment: {
+          additionalAmountCents: 4_500,
+          additionalPaymentStatus: "FAILED",
+        },
+      }),
+    ]);
+
+    await sendPreArrivalReminders();
+
+    expect(mockSendPreArrivalReminderEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ outstandingAdditionalAmountCents: 4_500 }),
+    );
+  });
+
+  it("says nothing about an additional payment that was collected", async () => {
+    mockPrisma.booking.findMany.mockResolvedValue([
+      booking({
+        payment: {
+          additionalAmountCents: 4_500,
+          additionalPaymentStatus: "SUCCEEDED",
+        },
+      }),
+    ]);
+
+    await sendPreArrivalReminders();
+
+    expect(mockSendPreArrivalReminderEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ outstandingAdditionalAmountCents: 0 }),
+    );
   });
 
   it("does not send when another worker already claimed the booking", async () => {

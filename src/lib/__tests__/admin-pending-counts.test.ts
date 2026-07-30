@@ -57,12 +57,18 @@ describe("getAdminPendingCounts", () => {
     mocks.memberApplicationCount.mockResolvedValue(2);
     mocks.refundRequestCount.mockResolvedValue(3);
     mocks.adminCreditAdjustmentRequestCount.mockResolvedValue(4);
-    // prisma.booking.count backs three queues: pending admin booking reviews,
-    // unpaid finished stays (#1731), and unsettled finished-stay additions
-    // (#1723); discriminate on the where-clause.
+    // prisma.booking.count backs four queues: pending admin booking reviews,
+    // unpaid finished stays (#1731), and the two halves of the unsettled stay
+    // additions queue — finished (#1723) and still upcoming (#2350).
+    // Discriminate on the where-clause; the additions halves differ only in the
+    // direction of their check-out bound.
     mocks.bookingCount.mockImplementation(
-      async ({ where }: { where: { status?: unknown; payment?: unknown } }) => {
-        if (where.payment) return 13;
+      async ({
+        where,
+      }: {
+        where: { status?: unknown; payment?: unknown; checkOut?: { gt?: Date } };
+      }) => {
+        if (where.payment) return where.checkOut?.gt ? 15 : 13;
         return where.status === "PAYMENT_PENDING" ? 12 : 5;
       },
     );
@@ -90,6 +96,7 @@ describe("getAdminPendingCounts", () => {
       publicBookingRequests: 7,
       unpaidFinishedStays: 12,
       unsettledAdditionalFinishedStays: 13,
+      unsettledAdditionalUpcomingStays: 15,
       membershipCancellations: 8,
       archiveRequests: 9,
       deletionRequests: 10,

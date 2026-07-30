@@ -153,6 +153,8 @@ function bookingMetrics() {
       },
       capturedPrimaryCents: 24_000,
       capturedAdditionalCents: 0,
+      outstandingAdditionalCents: 0,
+      outstandingAdditionalBookings: 0,
       refundedCents: 0,
       netCollectedCents: 24_000,
       creditAppliedCents: 0,

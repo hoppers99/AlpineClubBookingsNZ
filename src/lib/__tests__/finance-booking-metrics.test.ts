@@ -166,6 +166,8 @@ describe("finance-booking-metrics", () => {
       },
       capturedPrimaryCents: 42000,
       capturedAdditionalCents: 0,
+      outstandingAdditionalCents: 0,
+      outstandingAdditionalBookings: 0,
       refundedCents: 2000,
       netCollectedCents: 40000,
       creditAppliedCents: 1000,
