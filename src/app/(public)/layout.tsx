@@ -55,6 +55,7 @@ export default async function PublicLayout({
         <SiteBanners banners={siteBanners} />
         <WebsiteHeader
           isAuthenticated={!!session?.user}
+          logoUrl={theme.logoUrl}
           logoDataUrl={theme.logoDataUrl}
         />
         <main className="flex-1" id="main-content">
@@ -65,7 +66,11 @@ export default async function PublicLayout({
             {children}
           </div>
         </main>
-        <WebsiteFooter logoDataUrl={theme.logoDataUrl} pageSlug={pageSlug} />
+        <WebsiteFooter
+          logoUrl={theme.logoUrl}
+          logoDataUrl={theme.logoDataUrl}
+          pageSlug={pageSlug}
+        />
         <AnalyticsConsent
           enabled={modules.analytics}
           measurementId={process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID}

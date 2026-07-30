@@ -3,9 +3,11 @@ import {
   MAX_RANGE_NIGHTS,
   boardNights,
   boardWindowError,
+  collapseNightRuns,
   fitBoardWindow,
+  stayWindowPage,
   stepBoardWindowByMonths,
-} from "@/app/(admin)/admin/bed-allocation/_components/board-window";
+} from "@/lib/bed-allocation-board-window";
 import { addMonthsDateOnly, formatDateOnly, parseDateOnly } from "@/lib/date-only";
 
 /*
@@ -157,5 +159,111 @@ describe("addMonthsDateOnly", () => {
     expect(
       formatDateOnly(addMonthsDateOnly(parseDateOnly("0099-12-01"), 1)),
     ).toBe("0100-01-01");
+  });
+});
+
+/*
+ * #2252 — the in-booking panel pages a stay through the same 31-night read
+ * bound. A page is always LABELLED with its night numbers, which is only
+ * honest if those numbers are right: the last page must end on the real
+ * check-out, and no page may wander outside the stay.
+ */
+describe("stayWindowPage", () => {
+  it("returns the whole stay as one page when it fits the read window", () => {
+    expect(stayWindowPage("2026-06-01", "2026-06-08", 0)).toEqual({
+      fromDate: "2026-06-01",
+      toDate: "2026-06-08",
+      pageIndex: 0,
+      pageCount: 1,
+      totalNights: 7,
+      firstNight: 1,
+      lastNight: 7,
+    });
+  });
+
+  it("splits a longer stay into labelled pages that end on the real check-out", () => {
+    // 61 nights: 31 + 30, and the second page stops at check-out rather than
+    // running a full window past the end of the stay.
+    expect(stayWindowPage("2026-06-01", "2026-08-01", 0)).toMatchObject({
+      fromDate: "2026-06-01",
+      toDate: "2026-07-02",
+      pageCount: 2,
+      totalNights: 61,
+      firstNight: 1,
+      lastNight: 31,
+    });
+    expect(stayWindowPage("2026-06-01", "2026-08-01", 1)).toMatchObject({
+      fromDate: "2026-07-02",
+      toDate: "2026-08-01",
+      pageCount: 2,
+      firstNight: 32,
+      lastNight: 61,
+    });
+  });
+
+  it("never exceeds the read window the dashboard GET accepts", () => {
+    for (const page of [0, 1, 2, 3]) {
+      const window = stayWindowPage("2026-01-01", "2027-01-01", page);
+      expect(window).not.toBeNull();
+      expect(
+        boardWindowError(window!.fromDate, window!.toDate),
+        `page ${page} must be a window the read accepts`,
+      ).toBeNull();
+      expect(window!.lastNight - window!.firstNight + 1).toBeLessThanOrEqual(
+        MAX_RANGE_NIGHTS,
+      );
+    }
+  });
+
+  it("clamps a page number outside the stay rather than inventing nights", () => {
+    const last = stayWindowPage("2026-06-01", "2026-08-01", 99);
+    expect(last).toMatchObject({ pageIndex: 1, toDate: "2026-08-01" });
+    const first = stayWindowPage("2026-06-01", "2026-08-01", -5);
+    expect(first).toMatchObject({ pageIndex: 0, fromDate: "2026-06-01" });
+  });
+
+  it("refuses a malformed or backwards stay instead of guessing one", () => {
+    expect(stayWindowPage("not-a-date", "2026-06-08", 0)).toBeNull();
+    expect(stayWindowPage("2026-06-08", "2026-06-01", 0)).toBeNull();
+    expect(stayWindowPage("2026-06-01", "2026-06-01", 0)).toBeNull();
+  });
+});
+
+describe("collapseNightRuns", () => {
+  it("collapses contiguous nights and keeps a gap as its own run", () => {
+    expect(
+      collapseNightRuns([
+        "2026-06-02",
+        "2026-06-01",
+        "2026-06-03",
+        "2026-06-06",
+      ]),
+    ).toEqual([
+      {
+        firstNight: "2026-06-01",
+        lastNight: "2026-06-03",
+        nights: ["2026-06-01", "2026-06-02", "2026-06-03"],
+      },
+      {
+        firstNight: "2026-06-06",
+        lastNight: "2026-06-06",
+        nights: ["2026-06-06"],
+      },
+    ]);
+  });
+
+  it("crosses a month boundary as one run", () => {
+    expect(collapseNightRuns(["2026-06-30", "2026-07-01"])).toHaveLength(1);
+  });
+
+  it("de-duplicates and handles an empty list", () => {
+    expect(collapseNightRuns(["2026-06-01", "2026-06-01"])).toEqual([
+      {
+        firstNight: "2026-06-01",
+        lastNight: "2026-06-01",
+        nights: ["2026-06-01"],
+      },
+    ]);
+    expect(collapseNightRuns([])).toEqual([]);
   });
 });

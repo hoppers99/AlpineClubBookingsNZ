@@ -12,6 +12,7 @@ import { listWebsiteMenuPages } from "@/lib/page-content-html";
 
 interface WebsiteHeaderProps {
   isAuthenticated: boolean;
+  logoUrl?: string | null;
   logoDataUrl?: string | null;
 }
 
@@ -19,6 +20,7 @@ const staticNavLinks = [{ href: "/contact", label: "Contact" }];
 
 export async function WebsiteHeader({
   isAuthenticated,
+  logoUrl,
   logoDataUrl,
 }: WebsiteHeaderProps) {
   const [dynamicPages, clubIdentity, bookNow] = await Promise.all([
@@ -52,6 +54,7 @@ export async function WebsiteHeader({
         >
           <WebsiteLogo
             label={clubName}
+            logoUrl={logoUrl}
             logoDataUrl={logoDataUrl}
             className="max-h-10 max-w-40"
             textClassName="max-w-48 text-brand-snow"
@@ -109,6 +112,7 @@ export async function WebsiteHeader({
         <WebsiteMobileMenu
           isAuthenticated={isAuthenticated}
           clubName={clubName}
+          logoUrl={logoUrl}
           logoDataUrl={logoDataUrl}
           navLinks={navLinks}
           showBookNow={showBookNow}

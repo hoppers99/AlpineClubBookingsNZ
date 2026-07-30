@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { BookingRequestType } from "@prisma/client";
 import { approveBookingRequest, BookingRequestError } from "@/lib/booking-request";
 import {
+  approveMemberWholeLodgeRequest,
   approveSchoolBookingRequest,
+  memberWholeLodgeApprovalSchema,
   schoolChildCountsSchema,
 } from "@/lib/school-booking-request";
 import { prisma } from "@/lib/prisma";
@@ -28,7 +30,11 @@ export async function POST(
 
   const requestRow = await prisma.bookingRequest.findUnique({
     where: { id },
-    select: { type: true },
+    // #2263: a member whole-lodge request is `type: GENERAL`, so the type alone
+    // cannot select the right approval. Both discriminator columns must be read
+    // here or every member request would silently fall through to the non-login
+    // payment-link path below.
+    select: { type: true, requestedByMemberId: true, exclusivityRequested: true },
   });
   if (!requestRow) {
     return NextResponse.json({ error: "Booking request not found" }, { status: 404 });
@@ -41,6 +47,8 @@ export async function POST(
   const body = (await req.json().catch(() => ({}))) as {
     childCounts?: unknown;
     ownerContactMemberId?: unknown;
+    pricedHeadcount?: unknown;
+    priceOverrideCents?: unknown;
   };
 
   // The map target is an existing non-login Organisation/School contact id. The
@@ -62,6 +70,62 @@ export async function POST(
   }
 
   try {
+    // #2263: the member whole-lodge branch is tested FIRST. These rows are
+    // `type: GENERAL`, so if the SCHOOL check and the GENERAL fallthrough ran in
+    // their old order every member request would be approved down the non-login
+    // payment-link path — minting a duplicate non-login member for someone who
+    // already has an account and emailing them a tokenised payment page.
+    if (requestRow.requestedByMemberId && requestRow.exclusivityRequested) {
+      const parsedOverride = memberWholeLodgeApprovalSchema.safeParse({
+        ...(body.pricedHeadcount !== undefined
+          ? { pricedHeadcount: body.pricedHeadcount }
+          : {}),
+        ...(body.priceOverrideCents !== undefined
+          ? { priceOverrideCents: body.priceOverrideCents }
+          : {}),
+      });
+      if (!parsedOverride.success) {
+        return NextResponse.json(
+          { error: "Invalid headcount or price override" },
+          { status: 422 }
+        );
+      }
+
+      const result = await approveMemberWholeLodgeRequest({
+        requestId: id,
+        adminMemberId: session.user.id,
+        override: parsedOverride.data,
+      });
+
+      if (result.type === "capacityExceeded") {
+        return NextResponse.json(
+          {
+            error:
+              "The lodge is at capacity for one or more of the requested nights",
+            fullNights: result.fullNights,
+          },
+          { status: 409 }
+        );
+      }
+
+      return NextResponse.json({
+        success: true,
+        type: "MEMBER_WHOLE_LODGE",
+        bookingId: result.bookingId,
+        memberId: result.memberId,
+        priceCents: result.priceCents,
+        guestCount: result.guestCount,
+        // Whether the receivable went to Xero or to admins to invoice by hand,
+        // so the officer's toast can say which (school parity). Null on an
+        // idempotent replay — this call raised nothing.
+        invoiceMode: result.invoiceMode,
+        // ADMIN-ONLY (ADR-001 decision 6): overlapping capacity-holding bookings
+        // the officer must resolve by hand. This reaches the admin caller and
+        // nothing else — no member surface reads this response.
+        exclusiveHoldConflicts: result.exclusiveHoldConflicts,
+      });
+    }
+
     if (requestRow.type === BookingRequestType.SCHOOL) {
       let guestOverride: { childCounts: ReturnType<typeof schoolChildCountsSchema.parse> } | undefined;
       if (body.childCounts !== undefined) {

@@ -339,6 +339,16 @@ export const rateLimiters = {
   bookingChangeRequest: { id: "booking-change-request", limit: 5, windowSeconds: 24 * 60 * 60 } as RateLimitConfig,
   /** Public non-member booking request submission: 5 per hour */
   bookingRequest: { id: "booking-request", limit: 5, windowSeconds: 60 * 60 } as RateLimitConfig,
+  /**
+   * Member whole-lodge booking request submission (#2263): 5 per hour.
+   * Deliberately no cheaper than the public/school door's `bookingRequest`
+   * limiter — an authenticated door must not be the easier one to hammer.
+   * Applied per-IP and again per-member, so neither a shared network nor a
+   * rotating address is a free pass.
+   */
+  memberWholeLodgeRequest: { id: "member-whole-lodge-request", limit: 5, windowSeconds: 60 * 60, authSensitive: true } as RateLimitConfig,
+  /** Member whole-lodge request withdrawal (#2263): 20 per hour */
+  memberWholeLodgeWithdraw: { id: "member-whole-lodge-withdraw", limit: 20, windowSeconds: 60 * 60 } as RateLimitConfig,
   /** Public booking request verification links: 10 hits per 15 minutes */
   bookingRequestToken: { id: "booking-request-token", limit: 10, windowSeconds: 15 * 60 } as RateLimitConfig,
   /** Tokenised public payment link pages and payment intents: 20 hits per 15 minutes */

@@ -17,6 +17,13 @@ const approveSchema = z
     allocationIds: z.array(z.string().min(1)).max(250).optional(),
     from: z.string().optional(),
     to: z.string().optional(),
+    /*
+     * One booking's draft rows (#2252) — the in-booking Bed allocation panel's
+     * Confirm sends this and NOTHING else. It is a sufficient selector on its
+     * own: the panel must never issue a `from`/`to` approval, which would
+     * confirm every other booking's drafts in the same window.
+     */
+    bookingId: z.string().min(1).optional(),
     // Board lodge scope (ADR-003): a range approval only approves this
     // lodge's pending allocations. Omitted = club-wide.
     lodgeId: z.string().min(1).optional(),
@@ -50,6 +57,7 @@ export async function POST(request: Request) {
       approvedByMemberId: guard.session.user.id,
       allocationIds: body.data.allocationIds,
       range,
+      bookingId: body.data.bookingId,
       lodgeId: body.data.lodgeId,
     });
 
@@ -60,9 +68,18 @@ export async function POST(request: Request) {
       category: "admin",
       outcome: "success",
       summary: "Bed allocations approved",
+      /*
+       * A booking-scoped approval carries the booking id as `targetId` (#2252):
+       * the booking page's "Audit log" deep link searches `?q=<bookingId>`
+       * against targetId/entityId/summary/details — never metadata — so without
+       * this a Confirm done from the booking would be invisible from that
+       * booking's own audit link. Mirrors BED_ALLOCATION_RANGE_SET (#2251).
+       */
+      targetId: body.data.bookingId ?? undefined,
       metadata: {
         approvedCount: result.count,
         allocationIds: body.data.allocationIds,
+        bookingId: body.data.bookingId,
         range,
       },
     });

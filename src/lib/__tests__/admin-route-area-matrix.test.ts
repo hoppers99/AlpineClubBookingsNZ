@@ -139,6 +139,11 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/booking-requests/[id]/contacts": "bookings",
   "/api/admin/booking-requests/[id]/decline": "bookings",
   "/api/admin/booking-requests/[id]/hold": "bookings",
+  // #2263: admin-only availability + conflict preview for a whole-lodge
+  // request. Read-only and advisory, but it exposes per-night occupancy and the
+  // identities of overlapping bookings, so it belongs to the same "bookings"
+  // area as the approve/decline actions it informs — never a wider one.
+  "/api/admin/booking-requests/[id]/hold-conflicts": "bookings",
   "/api/admin/booking-requests/[id]/link-conflicts": "bookings",
   "/api/admin/booking-requests/[id]/price": "bookings",
   "/api/admin/booking-requests/[id]/quote": "bookings",
@@ -331,6 +336,7 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/site-content": "content",
   "/api/admin/site-images": "content",
   "/api/admin/site-style": "content",
+  "/api/admin/site-style/logo": "content",
   "/api/admin/stuck-states": "support",
   "/api/admin/subscriptions": "finance",
   "/api/admin/subscriptions/[id]/manual-payment": "finance",
