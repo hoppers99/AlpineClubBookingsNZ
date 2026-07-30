@@ -13,6 +13,7 @@ import {
   WAITLISTER,
 } from "./helpers/fixtures";
 import { stayWindow } from "./helpers/stay-dates";
+import { overrideModules, setModuleSettings, type ModuleSettings } from "./helpers/modules";
 
 /*
   #2263 (epic #2245) — the member whole-lodge request journey, and the privacy
@@ -105,6 +106,16 @@ let aliceContext: BrowserContext;
 let wandaContext: BrowserContext;
 let nadiaContext: BrowserContext;
 
+// Module + Internet Banking state to put back in afterAll. The Xero setup-wizard
+// specs run immediately after this file (alphabetically), so leaving
+// xeroIntegration flipped on would be somebody else's mystery failure.
+let modulesBefore: ModuleSettings | null = null;
+let ibSettingsBefore: {
+  holdBedSlots: boolean;
+  holdDays: number;
+  minimumDaysBeforeCheckIn: number;
+} | null = null;
+
 /** Every member-origin whole-lodge request in the admin queue, any status. */
 async function listMemberOriginRequests(admin: APIRequestContext) {
   const response = await admin.get(
@@ -178,6 +189,35 @@ test.beforeAll(async ({ browser }) => {
   ).toBeVisible();
   await adminWarmup.close();
 
+  // World C needs a CONFIRMED (capacity-holding) booking, and the only route to
+  // one without Stripe is an Internet Banking create — which the create route
+  // gates on BOTH xeroIntegration AND internetBankingPayments, and which
+  // e2e/setup/enable-e2e-modules.ts deliberately leaves OFF. Turn both on for
+  // this file exactly as e2e/double-bed-sharing.spec.ts does for its
+  // capacity-holding anchors, with holdBedSlots so the booking lands CONFIRMED.
+  // Xero stays UNCONFIGURED, so the invoice this PR now enqueues is queued and
+  // never sent. Both are restored in afterAll.
+  modulesBefore = await overrideModules(adminContext.request, {
+    xeroIntegration: true,
+    internetBankingPayments: true,
+  });
+  const ibGet = await adminContext.request.get(
+    "/api/admin/internet-banking-settings",
+  );
+  expect(ibGet.ok(), `GET IB settings (${ibGet.status()})`).toBe(true);
+  ibSettingsBefore = (await ibGet.json()).settings;
+  const ibPut = await adminContext.request.put(
+    "/api/admin/internet-banking-settings",
+    {
+      data: {
+        holdBedSlots: true,
+        holdDays: ibSettingsBefore!.holdDays,
+        minimumDaysBeforeCheckIn: 0,
+      },
+    },
+  );
+  expect(ibPut.ok(), `PUT IB settings (${ibPut.status()})`).toBe(true);
+
   aliceContext = await browser.newContext({
     storageState: storageStatePath(personas.booker.email),
   });
@@ -242,10 +282,32 @@ async function clearLeftoverOpenRequests(admin: APIRequestContext) {
 }
 
 test.afterAll(async () => {
-  await adminContext?.close();
-  await aliceContext?.close();
-  await wandaContext?.close();
-  await nadiaContext?.close();
+  // Restore before closing the contexts, and tolerate partial setup: this file
+  // is followed by the Xero setup-wizard specs, which assume the module state
+  // enable-e2e-modules.ts left behind.
+  try {
+    if (ibSettingsBefore) {
+      await adminContext.request
+        .put("/api/admin/internet-banking-settings", {
+          data: {
+            holdBedSlots: ibSettingsBefore.holdBedSlots,
+            holdDays: ibSettingsBefore.holdDays,
+            minimumDaysBeforeCheckIn: ibSettingsBefore.minimumDaysBeforeCheckIn,
+          },
+        })
+        .catch(() => undefined);
+    }
+    if (modulesBefore) {
+      await setModuleSettings(adminContext.request, modulesBefore).catch(
+        () => undefined,
+      );
+    }
+  } finally {
+    await adminContext?.close();
+    await aliceContext?.close();
+    await wandaContext?.close();
+    await nadiaContext?.close();
+  }
 });
 
 /** Submit one whole-lodge request and return the raw status + body BYTES. */
