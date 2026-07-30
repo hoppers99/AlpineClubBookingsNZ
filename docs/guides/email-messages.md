@@ -79,7 +79,11 @@ Two consequences worth knowing:
 - **Never annotate a body with instructions to yourself.** Text such as
   `[only when a door code is set]` is not understood by anything — it is
   printed verbatim to the member. Older built-in wording carried such notes;
-  they were all removed in v0.13, and the build now refuses any that come back.
+  they were all removed in v0.13, the build refuses any that come back, and
+  **Save now refuses square-bracketed text in an override** too. A
+  customisation you saved from the old built-in wording may still carry these
+  notes — a warning at the top of this page names each such template; open it,
+  delete the bracketed text and save, or reset it to the corrected default.
 
 For the same reason, **each template covers exactly one outcome.** Where a
 message could go two ways there are two templates to edit, not one with a

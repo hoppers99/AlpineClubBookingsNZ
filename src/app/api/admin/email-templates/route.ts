@@ -8,6 +8,7 @@ import {
   EMAIL_TEMPLATE_DEFINITIONS,
   EMAIL_TEMPLATE_KEY_SET,
 } from "@/lib/email-message-registry";
+import { findBracketAnnotations } from "@/lib/email-message-token-contract";
 import { validateEmailTemplateContent } from "@/lib/email-message-renderer";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
@@ -71,6 +72,33 @@ export async function GET() {
       .map((override) => [override.templateName, override]),
   );
 
+  // #2268 review (MED-1): overrides saved from the pre-sweep editor text still
+  // carry the "[only when …]" authoring notes as literal member-facing content.
+  // Save-time validation now refuses them, but a row that is never re-saved
+  // would keep sending the junk forever and nothing would say so. Run guard 1's
+  // detector over every stored override (registered AND stale — a stale row can
+  // still matter to an operator deciding what to re-author) so the panel can
+  // name exactly which templates still carry the junk without an admin opening
+  // each one.
+  const bracketAnnotationOverrides = overrides
+    .map((override) => {
+      const findings = findBracketAnnotations({
+        [override.templateName]: {
+          defaultSubject: override.subject ?? "",
+          defaultBody: override.bodyText ?? "",
+        },
+      });
+      if (findings.length === 0) return null;
+      return {
+        templateName: override.templateName,
+        annotations: findings.flatMap((finding) => finding.detail.split(" | ")),
+      };
+    })
+    .filter(
+      (entry): entry is { templateName: string; annotations: string[] } =>
+        entry !== null,
+    );
+
   return NextResponse.json({
     templates: EMAIL_TEMPLATE_DEFINITIONS.map((definition) => {
       const override = overrideByTemplate.get(definition.key);
@@ -81,6 +109,7 @@ export async function GET() {
     }),
     staleOverrideCount: staleOverrides.length,
     staleOverrides,
+    bracketAnnotationOverrides,
   });
 }
 
@@ -126,6 +155,7 @@ export async function PUT(request: NextRequest) {
         signPrefixedTokens: validation.signPrefixedTokens,
         sensitiveSubjectTokens: validation.sensitiveSubjectTokens,
         unsafeLinks: validation.unsafeLinks,
+        bracketAnnotations: validation.bracketAnnotations,
       },
       { status: 400 },
     );

@@ -12,7 +12,10 @@ All notable public reference-release changes should be recorded here.
   such a note: it substitutes tokens and does nothing else. Because the admin
   email editor pre-fills its box with that built-in wording and saves whatever it
   is given, any club that had customised one of these templates was sending the
-  notes to members and admins verbatim. All of them are gone. Deleting them
+  notes to members and admins verbatim. The shipped built-in wording is now all
+  clean; a customisation a club saved from the old text still carries its notes,
+  so those overrides are now flagged by name on the Email Messages page and can
+  no longer be re-saved until the bracketed text is removed. Deleting the notes
   alone would have swapped one defect for another — a lodge with no door code
   would have received a bare `Door code:`, an appeal with no figure a bare
   `Requested:` — so every optional line is now built in full by the code that

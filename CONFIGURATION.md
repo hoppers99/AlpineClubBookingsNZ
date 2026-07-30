@@ -280,7 +280,12 @@ suite on any square-bracketed text in a shipped default, on any default token
 that is not in `APPROVED_EMAIL_TEMPLATE_TOKENS`, on any supplied override token
 that is not approved (the state `{{promoAdjustment}}` was in), and on any
 default that would leave a dangling label when a declared-optional value renders
-empty.
+empty. The same square-bracket detector runs at save time
+(`validateEmailTemplateContent`), so an override carrying such a note is
+refused with a plain-English explanation rather than stored; and because a row
+saved **before** that check existed keeps sending its notes until re-authored,
+the Admin → Email Messages page lists every stored override that still matches
+the pattern so an operator can clean each one up by name.
 
 | Field                                              | Required | Description                                                                                                      |
 | -------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------- |
