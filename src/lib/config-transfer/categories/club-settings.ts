@@ -7,6 +7,9 @@ import {
   DEFAULT_BOOKING_REQUEST_SETTINGS,
   DEFAULT_GROUP_DISCOUNT_SETTING,
   DEFAULT_INTERNET_BANKING_PAYMENT_SETTINGS,
+  DEFAULT_MEMBER_GUEST_SETTINGS,
+  MEMBER_GUEST_PENDING_HOLD_EXPIRY_DAYS_MAX,
+  MEMBER_GUEST_PENDING_HOLD_EXPIRY_DAYS_MIN,
   DEFAULT_MEMBERSHIP_CANCELLATION_SETTINGS,
   DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS,
   DEFAULT_MEMBERSHIP_NOMINATION_SETTINGS,
@@ -177,6 +180,15 @@ export const SINGLETONS: SingletonSpec[] = [
       // still renders. The deployment-specific spend cap does NOT travel — see the
       // note above the SINGLETONS array on not registering AiAssistantSettings.
       "aiAssistant",
+      // memberGuests SHOULD-TRAVEL (#2306, epic #2305, owner decision D-18):
+      // "may a member add another member as a guest?" is a club capability
+      // decision like groupBookings or waitlist, not a per-install auth or
+      // credential decision, so it travels with the other 21 flags. Importing
+      // `true` onto a target is harmless in this release (the flag is inert)
+      // and, once MG2 lands, still lands on the target's OWN policy singleton.
+      // The two PRIVACY toggles that decide how a member is FOUND live on the
+      // separate member-guest-settings singleton below and are excluded there.
+      "memberGuests",
     ],
     excluded: {
       multiLodge:
@@ -223,6 +235,7 @@ export const SINGLETONS: SingletonSpec[] = [
       analytics: { required: true },
       lobbyDisplay: { required: true },
       aiAssistant: { required: true },
+      memberGuests: { required: true },
     },
     select: CLUB_MODULE_SETTINGS_COLUMN_SELECT,
     defaults: () => DEFAULT_MODULE_SETTINGS,
@@ -301,6 +314,61 @@ export const SINGLETONS: SingletonSpec[] = [
         "reads today; a source lodge id is not portable across installs",
     },
     defaults: () => DEFAULT_BOOKING_REQUEST_SETTINGS,
+  },
+  {
+    // Member-guest policy singleton (#2306, epic #2305). OWNER DECISION D-18
+    // (30 Jul) is a deliberate SPLIT, not "the whole model travels":
+    //
+    //  * approvalRequired and pendingHoldExpiryDays TRAVEL. They are portable
+    //    club policy of exactly the BookingRequestSettings kind — "do we ask
+    //    first?" and "how long do we hold the bed?" — and a target club that
+    //    imports them can see and change both on its own settings page.
+    //
+    //  * openMemberSearchEnabled and openMemberSearchIncludesMinors NEVER
+    //    travel. See `excluded` below: they are the same shape as the
+    //    magicLink/googleLogin exclusions — a setting whose import would change
+    //    the TARGET's posture without the target's admin deciding.
+    entity: "member-guest-settings",
+    delegate: "memberGuestSettings",
+    fields: ["approvalRequired", "pendingHoldExpiryDays"],
+    // Both are non-null (@default); a present null fails the dry-run (#2200).
+    // The pendingHoldExpiryDays bounds are the 1..60 the owner confirmed on
+    // #2305 (30 Jul, confirm-by-objection), mirroring quoteResponseTtlDays.
+    // Taken from the shared constants rather than written as literals, so the
+    // importer's bounds and MG2's admin-route validator cannot drift apart.
+    constraints: {
+      approvalRequired: { required: true },
+      pendingHoldExpiryDays: {
+        required: true,
+        min: MEMBER_GUEST_PENDING_HOLD_EXPIRY_DAYS_MIN,
+        max: MEMBER_GUEST_PENDING_HOLD_EXPIRY_DAYS_MAX,
+      },
+    },
+    excluded: {
+      // OWNER JUDGEMENT (#2306, D-18), the same class of call as the
+      // magicLink/googleLogin exclusions above. This toggle decides whether the
+      // club's membership NAME LIST becomes browsable to anyone who can start a
+      // booking. Importing a source club's `true` would silently widen a target
+      // club's member privacy posture without its admin ever choosing it, and
+      // the target has no signal that its bundle just did that. A fresh import
+      // therefore keeps the target's own value (default OFF), and its admin
+      // opts in deliberately.
+      openMemberSearchEnabled:
+        "club privacy posture: turning it on makes the membership name list " +
+        "browsable to any member who can start a booking; an import must never " +
+        "widen a target club's member privacy without its own admin deciding — " +
+        "OWNER JUDGEMENT (#2306, D-18)",
+      // Same judgement, and strictly stronger: this one governs whether MINORS
+      // appear in that browsable list. It must not be able to arrive in a
+      // bundle. (Decision D-9 as ticked already makes any active member
+      // resolvable by a shared household email, which is what makes this
+      // sub-toggle load-bearing rather than cosmetic.)
+      openMemberSearchIncludesMinors:
+        "governs whether MINORS appear in the open member type-ahead; a child's " +
+        "discoverability is never a value another club's bundle gets to set — " +
+        "OWNER JUDGEMENT (#2306, D-18)",
+    },
+    defaults: () => DEFAULT_MEMBER_GUEST_SETTINGS,
   },
   {
     entity: "internet-banking-payment-settings",

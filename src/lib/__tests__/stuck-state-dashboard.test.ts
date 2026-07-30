@@ -33,6 +33,7 @@ const modulesOn: FeatureFlags = {
   lobbyDisplay: false,
   aiAssistant: false,
   memberNotices: true,
+  memberGuests: false,
 };
 
 function emptyEmailResponses() {
