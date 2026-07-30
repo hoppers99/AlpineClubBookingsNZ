@@ -100,6 +100,18 @@ export const ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES: ReadonlySet<string> =
     "group-join-cancelled",
     // Admin refund-appeal outcome, sent to the member about their booking
     "refund-request-resolved",
+    // src/lib/email/member-guest.ts (#2307) — all four take { bookingId }. A
+    // member-guest consent request, notice, outcome or lapse notice cannot exist
+    // without the booking the guest row hangs off, so `"none"` is not offered by
+    // any of the four wrappers. They are member-audience for a load-bearing
+    // reason (see isBookingSuppressibleTemplate below): owner decision D-16 has
+    // them ignore the per-action notify tick and the member's own notification
+    // preferences, so this switch is the ONLY thing that withholds them, and an
+    // admin-audience classification would let a silenced booking mail out.
+    "member-guest-consent-request",
+    "member-guest-added",
+    "member-guest-consent-outcome",
+    "member-guest-consent-expired",
   ]);
 
 /**

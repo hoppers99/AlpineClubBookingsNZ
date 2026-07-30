@@ -285,6 +285,33 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
   // the season, so requiring it would force an override to promise a figure the
   // send cannot always supply.
   "membership-payment-recorded": ["firstName", "seasonYear"],
+  // #2307 (epic #2305, MG2). The four member-guest emails. What each override
+  // may NOT drop is the part of the message that would otherwise leave the
+  // member unable to act:
+  //   - the ask itself, the deadline, and the link to answer on;
+  //   - the one sentence that says WHY somebody is on a booking they never
+  //     agreed to, and the honest statement of whether they can come off it
+  //     (owner decision D-14 — the ordinary self-removal blockers apply, so this
+  //     sentence is the only thing standing between the member and a control
+  //     the server would refuse);
+  //   - for the booking's owner, the outcome and what it did to their booking
+  //     and their money (D-15 settles an expired place as account credit).
+  // `consentUrl` is required in the BODY and separately banned from subjects
+  // (SENSITIVE_EMAIL_SUBJECT_TOKENS below).
+  "member-guest-consent-request": [
+    "askHeading",
+    "askContextNote",
+    "consentExpiresAt",
+    "consentUrl",
+  ],
+  "member-guest-added": ["addedContextNote", "removalNote"],
+  "member-guest-consent-outcome": [
+    "outcomeHeading",
+    "outcomeSentence",
+    "consequenceNote",
+    "bookingId",
+  ],
+  "member-guest-consent-expired": ["bookerName", "checkIn", "checkOut"],
 };
 
 const TEMPLATE_TRIGGER_METADATA: Partial<
@@ -531,6 +558,34 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
     frequency:
       "Once per manual mark-paid where the admin picks 'Mark paid and email member'; never on a reversal to unpaid",
   },
+  // #2307 (epic #2305, MG2). Owner decision D-16 is stated in every one of these
+  // four summaries rather than only in the code, because the admin editing the
+  // wording is the person most likely to assume these follow the member's
+  // notification preferences — and they deliberately do not.
+  "member-guest-consent-request": {
+    triggerSummary:
+      "A member was added as a guest on somebody else's booking under the ask-first policy (D-3, the shipped default), so the member — or a family delegate answering for a member with no login (D-9) — is asked to agree",
+    frequency:
+      "Once per member-guest row that needs consent. Ignores the per-action 'notify the member' tick and the member's own notification preferences (D-16): being asked is not a mutable preference, and a muted member would silently expire off the booking instead. Still withheld by the per-booking 'No emails' switch",
+  },
+  "member-guest-added": {
+    triggerSummary:
+      "A member was added as a guest on somebody else's booking WITHOUT being asked — the club runs notify-only (D-3 opt-down), an admin added them, or the row came from an approved booking request (MG4-D-a). One template for all three; the composed opening sentence says which",
+    frequency:
+      "Once per member-guest row that was not asked about. Ignores the per-action notify tick and the member's notification preferences (D-16); still withheld by the per-booking 'No emails' switch",
+  },
+  "member-guest-consent-outcome": {
+    triggerSummary:
+      "A member-guest consent request was answered or lapsed, so the person who made the booking is told. Covers approved, declined, lapsed-and-removed, and lapsed-but-still-on-the-booking (the D-15 exception case an admin has to resolve)",
+    frequency:
+      "Once per resolved request, to the booking's owner. Ignores the per-action notify tick and notification preferences (D-16); still withheld by the per-booking 'No emails' switch",
+  },
+  "member-guest-consent-expired": {
+    triggerSummary:
+      "A member-guest consent request lapsed with no answer, so the member who was asked is told the held bed was released",
+    frequency:
+      "Once per lapsed request, and ONLY where a request email was actually sent — nobody is told a request lapsed that they never received. Ignores the per-action notify tick and notification preferences (D-16); still withheld by the per-booking 'No emails' switch",
+  },
 };
 
 function titleCaseTemplateKey(key: string): string {
@@ -575,6 +630,58 @@ function sampleValue(token: string): string {
   if (token === "LODGE_CAPACITY") return String(FALLBACK_LODGE_CAPACITY);
   if (token === "doorCode") return "1234";
   if (token === "expectedArrivalTime") return "16:30";
+  // ---------------------------------------------------------------------
+  // #2307 (epic #2305, MG2) — the member-guest emails.
+  //
+  // Every one of these is a PRE-COMPOSED token: the sender emits the whole
+  // sentence or block, because renderTemplateString has no conditional and no
+  // loop. So the preview sample cannot be a placeholder word — it has to be the
+  // real composed text, or the admin previewing an override sees a shape their
+  // members will never receive and lays the body out for it.
+  //
+  // These sit ABOVE the generic `endsWith("Url")` / name-shaped fallbacks below
+  // on purpose, so consentUrl previews as a real consent link rather than as the
+  // generic admin URL.
+  //
+  // Every value here is the exact output of the matching composer in
+  // src/lib/member-guest-email-notes.ts for ONE documented fixture — Dave Ngata
+  // adding Priya Kaur to 8–10 Aug 2026 at the sample lodge, nights 8 and 9 Aug,
+  // NZ$48.00 of credit — and a test in member-guest-email-notes.test.ts calls
+  // those composers and asserts equality, so a wording change cannot leave a
+  // stale sample behind. Note there is no money in the request/added samples:
+  // owner decision MG2-D-a keeps money out of those emails entirely.
+  // ---------------------------------------------------------------------
+  if (token === "bookerName") return "Dave Ngata";
+  if (token === "askHeading") return "Can Dave Ngata add you to this booking?";
+  if (token === "askContextNote") {
+    return (
+      "Dave Ngata has put you down as a guest on a lodge booking. " +
+      "Nothing is settled until you answer - a bed is held for you in the meantime."
+    );
+  }
+  if (token === "addedContextNote") {
+    return (
+      "Dave Ngata has added you as a guest on a lodge booking. Your place is " +
+      "already held — this club does not ask first for member guests."
+    );
+  }
+  if (token === "removalNote") {
+    return "If you would rather not go, you can take yourself off the booking from your account.";
+  }
+  if (token === "partyListNote") {
+    return "Everyone on this booking:\n- Dave Ngata\n- Marama Ngata\n- Ari Ngata\n- Priya Kaur";
+  }
+  if (token === "guestNightsLabel") return "8 Aug 2026, 9 Aug 2026 (2 nights)";
+  if (token === "outcomeHeading") return "Priya Kaur has accepted";
+  if (token === "outcomeSentence") {
+    return "Priya Kaur has accepted your invitation and is confirmed on your booking at Example Mountain Club Lodge, 8 Aug 2026 - 10 Aug 2026.";
+  }
+  if (token === "consequenceNote") {
+    return "Nothing has changed on your booking — the bed that was being held for Priya is now theirs.";
+  }
+  if (token === "consentUrl") {
+    return "https://bookings.example.org/bookings/bkg_example#consent";
+  }
   if (token.endsWith("Email") || token === "email") return "member@example.org";
   if (token.endsWith("Url") || token.endsWith("URL")) {
     return "https://bookings.example.org/admin";
@@ -656,6 +763,9 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "CONTACT_EMAIL",
   "LODGE_CAPACITY",
   "SUPPORT_EMAIL",
+  // #2307: the one composed sentence that tells notify-only, an admin add and a
+  // pipeline add apart in the single member-guest-added template.
+  "addedContextNote",
   "additionalAmount",
   "additionalPaymentMethod",
   "adminEnteredBody",
@@ -665,8 +775,16 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "amount",
   "applicantEmail",
   "applicantName",
+  // #2307: what is being asked, of whom, and why them — composed because the
+  // reader may be the member being added OR a family delegate answering for a
+  // member with no login (D-9), and the template language has no conditional.
+  "askContextNote",
+  // #2307: the consent request's heading, composed for the same reason.
+  "askHeading",
   "attemptCount",
   "availableBeds",
+  // #2307: the member who made the booking and put this member down as a guest.
+  "bookerName",
   "bookingId",
   "bookingReference",
   "bumpedMemberName",
@@ -678,6 +796,16 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "choreDescription",
   "choreLink",
   "choreName",
+  // #2307: when a pending member-guest consent request lapses (the answer-by
+  // date the member is given, and the date the sweep works to).
+  "consentExpiresAt",
+  // #2307: the deep link to the consent surface. Subject-sensitive — see
+  // SENSITIVE_EMAIL_SUBJECT_TOKENS.
+  "consentUrl",
+  // #2307: what the outcome means for the owner's booking and their money —
+  // the repricing plus D-15's account credit, or the honest "they are still on
+  // the booking because only the club can change it".
+  "consequenceNote",
   "contactEmail",
   "correlationKey",
   "count",
@@ -708,6 +836,8 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "guestFirstName",
   "guestLastName",
   "guestName",
+  // #2307: which nights THIS guest is down for, human-readable.
+  "guestNightsLabel",
   "holdUntil",
   "hoursRemaining",
   "inducteeName",
@@ -748,11 +878,21 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "organiserName",
   "originalRecipient",
   "originalTemplateName",
+  // #2307: the consent outcome's heading and its opening sentence. One template
+  // covers approved, declined, lapsed-and-removed and lapsed-but-stuck, so both
+  // are composed server-side.
+  "outcomeHeading",
+  "outcomeSentence",
   "pageTitle",
   "pageUrl",
   "paidAmount",
   "parentName",
   "partnerName",
+  // #2307: the whole "Everyone on this booking" block, heading included (owner
+  // decision MG2-D-a). ONE token because the template language cannot render a
+  // list — see the note in docs/guides/email-messages.md: an override may move
+  // or omit the block but cannot reformat it guest by guest.
+  "partyListNote",
   "payUrl",
   "paymentIntentId",
   "paymentReference",
@@ -773,6 +913,10 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "refundedAmount",
   "remainingAmount",
   "remainingCredit",
+  // #2307: whether the member can take themselves off, or the real remedy if
+  // they cannot. Composed from the SHARED evaluateGuestSelfRemoval predicate so
+  // the email never offers a control the server would refuse (D-14).
+  "removalNote",
   "recipientName",
   "profileUrl",
   "requestId",
@@ -829,6 +973,12 @@ const SENSITIVE_EMAIL_SUBJECT_TOKENS = [
   "claimUrl",
   "confirmUrl",
   "confirmationUrl",
+  // #2307: the member-guest consent deep link. Not a bearer credential — both
+  // consent surfaces require the reader to be signed in — but it is a per-guest
+  // URL identifying who was asked about which booking, and EmailLog persists
+  // subjects for every template while mail headers travel in the clear. Same
+  // class as respondUrl, and restricted the same way.
+  "consentUrl",
   "doorCode",
   "loginUrl",
   "payUrl",
