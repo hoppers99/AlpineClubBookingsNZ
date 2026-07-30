@@ -268,6 +268,75 @@ Recorded as the children landed, to keep the design of record accurate:
   general booking-request or ordinary member booking flows. Admins can still
   set/clear `Booking.wholeLodgeHold` on **any** booking (the flag is
   booking-generic; only the request front-door is school-scoped for now).
+  - **SUPERSEDED 2026-07-30 (owner decision D11, issue #2263) — a signed-in
+    member may now ask too; the ANONYMOUS door still may not.** A second
+    front-door is added: `POST /api/booking-requests/whole-lodge`, behind an
+    active-session guard, reachable from a card on Book a Stay leading to
+    `/book/whole-lodge`. The four-step booking wizard is untouched. What is
+    superseded is only the *school-only* scope of the ask. Everything else about
+    exclusivity is unchanged: the flag on the request is still nothing but the
+    ASK; only an approving admin turns it into `Booking.wholeLodgeHold`; the
+    approval runs through the same `school-booking-request.ts` machinery so the
+    lock ordering, hold stamping, bed-allocation prune (#2285) and post-commit
+    conflict surfacing exist in one place; and decision 1 (never refuse, never
+    displace) is untouched. The anonymous public GENERAL door remains unable to
+    set the flag at all — an unauthenticated stranger who could would be asking
+    the club to sterilise every bed on a date of their choosing.
+    - **Decision 6 (no member or public disclosure) is restated as UNCHANGED,
+      and is now enforced by test rather than by care.** The member front-door
+      shows no availability calendar, no capacity pre-check, no price and no
+      quote, and returns ONE frozen acknowledgement body for every schema-valid
+      submission. The submit handler issues no availability, occupancy, season
+      or pricing query at all, so uniformity is structural rather than padded.
+      A Playwright spec (`e2e/whole-lodge-request.spec.ts`) submits the same
+      payload against three seeded worlds — clear, ordinarily full, and
+      exclusively held — from three member sessions and compares the response
+      **bytes as buffers**. "My requests" reduces every internal status to one
+      of four words, and a member-origin decline persists no officer note and
+      emails one fixed generic sentence.
+    - **The pinning test is replaced, not deleted.** The former
+      `booking-request.test.ts` pin ("the whole-lodge request front-door is
+      school-only (#121)") is replaced in the same change by a pair: a
+      behavioural test that the public GENERAL create path still persists no
+      `exclusivityRequested` key and no member attribution, and an AST
+      source-scan (`src/lib/__tests__/exclusivity-request-write-sites.test.ts`)
+      asserting the set of files that WRITE the flag is exactly the two
+      sanctioned doors. The behavioural half cannot see a third door somebody
+      adds later; the scan is what does.
+    - **Retention (owner decision OD-B).** Member-origin `DECLINED` and
+      `CANCELLED` (member-withdrawn) requests both purge on the existing 90-day
+      Privacy Act clock, so "My requests" is a bounded history and its UI copy
+      says so.
+    - **Placeholder rate class (owner decision OD-A).** The member's party is
+      unnamed placeholder guests, which price at NON-MEMBER rates at approval
+      (`hasNonMembers: true`) as the conservative revenue default.
+
+      **How a placeholder becomes a member-rated guest: REMOVE AND RE-ADD.**
+      OD-A was ticked on the understanding that guests "re-rate per-guest as
+      names and links are edited in". Review found that no in-place path exists:
+      the guest-edit engine (`buildBookingModifyPlan`, `src/lib/booking-modify-plan.ts`)
+      accepts `guestUpdates` for NAMES ONLY and refuses outright when the guest
+      `isMember` or carries a `memberId` — member linkage cannot be changed on an
+      existing guest row at all, by design (renaming must never be able to
+      quietly transfer who a booking is for). So an officer converts a
+      placeholder by **removing it and adding the real member as a new guest**
+      (`removeGuestIds` + `addGuests` in the same batch modification), which
+      prices the added guest at their own rate and settles the difference through
+      the ordinary `BookingModification` refund/re-charge path. Renaming a
+      placeholder alone does NOT re-rate it, and that is correct — a rename does
+      not change who the person is for rate purposes.
+
+      A first-class "link placeholder → member with in-place re-rate" is a
+      separate, owner-scoped piece of work (it widens the money surface of the
+      modify engine and deliberately reverses that refusal); it is filed as its
+      own `needs-decision` issue (#2337).
+
+      No
+      `nonMemberHoldUntil` is stamped: the hold clock belongs to the PENDING
+      non-member path, and arming a bump clock against a CONFIRMED booking that
+      holds the whole lodge would point it at the one booking that must never
+      be bumped (school parity — a school booking is `hasNonMembers` with no
+      hold clock either).
 - **Group B (pre-existing overridden settlements) — left proceeding, revisitable.**
   #118 deliberately does not hard-block the payment-settlement paths for a
   booking that was admitted over-capacity *before* a hold was later placed over

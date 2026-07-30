@@ -52,6 +52,103 @@ All notable public reference-release changes should be recorded here.
   departure day) should have its end date trimmed by a day first — the form and
   the guide both say so.
 
+- **Beds can now be allocated and confirmed from inside a booking, without going
+  to the board at all (#2252).** Until now, answering "where is this party
+  sleeping, and is it settled?" meant leaving the booking, opening the
+  bed-allocation board, setting the date window to that booking's nights, and
+  picking its chips out from among everyone else's. An admin viewing a booking
+  now gets a **Bed allocation** card on the booking itself — its own section, in
+  the section list down the side — with one row per guest: their stay, how many
+  of their nights have a bed and how many do not, and each bed they are on shown
+  as a run of nights rather than a line per night.
+
+  **Assign…** opens the same range dialog the board uses, prefilled with that
+  guest's own stay, so everything it does there it does here — including
+  confirming those beds as it writes them. **Remove** takes a run of nights off
+  a bed. **Confirm draft beds** approves every draft bed night on that booking
+  and, importantly, on no other: the board's existing "approve everything in
+  this window" action would have swept up other people's bookings, so confirming
+  from a booking now selects by the booking itself. That approval is recorded
+  against the booking, so the booking's own **Audit log** link finds it.
+
+  The card is deliberately honest about the things it cannot do or cannot show.
+  Confirming beds locks the member out of changing their requested room — and
+  under range assignment that lock has usually already happened, so the card
+  says so rather than implying the button is the trigger. The lock is also not
+  one-way: removing a booking's last confirmed night re-opens the member's room
+  request, and the card warns before it does. A stay longer than the 31-night
+  window the allocation view allows is shown a page at a time, with the page
+  always labelled ("Nights 32–61 of 61") and Confirm stating plainly that it
+  reaches the nights you cannot currently see. A booking that cannot hold beds —
+  cancelled, deleted, or a status that is never allocated — keeps the card and
+  says why, instead of vanishing and leaving you to wonder — and that note is
+  about the booking's own status, so it reads the same whatever dates you are
+  looking at, and it is no longer swallowed when a cancelled booking still
+  carries an old whole-lodge-hold flag. A page that simply holds none of the
+  booking's nights says exactly that instead, and keeps the rows and **Confirm
+  draft beds** available, because on a long stay its nights are just on another
+  page. A booking holding the whole lodge shows the hold instead of rows, with no
+  buttons at all, because it needs no individual beds. And because removing a run
+  is one night at a time, a removal that stops half way tells you exactly how
+  many nights actually went.
+
+  Two smaller pieces of the same honesty: the card's counts and its
+  Draft/Confirmed badge say "(this page)" when a stay is paged, because a single
+  31-night read cannot report on the rest; and the "this re-opens the member's
+  room request" warning counts the whole booking rather than the page, so a long
+  stay with confirmed nights on another page no longer gets warned about
+  something that is not going to happen. **Confirm draft beds** also stays inside
+  the lodge whose beds the card is showing, so it can never confirm a bed you
+  were not shown.
+
+  Members see none of this, including on their own booking, and neither do
+  read-only admins — every control on the card is a change, and the board is one
+  click away for anyone who only needs to look.
+- **Members can now ask to book the whole lodge (#2263).** Planning a course, a
+  club trip or a family gathering that needs the lodge to yourselves? Book a
+  Stay now has a "Need the whole lodge?" card leading to a short form: your
+  dates, roughly how many people, who the group is, and anything else the
+  booking officer should know. No guest names are needed yet, and an estimate of
+  the headcount is fine — the officer confirms the real number with you before
+  anything is charged. The ordinary four-step booking wizard is unchanged. This
+  is a request, not a booking: nothing is reserved and nothing is charged until
+  the officer confirms it, and you can withdraw a request while it is still
+  waiting. Requests appear under **My requests** on My bookings, showing whether
+  each one is still with the booking officer, approved (with a link straight to
+  the real booking), declined, or withdrawn; declined and withdrawn ones are
+  removed after 90 days. Two open requests at a time, so the queue stays honest.
+
+  The form deliberately shows no calendar, no "beds left" hint and no price. The
+  club's long-standing rule is that a lodge held for one group looks exactly
+  like a full lodge to everybody else, and a calendar on this form would give
+  that away. For the same reason the confirmation message you get back is the
+  same words every time, whatever you asked for and whatever else is booked.
+
+  For booking officers, whole-lodge requests land in the existing booking
+  requests queue alongside the school ones, tagged "Member" and "Whole lodge
+  requested" — the second tag now shows on school requests too, which it never
+  did before. Each one can be expanded to show, officer-side only, how full each
+  requested night already is, which nights are already held, and exactly which
+  bookings overlap. Set the headcount you are really pricing (and a total price
+  if no season rate covers those dates), then approve: the booking is confirmed
+  and the whole lodge is held for those nights. Approving never cancels anything
+  that is already booked — anything that overlaps is listed for you to sort out
+  with the people involved, as it always has been. Declining is one click through
+  the usual "email them or not?" prompt; any note you write is kept in the audit
+  log for the club's own record and is never shown to the member, who receives
+  the same fixed wording either way.
+
+  The money is handled the same way a school booking's is. Approving raises the
+  invoice: if your club uses the Xero integration the invoice goes out
+  automatically (with any account credit the member is holding allocated against
+  it), and if it does not, the club's administrators are emailed to invoice the
+  member by hand — including the exact payment reference the member was given, so
+  the two match. Either way the member's confirmation email is honest about it:
+  it says the booking is confirmed, states the amount still **owing**, and gives
+  them the internet-banking reference to pay against. It does not tell them a
+  payment has been processed, because none has. The booking page says the same
+  thing, and only mentions an emailed invoice when one was really sent.
+
 - **Every dead button in the five guided setup wizards now says why it is dead
   (#2324).** The Xero, Stripe, Google sign-in, Backups and Lodge Display setup
   paths all share one wizard frame, and that frame already showed a **"You have
@@ -82,9 +179,10 @@ All notable public reference-release changes should be recorded here.
   Xero, Stripe and Google steps, which appeared and then vanished for actual Full
   Admins, because the page read "still working out who you are" as "not a Full
   Admin". All three are gone or now wait until they know. The published
-  banner-coverage figures were re-measured with it (and again when #2286's
-  Release/Change bed controls landed): **288**
-  gated admin controls, **245** of them covered by a banner (219 in their own
+  banner-coverage figures were re-measured with it (and again after the
+  in-booking Bed allocation card, #2252, added its three, and once more when
+  #2286's Release/Change bed controls landed): **291**
+  gated admin controls, **248** of them covered by a banner (222 in their own
   file, 26 by a verified vouching parent — 5 of those through the wizard frame),
   and **43** across 23 files deliberately keeping their own reason.
 - **Choosing to use your account credit and then saving the booking as a draft
@@ -160,6 +258,7 @@ All notable public reference-release changes should be recorded here.
   holds the whole lodge is now refused outright, matching the automatic
   allocator (#2285) — previously such a placement was accepted and then quietly
   cleaned away later.
+
 - **The booking-confirmed email now explains a promo that raises the price,
   instead of a blank Discount line and an unexplained total (#2267).** A member
   who booked with an exclusive-use flat-rate promo received a payment
@@ -283,7 +382,6 @@ All notable public reference-release changes should be recorded here.
   quietly ending. Nothing in the tree can be edited: it is a picture of the
   Parent Links, Partner, and Dependents cards below it, and changing those
   changes the tree.
-
 - **Exclusive whole-lodge bookings no longer collect hidden bed assignments
   (#2285).** A booking with an exclusive whole-lodge hold takes the entire
   lodge, so nobody in the group is assigned an individual bed — the
