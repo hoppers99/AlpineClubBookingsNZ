@@ -553,3 +553,87 @@ describe("booking member-night conflict messages", () => {
     expect(body.error).not.toContain("Bob Jones are already");
   });
 });
+
+// ============================================================================
+// FREEZE TEST (#2307): a PENDING member guest still holds their person-night
+// ============================================================================
+//
+// Owner decision D-12 keeps an unconsented member guest off every operational
+// surface. This is NOT one of them, and the reason is sharper than "capacity
+// holds a bed" (D-4), though that is also true.
+//
+// A person-night conflict exists to stop ONE MEMBER being placed in TWO BEDS on
+// ONE NIGHT. A PENDING guest row is holding a bed for that member on that night.
+// Filter it out here and the same member can be added to a second booking for
+// the same night — and if the pending consent is then confirmed, the club has
+// two beds committed to one person and no code path that notices.
+//
+// The consent state is deliberately never read on this path. This freezes that.
+describe("#2307 person-night conflicts still see a PENDING member guest (D-4/D-12)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-20T00:00:00.000Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("reports a conflict against a guest row whose consent is still PENDING", async () => {
+    const db = conflictDb([
+      existingGuest({
+        consentStatus: "PENDING",
+        consentRequestedAt: new Date("2026-05-18T00:00:00.000Z"),
+        consentExpiresAt: new Date("2026-05-31T12:00:00.000Z"),
+      }),
+    ]);
+
+    const conflicts = await findBookingMemberNightConflicts(db as any, {
+      actorMemberId: "member-1",
+      actorRole: "USER",
+      checkIn: parseDateOnly("2026-06-01"),
+      checkOut: parseDateOnly("2026-06-03"),
+      guests: [{ memberId: "member-1" }],
+    });
+
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0]).toMatchObject({
+      memberId: "member-1",
+      bookingId: "booking-1",
+      conflictingNights: ["2026-06-01", "2026-06-02"],
+    });
+  });
+
+  it("reports a conflict against a DECLINED or EXPIRED row that survived removal", async () => {
+    // A row whose removal was refused (it goes to the admin exception list) is
+    // still occupying the night until an admin resolves it, so it still clashes.
+    for (const consentStatus of ["DECLINED", "EXPIRED"]) {
+      const db = conflictDb([existingGuest({ consentStatus })]);
+
+      const conflicts = await findBookingMemberNightConflicts(db as any, {
+        actorMemberId: "member-1",
+        actorRole: "USER",
+        checkIn: parseDateOnly("2026-06-01"),
+        checkOut: parseDateOnly("2026-06-03"),
+        guests: [{ memberId: "member-1" }],
+      });
+
+      expect(conflicts, `a ${consentStatus} row must still clash`).toHaveLength(1);
+    }
+  });
+
+  it("sends no consent filter in the conflict lookup", async () => {
+    const db = conflictDb([]);
+
+    await findBookingMemberNightConflicts(db as any, {
+      actorMemberId: "member-1",
+      actorRole: "USER",
+      checkIn: parseDateOnly("2026-06-01"),
+      checkOut: parseDateOnly("2026-06-03"),
+      guests: [{ memberId: "member-1" }],
+    });
+
+    const args = db.bookingGuest.findMany.mock.calls[0][0];
+    expect(JSON.stringify(args.where)).not.toContain("consentStatus");
+  });
+});
