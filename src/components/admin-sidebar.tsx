@@ -72,7 +72,7 @@ import {
 import { formatDateOnly, getTodayDateOnly } from "@/lib/date-only";
 import {
   buildUnpaidFinishedStaysHref,
-  buildUnsettledAdditionalFinishedStaysHref,
+  buildUnsettledAdditionalStaysHref,
 } from "@/lib/unpaid-finished-stays";
 import { openAdminCommandPalette } from "@/lib/admin-command-palette-events";
 
@@ -125,13 +125,14 @@ const UNPAID_FINISHED_STAYS_HREF = buildUnpaidFinishedStaysHref(
 );
 
 /**
- * Deep link for the unsettled finished-stay additions queue (#1723 path 2):
- * settled past stays whose upward modification delta was never collected.
- * Same evaluation moment and drift rule as the queue above.
+ * Deep link for the unsettled-additions queue (#1723 path 2, widened by #2350):
+ * every booking whose upward modification delta was never collected, whether the
+ * stay has finished or is still ahead. Unlike the queue above this needs no date
+ * in the URL — the owed filter alone is the queue — so the two halves the badge
+ * sums both land here. Same drift rule: the href and the count come from the
+ * shared helpers in src/lib/unpaid-finished-stays.ts.
  */
-const UNSETTLED_ADDITIONS_HREF = buildUnsettledAdditionalFinishedStaysHref(
-  formatDateOnly(getTodayDateOnly()),
-);
+const UNSETTLED_ADDITIONS_HREF = buildUnsettledAdditionalStaysHref();
 
 const navSections: NavSection[] = [
   {
@@ -632,6 +633,7 @@ const ZERO_PENDING_COUNTS: AdminPendingCounts = {
   publicBookingRequests: 0,
   unpaidFinishedStays: 0,
   unsettledAdditionalFinishedStays: 0,
+  unsettledAdditionalUpcomingStays: 0,
   membershipCancellations: 0,
   archiveRequests: 0,
   deletionRequests: 0,
@@ -735,8 +737,14 @@ function SidebarLinks({
   if (counts.unpaidFinishedStays > 0) {
     badges[UNPAID_FINISHED_STAYS_HREF] = counts.unpaidFinishedStays;
   }
-  if (counts.unsettledAdditionalFinishedStays > 0) {
-    badges[UNSETTLED_ADDITIONS_HREF] = counts.unsettledAdditionalFinishedStays;
+  // #2350: both halves of the unsettled-additions queue behind one badge. The
+  // predicates are disjoint by construction (check-out before/after today), so
+  // the sum counts every owing booking exactly once.
+  const unsettledAdditionsCount =
+    counts.unsettledAdditionalFinishedStays +
+    counts.unsettledAdditionalUpcomingStays;
+  if (unsettledAdditionsCount > 0) {
+    badges[UNSETTLED_ADDITIONS_HREF] = unsettledAdditionsCount;
   }
   if (counts.refundAppeals + counts.creditApprovals > 0) {
     badges["/admin/refund-requests"] =

@@ -100,3 +100,37 @@ export function buildUnsettledAdditionalFinishedStaysHref(
 ): string {
   return `/admin/bookings?additionalOwed=owed&checkOutTo=${todayKey}`;
 }
+
+/**
+ * Unsettled additions on a stay that has NOT finished yet (#2350): the same
+ * uncollected upward modification delta, but on a booking whose check-out is
+ * still ahead. Counting only finished stays meant the club found out about the
+ * money after the guests had gone home; this is the half that can still be
+ * chased while the member is paying attention (the reminder cron emails them,
+ * src/lib/cron-additional-payment-reminders.ts).
+ *
+ * Deliberately DISJOINT from the finished predicate above (`checkOut > today`
+ * against its `checkOut <= today`), so the two counts can be shown side by side,
+ * or summed for one badge, without double-counting a booking.
+ */
+export function buildUnsettledAdditionalUpcomingStaysWhere(
+  today: Date,
+): Prisma.BookingWhereInput {
+  return {
+    deletedAt: null,
+    checkOut: { gt: today },
+    ...buildAdditionalOwedWhere(),
+  };
+}
+
+/**
+ * Deep link covering BOTH halves of the unsettled-additions queue — every
+ * booking with an uncollected addition, whenever it stays. Used by the sidebar
+ * badge and the dashboard card, whose split label ("N upcoming, M finished")
+ * names the two halves while the one link shows all of them; the bookings list
+ * has no "upcoming only" filter to deep-link to, and inventing one to express a
+ * split the list already sorts by check-out would be the worse trade.
+ */
+export function buildUnsettledAdditionalStaysHref(): string {
+  return "/admin/bookings?additionalOwed=owed";
+}

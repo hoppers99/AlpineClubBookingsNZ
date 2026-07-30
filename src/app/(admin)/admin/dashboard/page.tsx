@@ -56,8 +56,9 @@ import { getUnassignedHutLeaderDates } from "@/lib/hut-leader-coverage";
 import {
   buildUnpaidFinishedStaysHref,
   buildUnpaidFinishedStaysWhere,
-  buildUnsettledAdditionalFinishedStaysHref,
   buildUnsettledAdditionalFinishedStaysWhere,
+  buildUnsettledAdditionalStaysHref,
+  buildUnsettledAdditionalUpcomingStaysWhere,
 } from "@/lib/unpaid-finished-stays";
 
 async function getStats() {
@@ -83,6 +84,7 @@ async function getStats() {
     upcomingCheckIns,
     unpaidFinishedStays,
     unsettledAdditionalFinishedStays,
+    unsettledAdditionalUpcomingStays,
     recentBookings,
     pendingRefundAppeals,
     pendingCreditApprovals,
@@ -134,6 +136,13 @@ async function getStats() {
     // Predicate shared with the sidebar badge via unpaid-finished-stays.ts.
     prisma.booking.count({
       where: buildUnsettledAdditionalFinishedStaysWhere(today),
+    }),
+    // #2350: the same uncollected addition on a stay that has NOT finished.
+    // Counting only finished stays meant the club learned about the money after
+    // the guests had gone home; this half can still be chased (and the reminder
+    // cron is emailing the member about it). Disjoint from the count above.
+    prisma.booking.count({
+      where: buildUnsettledAdditionalUpcomingStaysWhere(today),
     }),
     prisma.booking.findMany({
       where: { deletedAt: null },
@@ -214,6 +223,7 @@ async function getStats() {
     upcomingCheckIns,
     unpaidFinishedStays,
     unsettledAdditionalFinishedStays,
+    unsettledAdditionalUpcomingStays,
     recentBookings,
     unassignedDatesWithBookings: unassignedHutLeaderDates.map(
       (item) => item.date,
@@ -290,6 +300,12 @@ export default async function AdminDashboardPage() {
     canViewRoster ||
     canViewBedAllocation;
   const showSecondaryRow = canViewMembers || canViewPayments;
+
+  // #2350: the two halves of the unsettled-additions queue are disjoint by
+  // construction (check-out before/after NZ today), so the total is a plain sum.
+  const unsettledAdditionsTotal =
+    stats.unsettledAdditionalFinishedStays +
+    stats.unsettledAdditionalUpcomingStays;
 
   const hasPendingAdminReviews =
     stats.pendingRefundAppeals > 0 || stats.pendingCreditApprovals > 0;
@@ -392,26 +408,28 @@ export default async function AdminDashboardPage() {
         </Link>
       )}
 
-      {/* Unsettled finished-stay additions (#1723 path 2): a settled past
-          stay whose upward modification delta (admin recalculate / guest add)
-          was never collected on the card additional-payment flow. The booking
-          is not PAYMENT_PENDING, so the card above cannot count it. */}
-      {stats.unsettledAdditionalFinishedStays > 0 && (
-        <Link
-          href={buildUnsettledAdditionalFinishedStaysHref(stats.todayKey)}
-        >
+      {/* Unsettled stay additions (#1723 path 2, widened by #2350): a settled
+          booking whose upward modification delta (admin recalculate / guest
+          add) was never collected on the card additional-payment flow. The
+          booking is not PAYMENT_PENDING, so the card above cannot count it.
+          Both halves are shown — upcoming stays can still be chased, finished
+          ones need a follow-up — behind one link to the owed filter. */}
+      {unsettledAdditionsTotal > 0 && (
+        <Link href={buildUnsettledAdditionalStaysHref()}>
           <Card className="border-warning-6 bg-warning-3 hover:shadow-md transition-shadow cursor-pointer">
             <CardContent className="flex items-start gap-3 pt-5">
               <DollarSign className="h-5 w-5 text-warning-11 flex-shrink-0 mt-0.5" />
               <div>
                 <p className="font-medium text-warning-11">
-                  Finished Stays With Unpaid Additions
+                  Bookings With Unpaid Additions
                 </p>
                 <p className="text-sm text-warning-11 mt-1">
-                  {stats.unsettledAdditionalFinishedStays} paid booking
-                  {stats.unsettledAdditionalFinishedStays === 1 ? "" : "s"}{" "}
-                  with an additional payment still owing after check-out.
-                  Collect the outstanding amount or adjust the booking.
+                  {unsettledAdditionsTotal} paid booking
+                  {unsettledAdditionsTotal === 1 ? "" : "s"} with an additional
+                  payment still owing ({stats.unsettledAdditionalUpcomingStays}{" "}
+                  upcoming &middot; {stats.unsettledAdditionalFinishedStays}{" "}
+                  finished). Collect the outstanding amount or adjust the
+                  booking.
                 </p>
               </div>
             </CardContent>

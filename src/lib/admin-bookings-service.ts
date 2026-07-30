@@ -12,6 +12,7 @@ import {
   type XeroActivitySummary,
   type XeroState,
 } from "@/lib/admin-operational-state";
+import { isAdditionalPaymentOwed } from "@/lib/additional-payment-chase";
 import { BED_ALLOCATABLE_BOOKING_STATUSES } from "@/lib/bed-allocation-lifecycle";
 import {
   bookingStatusLifecycleRank,
@@ -112,6 +113,12 @@ type BookingCandidate = Awaited<ReturnType<typeof loadBookingCandidates>>[number
 
 interface AdminBookingOperationalState {
   paymentSource: PaymentSourceFilter;
+  /**
+   * Extra still owed after an upward booking change (#2350). Zero when nothing
+   * is outstanding; positive for a PENDING, FAILED, or legacy-null additional
+   * payment, which the owed predicate treats identically.
+   */
+  outstandingAdditionalCents: number;
   xeroState: XeroState;
   xeroActivity: XeroActivitySummary;
   invoiceLinked: boolean;
@@ -512,6 +519,10 @@ async function loadBookingCandidates(
           xeroInvoiceId: true,
           xeroInvoiceNumber: true,
           refundedAmountCents: true,
+          // #2350: an upward change can leave money uncollected on a booking
+          // whose lifecycle status still reads PAID. The list row says so.
+          additionalAmountCents: true,
+          additionalPaymentStatus: true,
         },
       },
       bedAllocations: {
@@ -765,6 +776,9 @@ function deriveBookingOperationalState(
 
   return {
     paymentSource,
+    outstandingAdditionalCents: isAdditionalPaymentOwed(booking.payment)
+      ? booking.payment?.additionalAmountCents ?? 0
+      : 0,
     xeroState: deriveXeroState({ invoiceExpected, invoiceLinked, activity }),
     xeroActivity: activity,
     invoiceLinked,
