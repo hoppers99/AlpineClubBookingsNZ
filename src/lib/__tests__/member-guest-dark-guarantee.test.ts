@@ -466,7 +466,9 @@ describe("call-site survey", () => {
     expect(callersOf("resolveLinkedBookingMembers")).toEqual([...CALL_SITE_FILES].sort());
     expect(new Set(CALL_SITE_FILES).size).toBe(CALL_SITE_FILES.length);
     expect(
-      CALL_SITES.filter((site) => site.skipAuthorizationModes.includes(true)),
+      CALL_SITES.filter((site) =>
+        site.skipAuthorizationModes.some((mode) => mode === true),
+      ),
     ).toHaveLength(CALL_SITES_THAT_CAN_SKIP);
   });
 
@@ -654,11 +656,11 @@ describe("the module flag itself gates nothing yet", () => {
     // run — which is what made the CHANGELOG and CONFIGURATION sentences about
     // the switch saying so "plainly" not quite true as written.
     const statusFor = (memberGuests: boolean) => {
-      const module = buildClubModuleSettingsPayload({ memberGuests }).modules.find(
+      const found = buildClubModuleSettingsPayload({ memberGuests }).modules.find(
         (entry) => entry.key === "memberGuests",
       );
-      expect(module, "memberGuests missing from the module payload").toBeDefined();
-      return module!;
+      expect(found, "memberGuests missing from the module payload").toBeDefined();
+      return found!;
     };
 
     expect(statusFor(false).readiness.status).toBe("admin_disabled");
