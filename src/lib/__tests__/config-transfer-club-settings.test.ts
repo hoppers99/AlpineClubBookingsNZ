@@ -21,6 +21,9 @@ import {
   DEFAULT_BOOKING_DEFAULTS,
   DEFAULT_BOOKING_REQUEST_SETTINGS,
   DEFAULT_GROUP_DISCOUNT_SETTING,
+  DEFAULT_MEMBER_GUEST_SETTINGS,
+  MEMBER_GUEST_PENDING_HOLD_EXPIRY_DAYS_MAX,
+  MEMBER_GUEST_PENDING_HOLD_EXPIRY_DAYS_MIN,
   DEFAULT_MEMBERSHIP_CANCELLATION_SETTINGS,
   DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS,
   DEFAULT_MEMBERSHIP_SUBSCRIPTION_BILLING_SETTINGS,
@@ -50,6 +53,10 @@ const SINGLETON_DELEGATES = [
   "loginSecuritySetting",
   "publicContentSettings",
   "membershipSubscriptionBillingSettings",
+  // #2306 — the member-guest policy singleton (epic #2305). Only
+  // approvalRequired + pendingHoldExpiryDays travel; the two open-search
+  // privacy toggles are excluded by owner decision D-18.
+  "memberGuestSettings",
 ];
 
 /** Build a stub DB whose singleton delegates return the given rows (else null). */
@@ -75,7 +82,7 @@ const MODULES = {
   // Every travelling module flag is a non-null Boolean; the #2200 dry-run
   // `constraints.required` audit rejects a projected null, so the fixture must
   // carry all of them (a real DB row always does).
-  lobbyDisplay: false, aiAssistant: false,
+  lobbyDisplay: false, aiAssistant: false, memberGuests: false,
 };
 const EMAIL = {
   clubName: "Grads", bookingsName: "Bookings", lodgeName: "Lodge",
@@ -1009,6 +1016,25 @@ describe("#2200 portable singletons export/import and stay schema-bound", () => 
   it("keeps the billing family-mode default in lockstep with DEFAULT_FAMILY_BILLING_MODE", () => {
     expect(DEFAULT_MEMBERSHIP_SUBSCRIPTION_BILLING_SETTINGS.familyBillingMode).toBe(
       DEFAULT_FAMILY_BILLING_MODE,
+    );
+  });
+
+  it("ties the member-guest pending-hold bounds to the shared constants (#2306)", () => {
+    // The importer's bounds and the bounds MG2's admin route will enforce are
+    // the same two numbers. Written as literals they were free to drift; this
+    // pins them to MEMBER_GUEST_PENDING_HOLD_EXPIRY_DAYS_MIN/MAX.
+    const spec = SINGLETONS.find((entry) => entry.entity === "member-guest-settings");
+    expect(spec, "the member-guest-settings singleton is not registered").toBeDefined();
+    expect(spec!.constraints?.pendingHoldExpiryDays).toEqual({
+      required: true,
+      min: MEMBER_GUEST_PENDING_HOLD_EXPIRY_DAYS_MIN,
+      max: MEMBER_GUEST_PENDING_HOLD_EXPIRY_DAYS_MAX,
+    });
+    expect(DEFAULT_MEMBER_GUEST_SETTINGS.pendingHoldExpiryDays).toBeGreaterThanOrEqual(
+      MEMBER_GUEST_PENDING_HOLD_EXPIRY_DAYS_MIN,
+    );
+    expect(DEFAULT_MEMBER_GUEST_SETTINGS.pendingHoldExpiryDays).toBeLessThanOrEqual(
+      MEMBER_GUEST_PENDING_HOLD_EXPIRY_DAYS_MAX,
     );
   });
 });
