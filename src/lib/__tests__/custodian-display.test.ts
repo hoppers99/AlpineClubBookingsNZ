@@ -25,7 +25,7 @@ const { mockPrisma, mockFlags, mockInstructions } = vi.hoisted(() => ({
     choreAssignment: { findMany: vi.fn() },
     clubTheme: { findUnique: vi.fn().mockResolvedValue(null) },
     clubIdentitySettings: { findUnique: vi.fn().mockResolvedValue(null) },
-    hutLeaderAssignment: { findFirst: vi.fn() },
+    hutLeaderAssignment: { findMany: vi.fn() },
   },
   mockFlags: vi.fn(),
   mockInstructions: vi.fn(),
@@ -82,8 +82,12 @@ beforeEach(() => {
   mockPrisma.choreAssignment.findMany.mockResolvedValue([]);
   mockPrisma.clubTheme.findUnique.mockResolvedValue(null);
   mockPrisma.clubIdentitySettings.findUnique.mockResolvedValue(null);
-  mockPrisma.hutLeaderAssignment.findFirst.mockResolvedValue(null);
-  mockFlags.mockResolvedValue({ bedAllocation: false, chores: false });
+  mockPrisma.hutLeaderAssignment.findMany.mockResolvedValue([]);
+  mockFlags.mockResolvedValue({
+    bedAllocation: false,
+    chores: false,
+    hutLeaders: true,
+  });
   mockInstructions.mockResolvedValue([]);
 });
 
@@ -95,7 +99,7 @@ describe("custodian slot on the lobby display", () => {
 
   it("asks only for a BED-HOLDING assignment covering today, scoped to this lodge", async () => {
     await buildDisplayState(LODGE_ID);
-    const where = mockPrisma.hutLeaderAssignment.findFirst.mock.calls[0][0]
+    const where = mockPrisma.hutLeaderAssignment.findMany.mock.calls[0][0]
       .where as Record<string, unknown>;
     // The bedId gate is the whole point: a role-only assignment is not an
     // occupancy and must not put anyone on the wall.
@@ -107,52 +111,55 @@ describe("custodian slot on the lobby display", () => {
     mockPrisma.lodge.findUnique.mockResolvedValue(
       lodge("FIRST_NAME_SURNAME_INITIAL"),
     );
-    mockPrisma.hutLeaderAssignment.findFirst.mockResolvedValue(
+    mockPrisma.hutLeaderAssignment.findMany.mockResolvedValue([
       custodianRow("ADULT"),
-    );
+    ]);
 
     const state = await buildDisplayState(LODGE_ID);
-    expect(state?.custodian).toEqual({ label: "Sam R" });
+    expect(state?.custodian).toEqual({ label: "Sam R", count: 1 });
   });
 
   it("shows the slot with NO name under COUNTS_ONLY, so the wall still says someone is here", async () => {
     mockPrisma.lodge.findUnique.mockResolvedValue(lodge("COUNTS_ONLY"));
-    mockPrisma.hutLeaderAssignment.findFirst.mockResolvedValue(
+    mockPrisma.hutLeaderAssignment.findMany.mockResolvedValue([
       custodianRow("ADULT"),
-    );
+    ]);
 
     const state = await buildDisplayState(LODGE_ID);
-    expect(state?.custodian).toEqual({ label: null });
+    expect(state?.custodian).toEqual({ label: null, count: 1 });
   });
 
   it.each(["INFANT", "CHILD", "YOUTH"])(
     "never names a %s custodian, even at FULL_NAME — the display contract forbids naming a minor at any level",
     async (ageTier) => {
       mockPrisma.lodge.findUnique.mockResolvedValue(lodge("FULL_NAME"));
-      mockPrisma.hutLeaderAssignment.findFirst.mockResolvedValue(
+      mockPrisma.hutLeaderAssignment.findMany.mockResolvedValue([
         custodianRow(ageTier),
-      );
+      ]);
 
       const state = await buildDisplayState(LODGE_ID);
-      expect(state?.custodian).toEqual({ label: null });
+      expect(state?.custodian).toEqual({ label: null, count: 1 });
       expect(JSON.stringify(state)).not.toContain("Ranger");
     },
   );
 
   it("carries no phone, no dates and no member id — the slot is a name or nothing", async () => {
     mockPrisma.lodge.findUnique.mockResolvedValue(lodge("FULL_NAME"));
-    mockPrisma.hutLeaderAssignment.findFirst.mockResolvedValue(
+    mockPrisma.hutLeaderAssignment.findMany.mockResolvedValue([
       custodianRow("ADULT"),
-    );
+    ]);
 
     const state = await buildDisplayState(LODGE_ID);
-    expect(Object.keys(state?.custodian ?? {})).toEqual(["label"]);
+    expect(Object.keys(state?.custodian ?? {}).sort()).toEqual([
+      "count",
+      "label",
+    ]);
   });
 
   it("keeps the custodian out of the occupancy counts, the booking rows and the chore roster", async () => {
-    mockPrisma.hutLeaderAssignment.findFirst.mockResolvedValue(
+    mockPrisma.hutLeaderAssignment.findMany.mockResolvedValue([
       custodianRow("ADULT"),
-    );
+    ]);
 
     const state = await buildDisplayState(LODGE_ID);
     // Structural, not filtered: a custodian is not a BookingGuest, so there is
@@ -160,5 +167,61 @@ describe("custodian slot on the lobby display", () => {
     expect(state?.bookings).toEqual([]);
     expect(state?.chores).toEqual([]);
     expect(state?.occupancy.every((day) => day.staying === 0)).toBe(true);
+  });
+
+  it("is skipped entirely when the hutLeaders module is off — no read, no slot", async () => {
+    mockFlags.mockResolvedValue({
+      bedAllocation: false,
+      chores: false,
+      hutLeaders: false,
+    });
+    mockPrisma.hutLeaderAssignment.findMany.mockResolvedValue([
+      custodianRow("ADULT"),
+    ]);
+
+    const state = await buildDisplayState(LODGE_ID);
+    // A club with the module off has no hut-leader surface at all, so the wall
+    // must not grow one. The query is not made in the first place — the same
+    // shape as `flags.bedAllocation` for rooms and `flags.chores` for the roster.
+    expect(state?.custodian).toBeNull();
+    expect(mockPrisma.hutLeaderAssignment.findMany).not.toHaveBeenCalled();
+  });
+
+  describe("handover night — two custodians on two beds", () => {
+    it("names BOTH and counts two, instead of naming one and hiding the other", async () => {
+      mockPrisma.lodge.findUnique.mockResolvedValue(
+        lodge("FIRST_NAME_SURNAME_INITIAL"),
+      );
+      mockPrisma.hutLeaderAssignment.findMany.mockResolvedValue([
+        custodianRow("ADULT", "Sam", "Ranger"),
+        custodianRow("ADULT", "Ada", "Beck"),
+      ]);
+
+      const state = await buildDisplayState(LODGE_ID);
+      expect(state?.custodian).toEqual({ label: "Sam R · Ada B", count: 2 });
+    });
+
+    it("withholds EVERY name when one of them is a minor, and reports the count", async () => {
+      // All-or-nothing: naming the adult beside "Custodians · 2" would identify
+      // the minor by elimination. The count is still the honest fact.
+      mockPrisma.lodge.findUnique.mockResolvedValue(lodge("FULL_NAME"));
+      mockPrisma.hutLeaderAssignment.findMany.mockResolvedValue([
+        custodianRow("ADULT", "Sam", "Ranger"),
+        custodianRow("YOUTH", "Kid", "Junior"),
+      ]);
+
+      const state = await buildDisplayState(LODGE_ID);
+      expect(state?.custodian).toEqual({ label: null, count: 2 });
+      const payload = JSON.stringify(state);
+      expect(payload).not.toContain("Junior");
+      expect(payload).not.toContain("Ranger");
+    });
+
+    it("bounds the read rather than rendering an unbounded list of bad data", async () => {
+      await buildDisplayState(LODGE_ID);
+      expect(
+        mockPrisma.hutLeaderAssignment.findMany.mock.calls[0][0].take,
+      ).toBeGreaterThan(0);
+    });
   });
 });

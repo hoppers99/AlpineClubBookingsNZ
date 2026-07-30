@@ -228,19 +228,26 @@ function InfoFooter({ state }: DisplayModuleProps) {
     <div className="display-info-footer">
       {/*
         Custodian in residence (#2286). The role word is the FIXED string
-        "Custodian" for every club — the owner's 29 Jul decision, deliberately
-        overriding the per-club `hutLeaderLabel` used everywhere else in the
-        admin surface. Do not swap this for the configurable label.
+        "Custodian"/"Custodians" for every club — the owner's 29 Jul decision,
+        deliberately overriding the per-club `hutLeaderLabel` used everywhere
+        else in the admin surface. Do not swap this for the configurable label.
 
-        `label` null means the person must not be named (counts-only
-        granularity, or a minor-age custodian at any granularity): the slot
-        still appears, because the fact that someone is on site is the useful
-        part, but it shows the role alone.
+        `label` null means the people must not be named (counts-only
+        granularity, or a minor-age custodian among them at any granularity):
+        the slot still appears, because the fact that someone is on site is the
+        useful part, but it shows the role and — on a handover night, where two
+        custodians hold two beds — the count, so the wall never implies one
+        person when two are here.
       */}
       {state.custodian && (
-        <span className="display-footer-item">
+        <span className="display-footer-item" data-testid="display-custodian">
           <span className="display-footer-icon">🛎</span>
-          Custodian {state.custodian.label && <b>{state.custodian.label}</b>}
+          {state.custodian.count === 1 ? "Custodian" : "Custodians"}{" "}
+          {state.custodian.label ? (
+            <b>{state.custodian.label}</b>
+          ) : state.custodian.count > 1 ? (
+            <b>{state.custodian.count}</b>
+          ) : null}
         </span>
       )}
       {wifiCode && (
