@@ -31,6 +31,7 @@ import {
   BedAllocationAdminError,
   MAX_BED_ALLOCATION_RANGE_NIGHTS,
   buildBedAllocationWarnings,
+  countGuestsAwaitingBed,
   createBedAllocationBed,
   createBedAllocationRoom,
   createBedAllocationRoomsBulk,
@@ -2744,5 +2745,135 @@ describe("getBedAllocationDashboard exclusive whole-lodge holds (#119/#120)", ()
     expect(
       dashboard.unallocatedGuestNights.some((g) => g.bookingId === "solo"),
     ).toBe(true);
+  });
+});
+
+// --- D-12 (#2307): the admin bed board's awaiting-allocation queue ----------
+//
+// Owner decision D-12: a member guest whose consent is still PENDING holds a bed
+// against capacity (D-4) but is not somebody an officer should be placing in a
+// bunk. Two queries in this module load the guests the board works from — the
+// board's own booking load and the dashboard card's window-scoped mirror of it —
+// and both must exclude them or the board offers work that should not exist.
+//
+// Occupancy is unaffected by design: the board reads BedAllocation rows through
+// `loadAllocationRecords` and names their guests from the allocation row itself,
+// so a bed that IS occupied still shows as occupied whatever the consent says.
+describe("bed allocation board member-guest consent exclusion (D-12, #2307)", () => {
+  const PRESENT_OR = [{ consentStatus: null }, { consentStatus: "CONFIRMED" }];
+
+  function dashboardDb() {
+    const bookingFindMany = vi.fn().mockResolvedValue([]);
+    const allocationFindMany = vi.fn().mockResolvedValue([]);
+    const roomFindMany = vi.fn().mockResolvedValue([]);
+    return {
+      db: {
+        bedAllocationSettings: {
+          findUnique: vi.fn().mockResolvedValue({
+            autoAllocationEnabled: false,
+            updatedByMemberId: null,
+            updatedAt: parseDateOnly("2026-07-01"),
+          }),
+        },
+        lodgeRoom: { findMany: roomFindMany },
+        booking: { findMany: bookingFindMany },
+        bedAllocation: { findMany: allocationFindMany },
+      },
+      bookingFindMany,
+      allocationFindMany,
+    };
+  }
+
+  const range = parseBedAllocationDateRange({ from: "2026-07-01", to: "2026-07-08" });
+
+  it("excludes unconsented guests from the board's booking load", async () => {
+    const { db, bookingFindMany } = dashboardDb();
+
+    await getBedAllocationDashboard({ range, lodgeId: "lodge-2", db: db as never });
+
+    const args = bookingFindMany.mock.calls[0][0];
+    expect(args.select.guests.where.OR).toEqual(PRESENT_OR);
+  });
+
+  it("leaves the board's OCCUPANCY read unfiltered", async () => {
+    // The allocation rows describe the beds as written. A consent filter here
+    // would make an occupied bed look free on the board an officer is dragging
+    // guests around on.
+    const { db, allocationFindMany } = dashboardDb();
+
+    await getBedAllocationDashboard({ range, lodgeId: "lodge-2", db: db as never });
+
+    expect(JSON.stringify(allocationFindMany.mock.calls[0][0])).not.toContain(
+      "consentStatus",
+    );
+  });
+
+  it("excludes unconsented guests from the awaiting-allocation counter", async () => {
+    // A window-scoped mirror of the board's own construction, so it has to apply
+    // the same exclusion — otherwise the dashboard officer card advertises work
+    // the board itself does not list.
+    const bookingFindMany = vi.fn().mockResolvedValue([]);
+    const allocationFindMany = vi.fn().mockResolvedValue([]);
+
+    const count = await countGuestsAwaitingBed({
+      from: parseDateOnly("2026-07-01"),
+      to: parseDateOnly("2026-07-08"),
+      db: {
+        booking: { findMany: bookingFindMany },
+        bedAllocation: { findMany: allocationFindMany },
+      } as never,
+    });
+
+    expect(count).toBe(0);
+    const args = bookingFindMany.mock.calls[0][0];
+    expect(args.select.guests.where.OR).toEqual(PRESENT_OR);
+  });
+
+  it("counts a null-consent guest as awaiting, and never a PENDING one", async () => {
+    // The outcome, not just the query: an ordinary (null-consent) guest with no
+    // bed is still work to do — the case the `not: "PENDING"` trap would have
+    // silently emptied — while the pending guest is not.
+    const bookingFindMany = vi.fn().mockImplementation(async (args: any) => {
+      const where = args.select.guests.where as
+        | { OR?: Array<{ consentStatus: string | null }> }
+        | undefined;
+      const guests = [
+        {
+          id: "guest-ordinary",
+          stayStart: parseDateOnly("2026-07-01"),
+          stayEnd: parseDateOnly("2026-07-03"),
+          consentStatus: null,
+        },
+        {
+          id: "guest-awaiting",
+          stayStart: parseDateOnly("2026-07-01"),
+          stayEnd: parseDateOnly("2026-07-03"),
+          consentStatus: "PENDING",
+        },
+      ];
+      return [
+        {
+          id: "booking-1",
+          guests: where?.OR
+            ? guests.filter((guest) =>
+                where.OR!.some(
+                  (branch) => branch.consentStatus === guest.consentStatus,
+                ),
+              )
+            : guests,
+        },
+      ];
+    });
+
+    const count = await countGuestsAwaitingBed({
+      from: parseDateOnly("2026-07-01"),
+      to: parseDateOnly("2026-07-08"),
+      db: {
+        booking: { findMany: bookingFindMany },
+        bedAllocation: { findMany: vi.fn().mockResolvedValue([]) },
+      } as never,
+    });
+
+    expect(count).toBe(1);
   });
 });
