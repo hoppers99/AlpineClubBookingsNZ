@@ -287,6 +287,16 @@ export const MODULE_DEFINITIONS: Record<ModuleKey, ModuleDefinition> = {
     description:
       "Lets a member add another club member, outside their own family group, as a guest on their booking. By default the other member is emailed and asked first, and a bed is held for them until they answer or the request lapses.",
     dependencies: [
+      // HONESTY GATE, and it is temporary by construction. MG2 (#2307) ships the
+      // widening, the consent emails, the expiry sweep and the settings — but the
+      // screen a member presses Yes on is UI, and it is held until the owner signs
+      // off its design. Turning the module on in this state is safe (an
+      // unanswered request lapses on its own and the bed is released) but not
+      // useful, because nobody can accept. Saying so here is the only honest
+      // option: the alternative is an admin switching it on and quietly emailing
+      // members a request they cannot answer. DELETE THIS BULLET in the change
+      // that lands the accept screen.
+      "Not ready to turn on yet: the screen a member presses Yes on arrives in the next update. Until then a request can be sent but not accepted — it will simply lapse and release the bed.",
       "The other member is asked before they are added, unless you change that on the member-guest settings. Set how long a request waits there too.",
       "A member who has been asked but has not answered yet holds a bed, and is deliberately left off the kiosk arrivals list, the chore roster and the arrival emails until they accept.",
       "Finding another member is by exact email address unless you switch on name search — which makes your membership list browsable to any member. It ships off.",

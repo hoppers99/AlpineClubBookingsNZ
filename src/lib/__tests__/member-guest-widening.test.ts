@@ -815,10 +815,25 @@ describe("the module flag now gates the widening, and says so", () => {
     expect(definition.key).toBe("memberGuests");
     expect(definition.label.length).toBeGreaterThan(0);
     expect(definition.description).not.toMatch(/not available yet/i);
-    expect(definition.dependencies.join(" ")).not.toMatch(/not available yet/i);
     // And it must still explain what it does, in plain English, to an admin who
     // is deciding whether to turn it on.
     expect(definition.description).toMatch(/family group/i);
+  });
+
+  it("still warns that a member cannot accept until the accept screen ships", () => {
+    // The counterpart to the case above, and the reason MG2 does not simply
+    // delete MG1's warning. The module now gates REAL behaviour, so reporting it
+    // "not available" would be false — but the screen a member presses Yes on is
+    // held pending design sign-off, so reporting it as fully usable would be
+    // false in the other direction. The dependency bullet is where an admin reads
+    // "things to know before switching this on", so the caveat lives there.
+    //
+    // THIS ASSERTION IS MEANT TO BE DELETED, together with the bullet, by the
+    // change that lands the accept screen. Until then it is what stops the copy
+    // drifting into a promise the release does not keep.
+    const dependencies = MODULE_DEFINITIONS.memberGuests.dependencies.join(" ");
+    expect(dependencies).toMatch(/not ready to turn on yet/i);
+    expect(dependencies).toMatch(/lapse/i);
   });
 
   it("reports itself ready when switched on, and disabled when not", () => {

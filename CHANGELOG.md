@@ -4,28 +4,40 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
-- **Groundwork for adding another club member as a guest (#2306).** Members can
-  currently only put people from their own family group on a booking as linked
-  members. Work has started on letting a member add *any* club member as a
-  guest, with that member's consent. This first change lays the foundations —
-  the database columns that record whether a member agreed, a new
-  "Add another member as a guest" switch on Admin > Modules, and the settings
-  row that will hold the club's policy — and **deliberately changes nothing you
-  can see or do**. Adding somebody outside your own family group is still
-  declined exactly as before, whether the new module switch is on or off — and
-  the switch says so itself. Its description on **Admin → Modules** opens with
-  "Not available yet", and switching it on shows a **Not available yet** badge
-  instead of the usual green **Enabled** one, so nobody is left thinking a live
-  feature just came on. That is on purpose: the consent request
-  emails, the approval screen, and the timer that releases a held bed when
-  nobody answers all arrive together in the next change, so there is never a
-  version where turning the switch on could hold beds for approvals that
-  nothing can grant. The settings this will eventually use ship with sensible
-  defaults already chosen: consent is required by default, a held bed is
-  released after 7 days, and the two settings that would make the club's member
-  list browsable are off and never travel in a club config transfer, so
-  importing another club's settings can never widen your members' privacy
-  without your admin choosing it.
+- **Adding another club member as a guest (#2306, #2307).** Until now a member
+  could only put people from their own family group on a booking. There is now a
+  new **Add another member as a guest** switch on **Admin → Modules**, off by
+  default, and with it on a member can put *any* active club member on their
+  booking — with that member's agreement. By default the other member is emailed
+  and asked first, and a bed is held for them until they answer or the request
+  lapses. A club can instead choose to tell them rather than ask, and can set how
+  long a request waits (7 days by default, anywhere from 1 to 60) on the new
+  **Member guests** card under **Admin → Bookings setup**. An unanswered request
+  lapses on its own the night before check-in at the latest, the held bed is
+  released, and the person who made the booking is told what happened — including
+  the money, which comes back as account credit rather than an unasked-for card
+  refund.
+  A member who has been asked but has not answered yet holds a bed and nothing
+  else: they are deliberately kept off the kiosk arrivals list, the chore roster,
+  bed allocation, the hut-leader pickers, the lodge TV board and the arrival
+  emails until they accept, so nobody is counted, rostered or given a bed for a
+  stay they have not agreed to. And two settings that would make your membership
+  list browsable to any member ship **off** and never travel in a club config
+  transfer, so importing another club's settings can never widen your members'
+  privacy without your own admin choosing it.
+  **One part is not finished, and the switch says so.** The screen a member
+  presses *Yes* on is still to come, so **leave the module off for now**: with it
+  on, a request can be sent but not accepted — it would simply lapse and release
+  the bed. The **Add another member as a guest** switch carries that warning
+  under **Admin → Modules**. Everything the accept screen needs is already
+  here — the consent emails, the settings, the timer that releases the bed, and
+  the rule that keeps an unconsented guest off every operational list — which is
+  why they shipped together rather than leaving a version where turning the switch
+  on could hold beds for approvals nothing could grant.
+  We also fixed an unrelated bug we found next door while doing this: the
+  **check-in reminder** email joined every guest's first names together and then
+  every guest's last names, so the guest list read `Ada, Bob, Cleo Lovelace,
+  Smith, Jones`. It now lists each guest's own full name, one per line.
 
 - **Setting up a lodge TV is now one guided path instead of five cards and a
   guess (#2249).** **Admin → Lobby Display** leads with a **Guided setup** card
