@@ -1,10 +1,14 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   coerceWhakapapaCurlData,
   coerceWhakapapaSectionVisibility,
   coerceWhakapapaSourceConfig,
   emptyWhakapapaSectionVisibility,
+  WHAKAPAPA_DEFAULT_SELECTORS,
   WHAKAPAPA_DEFAULT_SOURCE_URL,
+  WHAKAPAPA_SELECTOR_KEYS,
 } from "@/lib/whakapapa-report";
 
 // Regression coverage for the Whakapapa report coercion helpers that back the
@@ -258,5 +262,37 @@ describe("coerceWhakapapaSourceConfig (import/export round-trip)", () => {
     const config = coerceWhakapapaSourceConfig("not json");
     expect(config.sourceUrl).toBe(WHAKAPAPA_DEFAULT_SOURCE_URL);
     expect(config.selectorOverrides).toEqual({});
+  });
+});
+
+describe("selector-defaults seed migration", () => {
+  const SEED_SQL = readFileSync(
+    path.join(
+      process.cwd(),
+      "prisma/migrations/20260730130000_seed_whakapapa_selector_defaults/migration.sql",
+    ),
+    "utf8",
+  );
+
+  it("seeds a JSON selector set the DB can parse (dollar-quoted block)", () => {
+    const block = SEED_SQL.match(/\$wsel\$([\s\S]*?)\$wsel\$/);
+    expect(block, "the migration must carry a $wsel$…$wsel$ JSON block").not.toBeNull();
+
+    const seeded = JSON.parse(block![1]) as Record<string, unknown>;
+    for (const [key, value] of Object.entries(seeded)) {
+      expect(WHAKAPAPA_SELECTOR_KEYS).toContain(key);
+      expect(typeof value).toBe("string");
+      expect((value as string).length).toBeGreaterThan(0);
+    }
+  });
+
+  it("seeds exactly the current code defaults (authoring guard)", () => {
+    // If the code defaults ever change, ship a NEW seed migration and update
+    // this expectation — old migrations are immutable, and under the
+    // "DB always wins" model already-seeded sites keep their stored values.
+    const seeded = JSON.parse(
+      SEED_SQL.match(/\$wsel\$([\s\S]*?)\$wsel\$/)![1],
+    );
+    expect(seeded).toEqual(WHAKAPAPA_DEFAULT_SELECTORS);
   });
 });

@@ -38,6 +38,7 @@ import {
   emptyWhakapapaCurlData,
   emptyWhakapapaSectionVisibility,
   emptyWhakapapaSourceConfig,
+  resolveWhakapapaSelectors,
   validateWhakapapaSourceUrl,
   WHAKAPAPA_DEFAULT_SELECTORS,
   WHAKAPAPA_SELECTOR_KEYS,
@@ -156,6 +157,8 @@ export function MountainConditionsPanel() {
   const [previewing, setPreviewing] = useState(false);
   const [showSelectors, setShowSelectors] = useState(false);
   const [previewJson, setPreviewJson] = useState<string | null>(null);
+  const [exportingConfig, setExportingConfig] = useState(false);
+  const [importingConfig, setImportingConfig] = useState(false);
   const [error, setError] = useState<string>("");
   const importInputRef = useRef<HTMLInputElement>(null);
   // Sampled whenever the record is (re)loaded so the frozen check below can
@@ -318,61 +321,102 @@ export function MountainConditionsPanel() {
     return { sourceUrl: sourceUrl.trim(), selectorOverrides: overrides };
   }
 
-  function exportConfig() {
-    const config = buildConfigPayload();
-    const file = {
-      type: "whakapapa-mountain-conditions-selectors",
-      version: 1,
-      exportedAt: new Date().toISOString(),
-      sourceUrl: config.sourceUrl,
-      selectorOverrides: config.selectorOverrides,
-    };
-    const blob = new Blob([JSON.stringify(file, null, 2)], {
-      type: "application/json",
-    });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = "whakapapa-mountain-conditions-selectors.json";
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    URL.revokeObjectURL(url);
-    toast.success("Selector configuration exported.");
+  async function exportConfig() {
+    setExportingConfig(true);
+    setError("");
+    try {
+      // Read the current config straight from the database so the export
+      // reflects what is stored, not any unsaved edits in the form.
+      const response = await fetch("/api/admin/mountain-conditions");
+      const body = (await response.json()) as ApiResponse;
+      if (!response.ok) {
+        throw new Error(body.error || "Failed to read the stored configuration");
+      }
+
+      const config = body.record?.config ?? emptyWhakapapaSourceConfig();
+      // Export the FULL resolved selector set (defaults filled in for any key
+      // not overridden), so the file is a complete, self-contained vocabulary.
+      const file = {
+        type: "whakapapa-mountain-conditions-selectors",
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        sourceUrl: config.sourceUrl,
+        selectorOverrides: resolveWhakapapaSelectors(config.selectorOverrides),
+      };
+      const blob = new Blob([JSON.stringify(file, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "whakapapa-mountain-conditions-selectors.json";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      toast.success("Selector configuration exported from the database.");
+    } catch (exportError) {
+      setError(
+        exportError instanceof Error
+          ? exportError.message
+          : "Failed to export configuration",
+      );
+      toast.error("Export failed");
+    } finally {
+      setExportingConfig(false);
+    }
   }
 
   async function importConfigFromFile(file: File) {
+    setImportingConfig(true);
+    setError("");
+    setForbidden(false);
     try {
       const parsed = JSON.parse(await file.text());
 
       // Reuse the shared coercion so only known selector keys with non-empty
       // string values are accepted (unknown/garbage keys are dropped).
       const coerced = coerceWhakapapaSourceConfig(parsed);
-      const form = configToForm(coerced);
-      const imported = Object.values(form.overrides).filter(Boolean).length;
-      if (imported === 0) {
+      const importedCount = Object.keys(coerced.selectorOverrides).length;
+      if (importedCount === 0) {
         toast.error("No recognised selector fields were found in that file.");
         return;
       }
 
-      setSelectorOverrides(form.overrides);
-      // Only replace the URL when the file explicitly carries a valid one, so a
-      // selectors-only file does not reset the current Report URL.
+      // Persist the FULL set (imported values, with defaults filling any gap),
+      // so importing writes the complete selector vocabulary to the database.
+      const fullSelectors = resolveWhakapapaSelectors(coerced.selectorOverrides);
+      // Only take the file's URL when it explicitly carries a valid one; a
+      // selectors-only file keeps the currently stored Report URL.
       const rawUrl =
         parsed && typeof parsed === "object"
           ? (parsed as { sourceUrl?: unknown }).sourceUrl
           : undefined;
       const urlCheck = validateWhakapapaSourceUrl(rawUrl);
-      if (urlCheck.ok) {
-        setSourceUrl(urlCheck.url);
-      }
+      const sourceUrlToUse = urlCheck.ok ? urlCheck.url : sourceUrl.trim();
+
+      await persistConfig({
+        sourceUrl: sourceUrlToUse,
+        selectorOverrides: fullSelectors,
+      });
 
       setShowSelectors(true);
       toast.success(
-        `Imported ${imported} selector${imported === 1 ? "" : "s"}. Review, then click Save configuration.`,
+        `Imported ${importedCount} selector${importedCount === 1 ? "" : "s"} and saved to the database.`,
       );
-    } catch {
-      toast.error("Could not import selectors: the file is not valid JSON.");
+    } catch (importError) {
+      if (importError instanceof SyntaxError) {
+        toast.error("Could not import selectors: the file is not valid JSON.");
+      } else {
+        setError(
+          importError instanceof Error
+            ? importError.message
+            : "Failed to import selectors",
+        );
+        toast.error("Import failed");
+      }
+    } finally {
+      setImportingConfig(false);
     }
   }
 
@@ -387,28 +431,35 @@ export function MountainConditionsPanel() {
     }
   }
 
+  // Writes a config to the database (the SSRF-guarded PATCH) and mirrors the
+  // saved row back into the form. Shared by Save, Import, and any DB write.
+  async function persistConfig(config: WhakapapaSourceConfig): Promise<string> {
+    const response = await fetch("/api/admin/mountain-conditions", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config }),
+    });
+    const body = (await response.json()) as ApiResponse;
+    if (!response.ok) {
+      if (response.status === 403) setForbidden(true);
+      throw new Error(body.error || "Failed to save source configuration");
+    }
+
+    setRecord(body.record);
+    setRecordSyncedAt(Date.now());
+    const form = configToForm(body.record?.config);
+    setSourceUrl(form.sourceUrl);
+    setSelectorOverrides(form.overrides);
+    return body.message || "Source configuration saved";
+  }
+
   async function saveConfig() {
     setSavingConfig(true);
     setError("");
     setForbidden(false);
     try {
-      const response = await fetch("/api/admin/mountain-conditions", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ config: buildConfigPayload() }),
-      });
-      const body = (await response.json()) as ApiResponse;
-      if (!response.ok) {
-        if (response.status === 403) setForbidden(true);
-        throw new Error(body.error || "Failed to save source configuration");
-      }
-
-      setRecord(body.record);
-      setRecordSyncedAt(Date.now());
-      const form = configToForm(body.record?.config);
-      setSourceUrl(form.sourceUrl);
-      setSelectorOverrides(form.overrides);
-      toast.success(body.message || "Source configuration saved");
+      const message = await persistConfig(buildConfigPayload());
+      toast.success(message);
     } catch (configError) {
       setError(
         configError instanceof Error
@@ -705,8 +756,13 @@ export function MountainConditionsPanel() {
                       variant="outline"
                       size="sm"
                       onClick={exportConfig}
+                      disabled={exportingConfig || importingConfig}
                     >
-                      <Download className="h-4 w-4" />
+                      {exportingConfig ? (
+                        <LoaderCircle className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Download className="h-4 w-4" />
+                      )}
                       Export selectors
                     </Button>
                     <Button
@@ -714,9 +770,13 @@ export function MountainConditionsPanel() {
                       variant="outline"
                       size="sm"
                       onClick={() => importInputRef.current?.click()}
-                      disabled={!canEdit}
+                      disabled={!canEdit || importingConfig || exportingConfig}
                     >
-                      <Upload className="h-4 w-4" />
+                      {importingConfig ? (
+                        <LoaderCircle className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Upload className="h-4 w-4" />
+                      )}
                       Import selectors
                     </Button>
                     <input
@@ -728,10 +788,11 @@ export function MountainConditionsPanel() {
                     />
                   </div>
                   <p className="mt-2 text-xs text-muted-foreground">
-                    Export saves the Report URL and selector overrides to a JSON
-                    file you can import on another site, so its admin does not
-                    have to re-enter them. Importing fills the fields above —
-                    review them, then click <b>Save configuration</b>.
+                    Export reads the stored Report URL and full selector set from
+                    the database and saves them to a JSON file. Import loads such
+                    a file and <b>saves it to the database</b>, so another
+                    site&rsquo;s admin does not have to re-enter the values by
+                    hand.
                   </p>
                   <p className="mt-1 text-xs text-muted-foreground">
                     Need an up-to-date file? Contact the LWTC Admin at{" "}
@@ -846,12 +907,14 @@ export function MountainConditionsPanel() {
               from the cached data, so an upstream refresh never wipes them.
             </p>
             <p>
-              Under <b>Advanced</b>, <i>Export selectors</i> downloads the URL
-              and overrides as a JSON file, and <i>Import selectors</i> loads
-              such a file into the fields — so another site&rsquo;s admin can
-              reuse a known-good configuration instead of re-entering it. After
-              importing, review the fields and click <b>Save configuration</b>.
-              Email the LWTC Admin at admin@lwtc.org.nz for an up-to-date file.
+              Under <b>Advanced</b>, <i>Export selectors</i> reads the stored
+              URL and the full selector set from the database and downloads them
+              as a JSON file, and <i>Import selectors</i> loads such a file and
+              saves it straight to the database — so another site&rsquo;s admin
+              can reuse a known-good configuration instead of re-entering it. The
+              built-in defaults are seeded into the database, so a fresh site
+              already has the complete set. Email the LWTC Admin at
+              admin@lwtc.org.nz for an up-to-date file.
             </p>
           </div>
         </DialogContent>
