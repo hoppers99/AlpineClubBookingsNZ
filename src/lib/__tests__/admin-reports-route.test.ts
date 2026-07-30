@@ -156,6 +156,80 @@ describe("admin reports route", () => {
     });
   }, 15_000);
 
+  /*
+    #2350: the revenue figure counts an upward change as money in hand even when
+    the extra was never collected. The figure keeps its meaning — it is what the
+    club BOOKED — and the shortfall is reported beside it so the two can be read
+    against each other.
+  */
+  it("reports outstanding additional payments alongside booked revenue", async () => {
+    mockPrisma.booking.findMany
+      .mockResolvedValueOnce([
+        {
+          createdAt: new Date("2026-04-07T10:00:00Z"),
+          finalPriceCents: 30_000,
+          status: "PAID",
+          guests: [{ isMember: true }],
+          payment: {
+            additionalAmountCents: 21_000,
+            additionalPaymentStatus: "PENDING",
+          },
+        },
+        {
+          createdAt: new Date("2026-04-08T10:00:00Z"),
+          finalPriceCents: 10_000,
+          status: "PAID",
+          guests: [{ isMember: true }],
+          // FAILED rides along with PENDING wherever the owed test is applied.
+          payment: {
+            additionalAmountCents: 4_000,
+            additionalPaymentStatus: "FAILED",
+          },
+        },
+        {
+          createdAt: new Date("2026-04-09T10:00:00Z"),
+          finalPriceCents: 20_000,
+          status: "PAID",
+          guests: [{ isMember: true }],
+          payment: {
+            additionalAmountCents: 9_000,
+            additionalPaymentStatus: "SUCCEEDED",
+          },
+        },
+        {
+          // Cancelled bookings are outside the revenue figure, so their
+          // uncollected extra must be outside the shortfall too.
+          createdAt: new Date("2026-04-10T10:00:00Z"),
+          finalPriceCents: 50_000,
+          status: "CANCELLED",
+          guests: [{ isMember: true }],
+          payment: {
+            additionalAmountCents: 8_000,
+            additionalPaymentStatus: "PENDING",
+          },
+        },
+      ])
+      .mockResolvedValueOnce([]);
+
+    mockPrisma.member.count.mockResolvedValueOnce(0).mockResolvedValueOnce(0);
+    mockPrisma.memberSubscription.count
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(0);
+
+    const { GET } = await import("@/app/api/admin/reports/route");
+    const response = await GET(
+      new NextRequest(
+        "http://localhost/api/admin/reports?from=2026-04-01&to=2026-04-14"
+      )
+    );
+    const data = await response.json();
+
+    expect(data.summary.totalRevenueCents).toBe(60_000);
+    expect(data.summary.outstandingAdditionalCents).toBe(25_000);
+    expect(data.summary.outstandingAdditionalBookings).toBe(2);
+  }, 15_000);
+
   it("rejects an unknown or inactive lodgeId with 400 (Low 2)", async () => {
     mockLodgeFindUnique.mockResolvedValue({ id: "lodge-2", active: false });
 

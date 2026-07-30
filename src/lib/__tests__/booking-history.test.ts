@@ -99,6 +99,68 @@ describe("buildBookingHistoryItems", () => {
     expect(items[0].occurredAt.toISOString()).toBe("2026-04-08T14:00:00.000Z");
   });
 
+  /*
+    #2350: the timeline had fallbacks for a SUCCEEDED and a FAILED additional
+    payment but none for one still awaiting the member — the state an
+    outstanding delta spends nearly all of its life in. The moment the price
+    went up therefore left no mark on the timeline at all.
+  */
+  describe("an additional payment still awaiting the member (#2350)", () => {
+    function build(
+      additionalPaymentStatus: string | null,
+      additionalAmountCents = 21_000,
+    ) {
+      return buildBookingHistoryItems({
+        createdAt: new Date("2026-04-01T09:00:00Z"),
+        payment: {
+          status: "SUCCEEDED",
+          amountCents: 9000,
+          refundedAmountCents: 0,
+          additionalAmountCents,
+          additionalPaymentStatus,
+          createdAt: new Date("2026-04-01T09:00:00Z"),
+          updatedAt: new Date("2026-04-08T14:00:00Z"),
+        },
+        modifications: [],
+        refundRequests: [],
+        auditLogs: [],
+      });
+    }
+
+    it("records the request with its amount and the moment it was raised", () => {
+      const item = build("PENDING").find(
+        (entry) => entry.id === "payment-additional-pending",
+      );
+
+      expect(item).toMatchObject({
+        category: "Payment",
+        title: "Additional payment requested",
+        amountDisplay: "$210.00",
+        tone: "warning",
+      });
+      expect(item?.occurredAt.toISOString()).toBe("2026-04-08T14:00:00.000Z");
+      expect(item?.detail).toContain("has not been paid yet");
+    });
+
+    it("does not claim a request when the extra was collected or failed", () => {
+      for (const status of ["SUCCEEDED", "FAILED"]) {
+        expect(
+          build(status).find(
+            (entry) => entry.id === "payment-additional-pending",
+          ),
+        ).toBeUndefined();
+      }
+    });
+
+    it("stays silent when there is no additional payment at all", () => {
+      expect(
+        build("PENDING", 0).find(
+          (entry) => entry.id === "payment-additional-pending",
+        ),
+      ).toBeUndefined();
+    });
+  });
+
   it("renders a #1992 duplicate-capture auto-refund with honest copy when supplied (admin view, #2008)", () => {
     const items = buildBookingHistoryItems({
       createdAt: new Date("2026-04-01T09:00:00Z"),

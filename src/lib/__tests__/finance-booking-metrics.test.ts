@@ -467,6 +467,76 @@ describe("finance-booking-metrics", () => {
     ]);
   });
 
+  /*
+    #2350: the additional-payment status split was already computed here, but
+    nothing totalled the MONEY behind it, so no finance surface could say how
+    much of the booked revenue had never arrived.
+  */
+  it("totals uncollected additional payments, counting FAILED with PENDING", async () => {
+    mockPrisma.booking.findMany.mockResolvedValue([
+      {
+        id: "booking-pending-extra",
+        checkIn: new Date("2026-04-10T00:00:00.000Z"),
+        checkOut: new Date("2026-04-11T00:00:00.000Z"),
+        status: BookingStatus.PAID,
+        finalPriceCents: 30_000,
+        guests: [{ id: "g-1" }],
+        payment: {
+          status: PaymentStatus.SUCCEEDED,
+          amountCents: 9_000,
+          refundedAmountCents: 0,
+          creditAppliedCents: 0,
+          changeFeeCents: 0,
+          additionalAmountCents: 21_000,
+          additionalPaymentStatus: "PENDING",
+        },
+      },
+      {
+        id: "booking-failed-extra",
+        checkIn: new Date("2026-04-10T00:00:00.000Z"),
+        checkOut: new Date("2026-04-11T00:00:00.000Z"),
+        status: BookingStatus.PAID,
+        finalPriceCents: 10_000,
+        guests: [{ id: "g-2" }],
+        payment: {
+          status: PaymentStatus.SUCCEEDED,
+          amountCents: 6_000,
+          refundedAmountCents: 0,
+          creditAppliedCents: 0,
+          changeFeeCents: 0,
+          additionalAmountCents: 4_000,
+          additionalPaymentStatus: "FAILED",
+        },
+      },
+      {
+        id: "booking-collected-extra",
+        checkIn: new Date("2026-04-10T00:00:00.000Z"),
+        checkOut: new Date("2026-04-11T00:00:00.000Z"),
+        status: BookingStatus.PAID,
+        finalPriceCents: 20_000,
+        guests: [{ id: "g-3" }],
+        payment: {
+          status: PaymentStatus.SUCCEEDED,
+          amountCents: 20_000,
+          refundedAmountCents: 0,
+          creditAppliedCents: 0,
+          changeFeeCents: 0,
+          additionalAmountCents: 9_000,
+          additionalPaymentStatus: "SUCCEEDED",
+        },
+      },
+    ]);
+
+    const metrics = await getFinanceBookingMetrics({
+      realized: { from: "2026-04-10", to: "2026-04-11" },
+    });
+
+    expect(metrics.paymentSummary.outstandingAdditionalCents).toBe(25_000);
+    expect(metrics.paymentSummary.outstandingAdditionalBookings).toBe(2);
+    // A collected extra stays in the captured column and out of the shortfall.
+    expect(metrics.paymentSummary.capturedAdditionalCents).toBe(9_000);
+  });
+
   it("rejects an empty query", async () => {
     await expect(getFinanceBookingMetrics({})).rejects.toThrow(
       "At least one finance booking metrics section is required"
