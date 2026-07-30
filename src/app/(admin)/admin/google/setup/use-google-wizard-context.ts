@@ -25,8 +25,13 @@ export interface GoogleWizardContext {
   legacyEnvVars: string[];
   /** Metadata-only credential status (never a value). */
   credentials: Record<GoogleCredentialKey, GoogleCredentialFieldMeta>;
-  /** Whether the viewer may write credentials (Full Admin only). */
-  isFullAdmin: boolean;
+  /**
+   * Whether the viewer may write credentials (Full Admin only). Tri-state
+   * (#2065 / #2324): `undefined` while the session resolves, so a step neither
+   * flashes "Only a Full Admin can…" at a Full Admin nor flashes an enabled
+   * control at anyone else. Treat only `true` as permission.
+   */
+  isFullAdmin: boolean | undefined;
   /** A stored Google credential no longer decrypts (auth secret changed). */
   needsReentry: boolean;
   /** A real OAuth round-trip verified the current credentials (D2 gate). */
@@ -68,10 +73,16 @@ export function useGoogleWizardContext(
   loading: boolean;
   refresh: () => void;
 } {
-  const { data: session } = useSession();
-  const isFull = session
-    ? isFullAdmin({ accessRoles: session.user?.accessRoles ?? [] })
-    : false;
+  const { data: session, status: sessionStatus } = useSession();
+  // Tri-state: `undefined` until the session resolves (#2324). Reading an
+  // unresolved session as `false` made every step's Full-Admin notice appear
+  // and then vanish for an actual Full Admin.
+  const isFull =
+    sessionStatus === "loading"
+      ? undefined
+      : session
+        ? isFullAdmin({ accessRoles: session.user?.accessRoles ?? [] })
+        : false;
 
   const [loading, setLoading] = useState(true);
   const [credentials, setCredentials] = useState<

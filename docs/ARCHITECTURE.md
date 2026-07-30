@@ -793,18 +793,21 @@ one commit, and because a scope change is itself a load it unmounts the
 `PolicyScopeSelect` the admin just operated, dropping keyboard focus to `<body>`
 for the duration of the round trip. That banner shape started in the five
 Booking Policies sections (#2142) and is now the **default across the admin
-tree** (#2160, extended by #2168) — not a claim that nothing is left. Measured
+tree** (#2160, extended by #2168 and #2324) — not a claim that nothing is left.
+Measured
 on the current tree by `view-only-banner-contract.test.ts`, which asserts these
 figures rather than trusting a hand count: **78 components render a banner, and
-237 of the 275 `ViewOnlyActionButton` call sites opt out** of the per-button
+242 of the 285 `ViewOnlyActionButton` call sites opt out** of the per-button
 reason. (Earlier revisions of this page published 76/232/264/211 — those were
 upstream-historical and had drifted; the numbers here are the ones the contract
-test currently pins, which is the only authority.) Those 237 split by WHICH rule
+test currently pins, which is the only authority.) Those 242 split by WHICH rule
 covers them: **216** pass the literal
-`describeReason={false}` and are covered by a banner in the same file, and **21**
+`describeReason={false}` and are covered by a banner in the same file, and **26**
 pass `describeReason={!ancestorRendersViewOnlyBanner}` and are covered by a
-verified vouching parent (see *Vouching for a child's coverage* below). The
-remaining **38 controls across 18 files deliberately keep the per-button
+verified vouching parent — 21 by a parent's own JSX render site (#2168), 5 by the
+guided-setup shell (#2324); see *Vouching for a child's coverage* and *Vouching
+through the wizard shell* below. The
+remaining **43 controls across 23 files deliberately keep the per-button
 default** (`describeReason` left at `true`), in three shapes:
 
 - **Controls inside a dialog, sheet, popover, or dropdown menu.** These live in
@@ -818,16 +821,24 @@ default** (`describeReason` left at `true`), in three shapes:
   the booking capacity/exclusive hold controls, the family-group login-holder
   and request-review sub-sections, and the non-member contact form). Nothing
   local proves an ancestor renders a banner above them, so the reason stays on
-  the control. (25 controls across 13 files — the newest are the four steps of
-  the Lodge Display setup wizard, #2249, whose covering banner is rendered by
-  the shared `IntegrationWizard` shell in another file and reached through a
-  `render(context, helpers)` callback, so neither coverage rule can see it;
-  before those, the per-booking "No emails" switch, #2259, dropped into the
-  Admin tools card's layout beside the capacity and exclusive holds.) Read that
+  the control. (30 controls across 18 files.) Nine of those 30 sit inside a
+  setup wizard and are **scope** exceptions rather than indirection ones: each is
+  gated on a permission NARROWER than the banner its shell renders, so an admin
+  who has the wizard's area but not that narrower one meets no banner at all.
+  Eight are new to this bucket with #2324, and are the four provider wizards'
+  credential-ish writes — Xero credentials and webhook key, Stripe keys and
+  signing secret, Google credentials and verify, the backups credentials and
+  destination — all of which additionally need Full Admin. The ninth, the Lodge
+  Display wizard's `support`-gated module switch under a `lodge` banner, has been
+  an exception since #2249 and stays one for the same reason; #2324 moved its
+  three lodge-gated siblings out of this bucket and into the vouched one. Before
+  those, the per-booking "No emails" switch (#2259), dropped into the Admin tools
+  card's layout beside the capacity and exclusive holds. Read that
   bucket as the
   REMAINDER — everything that is neither a member detail card nor one of the
-  four dialog-only files — rather than as a claim that all 25 are leaves. Eleven
-  of the thirteen files are (22 controls); the other two, `page-content-panel.tsx`
+  four dialog-only files — rather than as a claim that all 30 are leaves. Ten of
+  the eighteen files are (18 controls); six are the wizard step files just
+  described (9 controls); and the last two, `page-content-panel.tsx`
   and `site-banners-panel.tsx`, are full banner-bearing panels whose last 3
   controls sit inside their own edit/create `Dialog`, so those 3 are really the
   first shape occurring inside a file that also has the third. Nothing is
@@ -863,7 +874,8 @@ opened a bogus template that swallowed the comment's opening `/*` and left its
 quoted `describeReason={false}` in the "code" the text checks read — which is
 how `public-booking-requests-section.tsx` slipped past the stripper a SECOND
 time, caught and fixed in #2166. If you add or convert a gated control, that
-test fails and the numbers here, in `AGENTS.md`, in `docs/STYLE_GUIDE.md`, in
+test fails and the numbers here, in `AGENTS.md`, in `docs/STYLE_GUIDE.md` (which
+publishes the exception TOTAL only), in
 `CHANGELOG.md` and in the `ViewOnlyActionButton` JSDoc all need updating
 together.
 
@@ -894,7 +906,9 @@ The contract test then closes each way the vouch could be a lie:
 
 - `describeReason` accepts **only** the literal `{false}`, the vouched
   `{!ancestorRendersViewOnlyBanner}`, or the `true` default. A third spelling
-  fails, so neither coverage rule can be escaped by inventing one.
+  fails, so no coverage rule can be escaped by inventing one. #2324 added a
+  third *rule* without adding a third spelling — see *Vouching through the
+  wizard shell* below.
 - the child must default the prop to `false`, and may read it only in
   `describeReason={!prop}` or as the guard on its own `AdminViewOnlyNotice`. It
   may not FORWARD it, so coverage never becomes transitive across a hop the test
@@ -945,6 +959,129 @@ half — that an unvouched card really does keep its reason, and a vouched one
 really does drop it while staying disabled — is verified by rendering the real
 components in `src/lib/__tests__/admin-view-only-controls.test.tsx`, so a bug in
 the static analysis cannot make the property vacuous.
+
+**Vouching through the wizard shell (#2324).** The #2168 mechanism is verified at
+the child's JSX render site, and the shared guided-setup shell
+(`IntegrationWizard`, #2080 — the frame behind the Xero, Stripe, Google, backups
+and Lodge Display setups) structurally cannot use it. A step is supplied by the
+provider's config as a `render(context, helpers)` callback and **called from the
+shell's file**, so nowhere in the source does a parent element sit above a step's
+control. Both coverage rules were blind to the relationship, and the result was a
+shared frame where the easiest thing to write was the least accessible one: the
+Lodge Display steps carried per-button reasons and sat in the exception list,
+while the other four wizards used plain disabled `Button`s that said nothing at
+all and were invisible to the contract test.
+
+Owner decision on #2324 (option **A + A1**, all five flows in one change) closed
+it **without a third `describeReason` spelling** — there are still exactly two,
+and a third still fails. What is new is the CHANNEL the existing vouch travels
+down:
+
+- `WizardStepHelpers` carries `ancestorRendersViewOnlyBanner`, typed as the
+  **required literal `true`**. The shell therefore cannot hand a step a false
+  vouch, and a provider cannot fabricate one from something weaker — the forward
+  is compiler-proved, not merely plausible.
+- the shell sets it, because it renders the banner in **every** branch, the
+  loading early-return included.
+- a provider config forwards it at the step's render site as
+  `ancestorRendersViewOnlyBanner={helpers.ancestorRendersViewOnlyBanner}`, where
+  `helpers` is that `WizardStepConfig.render` callback's own second parameter.
+- the step body then reads it in the ordinary #2168 shape: a prop defaulting to
+  `false`, used only as `describeReason={!prop}`.
+
+Decision A1 is what keeps the blast radius small, and the test enforces it: the
+channel is honoured **only** inside a real `WizardStepConfig.render` — an object
+literal that also declares `id` and `isVerified`, both required members of
+`WizardStepConfig` — read from that callback's own parameter, in a file that
+really renders `<IntegrationWizard>` with a non-literal `canEdit` and its own
+`viewOnlyBanner` sentence. The shell's half is re-proved rather than trusted: the
+flag's type and requiredness, the shell setting it to `true`, and an
+unconditional banner in every branch the shell can return. A JSX spread at the
+render site fails, and the child must still resolve through a named, non-aliased
+import to a file that declares the prop with a `= false` default.
+
+**Scope, for this channel only, is mechanical.** #2168 cannot check scope: a
+vouching parent's banner and its child's `canEdit` are two unrelated expressions
+in two files, and whether they name the same permission area is a judgement. The
+wizard channel is different, and this is the one real guarantee it buys. The
+shell passes **one** `canEdit` to both the banner and `helpers`, so a step
+control that reads `canEdit` from that same `helpers` object shares the banner's
+value *by construction* — the two cannot disagree, because they are the same
+value. The contract test enforces exactly that, in two halves that only mean
+something together:
+
+- inside a wizard-vouched component, a control that opts out via the vouch must
+  read `canEdit` off an identifier the component received as a parameter whose
+  DECLARED type is `WizardStepHelpers` — not from an independent source, and not
+  merely off "some parameter" (which would accept a second, independently derived
+  access flag with a different scope, the very defect this catches); and
+- **only the shell may construct a `WizardStepHelpers` at all.** Outside
+  `integration-wizard.tsx`, an object property named
+  `ancestorRendersViewOnlyBanner` and an object literal annotated
+  `WizardStepHelpers` (`: T`, `as T`, `satisfies T`) both fail the test. Without
+  this, a provider config could mint its own helpers object with the vouch set to
+  `true` and hand it to a step body — satisfying every other check while no
+  banner rendered anywhere. Step unit tests are outside the scan, deliberately:
+  they must build a helpers object to render a step at all, and they cannot make
+  a production step opt out (the step's own `= false` default is what covers
+  that).
+
+A control that calls `useAdminAreaEditAccess(...)` itself therefore cannot be
+vouched for even by accident — it is neither a parameter nor typed as the
+helpers — which is precisely the mismatch this issue's review flagged.
+
+What stays a review call is the other direction: deciding a control should **not**
+take the vouch. Five controls take it today: the Lodge Display wizard's
+restore-boards, save-lodge-details and pair-the-screen (all reading the wizard's
+`lodge` access) and the backups wizard's turn-it-on and run-verification (both
+`support`). Nine keep their own reason because their gate is NARROWER than the
+area their wizard's banner names, and they now say which permission that is: the
+Xero, Stripe, Google and backups
+credential-ish writes additionally need **Full Admin** on top of the wizard's
+area, and the Lodge Display module switch is **support**-gated under a `lodge`
+banner. Before #2324 eight of those nine were plain disabled `Button`s carrying
+no per-control explanation at all.
+
+Those nine also state the narrower reason **visibly**, in their step's own prose,
+and that is not redundant with the per-control reason: a disabled button's
+`title` never fires (`disabled:pointer-events-none`) and its `aria-describedby`
+line is not visible, so the two serve different readers. What the visible half
+must not do is guess. The Xero, Stripe and Google Full-Admin flag is derived from
+the session rather than from the wizard's own fetch, and reading an unresolved
+session as "not a Full Admin" made those notices appear and then vanish for an
+actual Full Admin; it is now tri-state (`boolean | undefined`) like every other
+edit-access signal (#2065), so the notice renders only on a resolved `false`.
+The backups equivalent (`canManageDestination`) comes from the server fetch the
+shell already waits on, so it was never able to flash.
+
+The mirror-image edit went with it: **a step must not repeat what the banner
+already says**, and two sentences in the backups steps did. "You need support
+edit access" beside the verification button and "your admin role can view these
+settings but cannot change them" beside the nightly-backups switch both stated
+the wizard's own `support` scope — exactly what the banner above them states,
+once, in the reading order. Both were also keyed off `!canEdit` rather than
+`canEdit === false`, so both appeared for a moment even for an admin who *can*
+change those settings. Both are deleted; the vouched buttons under them now lean
+on the banner. That is the general rule from #2160's `AdminViewOnlyNotice`
+guidance applied to a wizard step: keep a second sentence only when it names a
+DIFFERENT permission from the banner's (which is exactly what the nine
+exceptions above do).
+
+Two things were deliberately left alone. `xero/_components/connection-status-panel.tsx`'s
+connect / reconnect / disconnect buttons ARE finance-gated, matching the Xero
+wizard's banner, but the panel is a GRANDCHILD (the Connect step renders it) and
+is also used standalone outside the wizard; forwarding the vouch through two hops
+is forbidden, so its plain `Button`s stay. And the disabled `Input`s and
+`select`s inside the wizard steps stay as they are — this contract polices
+`ViewOnlyActionButton`, and text inputs have never been in its scope.
+
+The behavioural half is checked independently of the static analysis, in
+`src/components/admin/integration-wizard/__tests__/integration-wizard.test.tsx`:
+the real shell is rendered and asked whether the banner is mounted in the
+loading branch as well as the loaded one, whether the helpers really carry
+`true`, and whether a step control that uses the vouch drops its reason while
+STAYING disabled. Gating never depends on the flag; only who states the reason
+does.
 
 **Where the banner goes: first child, every branch.** The banner is the first
 child of a section's outermost wrapper, rendered identically in the loading,

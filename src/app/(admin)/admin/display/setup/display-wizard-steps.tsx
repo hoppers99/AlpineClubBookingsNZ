@@ -13,6 +13,7 @@ import type { WizardStepHelpers } from "@/components/admin/integration-wizard";
 import {
   ADMIN_FORBIDDEN_SAVE_REASON,
   ViewOnlyActionButton,
+  type AncestorViewOnlyBannerProps,
 } from "@/components/admin/view-only-action";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import { useRestoreBuiltInBoards } from "../templates/restore-built-ins";
@@ -43,7 +44,16 @@ import {
  * enforcement.
  */
 
-interface StepProps {
+/**
+ * `ancestorRendersViewOnlyBanner` (#2324) is the shell's vouch, forwarded by the
+ * wizard config from `helpers.ancestorRendersViewOnlyBanner`. It defaults to
+ * false, so a step body rendered anywhere else keeps its own per-button reason.
+ *
+ * It covers the LODGE-gated controls only — that is the scope the wizard's
+ * banner states. Step 1's module switch is gated on `support`, so it keeps its
+ * own reason (see `ModuleStep`).
+ */
+interface StepProps extends AncestorViewOnlyBannerProps {
   context: DisplayWizardContext;
   helpers: WizardStepHelpers;
 }
@@ -336,6 +346,14 @@ export function ModuleStep({ context, helpers }: StepProps) {
             </p>
           ) : (
             <div className="space-y-2">
+              {/* KEEPS its own reason, and must (#2324). The shell's vouch
+                  covers the wizard's own scope — `lodge` — but this switch is
+                  gated on `support`. An admin with lodge edit and support
+                  view-only gets NO banner at all (the banner only renders when
+                  the LODGE access is view-only), so opting this control out
+                  would leave it silently dead for exactly the person who hits
+                  it. Same reasoning as `member-credit-card.tsx` under #2168:
+                  scope decides, not proximity. */}
               <ViewOnlyActionButton
                 canEdit={canEditModules}
                 disabled={busy}
@@ -382,7 +400,11 @@ function TerminologyList() {
  * shows. A club that already authored its own boards is verified here without
  * pressing anything.
  */
-export function BoardsStep({ context, helpers }: StepProps) {
+export function BoardsStep({
+  context,
+  helpers,
+  ancestorRendersViewOnlyBanner = false,
+}: StepProps) {
   const [message, setMessage] = useState<string | null>(null);
   const { run, running, confirmDialog } = useRestoreBuiltInBoards({
     onResult: (text, restored) => {
@@ -421,6 +443,7 @@ export function BoardsStep({ context, helpers }: StepProps) {
       <div className="space-y-2">
         <ViewOnlyActionButton
           canEdit={helpers.canEdit}
+          describeReason={!ancestorRendersViewOnlyBanner}
           variant="outline"
           onClick={() => void run()}
         >
@@ -654,7 +677,11 @@ export const DISPLAY_QUICK_SET_FIELDS: Array<{
   },
 ];
 
-export function ConfigStep({ context, helpers }: StepProps) {
+export function ConfigStep({
+  context,
+  helpers,
+  ancestorRendersViewOnlyBanner = false,
+}: StepProps) {
   const saved = context.lodgeConfig;
   const [values, setValues] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState("");
@@ -805,6 +832,7 @@ export function ConfigStep({ context, helpers }: StepProps) {
           <div className="flex flex-wrap items-center gap-3">
             <ViewOnlyActionButton
               canEdit={helpers.canEdit}
+              describeReason={!ancestorRendersViewOnlyBanner}
               disabled={busy}
               onClick={() => void save()}
             >
@@ -833,6 +861,7 @@ export function PairStep({
   helpers,
   chosenTemplateId,
   onChoose,
+  ancestorRendersViewOnlyBanner = false,
 }: StepProps & {
   chosenTemplateId: string | null;
   /** Set (or change) the board the screen will be bound to at pairing. */
@@ -1108,6 +1137,7 @@ export function PairStep({
                 ) : null}
                 <ViewOnlyActionButton
                   canEdit={helpers.canEdit}
+                  describeReason={!ancestorRendersViewOnlyBanner}
                   disabled={busy || code.trim() === ""}
                   onClick={() => void pair()}
                 >
