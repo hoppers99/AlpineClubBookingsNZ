@@ -37,6 +37,7 @@ function stubDb(): ReadDb {
         brandSafety: "#f00",
         headingFontKey: "LEAGUE_SPARTAN",
         bodyFontKey: "INTER",
+        logoUrl: null,
         logoDataUrl: null,
         rawCss: "",
       }),
@@ -92,6 +93,77 @@ describe("config-transfer export", () => {
     ) as Record<string, { path: string; contentType: string }>;
     expect(mediaMap.img123.path).toBe("media/img123.png");
     expect(mediaMap.img123.contentType).toBe("image/png");
+  });
+
+  it("bundles the club logo's bytes when only the theme references it (#2322)", async () => {
+    // The logo lives in ClubTheme.logoUrl, not in any page's HTML. Without an
+    // explicit media reference for it the bundle would carry a theme pointing
+    // at an image id the target deployment has never seen.
+    const db = {
+      pageContent: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            slug: "about",
+            path: "/about",
+            caption: "",
+            menuTitle: "About",
+            title: "About Us",
+            headerText: "",
+            sortOrder: 1,
+            contentHtml: "<p>No images here</p>",
+            published: true,
+          },
+        ]),
+      },
+      siteContent: { findMany: vi.fn().mockResolvedValue([]) },
+      clubTheme: {
+        findUnique: vi.fn().mockResolvedValue({
+          brandGold: "#e0a800",
+          brandDeep: "#111",
+          brandSafety: "#f00",
+          headingFontKey: "LEAGUE_SPARTAN",
+          bodyFontKey: "INTER",
+          logoUrl: "/api/images/logo999",
+          logoDataUrl: null,
+          rawCss: "",
+        }),
+      },
+      mediaImage: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "logo999",
+            filename: "club-logo.webp",
+            contentType: "image/webp",
+            data: new Uint8Array([9, 9, 9]),
+          },
+        ]),
+      },
+    } as unknown as ReadDb;
+
+    const result = await buildConfigExport({
+      db,
+      categories: ["site-content"],
+      includeDoorCodes: false,
+      appVersion: "0.10.1",
+      prismaMigration: null,
+      generatedAt: "2026-07-08T00:00:00.000Z",
+    });
+
+    expect(result.imageCount).toBe(1);
+
+    const { manifest, files } = readBundle(result.zip);
+    const paths = manifest.files.map((f) => f.path);
+    expect(paths).toContain("media/logo999.webp");
+
+    const mediaMap = JSON.parse(
+      strFromU8(files.get("media/media-map.json")!),
+    ) as Record<string, { path: string; contentType: string }>;
+    expect(mediaMap.logo999.contentType).toBe("image/webp");
+
+    // The theme entry carries the URL form, not inlined bytes.
+    const theme = JSON.parse(strFromU8(files.get("site-content/theme.json")!));
+    expect(theme.logoUrl).toBe("/api/images/logo999");
+    expect(theme.logoDataUrl).toBeNull();
   });
 
   it("omits a category that produced no entries", async () => {

@@ -131,10 +131,10 @@ describe("database theme app-shell contract", () => {
     const layout = readRepoFile("src/app/(public)/layout.tsx");
 
     expect(layout).toMatch(
-      /<WebsiteHeader[\s\S]*?logoDataUrl=\{theme\.logoDataUrl\}[\s\S]*?\/>/,
+      /<WebsiteHeader[\s\S]*?logoUrl=\{theme\.logoUrl\}[\s\S]*?logoDataUrl=\{theme\.logoDataUrl\}[\s\S]*?\/>/,
     );
     expect(layout).toMatch(
-      /<WebsiteFooter[\s\S]*?logoDataUrl=\{theme\.logoDataUrl\}[\s\S]*?\/>/,
+      /<WebsiteFooter[\s\S]*?logoUrl=\{theme\.logoUrl\}[\s\S]*?logoDataUrl=\{theme\.logoDataUrl\}[\s\S]*?\/>/,
     );
   });
 

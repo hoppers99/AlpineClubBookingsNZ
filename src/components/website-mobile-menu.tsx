@@ -15,6 +15,7 @@ export interface WebsiteNavLink {
 interface WebsiteMobileMenuProps {
   isAuthenticated: boolean;
   clubName: string;
+  logoUrl?: string | null;
   logoDataUrl?: string | null;
   navLinks: ReadonlyArray<WebsiteNavLink>;
   // Configurable public Book Now (E3 #1929): hide the button entirely when the
@@ -27,6 +28,7 @@ interface WebsiteMobileMenuProps {
 export function WebsiteMobileMenu({
   isAuthenticated,
   clubName,
+  logoUrl,
   logoDataUrl,
   navLinks,
   showBookNow,
@@ -61,6 +63,7 @@ export function WebsiteMobileMenu({
         <div className="mb-5">
           <WebsiteLogo
             label={clubName}
+            logoUrl={logoUrl}
             logoDataUrl={logoDataUrl}
             className="max-h-8 max-w-36"
             textClassName="text-brand-snow"

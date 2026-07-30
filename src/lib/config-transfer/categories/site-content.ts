@@ -1,6 +1,11 @@
 import { strToU8, strFromU8 } from "fflate";
 import type { Prisma } from "@prisma/client";
 
+import {
+  logoImageIdFromUrl,
+  normaliseThemeValues,
+  resolveLogoFields,
+} from "@/lib/club-theme-schema";
 import { sanitizePageContentHtml } from "@/lib/page-content-html";
 import {
   canUnpublishPage,
@@ -12,7 +17,11 @@ import {
   SYSTEM_PAGE_SLUGS,
   toPagePath,
 } from "@/lib/page-content";
-import { remapImageRefs } from "../media";
+import {
+  bundleMediaIds,
+  planBundleMediaTarget,
+  remapImageRefs,
+} from "../media";
 import type { BundleEntry } from "../bundle";
 
 // Re-exported for tests and other categories that rewrite image references.
@@ -25,12 +34,14 @@ import {
   changedFields,
   hashRow,
   planActionFor,
+  rawHasValue,
   updateDataForMode,
   type CategoryImporter,
   type CategoryApplyResult,
   type CategoryPlanResult,
   type PlanContext,
   type ApplyContext,
+  type ImportMode,
   type PlanItem,
   type ReadDb,
 } from "../import-types";
@@ -77,6 +88,7 @@ export const CLUB_THEME_FIELDS = [
   "brandSafety",
   "headingFontKey",
   "bodyFontKey",
+  "logoUrl",
   "logoDataUrl",
   "rawCss",
 ] as const;
@@ -113,6 +125,68 @@ registerEntity({
   singleton: true,
   fields: [...CLUB_THEME_FIELDS],
 });
+
+/**
+ * The single derivation BOTH the dry-run and the apply use for the club theme
+ * (#2322, ADR-002 plan/apply parity). Before this existed the planner compared
+ * raw bundle values while apply wrote normalised, remapped, exclusivity-resolved
+ * ones, so the preview under-disclosed the logo nulling and mis-counted dangling
+ * imports.
+ *
+ * `resolvedLogoUrl` is what the caller has determined the logo reference will
+ * be: apply passes the remapped id, plan passes the id the reuse rule will land
+ * on (or null when the bundle carries no bytes for it, which both sides drop).
+ */
+export function deriveThemeWrite(
+  theme: Record<string, unknown>,
+  mode: ImportMode,
+  resolvedLogoUrl: string | null,
+): Record<string, unknown> {
+  // An import bypasses the zod write schema entirely, so the bundle's values go
+  // through the same normaliser every render uses — that enforces
+  // LOGO_URL_PATTERN and the 900K data-URI read bound. Legacy oversized
+  // data-URIs in old bundles stay importable by design.
+  const normalised = normaliseThemeValues({
+    ...theme,
+    logoUrl: resolvedLogoUrl,
+  });
+  const sanitised: Record<string, unknown> = {
+    ...normalised,
+    ...resolveLogoFields(normalised),
+  };
+
+  // Pick back ONLY the keys the bundle actually carried: normaliseThemeValues
+  // fills every field with a default, so writing it wholesale would turn a
+  // partial bundle into a full overwrite and reset colours it never mentioned.
+  const data: Record<string, unknown> = {};
+  for (const field of CLUB_THEME_FIELDS) {
+    if (field in theme) data[field] = sanitised[field];
+  }
+
+  const write = updateDataForMode(mode, theme, data) as Record<string, unknown>;
+
+  // Re-apply exclusivity to the FINAL write set. `updateDataForMode`'s merge
+  // mode (the default) drops any field whose bundle value is blank — including
+  // the very nulls that carry the invariant — so without this an import can
+  // leave BOTH logo columns populated on an existing row.
+  //
+  // The two columns are ONE logical field, so they travel together: if the
+  // bundle declares a logo at all (a non-blank value under either key), both
+  // derived values are written. Treating them independently under merge is what
+  // produced the incoherent states — e.g. a bundle whose logoUrl turns out to be
+  // dangling would null the URL while leaving the target's OLD inlined logo in
+  // place, resurrecting a logo the bundle never described. A bundle that
+  // mentions neither key still leaves both columns untouched, which is ordinary
+  // merge behaviour.
+  const declaresLogo =
+    rawHasValue(theme, "logoUrl") || rawHasValue(theme, "logoDataUrl");
+  if (declaresLogo) {
+    write.logoUrl = sanitised.logoUrl ?? null;
+    write.logoDataUrl = sanitised.logoDataUrl ?? null;
+  }
+
+  return write;
+}
 
 /** Extract MediaImage ids referenced as /api/images/<id> in content HTML. */
 export function extractImageIds(html: string): string[] {
@@ -189,6 +263,7 @@ export const siteContentExporter: CategoryExporter = {
         brandSafety: true,
         headingFontKey: true,
         bodyFontKey: true,
+        logoUrl: true,
         logoDataUrl: true,
         rawCss: true,
       },
@@ -204,6 +279,13 @@ export const siteContentExporter: CategoryExporter = {
       for (const id of extractImageIds(row.contentHtml ?? "")) {
         ctx.media.reference(id);
       }
+    }
+    // #2322: the club logo is a served image, not inlined bytes, so its
+    // MediaImage row has to travel with the bundle like any embedded image —
+    // otherwise the imported theme points at an id the target deployment does
+    // not have. Same `/api/images/<id>` scanner the HTML fields use.
+    for (const id of extractImageIds(theme?.logoUrl ?? "")) {
+      ctx.media.reference(id);
     }
 
     const entries: BundleEntry[] = [
@@ -623,10 +705,37 @@ async function planSiteContent(ctx: PlanContext): Promise<CategoryPlanResult> {
     fingerprintParts.push(
       `club-theme:default:${current ? hashRow([...CLUB_THEME_FIELDS], current) : "absent"}`,
     );
-    const data: Record<string, unknown> = {};
-    for (const f of CLUB_THEME_FIELDS) if (f in theme) data[f] = theme[f];
-    const write = updateDataForMode(ctx.mode, theme, data);
+    // Same derivation apply uses, so the preview discloses the exclusivity
+    // nulling and the dangling-logo drop instead of echoing raw bundle values
+    // (#2322, ADR-002). The only thing plan cannot know is the id a freshly
+    // minted MediaImage will get, so a logo that will be created fresh is
+    // disclosed as changed without fabricating the value.
+    const bundleLogoImageId = logoImageIdFromUrl(
+      typeof theme.logoUrl === "string" ? theme.logoUrl : null,
+    );
+    let planLogoUrl: string | null = null;
+    let logoIdUnknowable = false;
+    if (bundleLogoImageId) {
+      const target = await planBundleMediaTarget(
+        ctx.db,
+        ctx.files,
+        bundleLogoImageId,
+      );
+      if (target.carried) {
+        if (target.existingId) {
+          planLogoUrl = `/api/images/${target.existingId}`;
+        } else {
+          logoIdUnknowable = true;
+          planLogoUrl = typeof theme.logoUrl === "string" ? theme.logoUrl : null;
+        }
+      }
+    }
+
+    const write = deriveThemeWrite(theme, ctx.mode, planLogoUrl);
     const changed = changedFields(write, current);
+    if (logoIdUnknowable && !changed.includes("logoUrl")) {
+      changed.push("logoUrl");
+    }
     items.push({
       entity: "club-theme",
       key: "default",
@@ -638,6 +747,19 @@ async function planSiteContent(ctx: PlanContext): Promise<CategoryPlanResult> {
   if (anyEmbeddedImages) {
     warnings.push(
       "Some pages embed images; their bytes are re-imported and references remapped.",
+    );
+  }
+
+  // #2322: the theme can reference a logo image the bundle does not carry (media
+  // stripped, skipped as too large, or unrecognised bytes). Importing the id
+  // verbatim would leave the theme pointing at a blob this deployment has never
+  // seen, so apply drops it — say so in the dry-run rather than silently.
+  const plannedThemeLogoId = logoImageIdFromUrl(
+    typeof theme?.logoUrl === "string" ? theme.logoUrl : null,
+  );
+  if (plannedThemeLogoId && !bundleMediaIds(ctx.files).has(plannedThemeLogoId)) {
+    warnings.push(
+      "The bundle's club logo image is missing from its media; the logo will be cleared and the club name shown instead.",
     );
   }
 
@@ -725,21 +847,35 @@ async function applySiteContent(ctx: ApplyContext): Promise<CategoryApplyResult>
   // Theme (singleton, replace-present of allowlisted fields).
   const theme = readThemeFile(ctx.files, errors);
   if (theme) {
-    const data: Record<string, unknown> = {};
-    for (const field of CLUB_THEME_FIELDS) {
-      if (field in theme) data[field] = theme[field];
-    }
+    // Media ids are NOT preserved across deployments — recreateBundleMedia
+    // mints fresh rows and returns an old->new map — so the logo reference has
+    // to be remapped exactly like the image refs embedded in page HTML (#2322).
+    // A reference the map does not cover has no bytes in this deployment, so it
+    // is dropped rather than stored as a dangling id (the planner warns).
+    const bundleLogoUrl =
+      typeof theme.logoUrl === "string" ? theme.logoUrl.trim() : null;
+    const bundleLogoImageId = logoImageIdFromUrl(bundleLogoUrl);
+    const resolvedLogoUrl =
+      bundleLogoImageId && oldToNew.has(bundleLogoImageId)
+        ? remapImageRefs(bundleLogoUrl as string, oldToNew)
+        : null;
+
+    const write = deriveThemeWrite(theme, ctx.mode, resolvedLogoUrl);
     const current = batch.theme;
     if (!current) {
       // The three seed columns are required with no DB default, so the bundle
       // must carry them (validated by Prisma at runtime). The four orphan columns
       // have DB defaults (#2187 EXPAND migration), so omitting them is safe.
+      // Creates always take the bundle's full derived values.
+      const createData = deriveThemeWrite(theme, "overwrite", resolvedLogoUrl);
       await ctx.tx.clubTheme.create({
-        data: { id: "default", ...data } as Prisma.ClubThemeUncheckedCreateInput,
+        data: {
+          id: "default",
+          ...createData,
+        } as Prisma.ClubThemeUncheckedCreateInput,
       });
       result.created += 1;
     } else {
-      const write = updateDataForMode(ctx.mode, theme, data);
       const changed = changedFields(write, current);
       if (changed.length === 0) {
         result.unchanged += 1;
