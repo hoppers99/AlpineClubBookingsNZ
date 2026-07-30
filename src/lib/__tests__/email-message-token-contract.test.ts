@@ -382,8 +382,33 @@ describe("#2321 refund-appeal outcome templates", () => {
       expect(isBookingSuppressibleTemplate(key)).toBe(true);
       expect(ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES.has(key)).toBe(true);
     }
+    // The RETIRED combined name stays in the set on purpose: the set's whole
+    // job is the NULL-bookingId legacy window, and a fork jumping several
+    // releases in one deploy can still hold pre-#2258 FAILED rows queued under
+    // the old name with no bookingId at all. Membership here is what makes the
+    // retry cron (cron-email-retry.ts) refuse to replay those rows blind — the
+    // fail-closed audience gate in isBookingSuppressibleTemplate never sees
+    // them, because it only runs when a caller supplies a real bookingId. No
+    // live sender uses the name, so the entry can never withhold current mail.
     expect(
       ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES.has("refund-request-resolved"),
-    ).toBe(false);
+    ).toBe(true);
+  });
+});
+
+// #2320 review (LOW-6): guard 4 only exercises tokens DECLARED in
+// OPTIONAL_TEMPLATE_TOKENS — an optional a sender supplies but nobody declares
+// renders with its non-empty preview sample and is invisible to the guard. Pin
+// the two declarations that were live-but-undeclared when the review found
+// them, so removing either turns guard 4 back off for a token whose sender
+// really does supply "".
+describe("#2320 review — live optional tokens are declared", () => {
+  it.each([
+    // sendBookingCancelledEmail composes "" when no applied credit was restored.
+    ["booking-cancelled", "creditRestoredMessage"],
+    // sendBookingConfirmedEmail composes "" for a lodge with no door code.
+    ["booking-confirmed", "doorCodeNote"],
+  ])("declares %s's optional {{%s}}", (key, token) => {
+    expect(OPTIONAL_TEMPLATE_TOKENS[key]).toContain(token);
   });
 });

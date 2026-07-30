@@ -32,15 +32,33 @@ const TOKEN_PATTERN = /\{\{([^{}]+)\}\}/g;
  *
  * This is the honest half of the contract and it is maintained BY HAND: each
  * entry was read off the sender during #2268 (a `?? ""`, a nullable column, an
- * `amountCents: number | null`). Nothing derives it, so adding an optional
- * value to a send site without recording it here — or writing a default body
- * line that assumes an optional value is always present — is what
- * `findDanglingDefaultLines` catches.
+ * `amountCents: number | null`). Nothing derives it, and — be precise about
+ * what that means — guard 4 (`findDanglingDefaultLines`) only exercises the
+ * tokens DECLARED here: it renders each declared token empty and checks no
+ * line dangles. An optional value a sender supplies but nobody declares is
+ * rendered with its non-empty preview sample instead, so guard 4 CANNOT catch
+ * an undeclared optional; only guard 5 keeps the declared names honest in the
+ * other direction (declared but no longer in the body). The declaration
+ * discipline is therefore: whenever a send site starts supplying a value that
+ * can be empty (`?? ""`, nullable column, conditional composition), record it
+ * here in the same change — this table is the single place that turns guard 4
+ * on for that token.
  */
 export const OPTIONAL_TEMPLATE_TOKENS: Record<string, readonly string[]> = {
   // #2267 (F1): the promo block and the split-parent sentence are both
-  // pre-composed and both empty on an ordinary confirmation.
-  "booking-confirmed": ["promoSummary", "provisionalGuestsNote"],
+  // pre-composed and both empty on an ordinary confirmation. The door-code
+  // line (#2267) is composed whole by the sender and empty for a lodge with
+  // no code recorded — declared here so guard 4 proves the default body
+  // survives its absence (it was live-but-undeclared until the #2320 review).
+  "booking-confirmed": [
+    "promoSummary",
+    "provisionalGuestsNote",
+    "doorCodeNote",
+  ],
+  // The credit-restored sentence is composed whole by the sender and empty
+  // when no applied credit was restored (#1164 D7) — declared for the same
+  // reason as booking-confirmed's doorCodeNote above.
+  "booking-cancelled": ["creditRestoredMessage"],
   "booking-modified": ["paymentNote"],
   // #2268 sweep. Each of these was an "[only when …]" annotated line.
   "checkin-reminder": ["choreListNote"],
