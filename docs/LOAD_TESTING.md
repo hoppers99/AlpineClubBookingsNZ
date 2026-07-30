@@ -275,9 +275,9 @@ BASE_URL=http://localhost:3001 LOAD_TEST_CONFIRM_TARGET=1 \
   separate resource profile; do not raise thresholds, reduce bcrypt cost, or
   silently change the standard profile to manufacture a pass.
 - **Profile change (#2351, 30 Jul 2026):** the compose default the staging
-  stack inherits no longer hard-caps app CPU at all — the app containers now
-  carry a `cpu_shares` weight and burst into whatever cores the host has idle
-  (raised from a `cpus: 0.8` cap after production measurement showed cold page
+  stack inherits no longer hard-caps app CPU at all — the app containers set
+  no CPU control and burst into whatever cores the host has idle (the old
+  `cpus: 0.8` cap was lifted after production measurement showed cold page
   renders CFS-throttling into multi-second loads — see `DEPLOYMENT.md` → "App
   CPU sizing"). The recorded baselines above predate this and describe the
   sub-one-CPU profile; a future full run happens on the uncapped-weighted

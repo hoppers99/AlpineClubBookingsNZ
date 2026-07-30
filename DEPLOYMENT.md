@@ -86,8 +86,9 @@ size, `max_connections`, or the replica count.
 
 ## App CPU sizing
 
-The app containers ship with **no hard CPU cap** — a `cpu_shares` weight in
-`docker-compose.yml` instead (#2351). The reasons, and what the weight does:
+The app containers ship with **no CPU control at all** in `docker-compose.yml`
+— no `cpus` cap, and deliberately no explicit `cpu_shares` weight either
+(#2351). The reasons, and how scheduling then behaves:
 
 Page renders are fully dynamic (nothing is prerendered — every page reads the
 per-request CSP nonce and session), and the JavaScript engine throws away a
@@ -105,15 +106,22 @@ slow site with an idle database (that deployment's container had been
 throttled in 64% of all scheduler periods). Low-traffic club sites feel this
 the most, because sparse visits mean *every* visit is a cold render.
 
-`cpu_shares` is a **weight, not a limit**. While the host has idle CPU, the
-app can use all of it — on any host size, a 1-core VPS included (there is no
-limit for Docker to validate, so nothing to adjust for small hosts). Only
-while containers genuinely compete for CPU does the kernel share it out in
-proportion to each contender's weight; every container defaults to 1024, so
-under full contention on this stack `postgres` still receives far more than
-the `cpus: 0.5` ceiling it runs under. The practical effect: renders get the
-whole machine when it is free, and the database and proxy keep their slice
-when it is not.
+With no cap set, the app can use **all idle CPU** — on any host size, a
+1-core VPS included (there is no limit for Docker to validate, so nothing to
+adjust for small hosts). Only while containers genuinely compete does the
+kernel share CPU out by scheduler weight, and *unset* weights are equal by
+default on both cgroup versions — which is why no explicit `cpu_shares`
+value is written: an explicit value maps inconsistently between cgroup v1
+and v2 (on a v2 host — any modern distro — an explicit `1024` becomes
+`cpu.weight` 39 against the default 100, silently *deprioritising* the
+container it was meant to describe as "normal"). Under equal weights,
+contention splits CPU evenly across the runnable containers: on hosts with
+a few cores or more, `postgres`'s share of a fully-contended machine meets
+or exceeds the `cpus: 0.5` ceiling it runs under anyway; on a 1-core host
+everything necessarily shares the single core, exactly as it did under the
+old capped arrangement. The practical effect: renders get the whole machine
+when it is free, and the database and proxy still get a fair share when it
+is not.
 
 If you share the host with other workloads and need an absolute "the app may
 never use more than X cores" guarantee, add a `cpus:` override in your fork —

@@ -16,11 +16,11 @@ All notable public reference-release changes should be recorded here.
   four-to-thirteen-second page loads that looked like a slow server or
   database but were neither (a live deployment measured exactly this, and
   dropped from over five seconds to about 1.4 the moment the cap was lifted).
-  The recipe now sets no cap at all: it gives the app a *priority weight*
-  instead, so pages can spread across every core the server has spare — a
-  one-core budget server and an eight-core machine both simply use what they
-  have — while the database and the web proxy are still guaranteed their
-  share whenever things genuinely compete. The deployment guide gains an
+  The recipe now sets no cap at all, so pages can spread across every core
+  the server has spare — a one-core budget server and an eight-core machine
+  both simply use what they have — while the database and the web proxy
+  still get a fair, equal share of the processor whenever things genuinely
+  compete for it. The deployment guide gains an
   "App CPU sizing" section explaining the arrangement, the measurements
   behind it, how to reimpose a hard cap on a shared server, and two
   mitigations for genuinely starved machines (a keep-warm pinger, and the

@@ -126,19 +126,20 @@ x-app-service: &app-service
   security_opt:
     - no-new-privileges:true
   mem_limit: 1g
-  # Deliberately NO hard "cpus" cap here (#2351): a cold page render costs
-  # seconds of V8 re-warm CPU work (measured ~3.5-5 CPU-seconds per route on a
-  # production deployment, where per-route optimised code was flushed within
-  # ~10s of idleness), and that work parallelises across cores — so the app
-  # should burst into whatever cores the host has idle. A previous hard cap of
-  # 0.8 CFS-throttled those renders into 4-13s page loads. cpu_shares is a
-  # WEIGHT, not a limit: it only takes effect while containers are actually
-  # competing for CPU, sharing cores in proportion to each contender's weight
-  # (postgres/caddy keep their own small hard caps below, which their
-  # contention share comfortably exceeds). Works unchanged on any host size,
-  # 1-core VPS included. To reimpose an absolute ceiling (shared host), add a
-  # "cpus:" override in your fork — see DEPLOYMENT.md ("App CPU sizing").
-  cpu_shares: 1024
+  # Deliberately NO CPU control here (#2351) — no "cpus" cap, and no explicit
+  # "cpu_shares" either. A cold page render costs seconds of V8 re-warm CPU
+  # work (measured ~3.5-5 CPU-seconds per route on a production deployment,
+  # where per-route optimised code was flushed within ~10s of idleness), and
+  # that work parallelises across cores — so the app should burst into
+  # whatever cores the host has idle; a previous hard cap of 0.8 CFS-throttled
+  # those renders into 4-13s page loads. Leaving cpu_shares unset is
+  # deliberate too: an explicit value maps inconsistently between cgroup v1
+  # and v2 (on v2, an explicit 1024 becomes weight 39 vs the default 100,
+  # silently DEPRIORITISING the container), while unset gives every container
+  # the kernel's equal default weight on either version — competition, when
+  # it happens, splits CPU evenly. Works unchanged on any host size, 1-core
+  # VPS included. To impose an absolute ceiling (shared host), add a "cpus:"
+  # override in your fork — see DEPLOYMENT.md ("App CPU sizing").
   healthcheck:
     test:
       [
