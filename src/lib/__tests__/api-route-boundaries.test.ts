@@ -26,6 +26,7 @@ function routeContents(filePath: string) {
 }
 
 const issue675MalformedJsonRoutes = [
+  "src/app/api/admin/bed-allocation/allocations/range/route.ts",
   "src/app/api/admin/bed-allocation/allocations/route.ts",
   "src/app/api/admin/bed-allocation/auto-allocate/route.ts",
   "src/app/api/admin/bed-allocation/approve/route.ts",

@@ -67,6 +67,7 @@ describe("RoomTable active drag lane rendering", () => {
         bedOptions={[]}
         onReassignBed={vi.fn()}
         onRemove={vi.fn()}
+        onAssignRange={vi.fn()}
         pendingAllocationIds={new Set()}
         highlightedBookingId=""
         activeDragDates={new Set(["2026-07-02"])}
@@ -140,6 +141,7 @@ describe("RoomTable active drag lane rendering", () => {
         bedOptions={[]}
         onReassignBed={vi.fn()}
         onRemove={vi.fn()}
+        onAssignRange={vi.fn()}
         pendingAllocationIds={new Set()}
         highlightedBookingId="booking-focused"
       />,
@@ -163,6 +165,7 @@ describe("RoomTable bed-type icon (#1675)", () => {
         bedOptions={[]}
         onReassignBed={vi.fn()}
         onRemove={vi.fn()}
+        onAssignRange={vi.fn()}
         pendingAllocationIds={new Set()}
         highlightedBookingId=""
       />,
@@ -290,6 +293,7 @@ describe("RoomTable double-bed sharing (#1701)", () => {
         bedOptions={[]}
         onReassignBed={vi.fn()}
         onRemove={vi.fn()}
+        onAssignRange={vi.fn()}
         pendingAllocationIds={new Set()}
         highlightedBookingId=""
       />,
@@ -302,3 +306,59 @@ describe("RoomTable double-bed sharing (#1701)", () => {
     expect(screen.getByText("Shares bed · partner")).toBeTruthy();
   });
 });
+
+// #2251 decision 3: after a range operation the target bed's nights are tinted
+// green (written) and red (refused) until dismissed. The tint is never the only
+// signal — each cell also carries a word.
+describe("RoomTable range outcome tinting", () => {
+  it("labels written and refused nights on the bed the range targeted", () => {
+    render(
+      <RoomTable
+        canEdit={true}
+        room={buildRoom()}
+        nights={["2026-07-01", "2026-07-02", "2026-07-03"]}
+        allocationByBedAndDate={new Map()}
+        bedOptions={[]}
+        onReassignBed={vi.fn()}
+        onRemove={vi.fn()}
+        onAssignRange={vi.fn()}
+        rangeTint={{
+          bedId: "bed-1",
+          written: new Set(["2026-07-01"]),
+          refused: new Set(["2026-07-02"]),
+        }}
+        pendingAllocationIds={new Set()}
+        highlightedBookingId=""
+      />,
+    );
+
+    expect(screen.getByText("Assigned")).toBeInTheDocument();
+    expect(screen.getByText("Refused")).toBeInTheDocument();
+  });
+
+  it("leaves another bed's cells untinted", () => {
+    render(
+      <RoomTable
+        canEdit={true}
+        room={buildRoom()}
+        nights={["2026-07-01", "2026-07-02"]}
+        allocationByBedAndDate={new Map()}
+        bedOptions={[]}
+        onReassignBed={vi.fn()}
+        onRemove={vi.fn()}
+        onAssignRange={vi.fn()}
+        rangeTint={{
+          bedId: "bed-other",
+          written: new Set(["2026-07-01"]),
+          refused: new Set(["2026-07-02"]),
+        }}
+        pendingAllocationIds={new Set()}
+        highlightedBookingId=""
+      />,
+    );
+
+    expect(screen.queryByText("Assigned")).not.toBeInTheDocument();
+    expect(screen.queryByText("Refused")).not.toBeInTheDocument();
+  });
+});
+

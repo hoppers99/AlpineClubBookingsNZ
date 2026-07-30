@@ -210,6 +210,31 @@ generated or demanded for held bookings.
   across the guest swap, #1254 — wrong once whole-lodge-held). The two paths
   are locked in agreement by
   `src/lib/__tests__/held-booking-allocation-agreement.test.ts`.
+- **#2251 follow-up — the MANUAL write paths enforce it too, and only for the
+  held booking's own guests.** The short-circuit previously lived only in the
+  read paths and the lifecycle, so an admin could still hand-place a held
+  booking's guest on a bed; the row was accepted and then swept by the next
+  reconcile. `assertGuestAndBedForAllocation` (`src/lib/admin-bed-allocation.ts`)
+  is now the chokepoint for all three manual paths — single-night board
+  placement, the bulk multi-night drop, and range assignment — and refuses a
+  whole-lodge-held booking outright. Range assignment reports it as its own
+  refusal category instead of a bare error: because a held booking owns no
+  per-bed rows at all, the **whole range** is refused, and the free-nights
+  action has nothing to offer.
+  **Scope is unchanged and deliberate:** this refusal applies to the HELD
+  booking's own guests only. An ORDINARY booking whose nights overlap someone
+  else's hold is still allocatable by every path (planner, auto-allocator,
+  manual single/bulk/range) — decision 1's never-refuse posture means the hold
+  surfaces those bookings as `conflicts` for the officer, and the board badges
+  them `overlapsExclusiveHold`, rather than blocking them. A range assign that
+  refused on another booking's hold would have made this one endpoint stricter
+  than the rule enforced anywhere else. **Open question for the owner:** should
+  another booking's hold hard-block manual placement everywhere? If so it needs
+  an amendment here plus enforcement at the chokepoint, the planner and the
+  lifecycle together — today it blocks nowhere, consistently. This is the manual
+  half of the same question #2317 asks of the planners (whether held nights are
+  modelled as blocking occupancy), and should be decided with it: a yes there
+  without a yes here would leave the board refusing what the planner allows.
 
 - **Accepted consequence of the short-circuit (#2285 follow-up, 2026-07-29):
   a held booking's nights are NOT modelled as occupied for OTHER bookings'

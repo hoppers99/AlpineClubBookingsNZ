@@ -85,6 +85,12 @@ export interface DashboardBookingSummary {
   // This ordinary booking overlaps another booking's exclusive hold (#119):
   // badge it so staff see the clash.
   overlapsExclusiveHold: boolean;
+  // Per-guest stay windows (stayEnd exclusive). Always present in the dashboard
+  // payload; optional here because the board only reads it to prefill the
+  // range-assign dialog with the GUEST's own stay (#2251) — a guest who joins
+  // late or leaves early must not be handed the booking's wider envelope, which
+  // would refuse as "guest not booked" on the nights outside their stay.
+  guests?: Array<{ id: string; stayStart: string; stayEnd: string }>;
 }
 
 // An exclusive whole-lodge hold overlapping the board range (ADR-001, #120):
