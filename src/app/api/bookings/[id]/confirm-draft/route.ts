@@ -153,7 +153,16 @@ export async function POST(
 
     await tx.booking.update({
       where: { id },
-      data: { status: BookingStatus.PAID, draftExpiresAt: null },
+      data: {
+        status: BookingStatus.PAID,
+        draftExpiresAt: null,
+        // #2265 — this route only ever confirms a $0 booking, so there is
+        // nothing for account credit to pay and the member's balance is
+        // deliberately left untouched. Clear any stored election so it cannot
+        // linger on a settled booking; no credit was consumed, so nothing is
+        // lost by dropping it.
+        creditElectionCents: null,
+      },
     });
     await reconcileBedAllocationsForBooking({
       bookingId: id,

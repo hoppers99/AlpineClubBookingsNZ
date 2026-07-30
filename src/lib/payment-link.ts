@@ -24,9 +24,11 @@ import { bookingHasCapacityOverride } from "@/lib/booking-status";
 import { getDefaultLodgeId } from "@/lib/lodges";
 import { endOfDateOnlyForTimeZone, formatDateOnly } from "@/lib/date-only";
 import {
+  sendAdminPaymentFailureAlert,
   sendBookingRequestApprovedEmail,
   sendSplitGuestPaymentLinkEmail,
 } from "@/lib/email";
+import { formatCents } from "@/lib/utils";
 import { recordWithheldBookingEmail } from "@/lib/booking-email-suppression";
 import logger from "@/lib/logger";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
@@ -76,6 +78,29 @@ const REVOKED_LINK_MESSAGE =
   "This payment link is no longer active. Please contact the club for help.";
 const NOT_PAYABLE_MESSAGE =
   "This booking can no longer be paid online. Please contact the club for help.";
+/**
+ * #2265 (#2319 door 1). Deliberately vague to the payer, who is often not the
+ * member whose credit is involved: it says the booking needs to be paid another
+ * way and points at the club, without disclosing that a member holds an account
+ * credit balance or how much of it they elected to spend. The operator alert
+ * raised alongside carries the full detail.
+ */
+const CREDIT_ELECTION_PENDING_MESSAGE =
+  "This booking has to be paid from the member's own account rather than through this link. Please contact the club and they'll sort it out.";
+
+/**
+ * Signals the unconsumed-credit-election refusal from inside the revalidation
+ * transaction (#2265). Thrown, rather than returned, so the transaction rolls
+ * back; caught immediately outside it, where the operator alert can be sent
+ * without an SES call sitting inside an open transaction.
+ */
+class UnconsumedCreditElectionError extends Error {
+  constructor(readonly electionCents: number) {
+    super("Booking carries an unconsumed credit election");
+    this.name = "UnconsumedCreditElectionError";
+  }
+}
+
 
 type ResolvedPaymentLink = Prisma.PaymentLinkGetPayload<{
   include: {
@@ -445,6 +470,13 @@ export async function createPaymentIntentForPaymentLink(
     const existingIntent = await getPaymentIntent(booking.payment.stripePaymentIntentId);
 
     if (existingIntent.status === "succeeded") {
+      // #2265 (#2319 door 1, settle arm). The card money is already captured, so
+      // a stored credit election can no longer be honoured here — but the clear
+      // and its reporting live in `markBookingPaymentSucceeded` below, the single
+      // settle door every card path funnels through, rather than being repeated
+      // in this caller. When the payment is ALREADY SUCCEEDED this arm settles
+      // nothing at all, so an earlier run through that same door has already
+      // dealt with it.
       if (booking.payment.status !== PaymentStatus.SUCCEEDED) {
         const reconciliation = await markBookingPaymentSucceeded({
           bookingId: booking.id,
@@ -524,6 +556,41 @@ export async function createPaymentIntentForPaymentLink(
       throw new PaymentLinkError(NOT_PAYABLE_MESSAGE, 410);
     }
 
+    // #2265 (#2319 door 1, minting arm). A booking still carrying a stored
+    // credit election must not be charged the full price through a public link.
+    //
+    // Refuse rather than consume, and the reason is authorisation, not scope. The
+    // election is the member's standing request to spend money out of their own
+    // account-credit balance; this route is authenticated by a bearer token that
+    // is routinely held by SOMEONE ELSE (a booking requester, a group joiner, a
+    // non-member guest paying for their beds), carries no member session, and has
+    // no surface on which to show the member that their election was clamped by a
+    // balance or a price that moved. Debiting a member's balance on a
+    // third-party's token, with the outcome reportable to nobody, is a worse
+    // property than declining to take the payment here.
+    //
+    // Refuse rather than CLEAR, too: nothing is lost by refusing, because the
+    // election is still perfectly honourable — the pay step and the
+    // switch-to-Internet-Banking route both consume it, and every booking that
+    // can carry one belongs to a member with a login. Clearing would throw away
+    // the member's request to make a charge convenient, which is #2265's original
+    // bug wearing a different hat. Clearing is only right once the money is
+    // actually taken, which is the succeeded-intent arm above.
+    //
+    // Read from the post-lock re-read, so a concurrent pay step that consumed the
+    // election a moment ago is seen to have done so and the payer is not refused
+    // for nothing. This state is not reachable by any flow that exists today —
+    // no PaymentLink mint path attaches a link to a booking that can carry an
+    // election — so the guard is an assertion of that invariant rather than a
+    // routine branch, and it alerts loudly instead of failing quietly if some
+    // future mint path breaks it.
+    // The alert and the refusal are raised OUTSIDE this transaction (the SES
+    // send must not sit inside a database transaction), so signal with a private
+    // error the catch below translates.
+    if (freshBooking.creditElectionCents != null) {
+      throw new UnconsumedCreditElectionError(freshBooking.creditElectionCents);
+    }
+
     // Re-read the link under the same lock (#1967 FIX-6): the auto-charge cron
     // revokes a booking's links inside its claim transaction (also under this
     // lodge lock) before charging the saved card, so a /pay request that
@@ -561,6 +628,39 @@ export async function createPaymentIntentForPaymentLink(
         409
       );
     }
+  }).catch(async (err: unknown) => {
+    // #2265 (#2319 door 1). The unconsumed-election refusal is signalled from
+    // inside the transaction so it rolls back with everything else, and is turned
+    // into the payer-facing 409 out here — where the operator alert can be sent
+    // without holding a database transaction open across an SES call. Every other
+    // error, including the route's own PaymentLinkErrors, propagates untouched.
+    if (!(err instanceof UnconsumedCreditElectionError)) throw err;
+
+    logger.error(
+      {
+        bookingId: booking.id,
+        paymentLinkId: link.id,
+        creditElectionCents: err.electionCents,
+      },
+      "Refused a payment-link intent for a booking carrying an unconsumed credit election: a public link must not charge the pre-credit price, nor spend a member's credit balance on a bearer token (#2265)"
+    );
+    await sendAdminPaymentFailureAlert({
+      memberName: `${booking.member.firstName} ${booking.member.lastName}`,
+      checkIn: booking.checkIn,
+      checkOut: booking.checkOut,
+      amountCents: err.electionCents,
+      errorMessage: `This booking still has a saved account-credit choice of ${formatCents(err.electionCents)} on it, so the payment link declined to take a card payment: charging through the link would bill the full price and ignore the credit, and a public link must not spend a member's credit balance on its own authority. Nothing was charged and the saved choice is untouched. Ask the member to pay from their own bookings page, where the credit is applied and the card is charged only the remainder.`,
+      // No intent exists — nothing was minted — so give the officer the booking
+      // reference to search on instead.
+      paymentIntentId: booking.id,
+    }).catch((alertErr) =>
+      logger.error(
+        { err: alertErr, bookingId: booking.id },
+        "Failed to alert admins about a payment link refused for an unconsumed credit election"
+      )
+    );
+
+    throw new PaymentLinkError(CREDIT_ELECTION_PENDING_MESSAGE, 409);
   });
 
   // Stripe calls stay outside the database transaction.
