@@ -1253,7 +1253,10 @@ export async function applyGuestChanges(
     removedGuests: BookingGuest[];
     remainingGuests: BookingGuest[];
     proposedRemainingGuests: ProposedRemainingGuest[];
-    normalizedAddGuests: BookingGuestInput[] | undefined;
+    // Carries the MG2 consent columns straight from `prepareGuestPlan` (#2307).
+    normalizedAddGuests:
+      | Array<BookingGuestInput & MemberGuestConsentGuestFields>
+      | undefined;
     guestNameUpdates?: ResolvedGuestNameUpdate[];
     priceBreakdown: PricingResult["priceBreakdown"];
     inProgressPlan: BookingEditGuestRangePlan | null;
