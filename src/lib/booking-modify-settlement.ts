@@ -37,6 +37,7 @@ import {
   clampAppliedCreditToBookingPrice,
   deriveBookingAppliedCreditCents,
 } from "@/lib/member-credit";
+import { clearStaleCreditElection } from "@/lib/booking-credit-election";
 
 export type BookingModificationSettlementOptions = {
   basisAmountCents: number;
@@ -367,6 +368,20 @@ export async function applyLifecycleTransitions(
   ) {
     newStatus = BookingStatus.PAID;
     zeroDollarAutoPaid = true;
+    // #2265 (#2319). This booking is settling at $0, so there is nothing left
+    // for account credit to pay and a stored credit election has become moot —
+    // clear it rather than let it ride into a PAID row. The same reasoning, and
+    // the same silence, as `confirm-draft`'s $0 confirm: no credit was consumed
+    // and none is owed, so nothing is lost by dropping the request and there is
+    // no unhonoured choice to report to anybody.
+    //
+    // This is the one arm that can genuinely reach a settled booking with a live
+    // election. A guest removal on a review-parked booking releases it from
+    // AWAITING_REVIEW to PAYMENT_PENDING (above) with its election still stored,
+    // and a removal that reprices the stay to nothing then lands it PAID right
+    // here — without this line, on a row still advertising an outstanding
+    // election that no consumer would ever look at again.
+    await clearStaleCreditElection(tx, booking);
     const zeroDollarPayment = await tx.payment.upsert({
       where: { bookingId },
       create: {

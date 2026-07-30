@@ -44,6 +44,8 @@ import {
   sendAdminPaymentFailureAlert,
 } from "@/lib/email";
 import logger from "@/lib/logger";
+import { clearStaleCreditElection } from "@/lib/booking-credit-election";
+import { reportUnappliedCreditElection } from "@/lib/booking-credit-election-report";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import { getDefaultLodgeId } from "@/lib/lodges";
 import {
@@ -606,6 +608,31 @@ export async function markBookingPaymentSucceeded({
         "Booking status changed concurrently during the PAID claim (#1881)"
       );
     }
+
+    // #2265 (#2319). This is the single settle door every card path funnels
+    // through — the Stripe webhook, the session confirm, the public payment
+    // link, the saved-card charge and the auto-confirm cron — and by the time it
+    // runs, the money has been captured for the amount the intent was minted at.
+    // A stored credit election can therefore no longer be honoured: applying it
+    // now would debit the member's balance for cash already taken, which invents
+    // a charge rather than honouring a choice. So clear it, and never leave a
+    // PAID booking advertising an election nothing will act on.
+    //
+    // Nearly always a no-op, and that is the point. Every minter of a primary
+    // intent either consumes the election first (the pay step, whose consumption
+    // is what makes the intent smaller) or cannot reach a booking that carries
+    // one (the payment link now refuses such a booking outright;
+    // charge-saved-method requires PENDING, a status no election carrier is ever
+    // in). Guarding HERE rather than in each of those callers means the invariant
+    // "no settled booking carries a stored election" holds by construction at the
+    // point of settlement, instead of resting on the provenance of five callers
+    // staying true — which is exactly the kind of incidental safety that quietly
+    // stops being safe.
+    //
+    // Guarded claim on the exact amount read, so a pay-step consumer racing this
+    // writer is never clobbered; see clearStaleCreditElection.
+    const staleCreditElectionCents = await clearStaleCreditElection(tx, booking);
+
     await reconcileBedAllocationsForBooking({
       bookingId: booking.id,
       db: tx,
@@ -620,8 +647,32 @@ export async function markBookingPaymentSucceeded({
       booking,
       paymentId: payment.id,
       bumpedBookingIds: [] as string[],
+      staleCreditElectionCents,
     };
   });
+
+  if (
+    reconciliation.outcome === "paid" &&
+    reconciliation.staleCreditElectionCents != null
+  ) {
+    // #2265 (#2319). Post-commit, outside the transaction: the member paid the
+    // full price while holding credit they had asked to spend, so say so on
+    // their booking history and put it in front of an operator who can decide
+    // whether to refund the difference. Their balance is untouched either way.
+    await reportUnappliedCreditElection({
+      bookingId,
+      memberId: reconciliation.booking.memberId,
+      memberFirstName: reconciliation.booking.member.firstName,
+      memberLastName: reconciliation.booking.member.lastName,
+      checkIn: reconciliation.booking.checkIn,
+      checkOut: reconciliation.booking.checkOut,
+      electionCents: reconciliation.staleCreditElectionCents,
+      paidAmountCents: amountCents,
+      source: "payment-reconciliation",
+      reference: paymentIntentId,
+      extraDetails: { paymentIntentId },
+    });
+  }
 
   if (reconciliation.outcome === "paid") {
     // Single durable "paid" fact for every payment path (session, webhook,

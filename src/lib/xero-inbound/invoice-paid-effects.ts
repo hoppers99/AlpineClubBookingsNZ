@@ -14,6 +14,8 @@ import { bookingHasCapacityOverride } from "@/lib/booking-status";
 import { processWaitlistForDates } from "@/lib/waitlist";
 import { enqueueXeroAccountCreditNoteOperation } from "@/lib/xero-operation-outbox";
 import { createAuditLog } from "@/lib/audit";
+import { clearStaleCreditElection } from "@/lib/booking-credit-election";
+import { reportUnappliedCreditElection } from "@/lib/booking-credit-election-report";
 import { getProvisionalNonMemberChildSummary } from "@/lib/booking-split-summary";
 import { formatCents } from "@/lib/utils";
 
@@ -750,6 +752,14 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
           );
         }
         if (!capacity.available && !lockedHasOverride) {
+          // #2265 (#2319 door 2). This booking is being cancelled and its cash
+          // turned into account credit, so no consumer will ever read its
+          // stored election again (both require PAYMENT_PENDING). Clear it here
+          // too, for the same reason the PAID arm does: no terminal booking
+          // carries a stale election. Nothing is lost — the election never
+          // moved money, and the cash the member did send is minted as credit
+          // just below.
+          await clearStaleCreditElection(tx, fresh.booking);
           await tx.booking.update({
             where: { id: fresh.bookingId },
             data: {
@@ -830,6 +840,17 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
         }
       }
 
+      // #2265 (#2319 door 2). The member has paid the invoiced amount in cash,
+      // so a stored credit election can no longer be honoured on this booking —
+      // clear it rather than leave a settled booking advertising an outstanding
+      // election. Read off `fresh`, which is a post-`lock(1)` snapshot, and
+      // taken as a guarded claim; see claimStaleCreditElection for the full
+      // reasoning and for who can still reach here carrying one.
+      const staleCreditElectionCents = await clearStaleCreditElection(
+        tx,
+        fresh.booking
+      );
+
       await tx.booking.update({
         where: { id: fresh.bookingId },
         data: {
@@ -846,6 +867,7 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
         type: "paid" as const,
         payment: fresh,
         paymentWasPending,
+        staleCreditElectionCents,
       };
     });
 
@@ -1062,6 +1084,27 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
         { err, bookingId: outcome.payment.bookingId, paymentId: outcome.payment.id },
         "Failed to audit Internet Banking payment reconciliation"
       );
+    }
+
+    // #2265 (#2319 door 2). The settle cleared a stored credit election this
+    // invoice could not honour — the member bank-transferred the full invoiced
+    // amount while holding credit they had asked to spend. Reported through the
+    // shared reporter so the member's booking history and the operator alert read
+    // identically however the clear was reached.
+    if (outcome.staleCreditElectionCents != null) {
+      await reportUnappliedCreditElection({
+        bookingId: outcome.payment.bookingId,
+        memberId: outcome.payment.booking.memberId,
+        memberFirstName: outcome.payment.booking.member.firstName,
+        memberLastName: outcome.payment.booking.member.lastName,
+        checkIn: outcome.payment.booking.checkIn,
+        checkOut: outcome.payment.booking.checkOut,
+        electionCents: outcome.staleCreditElectionCents,
+        paidAmountCents: outcome.payment.amountCents,
+        source: "xero-inbound-invoice",
+        reference: invoiceId,
+        extraDetails: { xeroInvoiceId: invoiceId, xeroInvoiceNumber: invoiceNumber },
+      });
     }
 
     await recordBookingEvent({
