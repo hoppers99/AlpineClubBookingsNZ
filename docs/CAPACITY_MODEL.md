@@ -364,6 +364,17 @@ cleared until an admin approves the re-planned beds. The removed rows (including
 which were approved) are listed in the hold's audit entry so the placement can be
 rebuilt by hand.
 
+The MANUAL write paths enforce it as well (#2251): single-night board placement,
+the bulk multi-night drop and range assignment all pass through
+`assertGuestAndBedForAllocation`, which refuses a whole-lodge-held booking rather
+than accepting a row the next reconcile would sweep. Range assignment reports it
+as its own refusal category and refuses the **whole** range, since a held booking
+owns no per-bed rows at all. This is scoped to the held booking's OWN guests: an
+ordinary booking overlapping someone else's hold stays allocatable everywhere
+(the hold surfaces it as a conflict and an `overlapsExclusiveHold` badge —
+decision 1's never-refuse posture), so no allocation path hard-blocks on another
+booking's hold.
+
 ### Persisted capacity override (#1771)
 
 Every over-capacity admission above **persists** the decision on the booking:

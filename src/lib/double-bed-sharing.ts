@@ -145,3 +145,61 @@ export async function mayShareDoubleBed(
   });
   return link?.status === PARTNER_LINK_CONFIRMED;
 }
+
+/**
+ * The batched form of `mayShareDoubleBed` — the SAME rule, asked once for many
+ * candidate partners (#2251).
+ *
+ * A range assignment can meet a different occupying member on every night of a
+ * double bed, and asking `mayShareDoubleBed` per pair inside the assignment's
+ * transaction makes its statement count grow with the range. This answers the
+ * whole set in two statements. The rule is deliberately re-stated here rather
+ * than looped over the single-pair function, and is pinned to it by a parity
+ * test (`double-bed-sharing.test.ts`): distinct real ACTIVE ADULT members on
+ * both sides, plus a CONFIRMED link.
+ *
+ * Returns the subset of `candidateMemberIds` that may share a double with
+ * `memberId`.
+ */
+export async function mayShareDoubleBedWith(
+  memberId: string,
+  candidateMemberIds: string[],
+  db: DoubleBedSharingDb = prisma,
+): Promise<Set<string>> {
+  const candidates = [
+    ...new Set(candidateMemberIds.filter((id) => id && id !== memberId)),
+  ];
+  if (!memberId || candidates.length === 0) return new Set();
+
+  const members = await db.member.findMany({
+    where: { id: { in: [memberId, ...candidates] } },
+    select: { id: true, ageTier: true, active: true },
+  });
+  const activeAdults = new Set(
+    members
+      .filter((member) => member.ageTier === "ADULT" && member.active)
+      .map((member) => member.id),
+  );
+  // The anchor itself must be a real, active adult, or nobody may share.
+  if (!activeAdults.has(memberId)) return new Set();
+
+  const eligibleCandidates = candidates.filter((id) => activeAdults.has(id));
+  if (eligibleCandidates.length === 0) return new Set();
+
+  // Link rows are canonical ordered pairs (memberAId < memberBId), so each
+  // candidate contributes exactly one pair to look up.
+  const links = await db.memberPartnerLink.findMany({
+    where: {
+      status: PARTNER_LINK_CONFIRMED,
+      OR: eligibleCandidates.map((id) => canonicalPartnerPair(memberId, id)),
+    },
+    select: { memberAId: true, memberBId: true },
+  });
+
+  const linked = new Set<string>();
+  for (const link of links) {
+    const other = link.memberAId === memberId ? link.memberBId : link.memberAId;
+    if (eligibleCandidates.includes(other)) linked.add(other);
+  }
+  return linked;
+}

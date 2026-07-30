@@ -26,13 +26,20 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
+    // #2265 — the pay transaction takes the global booking/money lock(1) before
+    // anything else, so the client double has to answer $executeRaw.
+    $executeRaw: vi.fn().mockResolvedValue(1),
     booking: {
       findUnique: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
     payment: {
       findUnique: vi.fn(),
       upsert: vi.fn(),
+    },
+    memberCredit: {
+      aggregate: vi.fn().mockResolvedValue({ _sum: { amountCents: 0 } }),
     },
     $transaction: vi.fn(),
   },

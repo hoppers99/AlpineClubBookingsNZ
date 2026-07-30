@@ -59,8 +59,18 @@ export function BackupSetupWizard() {
         title: "Turn it on",
         summary: "Enable + retention",
         isVerified: (ctx) => ctx.enabled,
+        // The shell's vouch (#2324) goes only to the steps whose gated controls
+        // sit in the wizard's OWN scope (`support`, what the banner states).
+        // The credentials and destination steps do NOT get it: those writes
+        // additionally need Full Admin, so they keep their own reason.
         render: (ctx, helpers) => (
-          <OperationalStep context={ctx} helpers={helpers} />
+          <OperationalStep
+            context={ctx}
+            helpers={helpers}
+            ancestorRendersViewOnlyBanner={
+              helpers.ancestorRendersViewOnlyBanner
+            }
+          />
         ),
       },
       {
@@ -69,7 +79,13 @@ export function BackupSetupWizard() {
         summary: "Run a real backup",
         isVerified: (ctx) => ctx.verified,
         render: (ctx, helpers) => (
-          <VerificationStep context={ctx} helpers={helpers} />
+          <VerificationStep
+            context={ctx}
+            helpers={helpers}
+            ancestorRendersViewOnlyBanner={
+              helpers.ancestorRendersViewOnlyBanner
+            }
+          />
         ),
       },
     ],
