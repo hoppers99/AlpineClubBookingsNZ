@@ -338,6 +338,10 @@ describe("degraded-mode policy for auth-sensitive limiters (#1142)", () => {
       "aiChatMember",
       "aiChatIp",
       "aiChatGlobal",
+      // Member-guest consent answers (#2307): the endpoint returns one uniform
+      // 403 for every failure, so volume is the only probe — a degraded
+      // shared-store fallback must not multiply that allowance.
+      "memberGuestConsentRespond",
     ].sort();
 
     const marked = Object.entries(rateLimiters)
