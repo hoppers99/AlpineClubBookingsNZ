@@ -26,7 +26,12 @@ All notable public reference-release changes should be recorded here.
   booking raises a **Refunds to pay back by hand** task on the Payments page
   rather than pretending a card refund happened: the member is told the club
   will arrange their refund, and the ledger records it at the moment an admin
-  marks it paid back. Recording, reversing and closing all need finance edit
+  marks it paid back. And if the member had saved a choice to put account
+  credit towards the booking that was never applied, recording the cash does
+  not quietly spend or discard it: the saved choice is cleared, the booking's
+  history tells the member their credit was not used and is still available,
+  and the club is alerted so someone can decide whether to refund the
+  difference. Recording, reversing and closing all need finance edit
   access and are written to the audit log with your name.
 - **Every dead button in the five guided setup wizards now says why it is dead
   (#2324).** The Xero, Stripe, Google sign-in, Backups and Lodge Display setup

@@ -267,9 +267,11 @@ export function buildBookingHistoryItems({
         });
         break;
       }
-      // #2265 (#2319 door 2). The member asked to put account credit towards
-      // this booking and the settlement could not honour it — most plainly,
-      // an Internet Banking invoice that was raised and paid at the full price.
+      // #2265 (#2319 door 2; #2262 door 3). The member asked to put account
+      // credit towards this booking and the settlement could not honour it —
+      // most plainly, an Internet Banking invoice that was raised and paid at
+      // the full price, or a cash / off-Xero payment an admin recorded for the
+      // full amount owing.
       // Their balance was never touched, so the honest note is "we did not use
       // it, and you still have it": a silent cleared column would leave them
       // believing credit had been spent that is in fact still theirs. Rendered

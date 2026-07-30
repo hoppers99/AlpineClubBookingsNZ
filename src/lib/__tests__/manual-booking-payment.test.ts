@@ -139,6 +139,7 @@ import {
   markBookingPaymentManuallySettled,
   reverseManualBookingPayment,
 } from "@/lib/payment-reconciliation";
+import { sendAdminPaymentFailureAlert } from "@/lib/email";
 
 const tx = {
   $executeRaw: (...args: unknown[]) => mocks.executeRaw(...args),
@@ -907,5 +908,190 @@ describe("#2262 — the reversal (direction unpaid)", () => {
       status: 409,
       message: expect.stringMatching(/Only a manually recorded payment/),
     });
+  });
+});
+
+describe("#2262 door 3 — a stored credit election (#2265) is never silently stranded", () => {
+  const UNAPPLIED_ACTION = "booking.credit_election.unapplied";
+
+  /** The settle-shaped booking read, carrying a stored, unconsumed election. */
+  function primeSettleWithElection(electionCents: number | null = 4500) {
+    mocks.bookingFindUnique.mockImplementation(
+      async (args: { select?: unknown }) =>
+        args.select
+          ? { lodgeId: "lodge-1" }
+          : bookingRow({ creditElectionCents: electionCents })
+    );
+  }
+
+  /** The reversal-shaped booking read (mirrors the sibling describe's helper). */
+  function primeReversalRead() {
+    mocks.bookingFindUnique.mockImplementation(
+      async (args: { select?: unknown }) =>
+        args.select
+          ? { lodgeId: "lodge-1" }
+          : {
+              ...bookingRow({
+                status: BookingStatus.PAID,
+                creditElectionCents: null,
+              }),
+              payment: {
+                id: "payment-1",
+                amountCents: 10000,
+                refundedAmountCents: 0,
+                xeroInvoiceId: null,
+                xeroRefundCreditNoteId: null,
+                internetBankingHoldSlots: false,
+                internetBankingHoldUntil: null,
+                manuallyMarkedPaidAt: new Date("2026-07-20T00:00:00Z"),
+                manuallyMarkedPaidPreviousStatus: BookingStatus.PAYMENT_PENDING,
+              },
+            }
+    );
+  }
+
+  function unappliedAuditCalls() {
+    return mocks.createAuditLog.mock.calls.filter(
+      (call) => (call[0] as { action?: string })?.action === UNAPPLIED_ACTION
+    );
+  }
+
+  /** Every write's data payload, so "nothing touched the election" is provable. */
+  function electionWritePayloads() {
+    return [
+      ...mocks.bookingUpdateMany.mock.calls,
+      ...mocks.paymentUpdateMany.mock.calls,
+    ]
+      .map((call) => (call[0] as { data?: Record<string, unknown> })?.data ?? {})
+      .filter((data) => "creditElectionCents" in data);
+  }
+
+  beforeEach(() => {
+    vi.mocked(sendAdminPaymentFailureAlert).mockResolvedValue(
+      undefined as never
+    );
+  });
+
+  it("CLEARS the election with the guarded claim, audits it on the mark-paid row, and reports the honest member-visible copy", async () => {
+    primeSettleWithElection(4500);
+
+    const result = await settle();
+
+    // The guarded claim — the exact amount that was read moves to NULL, the
+    // same discipline every #2319 door uses, so a consumer racing this settle
+    // is never clobbered.
+    expect(mocks.bookingUpdateMany).toHaveBeenCalledWith({
+      where: { id: "booking-1", creditElectionCents: 4500 },
+      data: { creditElectionCents: null },
+    });
+
+    // The cleared cents ride the mark-paid audit row's own metadata...
+    expect(mocks.createAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "booking-payment.manual-payment.mark-paid",
+        metadata: expect.objectContaining({
+          clearedCreditElectionCents: 4500,
+        }),
+      }),
+      expect.anything()
+    );
+
+    // ...and the shared #2319 reporter writes the member-visible row: the
+    // booking history renders this exact action as "your credit was not used
+    // and is still available".
+    expect(mocks.createAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: UNAPPLIED_ACTION,
+        entityId: "booking-1",
+        subjectMemberId: "member-1",
+        metadata: expect.objectContaining({
+          source: "manual-mark-paid",
+          creditElectionCents: 4500,
+          paidAmountCents: 10000,
+          paymentId: "payment-1",
+          actingAdminMemberId: ADMIN_ID,
+        }),
+      })
+    );
+
+    // The operator alert says the balance is untouched — cash collected outside
+    // the app means the member's credit was NOT spent — and, this door having
+    // neither a Stripe intent nor a Xero invoice, references the booking id.
+    expect(vi.mocked(sendAdminPaymentFailureAlert)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        amountCents: 4500,
+        paymentIntentId: "booking-1",
+        errorMessage: expect.stringContaining(
+          "account credit balance is untouched"
+        ),
+      })
+    );
+
+    expect(result.staleCreditElectionCents).toBe(4500);
+  });
+
+  it("does nothing and reports nothing when the booking carries no election — the overwhelmingly common case", async () => {
+    const result = await settle();
+
+    expect(electionWritePayloads()).toEqual([]);
+    expect(unappliedAuditCalls()).toEqual([]);
+    expect(vi.mocked(sendAdminPaymentFailureAlert)).not.toHaveBeenCalled();
+    expect(result.staleCreditElectionCents).toBeNull();
+  });
+
+  it("reports nothing when the guarded claim is lost — a racing consumer already owns the election", async () => {
+    primeSettleWithElection(4500);
+    mocks.bookingUpdateMany.mockImplementation(
+      async (args: { data?: Record<string, unknown> }) =>
+        args.data && "creditElectionCents" in args.data
+          ? { count: 0 }
+          : { count: 1 }
+    );
+
+    const result = await settle();
+
+    expect(unappliedAuditCalls()).toEqual([]);
+    expect(vi.mocked(sendAdminPaymentFailureAlert)).not.toHaveBeenCalled();
+    expect(result.staleCreditElectionCents).toBeNull();
+  });
+
+  it("the reversal never resurrects a cleared election", async () => {
+    primeReversalRead();
+
+    await reverseManualBookingPayment({
+      bookingId: "booking-1",
+      actingAdminMemberId: ADMIN_ID,
+      note: null,
+    });
+
+    // No write on either row touches the column: the member was already told
+    // their credit is still available, and the restored booking's pay step
+    // asks about credit afresh.
+    expect(electionWritePayloads()).toEqual([]);
+  });
+
+  it("mark-paid -> reversal -> re-mark clears and reports exactly once — no double-clear, no resurrection", async () => {
+    // 1. The settle clears the election and reports it.
+    primeSettleWithElection(4500);
+    await settle();
+    expect(unappliedAuditCalls()).toHaveLength(1);
+    expect(vi.mocked(sendAdminPaymentFailureAlert)).toHaveBeenCalledTimes(1);
+
+    // 2. The reversal restores the booking; the election stays NULL.
+    primeReversalRead();
+    await reverseManualBookingPayment({
+      bookingId: "booking-1",
+      actingAdminMemberId: ADMIN_ID,
+      note: null,
+    });
+
+    // 3. The re-mark finds no election: nothing to clear, nothing to report.
+    primeSettleWithElection(null);
+    mocks.paymentFindUnique.mockResolvedValue(paymentRow());
+    const remark = await settle();
+
+    expect(remark.staleCreditElectionCents).toBeNull();
+    expect(unappliedAuditCalls()).toHaveLength(1);
+    expect(vi.mocked(sendAdminPaymentFailureAlert)).toHaveBeenCalledTimes(1);
   });
 });

@@ -1107,14 +1107,20 @@ async function settleBookingPaymentInTransaction(
       );
     }
 
-    // #2265 (#2319). This is the single settle door every card path funnels
-    // through — the Stripe webhook, the session confirm, the public payment
-    // link, the saved-card charge and the auto-confirm cron — and by the time it
-    // runs, the money has been captured for the amount the intent was minted at.
-    // A stored credit election can therefore no longer be honoured: applying it
-    // now would debit the member's balance for cash already taken, which invents
-    // a charge rather than honouring a choice. So clear it, and never leave a
-    // PAID booking advertising an election nothing will act on.
+    // #2265 (#2319; #2262 door 3). This is the single settle door every card
+    // path funnels through — the Stripe webhook, the session confirm, the
+    // public payment link, the saved-card charge and the auto-confirm cron —
+    // AND the manual cash / off-Xero settlement, and by the time it runs, the
+    // money has been captured for the amount the intent was minted at (Stripe)
+    // or collected by hand for the full amount owing (manual). A stored credit
+    // election can therefore no longer be honoured: applying it now would debit
+    // the member's balance for cash already taken, which invents a charge
+    // rather than honouring a choice. Cash collected outside the app means the
+    // member's credit was NOT spent — so clear the election, and never leave a
+    // PAID booking advertising an election nothing will act on. Both callers
+    // report a non-null clear through reportUnappliedCreditElection after
+    // commit, so the member's booking history says "your credit is still
+    // available" and an operator can decide whether to refund the difference.
     //
     // Nearly always a no-op, and that is the point. Every minter of a primary
     // intent either consumes the election first (the pay step, whose consumption
@@ -1177,6 +1183,14 @@ async function settleBookingPaymentInTransaction(
             previousStatus: booking.status,
             hasXeroInvoiceLink: false,
             cancelledPaymentIntentIds: outstandingIntentIds,
+            // #2262 door 3: a stored, unconsumed credit election this cash
+            // settlement could not honour, cleared under the same locks by the
+            // guarded claim above (null when the booking carried none). The
+            // member-visible report rides the shared
+            // UNAPPLIED_CREDIT_ELECTION_AUDIT_ACTION row written post-commit;
+            // this key keeps the money trail complete on the mark-paid entry
+            // itself.
+            clearedCreditElectionCents: staleCreditElectionCents,
             // #2260 honesty rule: record the email decision BOTH ways, so a
             // reader can tell "chose not to email" from "no choice was offered".
             notifyMember: settlement.notifyMember,
@@ -1195,6 +1209,7 @@ async function settleBookingPaymentInTransaction(
         previousStatus: booking.status,
         settledAt: manualSettledAt,
         outstandingIntentIds,
+        staleCreditElectionCents,
       };
     }
 
@@ -1581,6 +1596,13 @@ export type ManualBookingSettlementResult = {
   settledAt: Date;
   /** Live Stripe intents this settlement queued a cancellation for. */
   outstandingIntentIds: string[];
+  /**
+   * #2262 door 3: a stored, unconsumed credit election (#2265) this cash
+   * settlement could not honour, cleared inside the settle transaction and
+   * reported post-commit (`reportUnappliedCreditElection`). Null when the
+   * booking carried none — the overwhelmingly common case.
+   */
+  staleCreditElectionCents: number | null;
   memberFirstName: string;
   memberEmail: string | null;
 };
@@ -1647,6 +1669,34 @@ export async function markBookingPaymentManuallySettled({
     },
   });
 
+  // #2265 (#2262 door 3). The settle cleared a stored credit election this cash
+  // settlement could not honour — the admin collected the full amount owing
+  // outside the app while the member held credit they had asked to spend, so
+  // that credit was NOT spent and is still on their account. Reported through
+  // the shared reporter, post-commit and best-effort by design, so the member's
+  // booking history and the operator alert read identically however the clear
+  // was reached (Stripe capture, Xero inbound, or this door).
+  if (reconciliation.staleCreditElectionCents != null) {
+    await reportUnappliedCreditElection({
+      bookingId,
+      memberId: reconciliation.booking.memberId,
+      memberFirstName: reconciliation.booking.member.firstName,
+      memberLastName: reconciliation.booking.member.lastName,
+      checkIn: reconciliation.booking.checkIn,
+      checkOut: reconciliation.booking.checkOut,
+      electionCents: reconciliation.staleCreditElectionCents,
+      paidAmountCents: reconciliation.effectiveAmountCents,
+      source: "manual-mark-paid",
+      // No Stripe intent and no Xero invoice exist by definition on this door,
+      // so the booking id is the searchable reference.
+      reference: bookingId,
+      extraDetails: {
+        paymentId: reconciliation.paymentId,
+        actingAdminMemberId,
+      },
+    });
+  }
+
   // Best-effort Stripe cancels, OUTSIDE the transaction. The durable
   // CANCEL_PAYMENT_INTENT operations committed with the settlement, so a
   // failure here only means the recovery cron does the work instead.
@@ -1667,6 +1717,7 @@ export async function markBookingPaymentManuallySettled({
     previousStatus: reconciliation.previousStatus,
     settledAt: reconciliation.settledAt,
     outstandingIntentIds: reconciliation.outstandingIntentIds,
+    staleCreditElectionCents: reconciliation.staleCreditElectionCents,
     memberFirstName: reconciliation.booking.member.firstName,
     memberEmail: reconciliation.booking.member.email ?? null,
   };
@@ -1866,6 +1917,14 @@ export async function reverseManualBookingPayment({
       },
     });
 
+    // #2265 (#2262 door 3): a credit election the settle cleared is
+    // deliberately NOT resurrected here. The clear was reported to the member
+    // ("your credit is still available") and their balance was never touched,
+    // so restoring the column would advertise a stale request the member was
+    // already told is over; the restored booking is payable again and the pay
+    // step asks about credit afresh. A re-mark after this reversal therefore
+    // finds no election and reports nothing — no double-clear, no double alert.
+    //
     // A stored DRAFT deliberately restores as PAYMENT_PENDING (owner-decided
     // 28 Jul). This is code-necessary, not taste: DRAFT is a payable status, so
     // a DRAFT booking CAN be settled, and the PAID claim cleared

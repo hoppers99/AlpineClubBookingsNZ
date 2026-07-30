@@ -69,6 +69,15 @@ bank transfer for a club that does not use Xero invoicing.
    payment would. Nothing is sent to Xero: no invoice is created, and none is
    emailed.
 
+If the member had saved a choice to put account credit towards this booking
+(ticked "use my credit" and saved the booking as a draft) and that credit was
+never applied, recording the cash clears the saved choice rather than spending
+their credit — the money you collected settled the booking in full, so their
+credit balance is untouched. The booking's history tells the member their
+credit was not used and is still available, and the admins are alerted so
+someone can decide whether to refund the difference or leave the credit for
+their next stay.
+
 Needs finance **edit** access. It is refused — with the reason shown — when the
 booking already has a Xero invoice (or one queued), when it was settled as part
 of a group booking, when there is nothing owing, when the booking no longer fits

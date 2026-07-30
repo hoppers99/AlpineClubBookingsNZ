@@ -738,6 +738,15 @@ Future reviews and issues should cite this file when proposing changes.
     first, and the reversal refuses on any settled Stripe transaction before
     the disarm. The deleted rows' full content is preserved in the reversal's
     `AuditLog` metadata.
+  - A stored, unconsumed credit election (#2265) on the booking is never
+    silently stranded or ignored (door 3 of the #2319 invariant below): the
+    settle clears it with the shared guarded claim, records the cleared cents
+    on the mark-paid audit row, and reports it post-commit through
+    `reportUnappliedCreditElection` (source `manual-mark-paid`) — the member's
+    booking history says their credit was not used and is still available, and
+    an operator is alerted to decide whether to refund the difference. The
+    reversal does not resurrect a cleared election, so reversal-then-re-mark
+    clears and reports exactly once.
   - Both directions are audited with the acting admin and the previous status;
     marking paid also records the #2260 email decision BOTH ways.
 - Account credit is consumed only by a booking that is actually reaching
@@ -810,6 +819,18 @@ Future reviews and issues should cite this file when proposing changes.
     late-capacity-failure `CANCELLED` flip in the same writer.
   - The repriced-to-$0 auto-pay arms of both modification services clear, as
     `confirm-draft`'s $0 confirm and group settlement already did.
+  - The manual mark-paid settlement (#2262, door 3 of this invariant) clears on
+    its `PAID` claim inside the one settlement body, for the same reason in cash
+    form: the admin collected the full amount owing OUTSIDE the app, so the
+    member's credit was NOT spent and "applying" the election would invent a
+    charge. The cleared cents are recorded on the mark-paid audit row
+    (`clearedCreditElectionCents`) and reported post-commit through the shared
+    reporter with source `manual-mark-paid`, referencing the booking id (this
+    door has no Stripe intent and no Xero invoice by definition). The reversal
+    deliberately does NOT resurrect a cleared election — the member was already
+    told their credit is still available, and the restored booking's pay step
+    asks afresh — so a re-mark after a reversal finds no election and reports
+    nothing: no double-clear, no double alert.
   Clearing is the answer ONLY once the money is taken. While a booking is still
   payable the election remains honourable and must be consumed or left alone —
   never discarded to make a charge simpler, which is the original #2265 bug in

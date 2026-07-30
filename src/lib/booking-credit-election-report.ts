@@ -6,14 +6,15 @@ import { formatCents } from "@/lib/utils";
 
 /**
  * Reporting for a stored credit election (#2265) that a settlement had to CLEAR
- * because it could no longer be honoured (#2319 doors 1 and 2).
+ * because it could no longer be honoured (#2319 doors 1 and 2; #2262 door 3,
+ * the manual cash / off-Xero mark-paid).
  *
  * Deliberately a module of its own, and deliberately not part of
  * `booking-credit-election.ts`. That module is pure database work — a guarded
  * claim, a ledger write, some integer arithmetic — and its test suite drives it
  * against an in-memory ledger with nothing mocked. Pulling an SES send and an
  * audit write in there would make every one of those cases carry provider mocks
- * for a code path they do not exercise. Here instead, imported by the three
+ * for a code path they do not exercise. Here instead, imported by the
  * settlement writers that can clear an election.
  *
  * Why report at all. A cleared column is invisible. Without this, a member who
@@ -54,7 +55,11 @@ export async function reportUnappliedCreditElection({
   /** What was actually taken instead, integer cents (the full price). */
   paidAmountCents: number;
   /** Which settlement cleared it, for the audit trail. */
-  source: "payment-reconciliation" | "payment-link" | "xero-inbound-invoice";
+  source:
+    | "payment-reconciliation"
+    | "payment-link"
+    | "xero-inbound-invoice"
+    | "manual-mark-paid";
   /**
    * What to show in the operator alert's reference slot — the Stripe intent id,
    * the Xero invoice id, or (when the settlement has neither) the booking id, so
