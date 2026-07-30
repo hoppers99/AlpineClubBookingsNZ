@@ -8,6 +8,8 @@ import { familyAdultDelegateResolver } from "@/lib/member-guest-delegate";
 import type { MemberGuestConsentDelegateResolver } from "@/lib/member-guest-delegate";
 import { getDefaultLodgeId } from "@/lib/lodges";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import { ApiError } from "@/lib/api-error";
+import { MembershipTypeBookingPolicyError } from "@/lib/membership-type-policy";
 import { logAudit } from "@/lib/audit";
 import {
   sendMemberGuestConsentExpiredEmail,
@@ -129,6 +131,42 @@ export function classifyConsentRemovalRefusal(
   return "OTHER";
 }
 
+/**
+ * The message of a refusal the shared removal path raised, or `null` if this is
+ * not a refusal at all.
+ *
+ * THE REMOVAL PATH REFUSES IN THREE TYPED CLASSES, NOT ONE, and matching only
+ * `BookingGuestRemovalError` was a real defect rather than a tidy-up. The gate
+ * that blocks a hand-priced booking (`assertBookingNotQuotePriced`) raises
+ * `ApiError`, and the membership-type policy check on the REMAINING guests raises
+ * `MembershipTypeBookingPolicyError` — both from inside
+ * `removeBookingGuestInTransaction`, and both after the status-guarded claim has
+ * already succeeded in this same transaction. An unmatched refusal propagates,
+ * which rolls the claim back, so the row stays `PENDING`, keeps holding its bed,
+ * never reaches D-15's exception list, and is retried by the sweep every night
+ * for ever. That is precisely the stranded capacity D-4's deadline exists to
+ * prevent, and `classifyConsentRemovalRefusal`'s `QUOTE_PRICED` branch was dead
+ * code until this matched the error that carries it.
+ *
+ * These are the same three classes the guest DELETE route has enumerated for this
+ * same function since #1032, which is where the list comes from: it is the shared
+ * path's actual contract with its callers — typed domain errors carrying a
+ * user-facing sentence and an HTTP status — rather than a guess about what might
+ * be thrown. Anything else (a `TypeError`, a lost connection) is NOT a refusal and
+ * must keep propagating: marking a row terminal on the strength of a bug would put
+ * it on an operator's list with a meaningless reason.
+ */
+function consentRemovalRefusalMessage(err: unknown): string | null {
+  if (
+    err instanceof BookingGuestRemovalError ||
+    err instanceof ApiError ||
+    err instanceof MembershipTypeBookingPolicyError
+  ) {
+    return err.message;
+  }
+  return null;
+}
+
 type ConsentGuestRow = {
   id: string;
   memberId: string | null;
@@ -208,11 +246,12 @@ async function removeClaimedConsentGuest(
     });
     return { removed: true, creditCents: result.accountCreditAmountCents ?? 0 };
   } catch (err) {
-    if (err instanceof BookingGuestRemovalError) {
+    const refusal = consentRemovalRefusalMessage(err);
+    if (refusal !== null) {
       return {
         removed: false,
-        reason: classifyConsentRemovalRefusal(err.message),
-        message: err.message,
+        reason: classifyConsentRemovalRefusal(refusal),
+        message: refusal,
       };
     }
     throw err;
