@@ -447,7 +447,17 @@ Future reviews and issues should cite this file when proposing changes.
   (#1750) — the surviving partner is **auto-promoted** to primary on the vacated
   bed-night atomically with the removal on transactional paths, each with its own audit entry
   (`BED_ALLOCATION_PARTNER_PROMOTED`) because the partner may belong to a
-  different booking (sharing eligibility is member-level). Promotion is gated on
+  different booking (sharing eligibility is member-level). The one exception is
+  **range assignment** (#2251), which can vacate up to 366 bed-nights in a single
+  transaction: it records **one batched
+  `BED_ALLOCATION_PARTNERS_PROMOTED`** entry instead, targeted at the booking
+  whose range assignment caused the promotions and listing each promotion
+  (`{allocationId, bookingId, bookingGuestId, bedId, stayDate}`) up to
+  `MAX_AUDITED_RANGE_PARTNER_PROMOTIONS` (50, the audit sanitiser's array limit),
+  with the exact `promotedCount` and a `promotionsTruncated` flag alongside — so
+  the promoted partner's own booking is still named per promotion, and the audit
+  rows written inside that transaction stay bounded independently of the range
+  length. Promotion is gated on
   `isSecondOccupant` alone, never the denormalized `bedType` of the removed row or
   the survivor: an AUTO-allocated row on a real DOUBLE carries the SINGLE default,
   so trusting that type would strand the partner it needs to promote. The
@@ -578,9 +588,11 @@ Future reviews and issues should cite this file when proposing changes.
   immediately before the write, so a hold, cancel or soft delete landing
   between planning and writing cannot be undone by a re-insert. The manual
   board path is guarded separately, at the single allocation-write chokepoint
-  added by #2251 (stacked on #2285 and landing with it); until that lands, a
-  hand placement onto a held booking is not refused at the API. The
-  exclusive-hold toggle reconciles both directions (set prunes, release
+  added by #2251 (stacked on #2285 and landing with it): every manual path —
+  single-night board placement, the bulk multi-night drop and range assignment —
+  goes through `assertGuestAndBedForAllocation`, which refuses a held booking, so
+  a hand-placed row can no longer be created only to be swept by the next
+  reconcile. The exclusive-hold toggle reconciles both directions (set prunes, release
   re-plans), and a school approval granting exclusivity prunes after stamping
   the hold; both record the removed rows in their audit entry so a mistaken
   hold can be undone by hand. Divergence guard:
@@ -598,6 +610,43 @@ Future reviews and issues should cite this file when proposing changes.
   editor re-opens; the re-plan after a clear creates unapproved AUTO rows, so it
   stays open until an admin approves again. Intended: with no allocated beds
   there is nothing for the lock to protect.
+- **A range assignment writes all or nothing, and records itself once (#2251):**
+  `assignBedRange` scans, writes and audits inside one transaction. If any
+  requested night is blocked, NOTHING is written and the caller receives a
+  per-night refusal in one of three categories that are never merged —
+  `BED_TAKEN` (a clash; a provisional occupant counts, so nothing is silently
+  overwritten), `GUEST_NOT_BOOKED` (a bad request, never a silent skip, and it
+  includes a gap night of a non-contiguous stay, #713), and `EXCLUSIVE_HOLD` —
+  which here means **the guest's OWN booking** holds the lodge (ADR-001's
+  short-circuit, scoped to the held booking's own guests). Another booking's
+  overlapping hold is surfaced on the board (`overlapsExclusiveHold`), not
+  refused here: no allocation path in the domain hard-blocks on it, and this one
+  must not be the exception. A partial result exists only when a human sends the
+  explicit `nights` list they were shown — the server writes exactly that set or
+  refuses it with a fresh report, never a set it re-derived. Every attempt that
+  COMPLETES — applied or refused — produces exactly ONE
+  `BED_ALLOCATION_RANGE_SET` audit entry against the booking id, committed in the
+  same transaction as the rows; an attempt that THROWS (unknown guest/bed,
+  cancelled booking, deactivated bed, over-cap range, lost write race) rolls back
+  and records nothing, because nothing happened. That entry records shape, not
+  people: night counts and runs per category plus the involved booking ids, with
+  the occupying guests' names carried only in the API response to the admin who
+  asked. The only other row the transaction may write is the single batched
+  `BED_ALLOCATION_PARTNERS_PROMOTED` entry when the move stranded partners on
+  shared doubles (see the sharing invariant above), so **both the statement count
+  and the audit-row count are fixed whatever the night count**. Proceeding past
+  `GUEST_NOT_BOOKED` nights additionally requires an explicit on-screen
+  confirmation naming how many nights are not part of the guest's booking (never
+  "outside the stay" — a GAP night of a non-contiguous stay is inside the span and
+  still refused, #713) and how many
+  will be written, so a partial result is never one click from a warning. The
+  31-night `MAX_BED_ALLOCATION_RANGE_NIGHTS` bounds
+  the board's READ window, not this write: lodge capacity is the active bed
+  count and never reads `BedAllocation` rows, and no capacity or advisory lock
+  is taken on any allocation write path. The separate write bound
+  (`MAX_BED_ALLOCATION_ASSIGN_RANGE_NIGHTS`, 366) exists only to keep one
+  transaction finite, and is **refused at, never silently truncated to** — as is
+  every board window the admin types.
 
 ## Payment And Settlement
 
