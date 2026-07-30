@@ -33,7 +33,10 @@ import {
 type ModuleReadinessStatus =
   | "ready"
   | "admin_disabled"
-  | "credentials_missing";
+  | "credentials_missing"
+  // #2306: the flag exists but its behaviour ships in a later release, so it is
+  // never reported "ready" even when the admin switches it on.
+  | "not_available_yet";
 
 interface ModuleStatus {
   key: ModuleKey;
@@ -72,12 +75,14 @@ function readinessVariant(
 ): BadgeProps["variant"] {
   if (status === "ready") return "success";
   if (status === "credentials_missing") return "warning";
+  if (status === "not_available_yet") return "warning";
   return "secondary";
 }
 
 function readinessLabel(status: ModuleReadinessStatus) {
   if (status === "ready") return "Enabled";
   if (status === "credentials_missing") return "Needs setup";
+  if (status === "not_available_yet") return "Not available yet";
   return "Disabled";
 }
 
@@ -100,7 +105,13 @@ function getReadiness(
     };
   }
 
-  if (module.readiness.status === "credentials_missing") {
+  // Both of these survive an optimistic re-render of the draft state: a module
+  // that needs credentials, or whose behaviour has not shipped yet (#2306), must
+  // not flip to a green "Enabled" the moment the admin ticks the box.
+  if (
+    module.readiness.status === "credentials_missing" ||
+    module.readiness.status === "not_available_yet"
+  ) {
     return module.readiness;
   }
 
