@@ -59,12 +59,12 @@ vi.mock("@/lib/prisma", () => ({
     },
     member: {
       findUnique: (args: unknown) => h.state.world.member.findUnique(args as never),
-      findMany: (args: unknown) => h.state.world.member.findMany(args as never),
+      findMany: () => h.state.world.member.findMany(),
     },
     // The lapse notice reaches the member through the same recipient rule the
     // request did, so the real delegate resolver runs against this fake too.
     familyGroupMember: {
-      findMany: (args: unknown) => h.state.world.familyGroupMember.findMany(args as never),
+      findMany: () => h.state.world.familyGroupMember.findMany(),
     },
   },
 }));
@@ -233,10 +233,10 @@ function makeWorld(rows: GuestRow[]) {
     })),
     // These two exist so the delegate resolver's queries resolve rather than
     // throw; the fixture members all hold logins, so nothing reads the results.
-    findMany: vi.fn(async (_args: unknown) => []),
+    findMany: vi.fn(async () => []),
   };
 
-  const familyGroupMember = { findMany: vi.fn(async (_args: unknown) => []) };
+  const familyGroupMember = { findMany: vi.fn(async () => []) };
 
   const tx = { $executeRaw: vi.fn(async () => 0), bookingGuest, booking, member };
 
