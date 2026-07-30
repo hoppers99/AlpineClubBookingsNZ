@@ -176,6 +176,14 @@ Some things the card deliberately will not pretend about:
 - **A booking with an exclusive whole-lodge hold** shows the hold instead of
   rows, with no assign or confirm buttons at all: it takes the lodge, so it
   needs no individual beds.
+- **A bed held for a hut leader** (your club's own word for the role) in the
+  nights on screen shows the same notice the board gives: the bed is held with
+  no booking behind it, no guest can be placed on it for those nights, and the
+  fix is under **Hut Leader Assignments**, not here. Trying it anyway in
+  **Assign…** gets the standard refusal report, exactly as on the board. And if
+  one of this booking's placed nights is somehow sitting on a held bed — which
+  the app itself never writes — that run is marked held rather than left
+  looking clean.
 - **Removing a run is one night at a time**, so if it stops half way the message
   tells you exactly how many nights actually went.
 

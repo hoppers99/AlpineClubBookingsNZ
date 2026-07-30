@@ -75,7 +75,19 @@ import {
 export interface RangeBedOptionGroup {
   roomId: string;
   roomName: string;
-  beds: { id: string; bedName: string }[];
+  beds: {
+    id: string;
+    bedName: string;
+    /*
+     * Display-only annotation on the option label (#2286 wired by #2252's
+     * panel): "held for a hut leader (dates)", supplied by a surface whose
+     * payload carries the custodian holds, so a held bed is visibly
+     * unavailable BEFORE the click. The bed is deliberately not removed or
+     * disabled — a hold may cover only part of the requested range, and the
+     * server's per-night CUSTODIAN_HOLD refusal report is the authority.
+     */
+    heldNote?: string;
+  }[];
 }
 
 /*
@@ -421,6 +433,7 @@ export function BedRangeAssignDialog({
                     {room.beds.map((bed) => (
                       <SelectItem key={bed.id} value={bed.id}>
                         {room.roomName} / {bed.bedName}
+                        {bed.heldNote ? ` — ${bed.heldNote}` : ""}
                       </SelectItem>
                     ))}
                   </SelectGroup>

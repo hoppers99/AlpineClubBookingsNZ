@@ -24,7 +24,12 @@ All notable public reference-release changes should be recorded here.
   cells on the allocation board, which is not a drop target and which the server
   refuses regardless, and the lodge screen shows a **Custodian** line in its
   footer while the assignment is running. A custodian who is a minor is never
-  named on that screen, at any name-display setting.
+  named on that screen, at any name-display setting. The in-booking **Bed
+  allocation** card (#2252) is told the same facts: it shows the board's
+  held-bed notice for the nights on screen, marks any of the booking's own
+  placed nights that are somehow sitting on a held bed with the same neutral
+  hatched treatment, and its Assign dialog gives the same refusal report the
+  board's does.
 
   The bed is genuinely reserved rather than merely labelled: no guest can be
   placed on it by hand, by the range assign, by the auto-allocator or by the

@@ -3034,6 +3034,9 @@ describe("bed allocation lock semantics are two-way (#2252)", () => {
         update: vi.fn(),
         upsert,
       },
+      // #2286: allocateBedNight refuses a custodian-held bed-night. No holds
+      // here, so the move behaves exactly as before.
+      hutLeaderAssignment: { findMany: vi.fn().mockResolvedValue([]) },
     };
 
     await manuallyAllocateBedForNights({
