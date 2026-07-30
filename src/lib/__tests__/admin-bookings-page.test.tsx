@@ -87,6 +87,7 @@ const effectiveModulesOn = {
   lobbyDisplay: false,
   aiAssistant: false,
   memberNotices: true,
+  memberGuests: false,
 };
 
 describe("AdminBookingsPage", () => {

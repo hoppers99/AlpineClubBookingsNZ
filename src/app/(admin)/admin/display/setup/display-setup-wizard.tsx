@@ -76,8 +76,18 @@ export function DisplaySetupWizard({
         title: "Built-in boards",
         summary: "Make sure boards exist",
         isVerified: isBoardsStepVerified,
+        // The shell's vouch (#2324) is forwarded to the steps whose gated
+        // controls sit in the wizard's OWN scope (`lodge`, what `canEdit`
+        // below resolves and what the banner states). Step 1 does not get it:
+        // its module switch is `support`-gated, so it keeps its own reason.
         render: (ctx, helpers) => (
-          <BoardsStep context={ctx} helpers={helpers} />
+          <BoardsStep
+            context={ctx}
+            helpers={helpers}
+            ancestorRendersViewOnlyBanner={
+              helpers.ancestorRendersViewOnlyBanner
+            }
+          />
         ),
       },
       {
@@ -111,7 +121,13 @@ export function DisplaySetupWizard({
             "A club whose boards use no {{config:…}} tokens has nothing to fill in here.",
         },
         render: (ctx, helpers) => (
-          <ConfigStep context={ctx} helpers={helpers} />
+          <ConfigStep
+            context={ctx}
+            helpers={helpers}
+            ancestorRendersViewOnlyBanner={
+              helpers.ancestorRendersViewOnlyBanner
+            }
+          />
         ),
       },
       {
@@ -128,6 +144,9 @@ export function DisplaySetupWizard({
             // The pairing step therefore has to be able to (re-)make it, rather
             // than pairing onto the club default in silence (#2249 review M3).
             onChoose={setChosenTemplateId}
+            ancestorRendersViewOnlyBanner={
+              helpers.ancestorRendersViewOnlyBanner
+            }
           />
         ),
       },

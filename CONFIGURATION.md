@@ -1490,6 +1490,30 @@ cannot be read, optional modules fail closed.
 | Google sign-in | off | Lets members sign in with a Google account they have linked from their profile (additive to password login, never a replacement). Credentials are entered and verified **in-app** on the Google sign-in setup page (Admin → Integrations → Google) — no env vars, no restart. The module cannot be turned on until a real Google OAuth round-trip verifies (hard gate), and replacing a credential re-locks it until re-verified. The "Continue with Google" button appears only when the module is on AND credentials resolve. No account is ever created from Google, and an unlinked Google account is refused with a friendly message. See the Google sign-in section below. |
 | Google Analytics | off | Consent-gated GA4 tracking on public website and public account pages. Requires `NEXT_PUBLIC_GA_MEASUREMENT_ID`; GA scripts load only after a visitor accepts the analytics banner. |
 | AI help assistant | off | Free-text help questions answered by a paid AI model (Anthropic Claude Haiku), grounded strictly in each page's curated help content. The Anthropic API key is entered **in-app** on Admin → Integrations (encrypted vault, never an env var). Unlike Google sign-in there is **no** enable-gate on a present key — with the module on but no key, the ask box degrades to a structured fallback and curated page help still works. A monthly spend cap (default NZ$10) hard-stops AI answers for the rest of the month once reached. See the AI help assistant section below. |
+| Add another member as a guest | off | **Not available yet — this switch does nothing in this version.** Lets a member add another club member, outside their own family group, as a guest on their booking with that member's consent. Adding a member outside your own family group is still declined whether the module is on or off; the feature, its consent emails, and its settings arrive in a later update. Turning it on deliberately shows a **Not available yet** badge rather than the usual **Enabled** one, so the Modules page never presents an inert switch as a live feature. See the member-guest settings section below. |
+
+### Member-guest settings (not available yet)
+
+The "Add another member as a guest" module stores its policy in the
+`MemberGuestSettings` singleton (`id = "default"`), created lazily on first
+write. **No admin page writes it in this version** — the settings card and its
+API route ship in the same update as the behaviour they control, so an admin is
+never offered a live-looking control over a feature that cannot run. Every value
+below is inert today; they are listed so the defaults an update inherits are on
+the record.
+
+| Setting | Default | Travels in config transfer | Description |
+| --- | --- | --- | --- |
+| Approval required | on | yes | The member being added must agree before they appear on the booking. Turning it off means they are told rather than asked. |
+| Pending hold expiry (days) | 7 (range 1–60) | yes | How long a bed stays held for a member who has been asked and has not answered. After that the hold is released. |
+| Open member search | off | **no** | Off means a booker can only find another member by typing their exact email address. On makes the club's member name list browsable to anyone who can start a booking. |
+| Include minors in open member search | off | **no** | Off means minors are excluded from that browsable list even when open member search is on. |
+
+The two search settings deliberately **never travel** in a club config transfer
+(owner decision D-18): importing another club's bundle must not widen this
+club's member privacy without this club's admin choosing it, the same rule the
+sign-in method toggles follow. A fresh import keeps whatever this club already
+had, which for a new install is off.
 
 Cron-backed optional module schedules are still registered when
 `CRON_ENABLED=true`; each run checks the effective module state before doing

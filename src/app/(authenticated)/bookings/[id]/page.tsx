@@ -366,6 +366,9 @@ export default async function BookingDetailPage({
           "booking.payment.failed",
           "booking.modification.payment.confirmed",
           "booking.modification.payment.failed",
+          // #2265 (#2319 door 2): the settle-time note telling the member their
+          // saved credit choice was not applied and is still on their account.
+          "booking.credit_election.unapplied",
           "booking.cancel",
           "booking.delete.draft",
           "booking.delete.cancelled.soft",
