@@ -1,4 +1,10 @@
-import { addDaysDateOnly, formatDateOnly, getTodayDateOnly } from "@/lib/date-only";
+import {
+  addDaysDateOnly,
+  addMonthsDateOnly,
+  dateOnlyFromParts,
+  formatDateOnly,
+  getTodayDateOnly,
+} from "@/lib/date-only";
 
 export const CUSTOM_DATE_RANGE_KEY = "custom";
 
@@ -13,19 +19,11 @@ export interface DateRangePreset {
   getRange: (today: Date) => DateRangeValues;
 }
 
-function dateOnly(year: number, monthIndex: number, day: number): Date {
-  return new Date(Date.UTC(year, monthIndex, day));
-}
-
-function addMonthsDateOnly(date: Date, months: number): Date {
-  const targetMonthStart = dateOnly(date.getUTCFullYear(), date.getUTCMonth() + months, 1);
-  const lastDayOfTargetMonth = endOfMonthDateOnly(targetMonthStart).getUTCDate();
-  return dateOnly(
-    targetMonthStart.getUTCFullYear(),
-    targetMonthStart.getUTCMonth(),
-    Math.min(date.getUTCDate(), lastDayOfTargetMonth)
-  );
-}
+// Shared with the rest of the app's date-only arithmetic so the legacy
+// two-digit-year rule in Date.UTC (years 0-99 → 1900-1999) cannot creep back in
+// here. Month-stepping is the shared addMonthsDateOnly (#2251) — this module
+// used to carry a byte-identical private copy.
+const dateOnly = dateOnlyFromParts;
 
 function startOfMonthDateOnly(date: Date): Date {
   return dateOnly(date.getUTCFullYear(), date.getUTCMonth(), 1);

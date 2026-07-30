@@ -1105,9 +1105,48 @@ stay-level `ROOM_SWITCH` warning when a booking's rooms change between nights,
 plus a `MINOR_ADULT_MIX` warning on any persisted room-night that mixes one
 booking's minors with another booking's adults (#1768).
 
+**Range assignment (#2251).** "Assign range…" places ONE guest on ONE bed
+across a range of any length — the board's 31-night window bounds the read, not
+the write. The write is attempt-first (there is deliberately no dry-run/preview
+step) and atomic: any blocked night refuses the WHOLE range, nothing is written,
+and the refusal report names each blocked night in one of three distinct
+categories — the bed is already allocated that night (naming the occupying
+guest; a provisional occupant still counts, so nothing is silently overwritten),
+the guest is not booked that night (a **bad request**, never a silent skip —
+including a gap night of a non-contiguous stay, #713), or **the guest's own
+booking** holds the whole lodge (ADR-001's short-circuit — a held booking owns no
+per-bed rows, so the whole range is refused). Another booking's overlapping hold
+is NOT a blocker here: it is surfaced on the board as a banner and an
+`overlapsExclusiveHold` badge, exactly as it is for every other allocation path.
+A second, explicit "assign the N free nights" action re-sends the exact night
+list the report showed, and the server writes that set or refuses it with a fresh
+report. When the report contains nights the guest is not booked on, that action
+asks for an explicit confirmation first — naming how many nights are not part of
+the guest's booking and will NOT be assigned, and how many will — so a partial write is never
+one click away from a warning. Either way the operation records exactly one
+`BED_ALLOCATION_RANGE_SET`
+audit entry (`targetId` = the booking id, written inside the same transaction as
+the rows) carrying the requested range, what was written, and what was refused —
+as counts and night runs, without the other bookings' guest names, which stay in
+the response to the admin. If the move stranded partners on shared doubles, the
+same transaction adds ONE batched `BED_ALLOCATION_PARTNERS_PROMOTED` entry for
+all of them (capped list + exact count + truncation flag) rather than one entry
+per promotion, so a 366-night range writes a bounded number of audit rows as well
+as a bounded number of statements; the single-night and bulk board paths keep
+their per-promotion `BED_ALLOCATION_PARTNER_PROMOTED` entries. Range assignments
+**auto-approve**: their rows land with `approvedAt`/`approvedByMemberId` stamped
+rather than as drafts. Board single-night and drag placements are deliberately
+NOT auto-approved — draft-vs-approved remains the suggestion-vs-confirmation
+distinction. One consequence to state plainly: because
+`isBookingBedAllocationLocked` is "at least one approved row exists" (#776), the
+member's requested-room editing locks on the FIRST range assign, not at a later
+confirmation step; the assign dialog says so before the admin commits. Manual
+allocation of a whole-lodge-held booking is refused outright at the write
+chokepoint, matching the lifecycle prune (#2285).
+
 To verify: approval status representation, conflict handling, per-night guest
-uniqueness, room continuity and whole-booking displacement behavior, and
-module-disabled behavior.
+uniqueness, room continuity and whole-booking displacement behavior, range
+refusal categories and their single audit entry, and module-disabled behavior.
 
 ## Membership Application Lifecycle
 

@@ -49,6 +49,53 @@ All notable public reference-release changes should be recorded here.
   payment has been processed, because none has. The booking page says the same
   thing, and only mentions an emailed invoice when one was really sent.
 
+- **A guest can now be put in one bed for a whole long stay in a single action,
+  and the board can be browsed a month at a time (#2251).** The bed-allocation
+  board shows 31 nights at once, and until now that was also as far as you could
+  assign: a long stay meant dragging a guest onto a bed, moving the dates,
+  dragging again, over and over. Every guest awaiting a bed — and every guest
+  already placed on the board — now has an **Assign range…** action. Choose a
+  bed, a first night and a checkout date of any length (up to a year), and the
+  whole stay is written in one go.
+
+  It is deliberately all-or-nothing. If any night in the range is blocked,
+  **nothing is written at all** and you are shown exactly which nights and why,
+  split into three kinds that are never lumped together as "skipped": the bed is
+  already taken that night (the occupying guest is named, and an occupant whose
+  booking does not hold the night is badged **Provisional** — still a clash, so
+  nothing is overwritten behind your back); the guest is not booked that night,
+  which is not a clash at all but a sign the range or the guest is wrong; or this
+  booking itself holds the whole lodge, which needs no individual beds. Only
+  then, and only if you click the second button, does it write just the free
+  nights — it says how many before you commit, and writes exactly those, refusing
+  again with a fresh list if one of them has been taken in the meantime. If any
+  night was refused because the guest is not booked on it, that button asks you to
+  confirm first: it names how many nights are not part of the guest's booking and
+  will not be assigned, and how many will, and waits for a **Yes**. That refusal usually means
+  a typo in the dates, so going past it is something you read and agree to rather
+  than a click next to a warning. Either
+  way the operation leaves a **single** audit entry against the booking recording
+  the range you asked for, what was written and what was refused, so "who put
+  this guest in bed 4 for the winter?" has one answer rather than fragments. The
+  entry records dates and counts rather than other members' names, which stay on
+  your screen. If moving the guest left a partner alone on a shared double, all of
+  those promotions are recorded together in one further entry rather than one
+  entry per night. Assigning a range
+  confirms those beds immediately, which locks the member out of changing their
+  requested room; the dialog says so before you commit. Afterwards the board
+  tints the nights it wrote green and the nights it refused red so any gaps are
+  easy to spot.
+
+  The board itself gains **‹** and **›** arrows that step the window a calendar
+  month at a time, and it no longer quietly shortens a date range you type: a
+  window longer than 31 nights is refused with an explanation instead of
+  silently showing you something narrower than you asked for. Arriving from a
+  long booking's link, the board shows the first 31 nights and tells you it is
+  showing part of the stay. Finally, hand-placing a guest from a booking that
+  holds the whole lodge is now refused outright, matching the automatic
+  allocator (#2285) — previously such a placement was accepted and then quietly
+  cleaned away later.
+
 - **The booking-confirmed email now explains a promo that raises the price,
   instead of a blank Discount line and an unexplained total (#2267).** A member
   who booked with an exclusive-use flat-rate promo received a payment
