@@ -4,6 +4,40 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Every dead button in the five guided setup wizards now says why it is dead
+  (#2324).** The Xero, Stripe, Google sign-in, Backups and Lodge Display setup
+  paths all share one wizard frame, and that frame already showed a **"You have
+  view-only access to this area"** banner at the top. What it could not do was
+  let the controls inside a step lean on it: the frame calls each step from
+  another file, so nothing in the code proved the banner was really above them.
+  The result was a split — the Lodge Display steps repeated the reason on every
+  button, while the Xero, Stripe, Google and Backups steps had **Save** buttons
+  that were simply grey and silent. Both halves are fixed. The frame now vouches
+  for its steps, so a control gated on the same access the banner names stops
+  repeating it (restoring boards, saving lodge details and pairing a screen; and
+  turning nightly backups on and running a verification backup). And every
+  control that needs **more** than the banner's access now says so instead of
+  saying nothing: entering or replacing the Xero, Stripe, Google and S3
+  credentials, the Xero webhook key, the Stripe signing secret, the backup
+  destination and Google verification all need **Full Admin**, and each button
+  now carries that reason, because an admin who has the wizard's area but not
+  Full Admin never sees the banner at all. Turning the Lobby TV display module
+  on keeps its own reason for the same reason — it needs system-settings access,
+  not lodge access. Nothing about who can do what changed; only what a dead
+  button tells you. Three flickering sentences went with it. Two were in the
+  Backups wizard — "your admin role can view these settings but cannot change
+  them" beside the nightly-backups switch, and "you need support edit access"
+  beside the verification button. Both were saying exactly what the banner above
+  them already said, and both appeared for a moment even for admins who *can*
+  change those settings, because they were keyed off "not allowed yet" rather
+  than "not allowed". The third was the "Only a Full Admin can…" notice in the
+  Xero, Stripe and Google steps, which appeared and then vanished for actual Full
+  Admins, because the page read "still working out who you are" as "not a Full
+  Admin". All three are gone or now wait until they know. The published
+  banner-coverage figures were re-measured with it: **287**
+  gated admin controls, **244** of them covered by a banner (218 in their own
+  file, 26 by a verified vouching parent — 5 of those through the wizard frame),
+  and **43** across 23 files deliberately keeping their own reason.
 - **Choosing to use your account credit and then saving the booking as a draft
   no longer throws that choice away (#2265).** Ticking "use my credit" in the
   booking wizard and pressing **Save as draft** used to discard the amount you
@@ -122,6 +156,28 @@ All notable public reference-release changes should be recorded here.
   instead of a bare "Invalid email template". Only clubs that saved an
   override of these templates ever saw the broken email; clubs on the defaults
   always got the correct built-in HTML version.
+- **Groundwork for adding another club member as a guest (#2306).** Members can
+  currently only put people from their own family group on a booking as linked
+  members. Work has started on letting a member add *any* club member as a
+  guest, with that member's consent. This first change lays the foundations —
+  the database columns that record whether a member agreed, a new
+  "Add another member as a guest" switch on Admin > Modules, and the settings
+  row that will hold the club's policy — and **deliberately changes nothing you
+  can see or do**. Adding somebody outside your own family group is still
+  declined exactly as before, whether the new module switch is on or off — and
+  the switch says so itself. Its description on **Admin → Modules** opens with
+  "Not available yet", and switching it on shows a **Not available yet** badge
+  instead of the usual green **Enabled** one, so nobody is left thinking a live
+  feature just came on. That is on purpose: the consent request
+  emails, the approval screen, and the timer that releases a held bed when
+  nobody answers all arrive together in the next change, so there is never a
+  version where turning the switch on could hold beds for approvals that
+  nothing can grant. The settings this will eventually use ship with sensible
+  defaults already chosen: consent is required by default, a held bed is
+  released after 7 days, and the two settings that would make the club's member
+  list browsable are off and never travel in a club config transfer, so
+  importing another club's settings can never widen your members' privacy
+  without your admin choosing it.
 
 - **Setting up a lodge TV is now one guided path instead of five cards and a
   guess (#2249).** **Admin → Lobby Display** leads with a **Guided setup** card

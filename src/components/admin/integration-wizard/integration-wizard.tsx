@@ -198,6 +198,12 @@ export function IntegrationWizard<Ctx>({
     optional: isWizardStepOptional(activeStep),
     acknowledged: acknowledgedOnlyFlags[index],
     skip: skipCurrent,
+    // The shell's vouch (#2324): `viewOnlyBanner` above is rendered in EVERY
+    // branch of this component — the loading early-return included — so a step's
+    // gated controls may drop their own per-button reason and lean on it. The
+    // literal `true` is the whole channel; there is no runtime condition here to
+    // get wrong, and the type in `types.ts` forbids anything else.
+    ancestorRendersViewOnlyBanner: true,
   };
   const isLast = index === steps.length - 1;
   const currentPassed = passedFlags[index];
