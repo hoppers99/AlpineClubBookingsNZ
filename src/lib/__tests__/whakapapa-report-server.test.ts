@@ -58,10 +58,24 @@ function buildHtml(
   </body></html>`;
 }
 
+// The difficulty SVG markers exactly as the upstream report draws them: a green
+// circle (id "green"), a blue square (id "blue"), an id-LESS black diamond path,
+// and a red diamond drawn as diamond_left/diamond_right paths.
+const DIFFICULTY_SVG: Record<string, string> = {
+  beginner: '<svg viewBox="0 0 600 600"><circle id="green" cx="300" cy="300" r="250"/></svg>',
+  intermediate:
+    '<svg viewBox="0 0 600 600"><rect id="blue" x="66" y="66" width="472" height="472"/></svg>',
+  advanced:
+    '<svg viewBox="0 0 600 600"><path d="M300,575l275,-275l-275,-275l-275,275l275,275Z"/></svg>',
+  expert:
+    '<svg viewBox="0 0 600 600"><path id="diamond_left" d="M155,560l135,-260l-135,-260l-135,260l135,260Z"/><path id="diamond_right" d="M445,560l135,-260l-135,-260l-135,260l135,260Z"/></svg>',
+};
+
 type TrailSpec = {
   name: string;
   status: string;
-  grade: string;
+  /** Difficulty the marker should encode: beginner|intermediate|advanced|expert. */
+  grade: keyof typeof DIFFICULTY_SVG;
   subInfo: string;
   statusClass: string;
 };
@@ -75,7 +89,7 @@ function trailsSection(areaName: string, trails: TrailSpec[]): string {
     .map(
       (trail) => `
         <div class="item_3CiH98">
-          <div class="iconWrapper_3CiH98"><svg viewBox="0 0 10 10"><circle id="${trail.grade}" r="5"/></svg></div>
+          <div class="iconWrapper_3CiH98">${DIFFICULTY_SVG[trail.grade]}</div>
           <div class="textWrapper_3CiH98">
             <div class="name_3CiH98">${trail.name}</div>
             <div class="subInfo_3CiH98">${trail.subInfo}</div>
@@ -255,23 +269,30 @@ describe("fetchWhakapapaCurlData", () => {
       {
         name: "Happy Valley",
         status: "Open",
-        grade: "green",
+        grade: "beginner", // green circle
         subInfo: "Groomed",
         statusClass: "open_3CiH98",
       },
       {
         name: "Tennants Valley",
         status: "Coming Soon",
-        grade: "black",
+        grade: "advanced", // id-less black diamond path
         subInfo: "Ungroomed",
         statusClass: "inactive_3CiH98",
       },
       {
         name: "Big Park",
         status: "Open",
-        grade: "blue",
+        grade: "intermediate", // blue square
         subInfo: "Groomed - Large",
         statusClass: "open_3CiH98",
+      },
+      {
+        name: "Waterfall",
+        status: "Coming Soon",
+        grade: "expert", // red diamond (diamond_left/diamond_right paths)
+        subInfo: "Ungroomed",
+        statusClass: "inactive_3CiH98",
       },
     ]);
     mockFetchHtml(buildHtml(CANONICAL_SECTIONS, [], trails));
@@ -302,6 +323,13 @@ describe("fetchWhakapapaCurlData", () => {
             groomed: true,
             difficulty: "Intermediate",
             size: "Large",
+          },
+          {
+            name: "Waterfall",
+            status: "Coming Soon",
+            groomed: false,
+            difficulty: "Expert",
+            size: "",
           },
         ],
       },

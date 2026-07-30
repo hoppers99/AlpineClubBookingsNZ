@@ -85,28 +85,47 @@ function findMetricValue(container: ParentNode, title: string): string {
   return "";
 }
 
-const TRAIL_DIFFICULTY_BY_GRADE: Record<string, string> = {
-  green: "Beginner",
-  blue: "Intermediate",
-  red: "Intermediate",
-  black: "Advanced",
-  doubleblack: "Expert",
-  expert: "Expert",
-};
-
+// Difficulty is drawn as a coloured SVG grade marker whose shape carries an
+// id/colour on the upstream report:
+//   green circle (id "green")            -> Beginner
+//   blue square  (id "blue")             -> Intermediate
+//   black diamond (a path with NO id)    -> Advanced
+//   red diamond  (id "diamond_left"/…)   -> Expert
+// Read the shape rather than any hashed class so it survives an upstream rebuild.
 function parseTrailDifficulty(iconEl: Element | null): string {
   if (!iconEl) {
     return "";
   }
-  // Difficulty is drawn as a coloured SVG grade marker whose shape carries an
-  // id/colour (e.g. <circle id="green">). Read that grade rather than any
-  // hashed class so it survives an upstream rebuild.
-  const shape = iconEl.querySelector("[id]");
-  const grade = normalizeText(shape?.id).toLowerCase().replace(/[\s-]+/g, "");
-  if (grade && TRAIL_DIFFICULTY_BY_GRADE[grade]) {
-    return TRAIL_DIFFICULTY_BY_GRADE[grade];
+
+  const shapes = Array.from(
+    iconEl.querySelectorAll("circle, ellipse, rect, path, polygon"),
+  );
+  if (shapes.length === 0) {
+    return "";
   }
-  return grade ? grade.charAt(0).toUpperCase() + grade.slice(1) : "";
+
+  // 1) By shape id keyword — robust to both the current lowercase ids
+  //    (green / blue / diamond_left / diamond_right) and Capitalised variants
+  //    (Green_circle / Blue_square / Diamond_left).
+  for (const shape of shapes) {
+    const id = normalizeText(shape.id).toLowerCase();
+    if (id.includes("green")) return "Beginner";
+    if (id.includes("blue")) return "Intermediate";
+    if (id.includes("diamond")) return "Expert";
+    if (id.includes("black")) return "Advanced";
+  }
+
+  // 2) Fall back to the shape kind: a circle is a green (Beginner) run, a
+  //    rect a blue (Intermediate) run, and an id-less diamond path/polygon is
+  //    the black (Advanced) marker.
+  for (const shape of shapes) {
+    const tag = shape.tagName.toLowerCase();
+    if (tag === "circle" || tag === "ellipse") return "Beginner";
+    if (tag === "rect") return "Intermediate";
+    if (tag === "path" || tag === "polygon") return "Advanced";
+  }
+
+  return "";
 }
 
 function parseTrailSubInfo(raw: string): { groomed: boolean; size: string } {

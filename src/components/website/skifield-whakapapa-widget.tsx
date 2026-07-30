@@ -92,13 +92,125 @@ function FacilityGroup({
   );
 }
 
+type TrailShape = "circle" | "square" | "diamond";
+
+// Standardised ski trail-difficulty markers. The colours are universal safety
+// symbols (not brand/club colours), so they are fixed literals via SVG `fill`
+// rather than theme tokens; the thin outline uses `currentColor` (the border
+// token) so each shape stays visible on both light and dark cards.
+const DIFFICULTY_MARKERS: {
+  key: string;
+  label: string;
+  shape: TrailShape;
+  color: string;
+}[] = [
+  { key: "beginner", label: "Beginner", shape: "circle", color: "#2E9E3F" },
+  { key: "intermediate", label: "Intermediate", shape: "square", color: "#0B75B8" },
+  { key: "advanced", label: "Advanced", shape: "diamond", color: "#1A1A1A" },
+  { key: "expert", label: "Expert", shape: "diamond", color: "#D22F2F" },
+];
+
+function DifficultyShape({
+  shape,
+  color,
+  size = 14,
+}: {
+  shape: TrailShape;
+  color: string;
+  size?: number;
+}) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      className="shrink-0 text-border"
+      aria-hidden="true"
+      focusable="false"
+    >
+      {shape === "circle" ? (
+        <circle
+          cx={12}
+          cy={12}
+          r={9}
+          fill={color}
+          stroke="currentColor"
+          strokeWidth={1.5}
+        />
+      ) : null}
+      {shape === "square" ? (
+        <rect
+          x={3}
+          y={3}
+          width={18}
+          height={18}
+          rx={2}
+          fill={color}
+          stroke="currentColor"
+          strokeWidth={1.5}
+        />
+      ) : null}
+      {shape === "diamond" ? (
+        <path
+          d="M12 1.5 L22.5 12 L12 22.5 L1.5 12 Z"
+          fill={color}
+          stroke="currentColor"
+          strokeWidth={1.5}
+          strokeLinejoin="round"
+        />
+      ) : null}
+    </svg>
+  );
+}
+
+function DifficultyMarker({ difficulty }: { difficulty: string }) {
+  const marker = DIFFICULTY_MARKERS.find(
+    (candidate) => candidate.key === difficulty.trim().toLowerCase(),
+  );
+  if (!marker) {
+    return null;
+  }
+  return (
+    <span
+      className="inline-flex items-center"
+      role="img"
+      aria-label={`Difficulty: ${marker.label}`}
+      title={marker.label}
+    >
+      <DifficultyShape shape={marker.shape} color={marker.color} />
+    </span>
+  );
+}
+
+function TrailsKey() {
+  return (
+    <ul
+      className="flex flex-wrap gap-x-3 gap-y-1"
+      aria-label="Trail difficulty key"
+    >
+      {DIFFICULTY_MARKERS.map((marker) => (
+        <li
+          key={marker.key}
+          className="flex items-center gap-1 text-[11px] text-muted-foreground"
+        >
+          <DifficultyShape shape={marker.shape} color={marker.color} size={12} />
+          {marker.label}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function TrailsGroup({ areas }: { areas: WhakapapaTrailArea[] }) {
   return (
     <article
       id="whakapapa-trails"
       className="mt-3 rounded-md border border-border bg-card p-2"
     >
-      <h3 className="text-sm font-semibold text-foreground">Trails</h3>
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <h3 className="text-sm font-semibold text-foreground">Trails</h3>
+        <TrailsKey />
+      </div>
       {areas.length > 0 ? (
         <div className="mt-2 space-y-3">
           {areas.map((area) => (
@@ -118,7 +230,9 @@ function TrailsGroup({ areas }: { areas: WhakapapaTrailArea[] }) {
                       {trail.name || "Unknown"}
                     </span>
                     <div className="flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
-                      {trail.difficulty ? <span>{trail.difficulty}</span> : null}
+                      {trail.difficulty ? (
+                        <DifficultyMarker difficulty={trail.difficulty} />
+                      ) : null}
                       {trail.difficulty && (trail.groomed || trail.size) ? (
                         <span aria-hidden>·</span>
                       ) : null}

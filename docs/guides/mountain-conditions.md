@@ -45,6 +45,12 @@ permission area.
    `trails`, and the `visibility` map), then click **Save**. **Saving freezes
    automatic upstream updates for 12 hours** so your edits are not overwritten.
 
+   Each trail carries a `difficulty` of `Beginner`, `Intermediate`, `Advanced`,
+   or `Expert`. On the public widget these render as the standard ski symbols —
+   green circle (Beginner), blue square (Intermediate), black diamond
+   (Advanced), red diamond (Expert) — with a matching key shown in the top-right
+   of the Trails section.
+
 ### Point the scraper at a new URL or fix a selector
 
 The upstream report is built with rotating style-name suffixes, so the scraper
