@@ -4,6 +4,7 @@ import {
 } from "@/lib/email-message-audit-defaults";
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
 import {
+  adminSplitSettlementCancelledLeadParagraph,
   adminSplitSettlementUnpaidLeadParagraph,
   duplicateCaptureRefundOutcomeParagraph,
   splitGuestPortionOwnBookingLine,
@@ -827,6 +828,32 @@ export function sampleValue(token: string): string {
   return token.replace(/[|]/g, " ");
 }
 
+// #2320 review (LOW-4): per-template overrides of the global sampleValue()
+// fallthrough, for the few tokens whose sample must differ by template because
+// their SENDERS compose different text for the same token name. The editor
+// preview is the admin's only picture of what a member reads, so a preview
+// that contradicts its own template (the UNPAID lead paragraph under a
+// cancelled heading) or shows a label the sender never writes ("Notes:" where
+// the send composes "Note from admin:") teaches an admin to distrust it.
+const TEMPLATE_SAMPLE_VALUE_OVERRIDES: Partial<
+  Record<EmailAuditTemplateName, Record<string, string>>
+> = {
+  // The terminal cancellation alert previews the CANCELLED lead paragraph —
+  // the recurring unpaid alert keeps the global sample (the unpaid paragraph).
+  "admin-split-settlement-cancelled": {
+    settlementActionNote: adminSplitSettlementCancelledLeadParagraph(false),
+  },
+  // These two senders compose their own labels around the shared
+  // {{adminNotesLine}} token (src/lib/email/booking.ts), so the preview mirrors
+  // each real send instead of the refund-appeal templates' "Notes:" label.
+  "booking-review-approved": {
+    adminNotesLine: "Note from admin: Reviewed by the committee.\n\n",
+  },
+  "booking-review-rejected": {
+    adminNotesLine: "Reason from admin: No adult guest is listed.\n\n",
+  },
+};
+
 export const EMAIL_TEMPLATE_DEFINITIONS: EmailTemplateDefinition[] = (
   Object.entries(EMAIL_AUDIT_DEFAULTS) as Array<
     [
@@ -857,7 +884,10 @@ export const EMAIL_TEMPLATE_DEFINITIONS: EmailTemplateDefinition[] = (
     requiredTokens: REQUIRED_TEMPLATE_TOKENS[key] ?? [],
     requiredTokenAlternatives: REQUIRED_TOKEN_ALTERNATIVES[key] ?? {},
     sampleData: Object.fromEntries(
-      allowedTokens.map((token) => [token, sampleValue(token)]),
+      allowedTokens.map((token) => [
+        token,
+        TEMPLATE_SAMPLE_VALUE_OVERRIDES[key]?.[token] ?? sampleValue(token),
+      ]),
     ),
     triggerSummary: metadata.triggerSummary,
     frequency: metadata.frequency,
@@ -1100,6 +1130,10 @@ export const APPROVED_EMAIL_TEMPLATE_TOKEN_SET = new Set<string>(
 // in clear mail headers, so secret values are restricted to message bodies.
 const SENSITIVE_EMAIL_SUBJECT_TOKENS = [
   "choreLink",
+  // #2268: the composed chore-roster line carries the 48-hour bearer link
+  // itself, so it is subject-forbidden exactly like the bare {{choreLink}}
+  // value (the {{doorCodeNote}}/{{doorCode}} treatment).
+  "choreLinkNote",
   "claimUrl",
   "confirmUrl",
   "confirmationUrl",
