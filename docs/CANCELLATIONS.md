@@ -32,6 +32,24 @@ booking request. Those are refused silently: no cancellation action is offered
 on their page, and there is nothing to explain, because there is no membership
 being withheld.
 
+"The lodge kiosk device login" means a record whose *whole* account type is the
+kiosk — the one the member page's User Type shows as **Lodge (kiosk account)**.
+Ticking the **Lodge** access role on a real person, so they can use the kiosk
+and the lodge operations tools, does not make them a device and does not hide
+the cancellation action, as long as they hold some other role too (an admin
+bundle, a finance role, or a club-defined custom role). A person given *only*
+the Lodge role and nothing else is indistinguishable from the kiosk account, and
+is treated as one — their member page says so, in the same User Type field.
+
+**The member-raised route is narrower than this.** Everything above describes
+the admin-raised route, from a member's admin page. Members using
+**Cancel Membership** in their own profile still see the older, narrower rule:
+that self-service flow is offered only to ordinary member accounts, and only
+ordinary member accounts appear in its family list — so an admin, or an
+organisation account, must be cancelled by an admin from the member page.
+Widening the self-service flow is tracked separately; nothing about the
+admin-raised route depends on it.
+
 Cancellation eligibility is deliberately not a permissions question. Two
 separate rules govern the **approval** of a cancellation against an account that
 holds privileged access, and both are enforced server-side inside the approval
@@ -53,10 +71,23 @@ they must appoint a successor Full Admin, who then approves. This is deliberate,
 and is the same separation-of-duties rule the archive and deletion queues use.
 
 Approving a cancellation does **not** delete the member's access roles. It sets
-the account inactive with login disabled, which removes every live permission,
-and the dormant role rows are left in place — the same as archive and deletion
-approval do — so the account stays protected by the Full-Admin-only rule above
-if it is later archived.
+the account **inactive** — which is what actually stops every admin area, since
+every server-side admin check re-reads it — and disables the login, and leaves
+the dormant role rows in place, the same as archive and deletion approval do, so
+the account stays protected by the Full-Admin-only rule above if it is later
+archived.
+
+Two consequences of that worth knowing before you approve:
+
+- **A cancelled ex-admin cannot be hard-deleted.** Deletion refuses any account
+  that still holds admin access, and cancellation deliberately keeps the rows.
+  Remove the roles first if the club also wants the record deleted.
+- **Approving an organisation or school account's cancellation can archive a
+  Xero contact that is still billing.** When "archive Xero contacts on
+  cancellation" is switched on, approval queues an archive of the member's Xero
+  contact — and for an organisation that is often the invoice contact for its
+  booking invoices. The approval blockers cover future bookings, not open
+  invoices, so check the organisation has nothing outstanding in Xero first.
 
 ## Refund Policy
 

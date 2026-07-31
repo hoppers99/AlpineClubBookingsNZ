@@ -18,8 +18,8 @@ import {
 } from "@/lib/membership-cancellation-settings";
 import {
   MEMBER_LEVEL_ROLE_VALUES,
-  accountCanHoldMembership,
   isMemberLevelRole,
+  isMembershipHolderRecord,
 } from "@/lib/member-roles";
 import { prisma } from "@/lib/prisma";
 
@@ -307,7 +307,15 @@ function toCandidate(
 
   let ineligibleReason: string | null = null;
   if (!roleAllowed) {
-    ineligibleReason = "Only member accounts can be included.";
+    // #2383: say what the rule actually is. The member-raised route keeps the
+    // narrow `isMemberLevelRole` test (legacy role USER), so an admin or
+    // organisation account in the family is not selectable HERE — but its
+    // membership is perfectly cancellable by an admin from the member page,
+    // which is the wider `isMembershipHolderRecord` rule. The old wording,
+    // "Only member accounts can be included", read as "that account is not a
+    // member", which was never true of an admin.
+    ineligibleReason =
+      "This account is cancelled by an admin from the member page, not from here.";
   } else if (!activeAllowed) {
     ineligibleReason = "This membership is not active.";
   } else if (activeParticipant) {
@@ -364,13 +372,20 @@ async function loadCancellationCandidates(requesterMemberId: string) {
     throw new MembershipCancellationRequestError("Member not found", 404);
   }
 
+  // The member-raised route deliberately keeps the pre-#2383 narrow rule
+  // (`isMemberLevelRole`: legacy role USER). Widening it is a separate piece of
+  // work with its own UX questions — self-service cancellation of an
+  // organisation account, and of one's own admin account, both need more than a
+  // predicate change. The admin-raised route on the member page is wider and
+  // covers every account this refuses, so nothing is uncancellable; the message
+  // must say so rather than telling a Full Admin they are not a member account.
   if (
     !currentMember.active ||
     !currentMember.canLogin ||
     !isMemberLevelRole(currentMember.role)
   ) {
     throw new MembershipCancellationRequestError(
-      "Membership cancellation requests are only available to active login-capable member accounts",
+      "Cancelling your membership from here is available to ordinary member accounts with an active login. Admin and organisation accounts are cancelled by an admin from the member page instead — contact the club office.",
       403,
     );
   }
@@ -381,6 +396,10 @@ async function loadCancellationCandidates(requesterMemberId: string) {
   const relatedMembers = await prisma.member.findMany({
     where: {
       active: true,
+      // Same deliberate narrowness as the gate above (#2383): a family member
+      // who is also an admin never appears in this list at all, and so gets no
+      // "why not" message either. Their membership is cancellable by an admin
+      // from the member page. Widening this route is tracked separately.
       role: { in: [...MEMBER_LEVEL_ROLE_VALUES] },
       OR: [
         { id: currentMember.id },
@@ -709,8 +728,14 @@ export async function createAdminMembershipCancellationRequest({
       cancelledAt: true,
       archivedAt: true,
       // #2383: read alongside the legacy role column so a lodge kiosk carrying
-      // only a LODGE access-role row is still recognised as a device login.
-      accessRoles: { select: { role: true } },
+      // only a LODGE access-role row is still recognised as a device login —
+      // and so a person who merely also holds the lodge tools is not. The
+      // definition id and the legacy finance column are selected too, because
+      // both widen the classification away from "kiosk"; without them a
+      // custom-role holder with lodge access would be refused here while the
+      // admin page (which is served resolved tokens) offered the action.
+      financeAccessLevel: true,
+      accessRoles: { select: { role: true, roleDefinitionId: true } },
     },
   });
 
@@ -733,14 +758,14 @@ export async function createAdminMembershipCancellationRequest({
   // Admin, are enforced at approval time by the #1604/#1622 guards in
   // membership-cancellation-admin.
   if (
-    !accountCanHoldMembership({
+    !isMembershipHolderRecord({
       role: target.role,
       canLogin: target.canLogin,
-      // `role` is null on a definition-backed custom-role row; only the
-      // bundled system roles are of interest here, so drop those.
-      accessRoles: target.accessRoles
-        .map((assignment) => assignment.role)
-        .filter((role): role is NonNullable<typeof role> => role !== null),
+      financeAccessLevel: target.financeAccessLevel,
+      // Raw rows: the helper accepts these and the resolved string tokens the
+      // admin page is served interchangeably, and applies the same
+      // login-clearing to both, so page and server never disagree.
+      accessRoles: target.accessRoles,
     })
   ) {
     throw new MembershipCancellationRequestError(

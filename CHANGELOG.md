@@ -25,14 +25,20 @@ All notable public reference-release changes should be recorded here.
   contact records the booking-request flows create (a public request's guest
   contact, and a school request's owner contact and teacher records). Those
   simply show no cancellation action, with nothing to explain, because nothing
-  is being withheld. The safeguards that matter sit where the decision is
-  actually made, at approval: only a full admin may approve a cancellation for
-  an account with admin access, an admin can never approve a cancellation they
-  raised themselves, and the club can never be left with no full admin — so a
-  sole admin who wants to leave must appoint their successor first, and then
-  that successor approves. Cancelling a member no longer needs their roles
-  deleted, so the record of what they once did for the club stays intact.
-
+  is being withheld. "The lodge kiosk" here means the shared device account
+  itself — the one whose account type reads *Lodge (kiosk account)* — and not
+  anyone who has merely been given the lodge role alongside their own: a
+  booking officer who also runs the lodge screen is a person with a membership,
+  and had also been quietly losing the cancellation action. The safeguards that
+  matter sit where the decision is actually made, at approval: only a full admin
+  may approve a cancellation for an account with admin access, an admin can
+  never approve a cancellation they raised themselves, and the club can never be
+  left with no full admin — so a sole admin who wants to leave must appoint
+  their successor first, and then that successor approves. Cancelling a member
+  no longer needs their roles deleted, so the record of what they once did for
+  the club stays intact. The member-facing **Cancel Membership** flow in a
+  member's own profile is unchanged and still limited to ordinary member
+  accounts; its wording no longer implies otherwise.
 
 - **Editing a booking no longer loses your account credit or your promo codes
   (#2266, epic #2245 E2).** Going "back into" a booking — the dashboard's
@@ -81,7 +87,8 @@ All notable public reference-release changes should be recorded here.
   queue, exactly as it does for anyone else. The page now asks the same
   eligibility question the server enforces — is this an active,
   not-yet-cancelled, not-archived member — so the action appears for
-  exactly the members it can act on.
+  exactly the members it can act on. That question was later widened by
+  #2383 above.
 
 - **Self-hosted sites now use whatever processing power the server has free,
   instead of being rationed to a fraction of one core (#2351).** The standard

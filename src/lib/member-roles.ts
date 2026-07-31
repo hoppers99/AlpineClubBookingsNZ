@@ -1,4 +1,10 @@
 import type { Role } from "@prisma/client";
+import {
+  deriveUserType,
+  storedAccessRolesForFullAdminGate,
+  type AccessRoleAssignmentInput,
+  type UserType,
+} from "@/lib/access-roles";
 
 export const ROLE_VALUES = [
   "USER",
@@ -9,6 +15,22 @@ export const ROLE_VALUES = [
 ] as const satisfies readonly Role[];
 
 export type AppRole = (typeof ROLE_VALUES)[number];
+
+/**
+ * Compile-time proof that ROLE_VALUES covers every value of the Prisma `Role`
+ * enum, so a value added to the enum cannot silently fall through the
+ * record-class rules below (#2383).
+ *
+ * `as const satisfies readonly Role[]` above checks only that each listed value
+ * IS a Role — assignability, not coverage — so on its own it permits an
+ * unlisted enum value. This alias closes the other direction: `Exclude` is
+ * empty today, and becomes the missing literal the moment the enum grows,
+ * which fails the `extends never` constraint and stops `npm run typecheck`.
+ * `src/lib/__tests__/member-roles.test.ts` pins the same property at runtime
+ * against the generated enum object, so a stale build cannot hide it either.
+ */
+type AssertNever<T extends never> = T;
+export type RolesMissingFromRoleValues = AssertNever<Exclude<Role, AppRole>>;
 
 export const MEMBER_LEVEL_ROLE_VALUES = [
   "USER",
@@ -29,7 +51,7 @@ export const OPERATIONAL_ROLE_VALUES = [
 // NOTE (#2383): this set is about ACCESS, not about who holds a membership.
 // `SCHOOL` accounts are in here yet do hold real, fee-paying memberships, so it
 // must never be reused to answer "is there a membership here to cancel?" — use
-// `accountCanHoldMembership` below.
+// `isMembershipHolderRecord` below.
 export const NON_MEMBER_ROLE_VALUES = [
   "NON_MEMBER",
   "SCHOOL",
@@ -59,15 +81,61 @@ export function isMemberLevelRole(
 }
 
 /**
- * True for the shared lodge kiosk device login (legacy role or normalized
- * access-role rows). Kiosk accounts never hold bookings; members holding
- * the admin role are real people and remain bookable-on-behalf.
+ * Access-role tokens a record's stored classification confers, evaluated
+ * login-blind, and the User Type the whole app derives from them (#1439).
+ *
+ * Accepts either shape the codebase carries: raw `MemberAccessRole` rows
+ * (`{ role, roleDefinitionId }`, what a server-side `select` yields) or the
+ * already-resolved string tokens the admin pages are served
+ * (`resolveAccessRoleTokens`). Both collapse to the same token list, which is
+ * what lets the client gate and the server check agree (#2383).
+ */
+export type AccountClassificationInput = {
+  role: string | null | undefined;
+  accessRoles?: ReadonlyArray<AccessRoleAssignmentInput | string> | null;
+  financeAccessLevel?: string | null;
+};
+
+export function classifyAccountRecord(
+  member: AccountClassificationInput,
+): UserType {
+  return deriveUserType(
+    storedAccessRolesForFullAdminGate({
+      role: member.role,
+      accessRoles: member.accessRoles ?? [],
+      financeAccessLevel: member.financeAccessLevel,
+    }),
+    // Login-blind: this classifies what the record IS, not what it can
+    // currently do. Callers apply their own `canLogin` policy.
+    true,
+  );
+}
+
+/**
+ * True for the shared lodge kiosk device login: a device, not a person.
+ * Kiosk accounts never hold bookings and hold no membership.
+ *
+ * This is a record-CLASS test, not a "has lodge access" test (#2383). `LODGE`
+ * is a freely tickable checkbox in the member editor, described there as "Can
+ * use lodge kiosk and lodge operations tools", with no exclusivity guard — so a
+ * Booking Officer who also runs the lodge screen carries a `LODGE` row while
+ * being an entirely ordinary fee-paying person. Testing for the mere presence
+ * of the token swept those people up with the device.
+ *
+ * The rule is therefore the app's own classification: the record is the kiosk
+ * only when `LODGE` is its ENTIRE classification, which is exactly when the
+ * admin UI labels its User Type "Lodge (kiosk account)". Anything carrying a
+ * second privileged token (any admin bundle, a finance role, a club-defined
+ * custom role) classifies as "admin" and is treated as the person it is.
  */
 export function isLodgeKioskAccount(
   role: string | null | undefined,
-  accessRoles?: readonly string[] | null,
+  accessRoles?: ReadonlyArray<AccessRoleAssignmentInput | string> | null,
+  financeAccessLevel?: string | null,
 ): boolean {
-  return role === "LODGE" || (accessRoles ?? []).includes("LODGE");
+  return (
+    classifyAccountRecord({ role, accessRoles, financeAccessLevel }) === "lodge"
+  );
 }
 
 export function isOperationalRole(
@@ -83,13 +151,17 @@ export function isOperationalRole(
  * organisation the club can hold a membership for — and so has a membership
  * that could be cancelled (#2383).
  *
- * Named for exactly what it tests, because the rule it replaced was not. The
- * old gate was `isMemberLevelRole` — legacy `role === "USER"` — whose name
- * suggested "this is a member" but whose behaviour was "this account holds no
- * Full Admin bundle". That caught one of the five admin classes (a Membership
- * Officer, Booking Officer, Treasurer, Content Manager or custom-role holder
- * all store `role = "USER"` and were always cancellable), and it also swept up
- * organisation accounts, which hold real fee-paying memberships.
+ * A record-CLASS test, not a capability test: it is true of archived,
+ * cancelled, inactive and subscription-exempt records alike, because all of
+ * those are still account holders. `canAdminRequestMembershipCancellation`
+ * below adds the member-state terms. Named for exactly what it tests, because
+ * the rule it replaced was not. The old gate was `isMemberLevelRole` — legacy
+ * `role === "USER"` — whose name suggested "this is a member" but whose
+ * behaviour was "this account holds no Full Admin bundle". That caught one of
+ * the five admin classes (a Membership Officer, Booking Officer, Treasurer,
+ * Content Manager or custom-role holder all store `role = "USER"` and were
+ * always cancellable), and it also swept up organisation accounts, which hold
+ * real fee-paying memberships.
  *
  * This asks an identity question, never a permissions or seniority one: what
  * admin access somebody holds says nothing about whether they pay for and hold
@@ -101,8 +173,10 @@ export function isOperationalRole(
  * Only two kinds of record are refused:
  *
  * 1. **The lodge kiosk device login** — a shared device, not a person. Matched
- *    on the legacy `LODGE` role or a `LODGE` access-role row, so a kiosk
- *    identified by either is caught.
+ *    on the record's whole classification (see `isLodgeKioskAccount`), so a
+ *    kiosk identified by the legacy `LODGE` role or by a `LODGE` access-role
+ *    row alone is caught, while a real person who merely also holds the lodge
+ *    tools is not.
  * 2. **Booking-request contact records** — the guest and school contacts minted
  *    by the public booking-request flows (`src/lib/booking-request.ts`,
  *    `src/lib/school-booking-request.ts`). They hold no membership: they exist
@@ -111,8 +185,9 @@ export function isOperationalRole(
  * The `canLogin` test applies to `SCHOOL` alone, and is not a login gate in
  * disguise. `SCHOOL` is genuinely two different things in this schema: the
  * legacy role of a real **organisation account** (User Type "Organisation",
- * which stores an `ORG` access-role row and can only be set on a login-capable
- * account), and the role stamped on every **school booking-request contact** —
+ * which stores an `ORG` access-role row; the admin UI only ever sets it on a
+ * login-capable account, though nothing in `createMemberSchema` enforces that
+ * on write), and the role stamped on every **school booking-request contact** —
  * the school's owner contact and each named teacher — which is always created
  * `canLogin: false`. Non-login is precisely the line the rest of the codebase
  * already draws between the two (`MAPPABLE_CONTACT_SCOPE` in
@@ -124,15 +199,34 @@ export function isOperationalRole(
  * dependants and non-login adults are ordinary `USER` members whose
  * memberships are cancellable, which was the whole point of #2354.
  *
- * `accessRoles` is used only to BLOCK (the kiosk), never to allow, because
- * access roles are cleared for anyone who cannot log in.
+ * INPUT CONTRACT (#2383). `accessRoles` accepts either raw `MemberAccessRole`
+ * rows or resolved string tokens, and the rows are consulted only when
+ * `canLogin` is true. That is not cosmetic: the admin page is served
+ * `resolveAccessRoleTokens` output, which is EMPTY for a non-login member,
+ * while the server reads the stored rows, which are not cleared when login is
+ * disabled (e.g. the family login-holder transfer). Applying the same
+ * login-clearing here makes both callers feed structurally identical input, so
+ * the page can never offer an action the server then refuses. Rows are used
+ * only to BLOCK (the kiosk) and to widen the classification away from the
+ * kiosk, never as evidence that a membership exists.
  */
-export function accountCanHoldMembership(member: {
+export function isMembershipHolderRecord(member: {
   role: string | null | undefined;
   canLogin: boolean;
-  accessRoles?: readonly string[] | null;
+  accessRoles?: ReadonlyArray<AccessRoleAssignmentInput | string> | null;
+  financeAccessLevel?: string | null;
 }): boolean {
-  if (isLodgeKioskAccount(member.role, member.accessRoles)) return false;
+  const isDevice = member.canLogin
+    ? isLodgeKioskAccount(
+        member.role,
+        member.accessRoles,
+        member.financeAccessLevel,
+      )
+    : // Login-cleared: the stored rows are ignored, exactly as the resolved
+      // tokens the admin page is served already are. The legacy role column is
+      // not cleared and still identifies a de-logined kiosk.
+      isLodgeKioskAccount(member.role);
+  if (isDevice) return false;
   if (member.role === "NON_MEMBER") return false;
   if (member.role === "SCHOOL") return member.canLogin;
   return true;
@@ -159,13 +253,14 @@ export function accountCanHoldMembership(member: {
 export function canAdminRequestMembershipCancellation(member: {
   role: string | null | undefined;
   canLogin: boolean;
-  accessRoles?: readonly string[] | null;
+  accessRoles?: ReadonlyArray<AccessRoleAssignmentInput | string> | null;
+  financeAccessLevel?: string | null;
   active: boolean;
   cancelledAt: string | Date | null | undefined;
   archivedAt: string | Date | null | undefined;
 }): boolean {
   return (
-    accountCanHoldMembership(member) &&
+    isMembershipHolderRecord(member) &&
     member.active &&
     !member.cancelledAt &&
     !member.archivedAt

@@ -16,10 +16,11 @@ import { describe, expect, it } from "vitest";
   exactly those members.
 
   #2383 widened the shared helper: eligibility is now an account-holder
-  question (`accountCanHoldMembership`) rather than legacy `role === "USER"`,
+  question (`isMembershipHolderRecord`) rather than legacy `role === "USER"`,
   so admins of every class and organisation accounts are cancellable and only
-  the lodge kiosk login and the booking-request contact records are refused.
-  That gave the helper two more inputs, `canLogin` and `accessRoles`. The
+  the lodge kiosk device login and the booking-request contact records are
+  refused. That gave the helper more inputs — `canLogin`, `accessRoles` and
+  `financeAccessLevel`, the last two only to tell a device from a person. The
   assertions below are unchanged in force and deliberately kept: the page must
   still hand the whole member to the helper and decide nothing itself. A bare
   `canLogin` or `accessRoles` conjunct ON THE PAGE is exactly the #2354
@@ -89,10 +90,12 @@ describe("admin membership-cancellation gate (#2354, #2383)", () => {
   });
 
   it("hands the whole member to the helper", () => {
-    // #2383: the helper reads `role`, `canLogin`, `accessRoles`, `active`,
-    // `cancelledAt` and `archivedAt`, and will read whatever the rule needs
-    // next. Passing the member wholesale is what lets the shared rule change
-    // without the page having to be found and changed too.
+    // #2383: the helper reads `role`, `canLogin`, `accessRoles`,
+    // `financeAccessLevel`, `active`, `cancelledAt` and `archivedAt`, and will
+    // read whatever the rule needs next. Passing the member wholesale is what
+    // lets the shared rule change without the page having to be found and
+    // changed too — and it is why adding `financeAccessLevel` to the rule
+    // needed no change here at all.
     expect(gate).toContain("canAdminRequestMembershipCancellation(member)");
   });
 

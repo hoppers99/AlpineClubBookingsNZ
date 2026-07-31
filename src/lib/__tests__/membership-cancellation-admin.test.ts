@@ -662,12 +662,16 @@ describe("membership cancellation admin review", () => {
 
     it("leaves the cancelled member's access-role rows in place", async () => {
       // Deliberate (#2383): cancellation is a lifecycle terminal, not a role
-      // edit. `active: false` + `canLogin: false` already remove every live
-      // permission (the admin permission matrix resolves to all-none once
-      // canLogin is false, and every server guard re-reads `active`), while
-      // the dormant rows keep the member inside the #1604 privileged-target
-      // guard for any later archive. Archive and deletion approval leave them
-      // in place too, so this is the house rule, not a special case.
+      // edit. What makes that safe is `active: false` — `requireAdmin`
+      // (src/lib/session-guards.ts) refuses an inactive member, and every
+      // server guard re-reads `active`. NOT `canLogin: false`: that guard does
+      // not even select `canLogin`, and `getAdminPermissionMatrix` zeroes the
+      // matrix only on an explicit `canLogin === false`, so retained rows read
+      // without that field still resolve to the full bundle. The dormant rows
+      // keep the member inside the #1604 privileged-target guard for any later
+      // archive. Archive and deletion approval leave them in place too, so this
+      // is the house rule, not a special case — and the reason nothing may
+      // reactivate a cancelled member without dealing with the rows first.
       mocks.tx.member.findUnique.mockResolvedValue({
         role: "ADMIN",
         financeAccessLevel: "NONE",
