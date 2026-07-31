@@ -2997,6 +2997,47 @@ dependent changes must preserve financial history, booking and guest history,
 audit history, required family/dependent history, privacy preferences, and Xero
 contact/link history where required.
 
+A membership cancellation never credits money owed for a membership that
+continues (#2400). One Xero subscription invoice covers every member of a family
+or billing group, its lines are per fee component rather than per member, and the
+cancellation credit note is for the invoice's whole `amountDue` — so it is raised
+only when the leaving member is the last member that invoice covers who has not
+themselves been cancelled. "Covered" is the union of
+`MemberSubscription.xeroInvoiceId` and the charge's ACTIVE
+(`releasedAt IS NULL`) coverage claims: either one can be the only record of a
+covered member — a member already PAID when the invoice was raised carries the
+coverage claim alone, because `createXeroMembershipSubscriptionInvoice` never
+overwrites a PAID subscription, and rows predating coverage claims carry the
+invoice link alone — and an uncertain covered set must never authorise wiping a
+balance. The coverage half resolves its member through `subscription.memberId`, a
+real foreign key, never through the row's own denormalised `memberId`, which is
+on member-merge's FK-less snapshot list and is left pointing at a deleted loser.
+The union only ever SHRINKS over the life of a cancellation, because a covered
+member leaves it when `cancelledAt` is set and nothing in the app writes
+`cancelledAt: null` (see the reactivation constraint below) — so an approval
+decided on "the leaver is last" cannot be falsified before the outbox drains.
+
+**At most one cancellation ever credits a given subscription invoice.** Several
+different cancellations can each reach the "last covered member" state (a whole
+family leaving), and the outbox claims per operation, so overlapping drains could
+otherwise each raise a full-balance credit note under different Xero idempotency
+keys. The right to credit one invoice is a durable first-writer-wins claim — a
+`XeroObjectLink` row keyed on the invoice, inserted with `skipDuplicates` before
+any Xero call — and a cancellation that loses it raises nothing at all. See
+`docs/CONCURRENCY_AND_LOCKING.md`.
+
+Paired with it: the unpaid-invoice approval blocker (#2392) excuses the member's
+own subscription invoice **if and only if** the approval is still about to credit
+its full balance. Both sides derive that from
+`loadMembershipCancellationSubscriptionCreditPlansByMemberId`, so the excused set
+is by construction the cleared set, and no cancellation can archive a Xero
+contact with a balance nobody is going to credit. "Still" is load-bearing: the
+credit-note operation is one-shot and completes even when it deliberately skips,
+so once a whole family is cancelled the recomputed answer flips back to "would
+credit in full" for members whose credit note already ran and skipped. The
+exclusion therefore also consults that operation's RECORDED outcome, and an
+invoice whose credit note has settled is never excused again.
+
 Access role, seasonal membership type, age tier, Xero contact-group rule, and
 committee assignment are separate axes. `MemberAccessRole` controls application
 access via the legacy enum values (`USER`, `ADMIN`, `ADMIN_READONLY`,

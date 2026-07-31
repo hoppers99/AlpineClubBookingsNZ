@@ -30,6 +30,67 @@ All notable public reference-release changes should be recorded here.
   dashboard now says so in an amber banner naming how much cash the figure may
   be short by and how many bookings are involved, instead of quietly publishing
   a number that is too low.
+- **Cancelling one member of a family no longer wipes the whole family's bill
+  (#2400).** When a family or billing group is charged for memberships, one Xero
+  invoice covers everyone in the group. Until now, cancelling any one of those
+  members credited that invoice's **entire** remaining balance — so cancelling
+  one child cleared the bill for the parents and siblings who were staying, and
+  nothing said so. The invoice simply went to zero, the memberships carried on,
+  and the club quietly stopped being owed for them. It was invisible: no warning
+  at approval, and no report that would show it.
+
+  The rule now is the plain one. If the member leaving is the **last** one that
+  invoice covers who is still with the club, nothing changes — the whole
+  remaining balance is credited exactly as before, which is what happens for the
+  ordinary single-member cancellation. If **other members it covers are
+  staying**, no credit note is raised at all: the invoice is left exactly as it
+  is, because the club is genuinely still owed it by the people who remain. The
+  review queue says so before you approve, in a blue notice that names the
+  members who are staying and links the invoice straight into Xero, so a credit
+  note can be raised by hand if one really is due. What was silently wrong is
+  now visibly deliberate.
+
+  Cancelling a whole family still works, and still credits the invoice in full —
+  approve them one at a time and the last approval does it, because by then
+  nobody else the invoice covers is with the club any more. The member who holds
+  the family's Xero contact normally has to go last: while the others are still
+  members, their share of that invoice is real money owing, so the check
+  introduced with #2392 rightly refuses to archive that contact over it, and the
+  notice beside them says plainly that the approval will be refused rather than
+  simply go through. Cancel the rest of the family first and that refusal clears
+  by itself. Where a whole family shares a single Xero contact — which happens
+  when children inherit a parent's email address — approving them in any order
+  gets nowhere, because every one of them is refused over the same invoice; the
+  notice says that too, instead of sending you round the loop, and points at
+  settling, crediting or voiding the invoice in Xero. So does the refusal
+  itself, so an admin approving from a stale page gets the real answer and not
+  just "pay, credit or void it". The same goes for members who were deactivated
+  rather than cancelled: there is no cancellation to approve for them, and they
+  keep the invoice open by design.
+
+  Two quieter fixes travel with it. Approving a family in a burst could raise
+  **two** full-balance credit notes for one invoice, when two of the approvals
+  reached the "nobody else is covered" moment together in overlapping background
+  runs — Xero accepted both, allocated one, and left the other sitting on the
+  family's contact as unallocated credit anyone could spend. The right to credit
+  an invoice is now claimed once before anything is sent to Xero, so the second
+  cancellation raises nothing and records why. And a family whose last member out
+  had already **paid** their own subscription used to leave the invoice with its
+  full balance and say nothing at all — the cancellation credited nothing, and
+  the archive check would later wave the invoice through as "about to be
+  credited" when its credit note had already been and gone, archiving the Xero
+  contact over live money. The check now reads what the credit note actually did,
+  never what it would do if it ran again, and an admin alert names any invoice a
+  cancellation walks away from with nobody left to pay it.
+
+  That check moved with this change, and had to. It deliberately ignores the
+  member's own subscription invoice, on the grounds that the cancellation is
+  about to credit it. That is now true only when the credit will clear the whole
+  balance, so the exemption applies only then: an invoice this cancellation is
+  not going to credit is treated like any other money owing, and cannot be
+  archived out of sight behind a closed contact. Both halves ask the same
+  question of the same rule, so the invoice the approval excuses is always
+  exactly the invoice it is about to clear.
 
 - **A young member can now be recorded as a parent (#2282).** A 16 or 17 year
   old can genuinely be a parent, and until now the club simply could not write
