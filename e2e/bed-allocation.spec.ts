@@ -239,10 +239,37 @@ test("existing-chip pointer and keyboard drops preserve dates, while keyboard ca
       );
 
     // Pointer preview + cancel: real sensor wiring, no request.
+    await targetCell().scrollIntoViewIfNeeded();
+    await dragHandle().scrollIntoViewIfNeeded();
     const from = await dragHandle().boundingBox();
     const to = await targetCell().boundingBox();
     expect(from).toBeTruthy();
     expect(to).toBeTruthy();
+    const viewport = page.viewportSize();
+    expect(viewport, "the pointer scenario has a fixed viewport").toBeTruthy();
+    for (const [label, box] of [
+      ["drag handle", from],
+      ["target cell", to],
+    ] as const) {
+      const center = {
+        x: box!.x + box!.width / 2,
+        y: box!.y + box!.height / 2,
+      };
+      expect(
+        center.x,
+        `${label} centre is inside the viewport`,
+      ).toBeGreaterThanOrEqual(0);
+      expect(center.x, `${label} centre is inside the viewport`).toBeLessThan(
+        viewport!.width,
+      );
+      expect(
+        center.y,
+        `${label} centre is inside the viewport`,
+      ).toBeGreaterThanOrEqual(0);
+      expect(center.y, `${label} centre is inside the viewport`).toBeLessThan(
+        viewport!.height,
+      );
+    }
     await page.mouse.move(from!.x + from!.width / 2, from!.y + from!.height / 2);
     await page.mouse.down();
     await page.mouse.move(to!.x + to!.width / 2, to!.y + to!.height / 2, {

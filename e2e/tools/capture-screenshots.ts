@@ -273,6 +273,8 @@ async function prepareBedAllocationSnapPreview(page: Page): Promise<void> {
   );
   await dragHandle.waitFor({ state: "visible", timeout: 15_000 });
   await targetCell.waitFor({ state: "visible", timeout: 15_000 });
+  await targetCell.scrollIntoViewIfNeeded();
+  await dragHandle.scrollIntoViewIfNeeded();
 
   const [from, to] = await Promise.all([
     dragHandle.boundingBox(),
@@ -282,6 +284,27 @@ async function prepareBedAllocationSnapPreview(page: Page): Promise<void> {
     throw new Error(
       "Could not resolve the seeded bed-allocation drag-preview geometry",
     );
+  }
+  const viewport = page.viewportSize();
+  if (!viewport) {
+    throw new Error("Could not resolve the screenshot viewport");
+  }
+  for (const [label, box] of [
+    ["drag handle", from],
+    ["target cell", to],
+  ] as const) {
+    const center = {
+      x: box.x + box.width / 2,
+      y: box.y + box.height / 2,
+    };
+    if (
+      center.x < 0 ||
+      center.x >= viewport.width ||
+      center.y < 0 ||
+      center.y >= viewport.height
+    ) {
+      throw new Error(`${label} is outside the screenshot viewport`);
+    }
   }
   await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
   await page.mouse.down();
