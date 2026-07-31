@@ -2,6 +2,11 @@ import "server-only";
 
 import { BookingStatus, PaymentSource, PaymentStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import {
+  isManualSettleFromPaymentStatus,
+  MANUAL_CAPTURED_PAYMENT_REFUSAL,
+} from "@/lib/booking-payment-state";
+import { isAdditionalAmountUncollected } from "@/lib/unpaid-finished-stays";
 import type { BookingManualPaymentState } from "@/components/admin/booking-manual-payment-controls";
 
 /**
@@ -39,6 +44,16 @@ export async function getBookingManualPaymentState(
       payment: {
         select: {
           id: true,
+          // #2397: a payment that has already taken money cannot also be
+          // recorded as cash. Restated here rather than imported, like every
+          // other guard in this advisory module — see the header note.
+          status: true,
+          // #2397: the upward-modification delta and whether it was ever
+          // collected. Advisory, like everything else here — the settle
+          // re-derives it under the locks and 409s on a mismatch — but the
+          // dialog cannot ask about an extra it does not know exists.
+          additionalAmountCents: true,
+          additionalPaymentStatus: true,
           xeroInvoiceId: true,
           xeroRefundCreditNoteId: true,
           refundedAmountCents: true,
@@ -103,6 +118,14 @@ export async function getBookingManualPaymentState(
     }
   }
 
+  // #2397: the three PAYMENT-level refusals in this chain — refund history,
+  // then already-captured, then Xero evidence — are ordered EXACTLY as
+  // `prepareManualSettlement` (src/lib/payment-reconciliation.ts) orders them,
+  // so a booking that trips more than one is told the same thing before the
+  // click and after it. The reasons for that order are recorded there; change
+  // both files together. (The booking-level reasons above are this page's own:
+  // a manually settled booking is PAID, and naming the manual settlement is
+  // more useful to an admin than "already paid".)
   let markPaidBlockedReason: string | null = null;
   if (manuallyMarkedPaidAt) {
     markPaidBlockedReason =
@@ -114,6 +137,19 @@ export async function getBookingManualPaymentState(
   } else if (booking.organiserSettled) {
     markPaidBlockedReason =
       "This booking was settled as part of a group booking — record the payment against the group settlement instead.";
+  } else if ((payment?.refundedAmountCents ?? 0) !== 0) {
+    markPaidBlockedReason =
+      "This booking's payment already carries refund history — it cannot be recorded as a manual settlement. Cancel and rebook, or resolve the refund first.";
+  } else if (payment && !isManualSettleFromPaymentStatus(payment.status)) {
+    // #2397: the advisory twin of `prepareManualSettlement`'s captured-payment
+    // refusal. A card capture that stranded before its status promotion (#1418)
+    // leaves a payable booking holding a SUCCEEDED payment — and an upward
+    // modification in that window is the one non-circular way a booking here
+    // acquires an uncollected extra. Without this the whole dialog opened,
+    // asked the admin whether the cash covered that extra, and then refused
+    // every answer with a message that said the booking had changed when
+    // nothing had.
+    markPaidBlockedReason = MANUAL_CAPTURED_PAYMENT_REFUSAL;
   } else if (xeroBlocked) {
     markPaidBlockedReason =
       "This booking has a Xero invoice (or one on its way) — record the payment against the invoice in Xero instead.";
@@ -162,6 +198,12 @@ export async function getBookingManualPaymentState(
 
   return {
     amountOwingCents,
+    // #2397. The same MONEY-half predicate the settle uses; the booking-status
+    // half is constant-true here because recording this payment always lands the
+    // booking on PAID (see isAdditionalAmountUncollected).
+    outstandingAdditionalCents: isAdditionalAmountUncollected(payment)
+      ? payment.additionalAmountCents
+      : 0,
     storedCreditElectionCents: booking.creditElectionCents,
     canMarkPaid: markPaidBlockedReason === null,
     markPaidBlockedReason,

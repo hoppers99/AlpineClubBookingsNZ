@@ -179,7 +179,7 @@ are its filters and columns.
 | Updated / Check In / Check Out ranges | Date-range filters | empty | NZ date-only |
 | Lodge | Filter by lodge | All lodges | Only shown when more than one active lodge exists |
 | + Create Booking | Open the Book on Behalf wizard | — | Disabled for view-only bookings roles |
-| Booking page → Admin tools → Cash / off-Xero payment | Record a payment made in cash or by a bank transfer that never reached Xero, or reverse one | — | Needs finance **edit** (not bookings edit). Never contacts Xero. See the [Payments guide](payments.md) |
+| Booking page → Admin tools → Cash / off-Xero payment | Record a payment made in cash or by a bank transfer that never reached Xero, or reverse one | — | Needs finance **edit** (not bookings edit). Never contacts Xero. Asks whether the money also covers any extra still owing from a later change. See the [Payments guide](payments.md) |
 
 **Booking status chips** (shared with the rest of the app): Draft, Pending,
 Payment Pending, Confirmed (Unpaid), Awaiting Review, Paid, Completed,
