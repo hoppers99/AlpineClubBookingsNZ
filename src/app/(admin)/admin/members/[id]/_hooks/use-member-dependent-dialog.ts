@@ -188,8 +188,15 @@ export function useMemberDependentDialog({
   const openDependentDialog = () => {
     if (!member) return;
 
+    // #2282: the mailbox a dependant of this member actually inherits, resolved
+    // by the SERVER with the same walk the create route uses. The old one-hop
+    // `inheritEmailFrom?.email || member.email` was right only while the parent
+    // was guaranteed to be a usable adult source — with parentage recordable at
+    // any age it would prefill a young parent's own address, which the create
+    // route then refuses. Falls back to the member's own address only when
+    // nothing is reachable, and the dialog says so in that case.
     const inheritedEmailAddress =
-      member.inheritEmailFrom?.email || member.email;
+      member.dependentEmailSource?.email || member.email;
 
     setDependentForm({
       title: "",
@@ -250,8 +257,6 @@ export function useMemberDependentDialog({
   const handleCreateDependent = async () => {
     if (!member) return;
 
-    const inheritedEmailSourceId = member.inheritEmailFromId || member.id;
-
     setDependentSaving(true);
     setDependentFormError("");
 
@@ -274,7 +279,13 @@ export function useMemberDependentDialog({
           canLogin: false,
           parentMemberId: member.id,
           inheritParentEmail: true,
-          inheritEmailFromId: inheritedEmailSourceId,
+          // #2282: no explicit `inheritEmailFromId`. Sending one pinned the
+          // source to a CLIENT-side one-hop read of the parent, which bypassed
+          // the server's transitive resolver (#2255) — the very walk that finds
+          // the nearest adult when the parent is a young or address-less middle
+          // generation. Leaving it out lets the route resolve and validate the
+          // source itself, so the created dependant inherits the same mailbox
+          // the dialog just told the admin about.
           familyGroupIds: member.familyGroups.map((group) => group.id),
           streetAddressLine1: dependentForm.streetAddressLine1 || null,
           streetAddressLine2: dependentForm.streetAddressLine2 || null,

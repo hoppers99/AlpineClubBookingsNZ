@@ -179,6 +179,43 @@ describe("resolveInheritedEmailSourceId", () => {
     expect(result).toEqual({ sourceId: "ggp" });
   });
 
+  // #2282: THE young-parent case, and the load-bearing one for that issue. The
+  // walk STARTS on a 16-year-old who is now recordable as a parent and who has a
+  // perfectly real address of their own — the previous test walks past a
+  // non-adult found part-way UP, which does not exercise level 0. Being the
+  // club's contact of record is a responsibility function and stays adult-only,
+  // so the child's mail must go to the grandparent instead.
+  //
+  // Mutation probe: delete `member.ageTier === "ADULT"` from
+  // `isUsableEmailSource` and this test resolves to "young-parent" and fails.
+  it("walks past a young PARENT with a real address, to the nearest adult", async () => {
+    const result = await resolveInheritedEmailSourceId(
+      db([
+        {
+          id: "young-parent",
+          ageTier: "YOUTH",
+          email: "teen@example.org",
+          parentMemberId: "gp",
+        },
+        { id: "gp" },
+      ]),
+      "young-parent",
+    );
+    expect(result).toEqual({ sourceId: "gp" });
+  });
+
+  // The other half of the same rule: a young parent with nobody adult above them
+  // is NOT quietly promoted to the source. Nothing is returned, and the callers
+  // turn that into the "no reachable mailbox" refusal rather than storing the
+  // minor as the family's contact of record.
+  it("returns nobody rather than falling back on the young parent", async () => {
+    const result = await resolveInheritedEmailSourceId(
+      db([{ id: "young-parent", ageTier: "YOUTH", email: "teen@example.org" }]),
+      "young-parent",
+    );
+    expect(result).toEqual({ sourceId: null });
+  });
+
   it("prefers the nearer ancestor, and the primary edge within a level", async () => {
     const result = await resolveInheritedEmailSourceId(
       db([

@@ -4,6 +4,46 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **A young member can now be recorded as a parent (#2282).** A 16 or 17 year
+  old can genuinely be a parent, and until now the club simply could not write
+  that down: adding a dependant refused with "Dependants can only be linked
+  under active adult members", and the search never offered a non-adult, so the
+  only options were to leave the child looking parentless or to attach them to a
+  grandparent. Both record the wrong thing. **The family relationship can now be
+  recorded at any age.**
+  **Nothing about responsibility has moved.** Being someone's recorded parent
+  never granted the powers people assume it does — booking on another member's
+  behalf, editing or confirming their details, answering a consent request for
+  them, and billing are all decided by family-group membership plus being an
+  active adult with a login, and none of them looks at the parent link at all.
+  Those rules are untouched. In particular the club's **contact of record** for
+  a child's mail is still an adult: a dependant added under a young parent has
+  their notifications routed on up to the nearest adult in the family, usually
+  the young parent's own parent, and the member's page now says on screen which
+  adult that is *before* you add the dependant. The two "link" dialogs say it
+  too, next to the notification-recipient list — that list names *parents*, and
+  the person the mail actually reaches can be someone further up, which the
+  screen used not to mention. If no adult in the family has a real email
+  address, adding the dependant is refused with that reason rather than quietly
+  leaving the child unreachable.
+  **Organisation and school accounts are not people**, so they cannot be
+  recorded as anyone's parent — they were never offered before, and are not
+  offered now.
+  **The dead ends are gone too.** "Add Dependent" used to disappear entirely on
+  a member who could not have one, teaching an admin nothing; on an inactive or
+  archived member it stayed and then failed on save. It is now always shown, and
+  disabled with the reason — "This member is inactive — reactivate them to add
+  dependents" — on both the *create new* and *link existing* paths, with the
+  reason read out to screen readers alongside the control rather than merely
+  sitting beside it. Where a dependant genuinely cannot be added because no
+  adult in the family can receive club email, the dialog now says so *and*
+  points at the way that does work, instead of letting the save fail. And the
+  copy that claimed only adults can manage dependants is gone, because that is
+  no longer the rule.
+  Two smaller corrections ride along: the age-up job's "your child is becoming
+  an adult" notice now goes to the family's actual contact of record instead of
+  whoever the parent link names, and creating a member under a parent without
+  asking for inherited email no longer records them as inheriting from nobody.
 - **Clubs that had saved their own email wording stop emailing our editing notes
   (#2269).** Older releases shipped little square-bracketed notes inside the
   built-in email wording — things like `Door code: {{doorCode}} [only when a door
