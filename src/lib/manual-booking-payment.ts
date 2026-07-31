@@ -10,6 +10,7 @@ import {
   ManualBookingPaymentError,
   markBookingPaymentManuallySettled,
   reverseManualBookingPayment,
+  type ManualAdditionalCoverage,
 } from "@/lib/payment-reconciliation";
 import { applyLocalRefundAllocation } from "@/lib/payment-transactions";
 import { getProvisionalNonMemberChildSummary } from "@/lib/booking-split-summary";
@@ -41,6 +42,14 @@ import { prisma } from "@/lib/prisma";
  *  * #2258: the per-booking "No emails" switch is enforced by the MAILER, not
  *    by a per-action bypass here. If it is on, the send is withheld and the
  *    receipt honestly reports not-delivered.
+ *  * #2397: when the booking carries an OUTSTANDING upward-modification delta,
+ *    the admin is asked whether the cash covers it and the answer travels with
+ *    the settle. Said covered, the extra is settled through the same columns
+ *    every surface reads (so nothing chases it). Said NOT covered, the extra is
+ *    left outstanding AND subtracted from the settled figure (owner decision,
+ *    31 Jul 2026), so the club records what it actually took rather than the
+ *    booking's whole worth. A booking with no extra sends nothing and behaves
+ *    identically to before this feature existed.
  */
 export { ManualBookingPaymentError };
 export { MANUAL_PAYMENT_NOTE_MAX };
@@ -69,6 +78,15 @@ export type ApplyManualBookingPaymentInput =
       notifyMember: boolean;
       /** The amount owing the admin saw in the dialog; stale-price protection. */
       expectedAmountCents: number;
+      /**
+       * #2397: the admin's answer to "does this cash cover the outstanding
+       * extra?", or null/absent to claim the dialog showed no extra. Absence is
+       * a CLAIM, not a shrug — the settle re-derives the outstanding extra under
+       * its locks and 409s when the claim is wrong — so the common no-extra
+       * screen stays exactly as it was while a stale client can never settle
+       * only the primary on a booking that has since grown one.
+       */
+      additionalCoverage?: ManualAdditionalCoverage | null;
     }
   | {
       bookingId: string;
@@ -77,7 +95,53 @@ export type ApplyManualBookingPaymentInput =
       actingMemberId: string;
       notifyMember?: never;
       expectedAmountCents?: never;
+      additionalCoverage?: never;
     };
+
+/**
+ * #2397: what became of a booking's outstanding upward-modification delta.
+ * Null when the booking carried none — the overwhelmingly common case, and the
+ * one where the dialog asks nothing.
+ */
+export type ManualBookingAdditionalOutcome = {
+  /** What was outstanding when the settle ran, in integer cents. */
+  outstandingCents: number;
+  /**
+   * On "paid": the admin said this cash covered it, so it is settled and no
+   * surface will chase it. On "unpaid": this reversal put it back to owing.
+   */
+  settled: boolean;
+  /**
+   * #2397 (owner decision, 31 Jul 2026): what the club recorded as received.
+   * When the extra was NOT covered this is the amount owing before the change —
+   * strictly less than the booking's worth — because the books must show what
+   * was actually handed over.
+   */
+  recordedAmountCents: number;
+  /**
+   * #2397 F4: on an extra left owing, whether the member can pay it themselves
+   * from their booking page — i.e. whether the settlement left the addition's
+   * card intent armed instead of cancelling it. False means the only route to
+   * the money is the club contacting them, and the admin standing at the till
+   * has to be told that, because "we will keep asking" is a very different
+   * instruction from "they can pay it online tonight". Always false on a
+   * reversal and on the covered answer, where there is nothing left to pay.
+   *
+   * DELIBERATELY CONSERVATIVE, and it can under-promise. It is derived from the
+   * intent the settlement actually SPARED, which exists only when a live
+   * PENDING/PROCESSING ADDITIONAL `PaymentTransaction` row pointed at
+   * `Payment.additionalPaymentIntentId`. A legacy or hand-repaired payment that
+   * carries the pointer with no such local row is told "the club will be in
+   * touch" even though `/api/bookings/[id]/additional-payment-secret` reads the
+   * pointer alone and their pay card would still open. That way round is the
+   * safe one: the failure is an extra phone call, whereas claiming a pay door
+   * that this settle has just cancelled sends the member to a dead intent and
+   * leaves the club chasing money nobody can send. Do not "fix" this by reading
+   * the pointer directly unless something first proves the intent is still live
+   * at Stripe.
+   */
+  payableOnline: boolean;
+};
 
 export type ApplyManualBookingPaymentResult = {
   bookingId: string;
@@ -86,7 +150,13 @@ export type ApplyManualBookingPaymentResult = {
   /** The admin's email decision as recorded in the audit log. */
   memberNotified: boolean;
   receipt: ManualBookingPaymentReceipt;
-  /** Settlement amount (paid) or the amount un-recorded (unpaid), in cents. */
+  /**
+   * Settlement amount (paid) or the amount un-recorded (unpaid), in cents.
+   *
+   * #2397: on "paid" this is what the club RECORDED AS RECEIVED, which is the
+   * amount owing less any outstanding extra the admin said the cash did not
+   * cover — not the booking's whole worth.
+   */
   amountCents: number;
   /** Booking status after the action. */
   bookingStatus: string;
@@ -102,6 +172,13 @@ export type ApplyManualBookingPaymentResult = {
    * `adminPaymentFailure` preference will never receive.
    */
   creditElectionCents: number | null;
+  /**
+   * #2397: the outstanding extra this action moved, and which way. Null when
+   * the booking carried none. Returned synchronously so the admin standing at
+   * the till is told what happened to the extra at the same moment they are
+   * told the payment was recorded.
+   */
+  additional: ManualBookingAdditionalOutcome | null;
 };
 
 function normaliseNote(note: string | null | undefined): string | null {
@@ -130,6 +207,18 @@ export async function applyManualBookingPayment(
       amountCents: reversal.reversedAmountCents,
       bookingStatus: reversal.restoredStatus,
       creditElectionCents: reversal.restoredCreditElectionCents,
+      additional:
+        reversal.restoredAdditionalAmountCents != null
+          ? {
+              outstandingCents: reversal.restoredAdditionalAmountCents,
+              settled: false,
+              recordedAmountCents: reversal.reversedAmountCents,
+              // A reversal un-records the whole settlement; the booking is
+              // unpaid again and the member's ordinary pay door governs, so
+              // there is no partial-balance instrument to point at.
+              payableOnline: false,
+            }
+          : null,
     };
   }
 
@@ -139,6 +228,7 @@ export async function applyManualBookingPayment(
     note,
     expectedAmountCents: input.expectedAmountCents,
     notifyMember: input.notifyMember,
+    additionalCoverage: input.additionalCoverage ?? null,
   });
 
   // Dispatched AFTER commit, never inside the transaction. A send failure must
@@ -190,6 +280,19 @@ export async function applyManualBookingPayment(
         });
         // The SAME message the Xero-inbound settle sends, so a cash-settled
         // member reads exactly what a bank-transfer-settled member reads.
+        //
+        // #2397 F1: EXCEPT when the club knowingly took less than the booking
+        // is worth. `finalPriceCents` is still the booking's price — it is what
+        // the promo rows and the "Booking Total" line are derived from — but
+        // the settled figure and the price now DIVERGE, and the default
+        // confirmation would say "Total Paid: <whole price>. Payment has been
+        // processed successfully." while the admin's own receipt says only part
+        // of it was recorded and the member will still be asked for the rest.
+        // The same HTTP response cannot say both. Passing the balance switches
+        // the money rows to Booking Total / Paid / Still Owing and replaces the
+        // success box with what actually happens next — which is the very
+        // contradiction #2397 exists to remove, stated to the member rather
+        // than only to the admin.
         const outcome = await sendBookingConfirmedEmail(
           { bookingId: input.bookingId },
           recipient.member.email,
@@ -201,6 +304,21 @@ export async function applyManualBookingPayment(
           {
             lodgeId: recipient.lodgeId,
             ...(provisionalGuests ? { provisionalGuests } : {}),
+            ...(settlement.uncollectedAdditionalCents > 0
+              ? {
+                  outstandingBalance: {
+                    amountCents: settlement.uncollectedAdditionalCents,
+                    // #2397 F4: true only when the settlement actually left the
+                    // addition's card intent armed, so the email never sends
+                    // the member to a pay door that will not open. Conservative
+                    // by design — see `payableOnline` on
+                    // ManualBookingAdditionalOutcome for the legacy shape where
+                    // it under-promises, and why that is the right way round.
+                    payableOnline:
+                      settlement.sparedAdditionalPaymentIntentId !== null,
+                  },
+                }
+              : {}),
             ...(recipient.promoRedemption?.promoCode
               ? {
                   discountCents: recipient.discountCents,
@@ -240,6 +358,15 @@ export async function applyManualBookingPayment(
     amountCents: settlement.effectiveAmountCents,
     bookingStatus: "PAID",
     creditElectionCents: settlement.staleCreditElectionCents,
+    additional:
+      settlement.outstandingAdditionalCents > 0
+        ? {
+            outstandingCents: settlement.outstandingAdditionalCents,
+            settled: settlement.settledAdditionalAmountCents > 0,
+            recordedAmountCents: settlement.effectiveAmountCents,
+            payableOnline: settlement.sparedAdditionalPaymentIntentId !== null,
+          }
+        : null,
   };
 }
 

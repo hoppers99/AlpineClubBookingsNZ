@@ -614,6 +614,27 @@ function summarizePayments(
       getAdditionalPaymentStatusKey(booking)
     ] += 1;
 
+    // KNOWN ISSUE (pre-existing, raised while reviewing #2397 and deliberately
+    // NOT changed there — needs an owner decision, see below).
+    //
+    // `capturedAdditionalCents` DOUBLE-COUNTS a collected price increase.
+    // `reconcilePaymentAggregates` (src/lib/payment-transactions.ts) sets
+    // `Payment.amountCents` to the sum of ALL captured ledger rows — PRIMARY
+    // and ADDITIONAL alike — so a $121 booking whose $21 addition captured
+    // already carries `amountCents = 121`, and `netCollectedCents` below adds
+    // the same $21 a second time to report $142. That is true of every
+    // card-settled booking with a collected addition today, and #2397's cash
+    // settlement writes the identical ledger shape, so it inherits the same
+    // overstatement on the covered answer (and is exactly right — $100 + $0 —
+    // on the not-covered one).
+    //
+    // The obvious repair — drop `capturedAdditionalCents` from the net and let
+    // `amountCents` speak for the whole capture — is right for every payment
+    // whose ledger rows exist, and would UNDER-report any legacy payment whose
+    // `additionalAmountCents` column was set without a matching captured
+    // ADDITIONAL row. Deciding that means deciding it against the club's real
+    // historical data, and it moves a published finance figure, so it belongs
+    // to the owner rather than to a bug-fix PR about cash settlement.
     const capturedPrimaryCents = FINANCE_CAPTURED_PAYMENT_STATUSES.has(
       payment.status
     )

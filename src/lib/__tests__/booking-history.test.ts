@@ -351,3 +351,65 @@ describe("buildBookingHistoryItems — unapplied credit election (#2265)", () =>
     expect(item?.detail).toContain("balance was not reduced");
   });
 });
+
+/**
+ * #2397 — an admin recorded a cash / off-Xero payment on a booking that still
+ * carried an uncollected price increase, and confirmed the money covered that
+ * increase too. The extra moved, so the timeline has to say so.
+ */
+describe("buildBookingHistoryItems — a manually settled extra (#2397)", () => {
+  function build(auditLogs: Parameters<typeof buildBookingHistoryItems>[0]["auditLogs"]) {
+    return buildBookingHistoryItems({
+      createdAt: new Date("2026-07-01T09:00:00Z"),
+      payment: {
+        status: "SUCCEEDED",
+        amountCents: 12100,
+        refundedAmountCents: 0,
+        additionalAmountCents: 2100,
+        additionalPaymentStatus: "SUCCEEDED",
+        createdAt: new Date("2026-07-01T09:00:00Z"),
+        updatedAt: new Date("2026-07-05T09:00:00Z"),
+      },
+      modifications: [],
+      refundRequests: [],
+      auditLogs,
+    });
+  }
+
+  it("renders the manual settlement of the extra, naming the amount", () => {
+    const items = build([
+      {
+        id: "audit-additional",
+        action: "booking-payment.manual-payment.additional-settled",
+        details: JSON.stringify({ additionalAmountCents: 2100 }),
+        createdAt: new Date("2026-07-05T09:00:00Z"),
+      },
+    ]);
+
+    const item = items.find((entry) => entry.id === "audit-audit-additional");
+    expect(item).toMatchObject({
+      title: "Additional payment recorded manually",
+      category: "Payment",
+      amountDisplay: "$21.00",
+      tone: "success",
+    });
+    expect(item?.detail).toContain("also covered the extra owing");
+  });
+
+  it("replaces the generic fallback rather than doubling it up", () => {
+    // Without the flag the payment-row fallback would add a second, vaguer
+    // "Additional payment recorded" entry for the same money.
+    const titles = build([
+      {
+        id: "audit-additional",
+        action: "booking-payment.manual-payment.additional-settled",
+        details: JSON.stringify({ additionalAmountCents: 2100 }),
+        createdAt: new Date("2026-07-05T09:00:00Z"),
+      },
+    ]).map((entry) => entry.title);
+
+    expect(titles.filter((title) => title.startsWith("Additional payment"))).toEqual([
+      "Additional payment recorded manually",
+    ]);
+  });
+});

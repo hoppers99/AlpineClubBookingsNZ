@@ -115,6 +115,33 @@ export function buildAdditionalOwedPaymentWhere(): Prisma.PaymentWhereInput {
 }
 
 /**
+ * The MONEY half of the owed test, in memory: the `Payment` clause inside
+ * `buildAdditionalOwedWhere` above, and nothing else. An upward modification
+ * delta was recorded and the money has not arrived — PENDING, FAILED
+ * (abandoned / declined) and a null status on a legacy row all mean uncollected;
+ * only SUCCEEDED means it was collected.
+ *
+ * It is deliberately only HALF the owed test. Every queue and every chase must
+ * ALSO test the booking's lifecycle status, because a cancelled booking keeps
+ * its delta columns unchanged and would otherwise read as still owing. This
+ * half is split out for the ONE caller where the status half is constant by
+ * construction: the manual cash / off-Xero mark-paid (#2397,
+ * `prepareManualSettlement` in src/lib/payment-reconciliation.ts) always lands
+ * the booking on PAID, which is in `ADDITIONAL_OWED_BOOKING_STATUSES`, so the
+ * settle only has to ask whether the money arrived.
+ *
+ * MERGE POINT with #2386 (issue #2350), now resolved: the definition moved to
+ * `src/lib/additional-payment-chase.ts`, which owns the owed concept and is
+ * already this module's dependency, and `isAdditionalPaymentOwed` there is
+ * literally `isAdditionalOwedBookingStatus(bookingStatus) &&
+ * isAdditionalAmountUncollected(payment)`. There is exactly ONE money-half in
+ * the codebase, so this call site cannot drift from the chase it silences.
+ * Re-exported here because the three callers that predate #2386 import it from
+ * this module, and because this is where its SQL twin lives.
+ */
+export { isAdditionalAmountUncollected } from "@/lib/additional-payment-chase";
+
+/**
  * Unsettled finished-stay additions (#1723 path 2): a settled (usually PAID or
  * COMPLETED) booking whose stay has ended but whose upward modification delta
  * was never collected. The booking is not PAYMENT_PENDING, so the primary

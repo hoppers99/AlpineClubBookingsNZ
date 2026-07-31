@@ -154,6 +154,39 @@ export interface AdditionalPaymentOwedInput {
 }
 
 /**
+ * The MONEY half of the owed test, on its own: an upward modification delta was
+ * recorded and the money has not arrived. PENDING, FAILED (abandoned /
+ * declined) and a null status on a legacy row all mean uncollected; only
+ * SUCCEEDED means it was collected.
+ *
+ * It is deliberately only HALF the test, and is exported for the ONE caller
+ * where the booking-status half is constant by construction: the manual cash /
+ * off-Xero mark-paid (#2397, `prepareManualSettlement` in
+ * src/lib/payment-reconciliation.ts) always lands the booking on PAID, which is
+ * in ADDITIONAL_OWED_BOOKING_STATUSES, so the settle only has to ask whether the
+ * money arrived. Every OTHER surface must use `isAdditionalPaymentOwed` below,
+ * which conjoins the status half — a cancelled booking keeps its delta columns
+ * unchanged and would otherwise read as still owing.
+ *
+ * It lives here, alongside the status half and the SQL builders' status list,
+ * so there is exactly one money-half in the codebase; #2397 introduced it in
+ * src/lib/unpaid-finished-stays.ts, which re-exports it for the callers that
+ * predate #2350.
+ */
+export function isAdditionalAmountUncollected<
+  T extends {
+    additionalAmountCents: number;
+    additionalPaymentStatus: string | null;
+  },
+>(payment: T | null | undefined): payment is T {
+  if (!payment) return false;
+  return (
+    payment.additionalAmountCents > 0 &&
+    payment.additionalPaymentStatus !== "SUCCEEDED"
+  );
+}
+
+/**
  * Is an upward modification delta still uncollected AND still worth collecting?
  *
  * Two halves, both required:
@@ -162,20 +195,17 @@ export interface AdditionalPaymentOwedInput {
  *    columns exactly as they were, so without this a cancelled booking reads as
  *    "still owing" and every surface — the chase email most of all — would dun
  *    the member for money they do not owe;
- *  - the money has not arrived. PENDING, FAILED and a null status on a legacy
- *    row are all treated as owed; only SUCCEEDED means it was collected.
+ *  - the money has not arrived — `isAdditionalAmountUncollected` above, called
+ *    rather than restated, so the cash settle (#2397) that silences this chase
+ *    and the chase itself can never drift apart.
  *
  * Same rule as `buildAdditionalOwedWhere`, the admin queues, and the cron.
  */
 export function isAdditionalPaymentOwed(
   input: AdditionalPaymentOwedInput,
 ): boolean {
-  if (!input.payment) return false;
   if (!isAdditionalOwedBookingStatus(input.bookingStatus)) return false;
-  return (
-    input.payment.additionalAmountCents > 0 &&
-    input.payment.additionalPaymentStatus !== "SUCCEEDED"
-  );
+  return isAdditionalAmountUncollected(input.payment);
 }
 
 /**
