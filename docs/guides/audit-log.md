@@ -88,6 +88,31 @@ rather than as a mystery. And the guarantee is a property of the admin screens,
 not of the write routes — a script or integration calling the API directly with
 `bookings:edit` can still submit an unchanged body and get an entry.
 
+### Member-guest entries (#2308 / #2388)
+
+The "+ Add Member Guest" feature writes four `privacy`-category actions. Two of
+them contain things you should know are there before you give somebody audit
+access.
+
+| Action | Written when | What it contains |
+| --- | --- | --- |
+| `member_guest.resolve_email` | Every time a member looks another member up by email address in the booking wizard — including when nothing was found, and when they hit the speed limit | **The full email address they typed**, and how many people it matched. The address is stored deliberately: a domain alone cannot tell probing one household from probing forty. Kept for two years (`sensitive_access`) |
+| `member_guest.search` | Every name-search keystroke batch, where the club turned name search on — including fragments too short to run a query, and blocked ones | **The name fragment they typed** (up to 64 characters), the number of results, and whether the list was truncated. Kept for ninety days (`diagnostic_high_volume`), because this is the high-volume one |
+| `member_guest.add_refused` | Every time a member is refused when adding somebody outside their own family group | The member who tried and the member they tried to add. Kept for two years |
+| `member_guest.repeated_refusal` | When one member has been refused several times in 24 hours against the **same** other member. **Once per pair per 24 hours** — it is raised on the crossing, not on every refusal after it | Both members, and the count at the moment it was raised. Severity **important**, so it stands out |
+
+**Be clear about the first two with your committee.** Anyone who can read the
+audit log can see the email addresses and names members typed into the finder.
+That is the price of being able to detect somebody working through the roll, and
+it is why the search settings ship off.
+
+**A `member_guest.repeated_refusal` entry is not an alarm and nothing was
+blocked.** By an explicit owner decision, repeated refusals are recorded for a
+person to look at and never acted on automatically: a member trying five
+different weekends to find one that suits a friend produces exactly the same
+pattern as somebody probing, and only a human who knows both people can tell
+them apart. Treat it as a conversation to have if it keeps happening.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |

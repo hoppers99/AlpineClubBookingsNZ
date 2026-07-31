@@ -36,6 +36,12 @@ import {
   planMemberGuestConsentWrites,
   type MemberGuestConsentWritePlanEntry,
 } from "@/lib/member-guest-add-policy";
+import {
+  handleMemberGuestAddRefusal,
+  memberGuestAddThrottleHook,
+  MemberGuestAddThrottledError,
+  startMemberGuestRefusalClock,
+} from "@/lib/member-guest-probe-guard";
 import type { MemberGuestAddActor } from "@/lib/member-guest-consent";
 import { nameField } from "@/lib/zod-helpers";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
@@ -150,6 +156,9 @@ const createBookingSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
+  // #2388: taken at the top so the collapsed-refusal timing floor covers the
+  // whole request, not only the part after the refusal was detected.
+  const startedAt = startMemberGuestRefusalClock();
   const rateLimited = await applyRateLimit(rateLimiters.bookingCreate, request);
   if (rateLimited) return rateLimited;
 
@@ -360,8 +369,19 @@ export async function POST(request: NextRequest) {
         {
           skipAuthorization: isAuthorizedOnBehalf,
           memberGuestWideningEnabled: memberGuestPolicy.wideningEnabled,
+          // #2388: the per-acting-member throttle, counted only on an attempt
+          // that actually names a beyond-family member, and spent the moment the
+          // family boundary is known — before any member row is read (H1), so a
+          // real member and an id with nobody behind it answer identically once
+          // the budget is gone.
+          onBoundaryResolved: memberGuestAddThrottleHook({
+            request,
+            actorMemberId: session.user.id,
+            skipAuthorization: isAuthorizedOnBehalf,
+          }),
         }
       );
+
     await assertLinkedBookingMembersCanBeBooked(
       prisma,
       linkedMembers,
@@ -387,7 +407,17 @@ export async function POST(request: NextRequest) {
     guestInputs = consentPlan.guests;
     memberGuestEntries = consentPlan.entriesByMemberId;
   } catch (error) {
+    if (error instanceof MemberGuestAddThrottledError) return error.response;
     if (error instanceof BookingGuestValidationError) {
+      await handleMemberGuestAddRefusal({
+        request,
+        actorMemberId: session.user.id,
+        error: error,
+        route: "bookings/create",
+        startedAt,
+        throttle: "ALREADY_CHARGED",
+        skipAuthorization: isAuthorizedOnBehalf,
+      });
       return NextResponse.json(
         getBookingGuestValidationErrorResponse(error),
         { status: error.status }
@@ -463,6 +493,15 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     if (error instanceof BookingGuestValidationError) {
+      await handleMemberGuestAddRefusal({
+        request,
+        actorMemberId: session.user.id,
+        error: error,
+        route: "bookings/create",
+        startedAt,
+        throttle: "ALREADY_CHARGED",
+        skipAuthorization: isAuthorizedOnBehalf,
+      });
       return NextResponse.json(
         getBookingGuestValidationErrorResponse(error),
         { status: error.status },
@@ -554,9 +593,26 @@ export async function POST(request: NextRequest) {
       ownerMemberId: effectiveMemberId,
       guests: guestInputs,
       seasonYear: getSeasonYear(checkIn),
+      // Finding 2 (privacy re-review of MG3 #2308).
+      skipAuthorization: isAuthorizedOnBehalf,
     });
   } catch (err) {
     if (err instanceof MembershipTypeBookingPolicyError) {
+      // Finding 2 (privacy re-review of MG3 #2308). The membership-type refusal
+      // is D-8's FOURTH collapsing refusal, so when it collapsed it owes the
+      // same three mitigations as its siblings — the throttle unit, the audit
+      // row naming actor and target, and the timing floor. A no-op for every
+      // other membership-type block: the handler returns immediately unless the
+      // error carries `crossFamilyMemberIds`, which only a collapsed one does.
+      await handleMemberGuestAddRefusal({
+        request,
+        actorMemberId: session.user.id,
+        error: err,
+        route: "bookings/create",
+        startedAt,
+        throttle: "ALREADY_CHARGED",
+        skipAuthorization: isAuthorizedOnBehalf,
+      });
       return NextResponse.json(
         getMembershipTypeBookingPolicyErrorBody(err),
         { status: err.status },
@@ -612,6 +668,15 @@ export async function POST(request: NextRequest) {
       });
     } catch (error) {
       if (error instanceof BookingGuestValidationError) {
+        await handleMemberGuestAddRefusal({
+          request,
+          actorMemberId: session.user.id,
+          error: error,
+          route: "bookings/create",
+          startedAt,
+          throttle: "ALREADY_CHARGED",
+          skipAuthorization: isAuthorizedOnBehalf,
+        });
         return NextResponse.json(
           getBookingGuestValidationErrorResponse(error),
           { status: error.status },
@@ -695,13 +760,39 @@ export async function POST(request: NextRequest) {
     } catch (err) {
       if (err instanceof BookingGuestValidationError) {
         // The in-transaction person-night guard's D-8 refusal (the pre-flight
-        // check above ran before the lock, so a race lands here).
+        // check above ran before the lock, so a race lands here). The
+        // transaction has already rolled back, so the #2388 handling below runs
+        // outside it and holds no lock while it waits.
+      await handleMemberGuestAddRefusal({
+          request,
+          actorMemberId: session.user.id,
+          error: err,
+          route: "bookings/create",
+          startedAt,
+          throttle: "ALREADY_CHARGED",
+          skipAuthorization: isAuthorizedOnBehalf,
+        });
         return NextResponse.json(
           getBookingGuestValidationErrorResponse(err),
           { status: err.status },
         );
       }
       if (err instanceof MembershipTypeBookingPolicyError) {
+      // Finding 2 (privacy re-review of MG3 #2308). The membership-type refusal
+      // is D-8's FOURTH collapsing refusal, so when it collapsed it owes the
+      // same three mitigations as its siblings — the throttle unit, the audit
+      // row naming actor and target, and the timing floor. A no-op for every
+      // other membership-type block: the handler returns immediately unless the
+      // error carries `crossFamilyMemberIds`, which only a collapsed one does.
+        await handleMemberGuestAddRefusal({
+          request,
+          actorMemberId: session.user.id,
+          error: err,
+          route: "bookings/create",
+          startedAt,
+          throttle: "ALREADY_CHARGED",
+          skipAuthorization: isAuthorizedOnBehalf,
+        });
         return NextResponse.json(
           getMembershipTypeBookingPolicyErrorBody(err),
           { status: err.status },
@@ -871,6 +962,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(waitlisted.booking, { status: 201 });
     } catch (waitlistErr) {
       if (waitlistErr instanceof BookingGuestValidationError) {
+      await handleMemberGuestAddRefusal({
+          request,
+          actorMemberId: session.user.id,
+          error: waitlistErr,
+          route: "bookings/create",
+          startedAt,
+          throttle: "ALREADY_CHARGED",
+          skipAuthorization: isAuthorizedOnBehalf,
+        });
         return NextResponse.json(
           getBookingGuestValidationErrorResponse(waitlistErr),
           { status: waitlistErr.status },
@@ -913,6 +1013,15 @@ export async function POST(request: NextRequest) {
     if (err instanceof BookingGuestValidationError) {
       // The in-transaction person-night guard's D-8 refusal, reached on a race
       // with the pre-flight check above.
+      await handleMemberGuestAddRefusal({
+        request,
+        actorMemberId: session.user.id,
+        error: err,
+        route: "bookings/create",
+        startedAt,
+        throttle: "ALREADY_CHARGED",
+        skipAuthorization: isAuthorizedOnBehalf,
+      });
       return NextResponse.json(
         getBookingGuestValidationErrorResponse(err),
         { status: err.status },

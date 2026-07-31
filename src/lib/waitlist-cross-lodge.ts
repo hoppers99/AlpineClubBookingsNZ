@@ -135,6 +135,11 @@ export async function quoteWaitlistEntryAtLodge(
       ),
       seasons: toSeasonRateData(seasons),
       groupDiscount: toGroupDiscountConfig(groupDiscountSetting),
+      // Finding 2 (privacy re-review of MG3 #2308). An unattended offer sweep
+      // that DISCARDS the refusal entirely (see the catch below), so there is
+      // nothing to collapse and no reason to spend a family-boundary read
+      // working out whether it needed collapsing.
+      skipAuthorization: true,
     });
     return { offerable: true, finalPriceCents: price.totalPriceCents };
   } catch {
