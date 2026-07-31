@@ -155,6 +155,12 @@ interface PublicBookingRequestData {
   checkIn: string;
   checkOut: string;
   guests: Array<{ firstName: string; lastName: string; ageTier: string }>;
+  // #2342: present (and always true) only when this request's stored guest data
+  // — the guest list, or the linked-member list — failed validation on the
+  // server. The names above are then shown exactly as saved rather than as
+  // validated data, and `linkedGuestMembers` comes back empty. Absent on every
+  // well-formed request.
+  guestDataNeedsAttention?: boolean;
   message: string | null;
   indicativePriceCents: number | null;
   priceCents: number | null;
@@ -1150,6 +1156,19 @@ export function PublicBookingRequestsPanel({
                         .map((teacher) => `${teacher.firstName} ${teacher.lastName}`)
                         .join(", ")}
                     </div>
+                  ) : null}
+
+                  {/* #2342: one historical request with an unreadable guest
+                      list used to 500 the whole page. It now renders, flagged,
+                      with its names shown exactly as stored. */}
+                  {request.guestDataNeedsAttention ? (
+                    <p className="text-sm text-warning-11">
+                      Guest details need attention: some of this request&rsquo;s
+                      saved guest data could not be read back. The names below
+                      are shown exactly as they were stored, and any linked
+                      members are not shown. Check the details with the
+                      requester before you approve it.
+                    </p>
                   ) : null}
 
                   <div className="flex flex-wrap gap-1 text-sm">

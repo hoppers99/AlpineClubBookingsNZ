@@ -4,6 +4,20 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **One unreadable booking request no longer takes down the whole queue
+  (#2342).** The **All** filter on the admin Booking Requests page returned a
+  server error on any database holding a request whose saved guest list could
+  not be read back — a missing surname was enough, and the demo seed shipped
+  exactly such a row. Every request on the page disappeared behind that one bad
+  row. Admin reads are now tolerant: a request whose stored guest data fails
+  validation — its guest list, or the member links on it — renders in the list
+  and in its own per-request payload with **Guest details need attention**, the
+  names shown exactly as stored and any links hidden, so one odd row costs one
+  odd-looking row. Nothing about a well-formed request changed. Writing and converting stay strict — submitting, pricing, quoting,
+  holding, and approving all still refuse an empty name, so a flagged request
+  cannot become a booking until it is corrected. The demo seed's school
+  children now carry surnames, matching what the real school form writes.
+
 - **The finance dashboard was counting a paid price increase twice, and now
   counts it once (#2408).** When a booking's price goes up after it was made —
   someone adds a guest — the difference is tracked as an "additional payment".

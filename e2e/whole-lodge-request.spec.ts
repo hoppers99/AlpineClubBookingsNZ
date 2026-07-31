@@ -121,13 +121,15 @@ let ibSettingsBefore: {
  *
  * Scoped to `status=VERIFIED`, which is where a member request lives for its
  * whole open life (it is created VERIFIED and the quote lifecycle is refused for
- * it), and deliberately NOT `status=ALL`. `ALL` currently returns **500** on the
- * seeded database: it includes the seeded CONVERTED school request, whose guests
- * carry `lastName: ""`, and `parseBookingRequestGuests` rejects an empty name, so
- * serialising the page throws. That is a PRE-EXISTING defect in the admin queue's
- * "All" filter — nothing in #2263 touches the seed, `nameField`, or that parser —
- * found by this spec and filed as #2342. Using the filter this spec actually
- * needs keeps the two problems apart.
+ * it), and deliberately NOT `status=ALL` — this spec only ever wants the member
+ * rows, so the narrower filter is also the cheaper one.
+ *
+ * `ALL` used to return **500** on the seeded database: it includes the seeded
+ * CONVERTED school request, whose guests carried `lastName: ""`, and the strict
+ * `parseBookingRequestGuests` rejects an empty name, so serialising the page
+ * threw. That pre-existing defect was found by this spec, filed as #2342, and
+ * fixed there: admin reads are now tolerant (the row renders flagged) and the
+ * seed gives the school children surnames.
  */
 async function listMemberOriginRequests(admin: APIRequestContext) {
   const response = await admin.get(
