@@ -231,6 +231,9 @@ export async function DELETE(
         changeFeeCents: 0,
         refundAmountCents: result.refundAmountCents,
         accountCreditAmountCents: result.accountCreditAmountCents,
+        // #2390: same words as the edit preview and the booking history when a
+        // usage cap stopped the promotion reaching somebody on this booking.
+        promoCoverageNote: result.promoCoverage?.message ?? null,
         lodgeId: result.booking.lodgeId,
         // Removing a guest can raise the price when it invalidates a group
         // promo the remaining guests relied on. Surface the increase when a
