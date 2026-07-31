@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   findUnique: vi.fn(),
   upsert: vi.fn(),
   fetchWhakapapaCurlData: vi.fn(),
+  findInvalidSelectorOverrides: vi.fn(() => [] as string[]),
 }));
 
 vi.mock("@/lib/auth", () => ({
@@ -40,6 +41,7 @@ vi.mock("@/lib/prisma", () => ({
 
 vi.mock("@/lib/whakapapa-report.server", () => ({
   fetchWhakapapaCurlData: mocks.fetchWhakapapaCurlData,
+  findInvalidSelectorOverrides: mocks.findInvalidSelectorOverrides,
 }));
 
 import { PATCH, POST } from "@/app/api/admin/mountain-conditions/route";
@@ -219,6 +221,7 @@ describe("PATCH config (source URL + selectors)", () => {
     mocks.auth.mockResolvedValue({ user: ADMIN_USER });
     mocks.requireActiveSessionUser.mockResolvedValue(null);
     mocks.findUnique.mockResolvedValue(null);
+    mocks.findInvalidSelectorOverrides.mockReturnValue([]);
     mocks.upsert.mockImplementation(async (args) => ({
       source: args.where.source,
       payload:
@@ -273,6 +276,27 @@ describe("PATCH config (source URL + selectors)", () => {
     );
 
     expect(response.status).toBe(400);
+    expect(mocks.upsert).not.toHaveBeenCalled();
+  });
+
+  it("rejects a malformed selector override, naming the field, and never writes", async () => {
+    // The scraper engine reports the offending field(s); the route must refuse
+    // the save rather than store a selector that throws on every scrape.
+    mocks.findInvalidSelectorOverrides.mockReturnValue(["item"]);
+
+    const response = await PATCH(
+      patchRequest({
+        config: {
+          sourceUrl: "https://www.whakapapa.com/report",
+          selectorOverrides: { item: "[[not-a-selector" },
+        },
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    // The error names the human-readable field label.
+    expect(body.error).toContain("Item: row");
     expect(mocks.upsert).not.toHaveBeenCalled();
   });
 });

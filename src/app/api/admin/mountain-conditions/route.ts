@@ -10,10 +10,14 @@ import {
   emptyWhakapapaCurlData,
   resolveWhakapapaSelectors,
   validateWhakapapaSourceUrl,
+  WHAKAPAPA_SELECTOR_LABELS,
   type WhakapapaSectionVisibility,
   type WhakapapaSourceConfig,
 } from "@/lib/whakapapa-report";
-import { fetchWhakapapaCurlData } from "@/lib/whakapapa-report.server";
+import {
+  fetchWhakapapaCurlData,
+  findInvalidSelectorOverrides,
+} from "@/lib/whakapapa-report.server";
 
 const WHAKAPAPA_SOURCE = "whakapapa-report";
 const ADMIN_FREEZE_TTL_MS = 12 * 60 * 60 * 1000;
@@ -90,6 +94,25 @@ async function saveConfig(rawConfig: unknown): Promise<NextResponse> {
     selectorOverrides:
       coerceWhakapapaSourceConfig(rawConfig).selectorOverrides,
   };
+
+  // Refuse a malformed selector up front, naming the field, rather than saving
+  // cleanly and then throwing on every scrape (a stale public widget and a 500
+  // on Update from upstream). This compiles each override against the same
+  // engine the scraper uses.
+  const invalidSelectors = findInvalidSelectorOverrides(
+    config.selectorOverrides,
+  );
+  if (invalidSelectors.length > 0) {
+    const fields = invalidSelectors
+      .map((key) => WHAKAPAPA_SELECTOR_LABELS[key])
+      .join(", ");
+    return NextResponse.json(
+      {
+        error: `Invalid CSS selector for: ${fields}. Fix the selector so it is valid, or clear the field to use the default.`,
+      },
+      { status: 400 },
+    );
+  }
 
   // Preserve the cached report data, its fetch timestamp, and any freeze window;
   // only the config column changes here.

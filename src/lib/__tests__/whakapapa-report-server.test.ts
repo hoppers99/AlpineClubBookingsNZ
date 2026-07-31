@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchWhakapapaCurlData } from "@/lib/whakapapa-report.server";
+import {
+  fetchWhakapapaCurlData,
+  findInvalidSelectorOverrides,
+} from "@/lib/whakapapa-report.server";
 
 // Regression coverage for the upstream Whakapapa report scraper (PR #1581,
 // #1657). The parser routes the three status groups by heading id AND falls
@@ -348,5 +351,31 @@ describe("fetchWhakapapaCurlData", () => {
     await expect(fetchWhakapapaCurlData()).rejects.toThrow(
       /Whakapapa report fetch failed/,
     );
+  });
+});
+
+describe("findInvalidSelectorOverrides", () => {
+  it("flags a selector that throws in the scraper engine (querySelector)", () => {
+    // A syntactically valid CSS selector compiles; a malformed one throws when
+    // the scraper calls querySelector — which is exactly what this reports.
+    const invalid = findInvalidSelectorOverrides({
+      item: '[class*="item_"]', // valid
+      itemName: "[[not-a-selector", // malformed -> throws
+      itemStatus: "div > :::bad", // malformed -> throws
+    });
+    expect(invalid).toEqual(["itemName", "itemStatus"]);
+  });
+
+  it("ignores blank overrides and the non-selector trailsHeadingId", () => {
+    const invalid = findInvalidSelectorOverrides({
+      item: "   ", // blank -> skipped (falls back to default)
+      trailsHeadingId: "!!! not a css selector but a plain id", // getElementById, not compiled
+    });
+    expect(invalid).toEqual([]);
+  });
+
+  it("returns [] for no overrides", () => {
+    expect(findInvalidSelectorOverrides({})).toEqual([]);
+    expect(findInvalidSelectorOverrides(null)).toEqual([]);
   });
 });

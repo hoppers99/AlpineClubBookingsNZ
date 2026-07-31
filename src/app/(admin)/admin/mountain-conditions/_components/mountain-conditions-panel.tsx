@@ -42,6 +42,7 @@ import {
   validateWhakapapaSourceUrl,
   WHAKAPAPA_DEFAULT_SELECTORS,
   WHAKAPAPA_SELECTOR_KEYS,
+  WHAKAPAPA_SELECTOR_LABELS,
   type WhakapapaCurlData,
   type WhakapapaSectionVisibility,
   type WhakapapaSelectorKey,
@@ -65,27 +66,6 @@ const VISIBILITY_SECTIONS: {
   { key: "conditions", label: "Mountain Conditions" },
   { key: "trails", label: "Trails" },
 ];
-
-const SELECTOR_LABELS: Record<WhakapapaSelectorKey, string> = {
-  roadAreaTitle: "Road: area title",
-  roadStatus: "Road: open/closed badge",
-  roadWheelRequirements: "Road: wheel requirements",
-  roadContent: "Road: road content",
-  sectionWrapper: "Group: section wrapper",
-  sectionHeading: "Group: section heading",
-  sectionItems: "Group: items container",
-  item: "Item: row",
-  itemName: "Item: name",
-  itemStatus: "Item: status badge",
-  conditionRow: "Conditions: location row",
-  conditionTitle: "Conditions: location name",
-  conditionTemperature: "Conditions: temperature",
-  trailsHeadingId: "Trails: heading id",
-  trailArea: "Trails: sub-area",
-  trailAreaName: "Trails: sub-area name",
-  trailDifficultyIcon: "Trails: difficulty icon",
-  trailSubInfo: "Trails: groomed/size text",
-};
 
 type AdminMountainConditionsRecord = {
   source: string;
@@ -732,7 +712,7 @@ export function MountainConditionsPanel() {
                         htmlFor={`selector-${key}`}
                         className="text-xs text-muted-foreground"
                       >
-                        {SELECTOR_LABELS[key]}
+                        {WHAKAPAPA_SELECTOR_LABELS[key]}
                       </Label>
                       <Input
                         id={`selector-${key}`}

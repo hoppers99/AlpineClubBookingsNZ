@@ -4,14 +4,58 @@ import {
   validateWhakapapaSourceUrl,
   WHAKAPAPA_DEFAULT_SELECTORS,
   WHAKAPAPA_DEFAULT_SOURCE_URL,
+  WHAKAPAPA_SELECTOR_KEYS,
   type WhakapapaCondition,
   type WhakapapaCurlData,
   type WhakapapaFacilityItem,
   type WhakapapaRoadStatus,
   type WhakapapaSelectorConfig,
+  type WhakapapaSelectorKey,
   type WhakapapaTrail,
   type WhakapapaTrailArea,
 } from "@/lib/whakapapa-report";
+
+// `trailsHeadingId` is passed to getElementById (any string is a valid id), so
+// it is not a CSS selector and must not be compiled as one.
+const NON_SELECTOR_KEYS = new Set<WhakapapaSelectorKey>(["trailsHeadingId"]);
+
+/**
+ * Compile each supplied selector override against the SAME engine the scraper
+ * uses (a JSDOM document's querySelector), and return the keys whose value would
+ * throw. This makes a save-time check mean precisely "will this throw when we
+ * scrape with it" — so a malformed selector is refused up front instead of
+ * saving cleanly and then throwing on every scrape (a stale public widget and a
+ * 500 on Update from upstream).
+ */
+export function findInvalidSelectorOverrides(
+  overrides: Partial<Record<WhakapapaSelectorKey, string>> | null | undefined,
+): WhakapapaSelectorKey[] {
+  if (!overrides || typeof overrides !== "object") {
+    return [];
+  }
+
+  const { document } = new JSDOM(
+    "<!doctype html><html><body></body></html>",
+  ).window;
+  const invalid: WhakapapaSelectorKey[] = [];
+
+  for (const key of WHAKAPAPA_SELECTOR_KEYS) {
+    if (NON_SELECTOR_KEYS.has(key)) {
+      continue;
+    }
+    const value = overrides[key];
+    if (typeof value !== "string" || value.trim().length === 0) {
+      continue;
+    }
+    try {
+      document.querySelector(value);
+    } catch {
+      invalid.push(key);
+    }
+  }
+
+  return invalid;
+}
 
 export interface WhakapapaFetchOptions {
   /** Report URL to scrape. Falls back to the default (and is re-validated). */

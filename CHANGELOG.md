@@ -4,6 +4,30 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **The Whakapapa conditions widget survives the source page changing, and now
+  shows the trails.** The public widget is scraped from an external report page
+  whose style names carry a build hash that changes every time that site
+  redeploys — and each time it did, a section quietly went blank (road status was
+  broken this way when this work started). The scraper now matches on the stable
+  parts of the page rather than those rotating hashes, so a routine upstream
+  rebuild no longer breaks it. A new **Trails** section joins road status, lifts,
+  facilities, food & drink and conditions: trails are grouped by sub-area (small
+  neighbouring areas share a line to save space) and each shows its run
+  difficulty as the standard ski symbol — green circle, blue square, black
+  diamond, red diamond — with a matching key, plus whether it is groomed and its
+  size. The status badges gained **On Hold** (yellow) alongside Open, Closed and
+  Coming Soon, and an **Unknown** state renders grey. Operators get a new
+  **Source & selectors** panel on *Admin → Mountain Conditions*: set the report
+  URL (locked to whakapapa.com / snow.nz so it can never be pointed at an
+  internal address), and, only if a deeper page change defeats the defaults,
+  override the per-section element selectors — with a **Preview** that fetches
+  and parses without saving, and a save that refuses a malformed selector up
+  front (naming the field) instead of storing one that would throw on every
+  later scrape. The built-in selector set is seeded into the database, and the
+  whole configuration can be **exported and imported as a JSON file** so one
+  site's known-good settings can be handed to another rather than re-entered by
+  hand.
+
 - **The browser test suite stopped crying wolf (#2302).** Over three days five
   different browser tests went red on code that was perfectly fine, each costing
   someone an investigation and one of them turning the main branch red for the

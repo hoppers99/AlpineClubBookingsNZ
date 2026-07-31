@@ -338,6 +338,29 @@ export const WHAKAPAPA_SELECTOR_KEYS = Object.keys(
   WHAKAPAPA_DEFAULT_SELECTORS,
 ) as WhakapapaSelectorKey[];
 
+/** Human-readable field names for each selector, used by the admin UI and by
+ * the save-time "malformed selector" error so it can name the offending field. */
+export const WHAKAPAPA_SELECTOR_LABELS: Record<WhakapapaSelectorKey, string> = {
+  roadAreaTitle: "Road: area title",
+  roadStatus: "Road: open/closed badge",
+  roadWheelRequirements: "Road: wheel requirements",
+  roadContent: "Road: road content",
+  sectionWrapper: "Group: section wrapper",
+  sectionHeading: "Group: section heading",
+  sectionItems: "Group: items container",
+  item: "Item: row",
+  itemName: "Item: name",
+  itemStatus: "Item: status badge",
+  conditionRow: "Conditions: location row",
+  conditionTitle: "Conditions: location name",
+  conditionTemperature: "Conditions: temperature",
+  trailsHeadingId: "Trails: heading id",
+  trailArea: "Trails: sub-area",
+  trailAreaName: "Trails: sub-area name",
+  trailDifficultyIcon: "Trails: difficulty icon",
+  trailSubInfo: "Trails: groomed/size text",
+};
+
 export interface WhakapapaSourceConfig {
   sourceUrl: string;
   /** Only selectors the admin has overridden; empty means "use the default". */
