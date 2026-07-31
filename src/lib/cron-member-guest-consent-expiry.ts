@@ -87,7 +87,11 @@ export async function runMemberGuestConsentExpiryCron(
   // decide whether it should exist at all.
   const candidates = await prisma.bookingGuest.findMany({
     where: { consentStatus: "PENDING", consentExpiresAt: { lte: now } },
-    select: { id: true, memberId: true, bookingId: true },
+    // `consentExpiresAt` is selected for the EMAIL, not for the query: the
+    // outcome notice tells the booking's owner which day the request ran out,
+    // and the row is gone by the time that mail is composed. Read here or not at
+    // all.
+    select: { id: true, memberId: true, bookingId: true, consentExpiresAt: true },
     orderBy: [{ consentExpiresAt: "asc" }, { id: "asc" }],
   });
 
@@ -121,6 +125,7 @@ export async function runMemberGuestConsentExpiryCron(
           outcome,
           actorMemberId: null,
           actorLabel: `cron:${job}`,
+          consentExpiresAt: candidate.consentExpiresAt,
         });
       }
     } catch (err) {

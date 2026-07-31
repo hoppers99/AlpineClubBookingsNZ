@@ -6,17 +6,20 @@ import {
   buildMemberGuestPartyList,
   composeGuestNightsLabel,
   composeMemberGuestAdded,
+  composeMemberGuestConsentAnswered,
   composeMemberGuestConsentAsk,
   composeMemberGuestConsentOutcome,
   composeMemberGuestRemovalNote,
   type MemberGuestAddedContext,
   type MemberGuestConsentAudience,
   type MemberGuestConsentOutcome,
+  type MemberGuestDelegateAnswer,
   type MemberGuestPartyMember,
   type MemberGuestRemovalFacts,
 } from "@/lib/member-guest-email-notes";
 import {
   memberGuestAddedTemplate,
+  memberGuestConsentAnsweredTemplate,
   memberGuestConsentExpiredTemplate,
   memberGuestConsentOutcomeTemplate,
   memberGuestConsentRequestTemplate,
@@ -25,7 +28,7 @@ import { formatNZDate } from "../nzst-date";
 import { sendEmail, type EmailSendOutcome } from "./core";
 
 /**
- * The four member-guest emails (epic #2305, MG2 #2307).
+ * The five member-guest emails (epic #2305, MG2 #2307).
  *
  * OWNER DECISION D-16, AND IT IS THE WHOLE REASON THIS FILE READS NO
  * PREFERENCES. Consent-adjacent mail ignores the per-action "notify the member"
@@ -41,11 +44,11 @@ import { sendEmail, type EmailSendOutcome } from "./core";
  * else — so the opt-out here is "do not call it", stated rather than implied.
  *
  * WHAT DOES STILL WITHHOLD THEM: the per-booking "No emails" switch (#2258,
- * owner decision D10). All four pass a real `{ bookingId }` `bookingContext`, so
+ * owner decision D10). All five pass a real `{ bookingId }` `bookingContext`, so
  * a silenced booking withholds them and each withheld send lands on the
  * booking's withheld-banner record. That is enforced by the type — the parameter
  * is a required discriminated union, so a missing booking id is a compile error
- * — and by all four templates being registered `audience: "member"`, which is
+ * — and by all five templates being registered `audience: "member"`, which is
  * what `isBookingSuppressibleTemplate` keys on. An admin-audience consent email
  * would silently bypass the switch.
  *
@@ -265,6 +268,60 @@ export async function sendMemberGuestConsentOutcomeEmail(
       outcomeSentence: copy.sentence,
       consequenceNote: copy.consequenceNote,
       bookingId: params.bookingId,
+    },
+    lodgeId: params.lodgeId,
+  });
+}
+
+export interface SendMemberGuestConsentAnsweredEmailParams
+  extends MemberGuestStayParams {
+  /** First name of WHOEVER IS BEING TOLD — the member, or another family adult. */
+  firstName: string;
+  /** The member the answer was given for. */
+  target: MemberGuestPartyMember;
+  /** The family adult who actually answered. */
+  responderName: string;
+  /** What they said, and whether the booking could be changed to match. */
+  answer: MemberGuestDelegateAnswer;
+}
+
+/**
+ * Tell the member (and the rest of the household) that a delegate answered.
+ *
+ * The only member-guest email whose recipient may have nothing to do with the
+ * booking, which is why it carries no booking link and no money — see
+ * `memberGuestConsentAnsweredTemplate`. It still passes the booking id as
+ * `bookingContext`, so a booking with "No emails" set withholds it like the rest.
+ */
+export async function sendMemberGuestConsentAnsweredEmail(
+  params: SendMemberGuestConsentAnsweredEmailParams,
+): Promise<EmailSendOutcome> {
+  const settings = await loadEmailMessageSettingsForLodge(params.lodgeId);
+  const copy = composeMemberGuestConsentAnswered({
+    target: params.target,
+    responderName: params.responderName,
+    lodgeName: settings.lodgeName,
+    checkIn: params.checkIn,
+    checkOut: params.checkOut,
+    answer: params.answer,
+  });
+
+  return sendEmail({
+    to: params.email,
+    subject: `${copy.heading} - ${EMAIL_DEFAULT_LODGE_NAME}`,
+    html: memberGuestConsentAnsweredTemplate({
+      firstName: params.firstName,
+      answeredHeading: copy.heading,
+      answeredSentence: copy.sentence,
+      answeredNote: copy.note,
+    }),
+    bookingContext: { bookingId: params.bookingId },
+    templateName: "member-guest-consent-answered",
+    templateData: {
+      firstName: params.firstName,
+      answeredHeading: copy.heading,
+      answeredSentence: copy.sentence,
+      answeredNote: copy.note,
     },
     lodgeId: params.lodgeId,
   });

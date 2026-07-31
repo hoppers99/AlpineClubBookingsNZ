@@ -244,6 +244,32 @@ describe("sendMemberGuestConsentOutcomeEmail (#2307)", () => {
     expect(call.templateData.consequenceNote).not.toContain("account credit");
   });
 
+  it("reports a decline the system could not carry out AS a decline", async () => {
+    // The variant that used to be missing. Every BLOCKED outcome — including a
+    // member who actively clicked "No thanks" the same day — was reported as
+    // EXPIRED_STILL_ON_BOOKING, so the owner was told the member "did not answer
+    // in time", on a lapse date fabricated from `new Date()`. Three separate
+    // untruths about one event.
+    await sendMemberGuestConsentOutcomeEmail({
+      ...SEND_PARAMS,
+      outcome: { kind: "DECLINED_STILL_ON_BOOKING", blocker: "SETTLEMENT_CHOICE" },
+    });
+
+    const call = sendEmailMock.mock.calls[0][0];
+    expect(call.templateData.outcomeHeading).toBe("Priya Kaur has declined");
+    expect(call.templateData.outcomeSentence).toBe(
+      "Priya Kaur has declined your invitation to your booking at Silverpeak Lodge, 8 Aug 2026 - 10 Aug 2026, but could not be taken off it.",
+    );
+    // Never "did not answer in time", and no date at all: nothing lapsed.
+    expect(call.templateData.outcomeSentence).not.toContain("did not answer");
+    expect(call.templateData.outcomeSentence).not.toContain("lapsed");
+    // And the reason names the real blocker rather than the vague
+    // "this booking is in a state the system cannot change on its own".
+    expect(call.templateData.consequenceNote).toBe(
+      "Priya is still on the booking, because this booking has already been paid for, so somebody has to choose whether that money comes back to you as a refund or as account credit. The club has been told and will be in touch.",
+    );
+  });
+
   it("uses the composed heading in the subject, so the two cannot disagree", async () => {
     await sendMemberGuestConsentOutcomeEmail({
       ...SEND_PARAMS,

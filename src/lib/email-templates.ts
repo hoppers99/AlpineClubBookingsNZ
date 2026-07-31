@@ -3557,9 +3557,10 @@ export function memberGuestAddedTemplate(data: {
 /**
  * What the member decided — to the person who made the booking.
  *
- * One template for four outcomes (approved, declined, lapsed-and-removed,
- * lapsed-but-still-on-the-booking) because the heading, the sentence and the
- * consequence are all composed server-side. The consequence is the only place
+ * One template for five outcomes (approved, declined, declined-but-still-on-the-
+ * booking, lapsed-and-removed, lapsed-but-still-on-the-booking) because the
+ * heading, the sentence and the consequence are all composed server-side. The
+ * consequence is the only place
  * money appears in this whole set, and it has to: owner decision D-15 settles an
  * expired or declined place as account credit to this recipient.
  */
@@ -3600,5 +3601,34 @@ export function memberGuestConsentExpiredTemplate(data: {
       `Hi ${escapeHtml(data.firstName)}, the request from <strong>${booker}</strong> to add you to a booking at ${escapeHtml(data.lodgeName)} on ${escapeHtml(formatNZDate(data.checkIn))} - ${escapeHtml(formatNZDate(data.checkOut))} has lapsed, and the bed that was held for you has been released.`,
     )}
     ${paragraph(`You do not need to do anything. If you did want to come, ask ${booker} to add you again.`)}
+  `);
+}
+
+/**
+ * "Someone answered for you" — after a DELEGATE answered on a member's behalf.
+ *
+ * The one transition nobody downstream would otherwise hear about. The booking's
+ * owner is told the outcome and the adult who clicked obviously knows, but the
+ * member the answer was given FOR — and the other adults in the household who
+ * were sent the same request — heard nothing, even though a decline releases
+ * that member's bed and takes them off a booking. It goes to whoever we hold an
+ * address for, including the member themselves when they have one, and states
+ * plainly who answered and what they said.
+ *
+ * NO ACTION LINK, deliberately. The recipient may be a household adult who is
+ * not on this booking at all, and owner decision D-11 gives booking-page access
+ * to a guest ROW, never to a delegate — so a "view this booking" button here
+ * would either leak the booking or 403 in their face.
+ */
+export function memberGuestConsentAnsweredTemplate(data: {
+  firstName: string;
+  answeredHeading: string;
+  answeredSentence: string;
+  answeredNote: string;
+}): string {
+  return layout(`
+    ${heading(escapeHtml(data.answeredHeading))}
+    ${paragraph(`Hi ${escapeHtml(data.firstName)}, ${escapeHtml(data.answeredSentence)}`)}
+    ${paragraph(escapeHtml(data.answeredNote))}
   `);
 }

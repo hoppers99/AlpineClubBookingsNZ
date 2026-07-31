@@ -399,6 +399,11 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
     "consequenceNote",
     "bookingId",
   ],
+  "member-guest-consent-answered": [
+    "answeredHeading",
+    "answeredSentence",
+    "answeredNote",
+  ],
   "member-guest-consent-expired": ["bookerName", "checkIn", "checkOut"],
 };
 
@@ -674,6 +679,12 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
     frequency:
       "Once per resolved request, to the booking's owner. Ignores the per-action notify tick and notification preferences (D-16); still withheld by the per-booking 'No emails' switch",
   },
+  "member-guest-consent-answered": {
+    triggerSummary:
+      "A family delegate answered a member-guest consent request on somebody else's behalf (D-5/D-10), so the member it was answered for — and the other adults who were sent the same request — are told who answered and what they said",
+    frequency:
+      "Once per request answered by a delegate rather than by the member themselves, to the member and to the other adults who were asked. Ignores the per-action notify tick and notification preferences (D-16); still withheld by the per-booking 'No emails' switch",
+  },
   "member-guest-consent-expired": {
     triggerSummary:
       "A member-guest consent request lapsed with no answer, so the member who was asked is told the held bed was released",
@@ -919,6 +930,12 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "adminNote",
   "adminNotes",
   "amount",
+  // #2307: the delegate-answered notice's three composed blocks — the heading
+  // names who answered and who they answered for, the sentence says what they
+  // said, and the note says what to do if that is not what the reader expected.
+  "answeredHeading",
+  "answeredNote",
+  "answeredSentence",
   "applicantEmail",
   "applicantName",
   // #2307: what is being asked, of whom, and why them — composed because the

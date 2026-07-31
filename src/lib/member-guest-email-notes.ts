@@ -414,9 +414,10 @@ export function composeMemberGuestRemovalNote(params: {
  * What happened to the request, as the person who made the booking needs to
  * hear it.
  *
- * FOUR outcomes and ONE template, because the heading, the outcome sentence and
- * the consequence are all composed here. The fourth is the one that could have
- * been left out and must not be: owner decision D-15 lets the expiry sweep
+ * FIVE outcomes and ONE template, because the heading, the outcome sentence and
+ * the consequence are all composed here. Two of them are the ones that could
+ * have been left out and must not be — a decline and a lapse that the system
+ * could not carry out: owner decision D-15 lets the expiry sweep
  * settle the money as account credit so an ORDINARY paid booking always lapses
  * cleanly, but a booking that is quote-priced, has only this guest on it, is in
  * a status that forbids changes, or has already started genuinely cannot be
@@ -428,13 +429,24 @@ export type MemberGuestConsentOutcome =
   | { kind: "APPROVED" }
   /** They said no and the place was released. `creditCents` is D-15's credit. */
   | { kind: "DECLINED"; creditCents: number }
+  /**
+   * They said no, but the place could NOT be released; an admin must act.
+   *
+   * THIS VARIANT IS NOT A TIDY-UP. Without it, a member who actively clicked
+   * "No thanks" on a booking the system could not change was reported to the
+   * booker as `EXPIRED_STILL_ON_BOOKING` — "did not answer in time", dated with
+   * the moment the email happened to be composed. The booker was told the wrong
+   * thing about the wrong event on a date that never happened, and the member
+   * who had answered promptly was blamed for silence.
+   */
+  | { kind: "DECLINED_STILL_ON_BOOKING"; blocker: MemberGuestStillOnBookingReason }
   /** The request lapsed with no answer and the place was released. */
   | { kind: "EXPIRED_REMOVED"; expiredAt: Date; creditCents: number }
   /** The request lapsed but the place could NOT be released; an admin must act. */
   | {
       kind: "EXPIRED_STILL_ON_BOOKING";
       expiredAt: Date;
-      blocker: GuestSelfRemovalBlocker;
+      blocker: MemberGuestStillOnBookingReason;
     };
 
 export interface MemberGuestConsentOutcomeCopy {
@@ -456,10 +468,28 @@ export interface MemberGuestConsentOutcomeCopy {
  * explanation. The two unreachable-from-here blockers get the general statement
  * for the same reason as in `MEMBER_GUEST_REMOVAL_NOTE_BY_BLOCKER`.
  */
+export type MemberGuestStillOnBookingReason =
+  | GuestSelfRemovalBlocker
+  /**
+   * The booking has already been paid for, so the reduction needs a
+   * refund-or-credit election nobody has made.
+   *
+   * NOT a self-removal blocker, and that is exactly why it is here. The shared
+   * predicate deliberately keeps this refusal server-only — it cannot be
+   * predicted from the facts a card renders — so it arrives only as a refusal
+   * message, and until now it was folded into `BOOKING_STATUS` and explained to
+   * the booking's owner as "this booking is in a state the system cannot change
+   * on its own". That is unhelpfully vague about the one blocker whose remedy is
+   * concrete and entirely in the club's hands.
+   */
+  | "SETTLEMENT_CHOICE";
+
 const STILL_ON_BOOKING_REASON_BY_BLOCKER: Record<
-  GuestSelfRemovalBlocker,
+  MemberGuestStillOnBookingReason,
   string
 > = {
+  SETTLEMENT_CHOICE:
+    "because this booking has already been paid for, so somebody has to choose whether that money comes back to you as a refund or as account credit",
   QUOTE_PRICED:
     "because this booking was priced by hand and only the club can change it — the club will re-quote the request",
   LAST_GUEST:
@@ -519,6 +549,15 @@ export function composeMemberGuestConsentOutcome(params: {
         sentence: `${guestName} has declined and has been taken off your booking at ${stay}.`,
         consequenceNote: composeRepricedConsequence(outcome.creditCents),
       };
+    case "DECLINED_STILL_ON_BOOKING":
+      return {
+        heading: `${guestName} has declined`,
+        sentence: `${guestName} has declined your invitation to your booking at ${stay}, but could not be taken off it.`,
+        consequenceNote:
+          `${guestFirstName} is still on the booking, ` +
+          `${STILL_ON_BOOKING_REASON_BY_BLOCKER[outcome.blocker]}. The club has been ` +
+          "told and will be in touch.",
+      };
     case "EXPIRED_REMOVED":
       return {
         heading: `${guestName} did not answer in time`,
@@ -535,6 +574,75 @@ export function composeMemberGuestConsentOutcome(params: {
           `${guestFirstName} is still on the booking, ` +
           `${STILL_ON_BOOKING_REASON_BY_BLOCKER[outcome.blocker]}. The club has been ` +
           "told and will be in touch.",
+      };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// member-guest-consent-answered
+// ---------------------------------------------------------------------------
+
+/** What the delegate said, and whether the answer could actually be carried out. */
+export type MemberGuestDelegateAnswer =
+  | { kind: "APPROVED" }
+  | { kind: "DECLINED_REMOVED" }
+  /** They said no, but the booking could not be changed; the club has to act. */
+  | { kind: "DECLINED_STILL_ON_BOOKING" };
+
+export interface MemberGuestConsentAnsweredCopy {
+  /** `{{answeredHeading}}` — the first block, and therefore the subject. */
+  heading: string;
+  /** `{{answeredSentence}}` — follows "Hi <first name>, ". */
+  sentence: string;
+  /** `{{answeredNote}}` — what to do if this is not what the reader expected. */
+  note: string;
+}
+
+/**
+ * "Pat answered for Sam" — the notice that closes owner decision D-10's loop.
+ *
+ * WHY THE SAME WORDS GO TO EVERYONE ON THE LIST. The recipients are the member
+ * the answer was given for and the other adults who were asked, and there is no
+ * fact here that is safe for one and not the other: they were all sent the same
+ * request, and the answer is the same answer. Writing a second, "your" variant
+ * for the member would only create a second sentence to keep true.
+ *
+ * NO MONEY, and no repricing. The money moved on the BOOKING OWNER's account,
+ * and it is their outcome email that reports it. A household adult reading this
+ * has no business being told what somebody else's stay cost.
+ */
+export function composeMemberGuestConsentAnswered(params: {
+  target: MemberGuestPartyMember;
+  responderName: string;
+  lodgeName: string;
+  checkIn: Date;
+  checkOut: Date;
+  answer: MemberGuestDelegateAnswer;
+}): MemberGuestConsentAnsweredCopy {
+  const { target, responderName, lodgeName, checkIn, checkOut, answer } = params;
+  const targetName = `${target.firstName} ${target.lastName}`.trim();
+  const targetFirstName = target.firstName || targetName;
+  const stay = `${lodgeName}, ${formatNZDate(checkIn)} - ${formatNZDate(checkOut)}`;
+  const heading = `${responderName} answered for ${targetName}`;
+
+  switch (answer.kind) {
+    case "APPROVED":
+      return {
+        heading,
+        sentence: `${responderName} said yes for ${targetName}, so ${targetFirstName} is now on the booking at ${stay}.`,
+        note: `If that is not what you expected, ask the person who made the booking, or the club, to change it.`,
+      };
+    case "DECLINED_REMOVED":
+      return {
+        heading,
+        sentence: `${responderName} said no for ${targetName}, so ${targetFirstName} has been taken off the booking at ${stay}.`,
+        note: `If that is not what you expected, ask the person who made the booking to add ${targetFirstName} again.`,
+      };
+    case "DECLINED_STILL_ON_BOOKING":
+      return {
+        heading,
+        sentence: `${responderName} said no for ${targetName} on the booking at ${stay}, but the booking could not be changed automatically.`,
+        note: `${targetFirstName} is still on that booking for now. The club has been told and will sort it out.`,
       };
   }
 }
