@@ -3,6 +3,11 @@ import {
   applyOptimisticAllocationBedMove,
   planAllocationMove,
 } from "@/app/(admin)/admin/bed-allocation/_components/allocation-move";
+import {
+  BED_ALLOCATION_SCREEN_READER_INSTRUCTIONS,
+  createBedAllocationAnnouncements,
+  describeBedAllocationDrop,
+} from "@/app/(admin)/admin/bed-allocation/_components/allocation-drag-feedback";
 import { deriveActiveDragDates } from "@/app/(admin)/admin/bed-allocation/_components/active-drag-dates";
 import type {
   BedOption,
@@ -71,7 +76,7 @@ describe("planAllocationMove", () => {
     });
   });
 
-  it("keeps later visible guest nights as single-night moves", () => {
+  it("snaps a later chip to its own original night even across date columns", () => {
     const first = buildAllocation({
       id: "allocation-1",
       stayDate: "2026-07-01",
@@ -91,11 +96,11 @@ describe("planAllocationMove", () => {
     ).toEqual({
       type: "single",
       allocationId: "allocation-2",
-      stayDate: "2026-07-03",
+      stayDates: ["2026-07-02"],
     });
   });
 
-  it("blocks first-night moves that would shift the guest's date sequence", () => {
+  it("uses a first visible chip as a proxy for the same original visible nights across columns", () => {
     const first = buildAllocation({
       id: "allocation-1",
       stayDate: "2026-07-01",
@@ -113,10 +118,27 @@ describe("planAllocationMove", () => {
         visibleNights: ["2026-07-01", "2026-07-02"],
       }),
     ).toEqual({
-      type: "blocked-date-shift",
-      firstStayDate: "2026-07-01",
-      targetStayDate: "2026-07-02",
+      type: "bulk",
+      allocationIds: ["allocation-1", "allocation-2"],
+      bookingGuestId: "guest-1",
+      stayDates: ["2026-07-01", "2026-07-02"],
     });
+  });
+
+  it("normalises every same-bed target to a no-op regardless of hovered column", () => {
+    const allocation = buildAllocation({
+      bedId: "bed-1",
+      stayDate: "2026-07-01",
+    });
+
+    expect(
+      planAllocationMove({
+        allocation,
+        target: { bedId: "bed-1", stayDate: "2026-07-03" },
+        visibleAllocations: [allocation],
+        visibleNights: ["2026-07-01", "2026-07-02", "2026-07-03"],
+      }),
+    ).toEqual({ type: "noop" });
   });
 });
 
@@ -271,5 +293,112 @@ describe("applyOptimisticAllocationBedMove", () => {
       }),
       unaffected,
     ]);
+  });
+});
+
+describe("allocation drag feedback (#2366)", () => {
+  const beds: BedOption[] = [
+    {
+      id: "bed-2",
+      roomId: "room-2",
+      roomName: "Room Two",
+      bedName: "Bed Two",
+      label: "Room Two / Bed Two",
+    },
+  ];
+
+  it("shows pointer drag-over destination bed and snapped original dates", () => {
+    const allocations = [
+      buildAllocation({ id: "allocation-1", stayDate: "2026-07-01" }),
+      buildAllocation({ id: "allocation-2", stayDate: "2026-07-02" }),
+    ];
+
+    expect(
+      describeBedAllocationDrop({
+        activeData: { type: "allocation", allocationId: "allocation-1" },
+        overData: {
+          type: "cell",
+          bedId: "bed-2",
+          roomId: "room-2",
+          // Pointer is horizontally over a different date. Feedback must name
+          // persisted source dates, not this hovered date.
+          stayDate: "2026-07-09",
+        },
+        visibleAllocations: allocations,
+        bucketGroups: [],
+        beds,
+        singleNightMode: false,
+      }),
+    ).toBe(
+      "Example Guest to Room Two / Bed Two, snapped to original lodge nights 2026-07-01, 2026-07-02",
+    );
+  });
+
+  it("announces the destination and snapped night for keyboard drag-over", () => {
+    const allocation = buildAllocation({
+      id: "allocation-2",
+      stayDate: "2026-07-02",
+    });
+    const announcements = createBedAllocationAnnouncements({
+      visibleAllocations: [allocation],
+      bucketGroups: [],
+      beds,
+      singleNightMode: false,
+    });
+    const active = {
+      id: "allocation:allocation-2",
+      data: {
+        current: { type: "allocation", allocationId: "allocation-2" },
+      },
+    };
+    const over = {
+      id: "cell:bed-2:2026-07-09",
+      data: {
+        current: {
+          type: "cell",
+          bedId: "bed-2",
+          roomId: "room-2",
+          stayDate: "2026-07-09",
+        },
+      },
+    };
+
+    expect(
+      announcements.onDragOver({
+        active,
+        over,
+      } as unknown as Parameters<typeof announcements.onDragOver>[0]),
+    ).toBe(
+      "Example Guest to Room Two / Bed Two, snapped to original lodge night 2026-07-02",
+    );
+  });
+
+  it("announces cancellation as no change and never instructs a date move", () => {
+    const allocation = buildAllocation();
+    const announcements = createBedAllocationAnnouncements({
+      visibleAllocations: [allocation],
+      bucketGroups: [],
+      beds,
+      singleNightMode: false,
+    });
+    const active = {
+      id: "allocation:allocation-1",
+      data: {
+        current: { type: "allocation", allocationId: "allocation-1" },
+      },
+    };
+
+    expect(
+      announcements.onDragCancel({
+        active,
+        over: null,
+      } as unknown as Parameters<typeof announcements.onDragCancel>[0]),
+    ).toBe("Cancelled Example Guest drag. No allocation changed.");
+    expect(BED_ALLOCATION_SCREEN_READER_INSTRUCTIONS.draggable).toContain(
+      "keep their original lodge night",
+    );
+    expect(BED_ALLOCATION_SCREEN_READER_INSTRUCTIONS.draggable).not.toContain(
+      "another night",
+    );
   });
 });

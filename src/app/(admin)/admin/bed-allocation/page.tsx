@@ -14,6 +14,7 @@ import {
   useSensor,
   useSensors,
   type DragEndEvent,
+  type DragOverEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
 import {
@@ -78,6 +79,11 @@ import {
   type DropData,
 } from "./_components/types";
 import { deriveActiveDragDates } from "./_components/active-drag-dates";
+import {
+  BED_ALLOCATION_SCREEN_READER_INSTRUCTIONS,
+  createBedAllocationAnnouncements,
+  describeBedAllocationDrop,
+} from "./_components/allocation-drag-feedback";
 import { useSyncedScroll } from "./_components/use-synced-scroll";
 
 // #2286: a bulk drop can now be refused for two different reasons on different
@@ -225,32 +231,6 @@ function addOptimisticAllocations(
   };
 }
 
-function applyOptimisticMove(
-  payload: DashboardPayload,
-  allocationId: string,
-  bed: BedOption,
-  stayDate: string,
-): DashboardPayload {
-  return {
-    ...payload,
-    allocations: payload.allocations.map((allocation) =>
-      allocation.id === allocationId
-        ? {
-            ...allocation,
-            bedId: bed.id,
-            bedName: bed.bedName,
-            roomId: bed.roomId,
-            roomName: bed.roomName,
-            stayDate,
-            source: "MANUAL",
-            approvedAt: null,
-            approvedByName: null,
-          }
-        : allocation,
-    ),
-  };
-}
-
 function applyOptimisticRemove(
   payload: DashboardPayload,
   allocation: DashboardAllocation,
@@ -324,6 +304,9 @@ export default function AdminBedAllocationPage() {
   const [pendingKeys, setPendingKeys] = useState<Set<string>>(new Set());
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
   const [activeDragData, setActiveDragData] = useState<DragData | null>(null);
+  const [activeDropPreview, setActiveDropPreview] = useState<string | null>(
+    null,
+  );
   // Range assignment (#2251): the dialog's target, and the outcome of the last
   // range operation, which tints the board until the admin dismisses it.
   const [rangeTarget, setRangeTarget] = useState<BedRangeAssignTarget | null>(
@@ -465,6 +448,17 @@ export default function AdminBedAllocationPage() {
       }),
     );
   }, [activeDragData, payload?.allocations, bucketGroups]);
+
+  const dragAnnouncements = useMemo(
+    () =>
+      createBedAllocationAnnouncements({
+        visibleAllocations: payload?.allocations ?? [],
+        bucketGroups,
+        beds: bedOptions,
+        singleNightMode,
+      }),
+    [payload?.allocations, bucketGroups, bedOptions, singleNightMode],
+  );
 
   async function loadDashboard() {
     // The server 400s on an over-long window anyway; withholding the request
@@ -767,125 +761,66 @@ export default function AdminBedAllocationPage() {
       return;
     }
 
-    if (movePlan.type === "blocked-date-shift") {
-      toast.info(
-        `First-night moves keep guest dates unchanged. Drop ${movePlan.firstStayDate} onto another bed in the same date column.`,
-      );
-      return;
-    }
-
     const snapshot = payload;
+    const allocationIds =
+      movePlan.type === "bulk"
+        ? movePlan.allocationIds
+        : [movePlan.allocationId];
+    setPayload(
+      applyOptimisticAllocationBedMove({
+        payload,
+        allocationIds,
+        bed,
+      }),
+    );
 
-    if (movePlan.type === "bulk") {
-      setPayload(
-        applyOptimisticAllocationBedMove({
-          payload,
-          allocationIds: movePlan.allocationIds,
-          bed,
-        }),
-      );
+    await withPending(
+      allocationIds.map((id) => `allocation:${id}`),
+      async () => {
+        try {
+          const response = await fetch(
+            "/api/admin/bed-allocation/allocations",
+            {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                allocationIds,
+                bedId: target.bedId,
+              }),
+            },
+          );
 
-      await withPending(
-        movePlan.allocationIds.map((id) => `allocation:${id}`),
-        async () => {
-          try {
-            const response = await fetch(
-              "/api/admin/bed-allocation/allocations/bulk",
-              {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  bookingGuestId: movePlan.bookingGuestId,
-                  bedId: target.bedId,
-                  stayDates: movePlan.stayDates,
-                }),
-              },
-            );
-
-            if (!response.ok) {
-              setPayload(snapshot);
-              toast.error(
-                await readApiError(response, "Failed to move allocations"),
-              );
-              await loadDashboard();
-              return;
-            }
-
-            const data = (await response.json()) as {
-              conflicts: BulkAllocationConflict[];
-            };
-
-            if (data.conflicts.length > 0) {
+          if (!response.ok) {
+            setPayload(snapshot);
+            if (response.status === 409) {
               toast.warning(
-                describeBulkConflicts(
-                  allocation.guestName,
-                  data.conflicts,
-                  hutLeaderLabel,
+                await readApiError(
+                  response,
+                  "No allocations were moved because the destination bed is unavailable on an original lodge night",
                 ),
               );
             } else {
-              toast.success("Visible guest nights moved");
+              toast.error(
+                await readApiError(response, "Failed to move allocation"),
+              );
             }
-            await loadDashboard();
-          } catch {
-            setPayload(snapshot);
-            toast.error("Failed to move allocations");
-            await loadDashboard();
-          }
-        },
-      );
-      return;
-    }
-
-    setPayload(applyOptimisticMove(payload, allocation.id, bed, target.stayDate));
-
-    await withPending(`allocation:${allocation.id}`, async () => {
-      try {
-        const postResponse = await fetch("/api/admin/bed-allocation/allocations", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            bookingGuestId: allocation.bookingGuestId,
-            bedId: target.bedId,
-            stayDate: target.stayDate,
-          }),
-        });
-
-        if (!postResponse.ok) {
-          setPayload(snapshot);
-          if (postResponse.status === 409) {
-            toast.warning(
-              `That bed was just taken for ${target.stayDate} — refreshing the board`,
-            );
-          } else {
-            toast.error(await readApiError(postResponse, "Failed to move allocation"));
-          }
-          await loadDashboard();
-          return;
-        }
-
-        if (target.stayDate !== allocation.stayDate) {
-          const deleteResponse = await fetch(
-            `/api/admin/bed-allocation/allocations/${allocation.id}`,
-            { method: "DELETE" },
-          );
-          if (!deleteResponse.ok) {
-            toast.error(
-              "Allocation moved, but the original night could not be cleared — refreshing the board",
-            );
             await loadDashboard();
             return;
           }
-        }
 
-        toast.success("Allocation moved");
-        await loadDashboard();
-      } catch {
-        setPayload(snapshot);
-        toast.error("Failed to move allocation");
-        await loadDashboard();
-      }
-    });
+          toast.success(
+            movePlan.type === "bulk"
+              ? "Visible guest nights moved"
+              : "Allocation moved",
+          );
+          await loadDashboard();
+        } catch {
+          setPayload(snapshot);
+          toast.error("Failed to move allocation");
+          await loadDashboard();
+        }
+      },
+    );
   }
 
   // Prefill the range dialog with the GUEST's own stay, not the booking's
@@ -1004,16 +939,32 @@ export default function AdminBedAllocationPage() {
 
     setActiveDragId(String(event.active.id));
     setActiveDragData((event.active.data.current as DragData | undefined) ?? null);
+    setActiveDropPreview(null);
+  }
+
+  function handleDragOver(event: DragOverEvent) {
+    setActiveDropPreview(
+      describeBedAllocationDrop({
+        activeData: event.active.data.current as DragData | undefined,
+        overData: event.over?.data.current as DropData | undefined,
+        visibleAllocations: payload?.allocations ?? [],
+        bucketGroups,
+        beds: bedOptions,
+        singleNightMode,
+      }),
+    );
   }
 
   function handleDragCancel() {
     setActiveDragId(null);
     setActiveDragData(null);
+    setActiveDropPreview(null);
   }
 
   function handleDragEnd(event: DragEndEvent) {
     setActiveDragId(null);
     setActiveDragData(null);
+    setActiveDropPreview(null);
     if (!canEditBookings) return;
 
     const { active, over } = event;
@@ -1347,7 +1298,13 @@ export default function AdminBedAllocationPage() {
         <DndContext
           sensors={sensors}
           collisionDetection={closestCenter}
+          accessibility={{
+            announcements: dragAnnouncements,
+            screenReaderInstructions:
+              BED_ALLOCATION_SCREEN_READER_INSTRUCTIONS,
+          }}
           onDragStart={handleDragStart}
+          onDragOver={handleDragOver}
           onDragEnd={handleDragEnd}
           onDragCancel={handleDragCancel}
         >
@@ -1547,7 +1504,12 @@ export default function AdminBedAllocationPage() {
           <DragOverlay>
             {activeDragLabel ? (
               <div className="rounded-md border bg-card px-3 py-2 text-sm font-medium text-card-foreground shadow-lg">
-                {activeDragLabel}
+                <div>{activeDragLabel}</div>
+                {activeDropPreview ? (
+                  <div className="mt-1 text-xs font-normal text-muted-foreground">
+                    {activeDropPreview}
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </DragOverlay>

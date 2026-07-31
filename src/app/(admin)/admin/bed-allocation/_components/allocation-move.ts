@@ -10,18 +10,13 @@ export type AllocationMovePlan =
   | {
       type: "single";
       allocationId: string;
-      stayDate: string;
+      stayDates: [string];
     }
   | {
       type: "bulk";
       allocationIds: string[];
       bookingGuestId: string;
       stayDates: string[];
-    }
-  | {
-      type: "blocked-date-shift";
-      firstStayDate: string;
-      targetStayDate: string;
     };
 
 export function planAllocationMove(input: {
@@ -36,10 +31,10 @@ export function planAllocationMove(input: {
     return { type: "noop" };
   }
 
-  if (
-    target.bedId === allocation.bedId &&
-    target.stayDate === allocation.stayDate
-  ) {
+  // Existing allocation drags choose a BED only. The hovered column is
+  // deliberately ignored and the move stays on the allocation's persisted
+  // lodge night (#2366), so any cell on the current bed normalises to a no-op.
+  if (target.bedId === allocation.bedId) {
     return { type: "noop" };
   }
 
@@ -57,15 +52,7 @@ export function planAllocationMove(input: {
     return {
       type: "single",
       allocationId: allocation.id,
-      stayDate: target.stayDate,
-    };
-  }
-
-  if (target.stayDate !== allocation.stayDate) {
-    return {
-      type: "blocked-date-shift",
-      firstStayDate: allocation.stayDate,
-      targetStayDate: target.stayDate,
+      stayDates: [allocation.stayDate],
     };
   }
 
@@ -73,7 +60,7 @@ export function planAllocationMove(input: {
     return {
       type: "single",
       allocationId: allocation.id,
-      stayDate: target.stayDate,
+      stayDates: [allocation.stayDate],
     };
   }
 

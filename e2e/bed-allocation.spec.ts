@@ -21,6 +21,12 @@ test.describe.configure({ mode: "serial" });
 
 let adminContext: BrowserContext;
 
+function addUtcDays(dateOnly: string, days: number) {
+  const date = new Date(`${dateOnly}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
 test.beforeAll(async ({ browser }) => {
   // Reuse the E2E admin session saved once in auth.setup.ts instead of a fresh
   // per-spec login (#1779).
@@ -116,6 +122,131 @@ test("an admin approves a review-flagged booking then allocates a bed to its gue
   await expect(page.getByText("Approved", { exact: true }).first()).toBeVisible();
 
   await page.close();
+});
+
+test("existing-chip pointer preview snaps to original nights, cancel is silent, and the atomic move preserves dates", async () => {
+  const ken = DEMO_BOOKING_WINDOWS.kenReview;
+  // Include the checkout date as one extra visible column so the pointer can
+  // hover horizontally over a date Ken is not allocated on. Existing-chip
+  // semantics must still snap back to the persisted source nights.
+  const extendedTo = addUtcDays(ken.checkOut, 1);
+  const dashboardPath = `/api/admin/bed-allocation?from=${ken.checkIn}&to=${extendedTo}`;
+  const dashboard = await adminContext.request.get(dashboardPath);
+  expect(dashboard.ok(), `read the board (${dashboard.status()})`).toBeTruthy();
+  const payload = (await dashboard.json()) as {
+    rooms: Array<{
+      name: string;
+      active: boolean;
+      beds: Array<{ id: string; name: string; active: boolean }>;
+    }>;
+    allocations: Array<{
+      id: string;
+      bookingId: string;
+      bookingGuestId: string;
+      bedId: string;
+      stayDate: string;
+      guestName: string;
+    }>;
+    custodianHolds: Array<{ bedId: string; nights: string[] }>;
+  };
+  const kensAllocations = payload.allocations
+    .filter((allocation) => allocation.guestName.includes("Ken"))
+    .sort((left, right) => left.stayDate.localeCompare(right.stayDate));
+  expect(kensAllocations.length).toBeGreaterThan(0);
+  const originalDates = kensAllocations.map(
+    (allocation) => allocation.stayDate,
+  );
+  const occupiedKeys = new Set(
+    payload.allocations.map(
+      (allocation) => `${allocation.bedId}:${allocation.stayDate}`,
+    ),
+  );
+  const heldKeys = new Set(
+    payload.custodianHolds.flatMap((hold) =>
+      hold.nights.map((night) => `${hold.bedId}:${night}`),
+    ),
+  );
+  const destination = payload.rooms
+    .filter((room) => room.active)
+    .flatMap((room) =>
+      room.beds.map((bed) => ({ ...bed, roomName: room.name })),
+    )
+    .find(
+      (bed) =>
+        bed.active &&
+        bed.id !== kensAllocations[0].bedId &&
+        originalDates.every(
+          (night) =>
+            !occupiedKeys.has(`${bed.id}:${night}`) &&
+            !heldKeys.has(`${bed.id}:${night}`),
+        ),
+    );
+  expect(destination, "a free destination bed exists").toBeTruthy();
+
+  const page = await adminContext.newPage();
+  let moveRequests = 0;
+  page.on("request", (request) => {
+    if (
+      request.method() === "PATCH" &&
+      new URL(request.url()).pathname ===
+        "/api/admin/bed-allocation/allocations"
+    ) {
+      moveRequests += 1;
+    }
+  });
+  await page.goto(`/admin/bed-allocation?from=${ken.checkIn}&to=${extendedTo}`);
+
+  const dragHandle = page
+    .getByRole("button", {
+      name: /Drag Ken King to another bed; original lodge night .* will be kept/,
+    })
+    .first();
+  const targetRow = page
+    .getByRole("row")
+    .filter({ has: page.getByText(destination!.name, { exact: true }) });
+  const targetCell = targetRow.locator(`td[data-stay-date="${ken.checkOut}"]`);
+  const from = await dragHandle.boundingBox();
+  const to = await targetCell.boundingBox();
+  expect(from).toBeTruthy();
+  expect(to).toBeTruthy();
+  await page.mouse.move(from!.x + from!.width / 2, from!.y + from!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(to!.x + to!.width / 2, to!.y + to!.height / 2, {
+    steps: 12,
+  });
+  await expect(
+    page.getByText(
+      `to ${destination!.roomName} / ${destination!.name}, snapped to original lodge night`,
+      { exact: false },
+    ),
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect.poll(() => moveRequests).toBe(0);
+  await page.close();
+
+  const moved = await adminContext.request.patch(
+    "/api/admin/bed-allocation/allocations",
+    {
+      data: {
+        allocationIds: kensAllocations.map((allocation) => allocation.id),
+        bedId: destination!.id,
+      },
+    },
+  );
+  expect(moved.ok(), `atomic move (${moved.status()})`).toBeTruthy();
+  const movedPayload = (await moved.json()) as {
+    noop: boolean;
+    allocations: Array<{ id: string; bedId: string; stayDate: string }>;
+  };
+  expect(movedPayload.noop).toBe(false);
+  expect(
+    movedPayload.allocations.map((allocation) => allocation.stayDate).sort(),
+  ).toEqual(originalDates);
+  expect(
+    movedPayload.allocations.every(
+      (allocation) => allocation.bedId === destination!.id,
+    ),
+  ).toBe(true);
 });
 
 // High row (docs/END_TO_END_TEST_MATRIX.md): "Allocate and confirm beds from
