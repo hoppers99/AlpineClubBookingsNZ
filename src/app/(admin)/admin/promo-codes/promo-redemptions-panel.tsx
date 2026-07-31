@@ -482,7 +482,6 @@ export function PromoRedemptionsPanel({
               setTo("");
               setLodgeId("");
               setPage(1);
-              setExpanded(new Set());
             }}
           />
         </CardContent>

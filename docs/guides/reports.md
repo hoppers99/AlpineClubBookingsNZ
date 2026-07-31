@@ -67,7 +67,7 @@ This page is read-only. Its controls:
 | From / To | The reporting date range | month-of (today - 3 months) to end-of-month of today | NZ date-only, club time zone; To must be after From |
 | Lodge | Scope metrics to one lodge | All lodges | Only shown with more than one active lodge |
 | Deleted | Include soft-deleted bookings | Hide deleted | Include deleted, or Deleted only |
-| Reset | Restore the date range and Deleted filter | rolling three-month window through current month-end; Hide deleted | Keeps the selected lodge; disabled at defaults |
+| Reset | Restore the date range and Deleted filter | start of the month three months prior through current month-end; Hide deleted | Keeps the selected lodge; disabled at defaults |
 | Update | Re-run the query | — | — |
 | CSV | Download the figures as CSV | — | Filename `tac-report-<date>.csv` |
 | Download PDF | Generate a printable PDF | — | Falls back to the browser print dialog on error; always rendered light-on-white regardless of your theme |

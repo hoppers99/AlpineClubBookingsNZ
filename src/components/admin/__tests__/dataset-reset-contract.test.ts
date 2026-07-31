@@ -38,13 +38,103 @@ function conditionalAncestor(node: ts.Node): ts.Node | null {
       ts.isIfStatement(current) ||
       ts.isSwitchStatement(current) ||
       (ts.isBinaryExpression(current) &&
-        current.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken)
+        [
+          ts.SyntaxKind.AmpersandAmpersandToken,
+          ts.SyntaxKind.BarBarToken,
+          ts.SyntaxKind.QuestionQuestionToken,
+        ].includes(current.operatorToken.kind))
     ) {
       return current
     }
     current = current.parent
   }
   return null
+}
+
+function nearestResetRegion(node: ts.Node): ts.Node {
+  let current = node.parent
+  while (current && !ts.isSourceFile(current)) {
+    if (
+      ts.isJsxElement(current) ||
+      ts.isJsxSelfClosingElement(current) ||
+      ts.isJsxFragment(current)
+    ) {
+      return current
+    }
+    current = current.parent
+  }
+  return node.getSourceFile()
+}
+
+function buttonLabelAncestor(node: ts.Node, region: ts.Node): ts.JsxElement | null {
+  let current = node.parent
+  while (current && current !== region.parent) {
+    if (ts.isJsxElement(current)) {
+      const tagName = current.openingElement.tagName.getText()
+      if (tagName === "Button" || tagName === "button") return current
+    }
+    if (current === region) break
+    current = current.parent
+  }
+  return null
+}
+
+function visibleString(node: ts.Node): string | null {
+  if (ts.isJsxText(node)) return node.getText().trim()
+  if (
+    ts.isJsxExpression(node) &&
+    node.expression &&
+    (ts.isStringLiteral(node.expression) ||
+      ts.isNoSubstitutionTemplateLiteral(node.expression))
+  ) {
+    return node.expression.text.trim()
+  }
+  return null
+}
+
+function inspectDatasetResetSource(source: string, relativePath = "synthetic.tsx") {
+  const sourceFile = ts.createSourceFile(
+    relativePath,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  )
+  const resetControls: ts.JsxSelfClosingElement[] = []
+
+  function collectResetControls(node: ts.Node) {
+    if (
+      ts.isJsxSelfClosingElement(node) &&
+      node.tagName.getText(sourceFile) === "DatasetResetButton"
+    ) {
+      resetControls.push(node)
+    }
+    ts.forEachChild(node, collectResetControls)
+  }
+  collectResetControls(sourceFile)
+
+  const resetRegions = new Set(resetControls.map(nearestResetRegion))
+  const legacyDatasetClearText = new Set<string>()
+  for (const region of resetRegions) {
+    function collectLegacyClear(node: ts.Node) {
+      const text = visibleString(node)
+      if (
+        text &&
+        /^Clear\b/.test(text) &&
+        buttonLabelAncestor(node, region)
+      ) {
+        legacyDatasetClearText.add(text)
+      }
+      ts.forEachChild(node, collectLegacyClear)
+    }
+    collectLegacyClear(region)
+  }
+
+  return {
+    resetControls,
+    conditionalResetControls: resetControls.filter(conditionalAncestor),
+    legacyDatasetClearText: [...legacyDatasetClearText],
+  }
 }
 
 describe("admin dataset Reset inventory contract", () => {
@@ -54,42 +144,58 @@ describe("admin dataset Reset inventory contract", () => {
     expect(new Set(INCLUDED_DATASETS.map(([, path]) => path)).size).toBe(22)
   })
 
+  it.each([
+    "hidden && <DatasetResetButton disabled={false} onReset={() => undefined} />",
+    "hidden || <DatasetResetButton disabled={false} onReset={() => undefined} />",
+    "hidden ?? <DatasetResetButton disabled={false} onReset={() => undefined} />",
+    "hidden ? null : <DatasetResetButton disabled={false} onReset={() => undefined} />",
+  ])("detects a conditionally rendered Reset in %s", (expression) => {
+    const inspection = inspectDatasetResetSource(
+      `function Example() { return <div>{${expression}}</div> }`,
+    )
+
+    expect(inspection.resetControls).toHaveLength(1)
+    expect(inspection.conditionalResetControls).toHaveLength(1)
+  })
+
+  it("detects expression-wrapped legacy dataset Clear labels", () => {
+    const inspection = inspectDatasetResetSource(`
+      function Example() {
+        return <div><Button>{"Clear filters"}</Button><DatasetResetButton disabled={false} onReset={() => undefined} /></div>
+      }
+    `)
+
+    expect(inspection.legacyDatasetClearText).toEqual(["Clear filters"])
+  })
+
+  it("ignores unrelated Clear actions outside the Reset control region", () => {
+    const inspection = inspectDatasetResetSource(`
+      function Example() {
+        return <><section><Button>Clear cache</Button></section><div><DatasetResetButton disabled={false} onReset={() => undefined} /></div></>
+      }
+    `)
+
+    expect(inspection.legacyDatasetClearText).toEqual([])
+  })
+
   it.each(INCLUDED_DATASETS)(
     "%s always renders exactly one shared Reset control",
     (_name, relativePath) => {
       const source = readFileSync(resolve(process.cwd(), relativePath), "utf8")
-      const sourceFile = ts.createSourceFile(
-        relativePath,
-        source,
-        ts.ScriptTarget.Latest,
-        true,
-        ts.ScriptKind.TSX,
-      )
-      const resetControls: ts.JsxSelfClosingElement[] = []
-      const legacyClearText: string[] = []
+      const inspection = inspectDatasetResetSource(source, relativePath)
 
-      function visit(node: ts.Node) {
-        if (
-          ts.isJsxSelfClosingElement(node) &&
-          node.tagName.getText(sourceFile) === "DatasetResetButton"
-        ) {
-          resetControls.push(node)
-        }
-        if (ts.isJsxText(node) && /^Clear\b/.test(node.getText().trim())) {
-          legacyClearText.push(node.getText().trim())
-        }
-        ts.forEachChild(node, visit)
-      }
-      visit(sourceFile)
-
-      expect(resetControls, `${relativePath} Reset count`).toHaveLength(1)
       expect(
-        conditionalAncestor(resetControls[0]),
+        inspection.resetControls,
+        `${relativePath} Reset count`,
+      ).toHaveLength(1)
+      expect(
+        inspection.conditionalResetControls,
         `${relativePath} conditionally hides Reset`,
-      ).toBeNull()
-      expect(legacyClearText, `${relativePath} retains visible Clear text`).toEqual(
-        [],
-      )
+      ).toEqual([])
+      expect(
+        inspection.legacyDatasetClearText,
+        `${relativePath} retains visible dataset Clear text`,
+      ).toEqual([])
     },
   )
 })
