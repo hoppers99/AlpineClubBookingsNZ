@@ -48,15 +48,45 @@
  * club-wide. Repeating that across seasons separates a member who is refused on
  * every date in a year (which is what unpaid subscription looks like) from one
  * refused only on scattered nights. Uniform wording removes the label from each
- * answer; it does not remove the signal in the PATTERN of answers. Nor does it
- * equalise response timing, and nothing here rate-limits the probing: the tight
- * `memberGuestConsentRespond` limiter covers the consent-answer endpoint, not
- * the quote and create paths this refusal is returned from.
+ * answer; it does not remove the signal in the PATTERN of answers.
  *
- * Closing the correlation channel needs a different tool — a discoverability
- * decision plus per-caller throttling on the add paths — which is MG3's
- * find-endpoint work. It is tracked as a follow-up issue on MG3 (#2388)
- * rather than left as an implied property of this constant.
+ * WHAT MG3 (#2308) ADDED, AND WHAT IS STILL TRUE AFTERWARDS. #2388 was decided
+ * by the owner on 31 Jul 2026 and the three mitigations shipped with MG3, so the
+ * paragraph above needs three corrections and one thing it said stands:
+ *
+ *   * **The wording is no longer the only uniformity.** Two refusals used to
+ *     escape the collapse entirely and needed no stopwatch to tell apart:
+ *     "Linked member is inactive or not found" (400) and the age-exempt-account
+ *     refusal (400) both answered a cross-family probe in their own words with
+ *     their own status. `resolveLinkedMemberRecords` now collapses BOTH for a
+ *     beyond-family id on a member-initiated path, so the existence oracle they
+ *     constituted is closed. Family-scope adds keep them verbatim.
+ *   * **Response timing is now equalised, partially and honestly.** Every
+ *     collapsed refusal is held to a fixed floor
+ *     (`MEMBER_GUEST_REFUSAL_FLOOR_MS`, `member-guest-probe-guard.ts`), which
+ *     removes the cheap, reliable measurement — the not-found answer used to
+ *     come back in one query's time, every time. It does NOT close the channel:
+ *     a refusal slower than the floor still reports its own duration.
+ *   * **The probing is now throttled**, per ACTING MEMBER rather than per IP,
+ *     and only on attempts that name a beyond-family member — so an ordinary
+ *     family booking is not rate-limited at all, and a run of probes across
+ *     dates is capped at 15 per quarter-hour and 50 per day. That is what turns
+ *     "map a season in an afternoon" into "map a season over three weeks".
+ *   * **Every collapsed refusal is now audited**, naming the actor and the
+ *     target, and a run of them against the same target raises a distinct
+ *     admin-visible row. By the owner's explicit sub-decision this LOGS and
+ *     never blocks: a member trying several dates to find one that suits a
+ *     friend is the normal case, and refusing them would produce a vague answer
+ *     they could not act on.
+ *
+ * SO THE HONEST STATEMENT AFTER MG3 IS THIS: a single refusal still tells a
+ * caller nothing, and a run of them is now slow, capped, and recorded against
+ * the caller's name — but the PATTERN of answers still carries the signal it
+ * always did, and a patient member who stays inside the daily cap can still
+ * learn which nights another member is booked. That residual is deliberate: the
+ * owner rejected closing it with an automatic block, on the grounds that the
+ * innocent case is indistinguishable from the probing one and only a person can
+ * tell them apart. It is now a detectable residual rather than an invisible one.
  *
  * STRICTLY CROSS-FAMILY, STRICTLY PRE-CONSENT. A family-scope add (D-6) keeps
  * today's detailed, actionable errors verbatim — a member adding their own child

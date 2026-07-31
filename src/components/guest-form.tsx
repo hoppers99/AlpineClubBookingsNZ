@@ -20,6 +20,23 @@ export interface GuestData {
   // "Multiple date ranges" mode; undefined means the guest stays the whole
   // booking range.
   nights?: string[];
+  /**
+   * DISPLAY ONLY, and never sent to the server or trusted for anything
+   * ("+ Add Member Guest", epic #2305, MG3 #2308).
+   *
+   * Set when the booker adds a cross-family member through the finder, so the
+   * wizard can show them what WILL happen when they confirm: the club asks the
+   * person first (`"PENDING"`), or tells them (`"NOTIFY_ONLY"`). Nothing has
+   * been persisted at this point — the booking does not exist yet — so this is a
+   * prediction derived from the club's own `approvalRequired` setting, not a
+   * consent record.
+   *
+   * `buildGuestPayload` picks the fields it sends field by field, so this never
+   * reaches an API; and were it forged it would change nothing, because every
+   * consent column is written server-side by
+   * `buildMemberGuestConsentWrite`.
+   */
+  memberGuestConsentPreview?: "PENDING" | "NOTIFY_ONLY";
 }
 
 interface GuestFormProps {
@@ -35,6 +52,17 @@ interface GuestFormProps {
   onMultiDateRangesEnabledChange?: (enabled: boolean) => void;
   // Optional nightly price (cents) for a guest on a night, from the live quote.
   nightlyPriceForGuest?: (guestIndex: number, nightKey: string) => number | null;
+  /**
+   * Extra controls for the "Guests (n/max)" header row, rendered BEFORE the
+   * "+ Add Non-Member Guest" button (MG3 #2308: "+ Add Member Guest" sits first,
+   * because a member guest is the cheaper, better-recorded outcome and should be
+   * the one that catches the eye).
+   */
+  headerActions?: React.ReactNode;
+  /** Rendered immediately under the header row — MG3's inline find panel. */
+  belowHeader?: React.ReactNode;
+  /** Optional per-guest badge (MG3's consent states), rendered in the guest row header. */
+  renderGuestBadge?: (guest: GuestData, index: number) => React.ReactNode;
 }
 
 function shiftDateOnly(date: string, days: number): string {
@@ -66,6 +94,9 @@ export function GuestForm({
   multiDateRangesEnabled = false,
   onMultiDateRangesEnabledChange,
   nightlyPriceForGuest,
+  headerActions,
+  belowHeader,
+  renderGuestBadge,
 }: GuestFormProps) {
   const ageTierOptions = useAgeTierOptions();
   const showPerGuestDatesToggle = Boolean(
@@ -135,20 +166,25 @@ export function GuestForm({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-lg font-semibold">
           Guests ({guests.length}/{maxGuests} max)
         </h3>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={addGuest}
-          disabled={guests.length >= maxGuests}
-        >
-          + Add Non-Member Guest
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          {headerActions}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={addGuest}
+            disabled={guests.length >= maxGuests}
+          >
+            + Add Non-Member Guest
+          </Button>
+        </div>
       </div>
+
+      {belowHeader}
 
       {guests.length === 0 && (
         <p className="text-sm text-muted-foreground">
@@ -204,8 +240,10 @@ export function GuestForm({
         const earliestStayEnd = stayStart ? shiftDateOnly(stayStart, 1) : bookingCheckIn;
         return (
           <div key={index} className="rounded-lg border p-4 space-y-3">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="text-sm font-medium">Guest {index + 1}</span>
+            {renderGuestBadge?.(guest, index)}
+            <span className="flex-1" />
             <Button
               type="button"
               variant="ghost"

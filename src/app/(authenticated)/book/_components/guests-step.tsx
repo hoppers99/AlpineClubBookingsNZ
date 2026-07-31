@@ -1,6 +1,8 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
+import { MemberGuestFindPanel } from "@/components/book/member-guest-find-panel";
 import { GuestForm, type GuestData } from "@/components/guest-form";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -9,6 +11,9 @@ import {
   getFamilyMemberBookingActionLabel,
   getFamilyMemberBookingBlockMessage,
 } from "@/lib/family-booking";
+import { describeMemberGuestConsentBadge } from "@/lib/member-guest-consent-card";
+import type { MemberGuestCandidate } from "@/lib/member-guest-find";
+import { memberGuestConsentPreviewColumns } from "./member-guest-preview";
 import {
   PROFILE_FAMILY_GROUP_RETURN_TO_BOOK,
   type FamilyMember,
@@ -39,6 +44,12 @@ interface GuestsStepProps {
   setStep: (step: "dates" | "guests" | "review" | "pay") => void;
   handleGuestsDone: () => void | Promise<void>;
   priceLoading: boolean;
+  // "+ Add Member Guest" (MG3 #2308). `memberGuestEnabled` is the server's
+  // answer, not the browser's guess — see `MemberGuestConfig` in the wizard hook.
+  memberGuestEnabled: boolean;
+  memberGuestOpenSearchEnabled: boolean;
+  addMemberGuest: (candidate: MemberGuestCandidate) => void;
+  memberGuestAddError: string | null;
 }
 
 export function GuestsStep({
@@ -64,7 +75,14 @@ export function GuestsStep({
   setStep,
   handleGuestsDone,
   priceLoading,
+  memberGuestEnabled,
+  memberGuestOpenSearchEnabled,
+  addMemberGuest,
+  memberGuestAddError,
 }: GuestsStepProps) {
+  // The find panel opens INLINE, underneath the Guests heading (owner sign-off
+  // answer 3) — never a dialog.
+  const [findPanelOpen, setFindPanelOpen] = useState(false);
   // Tri-state for the "add as a non-member guest" fallback warning (#1942). The
   // live quote only computes nonMemberHoldDecision once a non-member is already
   // in the party, so the FIRST non-member add has no decision yet — warn
@@ -82,9 +100,29 @@ export function GuestsStep({
   // Active steer (#1942): a typed-in non-member guest whose first+last name
   // matches one of THIS member's own family group members who can be booked as a
   // linked member guest. Matching is case-insensitive and scoped strictly to the
-  // member's own family list (never other members' data — no enumeration). We
-  // suggest switching them to the member guest (bed held, member rate, no split)
-  // — a suggestion only, never a forced switch.
+  // member's own family list. We suggest switching them to the member guest (bed
+  // held, member rate, no split) — a suggestion only, never a forced switch.
+  //
+  // THE NO-ENUMERATION RULE, STATED PRECISELY (rewritten by MG3, #2308). This
+  // comment used to assert as a repo-wide invariant that this screen shows
+  // "never other members' data — no enumeration". That became conditionally
+  // false the moment a club could turn open member search on, and a comment the
+  // code no longer honours is worse than no comment. The rule that actually
+  // holds is three separate statements:
+  //
+  //   1. NO ENUMERATION BY DEFAULT. Every club ships with the member-guest
+  //      module off; with it on, the finder resolves an EXACT email address the
+  //      booker already possesses and nothing else. Neither state lists members.
+  //   2. THE #1942 STEER BELOW IS ALWAYS FAMILY-ONLY, whatever any setting says.
+  //      It matches against `familyMembers` — this member's own family group,
+  //      already sent to this page for the quick-add row — and never against any
+  //      wider set. That is unconditional and must stay so.
+  //   3. THE MEMBER-GUEST FINDER ENUMERATES ONLY WHEN A CLUB HAS DELIBERATELY
+  //      TURNED OPEN SEARCH ON (`openMemberSearchEnabled`, default off). When it
+  //      is on the membership name list is browsable BY DESIGN — that is the
+  //      setting's whole purpose, the admin toggle says so in those words, and
+  //      the rate limits and audit trail make it slow and recorded rather than
+  //      impossible.
   const memberSwitchSuggestions = guests
     .map((guest, index) => ({ guest, index }))
     .filter(({ guest }) => {
@@ -225,6 +263,62 @@ export function GuestsStep({
           guests={guests}
           onGuestsChange={handleGuestsChange}
           maxGuests={lodgeCapacity}
+          headerActions={
+            memberGuestEnabled ? (
+              <Button
+                type="button"
+                variant={findPanelOpen ? "secondary" : "outline"}
+                size="sm"
+                disabled={guests.length >= lodgeCapacity}
+                onClick={() => setFindPanelOpen((open) => !open)}
+              >
+                + Add Member Guest
+              </Button>
+            ) : null
+          }
+          belowHeader={
+            memberGuestEnabled && findPanelOpen ? (
+              <MemberGuestFindPanel
+                openSearchEnabled={memberGuestOpenSearchEnabled}
+                existingMemberIds={guests
+                  .map((g) => g.memberId)
+                  .filter((id): id is string => Boolean(id))}
+                atCapacity={guests.length >= lodgeCapacity}
+                addError={memberGuestAddError}
+                onAdd={(candidate) => {
+                  addMemberGuest(candidate);
+                  setFindPanelOpen(false);
+                }}
+                onCancel={() => setFindPanelOpen(false)}
+              />
+            ) : null
+          }
+          renderGuestBadge={(guest) => {
+            const columns = memberGuestConsentPreviewColumns(guest);
+            if (!columns) return null;
+            const badge = describeMemberGuestConsentBadge({
+              guest: { memberId: guest.memberId ?? null, ...columns },
+              // The booking WIZARD's warmer, name-bearing vocabulary — owner
+              // sign-off answer 1, produced by the shared badge function's third
+              // audience rather than by a copy of its wording here.
+              audience: "WIZARD",
+              targetFirstName: guest.firstName,
+            });
+            if (!badge) return null;
+            return (
+              <span
+                className={
+                  badge.tone === "pending"
+                    ? "rounded-md border border-warning-6 bg-warning-3 px-2 py-0.5 text-xs font-semibold text-warning-11"
+                    : badge.tone === "ok"
+                      ? "rounded-md border border-success-6 bg-success-3 px-2 py-0.5 text-xs font-semibold text-success-11"
+                      : "rounded-md border border-danger-6 bg-danger-3 px-2 py-0.5 text-xs font-semibold text-danger-11"
+                }
+              >
+                {badge.label}
+              </span>
+            );
+          }}
           bookingCheckIn={checkIn ? formatLocalDateOnly(checkIn) : undefined}
           bookingCheckOut={checkOut ? formatLocalDateOnly(checkOut) : undefined}
           perGuestDatesEnabled={perGuestDatesEnabled}
