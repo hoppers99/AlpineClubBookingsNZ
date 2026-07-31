@@ -624,6 +624,265 @@ describe("membership cancellation admin review", () => {
         data: expect.objectContaining({ active: false, canLogin: false }),
       });
     });
+
+    // #2383 made these guards reachable for a Full Admin target by the front
+    // door: an admin's membership is now cancellable without first destroying
+    // their access. The guards are the whole safety story for that, so they
+    // are pinned from the widened path's point of view, not just #1604's.
+    it("cannot strand the club with no Full Admin, whoever raised the request", async () => {
+      mocks.tx.member.findUnique.mockResolvedValue({
+        role: "ADMIN",
+        financeAccessLevel: "NONE",
+        accessRoles: ADMIN_ACCESS_ROLES,
+      });
+      // actorIsFullAdmin → 1; target IS an active Full Admin (1); no other
+      // active Full Admin survives (0).
+      mocks.tx.member.count
+        .mockResolvedValueOnce(1)
+        .mockResolvedValueOnce(1)
+        .mockResolvedValueOnce(0);
+
+      await expect(
+        reviewMembershipCancellationParticipant({
+          requestId: "request-1",
+          participantId: "participant-1",
+          action: "approve",
+          adminMemberId: "admin-2",
+        }),
+      ).rejects.toMatchObject({
+        statusCode: 409,
+        message: LAST_FULL_ADMIN_GUARD_MESSAGE,
+      } satisfies Partial<MembershipCancellationAdminError>);
+
+      // The invariant is end-state, not intent: nothing was written, and no
+      // Xero cancellation was queued off the back of a rolled-back approval.
+      expect(mocks.tx.member.update).not.toHaveBeenCalled();
+      expect(mocks.queueCancellationXeroOperations).not.toHaveBeenCalled();
+    });
+
+    it("leaves the cancelled member's access-role rows in place", async () => {
+      // Deliberate (#2383): cancellation is a lifecycle terminal, not a role
+      // edit. What makes that safe is `active: false` — `requireAdmin`
+      // (src/lib/session-guards.ts) refuses an inactive member, and every
+      // server guard re-reads `active`. NOT `canLogin: false`: that guard does
+      // not even select `canLogin`, and `getAdminPermissionMatrix` zeroes the
+      // matrix only on an explicit `canLogin === false`, so retained rows read
+      // without that field still resolve to the full bundle. The dormant rows
+      // keep the member inside the #1604 privileged-target guard for any later
+      // archive. Archive and deletion approval leave them in place too, so this
+      // is the house rule, not a special case — and the reason nothing may
+      // reactivate a cancelled member without dealing with the rows first.
+      mocks.tx.member.findUnique.mockResolvedValue({
+        role: "ADMIN",
+        financeAccessLevel: "NONE",
+        accessRoles: ADMIN_ACCESS_ROLES,
+      });
+      mocks.tx.member.count.mockResolvedValue(1);
+
+      await reviewMembershipCancellationParticipant({
+        requestId: "request-1",
+        participantId: "participant-1",
+        action: "approve",
+        adminMemberId: "admin-2",
+      });
+
+      const [[update]] = mocks.tx.member.update.mock.calls as [
+        [{ data: Record<string, unknown> }],
+      ];
+      expect(update.data).not.toHaveProperty("accessRoles");
+      expect(update.data).not.toHaveProperty("role");
+      expect(update.data).not.toHaveProperty("financeAccessLevel");
+    });
+  });
+
+  // #2383: with any account holder now cancellable, the approval queue is the
+  // last place a human can catch an intended-but-mistaken approval — and it
+  // showed nothing but name, email, age tier and login state, so "de-logins the
+  // Treasurer" looked exactly like "cancels an ordinary member".
+  describe("what the reviewer is shown (#2383)", () => {
+    async function serializeParticipantOf(memberOverrides: Record<string, unknown>) {
+      mocks.tx.membershipCancellationRequestParticipant.findMany.mockResolvedValue([
+        { status: "REJECTED" },
+      ]);
+      mocks.requestFindUnique.mockResolvedValue(
+        adminRequest({ status: "REJECTED", member: memberOverrides }),
+      );
+
+      const result = await reviewMembershipCancellationParticipant({
+        requestId: "request-1",
+        participantId: "participant-1",
+        action: "reject",
+        adminMemberId: "admin-2",
+      });
+      return result.request.participants[0];
+    }
+
+    it("marks a participant whose approval will need a Full Admin", async () => {
+      // Same predicate as the approval-time guard, so the two cannot disagree.
+      const scopedAdmin = await serializeParticipantOf({
+        role: "USER",
+        financeAccessLevel: "NONE",
+        accessRoles: [{ role: "ADMIN_MEMBERSHIP", roleDefinitionId: null }],
+      });
+      expect(scopedAdmin.holdsPrivilegedAccess).toBe(true);
+      expect(scopedAdmin.accountType).toBe("admin");
+    });
+
+    it("marks an organisation account as one", async () => {
+      const org = await serializeParticipantOf({
+        role: "SCHOOL",
+        financeAccessLevel: "NONE",
+        accessRoles: [{ role: "ORG", roleDefinitionId: null }],
+      });
+      expect(org.accountType).toBe("organisation");
+      expect(org.holdsPrivilegedAccess).toBe(false);
+    });
+
+    it("leaves an ordinary member unmarked", async () => {
+      const plain = await serializeParticipantOf({
+        role: "USER",
+        financeAccessLevel: "NONE",
+        accessRoles: [{ role: "USER", roleDefinitionId: null }],
+      });
+      expect(plain.holdsPrivilegedAccess).toBe(false);
+      expect(plain.accountType).toBe("user");
+    });
+  });
+
+  // #2383: an admin cancelling their OWN membership was previously unreachable
+  // — the role gate refused an admin target, and the member-edit screen refuses
+  // to demote yourself. It is now reachable through the front door, so the
+  // separation-of-duties rule has to hold on it.
+  describe("self-cancellation (#2383)", () => {
+    function selfRequest(adminId: string) {
+      // The admin raised the request against their own membership: they are
+      // both `requestedByMemberId` and the participant member.
+      mocks.participantFindUnique.mockResolvedValue(
+        participant({
+          memberId: adminId,
+          member: member({ id: adminId }),
+          request: {
+            id: "request-1",
+            status: "REQUESTED",
+            reason: "Leaving the club",
+            requestedByMemberId: adminId,
+          },
+        }),
+      );
+    }
+
+    it("refuses to let the requester approve their own cancellation", async () => {
+      selfRequest("admin-1");
+
+      await expect(
+        reviewMembershipCancellationParticipant({
+          requestId: "request-1",
+          participantId: "participant-1",
+          action: "approve",
+          adminMemberId: "admin-1",
+        }),
+      ).rejects.toMatchObject({
+        statusCode: 403,
+        message: "Cancellation requests must be approved by a different admin.",
+      } satisfies Partial<MembershipCancellationAdminError>);
+
+      expect(mocks.tx.member.update).not.toHaveBeenCalled();
+    });
+
+    it("refuses approval when the raiser is no longer on file", async () => {
+      // `requestedByMemberId` is onDelete: SetNull, so hard-deleting the raiser
+      // nulls it. The guard used to skip itself in that case — fail-open on the
+      // only separation-of-duties check protecting the self-cancellation path
+      // this widening newly reaches. "We cannot tell who raised this" now means
+      // "not you", and rejecting the request is still available.
+      mocks.participantFindUnique.mockResolvedValue(
+        participant({
+          memberId: "admin-1",
+          member: member({ id: "admin-1" }),
+          request: {
+            id: "request-1",
+            status: "REQUESTED",
+            reason: "Leaving the club",
+            requestedByMemberId: null,
+          },
+        }),
+      );
+
+      await expect(
+        reviewMembershipCancellationParticipant({
+          requestId: "request-1",
+          participantId: "participant-1",
+          action: "approve",
+          adminMemberId: "admin-1",
+        }),
+      ).rejects.toMatchObject({
+        statusCode: 403,
+      } satisfies Partial<MembershipCancellationAdminError>);
+
+      expect(mocks.tx.member.update).not.toHaveBeenCalled();
+
+      // ...and the same request can still be rejected, so nothing is stranded:
+      // the guard runs on the approve branch only.
+      await expect(
+        reviewMembershipCancellationParticipant({
+          requestId: "request-1",
+          participantId: "participant-1",
+          action: "reject",
+          adminMemberId: "admin-1",
+        }),
+      ).resolves.toBeDefined();
+    });
+
+    it("refuses a solo Full Admin's self-cancellation even with a second reviewer", async () => {
+      // The realistic departing-solo-admin case: someone else approves, but
+      // there is no other active Full Admin to inherit the club.
+      selfRequest("admin-1");
+      mocks.tx.member.findUnique.mockResolvedValue({
+        role: "ADMIN",
+        financeAccessLevel: "NONE",
+        accessRoles: ADMIN_ACCESS_ROLES,
+      });
+      mocks.tx.member.count
+        .mockResolvedValueOnce(1)
+        .mockResolvedValueOnce(1)
+        .mockResolvedValueOnce(0);
+
+      await expect(
+        reviewMembershipCancellationParticipant({
+          requestId: "request-1",
+          participantId: "participant-1",
+          action: "approve",
+          adminMemberId: "admin-2",
+        }),
+      ).rejects.toMatchObject({
+        statusCode: 409,
+        message: LAST_FULL_ADMIN_GUARD_MESSAGE,
+      } satisfies Partial<MembershipCancellationAdminError>);
+    });
+
+    it("completes once a successor Full Admin exists and another admin approves", async () => {
+      selfRequest("admin-1");
+      mocks.tx.member.findUnique.mockResolvedValue({
+        role: "ADMIN",
+        financeAccessLevel: "NONE",
+        accessRoles: ADMIN_ACCESS_ROLES,
+      });
+      // A successor survives the cancellation, so the invariant holds.
+      mocks.tx.member.count.mockResolvedValue(1);
+
+      const result = await reviewMembershipCancellationParticipant({
+        requestId: "request-1",
+        participantId: "participant-1",
+        action: "approve",
+        adminMemberId: "admin-2",
+      });
+
+      expect(result.request.participants[0].status).toBe("CANCELLED");
+      expect(mocks.tx.member.update).toHaveBeenCalledWith({
+        where: { id: "admin-1" },
+        data: expect.objectContaining({ active: false, canLogin: false }),
+      });
+    });
   });
 
   describe("admin notify choice (#1787)", () => {

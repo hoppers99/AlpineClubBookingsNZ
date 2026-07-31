@@ -261,3 +261,105 @@ describe("#1285 must-send transactional mail is never suppressible", () => {
     expect(mockTransporter.sendMail).toHaveBeenCalledTimes(1);
   });
 });
+
+// ============================================================================
+// D-12 (#2307): the check-in reminder never NAMES an unconsented member guest
+// ============================================================================
+//
+// Owner decision D-12: a member guest whose consent is still PENDING holds a bed
+// (D-4) but is not operationally present. This email lists guests by name, so a
+// pending row here means the club tells the booker the add is settled and tells
+// the named member's name to somebody, neither of which has been agreed. The
+// guest names come straight off the booking include, so the include is where the
+// exclusion has to live.
+//
+// This suite drives the real email chain (the same harness the preference tests
+// above use), so the assertion is on what the member would actually receive.
+describe("#2307 check-in reminders exclude unconsented member guests (D-12)", () => {
+  // Applies the guest `where` the production query sends, the way Prisma would.
+  // A mock that ignored it would pass with the filter deleted.
+  function seedBooking(
+    guests: Array<{
+      firstName: string;
+      lastName: string;
+      consentStatus: string | null;
+    }>,
+  ) {
+    mockPrisma.booking.findMany.mockImplementation(
+      async (args: {
+        include: {
+          guests: true | { where?: { OR?: Array<{ consentStatus: string | null }> } };
+        };
+      }) => {
+        const where =
+          args.include.guests === true ? undefined : args.include.guests.where;
+        return [
+          {
+            id: "booking-1",
+            checkIn: new Date("2026-04-10T00:00:00.000Z"),
+            checkOut: new Date("2026-04-12T00:00:00.000Z"),
+            status: "CONFIRMED",
+            lodgeId: null,
+            member: {
+              id: "member-1",
+              email: "mia@example.com",
+              firstName: "Mia",
+            },
+            guests: guests.filter(
+              (guest) =>
+                !where?.OR ||
+                where.OR.some(
+                  (branch) => branch.consentStatus === guest.consentStatus,
+                ),
+            ),
+            choreAssignments: [],
+          },
+        ];
+      },
+    );
+  }
+
+  it("names null- and CONFIRMED-consent guests and never the PENDING one", async () => {
+    seedBooking([
+      // Null consent is the ordinary guest — every non-member, every family add,
+      // every legacy row — and is exactly what the `{ not: "PENDING" }` trap
+      // would have deleted from every reminder the club sends.
+      { firstName: "Nula", lastName: "Ordinary", consentStatus: null },
+      { firstName: "Connie", lastName: "Agreed", consentStatus: "CONFIRMED" },
+      { firstName: "Penny", lastName: "Awaiting", consentStatus: "PENDING" },
+    ]);
+    mockPrisma.notificationPreference.findUnique.mockResolvedValue(
+      prefRecord({ bookingReminder: true }),
+    );
+
+    const { sendCheckinReminders } = await import("../cron-checkin-reminders");
+    const result = await sendCheckinReminders();
+
+    expect(result.sent).toBe(1);
+    const html = mockTransporter.sendMail.mock.calls[0][0].html as string;
+    expect(html).toContain("Nula Ordinary");
+    expect(html).toContain("Connie Agreed");
+    expect(html).not.toContain("Penny");
+    expect(html).not.toContain("Awaiting");
+    // The headcount in the same email agrees with the list beside it.
+    expect(html).toContain(">2<");
+  });
+
+  it("sends the operational-presence predicate in the guest include", async () => {
+    seedBooking([]);
+    mockPrisma.notificationPreference.findUnique.mockResolvedValue(
+      prefRecord({ bookingReminder: true }),
+    );
+
+    const { sendCheckinReminders } = await import("../cron-checkin-reminders");
+    await sendCheckinReminders();
+
+    const args = mockPrisma.booking.findMany.mock.calls[0][0] as {
+      include: { guests: { where?: { OR?: unknown } } };
+    };
+    expect(args.include.guests.where?.OR).toEqual([
+      { consentStatus: null },
+      { consentStatus: "CONFIRMED" },
+    ]);
+  });
+});

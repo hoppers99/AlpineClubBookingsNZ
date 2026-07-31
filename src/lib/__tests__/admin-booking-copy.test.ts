@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   createDraftBooking: vi.fn(),
   logAudit: vi.fn(),
   resolveLinkedBookingMembers: vi.fn(),
+  resolveLinkedBookingMembersWithBoundary: vi.fn(),
   assertLinkedBookingMembersCanBeBooked: vi.fn(),
   normalizeBookingGuestInputs: vi.fn(),
 }));
@@ -31,6 +32,8 @@ vi.mock("@/lib/booking-guests", () => ({
     }
   },
   resolveLinkedBookingMembers: mocks.resolveLinkedBookingMembers,
+  resolveLinkedBookingMembersWithBoundary:
+    mocks.resolveLinkedBookingMembersWithBoundary,
   assertLinkedBookingMembersCanBeBooked:
     mocks.assertLinkedBookingMembersCanBeBooked,
   normalizeBookingGuestInputs: mocks.normalizeBookingGuestInputs,
@@ -93,6 +96,15 @@ describe("copyBookingToDraft", () => {
           },
         ],
       ]),
+    );
+    // MG2 (#2307): the copy uses the boundary-returning resolver so it can decide
+    // each guest's consent. An empty boundary is "everybody is inside the booking
+    // owner's family", which is this test's world unchanged.
+    mocks.resolveLinkedBookingMembersWithBoundary.mockImplementation(
+      async (...args: unknown[]) => ({
+        members: await mocks.resolveLinkedBookingMembers(...args),
+        boundary: { scopeByMemberId: new Map(), beyondFamilyMemberIds: [] },
+      }),
     );
     mocks.assertLinkedBookingMembersCanBeBooked.mockResolvedValue(undefined);
     mocks.normalizeBookingGuestInputs.mockImplementation((guests, linkedMembers) =>
