@@ -298,7 +298,8 @@ describe("admin member access-role UI", () => {
         xeroContactGroupsList={[]}
         onSearchChange={vi.fn()}
         onSetFilter={vi.fn()}
-        onClearFilters={vi.fn()}
+        resetDisabled={true}
+        onReset={vi.fn()}
       />,
     );
 
@@ -352,7 +353,8 @@ describe("admin member access-role UI", () => {
         xeroContactGroupsList={[]}
         onSearchChange={vi.fn()}
         onSetFilter={vi.fn()}
-        onClearFilters={vi.fn()}
+        resetDisabled={false}
+        onReset={vi.fn()}
       />,
     );
 
@@ -372,7 +374,8 @@ describe("admin member access-role UI", () => {
         xeroContactGroupsList={[]}
         onSearchChange={vi.fn()}
         onSetFilter={vi.fn()}
-        onClearFilters={vi.fn()}
+        resetDisabled={true}
+        onReset={vi.fn()}
       />,
     );
 
@@ -405,7 +408,8 @@ describe("admin member access-role UI", () => {
         xeroContactGroupsList={[]}
         onSearchChange={vi.fn()}
         onSetFilter={vi.fn()}
-        onClearFilters={vi.fn()}
+        resetDisabled={false}
+        onReset={vi.fn()}
       />,
     );
 

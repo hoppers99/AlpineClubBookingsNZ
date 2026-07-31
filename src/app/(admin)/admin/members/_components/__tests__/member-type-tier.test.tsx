@@ -128,7 +128,8 @@ function renderToolbar() {
       xeroContactGroupsList={[]}
       onSearchChange={vi.fn()}
       onSetFilter={vi.fn()}
-      onClearFilters={vi.fn()}
+      resetDisabled={true}
+      onReset={vi.fn()}
     />,
   );
 }
