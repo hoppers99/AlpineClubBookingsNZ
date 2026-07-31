@@ -4,6 +4,31 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Xero setup no longer gets stuck on "Confirming the organisation name…"
+  (#2394).** After connecting Xero, the setup wizard fetches your organisation's
+  name so you can check you picked the right one. That fetch happened exactly
+  once, and if it failed — because Xero was momentarily busy, briefly
+  unreachable, or the connection needed re-authorising — the page simply sat on
+  "Confirming the organisation name…" with no explanation, no way to retry, and
+  no way forward. The only escape was guessing that a reload might help.
+
+  The step now tells you what actually happened, in the terms that decide what
+  you should do about it. If Xero needs re-authorising, it says so and points at
+  Disconnect and Connect, because retrying would never have worked. If Xero's
+  daily limit has been reached it says when that clears — midnight UTC, about
+  midday in New Zealand — so you can judge whether to wait or come back
+  tomorrow. If it was Xero's short per-minute limit, or a passing outage, it
+  offers a **Try again** button that genuinely re-checks. And if your admin role
+  simply isn't allowed to read the organisation, it says that instead of
+  pretending a retry might fix it.
+
+  Nothing retries on its own, deliberately. Each Xero connection has a limited
+  number of calls per day, and hammering a limit that has already been hit only
+  makes it last longer — so a fresh check happens when you press the button, and
+  never otherwise. A related gap closed at the same time: if Xero refused the
+  authorisation itself, the wizard used to show only "Not Connected" and kept
+  Xero's reason to itself. It now shows what Xero said.
+
 - **Clubs can safely record a trusted induction history when moving an
   established membership onto the digital register (#2361).** A new
   dry-run-first operator command classifies every active real-member

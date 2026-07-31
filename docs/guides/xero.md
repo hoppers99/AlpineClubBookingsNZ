@@ -129,6 +129,8 @@ idempotent — retrying the same work never double-charges.
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
 | Only the Connection panel shows | Xero is not connected | Click **Connect Xero**; the sync/health panels appear once connected |
+| Xero Setup's **Connect** step cannot confirm the organisation name | The one read that fetches the name failed — Xero was busy, briefly unreachable, or the authorisation is no longer accepted | The step now says which of those it was and what to do. **Xero needs re-authorising**: disconnect and connect again. **Xero's daily limit reached**: the cap resets at midnight UTC (about midday in New Zealand), so come back after that. **Per-minute limit / could not reach Xero**: press **Try again**. The button makes a fresh call each time — nothing retries by itself, so it never spends Xero calls you did not ask for |
+| **Try again** on the Connect step says your role cannot read the organisation | Reading the connected organisation needs finance access | Ask a full admin to finish the step, or to give your role finance access |
 | Operations/events are read-only ("… can view Xero operations but cannot retry…") | Your finance role is view-only | Ask a finance-edit admin |
 | An outbound operation is stuck **Failed** | A push failed and needs a replay (or was fixed directly in Xero) | **Retry in background**, or **Resolve (fixed in Xero)** with a reason |
 | A member's grouping looks wrong | The mode/rules changed but existing members were not re-grouped automatically | Run the **dry-run diff**, then **bulk re-sync** per the [runbook](../XERO_MEMBER_GROUPING_RUNBOOK.md) |

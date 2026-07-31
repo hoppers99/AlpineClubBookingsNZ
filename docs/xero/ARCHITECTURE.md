@@ -572,6 +572,24 @@ Stripe (C4) and Google (C5) reuse the same shell with their own steps:
    accepts a sanitised `?return=/admin/...` so the callback resumes on the
    wizard rather than the Sync page.
 
+   Since **#2394** a failed organisation read is **shown, not swallowed**. The
+   route's `readFailure` classifies it as `disconnected` / `rate_limited`
+   (with the Xero limit and any `Retry-After`) / `unavailable`, and the step
+   renders wording per class plus a **Try again** control; a 401/403 from this
+   site's own route is a fourth, client-only "your role has no finance access"
+   case that offers no retry, because none would help. The retry is
+   **manual by design** (owner decision on #2394): it re-runs the context load,
+   which asks with `?refresh=1` — the only way past the 60-second negative
+   cache the failure just wrote — so it costs one live `getOrganisations` call
+   per press and none at all unless somebody presses it. Nothing auto-retries,
+   which also means a rate limit is never made worse by the wizard. Before
+   this, the wizard context's bare `catch {}`, the one-shot post-OAuth
+   `refresh()` mount effect, and a null-name degradation that no caller could
+   distinguish from "Xero has no name" combined to pin the step on
+   "Confirming the organisation name…" indefinitely after a single blip.
+   The step also renders `useXeroConnection`'s `error` now, so an OAuth
+   callback that redirects back with `?error=` no longer lands silently.
+
 Each step gates on **live server truth** (`isVerified(context)`); a small
 `IntegrationWizardProgress` row persists only a resume cursor (advisory), so a
 reload mid-flow resumes at the right step and a stale cursor can never skip a
@@ -687,6 +705,27 @@ concurrent cold-cache callers await a single shared read, and this read passes
 `maxRetries: 0` so it never waits out a 429 for minutes on a page-decoration
 call. Any later success replaces the negative entry and restores the 12-hour
 TTL.
+
+Since #2394 the summary also carries **`readFailure`** — `disconnected`,
+`rate_limited` (plus which Xero limit and any `Retry-After`) or `unavailable`,
+null on success — because every other field degrades silently on failure, which
+left callers unable to tell "Xero has no name for you" from "we never got to
+ask". Classification is **name-keyed** (like `classifyXeroLockDateCheckFailure`
+and `getXeroApiErrorInfo`) rather than `instanceof`: `XeroDailyLimitError` and
+`XeroTransientOutageError` are raised by the process-global cooldowns *before*
+any HTTP call, so they carry no status code and their own `retryAfterSec` is the
+only "when will this clear" signal there is. A failure can arrive **alongside**
+a real value, because the fallback still serves the last known summary — callers
+should prefer the value and read `readFailure` as "this is why it is not
+fresher". Existing callers that only want values (the deep-link short code, the
+year-end month, the lockout panel) ignore the field and are unchanged.
+
+`forceRefresh` skips the negative entry **and** the in-flight join, which is
+what makes the setup wizard's **Try again** meaningful: within the 60-second
+window an ordinary read would hand back the cached failure, and a retry that
+re-serves the failure it was pressed to clear is worse than no button. The cost
+is bounded to a human press — there is no automatic retry anywhere on this
+path.
 
 It passes `maxTransientRetries: 1` alongside that, and the pairing is
 load-bearing: `withXeroRetry` defaults the transient budget to
