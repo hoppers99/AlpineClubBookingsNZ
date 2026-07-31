@@ -437,7 +437,7 @@ describe("review finding source/schema contracts", () => {
       ).toBeGreaterThanOrEqual(0);
       // And before the guard reads, or the guard sees the unmarked list.
       const guardAt = source.search(
-        /\b(await )?(assertNo)?[fF]indBookingMemberNightConflicts\(/,
+        /\b(assertNoBookingMemberNightConflicts|findBookingMemberNightConflicts)\(/,
       );
       expect(
         guardAt,

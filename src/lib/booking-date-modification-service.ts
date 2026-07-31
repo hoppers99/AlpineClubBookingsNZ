@@ -525,22 +525,23 @@ export async function modifyBookingDates({
     // otherwise answer a stranger's occupancy in full on every date change. Mark
     // the party from the live family boundary first — see
     // `markCrossFamilyGuestsOnBooking`.
+    const guestsForMemberNightGuard = await markCrossFamilyGuestsOnBooking(
+      tx,
+      booking.memberId,
+      booking.guests.map((g, index) => ({
+        memberId: g.memberId ?? null,
+        stayStart: newCheckIn,
+        stayEnd: newCheckOut,
+        nights: priceBreakdown.guests[index].nightDates ?? [],
+      })),
+      { skipAuthorization: actor.role === "ADMIN" },
+    );
     await assertNoBookingMemberNightConflicts(tx, {
       actorMemberId: actor.id,
       actorRole: actor.role,
       checkIn: newCheckIn,
       checkOut: newCheckOut,
-      guests: await markCrossFamilyGuestsOnBooking(
-        tx,
-        booking.memberId,
-        booking.guests.map((g, index) => ({
-          memberId: g.memberId ?? null,
-          stayStart: newCheckIn,
-          stayEnd: newCheckOut,
-          nights: priceBreakdown.guests[index].nightDates ?? [],
-        })),
-        { skipAuthorization: actor.role === "ADMIN" },
-      ),
+      guests: guestsForMemberNightGuard,
       excludeBookingId: bookingId,
     });
 
