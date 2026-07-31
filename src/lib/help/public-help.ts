@@ -11,6 +11,12 @@ import type { HelpPageContent, HelpPageEntry } from "./types";
  *    quick links are admin-editable and can be saved empty.
  *  - No club proper nouns — always "the club".
  *  - No "AI" or "assistant" wording anywhere in the copy.
+ *  - Never state or imply that a non-member can simply book or stay (#2421).
+ *    Whether the club hosts non-members at all, and on what terms, is the
+ *    club's own policy — defer to its FAQ, rules, or policy pages and its
+ *    contact page. Never link or name the unlisted guest request form: it is
+ *    reachable only by the direct URL the club hands a guest it has agreed to
+ *    host. `help-corpus.test.ts` guards this.
  */
 
 function entry(path: string, content: HelpPageContent): HelpPageEntry {
@@ -24,12 +30,12 @@ const homeHelp: HelpPageContent = {
   actions: [
     "Members: use Log In, then open Book to reserve lodge nights.",
     "Not a member yet: use the Join or Apply link to start a membership application.",
-    "Not a member and wondering about staying? Look for any FAQ, rules, or policy pages the club publishes in the site menu or footer, or use the club's contact page.",
+    "Not a member and hoping to stay: look for any FAQ, rules, or policy pages the club publishes in the site menu or footer, or use the club's contact page.",
   ],
   questions: [
     {
       q: "How do I book a stay?",
-      a: "If you are a member, sign in and open Book to choose your nights and confirm. If you are not a member, apply to join first — and if you are hoping to stay without joining, check the club's own pages or contact the club, because that is the club's decision.",
+      a: "If you are a member, sign in and open Book to choose your nights and confirm. If you are not a member, apply to join first. Whether non-members can stay is the club's decision — see the club's own pages.",
     },
     {
       q: "How do I become a member?",

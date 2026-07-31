@@ -147,6 +147,15 @@ describe("question integrity across all surfaces", () => {
 describe("public corpus hygiene", () => {
   const CLUB_PROPER_NOUNS = /tokoroa|LWTC|hoppers|example mountain/i;
   const AI_WORDING = /\bAI\b|assistant/i;
+  // #2421: the signed-out corpus must never advertise the guest request form.
+  // The form is deliberately unlisted — reachable only by the direct URL the
+  // club hands a guest it has agreed to host — and whether the club hosts
+  // non-members at all is its own policy, so the copy defers to the club's own
+  // FAQ/rules/policy pages instead of naming or linking the route. The FAQ
+  // question "Can I stay without being a member?" is deliberately still
+  // allowed: asking the question is not advertising an answer.
+  const ADVERTISES_GUEST_BOOKING =
+    /without an account|booking-requests|request a booking/i;
 
   it("never names a specific club and never mentions AI or an assistant", () => {
     const contents = [
@@ -157,6 +166,14 @@ describe("public corpus hygiene", () => {
       const text = collectText(content);
       expect(text).not.toMatch(CLUB_PROPER_NOUNS);
       expect(text).not.toMatch(AI_WORDING);
+    }
+  });
+
+  it("never advertises the unlisted guest request form", () => {
+    const paths = [...getHelpPaths("public"), "/an-unknown-public-page"];
+    for (const path of paths) {
+      const text = collectText(getHelpForPage("public", path));
+      expect(text, `public ${path}`).not.toMatch(ADVERTISES_GUEST_BOOKING);
     }
   });
 });
@@ -216,11 +233,11 @@ describe("buildHelpGrounding", () => {
       ## What you can do
       - Members: use Log In, then open Book to reserve lodge nights.
       - Not a member yet: use the Join or Apply link to start a membership application.
-      - Not a member and wondering about staying? Look for any FAQ, rules, or policy pages the club publishes in the site menu or footer, or use the club's contact page.
+      - Not a member and hoping to stay: look for any FAQ, rules, or policy pages the club publishes in the site menu or footer, or use the club's contact page.
 
       ## Questions and answers
       Q: How do I book a stay?
-      A: If you are a member, sign in and open Book to choose your nights and confirm. If you are not a member, apply to join first — and if you are hoping to stay without joining, check the club's own pages or contact the club, because that is the club's decision.
+      A: If you are a member, sign in and open Book to choose your nights and confirm. If you are not a member, apply to join first. Whether non-members can stay is the club's decision — see the club's own pages.
 
       Q: How do I become a member?
       A: Use the Join or Apply link to fill in a membership application. Applying does not create a login — the club reviews and approves applications before you can sign in.
