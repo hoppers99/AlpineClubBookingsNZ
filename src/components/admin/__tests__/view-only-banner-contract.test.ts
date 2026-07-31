@@ -1362,7 +1362,30 @@ describe("view-only section banner coverage (#2160)", () => {
       }
       const flat = flatten(readFileSync(file, "utf8"));
       for (const phrase of phrases) {
-        if (!flat.includes(phrase)) offenders.push(`${rel}: "${phrase}"`);
+        if (!flat.includes(phrase)) {
+          offenders.push(`${rel}: "${phrase}"`);
+          continue;
+        }
+        // A CORRECT SENTENCE ELSEWHERE IN THE SAME FILE MUST NOT EXCUSE A STALE
+        // ONE, and that is not hypothetical: `includes` only answers "does the
+        // measured figure appear at least once". A CHANGELOG quotes this
+        // sentence once per release that moved the numbers, so a new entry
+        // carrying the right figure let an older entry keep publishing a
+        // superseded one — a reader landing on the wrong paragraph is told a
+        // number no test disagrees with, which is the exact failure the census
+        // above exists to prevent.
+        //
+        // So every occurrence of each sentence's SHAPE — the same words with any
+        // digits in the numeric slots — has to carry the measured figures.
+        const shape = new RegExp(
+          phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\d+/g, "\\d+"),
+          "g",
+        );
+        for (const match of flat.matchAll(shape)) {
+          if (match[0] !== phrase) {
+            offenders.push(`${rel}: stale "${match[0]}" — should read "${phrase}"`);
+          }
+        }
       }
     }
 

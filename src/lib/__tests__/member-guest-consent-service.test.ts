@@ -1045,6 +1045,68 @@ describe("D-14 — a decline refused, and a row left blocked rather than half-re
     expectBlocked(result, "OTHER", "Some future gate nobody has written yet");
   });
 
+  it("never stamps a blocked status over a claim the sweep won in the rollback gap", async () => {
+    // THE GAP THE TWO-WRITE DESIGN OPENS, and the reason the second write re-uses
+    // the guarded claim rather than a bare `update`. A refused decline rolls its
+    // transaction back, which puts the row to PENDING again — and the 04:30 sweep
+    // can legitimately claim that restored row before the blocked status is
+    // written. The loser must take the same ALREADY_RESOLVED answer every other
+    // loser takes; an unguarded write would stamp DECLINED (with a responder)
+    // straight over the sweep's EXPIRED, breaking the one-way state machine and
+    // attributing the lapse to a member as a decision.
+    let transactions = 0;
+    world().state.raceHook = () => {
+      transactions += 1;
+      // 1 = the decline attempt that is about to roll back; 2 = the blocked write.
+      if (transactions === 2) world().guests.get(GUEST)!.consentStatus = "EXPIRED";
+    };
+    refuseAfterPartialRemoval(new h.BookingGuestRemovalError(REFUSALS.LAST_GUEST, 400));
+
+    const result = await respondToMemberGuestConsent({
+      bookingId: BOOKING,
+      guestId: GUEST,
+      actorMemberId: TARGET,
+      action: "DECLINE",
+      now: NOW,
+      delegateResolver: acceptDelegate,
+    });
+
+    expect(result).toEqual({ outcome: "ALREADY_RESOLVED" });
+    expect(world().guests.get(GUEST)).toMatchObject({
+      consentStatus: "EXPIRED",
+      consentRespondedAt: null,
+      consentRespondedByMemberId: null,
+    });
+  });
+
+  it("does not resurrect a row the sweep removed in that same gap", async () => {
+    // The other half of the gap: the sweep did not just claim the row, it claimed
+    // it AND completed the removal, so there is no row left. The blocked write
+    // must find nothing and report ALREADY_RESOLVED — never re-create a guest the
+    // booking no longer has, and never fail the whole request on a missing row.
+    let transactions = 0;
+    world().state.raceHook = () => {
+      transactions += 1;
+      if (transactions === 2) {
+        world().guests.delete(GUEST);
+        world().choreAssignments.delete(GUEST);
+      }
+    };
+    refuseAfterPartialRemoval(new h.BookingGuestRemovalError(REFUSALS.LAST_GUEST, 400));
+
+    const result = await respondToMemberGuestConsent({
+      bookingId: BOOKING,
+      guestId: GUEST,
+      actorMemberId: TARGET,
+      action: "DECLINE",
+      now: NOW,
+      delegateResolver: acceptDelegate,
+    });
+
+    expect(result).toEqual({ outcome: "ALREADY_RESOLVED" });
+    expect(world().guests.has(GUEST)).toBe(false);
+  });
+
   it("still lets a genuinely unexpected failure surface", async () => {
     // The line between "the booking refused" and "something is broken". A
     // TypeError must NOT be filed as a blocked row: that would mark the row

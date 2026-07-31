@@ -31,7 +31,7 @@
 // `partial-stay-edit-pricing.test.ts` uses, which is also where the pre-existing
 // owner/admin removal behaviour is pinned end-to-end (its "#1093" cases). This
 // file deliberately does not repeat that money math; it tests the gate.
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/capacity", () => ({
   checkCapacity: vi.fn(),
@@ -151,8 +151,32 @@ const ADMIN = "m-admin";
 const TARGET_GUEST = "g-target";
 const COMPANION_GUEST = "g-companion";
 
-// Well in the future, so the self-removal future check passes and the stay is
-// nowhere near a rate boundary.
+/**
+ * THE CLOCK IS PINNED, and it has to be.
+ *
+ * The self-removal gate this file exists to test asks whether check-in is still
+ * in the future, and it asks the REAL wall clock — `removeBookingGuestInTransaction`
+ * takes no injectable date, so there is nothing to thread one through. A fixture
+ * check-in that is merely "well in the future" is therefore a dated assertion: on
+ * 2 November 2026 the stay stops being future, `STAY_NOT_FUTURE` starts firing,
+ * and eight tests in this file go red on that one morning for reasons that have
+ * nothing to do with the code they cover. Finding H4 caught exactly this shape
+ * eight days out; this is the same remedy applied to the one suite that reaches
+ * the gate through the real clock rather than through a threaded date.
+ *
+ * Mid-October: after the request went out (1 Oct) and before the deadline
+ * (1 Nov) and the stay (2 Nov), which is the situation the fixture describes.
+ */
+const PINNED_NOW = new Date("2026-10-15T00:00:00.000Z");
+beforeAll(() => {
+  vi.setSystemTime(PINNED_NOW);
+});
+afterAll(() => {
+  vi.useRealTimers();
+});
+
+// Well in the future OF THE PINNED CLOCK, so the self-removal future check
+// passes and the stay is nowhere near a rate boundary.
 const CHECK_IN = new Date("2026-11-02T00:00:00.000Z");
 const CHECK_OUT = new Date("2026-11-04T00:00:00.000Z"); // 2 nights
 

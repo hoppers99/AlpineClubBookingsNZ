@@ -51,7 +51,7 @@ All notable public reference-release changes should be recorded here.
   The published banner-coverage figures were re-measured with the new settings
   card: **297** gated admin controls, **250** of them covered by a banner (224
   in their own file, 26 by a verified vouching parent — 5 of those through the
-  wizard frame), and **43** across 23 files deliberately keeping their own
+  wizard frame), and **47** across 25 files deliberately keeping their own
   reason.
   **Review hardening in the same change.** A "no thanks" that the system cannot
   carry out — an already-paid booking whose refund-or-credit choice only the club
