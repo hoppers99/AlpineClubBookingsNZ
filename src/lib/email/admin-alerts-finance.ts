@@ -1,12 +1,18 @@
 import {
   adminPaymentFailureTemplate,
   adminDuplicateCaptureRefundTemplate,
+  adminManualSettlementConflictTemplate,
+  adminManualRefundTaskTemplate,
   adminXeroSyncErrorTemplate,
   adminXeroRepeatedFailureTemplate,
   adminXeroReconciliationReportTemplate,
   adminRefundRequestTemplate,
   type XeroReconciliationReportEmail,
 } from "../email-templates";
+import {
+  composeOptionalEmailLine,
+  duplicateCaptureRefundOutcomeParagraph,
+} from "../email-message-notes";
 import { CLUB_BOOKINGS_NAME } from "@/config/club-identity";
 import { formatNZDate } from "../nzst-date";
 import { formatCents as formatMoneyCents } from "@/lib/utils";
@@ -83,8 +89,95 @@ export async function sendAdminDuplicateCaptureRefundAlert(data: {
       paymentIntentId: data.paymentIntentId,
       operation: data.operationReference,
       errorMessage: data.errorMessage ?? "",
+      // #2268: the outcome-dependent lead paragraph, built from the same
+      // helper as the hand-built HTML, with the failure detail appended when
+      // there is one. The flat body used to state the success wording
+      // unconditionally and park the failure wording in an authoring note, so
+      // an admin who saved that default was told a duplicate charge had been
+      // refunded even when the refund had failed.
+      refundOutcomeNote:
+        duplicateCaptureRefundOutcomeParagraph(data.refundFailed) +
+        (data.refundFailed && data.errorMessage
+          ? " Failure detail: " + data.errorMessage
+          : ""),
       reviewUrl,
       refundFailed: data.refundFailed,
+    },
+    preferenceKey: "adminPaymentFailure",
+  });
+}
+
+/**
+ * B5 (#2262): the reciprocal fence's alert. An inbound Xero PAID landed on a
+ * booking this system already recorded as settled in cash / off-Xero, so the
+ * club may be holding the same money twice. Admin audience, so it is exempt
+ * from the per-booking "No emails" switch (#2258 rule 2) — that switch silences
+ * the MEMBER, and an operator must still hear about unreconciled money.
+ *
+ * Repeat sends are throttled by the caller with a cross-instance
+ * AlertCooldown claim keyed on (payment, invoice), so webhook replays re-count
+ * the conflict without re-spamming.
+ */
+export async function sendAdminManualSettlementConflictAlert(data: {
+  memberName: string;
+  checkIn: Date;
+  checkOut: Date;
+  amountCents: number;
+  bookingId: string;
+  bookingStatus: string;
+  xeroInvoiceNumber: string | null;
+  xeroInvoiceUrl: string | null;
+}) {
+  const baseUrl = process.env.NEXTAUTH_URL || "http://localhost:3000";
+  const reviewUrl = `${baseUrl}/admin/payments`;
+
+  await sendToAdmins({
+    subject: `Cash settlement vs Xero payment — reconcile: ${data.memberName}`,
+    html: adminManualSettlementConflictTemplate({ ...data, reviewUrl }),
+    templateName: "admin-manual-settlement-conflict",
+    templateData: {
+      memberName: data.memberName,
+      checkIn: formatNZDate(data.checkIn),
+      checkOut: formatNZDate(data.checkOut),
+      amount: formatMoneyCents(data.amountCents),
+      bookingId: data.bookingId,
+      status: data.bookingStatus,
+      xeroInvoiceNumber: data.xeroInvoiceNumber ?? "",
+      xeroObjectUrl: data.xeroInvoiceUrl ?? "",
+      reviewUrl,
+    },
+    preferenceKey: "adminPaymentFailure",
+  });
+}
+
+/**
+ * B5 (#2262): a cash-settled booking was cancelled, so the refund has to be
+ * paid back by hand. Admin audience (exempt from the #2258 switch); the durable
+ * ManualRefundTask row is the record, this is the nudge.
+ */
+export async function sendAdminManualRefundTaskAlert(data: {
+  memberName: string;
+  checkIn: Date;
+  checkOut: Date;
+  refundAmountCents: number;
+  bookingId: string;
+  reason: string;
+}) {
+  const baseUrl = process.env.NEXTAUTH_URL || "http://localhost:3000";
+  const reviewUrl = `${baseUrl}/admin/payments`;
+
+  await sendToAdmins({
+    subject: `Manual refund needed — cash booking cancelled: ${data.memberName}`,
+    html: adminManualRefundTaskTemplate({ ...data, reviewUrl }),
+    templateName: "admin-manual-refund-task",
+    templateData: {
+      memberName: data.memberName,
+      checkIn: formatNZDate(data.checkIn),
+      checkOut: formatNZDate(data.checkOut),
+      refundAmount: formatMoneyCents(data.refundAmountCents),
+      bookingId: data.bookingId,
+      reason: data.reason,
+      reviewUrl,
     },
     preferenceKey: "adminPaymentFailure",
   });
@@ -132,6 +225,29 @@ export async function sendAdminXeroRepeatedFailureAlert(data: {
       localModel: data.localModel ?? "",
       localId: data.localId ?? "",
       latestErrorMessage: data.latestErrorMessage ?? "",
+      // #2268: pre-composed optional lines. Every one of these five values is
+      // nullable, and the flat body has no conditional syntax, so each whole
+      // line is built here or omitted entirely — the body used to carry
+      // "OR Unavailable" and bare unclickable "Open local record" labels.
+      localRecordNote: composeOptionalEmailLine(
+        "Local Record",
+        [data.localModel, data.localId].filter(Boolean).join(" "),
+        { trailing: "\n" },
+      ),
+      latestErrorNote: composeOptionalEmailLine(
+        "Latest Error",
+        data.latestErrorMessage,
+        { trailing: "\n" },
+      ),
+      xeroLinksNote: composeOptionalEmailLine(
+        null,
+        composeOptionalEmailLine("Open local record", data.localUrl, {
+          trailing: "\n",
+        }) +
+          composeOptionalEmailLine("Open Xero object", data.xeroObjectUrl, {
+            trailing: "\n",
+          }),
+      ),
       timestamp: data.timestamp.toISOString(),
     },
     preferenceKey: "adminXeroSyncError",
@@ -189,6 +305,15 @@ export async function sendAdminRefundRequestAlert(data: {
         data.requestedAmountCents === null
           ? ""
           : formatMoneyCents(data.requestedAmountCents),
+      // #2268: pre-composed optional line — an appeal that names no amount
+      // must not print a dangling "Requested:".
+      requestedAmountNote: composeOptionalEmailLine(
+        "Requested",
+        data.requestedAmountCents === null
+          ? null
+          : formatMoneyCents(data.requestedAmountCents),
+        { trailing: "\n" },
+      ),
     },
     preferenceKey: "adminRefundRequest",
   });

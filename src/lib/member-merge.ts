@@ -100,7 +100,7 @@ function spec(
 }
 
 /**
- * The authoritative classification of all 77 Member FK-owning relations. The
+ * The authoritative classification of all 79 Member FK-owning relations. The
  * DMMF/schema completeness test (member-merge-dmmf.test.ts) fails CI if the
  * schema grows a Member relation that is missing here (or if a key here no
  * longer exists in the schema), so a new relation cannot silently escape merge
@@ -212,6 +212,13 @@ export const MEMBER_MERGE_RELATION_SPECS: readonly MemberMergeRelationSpec[] = [
   spec("AdminCreditAdjustmentRequest", "requestedBy", "requestedById", "move"),
   spec("AdminCreditAdjustmentRequest", "reviewedBy", "reviewedById", "move"),
   spec("RefundRequest", "member", "memberId", "move"),
+  // B5 (#2262): both are nullable SetNull actor back-refs with no Member unique
+  // constraint, exactly like MemberSubscription.manuallyMarkedPaidBy above —
+  // who recorded a cash settlement, and who closed the hand-back task it
+  // raised. `move` re-points that history onto the surviving member (history
+  // follows the person; no collision is possible without a unique).
+  spec("Payment", "manuallyMarkedPaidBy", "manuallyMarkedPaidByMemberId", "move"),
+  spec("ManualRefundTask", "completedBy", "completedByMemberId", "move"),
 
   // --- Reports / lodge / hut leader ---
   spec("IssueReport", "member", "memberId", "move"),

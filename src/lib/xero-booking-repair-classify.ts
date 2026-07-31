@@ -172,7 +172,27 @@ export function classifyBookingContext(
   }
 
   if (booking.status === "PAID") {
-    if (payment && !primaryInvoice) {
+    if (payment && !primaryInvoice && payment.manuallyMarkedPaidAt) {
+      // B5 (#2262) carve-out. This booking was settled in cash / by an off-Xero
+      // bank transfer, so NO Xero objects are expected for it and there is
+      // nothing to repair. Without this arm it would classify as the
+      // MISSING_PRIMARY_INVOICE critical finding carrying a safe-to-auto-apply
+      // QUEUE_PRIMARY_INVOICE action — an auto-repair pass would then queue a
+      // mint that raises, and emails the member, an awaiting-payment invoice for
+      // money the club already holds. Informational and action-free on purpose.
+      addFinding(findings, {
+        code: "MANUALLY_SETTLED_NO_XERO_EXPECTED",
+        severity: "info",
+        summary:
+          "The booking was manually marked paid (cash / off-Xero) — no Xero invoice is expected.",
+        safeToAutoApply: false,
+        details: {
+          paymentId: payment.id,
+          manuallyMarkedPaidAt: payment.manuallyMarkedPaidAt,
+        },
+        actionKeys: [],
+      });
+    } else if (payment && !primaryInvoice) {
       const blockingOperation = getBlockingOperation(
         paymentOperations,
         "INVOICE",

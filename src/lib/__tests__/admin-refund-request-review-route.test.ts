@@ -17,7 +17,8 @@ const mocks = vi.hoisted(() => ({
   enqueueXeroRefundCreditNoteOperation: vi.fn(),
   kickQueuedXeroOutboxOperationsIfConnected: vi.fn(),
   sendEmail: vi.fn(),
-  refundRequestResolvedTemplate: vi.fn(),
+  refundRequestApprovedTemplate: vi.fn(),
+  refundRequestDeclinedTemplate: vi.fn(),
   createAuditLog: vi.fn(),
 }));
 
@@ -64,7 +65,10 @@ vi.mock("@/lib/email", () => ({
 }));
 
 vi.mock("@/lib/email-templates", () => ({
-  refundRequestResolvedTemplate: mocks.refundRequestResolvedTemplate,
+  // #2321: one function per outcome — no boolean can route approval wording to
+  // a declined member.
+  refundRequestApprovedTemplate: mocks.refundRequestApprovedTemplate,
+  refundRequestDeclinedTemplate: mocks.refundRequestDeclinedTemplate,
 }));
 
 vi.mock("@/lib/logger", () => ({
@@ -124,7 +128,8 @@ describe("PUT /api/admin/refund-requests/[id]", () => {
       skipped: 0,
     });
     mocks.sendEmail.mockResolvedValue(undefined);
-    mocks.refundRequestResolvedTemplate.mockReturnValue("<p>approved</p>");
+    mocks.refundRequestApprovedTemplate.mockReturnValue("<p>approved</p>");
+    mocks.refundRequestDeclinedTemplate.mockReturnValue("<p>declined</p>");
     mocks.refundRequestUpdateMany.mockResolvedValue({ count: 1 });
     mocks.paymentFindUnique.mockResolvedValue({
       amountCents: 10000,
@@ -414,6 +419,17 @@ describe("PUT /api/admin/refund-requests/[id]", () => {
 
       expect(response.status).toBe(200);
       expect(mocks.sendEmail).toHaveBeenCalledTimes(1);
+      // #2321: the approve arm must send the APPROVED-outcome template —
+      // renaming either key in the route goes red here, not in a member's
+      // inbox. BOTH halves are pinned: `templateName` selects the club's saved
+      // override, but `html` is the body a club with NO override actually
+      // receives, so swapping only the HTML builders would otherwise post
+      // decline wording to an approved member unnoticed.
+      expect(mocks.sendEmail).toHaveBeenCalledWith(
+        expect.objectContaining({ templateName: "refund-request-approved" })
+      );
+      expect(mocks.refundRequestApprovedTemplate).toHaveBeenCalledTimes(1);
+      expect(mocks.refundRequestDeclinedTemplate).not.toHaveBeenCalled();
       expect(mocks.refundPaymentTransactions).toHaveBeenCalledWith(EXPECTED_REFUND);
       expect(mocks.enqueueXeroRefundCreditNoteOperation).toHaveBeenCalled();
       expect(auditMetadata("refund-request.approve")).not.toHaveProperty(
@@ -464,6 +480,12 @@ describe("PUT /api/admin/refund-requests/[id]", () => {
 
       expect(response.status).toBe(200);
       expect(mocks.sendEmail).toHaveBeenCalledTimes(1);
+      // #2321: outcome-template pinning (see the default-notify approve case).
+      expect(mocks.sendEmail).toHaveBeenCalledWith(
+        expect.objectContaining({ templateName: "refund-request-approved" })
+      );
+      expect(mocks.refundRequestApprovedTemplate).toHaveBeenCalledTimes(1);
+      expect(mocks.refundRequestDeclinedTemplate).not.toHaveBeenCalled();
       expect(mocks.refundPaymentTransactions).toHaveBeenCalledWith(EXPECTED_REFUND);
       expect(auditMetadata("refund-request.approve")).not.toHaveProperty(
         "notifyMember"
@@ -498,6 +520,15 @@ describe("PUT /api/admin/refund-requests/[id]", () => {
 
       expect(response.status).toBe(200);
       expect(mocks.sendEmail).toHaveBeenCalledTimes(1);
+      // #2321: the reject arm must send the DECLINED-outcome template — the
+      // exact wiring whose absence let a declined member be told "approved".
+      // Both halves pinned (see the approve case): the HTML builder is the
+      // body a club with no saved override actually receives.
+      expect(mocks.sendEmail).toHaveBeenCalledWith(
+        expect.objectContaining({ templateName: "refund-request-declined" })
+      );
+      expect(mocks.refundRequestDeclinedTemplate).toHaveBeenCalledTimes(1);
+      expect(mocks.refundRequestApprovedTemplate).not.toHaveBeenCalled();
       // Reject never refunds; only the claiming updateMany runs.
       expect(mocks.refundPaymentTransactions).not.toHaveBeenCalled();
       expect(mocks.refundRequestUpdateMany).toHaveBeenCalledWith(
@@ -550,6 +581,12 @@ describe("PUT /api/admin/refund-requests/[id]", () => {
 
       expect(response.status).toBe(200);
       expect(mocks.sendEmail).toHaveBeenCalledTimes(1);
+      // #2321: outcome-template pinning (see the default-notify reject case).
+      expect(mocks.sendEmail).toHaveBeenCalledWith(
+        expect.objectContaining({ templateName: "refund-request-declined" })
+      );
+      expect(mocks.refundRequestDeclinedTemplate).toHaveBeenCalledTimes(1);
+      expect(mocks.refundRequestApprovedTemplate).not.toHaveBeenCalled();
       expect(auditMetadata("refund-request.reject")).not.toHaveProperty(
         "notifyMember"
       );
