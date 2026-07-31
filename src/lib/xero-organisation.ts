@@ -10,6 +10,10 @@
 import logger from "@/lib/logger";
 import { parseDateOnly } from "@/lib/date-only";
 import {
+  getXeroErrorHeader,
+  getXeroErrorStatusCode,
+} from "@/lib/xero-error-shape";
+import {
   fetchMockXeroOrganisation,
   getXeroMockInternalOrigin,
 } from "@/lib/xero-mock-endpoint";
@@ -140,7 +144,13 @@ async function readXeroFinancialYearEndMonth(): Promise<number | null> {
         // arms `rememberXeroTransientOutage`, the PROCESS-GLOBAL breaker that
         // fails every Xero call (invoicing and sync included) for two
         // minutes. This read must not be able to trip that on its own first
-        // 5xx. See the summary read below for the full account.
+        // 5xx, so it takes two consecutive transient failures (#2283).
+        //
+        // Deliberately NOT the summary read's posture below: that one is
+        // driven by an operator-facing Try again button, so #2394 opted it out
+        // of arming the breaker entirely. This one has no button — it is
+        // member-facing serial traffic bounded by the throttle above — and
+        // keeps the #2283 decision unchanged.
         maxTransientRetries: 1,
       },
     );
@@ -250,6 +260,39 @@ export async function getXeroFinancialYearEndMonth(
 // share one in-flight read, and the read itself does not retry.
 // ---------------------------------------------------------------------------
 
+/**
+ * Why the organisation read failed, in the three shapes an OPERATOR can act on
+ * differently (#2394):
+ *
+ * - `disconnected` — the Xero authorisation is gone or unreadable. Only a
+ *   reconnect fixes it; waiting or retrying never will.
+ * - `rate_limited` — Xero refused because a limit was hit. Waiting fixes it;
+ *   retrying immediately makes it worse.
+ * - `unavailable` — Xero (or the hop to it) failed transiently. Trying again
+ *   now is the right move.
+ *
+ * Deliberately coarse. It exists so the setup wizard can tell an operator which
+ * of those three things to do — not to describe the error.
+ */
+export type XeroOrganisationReadFailureKind =
+  | "disconnected"
+  | "rate_limited"
+  | "unavailable";
+
+export interface XeroOrganisationReadFailure {
+  kind: XeroOrganisationReadFailureKind;
+  /**
+   * Which Xero limit was hit when `kind` is `rate_limited`, else null. The two
+   * clear on completely different timescales — the per-minute limit in about a
+   * minute, the daily cap at midnight UTC (about midday in New Zealand) — so a
+   * message that cannot tell them apart cannot tell an operator whether to wait
+   * or come back tomorrow.
+   */
+  rateLimit: "minute" | "day" | null;
+  /** Seconds Xero (or our own cooldown) said to wait, when it said. */
+  retryAfterSeconds: number | null;
+}
+
 export interface XeroConnectedOrganisation {
   name: string | null;
   financialYearEndMonth: number | null;
@@ -259,6 +302,24 @@ export interface XeroConnectedOrganisation {
    * a reason to hide or disable the link.
    */
   shortCode: string | null;
+  /**
+   * Why the last read failed, or null when it succeeded (#2394).
+   *
+   * Every other field on this summary degrades silently on failure — that is
+   * the whole point of the fallback below — so before this field existed a
+   * caller could not tell "Xero has no name for you" from "we never got to
+   * ask". The setup wizard's org-confirmation step sat on
+   * "Confirming the organisation name…" forever because of exactly that.
+   *
+   * Non-wizard callers (the deep-link short code, the year-end month, the
+   * lockout panel) can keep ignoring it: they already treat nulls as "degrade
+   * to the generic behaviour", which stays correct.
+   *
+   * Note a failure can arrive ALONGSIDE real values: a failed read falls back
+   * to the last known summary, so `name` may be a still-good cached name with
+   * `readFailure` set. Prefer the value; the failure is why it is not fresher.
+   */
+  readFailure: XeroOrganisationReadFailure | null;
 }
 
 /** Empty summary: the shape a failed/never-run read degrades to. */
@@ -266,7 +327,97 @@ const EMPTY_ORG_SUMMARY: XeroConnectedOrganisation = {
   name: null,
   financialYearEndMonth: null,
   shortCode: null,
+  readFailure: null,
 };
+
+/** Seconds from a `Retry-After` header value (delta-seconds or HTTP date). */
+function parseRetryAfterSeconds(value: string | undefined): number | null {
+  if (!value) return null;
+  const numeric = Number.parseInt(value, 10);
+  if (Number.isFinite(numeric) && numeric >= 0) return numeric;
+  const retryAtMs = Date.parse(value);
+  if (Number.isFinite(retryAtMs)) {
+    return Math.max(0, Math.ceil((retryAtMs - Date.now()) / 1000));
+  }
+  return null;
+}
+
+/** A positive, finite `retryAfterSec` off one of the xero-api-client errors. */
+function errorRetryAfterSeconds(error: unknown): number | null {
+  const raw = (error as { retryAfterSec?: unknown }).retryAfterSec;
+  return typeof raw === "number" && Number.isFinite(raw) && raw >= 0
+    ? Math.ceil(raw)
+    : null;
+}
+
+/**
+ * Classify an organisation-read failure into the three operator actions.
+ *
+ * Name-keyed rather than `instanceof`, matching
+ * `classifyXeroLockDateCheckFailure` and `getXeroApiErrorInfo`: it keeps this
+ * module decoupled from `xero-api-client`'s class identities (which differ
+ * across the mock/live paths and under module mocking in tests).
+ *
+ * Order matters. `XeroDailyLimitError` and `XeroTransientOutageError` are
+ * raised by the PROCESS-GLOBAL cooldowns before any HTTP call happens, so they
+ * carry no status code — they must be matched by name, and their own
+ * `retryAfterSec` is the only "when will this clear" signal available.
+ */
+function classifyOrganisationReadFailure(
+  error: unknown,
+): XeroOrganisationReadFailure {
+  const name = error instanceof Error ? error.name : "";
+
+  // Only an admin re-authorisation fixes these (revoked refresh token, missing
+  // tenant, or a stored token that no longer decrypts after an auth-secret
+  // change) — the same two names getXeroApiErrorInfo maps to "reconnect".
+  if (name === "XeroReconnectRequiredError" || name === "XeroTokenDecryptError") {
+    return { kind: "disconnected", rateLimit: null, retryAfterSeconds: null };
+  }
+
+  if (name === "XeroDailyLimitError") {
+    return {
+      kind: "rate_limited",
+      rateLimit: "day",
+      retryAfterSeconds: errorRetryAfterSeconds(error),
+    };
+  }
+
+  // The process-global transient breaker: Xero itself may be fine by now, but
+  // this process will refuse for the rest of the cooldown, so the wait is real
+  // and worth telling the operator about.
+  if (name === "XeroTransientOutageError") {
+    return {
+      kind: "unavailable",
+      rateLimit: null,
+      retryAfterSeconds: errorRetryAfterSeconds(error),
+    };
+  }
+
+  const statusCode = getXeroErrorStatusCode(error);
+
+  if (statusCode === 429) {
+    const problem = getXeroErrorHeader(error, "x-rate-limit-problem");
+    return {
+      kind: "rate_limited",
+      rateLimit: problem === "day" || problem === "minute" ? problem : null,
+      retryAfterSeconds: parseRetryAfterSeconds(
+        getXeroErrorHeader(error, "retry-after"),
+      ),
+    };
+  }
+
+  // A live 401/403 (the token was revoked in Xero's UI before the pre-expiry
+  // refresh window noticed) arrives as a raw API error, not a reconnect-classed
+  // one — same status fallback as getXeroApiErrorInfo and the lock-date guard.
+  if (statusCode === 401 || statusCode === 403) {
+    return { kind: "disconnected", rateLimit: null, retryAfterSeconds: null };
+  }
+
+  // Everything else — 5xx, 408, a refused socket, a mock-harness loopback
+  // failure — is "try again now".
+  return { kind: "unavailable", rateLimit: null, retryAfterSeconds: null };
+}
 
 /**
  * Normalise Xero's `Organisation.shortCode` to a usable value or null. Same
@@ -352,6 +503,7 @@ async function readXeroConnectedOrganisation(): Promise<XeroConnectedOrganisatio
           name: mock.name,
           financialYearEndMonth: mock.financialYearEndMonth,
           shortCode: normaliseShortCode(mock.shortCode),
+          readFailure: null,
         },
         false,
       );
@@ -372,16 +524,28 @@ async function readXeroConnectedOrganisation(): Promise<XeroConnectedOrganisatio
         // minutes and competing for the same minute budget as the sync that
         // caused the 429. One attempt, cached failure, try again in a minute.
         maxRetries: 0,
-        // But KEEP the transient (5xx/408) budget at withXeroRetry's default of
-        // 1, because `maxTransientRetries` otherwise defaults to
-        // `min(maxRetries, 1)` — so `maxRetries: 0` alone would also zero it.
-        // That matters far beyond this read: exhausting the transient budget
-        // calls `rememberXeroTransientOutage`, the PROCESS-GLOBAL breaker that
-        // fails every subsequent Xero call fast for two minutes, invoicing and
-        // sync included. A decorative read must not be able to trip that on its
-        // own first 5xx; with the budget intact it takes two consecutive
-        // transient failures, exactly as it did before this feature existed.
-        maxTransientRetries: 1,
+        // EXACTLY ONE live call, and it can never arm the process-global
+        // transient breaker (#2394 review, F2). The two options are one
+        // decision, taken together:
+        //
+        //   * `maxTransientRetries: 1` (what #2261 chose) means ONE press of the
+        //     wizard's Try again spends TWO Xero calls on a 5xx/408, and
+        //     exhausting that budget calls `rememberXeroTransientOutage` — the
+        //     PROCESS-GLOBAL breaker that then fails every Xero call for two
+        //     minutes, invoicing, sync and webhook replay included. #2394 puts
+        //     an operator-facing button in front of this read, rendered
+        //     precisely when Xero is 5xx-ing, with copy inviting a press. The
+        //     blast radius, not the quota, is the problem.
+        //   * `maxTransientRetries: 0` ALONE is worse: with no budget left, the
+        //     very first 5xx arms the breaker.
+        //
+        // So: no transient retry (one press = one call, which is what the
+        // operator is told), and an explicit opt-out of arming the breaker. This
+        // read still RESPECTS a cooldown armed by a call that matters — it
+        // refuses before any HTTP and reports the wait — it just may not start
+        // one. A page decoration should never be able to stop invoicing.
+        maxTransientRetries: 0,
+        armTransientBreaker: false,
       },
     );
     const org = response.body.organisations?.[0];
@@ -394,17 +558,24 @@ async function readXeroConnectedOrganisation(): Promise<XeroConnectedOrganisatio
             ? rawMonth
             : null,
         shortCode: normaliseShortCode(org?.shortCode),
+        readFailure: null,
       },
       false,
     );
   } catch (error) {
+    const readFailure = classifyOrganisationReadFailure(error);
     logger.warn(
-      { err: error },
+      { err: error, failureKind: readFailure.kind },
       "Failed to read Xero connected organisation summary",
     );
     // Negative-cache the failure, keeping the last known summary as the served
-    // value so a transient blip does not blank a name we already have.
-    return remember(orgSummaryCache?.summary ?? EMPTY_ORG_SUMMARY, true);
+    // value so a transient blip does not blank a name we already have — but
+    // now carrying WHY, so a caller with no name to fall back on can say so
+    // instead of waiting forever (#2394).
+    return remember(
+      { ...(orgSummaryCache?.summary ?? EMPTY_ORG_SUMMARY), readFailure },
+      true,
+    );
   }
 }
 
@@ -419,6 +590,22 @@ async function readXeroConnectedOrganisation(): Promise<XeroConnectedOrganisatio
  * {@link XeroConnectedOrganisation} needs no cache-shape change and no change
  * to {@link resetXeroOrganisationCaches} (which nulls the entry wholesale,
  * negative entries included) or to the connect/disconnect invalidation bus.
+ *
+ * `forceRefresh` skips BOTH the cache (positive and negative) and the in-flight
+ * join, so it reaches the underlying read every time. That is what makes the
+ * setup wizard's **Try again** button real (#2394): within the 60-second
+ * negative TTL an ordinary read would hand back the cached failure, and a retry
+ * button that re-serves the failure it was pressed to clear teaches the operator
+ * the button does nothing. The cost is at most ONE `getOrganisations` call per
+ * press (the read takes no transient retry), and the owner's decision on #2394
+ * was explicitly a manual retry, not an automatic one, so no extra Xero quota is
+ * spent unless somebody asks for it.
+ *
+ * "At most" is exact, not hedging: while a process-global cooldown armed
+ * ELSEWHERE is active — the daily-limit gate or the transient-outage breaker —
+ * `withXeroRetry` refuses before any HTTP, so a forced read costs nothing and
+ * comes back classified with the remaining wait. Being reported the wait is the
+ * useful outcome there, so the button is still worth pressing.
  *
  * Honours the test-only mock-Xero harness (#2080): inert in production.
  */

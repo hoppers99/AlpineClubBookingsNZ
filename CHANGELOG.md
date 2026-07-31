@@ -283,6 +283,47 @@ All notable public reference-release changes should be recorded here.
   dashboard finally renders the additional-payment split it had been quietly
   computing all along.
 
+- **Xero setup no longer gets stuck on "Confirming the organisation name…"
+  (#2394).** After connecting Xero, the setup wizard fetches your organisation's
+  name so you can check you picked the right one. That fetch happened exactly
+  once, and if it failed — because Xero was momentarily busy, briefly
+  unreachable, or the connection needed re-authorising — the page simply sat on
+  "Confirming the organisation name…" with no explanation, no way to retry, and
+  no way forward. The only escape was guessing that a reload might help.
+
+  The step now tells you what actually happened, in the terms that decide what
+  you should do about it, and offers a **Try again** button wherever pressing it
+  could genuinely help — including when Xero's daily limit has been reached,
+  since that limit can clear while you are still on the page. If Xero needs
+  re-authorising, it says so and points at Disconnect and Connect, and offers no
+  button, because retrying would never have worked. If the daily limit was hit
+  it says when that clears — midnight UTC, about midday in New Zealand — so you
+  can judge whether to wait or come back tomorrow. If your sign-in has simply
+  expired it tells you to sign in again rather than blaming your permissions,
+  and if your admin role really isn't allowed to read the organisation it says
+  that instead of pretending a retry might fix it. Each attempt is stamped
+  ("Checked 3 times, most recently at 2:32 pm") so a repeat failure is visible
+  rather than a silent flicker.
+
+  Nothing retries on its own, deliberately. Each Xero connection has a limited
+  number of calls per day, and hammering a limit that has already been hit only
+  makes it last longer — so apart from one fresh check when you come back from
+  authorising Xero (where the organisation may have just changed), a live check
+  happens only when you press the button. That check can also no longer put the
+  rest of the Xero integration on hold: it used to be able to trip the app-wide
+  "Xero looks unwell, pause everything" guard that stops invoicing and syncing
+  for a couple of minutes, and a button inviting you to press it during an
+  outage should never be able to do that.
+
+  Two related gaps closed at the same time. If Xero refused the authorisation
+  itself, the wizard used to show only "Not Connected" with no hint that
+  anything had gone wrong; it now says the connection attempt failed and what to
+  do about it. (It deliberately does not quote Xero's own wording back at you —
+  that text arrives through the browser and cannot be trusted to be Xero's.) And
+  a connected organisation whose name we could not re-check no longer shows a
+  green "all set" tick: it now says plainly that the name is the last one we
+  saw, not a confirmation — which is what you would see if the club revoked the
+  app inside Xero.
 - **A refused save no longer blames the email address when the email address is
   not the problem, and switching a family's login holder now explains an email
   clash (#2385).** Only one member per email address can sign in — that is why a
