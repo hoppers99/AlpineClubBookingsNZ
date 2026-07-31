@@ -1,9 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
-import { Archive, AlertTriangle, CheckCircle2, RefreshCw, XCircle } from "lucide-react";
+import { Archive, CheckCircle2, RefreshCw, XCircle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -35,14 +35,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { MembershipCancellationBlockerNotice } from "@/components/admin/membership-cancellation-blocker-notice";
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
-import {
-  describeMembershipCancellationBlocker,
-  membershipCancellationBlockerHeading,
-  membershipCancellationBlockerHint,
-  type MembershipCancellationBlocker,
-} from "@/lib/membership-cancellation-blocker-messages";
-import { formatNZDate, formatNZDateTime } from "@/lib/nzst-date";
+import type { MembershipCancellationBlocker } from "@/lib/membership-cancellation-blocker-messages";
+import { formatNZDateTime } from "@/lib/nzst-date";
 import { cn } from "@/lib/utils";
 
 type RequestFilter =
@@ -175,10 +171,6 @@ function formatDateTime(value: string | null) {
   return formatNZDateTime(new Date(value));
 }
 
-function formatDateOnly(value: string) {
-  return formatNZDate(new Date(value));
-}
-
 function requestStatusLabel(status: string) {
   switch (status) {
     case "REQUESTED":
@@ -238,52 +230,6 @@ function statusBadge(status: string) {
   );
 }
 
-function blockerText(blocker: Blocker) {
-  return describeMembershipCancellationBlocker(blocker, {
-    formatDate: formatDateOnly,
-  });
-}
-
-/** Stable list key across every blocker kind. */
-function blockerKey(blocker: Blocker) {
-  if (blocker.type === "unpaid_invoice") {
-    return `unpaid_invoice-${blocker.invoiceId}`;
-  }
-  if (blocker.type === "invoice_check_unavailable") {
-    return `invoice_check_unavailable-${blocker.reason}`;
-  }
-  return `${blocker.type}-${blocker.bookingId}-${blocker.guestAppearanceId ?? "owner"}`;
-}
-
-/**
- * Everything standing between this participant and an approval, in the server's
- * own words — and, for the Xero ones, the way out of it. A reviewer told only
- * "blocked" has nowhere to go (#2392).
- */
-function BlockerNotice({ blockers }: { blockers: Blocker[] }) {
-  if (blockers.length === 0) return null;
-  const hint = membershipCancellationBlockerHint(blockers);
-
-  return (
-    <div className="mt-3 rounded-md border border-warning-6 bg-warning-3 p-3 text-sm text-warning-11">
-      <div className="flex gap-2">
-        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-        <div>
-          <p className="font-medium">
-            {membershipCancellationBlockerHeading(blockers)}
-          </p>
-          <ul className="mt-1 list-disc space-y-1 pl-5">
-            {blockers.map((blocker) => (
-              <li key={blockerKey(blocker)}>{blockerText(blocker)}</li>
-            ))}
-          </ul>
-          {hint && <p className="mt-2">{hint}</p>}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function canApprove(participant: CancellationParticipant) {
   return participant.status === "REQUESTED" && Boolean(participant.confirmedAt);
 }
@@ -313,6 +259,7 @@ export default function MembershipCancellationsPage() {
     null,
   );
   const [error, setError] = useState("");
+  const errorRef = useRef<HTMLDivElement | null>(null);
   const [message, setMessage] = useState("");
   // #2255: survives the reload that follows an approval, and is cleared at the
   // start of the next review, so it always describes the most recent action.
@@ -413,6 +360,17 @@ export default function MembershipCancellationsPage() {
     loadArchiveRequests();
   }, [loadArchiveRequests]);
 
+  // Bring a refusal into view and under the cursor. `scrollIntoView` is guarded
+  // because jsdom does not implement it.
+  useEffect(() => {
+    const node = errorRef.current;
+    if (!error || !node) return;
+    node.focus();
+    if (typeof node.scrollIntoView === "function") {
+      node.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [error]);
+
   // #1787: open the notify-choice dialog for a given cancellation-review action.
   function openNotifyChoice(
     requestId: string,
@@ -484,11 +442,16 @@ export default function MembershipCancellationsPage() {
       setOrphanedLinks(pickDetachedLinks(body.orphanedLinks));
       await loadRequests();
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Could not review participant.",
-      );
+      const failure =
+        err instanceof Error ? err.message : "Could not review participant.";
+      // #2392 (review M6): a refusal is a statement about the queue, not just
+      // about this click — most often "Xero says money is owing" on a row whose
+      // own panel was loaded before the invoice was raised, or shows nothing at
+      // all. Reloading first means the banner and the participant's panel agree,
+      // and the participant's panel is where the whole list lives. loadRequests
+      // clears the error as it starts, so the refusal is set afterwards.
+      await loadRequests();
+      setError(failure);
     } finally {
       setSubmittingId(null);
     }
@@ -599,11 +562,23 @@ export default function MembershipCancellationsPage() {
         </div>
       </div>
 
-      {error && (
-        <div className="rounded-md border border-danger-6 bg-danger-3 px-4 py-3 text-sm text-danger-11">
-          {error}
-        </div>
-      )}
+      {/* #2392 (review M6): a refusal can be several sentences long and, on a
+          full queue, render well above the button that was just pressed. The
+          live region is mounted permanently and only its CONTENT is gated —
+          same reason as the family-links region below — and the message itself
+          takes focus so a keyboard or screen-reader user lands on it instead of
+          hunting for it. */}
+      <div role="alert">
+        {error && (
+          <div
+            ref={errorRef}
+            tabIndex={-1}
+            className="rounded-md border border-danger-6 bg-danger-3 px-4 py-3 text-sm text-danger-11 outline-none"
+          >
+            {error}
+          </div>
+        )}
+      </div>
       {message && (
         <div className="rounded-md border border-success-6 bg-success-3 px-4 py-3 text-sm text-success-11">
           {message}
@@ -936,7 +911,10 @@ export default function MembershipCancellationsPage() {
                             </div>
                           </div>
 
-                          <BlockerNotice blockers={participant.blockers} />
+                          <MembershipCancellationBlockerNotice
+                            blockers={participant.blockers}
+                            returnTo={currentPath}
+                          />
 
                           {(canApprove(participant) || canReject(participant)) && (
                             <div className="mt-4 space-y-3">

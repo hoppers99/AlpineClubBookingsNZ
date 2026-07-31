@@ -581,10 +581,41 @@ describe("membership cancellation admin review", () => {
     });
   });
 
-  it("does not check Xero invoices when rejecting", async () => {
+  // The old assertion here was near-vacuous: the reject path DOES reach the
+  // invoice loader, through the post-review reload that rebuilds the queue. What
+  // matters is that rejecting never takes a LIVE Xero answer, and — more to the
+  // point — that money owing cannot stop a rejection. Nothing is archived by a
+  // rejection, so there is nothing to protect (#2392 review, L12).
+  it("rejects a participant whose Xero contact owes money, without a live Xero check", async () => {
     mocks.tx.membershipCancellationRequestParticipant.findMany.mockResolvedValue([
       { status: "REJECTED" },
     ]);
+    // The reload rebuilds the queue for whoever is still awaiting review, which
+    // is the path that reaches the invoice loader at all.
+    mocks.requestFindUnique.mockResolvedValue(
+      adminRequest({ status: "REQUESTED" }),
+    );
+    mocks.loadInvoiceBlockers.mockResolvedValue(
+      new Map([
+        [
+          "member-1",
+          [
+            {
+              type: "unpaid_invoice",
+              invoiceId: "inv-1",
+              invoiceNumber: "INV-0042",
+              invoiceStatus: "AUTHORISED",
+              direction: "receivable",
+              amountDueCents: 12050,
+              currency: "NZD",
+              dueDate: "2026-06-30",
+              xeroUrl: null,
+              xeroContactUrl: null,
+            },
+          ],
+        ],
+      ]),
+    );
 
     await reviewMembershipCancellationParticipant({
       requestId: "request-1",
@@ -593,9 +624,21 @@ describe("membership cancellation admin review", () => {
       adminMemberId: "admin-1",
     });
 
-    expect(mocks.loadInvoiceBlockers).not.toHaveBeenCalledWith(["member-1"], {
-      fresh: true,
-    });
+    // It went through: no 409, and no approval-blocked audit record.
+    expect(mocks.transaction).toHaveBeenCalled();
+    expect(mocks.createAuditLog).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "membership_cancellation.approval_blocked",
+      }),
+    );
+    // The loader is still reached — the post-review reload rebuilds the queue's
+    // advisory panels — but never with `fresh`, so a rejection spends no Xero
+    // quota it does not have to.
+    expect(mocks.loadInvoiceBlockers).toHaveBeenCalled();
+    expect(mocks.loadInvoiceBlockers).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ fresh: true }),
+    );
   });
 
   it("prevents an admin from approving a cancellation request they initiated", async () => {
