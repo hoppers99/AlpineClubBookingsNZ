@@ -4,6 +4,19 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **The public site no longer advertises guest bookings (#2421).** The
+  signed-out help corpus previously answered "Can I stay without being a
+  member?" with "Yes", and the sign-in page carried a *Request a booking
+  without an account* link. Whether a club hosts non-members is the club's own
+  policy — often only as a guest accompanied by a member, if at all — and
+  advertising open guest bookings can read as commercial accommodation. Every
+  public string now defers to the club's own FAQ, rules, or policy pages, and
+  the sign-in-page link is gone (the school-group link is unchanged). The
+  request form itself still works exactly as before, by direct URL only: it is
+  now served `noindex` and disallowed in `robots.txt`, and admins copy its link
+  from a new **Public request form link** field on the **Public Requests** tab
+  of Booking Requests — visible to view-only admins, since sharing a link is
+  not a booking write.
 - **Bed moves now stay on the guest's original lodge nights (#2366).** Dragging
   an existing allocation chip across date columns now chooses only the
   destination bed: the preview and keyboard announcement show the original NZ

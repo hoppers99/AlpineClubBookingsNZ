@@ -80,6 +80,17 @@ are listed on the booking for you to relay.
 
    ![Booking Requests, Public Requests tab: the status filter row and the flow explainer for non-member requests](../images/admin/admin-booking-requests-public.png)
 
+   At the top of the tab is **Public request form link** with a **Copy** button.
+   That is the URL of the guest request form (`/booking-requests`), and copying
+   it is the only way to hand the form to anyone: the form is **deliberately
+   unlisted** — nothing on the public site links to it, it is served `noindex`,
+   and `robots.txt` disallows the whole `/booking-requests` prefix, so it is
+   reachable by direct URL only. Send it to a guest the club has agreed to host,
+   and to nobody else. The field is available to view-only admins too, since
+   sharing the link is not a booking write. Whether the club hosts non-members
+   at all is the club's own policy; the public website never states or implies
+   that a non-member can simply book (#2421).
+
 2. Open a **Verified** request. Set the **Pricing mode** (Overall total or Per
    guest-night) and enter the price, then **Save quote** and **Send quote** to
    email the requester a quote link.
