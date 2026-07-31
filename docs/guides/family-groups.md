@@ -91,6 +91,7 @@ Whether families are billed together is not set here — it is the club-level
 | "Family links are limited to 4 generations…" | Approving would make the family chain longer than great-grandparent → grandparent → parent → child | Link the member under a nearer relative, or unlink a generation that no longer needs recording |
 | "Cannot link a parent or ancestor as a dependant" | The chosen member is already further up this family, so the link would loop back on itself | Check who is already recorded as whose parent on the member detail pages |
 | "No parent or ancestor in this family has a real email address to inherit" | Nobody up the chain has a real (non-placeholder) address, so club email would go nowhere | Record an email address for the requester first, or choose **Use child's own email** to approve without inheriting |
+| "A member with this email already exists" when saving a login holder | Someone outside this family group already signs in with that address, and only one member per address can | Find that member (search the address on Members) and change or de-login one of them, or merge the duplicate |
 | A revoke fails | The invitation was just claimed or already revoked | Refresh; it may have been accepted |
 | A family isn't being invoiced | It has no active billing member (in billing-member mode) | Set its billing member on the member's detail Family card or the [Fees](fees.md) family-billing panel |
 
