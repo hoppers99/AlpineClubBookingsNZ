@@ -13,6 +13,11 @@ export type ApiRouteSecurityMetadata = {
 };
 
 export const explicitPublicApiRoutes = {
+  "src/app/api/[...unmatched]/route.ts": {
+    boundary: "public",
+    reason:
+      "Terminal 404 for /api URLs no real handler claims (#2405). Reads nothing, queries nothing and touches no session: every method returns the same frozen {error:\"Not found\"} body that src/proxy.ts already returns for a module-hidden /api path, so a route that does not exist and one hidden by a module flag look identical to a caller. Public by necessity — a guard here would answer 401/403 and tell an anonymous prober that the path is real.",
+  },
   "src/app/api/address-autocomplete/details/[id]/route.ts": {
     boundary: "public",
     reason:

@@ -1,0 +1,65 @@
+import { NextResponse } from "next/server";
+
+/**
+ * Terminal 404 for any `/api/*` URL that no real route handler claims (#2405).
+ *
+ * Without it these URLs fall through to the root `(website)/[...slug]` CMS
+ * catch-all, which is a PAGE: a JSON client asking for `/api/definitely-missing`
+ * was handed ~23KB of `text/html` — the club's whole "page not found" screen,
+ * site header, fonts and all. Measured on the staging build before this landed.
+ *
+ * Two things follow from being a route handler rather than a page, and both are
+ * the point:
+ *  • the body is JSON, so anything that parses `/api` responses gets something
+ *    it can parse instead of a document; and
+ *  • it never enters the `(website)` layout, so it is not affected by that
+ *    layout's pre-setup branch — which is what made these URLs answer `200 OK`
+ *    on a club that has not finished site-style setup (see #2405's findings).
+ *
+ * The body is byte-identical to the one `src/proxy.ts` already returns when a
+ * disabled module hides an `/api` path (`getFeatureFlagBlockResponse`), so a
+ * route that does not exist and a route hidden by a module flag are
+ * indistinguishable to a caller — no probing an install for which modules are
+ * on. Frozen and parameterless on purpose: it echoes nothing from the URL.
+ *
+ * Every method is listed because Next only answers the verbs a route exports;
+ * an unlisted verb would 405 here and, worse, could differ from the verb next to
+ * it. HEAD returns the same status with no body, per HTTP.
+ */
+
+export const dynamic = "force-dynamic";
+
+function notFoundJson() {
+  // Literal, not a shared constant: the body must stay byte-identical to
+  // `src/proxy.ts`'s module-gate response, and an inline literal is what the
+  // repo's response-shape contract test reads.
+  return NextResponse.json({ error: "Not found" }, { status: 404 });
+}
+
+export function GET() {
+  return notFoundJson();
+}
+
+export function HEAD() {
+  return new NextResponse(null, { status: 404 });
+}
+
+export function POST() {
+  return notFoundJson();
+}
+
+export function PUT() {
+  return notFoundJson();
+}
+
+export function PATCH() {
+  return notFoundJson();
+}
+
+export function DELETE() {
+  return notFoundJson();
+}
+
+export function OPTIONS() {
+  return notFoundJson();
+}
