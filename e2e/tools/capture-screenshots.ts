@@ -276,11 +276,12 @@ async function prepareBedAllocationSnapPreview(page: Page): Promise<void> {
   await targetCell.scrollIntoViewIfNeeded();
   await dragHandle.scrollIntoViewIfNeeded();
 
-  const [from, to] = await Promise.all([
+  const [from, target, dragged] = await Promise.all([
     dragHandle.boundingBox(),
     targetCell.boundingBox(),
+    dragHandle.locator("xpath=..").boundingBox(),
   ]);
-  if (!from || !to) {
+  if (!from || !target || !dragged) {
     throw new Error(
       "Could not resolve the seeded bed-allocation drag-preview geometry",
     );
@@ -291,7 +292,7 @@ async function prepareBedAllocationSnapPreview(page: Page): Promise<void> {
   }
   for (const [label, box] of [
     ["drag handle", from],
-    ["target cell", to],
+    ["target cell", target],
   ] as const) {
     const center = {
       x: box.x + box.width / 2,
@@ -306,9 +307,29 @@ async function prepareBedAllocationSnapPreview(page: Page): Promise<void> {
       throw new Error(`${label} is outside the screenshot viewport`);
     }
   }
+  // DndContext uses closestCenter. Keep the handle-to-card-centre grab offset
+  // so the dragged card, rather than only the cursor, centres on A4.
+  const to = {
+    x:
+      target.x +
+      target.width / 2 +
+      (from.x + from.width / 2 - (dragged.x + dragged.width / 2)),
+    y:
+      target.y +
+      target.height / 2 +
+      (from.y + from.height / 2 - (dragged.y + dragged.height / 2)),
+  };
+  if (
+    to.x < target.x ||
+    to.x >= target.x + target.width ||
+    to.y < target.y ||
+    to.y >= target.y + target.height
+  ) {
+    throw new Error("Adjusted pointer destination is outside A4");
+  }
   await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
   await page.mouse.down();
-  await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, {
+  await page.mouse.move(to.x, to.y, {
     steps: 12,
   });
   await page

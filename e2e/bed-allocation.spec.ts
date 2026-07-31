@@ -243,8 +243,10 @@ test("existing-chip pointer and keyboard drops preserve dates, while keyboard ca
     await dragHandle().scrollIntoViewIfNeeded();
     const from = await dragHandle().boundingBox();
     const to = await targetCell().boundingBox();
+    const dragged = await dragHandle().locator("xpath=..").boundingBox();
     expect(from).toBeTruthy();
     expect(to).toBeTruthy();
+    expect(dragged).toBeTruthy();
     const viewport = page.viewportSize();
     expect(viewport, "the pointer scenario has a fixed viewport").toBeTruthy();
     for (const [label, box] of [
@@ -270,9 +272,39 @@ test("existing-chip pointer and keyboard drops preserve dates, while keyboard ca
         viewport!.height,
       );
     }
+    // DndContext uses closestCenter, so preserve the handle-to-card-centre grab
+    // offset and put the dragged CARD's centre on the destination cell. Aiming
+    // the cursor at the cell centre instead leaves the taller card centred over
+    // the following row.
+    const targetPointer = {
+      x:
+        to!.x +
+        to!.width / 2 +
+        (from!.x + from!.width / 2 - (dragged!.x + dragged!.width / 2)),
+      y:
+        to!.y +
+        to!.height / 2 +
+        (from!.y + from!.height / 2 - (dragged!.y + dragged!.height / 2)),
+    };
+    expect(
+      targetPointer.x,
+      "adjusted pointer x stays inside the target cell",
+    ).toBeGreaterThanOrEqual(to!.x);
+    expect(
+      targetPointer.x,
+      "adjusted pointer x stays inside the target cell",
+    ).toBeLessThan(to!.x + to!.width);
+    expect(
+      targetPointer.y,
+      "adjusted pointer y stays inside the target cell",
+    ).toBeGreaterThanOrEqual(to!.y);
+    expect(
+      targetPointer.y,
+      "adjusted pointer y stays inside the target cell",
+    ).toBeLessThan(to!.y + to!.height);
     await page.mouse.move(from!.x + from!.width / 2, from!.y + from!.height / 2);
     await page.mouse.down();
-    await page.mouse.move(to!.x + to!.width / 2, to!.y + to!.height / 2, {
+    await page.mouse.move(targetPointer.x, targetPointer.y, {
       steps: 12,
     });
     await expect(preview()).toBeVisible();
@@ -284,7 +316,7 @@ test("existing-chip pointer and keyboard drops preserve dates, while keyboard ca
     // the date-free PATCH and the server persisted the original nights.
     await page.mouse.move(from!.x + from!.width / 2, from!.y + from!.height / 2);
     await page.mouse.down();
-    await page.mouse.move(to!.x + to!.width / 2, to!.y + to!.height / 2, {
+    await page.mouse.move(targetPointer.x, targetPointer.y, {
       steps: 12,
     });
     await expect(preview()).toBeVisible();
