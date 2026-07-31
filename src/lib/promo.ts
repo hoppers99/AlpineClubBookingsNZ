@@ -283,6 +283,13 @@ function filterGuestsByIndexes(guests: PromoDiscountGuest[], indexes: number[]) 
  * A price-RAISING fixed-nightly application counts as a use, because the
  * member's price genuinely changed — the rejected alternative was to count
  * price reductions only.
+ *
+ * LOCKSTEP: this predicate, `BENEFICIAL_PROMO_ALLOCATION_FILTER` below, and the
+ * `DELETE` predicate in
+ * `prisma/migrations/20260731130000_repair_zero_benefit_promo_allocations`
+ * are the same rule expressed three times (TypeScript, Prisma, SQL). Change one
+ * and you must change all three, or the repair migration will delete rows the
+ * runtime counts, or leave rows it does not.
  */
 export function isBeneficialPromoAllocation(allocation: {
   discountCents: number;
@@ -302,6 +309,15 @@ export function isBeneficialPromoAllocation(allocation: {
  * a historical all-zero row written before #2299 (or by an old colour during a
  * blue/green drain) stops consuming a member's slot immediately, without
  * waiting for the repair migration to run.
+ *
+ * SPREAD IT — and only into a `where` that has no `OR` of its own. An object
+ * literal cannot hold two `OR` keys, so the later one silently wins and one of
+ * the two conditions vanishes without a type error. All five current call sites
+ * spread it into a plain AND-of-scalars filter, which is safe; a future caller
+ * that needs its own `OR` must nest both under `AND: [...]` instead.
+ *
+ * Kept in lockstep with `isBeneficialPromoAllocation` and the repair
+ * migration's `DELETE` predicate — see the note on that function.
  */
 export const BENEFICIAL_PROMO_ALLOCATION_FILTER = {
   OR: [
@@ -389,10 +405,16 @@ export function calculatePromoDiscountForGuestRates(
 
   // Unassigned promos attribute the whole benefit to the booker. Before #2299
   // this fallback row was FORCED whenever any guest was eligible, so a promo
-  // that produced no discount at all (a fixed-nightly cap that never bit, a
-  // percentage off $0 guest-nights) still manufactured an allocation row and
-  // burned the member's single permitted use. It is now written only when there
-  // is something to attribute.
+  // that produced no discount at all still manufactured an allocation row and
+  // burned the member's single permitted use — a percentage or fixed-amount
+  // code over nights that were already free (20% of $0 is $0, and there is
+  // nothing to take a fixed amount off), or a SET_PRICE fixed-nightly code
+  // whose price already equals what the guest pays. It is now written only when
+  // there is something to attribute.
+  //
+  // A CAP_ONLY fixed-nightly code that never bites is NOT one of these cases:
+  // pricing counts no eligible guest for it at all, so it produced neither an
+  // allocation nor a redemption row before this change either.
   return {
     ...result,
     allocations: normalizeAllocations(
@@ -758,6 +780,24 @@ export interface PromoRuleCounts {
   requestedNewUniqueMemberCount?: number;
   memberRedemptionCounts?: Record<string, number>;
   memberFreeNightsUsedByMemberId?: Record<string, number>;
+  /**
+   * Allocation rows the booking being re-validated ALREADY holds against this
+   * code, to be discounted from `promoCode.currentRedemptions` before the
+   * total-redemptions cap is applied (#2299).
+   *
+   * `currentRedemptions` is the denormalised count of every allocation row for
+   * the code, including the rows the excluded booking holds right now. Every
+   * other cap honours `excludeBookingId` by filtering the allocation table;
+   * this counter cannot be filtered, so the caller measures the excluded
+   * booking's own rows and passes them here instead. Without it a booking
+   * holding the code's last slot fails its OWN reprice ("maximum number of
+   * uses"), loses its discount, and the member is billed the discount back for
+   * a date shift.
+   *
+   * Counted RAW (no benefit filter) on purpose, so it is measured in exactly
+   * the units `currentRedemptions` is kept in.
+   */
+  excludedBookingRedemptionCount?: number;
   // True for assigned-member promos where every linked member guest is at
   // their per-member cap (redemptions or lifetime free nights). Signals that
   // no beneficiary survives the upstream filter.
@@ -816,12 +856,21 @@ export function validatePromoCodeRules(
     }
   }
 
-  if (
-    promoCode.maxRedemptionsTotal !== null &&
-    promoCode.currentRedemptions + (counts.requestedRedemptionCount ?? 1) >
+  if (promoCode.maxRedemptionsTotal !== null) {
+    // Slots held by OTHER bookings. The excluded booking's own rows are about
+    // to be replaced by this very application, so counting them would make a
+    // booking fail its own reprice (#2299). Floored at zero so a counter that
+    // has drifted low can never turn into a negative allowance.
+    const redemptionsHeldElsewhere = Math.max(
+      0,
+      promoCode.currentRedemptions - (counts.excludedBookingRedemptionCount ?? 0)
+    );
+    if (
+      redemptionsHeldElsewhere + (counts.requestedRedemptionCount ?? 1) >
       promoCode.maxRedemptionsTotal
-  ) {
-    return "This promo code has reached its maximum number of uses";
+    ) {
+      return "This promo code has reached its maximum number of uses";
+    }
   }
 
   if (promoCode.membersOnly && !bookingDetails.memberId) {
@@ -1075,6 +1124,20 @@ export async function validateAndCalculatePromoDiscount(
     initialBeneficiaryMemberIds.length > 0 &&
     beneficiaryMemberIds.length === 0;
 
+  // Slots the booking being repriced already holds against this code, so the
+  // total-redemptions cap can discount them (#2299). Only fetched when that cap
+  // is actually set, so no path that cannot be affected pays for a query.
+  let excludedBookingRedemptionCount = 0;
+  if (
+    options.excludeBookingId &&
+    promoCode.maxRedemptionsTotal !== null &&
+    promoCode.maxRedemptionsTotal !== undefined
+  ) {
+    excludedBookingRedemptionCount = await db.promoRedemptionAllocation.count({
+      where: { promoCodeId: promoCode.id, bookingId: options.excludeBookingId },
+    });
+  }
+
   let uniqueMembersUsed = 0;
   let requestedNewUniqueMemberCount: number | undefined;
   if (promoCode.maxUniqueMembersTotal !== null && promoCode.maxUniqueMembersTotal !== undefined) {
@@ -1108,6 +1171,7 @@ export async function validateAndCalculatePromoDiscount(
       memberHasRedeemedBefore: bookerUsage.redemptionCount > 0,
       requestedRedemptionCount: beneficiaryMemberIds.length,
       requestedNewUniqueMemberCount,
+      excludedBookingRedemptionCount,
       allBeneficiariesExhausted,
     },
     requiresAssignedBooker ? assignedMemberIds : null,
@@ -1275,11 +1339,20 @@ export async function validatePromoCodeFull(
  *
  * Without it a cap check and the redemption that consumes it are two separate
  * statements, so two concurrent modifications of different bookings can both
- * read "one use left" and both take it. Booking creation has locked its promo
- * row this way since the per-individual redesign
+ * read "one use left" and both take it. Booking creation has taken a `FOR
+ * UPDATE` lock on its promo row since the per-individual redesign
  * (`booking-create-promo.ts`, docs/CONCURRENCY_AND_LOCKING.md → "Narrow
- * row-lock protocols"); this is the same protocol for the modification paths,
- * which matters more now that a reprice can RELEASE a slot as well as take one.
+ * row-lock protocols") — though it locks by selecting the whole row and then
+ * READING it, so it does not have property 2 below; this helper is the
+ * lock-only form used by the four modification paths, which matters more now
+ * that a reprice can RELEASE a slot as well as take one.
+ *
+ * Every path that may write `currentRedemptions` for an existing booking takes
+ * it: the batch modification path (`booking-modify-plan.ts`), adding guests
+ * (`/api/bookings/[id]/guests`), a date change
+ * (`booking-date-modification-service.ts`) and removing guests
+ * (`booking-guest-removal-service.ts`) — the last three via
+ * `lockAndRefreshPromoCodeUsage` below.
  *
  * Two properties keep it safe:
  *
@@ -1305,6 +1378,38 @@ export async function lockPromoCodeRowsForUpdate(
   for (const id of ids) {
     await tx.$queryRaw`SELECT "id" FROM "PromoCode" WHERE "id" = ${id} FOR UPDATE`;
   }
+}
+
+/**
+ * The reprice form of the protocol above, for the three modification paths that
+ * hold an existing redemption and re-price it in place (adding guests, changing
+ * dates, removing guests).
+ *
+ * They each carry a `PromoCode` snapshot loaded with the booking, BEFORE the
+ * transaction's locks were taken, so its `currentRedemptions` may already be
+ * stale by the time the caps are checked. Locking without refreshing would be
+ * theatre: the transaction would serialise correctly and then decide against a
+ * number it read outside the lock. So this both takes the row lock and returns
+ * the snapshot with the counter as it stands UNDER that lock.
+ *
+ * Only `currentRedemptions` is refreshed, deliberately. It is the one cap input
+ * a concurrent booking flow mutates; the cap ceilings themselves
+ * (`maxRedemptionsTotal`, `maxUsesPerMember`, …) are admin edits, and every
+ * allocation-derived count is already read inside the transaction by
+ * `validateAndCalculatePromoDiscount`.
+ *
+ * A code deleted between the two reads keeps the snapshot's value; the reprice
+ * then fails on its own foreign keys rather than on a wrong number.
+ */
+export async function lockAndRefreshPromoCodeUsage<
+  T extends { id: string; currentRedemptions: number },
+>(tx: PrismaTx, promoCode: T): Promise<T> {
+  await lockPromoCodeRowsForUpdate(tx, [promoCode.id]);
+  const fresh = await tx.promoCode.findUnique({
+    where: { id: promoCode.id },
+    select: { currentRedemptions: true },
+  });
+  return fresh ? { ...promoCode, currentRedemptions: fresh.currentRedemptions } : promoCode;
 }
 
 /**
@@ -1402,12 +1507,20 @@ export async function redeemPromoCode(
     });
   }
 
-  await tx.promoCode.update({
-    where: { id: promoCodeId },
-    data: {
-      currentRedemptions: { increment: allocationData.length },
-    },
-  });
+  // Guarded like both siblings (`replacePromoRedemptionAllocations`,
+  // `deletePromoRedemptionAndAdjustCount`): an application that consumed
+  // nothing must not touch the promo code row at all, because writing it would
+  // bump `updatedAt` and make a benefit-free application look like an admin
+  // edit of the code. The repair migration avoids `updatedAt` for the same
+  // reason.
+  if (allocationData.length > 0) {
+    await tx.promoCode.update({
+      where: { id: promoCodeId },
+      data: {
+        currentRedemptions: { increment: allocationData.length },
+      },
+    });
+  }
 }
 
 /**

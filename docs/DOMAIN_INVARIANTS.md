@@ -64,6 +64,40 @@ Future reviews and issues should cite this file when proposing changes.
   invariant removes), and `replacePromoRedemptionAllocations` must count the
   existing rows BEFORE its update (or it counts the trigger's transient row and
   skews the counter delta).
+  - **Reading `currentRedemptions` for a cap check requires the row lock, and a
+    read under it.** Every path that may write the counter for an existing
+    booking — `booking-modify-plan.ts`, the add-guests route,
+    `booking-date-modification-service.ts`,
+    `booking-guest-removal-service.ts` — takes the `FOR UPDATE` promo row lock
+    before its first cap read, and the three reprice paths re-read the counter
+    under that lock via `lockAndRefreshPromoCodeUsage`, because the `PromoCode`
+    snapshot they carry was loaded with the booking, before the locks. See
+    `docs/CONCURRENCY_AND_LOCKING.md` → "Narrow row-lock protocols".
+  - **A cap check that excludes a booking must exclude it from
+    `currentRedemptions` too.** The counter includes the rows the excluded
+    booking holds right now, and unlike every other cap it cannot be filtered by
+    a `where`. So `excludeBookingId` is paired with an explicit raw count of
+    that booking's own allocation rows, subtracted before the total-redemptions
+    cap is applied. Omitting it makes a booking holding a code's last slot fail
+    its OWN reprice, silently drop the discount, and bill the member the
+    discount back for a date change.
+  - **TRAP: the in-memory `PromoDiscountResult.allocations` is NOT
+    benefit-filtered on the assigned-member path.** `policies/pricing.ts`
+    deliberately emits a zero entry for a `SET_PRICE` guest whose rate already
+    equals the fixed price (`includeWhenZero`), and
+    `calculatePromoDiscountForGuestRates` returns the assigned-member result
+    before `normalizeAllocations` runs. The filter is applied at WRITE time
+    instead, inside `redeemPromoCode` / `replacePromoRedemptionAllocations`.
+    Anything that reads that in-memory list as "who benefited" must apply
+    `isBeneficialPromoAllocation` itself.
+  - **A `SET_PRICE` application whose per-guest adjustments net to exactly zero
+    counts as no use** (deliberate; #2299). In `SET_PRICE` mode every night is
+    re-priced, so a fixed price of $30 against nights of $50 and $10 nets to
+    zero, as does one member owning two guest rows that cancel. The member's
+    total is byte-identical with and without the code, so under the "any price
+    effect" rule there is no effect, and it consumes nothing. The accepted
+    consequence is that such a stay can carry the code indefinitely — which
+    costs nothing, because it gives nothing.
 - Refunds, credits, discounts, Stripe amounts, Xero invoice amounts, and
   membership fees must reconcile back to cent-based ledger records.
 - Admin adjustments need audit, approval, and a visible business reason.
