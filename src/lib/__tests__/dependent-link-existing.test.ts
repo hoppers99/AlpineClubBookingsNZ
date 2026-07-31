@@ -40,7 +40,10 @@ type MockMember = {
   firstName?: string;
   lastName?: string;
   email: string;
-  ageTier: "INFANT" | "CHILD" | "YOUTH" | "ADULT";
+  // NOT_APPLICABLE is the age-EXEMPT tier (#1440, #2106), carried by
+  // organisation accounts AND by age-exempt people — both of which #2282's
+  // parent-side rule has to tell apart, so both appear in fixtures here.
+  ageTier: "INFANT" | "CHILD" | "YOUTH" | "ADULT" | "NOT_APPLICABLE";
   active: boolean;
   archivedAt: Date | null;
   parentMemberId: string | null;
