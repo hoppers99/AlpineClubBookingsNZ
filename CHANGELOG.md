@@ -155,9 +155,40 @@ All notable public reference-release changes should be recorded here.
   that nothing may quietly un-cancel a membership. Related hardening found
   while checking this: the lobby-display preview endpoint now re-checks that the
   admin previewing it still has an active account, which every other admin
-  endpoint already did. The member-facing **Cancel Membership** flow in a
-  member's own profile is unchanged and still limited to ordinary member
-  accounts; its wording no longer implies otherwise.
+  endpoint already did. The member-facing **Membership Cancellation** panel in a
+  member's own profile follows the same rule — see the next entry.
+
+- **A full admin, and an organisation account, can now start a cancellation
+  from their own profile (#2391).** The **Membership Cancellation** panel in a
+  member's profile asked a narrower question than the member page did, and it
+  turned away exactly the two kinds of account the member page used to turn away
+  before the entry above fixed it: a **Full Admin**, and an **organisation or
+  school account**. A departing full admin was told to ring the office; an
+  organisation was told the same and had no self-service route at all.
+  Committee members were never affected — a Membership Officer, Booking Officer,
+  Treasurer, Content Manager or holder of a club-defined custom role keeps an
+  ordinary member account underneath their access, so they were always offered
+  the panel and always appeared in a relative's family list. Family lists had
+  the matching gap for the two classes that were refused: a relative who is a
+  full admin, and an organisation sharing a family group, were simply missing
+  from the list of memberships you could include, with no reason shown, so it
+  looked as though they held no membership at all. The profile panel now asks
+  exactly the question the member page asks: is there an account holder here
+  with a membership? So a full admin can start their own cancellation, an
+  organisation can start its own, and a relative who is a full admin appears in
+  the family list and can be included. Two conditions remain, and both are about
+  being able to use your own profile rather than about what kind of account it
+  is: the account must be active, and it must have its own login. A member with
+  no login of their own — most family dependants — is still cancelled either by a
+  relative including them in a family request or by an admin from their member
+  page, and the refusal now says that instead of implying they are not a proper
+  member. The lodge kiosk login and the contact records created by booking
+  requests are refused here as everywhere else, because they hold no membership,
+  and if one ever appears in a family list it now says so rather than vanishing.
+  Nothing about approval changed: whoever raises a cancellation, a *different*
+  admin must approve it, and the club can still never be left with no full
+  admin — so a sole full admin who starts their own departure from their profile
+  must appoint a successor before anyone can approve it.
 
 - **A booking paid in cash — or by a bank transfer that never reached Xero —
   can now be recorded as paid, properly (#2262).** Open the booking, and under

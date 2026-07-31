@@ -2633,12 +2633,36 @@ of birth to a minor tier can indirectly clear `canLogin` (informational).
 
 Membership-cancellation eligibility is an account-holder question, never a
 permissions one (#2383). `isMembershipHolderRecord` (`src/lib/member-roles.ts`)
-is the single rule, shared by `createAdminMembershipCancellationRequest` and the
-admin member page's gate, and pinned to that call site by the #2354 AST contract
-test. It refuses exactly two record classes, both of which are not account
-holders: the lodge kiosk device login, and booking-request contact records
-(`NON_MEMBER`, plus non-login `SCHOOL` — the school flow's owner contact and
-teacher records).
+is the single rule, shared by `createAdminMembershipCancellationRequest`, the
+admin member page's gate (pinned to that call site by the #2354 AST contract
+test), and — since #2391 — the member-raised route in
+`loadCancellationCandidates`: its own eligibility gate, and the per-candidate
+verdict for every member of the requester's family groups. It refuses exactly
+two record classes, both of which are not account holders: the lodge kiosk
+device login, and booking-request contact records (`NON_MEMBER`, plus non-login
+`SCHOOL` — the school flow's owner contact and teacher records).
+
+The member-raised route adds exactly two further conditions, and they are about
+being able to operate your own profile, never about what class of account it is
+(#2391): the requester must be `active` and `canLogin`. Both are retained
+deliberately — a closed account or one with no login of its own cannot raise
+anything from its own profile — and neither narrows what is cancellable, because
+those memberships remain reachable from a relative's family request and from the
+member page. The family candidate query therefore carries NO role filter: a
+relative who is also an admin, or an organisation account sharing the family
+group, is listed and eligible, and the two non-holder classes are listed with a
+reason rather than dropped silently. A self-raised participant is the requester,
+so `requiresOwnConfirmation` is false and the row is created `REQUESTED` with
+`confirmedAt` set — structurally identical to an admin-raised participant, and
+never waiting on a confirmation email nobody would action (which matters most
+for an organisation account, where there is no "adult participant" in the human
+sense).
+
+Both member-raised queries select `role`, `canLogin`, `financeAccessLevel` and
+the `accessRoles` rows (`cancellationCandidateSelect`), for the same reason the
+admin path does: an unselected column arrives `undefined` and would misclassify
+a person as the kiosk device. Unit tests cannot catch that — Prisma is mocked —
+so the query shape itself is asserted.
 
 The kiosk test is a record-CLASS test, never a "holds lodge access" test.
 `LODGE` is a freely tickable checkbox in the member editor ("Can use lodge kiosk
