@@ -61,6 +61,21 @@ All notable public reference-release changes should be recorded here.
   the leftover is flagged on the Email Messages page as a stale override to
   clean up, so re-apply your wording to whichever one you want changed.
 
+- **Admins can now cancel the membership of a member who has no login of
+  their own (#2354).** Opening such a member's admin page used to show no
+  **Request Cancellation** action at all — not greyed out, simply absent —
+  so their membership looked uncancellable. Most family dependants are in
+  exactly this position, as is any adult the club records without giving
+  them a login. The cause was the page borrowing a permissions test to
+  decide who is cancellable: a member without a login holds no permissions
+  by design, so the test always failed for them, while the cancellation
+  machinery behind it has always accepted them — an admin-raised request
+  is confirmed on the member's behalf and goes straight to the review
+  queue, exactly as it does for anyone else. The page now asks the same
+  eligibility question the server enforces — is this an active,
+  not-yet-cancelled, not-archived member — so the action appears for
+  exactly the members it can act on.
+
 - **Self-hosted sites now use whatever processing power the server has free,
   instead of being rationed to a fraction of one core (#2351).** The standard
   deployment recipe used to cap each app container at eight-tenths of a
