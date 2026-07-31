@@ -293,6 +293,9 @@ export async function DELETE(
           ? additionalPaymentClientSecret ?? null
           : null,
       promoRemoved: result.promoRemoved,
+      // #2390: who the promotion still covers after this edit, and who it does
+      // not. Null unless a usage cap left somebody out.
+      promoCoverage: result.promoCoverage,
       choreWarnings: result.choreWarnings,
     });
   } catch (err) {
