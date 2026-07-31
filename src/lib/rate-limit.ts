@@ -365,6 +365,16 @@ export const rateLimiters = {
   groupBookingJoinRequest: { id: "group-booking-join-request", limit: 5, windowSeconds: 60 * 60 } as RateLimitConfig,
   /** Group join verification links: 10 hits per 15 minutes */
   groupBookingToken: { id: "group-booking-token", limit: 10, windowSeconds: 15 * 60 } as RateLimitConfig,
+  /**
+   * Member-guest consent answers (#2307): 30 per 15 minutes.
+   *
+   * Deliberately tight relative to how often a real person answers a request
+   * (once), because the endpoint takes two ids and returns a uniform 403 for
+   * every failure — the only way to probe it at all is volume, and this is what
+   * makes that uneconomic. `authSensitive` so a degraded shared-store fallback
+   * cannot be used to multiply the allowance.
+   */
+  memberGuestConsentRespond: { id: "member-guest-consent-respond", limit: 30, windowSeconds: 15 * 60, authSensitive: true } as RateLimitConfig,
   // AI help assistant (#2211, C3). These caps only throttle abuse/burst; the
   // real spend cap is the monthly budget gate (checkAiBudget) in the route —
   // authSensitive so a degraded shared-store fallback cannot be used to multiply

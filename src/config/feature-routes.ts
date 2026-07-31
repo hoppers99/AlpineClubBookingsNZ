@@ -179,6 +179,31 @@ export const FEATURE_ROUTE_RULES: FeatureRouteRule[] = [
     flag: "aiAssistant",
     prefixes: ["/admin/ai-assistant", "/api/admin/ai-assistant"],
   },
+  {
+    // "+ Add Member Guest" (epic #2305). The two member-facing surfaces stop
+    // existing when a club has the module off: the delegate's answer page, and
+    // the consent endpoint both the target and the delegate answer through.
+    // Neither has anything to do on a club that does not run member guests.
+    //
+    // The consent endpoint also refuses on its own — every failure there is the
+    // same 403, module-off included, so no id can be used as an existence
+    // oracle — and this gate sits in front of that rather than replacing it. A
+    // 404 here reveals only that the club does not run the module, which is
+    // club-wide configuration, not anything about a particular booking.
+    //
+    // DELIBERATELY NOT LISTED: /api/admin/member-guest-settings, the admin
+    // route behind the Member guests card on Admin › Bookings setup. Owner
+    // decision MG2-M-4 is that an admin sets the policy up FIRST and turns the
+    // module on afterwards, so gating that route would 404 the card in exactly
+    // the state it exists for — the same mistake #2216 made with the
+    // Integrations hub. It stays reachable behind its `bookings` admin
+    // permission area, and nothing it saves does anything while the module is
+    // off: every surface that acts on those values is gated here or refuses in
+    // the route itself.
+    flag: "memberGuests",
+    prefixes: ["/bookings/consent"],
+    patterns: [/^\/api\/bookings\/[^/]+\/guests\/[^/]+\/consent$/],
+  },
 ];
 
 function matchesPrefix(pathname: string, prefix: string): boolean {

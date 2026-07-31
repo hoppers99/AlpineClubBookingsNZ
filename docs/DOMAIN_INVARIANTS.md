@@ -1310,10 +1310,35 @@ columns on `BookingGuest` — `consentStatus`, `consentRequestedAt`,
 `consentRespondedAt`, `consentRespondedByMemberId`, `consentExpiresAt` — not in
 a side table.
 
-**In the MG1 release (#2306) every one of these columns is inert.** Cross-family
-adds are still refused, `MEMBER_GUEST_WIDENING_ENABLED` is `false`, and
-therefore no code path writes a non-null `consentStatus` in any module state for
-any actor. The invariants below are the contract MG2 (#2307) onwards must hold.
+**MG1 (#2306) shipped every one of these columns inert. MG2 (#2307) turns them
+on.** With the `memberGuests` module enabled, a cross-family active member now
+resolves and the row carries a real consent state; with it disabled — the shipped
+default (D-2) — a cross-family add is refused with the byte-for-byte pre-feature
+error and nothing writes a non-null `consentStatus`. The invariants below are now
+live behaviour, not a forward contract.
+
+Two consequences of the owner's ticks are recorded here as **chosen behaviour**,
+because both are surprising and neither should be discovered by a member:
+
+- **An approved stay may be extended without asking again** (owner decision
+  D-13). Consent covers the booking *however it later changes*, in both policy
+  modes: no reset to `PENDING`, and no change notification in notify-only either.
+  So a booker may add nights to a stay a member agreed to, and that member keeps
+  holding the new nights without being asked. Their only exit is self-removal —
+  which, per D-14 below, may itself be refused. The two ticks compound, and this
+  is where that is written down.
+- **A member who never consented can be refused the ability to come off the
+  booking** (owner decision D-14). Declining is a self-removal, so it runs the
+  ordinary blockers. A pending guest CAN decline when the booking status allows
+  guest changes, check-in is strictly in the future, the booking has two or more
+  guests, it is not quote-priced, and the reduction needs no refund-vs-credit
+  election. They are TRAPPED — a plain-English 400, and the row survives as
+  *blocked* on the admin exception list — when a captured payment's cancellation
+  tier returns money (the common case, because member guests are charged up front
+  on the mixed-party split), when they are the booking's only guest, when the
+  booking was quote-priced, when check-in has started, or when the status forbids
+  changes. The member is told who can help; MG2 adds no exemption, which is
+  exactly what D-14 decides. See docs/STATE_MACHINES.md for the transition list.
 
 - **`NULL` is not `CONFIRMED`.** A null `consentStatus` means *no consent was
   ever needed* — a family-scope add (D-6) or a row written before the feature
@@ -1337,6 +1362,26 @@ any actor. The invariants below are the contract MG2 (#2307) onwards must hold.
   them (a delegate approving for a target with no login, D-5/D-10), or name the
   acting admin (an admin assignment or a booking copy). MG4's admin-assigner
   audit rides this column; no extra column exists or is needed.
+- **Nobody answers for a member who can sign in** (owner decision D-5/D-10). The
+  delegate rule has a target side as well as an actor side, and both are
+  enforced: a delegate must be an active, login-holding ADULT sharing a family
+  group with the target, AND the target must NOT hold a login of their own.
+  Without the target conjunct, two members of one household who are both put on
+  the same booking can answer for each other — including declining, which
+  releases the other's bed and deletes their guest row. `canRespondForTarget`
+  and `resolveNotificationRecipients` in `src/lib/member-guest-delegate.ts` share
+  one predicate for it, so "who may act" and "who is told" cannot drift into two
+  different rules. A consequence worth expecting: a login-holding target the club
+  has no email address for is asked nobody and told nobody, because the household
+  may not answer for them either — an unanswerable request emailed to a household
+  would only strand the bed.
+- **A delegate's answer is told to the member it was given for.** A member
+  answering for themselves needs no notice, but a delegate's answer is somebody
+  else's decision about them, so the member — and the other adults who were sent
+  the same request — receive the `member-guest-consent-answered` email naming who
+  answered and what they said. It carries no money and no booking link: the
+  recipient may have nothing to do with the booking, and D-11 grants booking-page
+  access to a guest ROW, never to a delegate.
 - **A `PENDING` row holds the bed** (D-4) until `consentExpiresAt`, which is set
   from `MemberGuestSettings.pendingHoldExpiryDays` (default 7, bounds 1–60). A
   `PENDING` row without an expiry would be an unbounded capacity hold and is not
@@ -1350,6 +1395,34 @@ any actor. The invariants below are the contract MG2 (#2307) onwards must hold.
   re-points A's guest rows — consent columns included — onto B.
   `consentRespondedByMemberId` is an FK-less snapshot and keeps the id of
   whoever actually answered at the time, even after that member is merged away.
+  The survivor therefore **inherits the consent the loser gave**, which is the
+  accepted consequence of the existing `move` classification, and two shapes fall
+  out of it that a reader should expect rather than discover: a merge can put two
+  guest rows for the same person on one booking (a person-night conflict the merge
+  path resolves), and a merge can leave a booking whose only guest is the
+  survivor, i.e. in `LAST_GUEST` — so a later decline or lapse on that row lands
+  on the admin exception list instead of releasing the bed.
+- **A pending guest is not operationally present** (owner decision D-12). Only
+  `null` and `CONFIRMED` rows appear on the kiosk arrivals list, the arrive/depart
+  gate, the chore roster and its print sheet, bed allocation and the admin bed
+  board, the hut-leader pickers, the lodge display board, the week summary, the
+  double-bed candidate sweep, and — because these are member-facing content, not
+  just screens — the pre-arrival and check-in reminder emails. The single shared
+  predicate is `OPERATIONALLY_PRESENT_GUEST_WHERE`, written as an explicit
+  `OR: [{ consentStatus: null }, { consentStatus: "CONFIRMED" }]`. It must NEVER
+  be written as `{ consentStatus: { not: "PENDING" } }`: on a nullable column that
+  form is `UNKNOWN` for every `NULL` row, so it would silently drop every ordinary
+  guest off the kiosk and out of the arrival emails in production.
+- **A pending guest DOES hold a bed and a person-night** (owner decision D-4), and
+  every capacity path counts them. Capacity, month availability, the occupancy
+  index, partner shared-admission and the person-night conflict guard must NOT
+  gain a consent filter — a pending guest who did not hold their person-night
+  could be placed in two beds on one night. The exclusion list and the freeze list
+  are deliberate opposites, and each has its own test.
+- **A data-subject export is not an operational surface.** The member data export
+  deliberately includes the member's own pending rows and exports
+  `consentStatus` as a field. Excluding them would make the export incomplete
+  about a commitment that exists.
 
 The eight legal column shapes, and only those eight, are. In the four column
 cells, **null** means the column must be `NULL`, **set** means it must be

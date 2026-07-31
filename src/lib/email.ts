@@ -1,6 +1,7 @@
 export * from "./email/core";
 export * from "./email/account";
 export * from "./email/booking";
+export * from "./email/member-guest";
 export * from "./email/membership";
 export * from "./email/family";
 export * from "./email/waitlist";

@@ -13,6 +13,7 @@ import {
   parseDateOnly,
 } from "@/lib/date-only";
 import { getKioskDateRange } from "@/lib/kiosk-access";
+import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent";
 import {
   checkLodgeAuth,
   kioskLodgeAuthErrorResponse,
@@ -128,6 +129,7 @@ export async function GET(req: NextRequest) {
         some: {
           stayStart: { lte: endInclusive },
           stayEnd: { gte: startDate },
+          ...OPERATIONALLY_PRESENT_GUEST_WHERE,
         },
       },
     },
@@ -136,6 +138,13 @@ export async function GET(req: NextRequest) {
       checkIn: true,
       checkOut: true,
       guests: {
+        // Owner decision D-12 (#2307): the week strip's staying / arriving /
+        // departing counts are operational — what the leader on shift should
+        // expect through the door — so an unconsented member guest is not in
+        // them. Filtering both the booking `some` and this select keeps a
+        // booking whose only overlapping guest is pending out of the week
+        // entirely instead of showing it as a zero-guest day.
+        where: { ...OPERATIONALLY_PRESENT_GUEST_WHERE },
         select: {
           stayStart: true,
           stayEnd: true,

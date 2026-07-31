@@ -586,6 +586,21 @@ export async function joinGroupBookingAsMember(
 
   // Resolve and normalise guests against the joiner; members only here (non-member
   // friends join via the public path). Reuses the same helpers as the route.
+  //
+  // DELIBERATELY NOT WIDENED — owner decision MG1-D-a keeps group-booking joins
+  // FAMILY-SCOPED in v1, so this is the one of the seven `resolveLinkedBooking-
+  // Members` call sites that passes no options at all and must keep passing none.
+  // MG2 turns the widening on everywhere else ("+ Add Member Guest", epic #2305,
+  // #2307); here the omission IS the policy, not an oversight, and the option's
+  // `false` default is what enforces it.
+  //
+  // The reason is worth stating, because "it works everywhere else" is the obvious
+  // objection: a group join already creates a booking under somebody ELSE's
+  // organiser event, and in ORGANISER_PAYS mode somebody else settles it. Letting
+  // a joiner also pull in a member from beyond their own family would put a third
+  // party on a stay they did not choose, billed to a fourth. If that is wanted it
+  // needs its own decision about who consents to what, and that decision has not
+  // been made. A test pins this call site against accidental widening.
   const linkedMembers = await resolveLinkedBookingMembers(
     prisma,
     sessionUserId,

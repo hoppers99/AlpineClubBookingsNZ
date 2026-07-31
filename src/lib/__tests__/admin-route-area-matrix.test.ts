@@ -258,6 +258,11 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/member-applications/[id]/nominations/refresh": "membership",
   "/api/admin/member-applications/[id]/nominators/[slot]/replace": "membership",
   "/api/admin/member-fields": "membership",
+  // Deliberately BOOKINGS, not membership, despite the /api/admin/member* name
+  // (epic #2305, MG2 #2307): it is booking policy — ask-first vs notify-only and
+  // how long a pending member guest holds the bed — so it belongs with
+  // booking-requests/settings, and it is bookings editors who administer it.
+  "/api/admin/member-guest-settings": "bookings",
   "/api/admin/member-lifecycle-action-requests": "membership",
   "/api/admin/member-lifecycle-action-requests/[requestId]": "membership",
   "/api/admin/members": "membership",
