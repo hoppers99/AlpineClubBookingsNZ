@@ -4,6 +4,33 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **The finance dashboard was counting a paid price increase twice, and now
+  counts it once (#2408).** When a booking's price goes up after it was made —
+  someone adds a guest — the difference is tracked as an "additional payment".
+  Once the member paid it, the finance dashboard's **Net collected cash** figure
+  added that money in twice: a booking worth $121 whose $21 increase had been
+  collected was reported as $142 of cash. The money was only ever received once;
+  it was the report that was wrong, and it has read this way for as long as
+  price increases have existed.
+
+  **Net collected cash will therefore go DOWN.** It drops by the value of every
+  collected price increase inside the range you are looking at, and by nothing
+  else — no other figure on any screen changes. If you are comparing against a
+  figure you wrote down last month, the new, smaller number is the correct one:
+  it is the cash the club actually took. In this club's records only two
+  bookings have ever had a collected increase, so the change to the published
+  totals is small. Nothing about how payments are taken, recorded or refunded
+  has changed.
+
+  Two other things go with it. The card now says in so many words that it
+  includes any collected price increase, so it is clear the figure is the whole
+  of the cash rather than a part of it. And should a booking ever record an
+  increase as collected without a matching payment record behind it — which no
+  booking does today, but a data import or a future change could create — the
+  dashboard now says so in an amber banner naming how much cash the figure may
+  be short by and how many bookings are involved, instead of quietly publishing
+  a number that is too low.
+
 - **Recording a cash payment now asks about any extra still owing (#2397).**
   When a booking is priced up after it was made — someone adds a guest, say —
   the increase is tracked separately as an "additional payment" the member is

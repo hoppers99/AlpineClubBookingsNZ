@@ -45,8 +45,14 @@ The booking metrics response includes:
   `additionalPaymentStatus` but a real uncollected `additionalAmountCents`
   counts as `PENDING`, not `NONE`, so the split cannot contradict
   `outstandingAdditionalCents` below it
-- `capturedPrimaryCents`
-- `capturedAdditionalCents`
+- `capturedGrossCents` (#2408, renamed from `capturedPrimaryCents`): gross
+  captured cash — `Payment.amountCents` summed over the payments whose status
+  says money was taken. `reconcilePaymentAggregates` sets that column to the sum
+  of EVERY captured ledger row, PRIMARY and ADDITIONAL alike, so this figure
+  already contains any collected price increase. The old name read as "the
+  primary leg only" and invited the double count #2408 fixed
+- `capturedAdditionalCents`: how much of `capturedGrossCents` came from a later
+  price increase. A **breakdown** of that total, never an addend beside it
 - `outstandingAdditionalCents` and `outstandingAdditionalBookings` (#2350): the
   money and booking count behind an upward change that was never collected -
   `additionalAmountCents > 0` where `additionalPaymentStatus` is anything other
@@ -57,8 +63,25 @@ The booking metrics response includes:
   "collected" looks like. Window-scoped like every other figure here, so it will
   legitimately differ from the all-time dashboard/sidebar queue counts and from
   the reports summary's own date range
+- `additionalLedgerGapCents` and `additionalLedgerGapBookings` (#2408, the
+  guard): money on payments that CLAIM a collected price increase
+  (`additionalPaymentStatus = "SUCCEEDED"` with a non-zero
+  `additionalAmountCents`) and have no captured ADDITIONAL `PaymentTransaction`
+  behind it. That is the only shape in which `capturedGrossCents` does not
+  contain the increase, and therefore the only shape in which
+  `netCollectedCents` understates the cash — by up to this amount. Healthy data
+  cannot produce it (`reconcilePaymentAggregates` derives both columns from the
+  latest ADDITIONAL row, so a SUCCEEDED status implies a captured row), but an
+  import, a repair pass or a future write path could. Non-zero raises a
+  `logger.error` naming the bookings and a warning on the finance dashboard
+  beside the cash card; reconcile those payments' ledgers before trusting the
+  collected total. An UNCOLLECTED increase is not this shape — it is absent from
+  the captured total by design and reported by `outstandingAdditionalCents`
 - `refundedCents`
-- `netCollectedCents`
+- `netCollectedCents`: `capturedGrossCents - refundedCents`, floored at zero.
+  **Never** the sum of `capturedGrossCents` and `capturedAdditionalCents` — that
+  was the #2408 double count, which reported a $121 booking with a collected $21
+  increase as $142 collected
 - `creditAppliedCents`
 - `changeFeeCents`
 
@@ -83,6 +106,13 @@ The booking metrics response includes:
 ## Metric Rules
 
 - Booking and guest inclusion rules come from `docs/finance-dashboard/data-contracts.md`.
+- Collected cash is counted once (#2408). `Payment.amountCents` is the gross
+  capture — the sum of every captured ledger row — so
+  `netCollectedCents = capturedGrossCents - refundedCents`, and
+  `capturedAdditionalCents` is a part of `capturedGrossCents` rather than
+  something to add to it. `additionalLedgerGapCents` measures exactly the
+  population where that containment cannot be proved from the ledger, and is
+  zero in healthy data.
 - Booked revenue always comes from AlpineClubBookingsNZ `Booking.finalPriceCents`, not `Payment`.
 - When revenue is exposed at nightly granularity, `Booking.finalPriceCents` is allocated evenly across stay nights from `checkIn` inclusive to `checkOut` exclusive.
 - A booking can contribute to both realized and forward sections when its stay spans the realized cutoff or forward `asOfDate`.
