@@ -668,3 +668,105 @@ describe("Rate limiter config", () => {
     expect(rateLimiters.deletionRequest.windowSeconds).toBe(24 * 60 * 60);
   });
 });
+
+// ─── #2307: the export is a DISCLOSURE, not an operational surface ────────────
+//
+// Owner decision D-12 keeps a guest whose member consent is still PENDING off
+// every operational surface: the kiosk, the roster, bed allocation, the arrival
+// emails, the wall. A data-subject export is deliberately NOT one of them. It is
+// this member's own record of their own bookings, and a row the club is holding
+// about them — including one still awaiting a guest's consent, which is holding a
+// bed under D-4 — belongs in it. Hiding it would make the export a summary rather
+// than a disclosure.
+//
+// `consentStatus` is exported for the same reason: the honest answer to "what do
+// you hold about me" includes WHICH state each guest row is in, not just that it
+// exists.
+describe("#2307 member data export includes guest consent state", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    _testStore.clear();
+    mockedPrisma.member.count.mockResolvedValue(1);
+    mockedAuth.mockResolvedValue({
+      user: { id: "m1", role: "MEMBER", accessRoles: [{ role: "USER" }] },
+    } as any);
+    mockedPrisma.member.findUnique.mockResolvedValue({
+      firstName: "Ada",
+      lastName: "Subject",
+      email: "ada@test.com",
+      phoneCountryCode: null,
+      phoneAreaCode: null,
+      phoneNumber: null,
+      dateOfBirth: null,
+      role: "MEMBER",
+      ageTier: "ADULT",
+      active: true,
+      joinedDate: null,
+      createdAt: new Date(),
+    } as any);
+    mockedPrisma.choreAssignment.findMany.mockResolvedValue([]);
+    mockedPrisma.memberSubscription.findMany.mockResolvedValue([]);
+    mockedPrisma.auditLog.findMany.mockResolvedValue([]);
+  });
+
+  it("exports a PENDING guest row rather than filtering it out", async () => {
+    mockedPrisma.booking.findMany.mockResolvedValue([
+      {
+        checkIn: new Date("2026-08-01"),
+        checkOut: new Date("2026-08-03"),
+        status: "PAID",
+        totalPriceCents: 12000,
+        discountCents: 0,
+        finalPriceCents: 12000,
+        hasNonMembers: false,
+        nonMemberHoldUntil: null,
+        notes: null,
+        createdAt: new Date("2026-07-01"),
+        guests: [
+          {
+            firstName: "Nula",
+            lastName: "Ordinary",
+            ageTier: "ADULT",
+            isMember: false,
+            priceCents: 6000,
+            consentStatus: null,
+          },
+          {
+            firstName: "Penny",
+            lastName: "Awaiting",
+            ageTier: "ADULT",
+            isMember: true,
+            priceCents: 6000,
+            consentStatus: "PENDING",
+          },
+        ],
+        payment: null,
+        promoRedemption: null,
+      },
+    ] as any);
+
+    const res = await dataExportGet();
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    // Both rows present — the whole point.
+    expect(body.bookings[0].guests).toHaveLength(2);
+    expect(body.bookings[0].guests[1].firstName).toBe("Penny");
+    // ...and each row states where its consent stands.
+    expect(body.bookings[0].guests[0].consentStatus).toBeNull();
+    expect(body.bookings[0].guests[1].consentStatus).toBe("PENDING");
+  });
+
+  it("sends no consent filter in the export query", async () => {
+    mockedPrisma.booking.findMany.mockResolvedValue([]);
+
+    await dataExportGet();
+
+    const args = mockedPrisma.booking.findMany.mock.calls[0][0] as any;
+    expect(JSON.stringify(args.select.guests.where ?? null)).not.toContain(
+      "consentStatus",
+    );
+    // The field IS selected, so the export can report it.
+    expect(args.select.guests.select.consentStatus).toBe(true);
+  });
+});

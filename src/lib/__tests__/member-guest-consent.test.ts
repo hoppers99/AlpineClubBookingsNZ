@@ -20,11 +20,19 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import type { MemberGuestConsentStatus } from "@prisma/client";
+
 import {
   CONSENT_FREE_GUEST_COLUMNS,
+  MEMBER_GUEST_CONSENT_MIN_HOLD_MS,
   MEMBER_GUEST_CONSENT_SUB_STATES,
-  MEMBER_GUEST_WIDENING_ENABLED,
+  OPERATIONALLY_PRESENT_GUEST_WHERE,
+  buildMemberGuestConsentWrite,
   classifyMemberGuestConsent,
+  computeMemberGuestConsentExpiry,
+  isOperationallyPresentConsent,
+  type MemberGuestAddActor,
+  type MemberGuestBoundaryScope,
   type MemberGuestConsentColumns,
 } from "@/lib/member-guest-consent";
 import { normalizeMemberGuestSettings } from "@/lib/member-guest-settings";
@@ -33,6 +41,12 @@ import {
   MEMBER_GUEST_PENDING_HOLD_EXPIRY_DAYS_MAX,
   MEMBER_GUEST_PENDING_HOLD_EXPIRY_DAYS_MIN,
 } from "@/config/club-settings-defaults";
+import { APP_TIME_ZONE } from "@/config/operational";
+import {
+  formatDateOnlyForTimeZone,
+  parseDateOnly,
+  startOfDateOnlyForTimeZone,
+} from "@/lib/date-only";
 
 // Test helper: reads a fixed repo file under process.cwd(); the path is
 // test-controlled, not user input.
@@ -65,12 +79,27 @@ describe("consent sub-state table", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("marks exactly one shape as reachable in this release", () => {
-    // The dark guarantee, expressed as data: a member-guest row created by MG1
-    // is consent-FREE, and every other shape needs code MG1 does not ship.
-    const reachable = MEMBER_GUEST_CONSENT_SUB_STATES.filter((s) => s.reachableInMg1);
-    expect(reachable.map((s) => s.id)).toEqual(["FAMILY_OR_LEGACY"]);
-    expect(MEMBER_GUEST_WIDENING_ENABLED).toBe(false);
+  it("records which shapes predate the feature going live", () => {
+    // MG1's version of this case asserted the dark guarantee as data: exactly one
+    // shape reachable, and MEMBER_GUEST_WIDENING_ENABLED false. MG2 (#2307)
+    // deliberately breaks both halves, so what is pinned now is the historical
+    // fact the field actually records — only the consent-FREE shape existed
+    // before the widening, and every other shape arrived with it.
+    const byRelease = (release: string) =>
+      MEMBER_GUEST_CONSENT_SUB_STATES.filter((s) => s.firstReachableIn === release).map(
+        (s) => s.id,
+      );
+
+    expect(byRelease("MG1")).toEqual(["FAMILY_OR_LEGACY"]);
+    expect(byRelease("MG2")).toEqual([
+      "AWAITING_TARGET",
+      "TARGET_APPROVED",
+      "DELEGATE_APPROVED",
+      "NOTIFY_ONLY_AUTO_CONFIRMED",
+      "ADMIN_ASSIGNED",
+      "DECLINED",
+      "EXPIRED",
+    ]);
   });
 
   it("gives every shape a written note", () => {
@@ -499,12 +528,24 @@ describe("migrations", () => {
       expect(phase).toBe("expand");
       expect(oldCodeCompatible).toBe("yes");
     }
-    // The hot-table row has to argue BOTH blue/green directions; the reverse
-    // one is only true because this release is dark.
+    // The hot-table row has to argue BOTH blue/green directions. MG1 could
+    // argue the reverse one away entirely, because nothing in that colour could
+    // write an enum label. MG2 (#2307) falsified that, so the row was REWRITTEN
+    // rather than left standing, and what is pinned here is that it now names the
+    // real reverse-direction risk and the real mitigation — which is the module
+    // flag, not the schema.
     const hotPlan = rows[1][4];
     expect(hotPlan.length).toBeGreaterThan(1000);
     expect(hotPlan).toContain("HOT_TABLE_SQL_REGEX");
-    expect(hotPlan).toContain("MEMBER_GUEST_WIDENING_ENABLED");
+    expect(hotPlan, "the row must not still claim the release is dark").not.toMatch(
+      /ships DARK/i,
+    );
+    expect(hotPlan, "the row must name the rollback mitigation").toMatch(
+      /turn the memberGuests module OFF first/i,
+    );
+    expect(hotPlan, "the row must be honest that PENDING rows hold beds on rollback").toMatch(
+      /hold their beds/i,
+    );
 
     // Lock honesty. The plan used to say the index build "briefly takes a SHARE
     // lock" and to offer CREATE INDEX CONCURRENTLY as the fix if BookingGuest
@@ -523,5 +564,472 @@ describe("migrations", () => {
     expect(hotPlan, "CONCURRENTLY is impossible in a Prisma migration").toMatch(
       /forbids it inside a transaction block/i,
     );
+  });
+});
+
+// --- MG2 (#2307): the operational-presence predicate ------------------------
+//
+// Owner decision D-12 says a non-consented guest is not operationally present:
+// no kiosk arrivals row, no chore, no bed, no name in an arrival email, no line
+// on the wall. Fourteen call sites spread across nine surfaces enforce that, and
+// every one of them spreads one of the two forms declared here. If the two forms
+// ever disagree, half the surfaces filter one way and half the other, and the
+// disagreement is invisible in review.
+//
+// The NULL case is pinned first and hardest because it is the trap: NULL is the
+// dominant value forever (every non-member guest, every family-scope add, every
+// row written before this feature existed), and the hand-written filter a
+// reviewer instinctively reaches for — { consentStatus: { not: "PENDING" } } —
+// evaluates to UNKNOWN for NULL in SQL, silently emptying the kiosk and the
+// arrival emails of every ordinary guest.
+describe("operational-presence predicate (D-12)", () => {
+  const ALL_STATUSES: Array<MemberGuestConsentStatus | null> = [
+    null,
+    "PENDING",
+    "CONFIRMED",
+    "DECLINED",
+    "EXPIRED",
+  ];
+
+  /**
+   * Evaluate the Prisma `where` fragment the way Postgres would, so the two
+   * forms are compared on the same input rather than by reading them.
+   *
+   * Deliberately written as an equality match per OR branch (never `!==`), which
+   * is exactly what Prisma emits for `{ consentStatus: null }` (IS NULL) and
+   * `{ consentStatus: "CONFIRMED" }` (= 'CONFIRMED').
+   */
+  function whereMatches(consentStatus: MemberGuestConsentStatus | null): boolean {
+    return OPERATIONALLY_PRESENT_GUEST_WHERE.OR.some(
+      (branch) => branch.consentStatus === consentStatus,
+    );
+  }
+
+  it("matches a NULL-consent guest — the Prisma-null trap", () => {
+    // Both forms. A regression in either one empties the kiosk of every
+    // ordinary guest, which is the single most expensive way this can fail.
+    expect(whereMatches(null)).toBe(true);
+    expect(isOperationallyPresentConsent(null)).toBe(true);
+
+    // An unselected column arrives as undefined rather than null; treat it the
+    // same, because a surface that forgot to select consentStatus must not
+    // thereby hide every guest it holds.
+    expect(isOperationallyPresentConsent(undefined)).toBe(true);
+
+    // The trap itself, stated as a test: the `not` form the OR replaces would
+    // have excluded NULL. This is what mutation probe 4 flips.
+    expect(OPERATIONALLY_PRESENT_GUEST_WHERE).not.toHaveProperty("consentStatus");
+    expect(JSON.stringify(OPERATIONALLY_PRESENT_GUEST_WHERE)).not.toContain("not");
+  });
+
+  it("agrees with isOperationallyPresentConsent over every column value", () => {
+    for (const status of ALL_STATUSES) {
+      expect(
+        isOperationallyPresentConsent(status),
+        `in-memory predicate disagrees with the where form for ${String(status)}`,
+      ).toBe(whereMatches(status));
+    }
+  });
+
+  it("admits NULL and CONFIRMED, and nothing else", () => {
+    expect(ALL_STATUSES.filter((status) => whereMatches(status))).toEqual([
+      null,
+      "CONFIRMED",
+    ]);
+    // PENDING is the one that holds a bed (D-4) while being absent from every
+    // operational surface (D-12); DECLINED and EXPIRED are rows that survived a
+    // failed removal and are not occupants either.
+    expect(isOperationallyPresentConsent("PENDING")).toBe(false);
+    expect(isOperationallyPresentConsent("DECLINED")).toBe(false);
+    expect(isOperationallyPresentConsent("EXPIRED")).toBe(false);
+  });
+
+  it("covers every status the enum can hold", () => {
+    // If MG3/MG4 adds a status, this fails until the table above names it —
+    // rather than the new status silently defaulting to "not present".
+    const declared = new Set(
+      MEMBER_GUEST_CONSENT_SUB_STATES.map((subState) => subState.status),
+    );
+    expect(new Set(ALL_STATUSES)).toEqual(declared);
+  });
+});
+
+// --- MG2 (#2307): the expiry clamp -----------------------------------------
+//
+// Owner decision D-4 lets a `PENDING` request hold a bed so a booker is not made
+// to race a stranger's inbox for capacity, and that is only defensible because
+// the hold has a deadline. This is the function that sets it, and the deadline it
+// picks is load-bearing in a way that is easy to miss on a read: it is
+// `min(now + N days, the START of the day BEFORE check-in)`, never sooner than two
+// hours away.
+//
+// THE DAY BEFORE, NOT CHECK-IN, IS THE WHOLE POINT. The sweep releases the bed
+// through the same path a member's own self-removal uses, and that path refuses
+// with STAY_NOT_FUTURE once the NZ-local check-in date is no longer in the future.
+// An expiry clamped to check-in itself would therefore fire on a morning when the
+// removal is already refused, and every such row would land on the admin
+// exception list still holding its bed — exactly the outcome D-4's deadline
+// exists to prevent. The "would fail if somebody simplified the clamp back to
+// check-in" case below is named as such so a later reader cannot mistake the
+// extra day for an off-by-one.
+const NZ = "Pacific/Auckland";
+const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
+
+describe("computeMemberGuestConsentExpiry", () => {
+  it("gives the club's configured window when check-in is far away", () => {
+    // Nothing binds: 30 days out, a 7-day policy, so the answer is just the
+    // policy. This is the ordinary case and it is asserted first so the clamp
+    // cases below cannot be read as the normal behaviour.
+    const now = new Date("2026-08-01T02:00:00.000Z");
+    expect(
+      computeMemberGuestConsentExpiry({
+        now,
+        pendingHoldExpiryDays: 7,
+        bookingCheckIn: parseDateOnly("2026-08-31"),
+        timeZone: NZ,
+      }),
+    ).toEqual(new Date("2026-08-08T02:00:00.000Z"));
+  });
+
+  it("clamps to the start of the day BEFORE check-in, not to check-in day", () => {
+    // MUTATION PROBE (the clamp): change `addDaysDateOnly(..., -1)` to `0` — i.e.
+    // "simplify" the clamp back to check-in — and this test fails on all three
+    // assertions. The request is made three days out under a seven-day policy, so
+    // the clamp binds and the two-hour floor does not.
+    const now = new Date("2026-08-01T02:00:00.000Z");
+    const expiry = computeMemberGuestConsentExpiry({
+      now,
+      pendingHoldExpiryDays: 7,
+      bookingCheckIn: parseDateOnly("2026-08-04"),
+      timeZone: NZ,
+    });
+
+    // Midnight NZST on 3 August, the day before the 4 August check-in.
+    expect(expiry).toEqual(new Date("2026-08-02T12:00:00.000Z"));
+
+    const startOfCheckInDay = startOfDateOnlyForTimeZone("2026-08-04", NZ);
+    expect(expiry.getTime()).toBeLessThan(startOfCheckInDay.getTime());
+    // And a full club day earlier, so the nightly 04:30 sweep gets a run on a
+    // morning when the removal path still sees a future check-in.
+    expect(startOfCheckInDay.getTime() - expiry.getTime()).toBe(24 * 60 * 60 * 1000);
+  });
+
+  it("lands on the real NZ start-of-day when daylight saving ENDS between now and check-in", () => {
+    // NZDT -> NZST on Sunday 5 April 2026 (clocks go back at 03:00). A check-in on
+    // 6 April makes the clamp 5 April, whose local midnight is still NZDT (UTC+13)
+    // — 11:00Z on the 4th. Two wrong-but-plausible implementations are excluded
+    // explicitly below: UTC midnight of the clamp date, and "start of check-in day
+    // minus 24 hours" (which is an hour out because the day the clock changes is
+    // 25 hours long).
+    const expiry = computeMemberGuestConsentExpiry({
+      now: new Date("2026-04-01T00:00:00.000Z"),
+      pendingHoldExpiryDays: 7,
+      bookingCheckIn: parseDateOnly("2026-04-06"),
+      timeZone: NZ,
+    });
+
+    expect(expiry).toEqual(new Date("2026-04-04T11:00:00.000Z"));
+    expect(expiry).not.toEqual(new Date("2026-04-05T00:00:00.000Z"));
+    const startOfCheckInDay = startOfDateOnlyForTimeZone("2026-04-06", NZ);
+    expect(startOfCheckInDay.getTime() - expiry.getTime()).toBe(25 * 60 * 60 * 1000);
+  });
+
+  it("lands on the real NZ start-of-day when daylight saving STARTS between now and check-in", () => {
+    // The other side of the year: NZST -> NZDT on Sunday 27 September 2026. A
+    // check-in on the 28th clamps to the 27th, whose local midnight is still NZST
+    // (UTC+12) — 12:00Z on the 26th. The 27th is only 23 hours long, so a naive
+    // "check-in minus 24 hours" is again an hour out, in the opposite direction
+    // from the April case. A single-date DST test would not have caught a sign
+    // error; two, either side of the year, do.
+    const expiry = computeMemberGuestConsentExpiry({
+      now: new Date("2026-09-20T00:00:00.000Z"),
+      pendingHoldExpiryDays: 7,
+      bookingCheckIn: parseDateOnly("2026-09-28"),
+      timeZone: NZ,
+    });
+
+    expect(expiry).toEqual(new Date("2026-09-26T12:00:00.000Z"));
+    const startOfCheckInDay = startOfDateOnlyForTimeZone("2026-09-28", NZ);
+    expect(startOfCheckInDay.getTime() - expiry.getTime()).toBe(23 * 60 * 60 * 1000);
+  });
+
+  it("never mints a request that has already expired, even when the clamp is in the past", () => {
+    // THE ONE CASE THE CLAMP CANNOT SAVE, and the function's own doc comment says
+    // so rather than hiding it: a booking made the evening before check-in. The
+    // clamp (midnight starting the day before check-in) is already behind us, so
+    // the two-hour floor wins and the deadline lands ON check-in day — where the
+    // sweep will meet STAY_NOT_FUTURE and route the row to the admin exception
+    // list. That is the deliberate trade: an already-expired request would give
+    // the member no chance to answer at all, which is worse.
+    const now = new Date("2026-08-01T11:00:00.000Z"); // 23:00 NZST on 1 August
+    const expiry = computeMemberGuestConsentExpiry({
+      now,
+      pendingHoldExpiryDays: 7,
+      bookingCheckIn: parseDateOnly("2026-08-02"),
+      timeZone: NZ,
+    });
+
+    expect(expiry).toEqual(new Date(now.getTime() + TWO_HOURS_MS));
+    expect(expiry.getTime()).toBeGreaterThanOrEqual(now.getTime() + TWO_HOURS_MS);
+    // Stated plainly so nobody "fixes" it by silently expiring the request on
+    // creation: this deadline really is on the check-in date in club time.
+    expect(formatDateOnlyForTimeZone(expiry, NZ)).toBe("2026-08-02");
+  });
+
+  it("lets the two-hour floor overshoot a clamp that is nearer than two hours", () => {
+    // The gentler version of the same edge: the clamp is only an hour away, so the
+    // floor wins and overshoots it — but by little enough that the deadline is
+    // still on the day before check-in and the sweep can still release the bed.
+    const now = new Date("2026-08-01T11:00:00.000Z"); // 23:00 NZST on 1 August
+    const clamp = startOfDateOnlyForTimeZone("2026-08-02", NZ); // now + 1 hour
+    const expiry = computeMemberGuestConsentExpiry({
+      now,
+      pendingHoldExpiryDays: 7,
+      bookingCheckIn: parseDateOnly("2026-08-03"),
+      timeZone: NZ,
+    });
+
+    expect(expiry).toEqual(new Date(now.getTime() + TWO_HOURS_MS));
+    expect(expiry.getTime()).toBeGreaterThan(clamp.getTime());
+    expect(expiry.getTime()).toBeLessThan(
+      startOfDateOnlyForTimeZone("2026-08-03", NZ).getTime(),
+    );
+  });
+
+  it("holds for at least two hours, matching the settlement reaper's floor", () => {
+    // Mirrors MIN_GRACE_MS in cron-group-settlement-reaper.ts: never mint a hold
+    // that has lapsed by the time the email announcing it lands.
+    expect(MEMBER_GUEST_CONSENT_MIN_HOLD_MS).toBe(TWO_HOURS_MS);
+  });
+
+  it("defaults to club time rather than to the server's zone", () => {
+    // Every lodge night in this system is an NZ date-only value, and the clamp is
+    // a club-midnight instant; a CI box or a container on UTC must not get a
+    // different deadline from the club's own server.
+    const args = {
+      now: new Date("2026-08-01T02:00:00.000Z"),
+      pendingHoldExpiryDays: 7,
+      bookingCheckIn: parseDateOnly("2026-08-04"),
+    };
+    expect(computeMemberGuestConsentExpiry(args)).toEqual(
+      computeMemberGuestConsentExpiry({ ...args, timeZone: APP_TIME_ZONE }),
+    );
+  });
+});
+
+// --- MG2 (#2307): the single writer of consent columns ----------------------
+//
+// Three inputs — the family boundary (D-6), the club's approvalRequired policy
+// (D-3) and who is doing the adding (MG4-D-a, brought forward) — are two states
+// each, so there are eight ways to call this function. The table below is all
+// eight, because the interesting property is not that each rule works in
+// isolation but that the three of them compose to exactly four legal column sets
+// and nothing else.
+//
+// The round-trip at the end is what makes the table binding rather than
+// descriptive: every column set the writer returns is fed straight back through
+// `classifyMemberGuestConsent` and must classify non-null, AND to the very
+// sub-state the writer claimed. Without it a writer could invent a shape the
+// model does not define — a CONFIRMED row carrying a hold deadline, say — and the
+// eight-shape table would quietly stop being the truth about what is in the
+// database.
+describe("buildMemberGuestConsentWrite", () => {
+  const NOW = new Date("2026-08-01T02:00:00.000Z");
+  const EXPIRY = new Date("2026-08-08T02:00:00.000Z");
+  const MEMBER_ACTOR: MemberGuestAddActor = { kind: "MEMBER" };
+  const ADMIN_ACTOR: MemberGuestAddActor = { kind: "ADMIN", adminMemberId: ADMIN };
+
+  /** All eight ways to call the writer, and the one answer each must give. */
+  const CASES: Array<{
+    label: string;
+    scope: MemberGuestBoundaryScope;
+    approvalRequired: boolean;
+    actor: MemberGuestAddActor;
+    subState: string;
+    notification: string;
+    columns: MemberGuestConsentColumns;
+  }> = [
+    // D-6: a family-scope add is consent-FREE, and the club's approval policy and
+    // the actor are both irrelevant to it — nobody is asked, nobody is told, and
+    // the row is indistinguishable from every pre-feature guest row. All four
+    // family rows are listed rather than collapsed, because "the policy does not
+    // reach inside a family" is the assertion.
+    ...(
+      [
+        ["approval-required policy, member adding", true, MEMBER_ACTOR],
+        ["approval-required policy, admin adding", true, ADMIN_ACTOR],
+        ["notify-only policy, member adding", false, MEMBER_ACTOR],
+        ["notify-only policy, admin adding", false, ADMIN_ACTOR],
+      ] as const
+    ).map(([label, approvalRequired, actor]) => ({
+      label: `family scope — ${label}`,
+      scope: "FAMILY" as MemberGuestBoundaryScope,
+      approvalRequired,
+      actor,
+      subState: "FAMILY_OR_LEGACY",
+      notification: "NONE",
+      columns: {
+        consentStatus: null,
+        consentRequestedAt: null,
+        consentRespondedAt: null,
+        consentRespondedByMemberId: null,
+        consentExpiresAt: null,
+      },
+    })),
+    // MG4-D-a, brought forward into MG2 so no released state can mint a PENDING
+    // row a later release would have had to migrate away: an admin add is
+    // consent-free and always-notify, and the club's approval policy does not
+    // change that. The row still records CONFIRMED against the admin who stood
+    // behind it, which is where MG4's audit rides.
+    ...([true, false] as const).map((approvalRequired) => ({
+      label: `admin actor — ${approvalRequired ? "approval-required" : "notify-only"} policy`,
+      scope: "BEYOND_FAMILY" as MemberGuestBoundaryScope,
+      approvalRequired,
+      actor: ADMIN_ACTOR,
+      subState: "ADMIN_ASSIGNED",
+      notification: "ADDED_NOTICE",
+      columns: {
+        consentStatus: "CONFIRMED" as const,
+        consentRequestedAt: null,
+        consentRespondedAt: NOW,
+        consentRespondedByMemberId: ADMIN,
+        consentExpiresAt: null,
+      },
+    })),
+    {
+      label: "member add under the shipped approval-required default (D-3)",
+      scope: "BEYOND_FAMILY",
+      approvalRequired: true,
+      actor: MEMBER_ACTOR,
+      subState: "AWAITING_TARGET",
+      notification: "CONSENT_REQUEST",
+      columns: {
+        consentStatus: "PENDING",
+        consentRequestedAt: NOW,
+        consentRespondedAt: null,
+        consentRespondedByMemberId: null,
+        consentExpiresAt: EXPIRY,
+      },
+    },
+    {
+      label: "member add at a club that opted down to notify-only (D-3)",
+      scope: "BEYOND_FAMILY",
+      approvalRequired: false,
+      actor: MEMBER_ACTOR,
+      subState: "NOTIFY_ONLY_AUTO_CONFIRMED",
+      notification: "ADDED_NOTICE",
+      columns: {
+        // CONFIRMED with a null requestedAt AND a null respondedBy is the
+        // signature of a consent nobody ever actually solicited. expiresAt stays
+        // null: a CONFIRMED row carrying a deadline would look to the sweep like
+        // a live hold.
+        consentStatus: "CONFIRMED",
+        consentRequestedAt: null,
+        consentRespondedAt: null,
+        consentRespondedByMemberId: null,
+        consentExpiresAt: null,
+      },
+    },
+  ];
+
+  it("covers all eight ways the three inputs can combine", () => {
+    expect(CASES).toHaveLength(8);
+  });
+
+  for (const testCase of CASES) {
+    it(`writes ${testCase.subState} for ${testCase.label}`, () => {
+      const write = buildMemberGuestConsentWrite({
+        scope: testCase.scope,
+        approvalRequired: testCase.approvalRequired,
+        actor: testCase.actor,
+        now: NOW,
+        consentExpiresAt: EXPIRY,
+      });
+
+      expect(write.columns).toEqual(testCase.columns);
+      expect(write.notification).toBe(testCase.notification);
+      expect(write.subState).toBe(testCase.subState);
+    });
+  }
+
+  it("classifies every shape it writes back to the sub-state it claimed", () => {
+    // The round trip, and the reason the eight-row table above is worth having.
+    // The writer's `subState` is a claim about the columns it just returned; this
+    // is where the claim is checked against the model's own classifier, for the
+    // target themselves (the guest's memberId) rather than for some third party.
+    for (const testCase of CASES) {
+      const write = buildMemberGuestConsentWrite({
+        scope: testCase.scope,
+        approvalRequired: testCase.approvalRequired,
+        actor: testCase.actor,
+        now: NOW,
+        consentExpiresAt: EXPIRY,
+      });
+
+      const classified = classifyMemberGuestConsent(write.columns, TARGET);
+      expect(classified, `${testCase.label}: the writer produced an undefined shape`).not.toBeNull();
+      expect(classified, testCase.label).toBe(write.subState);
+    }
+  });
+
+  it("reaches exactly four of the eight sub-states, and leaves the rest to the state machine", () => {
+    // A closed world in the other direction. The add path can only ever produce
+    // these four; TARGET_APPROVED, DELEGATE_APPROVED, DECLINED and EXPIRED are
+    // reachable only through respondToMemberGuestConsent and the expiry sweep. If
+    // a future add path starts writing one of those four, this fails and somebody
+    // has to say why an add is answering a question nobody asked.
+    const reachable = new Set(CASES.map((testCase) => testCase.subState));
+    expect([...reachable].sort()).toEqual([
+      "ADMIN_ASSIGNED",
+      "AWAITING_TARGET",
+      "FAMILY_OR_LEGACY",
+      "NOTIFY_ONLY_AUTO_CONFIRMED",
+    ]);
+
+    const unreachableHere = MEMBER_GUEST_CONSENT_SUB_STATES.map((state) => state.id).filter(
+      (id) => !reachable.has(id),
+    );
+    expect(unreachableHere).toEqual([
+      "TARGET_APPROVED",
+      "DELEGATE_APPROVED",
+      "DECLINED",
+      "EXPIRED",
+    ]);
+  });
+
+  it("refuses to write a PENDING hold with no deadline", () => {
+    // Not defensive padding. The sweep finds lapsed holds through the partial
+    // index on (consentStatus = 'PENDING', consentExpiresAt), so a PENDING row
+    // with a null expiry is invisible to it and would hold its bed until the stay
+    // had been and gone — the one outcome D-4's deadline exists to prevent. The
+    // writer would rather fail the add than create that row.
+    for (const consentExpiresAt of [undefined, null]) {
+      expect(() =>
+        buildMemberGuestConsentWrite({
+          scope: "BEYOND_FAMILY",
+          approvalRequired: true,
+          actor: MEMBER_ACTOR,
+          now: NOW,
+          consentExpiresAt,
+        }),
+      ).toThrow(/needs a consentExpiresAt/);
+    }
+  });
+
+  it("ignores a stray expiry on the shapes that must not carry one", () => {
+    // A caller that passes consentExpiresAt unconditionally (the obvious way to
+    // write the call site, since only one shape needs it) must not thereby stamp a
+    // hold deadline onto a settled CONFIRMED row. The classifier rejects that
+    // shape outright, so this is the assertion that keeps the call sites simple.
+    for (const testCase of CASES.filter((c) => c.subState !== "AWAITING_TARGET")) {
+      const write = buildMemberGuestConsentWrite({
+        scope: testCase.scope,
+        approvalRequired: testCase.approvalRequired,
+        actor: testCase.actor,
+        now: NOW,
+        consentExpiresAt: EXPIRY,
+      });
+      expect(write.columns.consentExpiresAt, testCase.label).toBeNull();
+    }
   });
 });

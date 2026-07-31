@@ -16,6 +16,17 @@ vi.mock("@/app/(admin)/admin/setup/permission-matrix", () => ({
 vi.mock("@/components/admin/finance-report-mappings-panel", () => ({
   FinanceReportMappingsPanel: () => <div>Finance mappings editor</div>,
 }));
+// #2307 (MG2-M-1): the Bookings Setup hub now carries the Member guests policy
+// card, a client component whose view-only gate reads `useSession`. Stubbed for
+// the same reason the finance panel above is — this suite renders SERVER pages
+// to static markup with no SessionProvider, and what it is testing is which
+// cards a hub page renders, not how any of them behaves. The card's own three
+// states are covered by `member-guest-settings-card.test.tsx`.
+vi.mock("@/components/admin/member-guest-settings-card", () => ({
+  MemberGuestSettingsCard: ({ moduleEnabled }: { moduleEnabled: boolean }) => (
+    <div>Member guests settings card (module {moduleEnabled ? "on" : "off"})</div>
+  ),
+}));
 
 import AppearanceHubPage from "@/app/(admin)/admin/appearance/page";
 import DisplayHubPage from "@/app/(admin)/admin/display/page";
@@ -104,6 +115,10 @@ describe("admin setup hub pages", () => {
     expect(html).toContain("Bookings Setup");
     expect(html).toContain("Rooms &amp; Beds");
     expect(html).toContain("Booking Messages");
+    // MG2-M-1 as ticked: the member-guest policy lives HERE rather than on a
+    // new admin route, and it is threaded the module flag so it can render its
+    // own not-in-use banner (MG2-M-4).
+    expect(html).toContain("Member guests settings card (module on)");
   });
 
   it("shows feature-gated cards when their modules are enabled", async () => {

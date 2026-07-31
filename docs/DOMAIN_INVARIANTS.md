@@ -1310,10 +1310,35 @@ columns on `BookingGuest` — `consentStatus`, `consentRequestedAt`,
 `consentRespondedAt`, `consentRespondedByMemberId`, `consentExpiresAt` — not in
 a side table.
 
-**In the MG1 release (#2306) every one of these columns is inert.** Cross-family
-adds are still refused, `MEMBER_GUEST_WIDENING_ENABLED` is `false`, and
-therefore no code path writes a non-null `consentStatus` in any module state for
-any actor. The invariants below are the contract MG2 (#2307) onwards must hold.
+**MG1 (#2306) shipped every one of these columns inert. MG2 (#2307) turns them
+on.** With the `memberGuests` module enabled, a cross-family active member now
+resolves and the row carries a real consent state; with it disabled — the shipped
+default (D-2) — a cross-family add is refused with the byte-for-byte pre-feature
+error and nothing writes a non-null `consentStatus`. The invariants below are now
+live behaviour, not a forward contract.
+
+Two consequences of the owner's ticks are recorded here as **chosen behaviour**,
+because both are surprising and neither should be discovered by a member:
+
+- **An approved stay may be extended without asking again** (owner decision
+  D-13). Consent covers the booking *however it later changes*, in both policy
+  modes: no reset to `PENDING`, and no change notification in notify-only either.
+  So a booker may add nights to a stay a member agreed to, and that member keeps
+  holding the new nights without being asked. Their only exit is self-removal —
+  which, per D-14 below, may itself be refused. The two ticks compound, and this
+  is where that is written down.
+- **A member who never consented can be refused the ability to come off the
+  booking** (owner decision D-14). Declining is a self-removal, so it runs the
+  ordinary blockers. A pending guest CAN decline when the booking status allows
+  guest changes, check-in is strictly in the future, the booking has two or more
+  guests, it is not quote-priced, and the reduction needs no refund-vs-credit
+  election. They are TRAPPED — a plain-English 400, and the row survives as
+  *blocked* on the admin exception list — when a captured payment's cancellation
+  tier returns money (the common case, because member guests are charged up front
+  on the mixed-party split), when they are the booking's only guest, when the
+  booking was quote-priced, when check-in has started, or when the status forbids
+  changes. The member is told who can help; MG2 adds no exemption, which is
+  exactly what D-14 decides. See docs/STATE_MACHINES.md for the transition list.
 
 - **`NULL` is not `CONFIRMED`.** A null `consentStatus` means *no consent was
   ever needed* — a family-scope add (D-6) or a row written before the feature
@@ -1337,6 +1362,26 @@ any actor. The invariants below are the contract MG2 (#2307) onwards must hold.
   them (a delegate approving for a target with no login, D-5/D-10), or name the
   acting admin (an admin assignment or a booking copy). MG4's admin-assigner
   audit rides this column; no extra column exists or is needed.
+- **Nobody answers for a member who can sign in** (owner decision D-5/D-10). The
+  delegate rule has a target side as well as an actor side, and both are
+  enforced: a delegate must be an active, login-holding ADULT sharing a family
+  group with the target, AND the target must NOT hold a login of their own.
+  Without the target conjunct, two members of one household who are both put on
+  the same booking can answer for each other — including declining, which
+  releases the other's bed and deletes their guest row. `canRespondForTarget`
+  and `resolveNotificationRecipients` in `src/lib/member-guest-delegate.ts` share
+  one predicate for it, so "who may act" and "who is told" cannot drift into two
+  different rules. A consequence worth expecting: a login-holding target the club
+  has no email address for is asked nobody and told nobody, because the household
+  may not answer for them either — an unanswerable request emailed to a household
+  would only strand the bed.
+- **A delegate's answer is told to the member it was given for.** A member
+  answering for themselves needs no notice, but a delegate's answer is somebody
+  else's decision about them, so the member — and the other adults who were sent
+  the same request — receive the `member-guest-consent-answered` email naming who
+  answered and what they said. It carries no money and no booking link: the
+  recipient may have nothing to do with the booking, and D-11 grants booking-page
+  access to a guest ROW, never to a delegate.
 - **A `PENDING` row holds the bed** (D-4) until `consentExpiresAt`, which is set
   from `MemberGuestSettings.pendingHoldExpiryDays` (default 7, bounds 1–60). A
   `PENDING` row without an expiry would be an unbounded capacity hold and is not
@@ -1350,6 +1395,34 @@ any actor. The invariants below are the contract MG2 (#2307) onwards must hold.
   re-points A's guest rows — consent columns included — onto B.
   `consentRespondedByMemberId` is an FK-less snapshot and keeps the id of
   whoever actually answered at the time, even after that member is merged away.
+  The survivor therefore **inherits the consent the loser gave**, which is the
+  accepted consequence of the existing `move` classification, and two shapes fall
+  out of it that a reader should expect rather than discover: a merge can put two
+  guest rows for the same person on one booking (a person-night conflict the merge
+  path resolves), and a merge can leave a booking whose only guest is the
+  survivor, i.e. in `LAST_GUEST` — so a later decline or lapse on that row lands
+  on the admin exception list instead of releasing the bed.
+- **A pending guest is not operationally present** (owner decision D-12). Only
+  `null` and `CONFIRMED` rows appear on the kiosk arrivals list, the arrive/depart
+  gate, the chore roster and its print sheet, bed allocation and the admin bed
+  board, the hut-leader pickers, the lodge display board, the week summary, the
+  double-bed candidate sweep, and — because these are member-facing content, not
+  just screens — the pre-arrival and check-in reminder emails. The single shared
+  predicate is `OPERATIONALLY_PRESENT_GUEST_WHERE`, written as an explicit
+  `OR: [{ consentStatus: null }, { consentStatus: "CONFIRMED" }]`. It must NEVER
+  be written as `{ consentStatus: { not: "PENDING" } }`: on a nullable column that
+  form is `UNKNOWN` for every `NULL` row, so it would silently drop every ordinary
+  guest off the kiosk and out of the arrival emails in production.
+- **A pending guest DOES hold a bed and a person-night** (owner decision D-4), and
+  every capacity path counts them. Capacity, month availability, the occupancy
+  index, partner shared-admission and the person-night conflict guard must NOT
+  gain a consent filter — a pending guest who did not hold their person-night
+  could be placed in two beds on one night. The exclusion list and the freeze list
+  are deliberate opposites, and each has its own test.
+- **A data-subject export is not an operational surface.** The member data export
+  deliberately includes the member's own pending rows and exports
+  `consentStatus` as a field. Excluding them would make the export incomplete
+  about a commitment that exists.
 
 The eight legal column shapes, and only those eight, are. In the four column
 cells, **null** means the column must be `NULL`, **set** means it must be
@@ -2557,6 +2630,97 @@ login), or passes `canLogin` only as a read/token filter
 strand an existing admin. The one remaining path that can clear `canLogin` on an existing
 admin and is NOT guarded is indirect — the age-down cron, where editing a date
 of birth to a minor tier can indirectly clear `canLogin` (informational).
+
+Membership-cancellation eligibility is an account-holder question, never a
+permissions one (#2383). `isMembershipHolderRecord` (`src/lib/member-roles.ts`)
+is the single rule, shared by `createAdminMembershipCancellationRequest` and the
+admin member page's gate, and pinned to that call site by the #2354 AST contract
+test. It refuses exactly two record classes, both of which are not account
+holders: the lodge kiosk device login, and booking-request contact records
+(`NON_MEMBER`, plus non-login `SCHOOL` — the school flow's owner contact and
+teacher records).
+
+The kiosk test is a record-CLASS test, never a "holds lodge access" test.
+`LODGE` is a freely tickable checkbox in the member editor ("Can use lodge kiosk
+and lodge operations tools") with no exclusivity guard, so a Booking Officer who
+also runs the lodge screen carries a `LODGE` row while being an ordinary
+fee-paying person. Refusing on the presence of the token would hide the
+cancellation action from such a person silently — the #2354 failure mode this
+rule exists to eliminate. The rule is therefore `deriveUserType(...) === "lodge"`
+over the record's login-blind stored tokens: refused only when `LODGE` is the
+record's ENTIRE classification, which is exactly when the admin UI labels its
+User Type "Lodge (kiosk account)". A record whose only tokens are `USER` and
+`LODGE` is still refused, and is correct to be: it is indistinguishable from a
+kiosk, and the refusal agrees with the User Type the operator is shown.
+
+The `canLogin` term applies to `SCHOOL` alone and must not be generalised:
+`SCHOOL` is the legacy role of BOTH a real organisation account (User Type
+"Organisation", which stores an `ORG` row; the admin UI only ever sets it on a
+login-capable account, though `createMemberSchema` does not enforce that on
+write — an API caller could store `role: "SCHOOL"` with `canLogin: false`) and
+every school booking-request contact (always created `canLogin: false`);
+non-login is the line `MAPPABLE_CONTACT_SCOPE`
+(`src/lib/non-member-contact.ts`) already draws between them. Every other
+account is cancellable, including admins of every class — the rule this replaced
+was legacy `role === "USER"`, which refused only the Full Admin bundle while
+accepting all four scoped admin classes, and swept up organisations that hold
+real fee-paying memberships. The privileged-target and last-Full-Admin guards
+above are what make widening this safe: they run inside the approval
+transaction, so a cancellation can never strand the club with no active,
+login-enabled Full Admin, and only a Full Admin may approve one against a
+privileged account. Separation of duties holds on the self-cancellation case a
+widened rule newly reaches — `assertCancellationApprovalIsIndependent` refuses
+an approval by the member who raised the request — so a club's sole Full Admin
+must appoint a successor before their own cancellation can be approved. That
+guard fails CLOSED on a null `requestedByMemberId` (the FK is
+`onDelete: SetNull`, so hard-deleting the raiser nulls it): "we cannot tell who
+raised this" means "not you", never "anyone". Rejection is unaffected, so such
+a request is never stuck. The approval queue also surfaces, per participant,
+whether the target holds privileged access (the guard's own predicate) and
+whether it is an organisation account, so an approval that is permitted but
+mistaken has a human check in front of it.
+
+Both callers of the rule must feed it the same shape. The admin member page is
+served `resolveAccessRoleTokens` output, which is EMPTY whenever
+`canLogin === false`; the server reads the stored `MemberAccessRole` rows, which
+are NOT cleared when login is disabled (the family login-holder transfer
+de-logins cluster members and leaves their rows). `isMembershipHolderRecord`
+therefore accepts raw rows and resolved tokens interchangeably and applies the
+same login-clearing to both — the rows are consulted only for a login-capable
+record — so the page can never offer an action the server answers with a 422.
+The legacy `role` column is exempt from that clearing and still identifies a
+de-logined kiosk. The AST contract test pins the call site, not the shape, so
+this property is pinned by unit tests over the helper instead
+(`src/lib/__tests__/member-roles.test.ts`).
+
+Cancellation approval does NOT clear `MemberAccessRole` rows,
+`financeAccessLevel`, or the legacy `role` column (#2383, confirming existing
+behaviour). Archive approval, deletion anonymisation, and bulk deactivate all
+leave them too. **`active: false` is the load-bearing flag**, not
+`canLogin: false`: `requireAdmin` (`src/lib/session-guards.ts`) rejects an
+inactive member, and it does not select `canLogin` at all, while
+`getAdminPermissionMatrix` zeroes the matrix only on an explicit
+`canLogin === false` — pass it a row set without that field and the full bundle
+resolves. De-logined accounts that still hold live rows therefore exist today
+(the login-holder transfer again), so nothing may be built on "no login means no
+permissions". The dormant rows are what keep the account inside the
+canLogin-blind `memberHoldsPrivilegedRole` guard for any later archive, and
+deleting them on cancellation would be novel and would weaken that later guard.
+The corollary is a hard constraint on any future work: **a path that reactivates
+a cancelled member would silently restore every privileged role it left in
+place.** No such path exists today — the member edit service and bulk update
+both refuse to reactivate a cancelled member, and nothing writes
+`cancelledAt: null` — and any that is added must clear or re-grant the roles
+deliberately.
+
+The same fact constrains session-authenticated routes: cancellation neither
+clears the rows nor invalidates the JWT (`auth()` invalidates only on
+`passwordChangedAt`, and re-stamps `token.accessRoles` from the retained rows on
+every request), so any route that resolves admin access from a member row must
+re-read `active` rather than trusting the rows. `requireAdmin` does; the display
+preview branch of `GET /api/display/state` did not, and now does (#2383) — it
+was unreachable before, because a cancelled member could not previously hold an
+`ADMIN` row.
 
 Application-approval mapping (link + overwrite of an existing member at approval
 time) preserves the login-uniqueness and auth invariants: it never creates a

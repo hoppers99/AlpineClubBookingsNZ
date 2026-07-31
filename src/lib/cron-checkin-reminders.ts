@@ -5,6 +5,7 @@ import logger from "@/lib/logger";
 import { OPERATIONAL_STAY_BOOKING_STATUSES } from "@/lib/booking-status";
 import { checkinNotBlockedByPendingReviewFilter } from "@/lib/booking-review";
 import { EMAIL_DEFAULT_LODGE_NAME } from "@/lib/email-message-settings";
+import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent";
 
 /**
  * N-01: Send check-in reminder emails for bookings checking in tomorrow.
@@ -32,7 +33,12 @@ export async function sendCheckinReminders(): Promise<{ sent: number; skipped: n
     },
     include: {
       member: true,
-      guests: true,
+      // Owner decision D-12 (#2307): the check-in reminder NAMES each guest, so
+      // it must not name a member whose consent to being added is still PENDING
+      // — the booker would read it as settled, and the named member has not
+      // agreed to be listed anywhere. They still hold a bed under D-4; that is
+      // capacity's business, not this email's.
+      guests: { where: { ...OPERATIONALLY_PRESENT_GUEST_WHERE } },
       choreAssignments: {
         where: {
           date: {

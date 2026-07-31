@@ -796,12 +796,12 @@ Booking Policies sections (#2142) and is now the **default across the admin
 tree** (#2160, extended by #2168 and #2324) — not a claim that nothing is left.
 Measured
 on the current tree by `view-only-banner-contract.test.ts`, which asserts these
-figures rather than trusting a hand count: **79 components render a banner, and
-248 of the 295 `ViewOnlyActionButton` call sites opt out** of the per-button
+figures rather than trusting a hand count: **80 components render a banner, and
+250 of the 297 `ViewOnlyActionButton` call sites opt out** of the per-button
 reason. (Earlier revisions of this page published 76/232/264/211 — those were
 upstream-historical and had drifted; the numbers here are the ones the contract
-test currently pins, which is the only authority.) Those 248 split by WHICH rule
-covers them: **222** pass the literal
+test currently pins, which is the only authority.) Those 250 split by WHICH rule
+covers them: **224** pass the literal
 `describeReason={false}` and are covered by a banner in the same file, and **26**
 pass `describeReason={!ancestorRendersViewOnlyBanner}` and are covered by a
 verified vouching parent — 21 by a parent's own JSX render site (#2168), 5 by the
@@ -2089,7 +2089,7 @@ flowchart TD
     Leader --> Q15["Every 15 min<br/>payment-recovery, xero-outbox,<br/>xero-operation-replay, xero-inbound-reconcile"]
     Leader --> Q30["Every 30 min<br/>waitlist-processor, email-retry"]
     Leader --> Q3h["Every 3 h<br/>confirm-pending, pre-arrival-reminders,<br/>purge-booking-requests, quote-expiry-reminders,<br/>school-attendee-confirmations, group-settlement-reaper"]
-    Leader --> Daily["Daily<br/>complete-bookings, data-pruning, draft-cleanup,<br/>age-up, capacity-warnings, admin-digest,<br/>credit-reconciliation, hut-leader-auto-assign,<br/>checkin-reminders, pending-deadline-alerts,<br/>nomination-reminders, finance-daily-sync,<br/>xero-membership-refresh, xero-link-backfill,<br/>xero-link-cleanup, xero-reconciliation-report"]
+    Leader --> Daily["Daily<br/>complete-bookings, data-pruning, draft-cleanup,<br/>age-up, capacity-warnings, admin-digest,<br/>credit-reconciliation, hut-leader-auto-assign,<br/>checkin-reminders, pending-deadline-alerts,<br/>member-guest-consent-expiry,<br/>nomination-reminders, finance-daily-sync,<br/>xero-membership-refresh, xero-link-backfill,<br/>xero-link-cleanup, xero-reconciliation-report"]
     Leader --> Cfg["Configurable<br/>backup"]
 ```
 
@@ -2115,6 +2115,7 @@ flowchart TD
 | `finance-daily-sync` | Daily when the finance dashboard module is enabled | Refresh finance report/invoice/balance snapshots from the operational Xero connection |
 | `data-pruning` | Daily | Prune expired tokens/logs and run audit retention |
 | `draft-cleanup` | Daily | Delete expired draft bookings |
+| `member-guest-consent-expiry` | Daily at 04:30 NZT when the member-guests module is enabled | Expire lapsed member-guest consent requests, release the bed, and settle the reduction as account credit to the booking owner; rows the shared removal path refuses are counted separately for the admin exception list |
 | `pending-deadline-alerts` | Daily | Alert admins about pending bookings approaching deadline |
 | `credit-reconciliation` | Daily | Reconcile account-credit ledger state and alert on refunded Stripe payments missing Xero credit notes |
 | `hut-leader-auto-assign` | Daily | Suggest hut leaders |

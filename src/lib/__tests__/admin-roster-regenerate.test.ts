@@ -212,3 +212,91 @@ describe("PUT /api/admin/roster/[date] regenerate action", () => {
     expect(mockTxExecuteRaw).toHaveBeenCalledTimes(1)
   })
 })
+
+// --- D-12 (#2307): the admin chore roster choke point -----------------------
+//
+// Owner decision D-12: a member guest whose consent is still PENDING holds a bed
+// (D-4) but is not operationally present. `getGuestsForDate` in
+// admin-roster-service.ts is the single query behind THREE things — chore
+// allocation, the roster email fan-out, and GuestChoreToken minting — so one
+// exclusion there keeps a pending guest out of all three at once. That is why
+// the assertion below is on what reaches `allocateChores`: it is the choke point,
+// and if the wrong list reaches it the wrong people get chores, emails and
+// tokens.
+describe("PUT /api/admin/roster/[date] excludes unconsented member guests (D-12, #2307)", () => {
+  const PRESENT_OR = [{ consentStatus: null }, { consentStatus: "CONFIRMED" }]
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockAuth.mockResolvedValue({ user: { id: "admin-1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] } })
+    mockLodgeFindFirst.mockResolvedValue({ id: "default-lodge" })
+    mockTransaction.mockImplementation(async (callback: (tx: unknown) => unknown) =>
+      callback({
+        $executeRaw: mockTxExecuteRaw,
+        choreAssignment: {
+          findMany: mockChoreAssignmentFindMany,
+          deleteMany: mockChoreAssignmentDeleteMany,
+          createMany: mockChoreAssignmentCreateMany,
+          groupBy: mockChoreAssignmentGroupBy,
+        },
+        choreTemplate: {
+          findMany: mockChoreTemplateFindMany,
+        },
+      })
+    )
+  })
+
+  it("allocates chores to the consented guests only, and never the PENDING one", async () => {
+    mockChoreAssignmentFindMany.mockResolvedValue([])
+    // Filters the guest list the way Prisma would, from the `where` the service
+    // actually sent — a mock that ignored it would pass with the filter deleted.
+    mockBookingFindMany.mockImplementation(async (args: any) => {
+      const where = args.include.guests.where as
+        | { OR?: Array<{ consentStatus: string | null }> }
+        | undefined
+      const guests = [
+        { id: "guest-ordinary", firstName: "Nula", lastName: "Ordinary", ageTier: "ADULT", consentStatus: null },
+        { id: "guest-agreed", firstName: "Connie", lastName: "Agreed", ageTier: "ADULT", consentStatus: "CONFIRMED" },
+        { id: "guest-awaiting", firstName: "Penny", lastName: "Awaiting", ageTier: "ADULT", consentStatus: "PENDING" },
+      ]
+      return [
+        {
+          id: "booking-1",
+          checkIn: new Date("2026-04-10T00:00:00.000Z"),
+          checkOut: new Date("2026-04-11T00:00:00.000Z"),
+          guests: where?.OR
+            ? guests.filter((guest) =>
+                where.OR!.some((branch) => branch.consentStatus === guest.consentStatus)
+              )
+            : guests,
+        },
+      ]
+    })
+    mockChoreTemplateFindMany.mockResolvedValue([])
+    mockChoreAssignmentGroupBy.mockResolvedValue([])
+    mockAllocateChores.mockReturnValue([])
+
+    const { PUT } = await import("@/app/api/admin/roster/[date]/route")
+    const req = new NextRequest("http://localhost/api/admin/roster/2026-04-10", {
+      method: "PUT",
+      body: JSON.stringify({ action: "regenerate" }),
+      headers: { "Content-Type": "application/json" },
+    })
+    const res = await PUT(req, { params: Promise.resolve({ date: "2026-04-10" }) })
+
+    expect(res.status).toBe(200)
+
+    // BOTH sites: the booking match and the guest include.
+    const args = mockBookingFindMany.mock.calls[0][0]
+    expect(args.where.guests.some.OR).toEqual(PRESENT_OR)
+    expect(args.include.guests.where.OR).toEqual(PRESENT_OR)
+
+    // And the choke point itself — the list the allocator, the email fan-out and
+    // the token minter all work from.
+    const allocatedGuests = mockAllocateChores.mock.calls[0][1] as Array<{ id: string }>
+    expect(allocatedGuests.map((guest) => guest.id)).toEqual([
+      "guest-ordinary",
+      "guest-agreed",
+    ])
+  })
+})

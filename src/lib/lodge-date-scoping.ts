@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { OPERATIONAL_STAY_BOOKING_STATUSES } from "@/lib/booking-status";
 import { lodgeNullTolerantScope } from "@/lib/lodges";
 import { checkinNotBlockedByPendingReviewFilter } from "@/lib/booking-review";
+import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent";
 
 export const LODGE_VISIBLE_BOOKING_STATUSES = [
   ...OPERATIONAL_STAY_BOOKING_STATUSES,
@@ -21,6 +22,12 @@ export async function findLodgeGuestForDate(
       id: bookingGuestId,
       stayStart: { lte: date },
       stayEnd: { gt: date },
+      // Owner decision D-12 (#2307): this is the ENFORCEMENT half of the kiosk,
+      // not just the display half. A guest whose member consent is still
+      // PENDING must resolve to null here so `arrive` 404s exactly the way a
+      // review-blocked guest already does — otherwise the arrivals list hides
+      // them while the endpoint would still happily mark them arrived.
+      ...OPERATIONALLY_PRESENT_GUEST_WHERE,
       booking: {
         status: { in: [...LODGE_VISIBLE_BOOKING_STATUSES] },
         checkIn: { lte: date },
@@ -59,6 +66,9 @@ export async function findLodgeGuestDepartingOnDate(
       id: bookingGuestId,
       stayStart: { lte: date },
       stayEnd: date,
+      // D-12 (#2307): the depart endpoint gets the same treatment as arrive —
+      // an unconsented guest resolves to null and the endpoint 404s.
+      ...OPERATIONALLY_PRESENT_GUEST_WHERE,
       booking: {
         status: { in: [...LODGE_VISIBLE_BOOKING_STATUSES] },
         checkIn: { lte: date },
@@ -100,6 +110,9 @@ export async function validateRosterAllocationsForDate(
       id: { in: guestIds },
       stayStart: { lte: date },
       stayEnd: { gt: date },
+      // D-12 (#2307): an unconsented guest is not on the roster at all, so an
+      // allocation naming them fails validation and roster-confirm rejects it.
+      ...OPERATIONALLY_PRESENT_GUEST_WHERE,
       booking: {
         status: { in: [...LODGE_VISIBLE_BOOKING_STATUSES] },
         checkIn: { lte: date },

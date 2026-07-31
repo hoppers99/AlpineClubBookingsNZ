@@ -634,10 +634,10 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
       expect.objectContaining({
         where: expect.objectContaining({
           guests: {
-            some: {
+            some: expect.objectContaining({
               stayStart: { lte: new Date("2026-07-12T00:00:00.000Z") },
               stayEnd: { gt: new Date("2026-07-12T00:00:00.000Z") },
-            },
+            }),
           },
         }),
       })
@@ -789,11 +789,15 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
         where: expect.objectContaining({
           checkIn: { lte: new Date("2026-04-19T00:00:00.000Z") },
           checkOut: { gte: new Date("2026-04-13T00:00:00.000Z") },
+          // objectContaining, not an exact match: MG2 (#2307) adds the
+          // operational-presence predicate alongside the stay-range clauses
+          // (owner decision D-12). This case is about the PII and query-count
+          // contract, so it pins the stay ranges and stays open to that.
           guests: {
-            some: {
+            some: expect.objectContaining({
               stayStart: { lte: new Date("2026-04-19T00:00:00.000Z") },
               stayEnd: { gte: new Date("2026-04-13T00:00:00.000Z") },
-            },
+            }),
           },
         }),
       })

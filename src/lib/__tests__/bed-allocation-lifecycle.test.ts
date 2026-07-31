@@ -3584,3 +3584,168 @@ describe("exclusive whole-lodge hold (ADR-001, #2285)", () => {
     expect(result.createdCount).toBe(2);
   });
 });
+
+// --- D-12 (#2307): bed allocation places only operationally present guests ---
+//
+// Owner decision D-12: a member guest whose consent is still PENDING holds a bed
+// against capacity (D-4) but is not somebody the club places in a specific bunk.
+// Two guest SELECTS in this module decide who gets placed — the per-booking load
+// and the auto-allocation planner's load — and both now carry the shared
+// predicate.
+//
+// The third guest read in this module, the BedAllocation occupancy query, is
+// deliberately NOT filtered, and the last test here says why in the only way
+// that survives a refactor.
+describe("bed allocation member-guest consent exclusion (D-12, #2307)", () => {
+  const AWAITING = {
+    consentStatus: "PENDING",
+    consentRequestedAt: new Date("2026-06-25T00:00:00.000Z"),
+    consentExpiresAt: new Date("2026-06-30T12:00:00.000Z"),
+  };
+
+  function guestRow(id: string, consent: Record<string, unknown> = {}) {
+    return {
+      id,
+      bookingId: "booking-1",
+      ageTier: "ADULT",
+      stayStart: parseDateOnly("2026-07-01"),
+      stayEnd: parseDateOnly("2026-07-03"),
+      nights: [],
+      // Null for every ordinary guest; that is the value the `not:` trap drops.
+      consentStatus: null,
+      ...consent,
+    };
+  }
+
+  /** Filters a guest list the way Prisma would, from the `where` production sent. */
+  function applyWhere(
+    where: { OR?: Array<{ consentStatus: string | null }> } | undefined,
+    guests: Array<{ consentStatus?: string | null }>,
+  ) {
+    if (!where?.OR) return guests;
+    return guests.filter((guest) =>
+      where.OR!.some(
+        (branch) => branch.consentStatus === (guest.consentStatus ?? null),
+      ),
+    );
+  }
+
+  it("sends the predicate on the per-booking guest load", async () => {
+    const db = makeDb();
+    db.booking.findUnique.mockResolvedValue({
+      id: "booking-1",
+      status: BookingStatus.PAID,
+      deletedAt: null,
+      checkIn: parseDateOnly("2026-07-01"),
+      checkOut: parseDateOnly("2026-07-03"),
+      guests: [guestRow("guest-1")],
+    });
+
+    await reconcileBedAllocationsForBooking({
+      bookingId: "booking-1",
+      db: db as any,
+    });
+
+    const args = db.booking.findUnique.mock.calls[0][0];
+    expect(args.select.guests.where.OR).toEqual([
+      { consentStatus: null },
+      { consentStatus: "CONFIRMED" },
+    ]);
+  });
+
+  it("prunes an unconsented guest out of the placement set entirely", async () => {
+    // Not merely "skips placing them": this list is what the prune diffs
+    // against, so any BedAllocation row an earlier release wrote for a guest who
+    // is no longer operationally present is swept on the next reconcile. That is
+    // the intended coherence — they must not be occupying a bunk on the board
+    // either — and it is asserted here so it cannot be mistaken for a bug later.
+    const db = makeDb();
+    db.booking.findUnique.mockImplementation(async (args: any) => ({
+      id: "booking-1",
+      status: BookingStatus.PAID,
+      deletedAt: null,
+      checkIn: parseDateOnly("2026-07-01"),
+      checkOut: parseDateOnly("2026-07-03"),
+      guests: applyWhere(args.select.guests.where, [
+        guestRow("guest-ordinary"),
+        guestRow("guest-agreed", { consentStatus: "CONFIRMED" }),
+        guestRow("guest-awaiting", AWAITING),
+      ]),
+    }));
+    db.bedAllocation.deleteMany.mockResolvedValue({ count: 1 });
+
+    await reconcileBedAllocationsForBooking({
+      bookingId: "booking-1",
+      db: db as any,
+    });
+
+    const where = db.bedAllocation.deleteMany.mock.calls[0][0].where;
+    // The keep-list is the two consented guests. The pending guest's id is
+    // absent, so `notIn` sweeps any row it holds.
+    expect(where.OR[0]).toEqual({
+      bookingGuestId: { notIn: ["guest-ordinary", "guest-agreed"] },
+    });
+  });
+
+  it("sends the predicate on the auto-allocation planner's guest load", async () => {
+    const db = makeDb({
+      bedAllocationSettings: {
+        findUnique: vi.fn().mockResolvedValue({ autoAllocationEnabled: true }),
+      },
+    });
+    db.booking.findUnique.mockResolvedValue({
+      id: "booking-1",
+      status: BookingStatus.PAID,
+      deletedAt: null,
+      checkIn: parseDateOnly("2026-07-01"),
+      checkOut: parseDateOnly("2026-07-03"),
+      guests: [guestRow("guest-1")],
+    });
+    db.booking.findMany.mockResolvedValue([]);
+
+    await reconcileBedAllocationsForBooking({
+      bookingId: "booking-1",
+      db: db as any,
+    });
+
+    const args = db.booking.findMany.mock.calls[0][0];
+    expect(args.select.guests.where.OR).toEqual([
+      { consentStatus: null },
+      { consentStatus: "CONFIRMED" },
+    ]);
+  });
+
+  it("leaves the BedAllocation occupancy read UNFILTERED, on purpose", async () => {
+    // This query reads the beds as WRITTEN, to learn what is occupied and which
+    // guest-nights are already placed. Filter it and two things break at once: a
+    // bed still holding an unconsented guest's row looks free and the planner
+    // double-books it, and the already-placed guest-night is forgotten so the
+    // planner drafts a duplicate. The exclusion belongs on the two guest selects
+    // above; the sweep is what removes a stale row.
+    const db = makeDb({
+      bedAllocationSettings: {
+        findUnique: vi.fn().mockResolvedValue({ autoAllocationEnabled: true }),
+      },
+    });
+    db.booking.findUnique.mockResolvedValue({
+      id: "booking-1",
+      status: BookingStatus.PAID,
+      deletedAt: null,
+      checkIn: parseDateOnly("2026-07-01"),
+      checkOut: parseDateOnly("2026-07-03"),
+      guests: [guestRow("guest-1")],
+    });
+    db.booking.findMany.mockResolvedValue([]);
+
+    await reconcileBedAllocationsForBooking({
+      bookingId: "booking-1",
+      db: db as any,
+    });
+
+    const occupancyCall = db.bedAllocation.findMany.mock.calls.find(
+      (call: any[]) => call[0]?.select?.bedId !== undefined,
+    );
+    expect(occupancyCall, "the planner's occupancy read should have run").toBeTruthy();
+    expect(JSON.stringify(occupancyCall![0])).not.toContain("consentStatus");
+  });
+});

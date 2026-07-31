@@ -237,6 +237,12 @@ vi.mock("@/lib/booking-guests", () => {
     getBookingGuestValidationErrorResponse: mockGetBookingGuestValidationErrorResponse,
     normalizeBookingGuestInputs: vi.fn((guests: unknown) => guests),
     resolveLinkedBookingMembers: vi.fn().mockResolvedValue([]),
+    // MG2 (#2307): the batch path resolves through the boundary-carrying
+    // variant now; an empty boundary means "every guest is family scope".
+    resolveLinkedBookingMembersWithBoundary: vi.fn().mockResolvedValue({
+      members: new Map(),
+      boundary: { scopeByMemberId: new Map(), beyondFamilyMemberIds: [] },
+    }),
   };
 });
 
@@ -539,7 +545,10 @@ describe("PUT /api/bookings/[id]/modify", () => {
         ],
       }),
     );
-  });
+    // First test in the file: the route's dynamic import (grown by #2307's
+    // member-guest modules) counts against this test's clock, like the two
+    // 10_000 timeouts below.
+  }, 10_000);
 
   it("allows identity-only edits on a quote-priced booking without repricing (#1099)", async () => {
     // A school booking's student names must be editable; the negotiated flat
@@ -765,6 +774,9 @@ describe("PUT /api/bookings/[id]/modify", () => {
       {
         actorRole: "USER",
         onBehalfOfMemberId: null,
+        // MG2 (#2307, D-8): the batch path now names which added members sit
+        // beyond the family boundary; none here, so the list is empty.
+        crossFamilyMemberIds: [],
       }
     );
     expect(tx.bookingGuest.create).not.toHaveBeenCalled();

@@ -370,7 +370,11 @@ Cancel (`booking-cancel.ts`), Stripe capture, the manual cash / off-Xero
 mark-paid and its reversal, and the capacity-failed void
 (`payment-reconciliation.ts`), the Internet-Banking hold-expiry release
 (`internet-banking-payment-cron.ts`), the quote hold-release crons
-(`cron-quote-expiry-reminders.ts`), and the whole group-settlement lifecycle —
+(`cron-quote-expiry-reminders.ts`), the member-guest consent transitions
+(`member-guest-consent-service.ts` — both the member/delegate approve-decline
+path and the nightly expiry sweep `cron-member-guest-consent-expiry.ts`, because
+a decline or a lapse reprices the booking, can elect account credit, AND releases
+a bed, putting it in both cohorts), and the whole group-settlement lifecycle —
 settle (`group-settlement.ts` `settleConfirmedChildrenAndNotify`), the reaper
 (`cron-group-settlement-reaper.ts`), `markGroupSettlementIntentFailed` /
 `markGroupSettlementIntentRefunded`, and the organiser-cancel FAILED claim
