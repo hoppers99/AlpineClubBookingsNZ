@@ -189,12 +189,15 @@ describe("SkifieldWhakapapaWidget trail sub-area layout", () => {
     const areaA = await screen.findByText("Happy Valley Area");
     const areaB = screen.getByText("Rangatira Area");
 
-    // Each area name is inline with its trail cards (parent is a flex-wrap
-    // container), and both areas share the SAME combined row (same grandparent).
-    expect(areaA.parentElement?.className).toContain("flex-wrap");
-    expect(areaB.parentElement?.className).toContain("flex-wrap");
+    // Each area is a column stack with its name ON TOP of its trails, and both
+    // area stacks share the SAME combined flex-wrap row (their grandparent).
+    expect(areaA.parentElement?.className).toContain("flex-col");
+    expect(areaB.parentElement?.className).toContain("flex-col");
     expect(areaA.parentElement?.parentElement).toBe(
       areaB.parentElement?.parentElement,
+    );
+    expect(areaA.parentElement?.parentElement?.className).toContain(
+      "flex-wrap",
     );
 
     // No trails from either area are lost.

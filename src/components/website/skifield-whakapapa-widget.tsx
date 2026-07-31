@@ -16,7 +16,7 @@ function StatusCell({ status }: { status: string }) {
 
   if (normalized === "open") {
     return (
-      <span className="flex w-full justify-center rounded-full px-2 py-1 text-xs font-medium text-success-11 bg-success-3">
+      <span className="flex w-full justify-center rounded-full px-2 py-1 text-xs font-medium text-success-11 bg-success-3 conditions-trail-status">
         {status}
       </span>
     );
@@ -24,7 +24,7 @@ function StatusCell({ status }: { status: string }) {
 
   if (normalized === "closed") {
     return (
-      <span className="flex w-full justify-center rounded-full px-2 py-1 text-xs font-medium text-danger-11 bg-danger-3">
+      <span className="flex w-full justify-center rounded-full px-2 py-1 text-xs font-medium text-danger-11 bg-danger-3 conditions-trail-status">
         {status}
       </span>
     );
@@ -32,7 +32,7 @@ function StatusCell({ status }: { status: string }) {
 
   if (normalized === "coming soon") {
     return (
-      <span className="flex w-full justify-center rounded-full px-2 py-1 text-xs font-medium text-muted-foreground bg-muted">
+      <span className="flex w-full justify-center rounded-full px-2 py-1 text-xs font-medium text-muted-foreground bg-muted conditions-trail-status">
         {status}
       </span>
     );
@@ -40,7 +40,7 @@ function StatusCell({ status }: { status: string }) {
 
   if (normalized === "unknown" || normalized === "") {
     return (
-      <span className="flex w-full justify-center rounded-full px-2 py-1 text-xs font-medium text-muted-foreground bg-muted">
+      <span className="flex w-full justify-center rounded-full px-2 py-1 text-xs font-medium text-muted-foreground bg-muted conditions-trail-status">
         {status || "Unknown"}
       </span>
     );
@@ -48,7 +48,7 @@ function StatusCell({ status }: { status: string }) {
 
   if (normalized === "on hold") {
     return (
-      <span className="flex w-full justify-center rounded-full px-2 py-1 text-xs font-medium text-warning-11 bg-warning-3">
+      <span className="flex w-full justify-center rounded-full px-2 py-1 text-xs font-medium text-warning-11 bg-warning-3 conditions-trail-status">
         {status}
       </span>
     );
@@ -56,7 +56,7 @@ function StatusCell({ status }: { status: string }) {
 
   if (normalized === "limited availability") {
     return (
-      <span className="flex w-full justify-center rounded-full px-2 py-1 text-xs font-medium text-warning-11 bg-warning-3">
+      <span className="flex w-full justify-center rounded-full px-2 py-1 text-xs font-medium text-warning-11 bg-warning-3 conditions-trail-status">
         {status}
       </span>
     );
@@ -227,10 +227,10 @@ function TrailsKey() {
 function TrailCard({ trail }: { trail: WhakapapaTrail }) {
   return (
     <div className="flex flex-col gap-1 rounded-md border border-border bg-card p-2">
-      <span className="text-xs font-medium text-foreground">
+      <span className="text-xs font-medium text-foreground conditions-trail-name">
         {trail.name || "Unknown"}
       </span>
-      <div className="flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
+      <div className="flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground conditions-trail-details">
         {trail.difficulty ? (
           <DifficultyMarker difficulty={trail.difficulty} />
         ) : null}
@@ -312,28 +312,31 @@ function TrailsGroup({ areas }: { areas: WhakapapaTrailArea[] }) {
         <div className="mt-2 space-y-3">
           {groupTrailAreas(areas).map((group, groupIndex) => {
             if (group.kind === "row") {
-              // Consecutive small sub-areas share one wrapping line: each area's
-              // name sits inline ahead of its own trail cards.
+              // Consecutive small sub-areas share one wrapping line. Each area is
+              // a column stack — its name on TOP of its own trail cards (matching
+              // the full-block layout) — and the stacks sit side by side.
               return (
                 <div
                   key={`trails-row-${group.areas
                     .map((area) => area.name || "unnamed")
                     .join("|")}-${groupIndex}`}
-                  className="flex flex-wrap items-center gap-x-4 gap-y-2"
+                  className="flex flex-wrap items-start gap-x-4 gap-y-2"
                 >
                   {group.areas.map((area) => (
                     <div
                       key={area.name || `trails-area-${groupIndex}`}
                       aria-label={area.name || "trails-area"}
-                      className="flex flex-wrap items-center gap-2"
+                      className="flex flex-col gap-1"
                     >
                       <TrailAreaName name={area.name} />
-                      {area.trails.map((trail) => (
-                        <TrailCard
-                          key={`${area.name}-${trail.name}`}
-                          trail={trail}
-                        />
-                      ))}
+                      <div className="flex flex-wrap gap-2">
+                        {area.trails.map((trail) => (
+                          <TrailCard
+                            key={`${area.name}-${trail.name}`}
+                            trail={trail}
+                          />
+                        ))}
+                      </div>
                     </div>
                   ))}
                 </div>
