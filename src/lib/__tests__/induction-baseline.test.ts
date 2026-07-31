@@ -352,6 +352,251 @@ async function applyCurrentPlan(
   return { dryRun, apply };
 }
 
+type DigestTemplate = {
+  id: string;
+  name: string;
+  version: string;
+  kind: ExistingRow["kind"];
+  sourceLabel: string | null;
+  sections: Array<{
+    id: string;
+    title: string;
+    description: string | null;
+    priority: "EMERGENCY" | "SECURITY" | "STARTUP" | "SHUTDOWN" | "GENERAL";
+    sortOrder: number;
+    items: Array<{
+      id: string;
+      label: string;
+      competencyPrompt: string | null;
+      notesPrompt: string | null;
+      isMandatory: boolean;
+      requiresDemonstration: boolean;
+      sortOrder: number;
+      legacySourceText: string | null;
+    }>;
+  }>;
+};
+
+type DigestExistingRef = Omit<ExistingRow, "memberId">;
+type DigestMemberPlan = {
+  memberId: string;
+  ageTier: PersonAgeTier;
+  existingInductions: DigestExistingRef[];
+};
+
+type DigestScenario = {
+  databaseTarget: { host: string; databaseName: string };
+  club: { name: string };
+  actor: { memberId: string };
+  baseline: { date: string; provenance: string };
+  template: DigestTemplate;
+  ageTierSettings: FakeAgeTierSetting[];
+  requiredSignOffs: number;
+  memberPlans: {
+    toCreate: DigestMemberPlan[];
+    alreadyCompleted: DigestMemberPlan[];
+    openWorkflows: DigestMemberPlan[];
+    notApplicable: Array<{
+      memberId: string;
+      ageTier: "NOT_APPLICABLE";
+    }>;
+  };
+};
+
+function baselineDigestScenario(): DigestScenario {
+  return {
+    databaseTarget: {
+      host: "digest-db.internal:5432",
+      databaseName: "digest_club",
+    },
+    club: { name: "Digest Alpine Club" },
+    actor: { memberId: "digest-admin" },
+    baseline: {
+      date: "2024-06-30",
+      provenance:
+        `${INDUCTION_BASELINE_PROVENANCE_PREFIX}: ` +
+        "Digest sensitivity register",
+    },
+    template: {
+      id: "digest-template",
+      name: "Digest induction",
+      version: "digest-v1",
+      kind: "NEW_MEMBER",
+      sourceLabel: "Digest source",
+      sections: [
+        {
+          id: "digest-section",
+          title: "Digest safety",
+          description: "Digest section description",
+          priority: "EMERGENCY",
+          sortOrder: 10,
+          items: [
+            {
+              id: "digest-item",
+              label: "Digest item label",
+              competencyPrompt: "Digest competency",
+              notesPrompt: "Digest notes",
+              isMandatory: true,
+              requiresDemonstration: true,
+              sortOrder: 20,
+              legacySourceText: "Digest legacy source",
+            },
+          ],
+        },
+      ],
+    },
+    ageTierSettings: structuredClone(DEFAULT_AGE_TIERS),
+    requiredSignOffs: 2,
+    memberPlans: {
+      toCreate: [
+        {
+          memberId: "digest-create",
+          ageTier: "INFANT",
+          existingInductions: [
+            {
+              id: "create-detail",
+              kind: "RE_INDUCTION",
+              status: "VOIDED",
+            },
+          ],
+        },
+      ],
+      alreadyCompleted: [
+        {
+          memberId: "digest-completed",
+          ageTier: "CHILD",
+          existingInductions: [
+            {
+              id: "completed-a-anchor",
+              kind: "NEW_MEMBER",
+              status: "COMPLETED",
+            },
+            {
+              id: "completed-z-detail",
+              kind: "HUT_LEADER",
+              status: "VOIDED",
+            },
+          ],
+        },
+      ],
+      openWorkflows: [
+        {
+          memberId: "digest-open",
+          ageTier: "YOUTH",
+          existingInductions: [
+            {
+              id: "open-a-anchor",
+              kind: "NEW_MEMBER",
+              status: "DRAFT",
+            },
+            {
+              id: "open-z-detail",
+              kind: "RE_INDUCTION",
+              status: "VOIDED",
+            },
+          ],
+        },
+      ],
+      notApplicable: [
+        {
+          memberId: "digest-not-applicable",
+          ageTier: "NOT_APPLICABLE",
+        },
+      ],
+    },
+  };
+}
+
+function scenarioScalarDiffPaths(
+  before: unknown,
+  after: unknown,
+  path = "",
+): string[] {
+  if (Object.is(before, after)) return [];
+  if (
+    before === null ||
+    after === null ||
+    typeof before !== "object" ||
+    typeof after !== "object"
+  ) {
+    return [path];
+  }
+  if (Array.isArray(before) || Array.isArray(after)) {
+    if (!Array.isArray(before) || !Array.isArray(after)) return [path];
+    if (before.length !== after.length) return [path];
+    return before.flatMap((value, index) =>
+      scenarioScalarDiffPaths(value, after[index], `${path}[${index}]`),
+    );
+  }
+
+  const beforeRecord = before as Record<string, unknown>;
+  const afterRecord = after as Record<string, unknown>;
+  const keys = [
+    ...new Set([...Object.keys(beforeRecord), ...Object.keys(afterRecord)]),
+  ].sort();
+  return keys.flatMap((key) =>
+    scenarioScalarDiffPaths(
+      beforeRecord[key],
+      afterRecord[key],
+      path ? `${path}.${key}` : key,
+    ),
+  );
+}
+
+async function digestForScenario(scenario: DigestScenario): Promise<string> {
+  const richPlans = [
+    ...scenario.memberPlans.toCreate,
+    ...scenario.memberPlans.alreadyCompleted,
+    ...scenario.memberPlans.openWorkflows,
+  ];
+  const members = [
+    ...richPlans.map((plan) =>
+      fakeMember(plan.memberId, "USER", {
+        ageTier: plan.ageTier,
+        canLogin: false,
+      }),
+    ),
+    ...scenario.memberPlans.notApplicable.map((plan) =>
+      fakeMember(plan.memberId, "USER", {
+        ageTier: plan.ageTier,
+        canLogin: false,
+      }),
+    ),
+  ];
+  const existing = richPlans.flatMap((plan) =>
+    plan.existingInductions.map((induction) => ({
+      ...induction,
+      memberId: plan.memberId,
+    })),
+  );
+  const provenancePrefix = `${INDUCTION_BASELINE_PROVENANCE_PREFIX}: `;
+  if (!scenario.baseline.provenance.startsWith(provenancePrefix)) {
+    throw new Error("Digest scenario provenance must use the stored prefix.");
+  }
+  const fake = createFakeStore({
+    clubName: scenario.club.name,
+    actor: { ...DEFAULT_ACTOR, id: scenario.actor.memberId },
+    ageTiers: scenario.ageTierSettings,
+    templates: [scenario.template] as never,
+    members,
+    existing,
+    requiredSignOffs: scenario.requiredSignOffs,
+  });
+  return (
+    await runInductionBaseline({
+      actorMemberId: scenario.actor.memberId,
+      baselineDate: scenario.baseline.date,
+      provenanceNote: scenario.baseline.provenance.slice(
+        provenancePrefix.length,
+      ),
+      databaseTarget: scenario.databaseTarget,
+      store: fake.store as never,
+      fallbackClubName: "unused",
+      fallbackClubNameSource: "primary",
+    })
+  ).planDigest;
+}
+
 describe("runInductionBaseline", () => {
   it("dry-runs every configured person tier and reports NOT_APPLICABLE separately without writing", async () => {
     const fake = createFakeStore({
@@ -588,7 +833,7 @@ describe("runInductionBaseline", () => {
     expect(fake.tx.auditLog.create).not.toHaveBeenCalled();
   });
 
-  it("uses identical deterministic classifications for dry-run and apply", async () => {
+  it("excludes report mode and a nonzero appliedCount from the plan digest", async () => {
     const fake = createFakeStore({
       existing: [
         existingRow("completed-adult", "adult-1", "HUT_LEADER", "COMPLETED"),
@@ -608,6 +853,10 @@ describe("runInductionBaseline", () => {
     });
 
     expect(classification(apply)).toEqual(classification(dryRun));
+    expect(dryRun.mode).toBe("dry-run");
+    expect(dryRun.appliedCount).toBe(0);
+    expect(apply.mode).toBe("apply");
+    expect(apply.appliedCount).toBeGreaterThan(0);
     expect(apply.planDigest).toBe(dryRun.planDigest);
   });
 
@@ -690,158 +939,340 @@ describe("runInductionBaseline", () => {
     );
   });
 
-  it("binds every safety-relevant plan input into the digest", async () => {
-    async function digestFor(
-      storeOptions: Parameters<typeof createFakeStore>[0] = {},
-      optionOverrides: Partial<Parameters<typeof runInductionBaseline>[0]> = {},
-    ) {
-      const fake = createFakeStore(storeOptions);
-      return (
-        await runInductionBaseline({
-          ...BASE_OPTIONS,
-          ...optionOverrides,
-          store: fake.store as never,
-        })
-      ).planDigest;
-    }
-
-    const baselineDigest = await digestFor();
-    const changedTemplateContent = structuredClone(DEFAULT_TEMPLATE);
-    changedTemplateContent.sections[0].items[0].competencyPrompt =
-      "Demonstrate both exits without prompting";
-    const changedAgeTiers = structuredClone(DEFAULT_AGE_TIERS);
-    changedAgeTiers[0] = {
-      ...changedAgeTiers[0],
-      maxAge: 3,
-      label: "Infant under four",
-      sortOrder: 40,
+  it("binds every serialized plan scalar into the digest one field at a time", async () => {
+    type SensitivityCase = {
+      name: string;
+      changedPaths: string[];
+      mutate: (scenario: DigestScenario) => void;
     };
-    changedAgeTiers[1] = { ...changedAgeTiers[1], minAge: 4 };
-    const completedMembers = [
-      fakeMember("adult-1", "ADMIN"),
-      fakeMember("na-member-1", "USER", {
-        ageTier: "NOT_APPLICABLE",
-        canLogin: false,
-      }),
-    ];
-    const variants: Array<[string, Promise<string>]> = [
-      [
-        "database host",
-        digestFor(
-          {},
+    const cases: SensitivityCase[] = [
+      {
+        name: "safe database target host",
+        changedPaths: ["databaseTarget.host"],
+        mutate: (scenario) => {
+          scenario.databaseTarget.host = "changed-db.internal:5432";
+        },
+      },
+      {
+        name: "safe database target name",
+        changedPaths: ["databaseTarget.databaseName"],
+        mutate: (scenario) => {
+          scenario.databaseTarget.databaseName = "changed_digest_club";
+        },
+      },
+      {
+        name: "effective club name",
+        changedPaths: ["club.name"],
+        mutate: (scenario) => {
+          scenario.club.name = "Changed Digest Alpine Club";
+        },
+      },
+      {
+        name: "actor member ID",
+        changedPaths: ["actor.memberId"],
+        mutate: (scenario) => {
+          scenario.actor.memberId = "changed-digest-admin";
+        },
+      },
+      {
+        name: "baseline date",
+        changedPaths: ["baseline.date"],
+        mutate: (scenario) => {
+          scenario.baseline.date = "2024-06-29";
+        },
+      },
+      {
+        name: "full stored provenance",
+        changedPaths: ["baseline.provenance"],
+        mutate: (scenario) => {
+          scenario.baseline.provenance =
+            `${INDUCTION_BASELINE_PROVENANCE_PREFIX}: ` +
+            "Changed digest sensitivity register";
+        },
+      },
+      {
+        name: "template ID",
+        changedPaths: ["template.id"],
+        mutate: (scenario) => {
+          scenario.template.id = "changed-digest-template";
+        },
+      },
+      {
+        name: "template name",
+        changedPaths: ["template.name"],
+        mutate: (scenario) => {
+          scenario.template.name = "Changed digest induction";
+        },
+      },
+      {
+        name: "template version",
+        changedPaths: ["template.version"],
+        mutate: (scenario) => {
+          scenario.template.version = "digest-v2";
+        },
+      },
+      {
+        name: "template kind",
+        changedPaths: ["template.kind"],
+        mutate: (scenario) => {
+          scenario.template.kind = "HUT_LEADER";
+        },
+      },
+      {
+        name: "template source label",
+        changedPaths: ["template.sourceLabel"],
+        mutate: (scenario) => {
+          scenario.template.sourceLabel = "Changed digest source";
+        },
+      },
+      {
+        name: "section ID",
+        changedPaths: ["template.sections[0].id"],
+        mutate: (scenario) => {
+          scenario.template.sections[0].id = "changed-digest-section";
+        },
+      },
+      {
+        name: "section title",
+        changedPaths: ["template.sections[0].title"],
+        mutate: (scenario) => {
+          scenario.template.sections[0].title = "Changed digest safety";
+        },
+      },
+      {
+        name: "section description",
+        changedPaths: ["template.sections[0].description"],
+        mutate: (scenario) => {
+          scenario.template.sections[0].description =
+            "Changed digest section description";
+        },
+      },
+      {
+        name: "section priority",
+        changedPaths: ["template.sections[0].priority"],
+        mutate: (scenario) => {
+          scenario.template.sections[0].priority = "SECURITY";
+        },
+      },
+      {
+        name: "section sort order",
+        changedPaths: ["template.sections[0].sortOrder"],
+        mutate: (scenario) => {
+          scenario.template.sections[0].sortOrder = 11;
+        },
+      },
+      {
+        name: "item ID",
+        changedPaths: ["template.sections[0].items[0].id"],
+        mutate: (scenario) => {
+          scenario.template.sections[0].items[0].id = "changed-digest-item";
+        },
+      },
+      {
+        name: "item label",
+        changedPaths: ["template.sections[0].items[0].label"],
+        mutate: (scenario) => {
+          scenario.template.sections[0].items[0].label =
+            "Changed digest item label";
+        },
+      },
+      {
+        name: "item competency prompt",
+        changedPaths: ["template.sections[0].items[0].competencyPrompt"],
+        mutate: (scenario) => {
+          scenario.template.sections[0].items[0].competencyPrompt =
+            "Changed digest competency";
+        },
+      },
+      {
+        name: "item notes prompt",
+        changedPaths: ["template.sections[0].items[0].notesPrompt"],
+        mutate: (scenario) => {
+          scenario.template.sections[0].items[0].notesPrompt =
+            "Changed digest notes";
+        },
+      },
+      {
+        name: "item mandatory flag",
+        changedPaths: ["template.sections[0].items[0].isMandatory"],
+        mutate: (scenario) => {
+          scenario.template.sections[0].items[0].isMandatory = false;
+        },
+      },
+      {
+        name: "item demonstration flag",
+        changedPaths: ["template.sections[0].items[0].requiresDemonstration"],
+        mutate: (scenario) => {
+          scenario.template.sections[0].items[0].requiresDemonstration = false;
+        },
+      },
+      {
+        name: "item sort order",
+        changedPaths: ["template.sections[0].items[0].sortOrder"],
+        mutate: (scenario) => {
+          scenario.template.sections[0].items[0].sortOrder = 21;
+        },
+      },
+      {
+        name: "item legacy source text",
+        changedPaths: ["template.sections[0].items[0].legacySourceText"],
+        mutate: (scenario) => {
+          scenario.template.sections[0].items[0].legacySourceText =
+            "Changed digest legacy source";
+        },
+      },
+      {
+        name: "age-tier identity (paired swap required by exact-set invariant)",
+        changedPaths: ["ageTierSettings[0].tier", "ageTierSettings[1].tier"],
+        mutate: (scenario) => {
+          const firstTier = scenario.ageTierSettings[0].tier;
+          scenario.ageTierSettings[0].tier = scenario.ageTierSettings[1].tier;
+          scenario.ageTierSettings[1].tier = firstTier;
+        },
+      },
+      {
+        name: "age boundary (paired max/min required by partition invariant)",
+        changedPaths: [
+          "ageTierSettings[0].maxAge",
+          "ageTierSettings[1].minAge",
+        ],
+        mutate: (scenario) => {
+          scenario.ageTierSettings[0].maxAge = 3;
+          scenario.ageTierSettings[1].minAge = 4;
+        },
+      },
+      {
+        name: "age-tier label",
+        changedPaths: ["ageTierSettings[0].label"],
+        mutate: (scenario) => {
+          scenario.ageTierSettings[0].label = "Changed infant";
+        },
+      },
+      {
+        name: "age-tier sort order",
+        changedPaths: ["ageTierSettings[0].sortOrder"],
+        mutate: (scenario) => {
+          scenario.ageTierSettings[0].sortOrder = 40;
+        },
+      },
+      {
+        name: "required sign-offs",
+        changedPaths: ["requiredSignOffs"],
+        mutate: (scenario) => {
+          scenario.requiredSignOffs = 3;
+        },
+      },
+      ...(
+        [
+          ["toCreate", "digest-create-changed", "ADULT"],
+          ["alreadyCompleted", "digest-completed-changed", "ADULT"],
+          ["openWorkflows", "digest-open-changed", "ADULT"],
+        ] as const
+      ).flatMap(
+        ([category, changedMemberId, changedAgeTier]): SensitivityCase[] => [
           {
-            databaseTarget: {
-              ...BASE_OPTIONS.databaseTarget,
-              host: "other.internal:5432",
+            name: `${category} member ID`,
+            changedPaths: [`memberPlans.${category}[0].memberId`],
+            mutate: (scenario) => {
+              scenario.memberPlans[category][0].memberId = changedMemberId;
             },
           },
-        ),
-      ],
-      [
-        "database name",
-        digestFor(
-          {},
           {
-            databaseTarget: {
-              ...BASE_OPTIONS.databaseTarget,
-              databaseName: "other_club",
+            name: `${category} member age tier`,
+            changedPaths: [`memberPlans.${category}[0].ageTier`],
+            mutate: (scenario) => {
+              scenario.memberPlans[category][0].ageTier = changedAgeTier;
             },
           },
-        ),
-      ],
-      ["club", digestFor({ clubName: "Other Alpine Club" })],
-      [
-        "actor",
-        digestFor(
-          { actor: { ...DEFAULT_ACTOR, id: "admin-2" } },
-          { actorMemberId: "admin-2" },
-        ),
-      ],
-      ["date", digestFor({}, { baselineDate: "2024-06-29" })],
-      [
-        "full stored provenance",
-        digestFor({}, { provenanceNote: "A different trusted register" }),
-      ],
-      [
-        "template identity",
-        digestFor({
-          templates: [{ ...DEFAULT_TEMPLATE, id: "other-template" }],
-        }),
-      ],
-      [
-        "template name",
-        digestFor({
-          templates: [{ ...DEFAULT_TEMPLATE, name: "Other induction" }],
-        }),
-      ],
-      [
-        "template version",
-        digestFor({
-          templates: [{ ...DEFAULT_TEMPLATE, version: "legacy-v2" }],
-        }),
-      ],
-      [
-        "template section/item content",
-        digestFor({ templates: [changedTemplateContent] }),
-      ],
-      ["age-tier partition", digestFor({ ageTiers: changedAgeTiers })],
-      ["required sign-offs", digestFor({ requiredSignOffs: 3 })],
-      [
-        "eligible member ID",
-        digestFor({
-          members: [
-            fakeMember("adult-2", "ADMIN"),
-            fakeMember("na-member-1", "USER", {
-              ageTier: "NOT_APPLICABLE",
-              canLogin: false,
-            }),
+        ],
+      ),
+      ...(
+        [
+          ["toCreate", 0, "create-detail-changed", "HUT_LEADER", "COMPLETED"],
+          [
+            "alreadyCompleted",
+            1,
+            "completed-y-detail",
+            "RE_INDUCTION",
+            "COMPLETED",
           ],
-        }),
-      ],
-      [
-        "existing induction ID and kind",
-        digestFor({
-          members: completedMembers,
-          existing: [
-            existingRow(
-              "different-induction",
-              "adult-1",
-              "HUT_LEADER",
-              "COMPLETED",
-            ),
-          ],
-        }),
-      ],
-      [
-        "existing induction status/category",
-        digestFor({
-          members: completedMembers,
-          existing: [
-            existingRow(
-              "existing-induction",
-              "adult-1",
-              "NEW_MEMBER",
-              "IN_PROGRESS",
-            ),
-          ],
-        }),
-      ],
-      [
-        "not-applicable member ID",
-        digestFor({
-          members: [
-            fakeMember("adult-1", "ADMIN"),
-            fakeMember("different-na-member", "USER", {
-              ageTier: "NOT_APPLICABLE",
-              canLogin: false,
-            }),
-          ],
-        }),
-      ],
+          ["openWorkflows", 1, "open-y-detail", "HUT_LEADER", "IN_PROGRESS"],
+        ] as const
+      ).flatMap(
+        ([
+          category,
+          inductionIndex,
+          changedId,
+          changedKind,
+          changedStatus,
+        ]): SensitivityCase[] => {
+          const prefix =
+            `memberPlans.${category}[0].existingInductions` +
+            `[${inductionIndex}]`;
+          return [
+            {
+              name: `${category} existing induction ID`,
+              changedPaths: [`${prefix}.id`],
+              mutate: (scenario) => {
+                scenario.memberPlans[category][0].existingInductions[
+                  inductionIndex
+                ].id = changedId;
+              },
+            },
+            {
+              name: `${category} existing induction kind`,
+              changedPaths: [`${prefix}.kind`],
+              mutate: (scenario) => {
+                scenario.memberPlans[category][0].existingInductions[
+                  inductionIndex
+                ].kind = changedKind;
+              },
+            },
+            {
+              name:
+                category === "toCreate"
+                  ? "toCreate existing induction status (category transition required by classification invariant)"
+                  : `${category} existing induction status`,
+              changedPaths: [`${prefix}.status`],
+              mutate: (scenario) => {
+                scenario.memberPlans[category][0].existingInductions[
+                  inductionIndex
+                ].status = changedStatus;
+              },
+            },
+          ];
+        },
+      ),
+      {
+        name: "NOT_APPLICABLE member ID",
+        changedPaths: ["memberPlans.notApplicable[0].memberId"],
+        mutate: (scenario) => {
+          scenario.memberPlans.notApplicable[0].memberId =
+            "digest-not-applicable-changed";
+        },
+      },
     ];
 
-    for (const [label, pendingDigest] of variants) {
-      expect(await pendingDigest, label).not.toBe(baselineDigest);
+    expect(cases).toHaveLength(45);
+    const baselineScenario = baselineDigestScenario();
+    const baselineDigest = await digestForScenario(baselineScenario);
+    const identicalScenario = structuredClone(baselineScenario);
+    expect(
+      scenarioScalarDiffPaths(baselineScenario, identicalScenario),
+    ).toEqual([]);
+    expect(await digestForScenario(identicalScenario)).toBe(baselineDigest);
+
+    for (const sensitivityCase of cases) {
+      const changedScenario = structuredClone(baselineScenario);
+      sensitivityCase.mutate(changedScenario);
+      expect(
+        scenarioScalarDiffPaths(baselineScenario, changedScenario).sort(),
+        sensitivityCase.name,
+      ).toEqual([...sensitivityCase.changedPaths].sort());
+      expect(
+        await digestForScenario(changedScenario),
+        sensitivityCase.name,
+      ).not.toBe(baselineDigest);
     }
   });
 
@@ -1091,7 +1522,12 @@ describe("runInductionBaseline", () => {
       toCreate: 0,
       alreadyCompleted: 4,
     });
+    expect(refreshedDryRun.mode).toBe("dry-run");
+    expect(refreshedDryRun.appliedCount).toBe(0);
+    expect(second.mode).toBe("apply");
     expect(second.appliedCount).toBe(0);
+    // Mode is the only report-level difference in this fresh no-op pair.
+    expect(second.planDigest).toBe(refreshedDryRun.planDigest);
     expect(fake.createCalls).toBe(1);
     expect(fake.auditRows).toHaveLength(1);
   });
