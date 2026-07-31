@@ -49,3 +49,21 @@ prisma/schema.prisma text eol=lf
 *.css text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
+
+# Shell scripts are the fourth instance of the same class, and the worst of
+# them, because the failure does not look like a line-ending problem at all.
+# Every tracked `*.sh` here opens with `set -Eeuo pipefail`. Materialised as
+# CRLF on a Windows checkout, bash reads the option name as `pipefail\r` and
+# dies on that line with `set: pipefail: invalid option name` — pointing at
+# the shell, not at the file. So `scripts/check-migration-safety-coverage.sh`
+# and `scripts/validate-blue-green-migrations.sh` exit 2 before reading a
+# single migration, and `review-findings-contracts.test.ts`, which shells out
+# to both, fails 33 assertions on every Windows checkout and inside any Linux
+# container fed from one. That suite was written off as "environmental, slow
+# MSYS process spawn" for days; it was this. A permanently-red suite is worse
+# than a broken one, because it trains people to ignore failures — and it very
+# nearly hid a real regression on a money path (#2308).
+#
+# Same fix and same zero churn as the migration SQL (#2399): the stored blobs
+# are already LF, so this only stops Windows re-materialising them as CRLF.
+*.sh text eol=lf
