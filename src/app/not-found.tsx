@@ -15,20 +15,25 @@ import { EmbeddedPageContentParts } from "@/components/website/embedded-page-con
  * artefact ships seven inline `<script>` tags with no `nonce`, every one of them
  * blocked by the very policy on the same response.
  *
- * It fixes two visible defects at the same time, both caused by the build-time
- * render having no database and no request:
- *  • `getSanitizedPageContentByPath("/404")` below failed at build and was
- *    swallowed by its `.catch(() => null)`, so the admin-authored `/404` CMS
- *    page could never appear — the hardcoded fallback was frozen into the HTML.
+ * It removes two more defects that lived in the same artefact, both caused by
+ * the build-time render having no database and no request:
+ *  • `getSanitizedPageContentByPath("/404")` failed at build and was swallowed
+ *    by the surrounding catch (see `loadNotFoundContent()` below), so the
+ *    admin-authored `/404` CMS page could not appear in it — the hardcoded
+ *    fallback was frozen into the HTML.
  *  • the root layout's `generateMetadata()` fell back to `SAFE_DEFAULT_CONFIG`,
  *    baking the template placeholder ("Example Mountain Club") and
- *    `http://localhost:3000` into every deployment's 404 title and OG tags.
+ *    `http://localhost:3000` into that artefact's title and OG tags.
  *
- * Cost is small: the app's `(website)/[...slug]` catch-all already claims almost
- * every mistyped or bot-probed URL and renders this boundary dynamically via
- * `notFound()`, so only the narrow set of paths that previously hit the static
- * artefact changes cost. `scripts/ci/check-prerendered-script-nonces.mjs` fails
- * the build if a prerendered route ever ships unnonced inline scripts again.
+ * Both were confined to the artefact, which is why nobody reported them: the
+ * `(website)/[...slug]` CMS catch-all already claimed every human-plausible
+ * mistyped or bot-probed URL and rendered this boundary dynamically via
+ * `notFound()`, with the real club name and nonced scripts. Only two synthetic
+ * shapes (`/_next/data/*` and `/_error`) reached the frozen copy — which is also
+ * why the cost of this change is small, since the app was already paying for the
+ * dynamic render nearly everywhere.
+ * `scripts/ci/check-prerendered-script-nonces.mjs` fails the build if a
+ * prerendered route ever ships unnonced inline scripts again.
  */
 export const dynamic = "force-dynamic";
 
@@ -36,15 +41,40 @@ function pageSlugFromPath(path: string) {
   return path.replace(/^\//, "") || "home";
 }
 
-export default async function NotFound() {
-  const page = await getSanitizedPageContentByPath("/404").catch(() => null);
+/**
+ * Every read this page needs, or `null` if any of them fails.
+ *
+ * The whole thing is guarded, not just the page lookup: `buildEmbeddedBody()`
+ * resolves gallery/form/calendar embeds and `getCachedClubIdentity()` reads
+ * config, so either can throw when the database is unreachable or an embed
+ * reference is broken. This is the LAST boundary in the render — a throw here
+ * escalates to the nearest error boundary and turns a 404 into a 500, on a URL
+ * shape that used to be served from a static file and so could not fail at all
+ * (#2356 review). Degrading to the hardcoded fallback below keeps "page not
+ * found" available whatever the database is doing.
+ */
+async function loadNotFoundContent() {
+  try {
+    const page = await getSanitizedPageContentByPath("/404");
+    if (!page) return null;
 
-  if (page) {
-    const headerHtml = { __html: page.headerText };
     const [embeddedBody, clubIdentity] = await Promise.all([
       buildEmbeddedBody(page.contentHtml),
       getCachedClubIdentity(),
     ]);
+
+    return { page, embeddedBody, clubIdentity };
+  } catch {
+    return null;
+  }
+}
+
+export default async function NotFound() {
+  const content = await loadNotFoundContent();
+
+  if (content) {
+    const { page, embeddedBody, clubIdentity } = content;
+    const headerHtml = { __html: page.headerText };
     const pageSlug = pageSlugFromPath(page.path);
 
     return (

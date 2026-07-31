@@ -23,40 +23,76 @@ import { pathToFileURL } from "node:url";
 
 const DIST_DIR = ".next";
 
+/** Build output directories this check refuses to run without. */
+const SCAN_ROOTS = [
+  ["server", "app"],
+  ["server", "pages"],
+];
+
+/**
+ * `<script type="…">` values the browser does NOT execute, so `script-src` does
+ * not govern them and a missing nonce is not a finding.
+ *
+ * Deliberately a closed list of data types rather than "anything unrecognised":
+ * `type="module"`, `type="importmap"`, `type="speculationrules"` and a missing
+ * `type` are all enforced by `script-src`, and a typo in a type value must fail
+ * this check rather than slip past it. Today's motivation is JSON-LD — a
+ * `<script type="application/ld+json">` structured-data block on a prerendered
+ * page would otherwise fail the build for no security reason at all.
+ */
+const NON_EXECUTABLE_SCRIPT_TYPES = new Set(["application/json", "application/ld+json"]);
+
 /**
  * Prerendered artefacts that are KNOWN to ship unnonced inline scripts and
- * cannot be fixed. Closed list, keyed by the build-relative posix path.
+ * cannot be fixed from this repository. Closed list, keyed by the build-relative
+ * posix path.
  *
- * Only entry: the global error page. A global error boundary must be a Client
- * Component (Next's `docs/01-app/03-api-reference/03-file-conventions/error.md`),
- * and route segment config is not read from a client module — `export const
- * dynamic = "force-dynamic"` there is accepted by the build with no error and no
- * warning, and changes nothing (measured, #2356). `server/pages/500.html` is
- * Next's own byte-identical copy of the same render.
+ * Both entries are ONE artefact: Next's own built-in error shell, which it
+ * prerenders itself and copies to `server/pages/500.html` (byte-identical). It
+ * is *not* a render of `src/app/global-error.tsx` — its visible text is Next's
+ * "This page couldn't load / A server error occurred. Reload to try again", and
+ * none of our own copy appears in it. Nothing in this repository controls how
+ * that shell is emitted, so it ships unnonced regardless of our route config.
+ *
+ * The practical consequence is the same either way: under the nonce-only CSP the
+ * browser blocks those scripts, so whatever is served from these files never
+ * hydrates. See docs/SECURITY-ATTACK-SURFACE.md -> "Prerendered Pages And The
+ * Nonce-Only CSP".
  *
  * This is not a licence to add more. Each entry is asserted to still be an
- * offender below, so a Next release that fixes one fails this check and the
- * carve-out gets deleted rather than quietly outliving its reason.
+ * offender below, so a Next release that starts nonce-ing its own shell fails
+ * this check and the carve-out gets deleted rather than quietly outliving its
+ * reason. Note what that means: these entries invalidate on a change to NEXT's
+ * shell, not on anything we can do to our own pages.
  */
 export const KNOWN_UNNONCED_PRERENDERS = new Map([
   [
     "server/app/_global-error.html",
-    "global-error.tsx must be a Client Component, so it cannot be forced dynamic (#2356)",
+    "Next's own built-in 500 shell, prerendered by the framework and not by any file in this repo (#2356)",
   ],
   [
     "server/pages/500.html",
-    "Next's copy of _global-error.html, served by base-server for a 500 that escapes the app render (#2356)",
+    "byte-identical copy of _global-error.html, served by base-server for a 500 that escapes the app render (#2356)",
   ],
 ]);
 
+/** The lower-cased `type` attribute of a `<script>` open tag, or `""`. */
+function scriptType(attributes) {
+  const match = attributes.match(/\btype\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i);
+  if (!match) return "";
+  return (match[1] ?? match[2] ?? match[3] ?? "").trim().toLowerCase();
+}
+
 /**
- * Every inline `<script>` open tag in `html` that carries no non-empty `nonce`.
+ * Every executable inline `<script>` open tag in `html` that carries no
+ * non-empty `nonce`.
  *
  * A tag with `src=` is external and is covered by `script-src 'self'`, so it is
- * not an offender. `nonce=""` does NOT count as nonced: an empty attribute
- * matches no `'nonce-…'` source expression, so the browser blocks it just the
- * same, and treating it as satisfied would be the exact silent pass this guard
- * exists to prevent.
+ * not an offender. A data block (`type="application/ld+json"` and friends) is
+ * never executed, so `script-src` does not apply to it either. `nonce=""` does
+ * NOT count as nonced: an empty attribute matches no `'nonce-…'` source
+ * expression, so the browser blocks it just the same, and treating it as
+ * satisfied would be the exact silent pass this guard exists to prevent.
  */
 export function findUnnoncedInlineScripts(html) {
   const offenders = [];
@@ -64,6 +100,7 @@ export function findUnnoncedInlineScripts(html) {
   for (const match of html.matchAll(/<script\b([^>]*)>/gi)) {
     const attributes = match[1];
     if (/\bsrc\s*=/i.test(attributes)) continue;
+    if (NON_EXECUTABLE_SCRIPT_TYPES.has(scriptType(attributes))) continue;
     if (/\bnonce\s*=\s*(?:"[^"]+"|'[^']+'|[^\s"'>]+)/i.test(attributes)) continue;
     offenders.push(match[0]);
   }
@@ -131,10 +168,32 @@ export function checkBuildOutput(distRoot) {
     );
   }
 
-  const files = [
-    ...collectHtmlFiles(path.join(distRoot, "server", "app"), distRoot),
-    ...collectHtmlFiles(path.join(distRoot, "server", "pages"), distRoot),
-  ];
+  // A scan that finds nothing must fail, not pass. Today the allowlist happens
+  // to keep this honest (its entries are asserted to exist), but if the
+  // allowlist ever empties — the good outcome, when Next starts nonce-ing its
+  // own shell — a renamed or relocated output directory would sail through with
+  // zero files inspected and a green tick.
+  const missingRoots = SCAN_ROOTS.map((segments) => path.join(distRoot, ...segments)).filter(
+    (root) => !fs.existsSync(root),
+  );
+  if (missingRoots.length > 0) {
+    throw new Error(
+      `Expected build output directories are missing: ${missingRoots.join(", ")}. ` +
+        "Either the build did not emit them or Next's output layout changed — " +
+        "this check cannot pass without inspecting them.",
+    );
+  }
+
+  const files = SCAN_ROOTS.flatMap((segments) =>
+    collectHtmlFiles(path.join(distRoot, ...segments), distRoot),
+  );
+
+  if (files.length === 0) {
+    throw new Error(
+      `No prerendered HTML found under ${SCAN_ROOTS.map((s) => s.join("/")).join(" or ")} in ${distRoot}. ` +
+        "A scan of nothing must not report success.",
+    );
+  }
 
   const artefacts = new Map(
     files.map((file) => [file, fs.readFileSync(path.join(distRoot, file), "utf8")]),

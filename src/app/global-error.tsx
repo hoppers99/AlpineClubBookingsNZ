@@ -4,6 +4,10 @@ import { useEffect } from "react";
 import * as Sentry from "@sentry/nextjs";
 
 /**
+ * Last-resort boundary: it catches only errors that escape the root layout, so
+ * it is rarely the thing a visitor sees. `src/app/error.tsx` handles the ordinary
+ * case (an error inside a page or a nested layout) and leaves the shell intact.
+ *
  * This page CANNOT be forced to render per-request, unlike `not-found.tsx` and
  * `/display` (issue #2356). A global error boundary must be a Client Component
  * (Next's own `docs/01-app/03-api-reference/03-file-conventions/error.md`: "Error
@@ -13,25 +17,29 @@ import * as Sentry from "@sentry/nextjs";
  * tried and measured: the build accepts it with no error and no warning, and
  * `/_global-error` prerenders exactly as before — a silent no-op.
  *
- * The consequence, accepted and bounded: Next copies the prerendered
- * `_global-error.html` to `server/pages/500.html` and registers it in
- * `pages-manifest.json`, and `base-server` serves that copy for a 500 that
- * escapes the app render (a proxy/middleware failure, a route-resolution
- * failure). Its six inline bootstrap scripts carry no nonce, so under our
- * nonce-only CSP that copy never hydrates: the Sentry `useEffect` below does not
- * fire and `reset()` cannot run.
+ * Be careful what that prerendered artefact actually is, because it is easy to
+ * get wrong. `.next/server/app/_global-error.html` — and the byte-identical
+ * `server/pages/500.html` Next copies it to — is NEXT'S OWN built-in error shell
+ * ("This page couldn't load / A server error occurred. Reload to try again"),
+ * not a render of this component: none of the copy below appears in it. It is
+ * emitted by the framework, ships six unnonced inline scripts, and nothing in
+ * this file changes that. So the file sits on the allowlist in
+ * `scripts/ci/check-prerendered-script-nonces.mjs` as a framework artefact we do
+ * not control, and that carve-out will fall away only if a Next release starts
+ * nonce-ing its own shell.
  *
- * Two things bound the damage. The common case is unaffected — an error thrown
- * INSIDE an app render renders this component dynamically in the failing
- * request, with the nonce, so it hydrates and behaves normally. And the server
- * has already reported the error by then (`onRequestError` in
- * `src/instrumentation.node.ts` captures it to Sentry, and `base-server` logs
- * it), so the client capture below is a duplicate channel, not the only one.
+ * What that leaves for this component: it renders dynamically, inside the
+ * failing request, with the nonce — so it hydrates normally and `reset()` works.
+ * The plain `<a href="/">` below is therefore not rescuing the static artefact
+ * (it cannot: our markup is not in it). It is ordinary progressive enhancement —
+ * a way out that survives a failed or blocked hydration, next to a button that
+ * does not. Do not replace it with a `<Link>` or an `onClick` handler.
  *
- * What was NOT acceptable was the crash page offering only a button that does
- * nothing when it cannot hydrate, so the plain `<a>` below is deliberate: it
- * needs no JavaScript and is always a working way out. Do not replace it with a
- * `<Link>` or an `onClick` handler.
+ * The client-side Sentry capture below is a second channel, not the only one:
+ * `onRequestError` in `src/instrumentation.ts` reports server-side render errors
+ * from the server, and `base-server` logs them. (That hook was only reachable
+ * from #2356 onward — before that it was exported from a module Next never reads
+ * it from, so the server-side channel was dead.)
  */
 export default function GlobalError({
   error,
@@ -109,10 +117,10 @@ export default function GlobalError({
               </button>
               {/*
                 Plain anchor, never a <Link> or an onClick: this is the only
-                action that still works on the statically served copy of this
-                page, whose scripts our own CSP blocks (see the note above).
+                action that still works if this page fails to hydrate, which is
+                exactly the situation a crash page has to survive.
               */}
-              {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- <Link> needs the router, which cannot hydrate here; see above. */}
+              {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- <Link> needs the router, which is unavailable if hydration fails; see above. */}
               <a
                 href="/"
                 style={{

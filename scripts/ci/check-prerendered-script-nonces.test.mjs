@@ -1,3 +1,7 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -42,6 +46,30 @@ describe("findUnnoncedInlineScripts", () => {
   it("finds every offender in a document, not just the first", () => {
     const html = `<script>a</script><script nonce="${NONCE}">b</script><script>c</script>`;
     expect(findUnnoncedInlineScripts(html)).toHaveLength(2);
+  });
+
+  it("ignores data blocks the browser never executes", () => {
+    // CSP's script-src does not govern a non-executable type, so failing the
+    // build over an unnonced JSON-LD structured-data block would be a false
+    // positive that blocks a legitimate SEO change for no security reason.
+    const html = `
+      <script type="application/ld+json">{"@type":"Organization"}</script>
+      <script type="application/json">{"a":1}</script>
+      <script TYPE=' Application/LD+JSON '>{"@type":"Event"}</script>
+    `;
+    expect(findUnnoncedInlineScripts(html)).toEqual([]);
+  });
+
+  it("still flags executable types, including module and importmap", () => {
+    // script-src DOES enforce these, so none of them may be waved through by the
+    // data-block carve-out above.
+    const html = `
+      <script type="module">import "./a.js"</script>
+      <script type="importmap">{"imports":{}}</script>
+      <script type="text/javascript">alert(1)</script>
+      <script type="applicaton/ld+json">{"typo":"in the type"}</script>
+    `;
+    expect(findUnnoncedInlineScripts(html)).toHaveLength(4);
   });
 });
 
@@ -109,5 +137,30 @@ describe("checkBuildOutput", () => {
     expect(() => checkBuildOutput("./definitely-not-a-build-dir-2356")).toThrow(
       /must run AFTER `npm run build`/,
     );
+  });
+
+  it("throws when a scan root is missing, so a moved output dir cannot pass", () => {
+    // Today the allowlist masks this: its entries are asserted to exist, so an
+    // empty scan already fails. The day the allowlist is legitimately emptied
+    // (Next starts nonce-ing its own shell) that cover disappears, and a renamed
+    // output directory would otherwise be reported as a clean scan.
+    const distRoot = fs.mkdtempSync(path.join(os.tmpdir(), "nonce-check-"));
+    try {
+      fs.mkdirSync(path.join(distRoot, "server", "app"), { recursive: true });
+      expect(() => checkBuildOutput(distRoot)).toThrow(/Expected build output directories are missing/);
+    } finally {
+      fs.rmSync(distRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("throws when both roots exist but hold no HTML at all", () => {
+    const distRoot = fs.mkdtempSync(path.join(os.tmpdir(), "nonce-check-"));
+    try {
+      fs.mkdirSync(path.join(distRoot, "server", "app"), { recursive: true });
+      fs.mkdirSync(path.join(distRoot, "server", "pages"), { recursive: true });
+      expect(() => checkBuildOutput(distRoot)).toThrow(/must not report success/);
+    } finally {
+      fs.rmSync(distRoot, { recursive: true, force: true });
+    }
   });
 });

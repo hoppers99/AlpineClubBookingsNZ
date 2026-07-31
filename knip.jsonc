@@ -34,8 +34,12 @@
     // Documented read-only diagnostic CLI (docs/guides/calendar.md; invoked via
     // `npx tsx`, never imported). Explains a member's calendar edit access.
     "scripts/diagnose-calendar-access.ts",
-    // Next.js runtime entry: register() and the onRequestError convention hook are
-    // invoked by the framework, not imported by app code (#1178 kept onRequestError).
+    // Next.js runtime entry: `register()` here is invoked by `src/instrumentation.ts`
+    // (the framework convention module) at server boot, and its cron/warm-up work
+    // is reachable no other way. This entry used to be justified partly by an
+    // `onRequestError` export, which Next never reads from this file — that hook
+    // now lives on `src/instrumentation.ts` where the framework actually looks
+    // (#2356 review; #1178 originally kept the misplaced copy alive).
     "src/instrumentation.node.ts"
   ],
   // The k6 load harness (#1884) is operator-invoked tooling that runs under the

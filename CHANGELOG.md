@@ -4,21 +4,28 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
-- **The "page not found" page now shows your club's own name and your own
-  wording, instead of the template's placeholder (#2356).** Visitors who
-  followed a dead link or mistyped a web address could land on a 404 page
-  titled "Example Mountain Club" — the demo name the template ships with — no
-  matter which club the site belonged to, and the page you can write yourself
-  under **Website content** at the `/404` address was never shown to them. The
-  cause was the same in both cases: that one page was being built in advance,
-  once, at the moment the software was packaged — before it had any connection
-  to your club's database — so whatever it could see at that moment was frozen
-  into it. It is now assembled when someone actually asks for it, like every
-  other page on the site, so it reads your club name and your own 404 content.
-  The same change fixes an invisible third problem: the frozen page's scripts
-  were blocked by the site's own security policy, which would have broken
-  anything interactive added to that page in future. A check now runs on every
-  build so no other page can be frozen in the same way without it being caught.
+- **The "page not found" page is now always assembled fresh, closing a small
+  security-policy inconsistency (#2356).** This is a correctness and
+  future-proofing fix rather than something most visitors would have noticed. A
+  copy of the 404 page was being built once, in advance, when the software was
+  packaged — before it had any connection to your club's database — and frozen.
+  That frozen copy still carried the template's demo club name and ignored the
+  404 page you can write yourself under **Website content**, and its scripts were
+  blocked by the site's own security policy. In ordinary browsing you would not
+  have met it: a mistyped or dead web address is handled elsewhere in the site
+  and already produced a correct, live page with your own club name. The frozen
+  copy was reached only by two internal request shapes that browsers and normal
+  scanners do not use. It is now assembled on request like every other page, so
+  the inconsistency is gone rather than waiting to surface, and a check runs on
+  every build so no other page can be frozen in the same way unnoticed.
+
+- **Server-side errors are now actually reported to error monitoring (#2356).**
+  The hook that hands a server-side page error to Sentry had been written in the
+  wrong file, so the framework never found it and never called it. Nothing failed
+  visibly — errors simply went unreported through that channel. It is now wired
+  up correctly and covered by a test, so if it is ever moved again the build
+  fails instead of the reports quietly stopping. Clubs that have not configured
+  Sentry are unaffected.
 
 
 - **A member's membership can now be cancelled without first destroying their
