@@ -340,6 +340,18 @@ export async function getAdminMemberDetail(params: {
     assignedPromoCodes,
     archiveLifecycleActionRequests,
     openCancellationParticipant,
+    // #2282: WHICH ADULT a dependant added under this member would actually
+    // reach. Parentage is now recordable at any age, but being the club's
+    // contact of record stays adult-only, so for a young parent the mail routes
+    // PAST them to the nearest usable ancestor. That has to be on screen BEFORE
+    // the admin adds the dependant, not discovered afterwards from a stored
+    // pointer naming someone they never chose. Resolved with the same walk both
+    // write paths use, so the page states exactly what the write will store
+    // rather than a lookalike one-hop guess; a null `sourceId` means no ancestor
+    // in reach can receive mail, which is the 422 those writes return. It joins
+    // this Promise.all because it needs only the route param, so it adds no
+    // serial round-trip to a page that already issues seven queries.
+    dependentEmailSourceResolution,
   ] = await Promise.all([
     prisma.member.findUnique({
       where: { id },
@@ -547,6 +559,7 @@ export async function getAdminMemberDetail(params: {
         },
       },
     }),
+    resolveInheritedEmailSourceId(prisma, id),
   ]);
 
   if (!member) {
@@ -618,18 +631,10 @@ export async function getAdminMemberDetail(params: {
   // editable on the member detail family card (#1932, E6).
   const familyBillingMode = await getFamilyBillingMode();
 
-  // #2282: WHICH ADULT a dependant added under this member would actually reach.
-  // Parentage is now recordable at any age, but being the club's contact of
-  // record stays adult-only, so for a young parent the mail routes PAST them to
-  // the nearest usable ancestor. That answer has to be on screen BEFORE the
-  // admin adds the dependant, not discovered afterwards from a stored pointer
-  // naming someone they never chose. Resolved with the same walk both write
-  // paths use (`resolveInheritedEmailSourceId`), so the page states exactly what
-  // the write will store rather than a lookalike one-hop guess; `null` means no
-  // ancestor in reach can receive mail, which is the 422 the writes return.
-  const dependentEmailSourceId = (
-    await resolveInheritedEmailSourceId(prisma, member.id)
-  ).sourceId;
+  // #2282: the summary for the adult resolved above. Only a second read when
+  // the source is somebody else — the ordinary case, an adult who is their own
+  // source, is answered from the row already in hand.
+  const dependentEmailSourceId = dependentEmailSourceResolution.sourceId;
   const dependentEmailSource = dependentEmailSourceId
     ? dependentEmailSourceId === member.id
       ? {
