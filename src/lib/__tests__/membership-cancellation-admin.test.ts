@@ -43,6 +43,7 @@ const mocks = vi.hoisted(() => {
     // #2392: the unpaid-Xero-invoice half of the blocker set. Stubbed to
     // "nothing owing" by default; the tests that care drive it directly.
     loadInvoiceBlockers: vi.fn(),
+    loadSharedInvoiceNotices: vi.fn(),
   };
 });
 
@@ -86,6 +87,13 @@ vi.mock("@/lib/xero-operation-outbox", () => ({
 
 vi.mock("@/lib/membership-cancellation-invoice-blockers", () => ({
   loadMembershipCancellationInvoiceBlockersByMemberId: mocks.loadInvoiceBlockers,
+}));
+
+// #2400: the advisory that says approving will raise no credit note because the
+// invoice covers members who are staying. Not a blocker — it never refuses.
+vi.mock("@/lib/membership-cancellation-subscription-credit", () => ({
+  loadMembershipCancellationSharedInvoiceNoticesByMemberId:
+    mocks.loadSharedInvoiceNotices,
 }));
 
 vi.mock("@/lib/logger", () => ({
@@ -188,6 +196,10 @@ describe("membership cancellation admin review", () => {
     mocks.loadInvoiceBlockers.mockImplementation(
       async (memberIds: readonly string[]) =>
         new Map(memberIds.map((memberId) => [memberId, []])),
+    );
+    mocks.loadSharedInvoiceNotices.mockImplementation(
+      async (memberIds: readonly string[]) =>
+        new Map(memberIds.map((memberId) => [memberId, null])),
     );
     // Admin-account guard defaults (#1604/#1622): a plain, non-privileged
     // target with no admins to strand, so neither guard trips.
@@ -639,6 +651,53 @@ describe("membership cancellation admin review", () => {
       expect.anything(),
       expect.objectContaining({ fresh: true }),
     );
+  });
+
+  // #2400: the reviewer is told, before they approve, that a shared family
+  // invoice means no credit note will be raised. It must never REFUSE — the club
+  // is still owed that money by the members who remain.
+  it("hands the reviewer the shared-invoice notice without blocking anything", async () => {
+    mocks.tx.membershipCancellationRequestParticipant.findMany.mockResolvedValue([
+      { status: "REQUESTED" },
+    ]);
+    mocks.requestFindUnique.mockResolvedValue(
+      adminRequest({ status: "REQUESTED" }),
+    );
+    const notice = {
+      invoiceId: "inv-1",
+      invoiceNumber: "INV-0042",
+      xeroUrl: "https://go.xero.com/AccountsReceivable/View.aspx?InvoiceID=inv-1",
+      sharedWith: [{ memberId: "member-2", name: "Bob Smith" }],
+    };
+    mocks.loadSharedInvoiceNotices.mockResolvedValue(
+      new Map([["member-1", notice]]),
+    );
+
+    const result = await reviewMembershipCancellationParticipant({
+      requestId: "request-1",
+      participantId: "participant-1",
+      action: "approve",
+      adminMemberId: "admin-1",
+    });
+
+    expect(result.request.participants[0].sharedInvoiceNotice).toEqual(notice);
+    expect(mocks.createAuditLog).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "membership_cancellation.approval_blocked",
+      }),
+    );
+    expect(mocks.queueCancellationXeroOperations).toHaveBeenCalled();
+  });
+
+  it("serializes no notice when the cancellation will credit the invoice in full", async () => {
+    const result = await reviewMembershipCancellationParticipant({
+      requestId: "request-1",
+      participantId: "participant-1",
+      action: "approve",
+      adminMemberId: "admin-1",
+    });
+
+    expect(result.request.participants[0].sharedInvoiceNotice).toBeNull();
   });
 
   it("prevents an admin from approving a cancellation request they initiated", async () => {

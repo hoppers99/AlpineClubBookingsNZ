@@ -18,12 +18,16 @@ import {
 } from "@/lib/email";
 import logger from "@/lib/logger";
 import { classifyAccountRecord } from "@/lib/member-roles";
-import { buildMembershipCancellationApprovalBlockedMessage } from "@/lib/membership-cancellation-blocker-messages";
+import {
+  buildMembershipCancellationApprovalBlockedMessage,
+  type MembershipCancellationSharedInvoiceNotice,
+} from "@/lib/membership-cancellation-blocker-messages";
 import {
   emptyMembershipCancellationBlockerMap,
   loadMembershipCancellationBlockersByMemberId,
   type MembershipCancellationBlocker,
 } from "@/lib/membership-cancellation-blockers";
+import { loadMembershipCancellationSharedInvoiceNoticesByMemberId } from "@/lib/membership-cancellation-subscription-credit";
 import {
   EMPTY_ORPHANED_FAMILY_LINKS,
   readFamilyLinkOrphans,
@@ -87,6 +91,12 @@ type AdminSerializedMembershipCancellationParticipant = {
   cancelledAtParticipant: string | null;
   reviewedBy: { id: string; name: string; email: string } | null;
   blockers: MembershipCancellationBlocker[];
+  /**
+   * #2400: set when this member's subscription invoice also covers other members
+   * who are staying, so approving raises no Xero credit note. Not a blocker —
+   * approval still goes ahead — but the reviewer is told before they press it.
+   */
+  sharedInvoiceNotice: MembershipCancellationSharedInvoiceNotice | null;
   /** True when approving this participant requires a Full Admin (#1604/#2383). */
   holdsPrivilegedAccess: boolean;
   /** Derived User Type, so an organisation account is visibly one. */
@@ -165,6 +175,12 @@ function serializeRequest(
   blockersByMemberId = emptyMembershipCancellationBlockerMap(
     request.participants.map((participant) => participant.memberId),
   ),
+  // #2400: absent by default, exactly like the blocker map — a caller that has
+  // not asked shows no notice rather than an unexplained empty one.
+  sharedInvoiceNoticesByMemberId = new Map<
+    string,
+    MembershipCancellationSharedInvoiceNotice | null
+  >(),
 ): AdminSerializedMembershipCancellationRequest {
   return {
     id: request.id,
@@ -197,6 +213,8 @@ function serializeRequest(
       cancelledAtParticipant: serializeDate(participant.cancelledAt),
       reviewedBy: serializeMember(participant.reviewedBy),
       blockers: blockersByMemberId.get(participant.memberId) ?? [],
+      sharedInvoiceNotice:
+        sharedInvoiceNoticesByMemberId.get(participant.memberId) ?? null,
       // #2383: what the reviewer is actually approving. `holdsPrivilegedAccess`
       // is the exact predicate the approval guard uses, so it is a promise:
       // approving this participant needs a Full Admin.
@@ -473,12 +491,19 @@ export async function getAdminMembershipCancellationRequests({
       )
       .map((participant) => participant.memberId),
   );
-  const blockersByMemberId =
-    await loadMembershipCancellationBlockersByMemberId(participantMemberIds);
+  // #2400: the shared-invoice notice reads only local records — no Xero call —
+  // so it costs the queue nothing beyond two indexed reads.
+  const [blockersByMemberId, sharedInvoiceNoticesByMemberId] =
+    await Promise.all([
+      loadMembershipCancellationBlockersByMemberId(participantMemberIds),
+      loadMembershipCancellationSharedInvoiceNoticesByMemberId(
+        participantMemberIds,
+      ),
+    ]);
 
   return {
     requests: requests.map((request) =>
-      serializeRequest(request, blockersByMemberId),
+      serializeRequest(request, blockersByMemberId, sharedInvoiceNoticesByMemberId),
     ),
     pendingCount,
     total,
@@ -785,18 +810,29 @@ export async function reviewMembershipCancellationParticipant({
     );
   }
 
-  const blockersByMemberId =
-    await loadMembershipCancellationBlockersByMemberId(
-      updatedRequest.participants
-        .filter(
-          (item) =>
-            item.status === MembershipCancellationParticipantStatus.REQUESTED,
-        )
-        .map((item) => item.memberId),
-    );
+  const stillReviewableMemberIds = updatedRequest.participants
+    .filter(
+      (item) => item.status === MembershipCancellationParticipantStatus.REQUESTED,
+    )
+    .map((item) => item.memberId);
+  // #2400: reloaded with the blockers, because approving one family member
+  // changes the answer for the others — the one just cancelled no longer keeps
+  // the shared invoice alive, so the next reviewer sees the notice disappear at
+  // the moment the last leaver's approval would credit the invoice in full.
+  const [blockersByMemberId, sharedInvoiceNoticesByMemberId] =
+    await Promise.all([
+      loadMembershipCancellationBlockersByMemberId(stillReviewableMemberIds),
+      loadMembershipCancellationSharedInvoiceNoticesByMemberId(
+        stillReviewableMemberIds,
+      ),
+    ]);
 
   return {
-    request: serializeRequest(updatedRequest, blockersByMemberId),
+    request: serializeRequest(
+      updatedRequest,
+      blockersByMemberId,
+      sharedInvoiceNoticesByMemberId,
+    ),
     // #2255: always present (empty arrays on reject, or when nothing was
     // linked), so a caller cannot mistake "no key" for "nothing detached".
     orphanedLinks: orphanedByCancellation,

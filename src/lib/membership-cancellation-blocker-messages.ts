@@ -7,6 +7,11 @@
  * and its audit record) and by the admin review queue, which is a client
  * component. One source of truth means the reviewer reads on screen exactly what
  * the server would say if they pressed Approve.
+ *
+ * It also carries the shared-invoice NOTICE (#2400), which is not a blocker: it
+ * does not refuse anything, it warns the reviewer that approving will raise no
+ * credit note because the invoice covers other members who are staying. Same
+ * reason for living here — the wording is written once and read by both sides.
  */
 
 /** The label of the setting that turns Xero contact archiving on or off. */
@@ -299,6 +304,84 @@ export function buildMembershipCancellationApprovalBlockedMessage(
   }
 
   return sentences.join(" ");
+}
+
+/**
+ * The member's own current-season subscription invoice, when it also covers
+ * OTHER members who are staying — so the cancellation will raise no credit note
+ * against it (#2400).
+ *
+ * Not a blocker. Nothing about it stops the approval: the invoice is simply left
+ * alone, which is the right outcome when the club is still owed for the members
+ * who remain. It is here so the reviewer is told BEFORE they approve, because a
+ * cancellation that quietly changes — or, as it used to, quietly wipes — what a
+ * different member owes deserves to be visible.
+ */
+export type MembershipCancellationSharedInvoiceNotice = {
+  invoiceId: string;
+  invoiceNumber: string | null;
+  /** Deep link to the invoice in Xero. */
+  xeroUrl: string;
+  /** The other members this invoice still covers, named. Never empty. */
+  sharedWith: Array<{ memberId: string; name: string }>;
+};
+
+/** Members named in the notice before it summarises the rest. */
+const SHARED_INVOICE_NAMES_IN_MESSAGE = 5;
+
+/** "Ana", "Ana and Bo", "Ana, Bo and Cy", "Ana, Bo, Cy, Di, Ed and 2 others". */
+export function formatMemberNameList(names: readonly string[]): string {
+  const named = names.slice(0, SHARED_INVOICE_NAMES_IN_MESSAGE);
+  const remaining = names.length - named.length;
+  const tail =
+    remaining > 0 ? `${remaining} other${remaining === 1 ? "" : "s"}` : null;
+  const parts = tail ? [...named, tail] : named;
+
+  if (parts.length === 0) return "";
+  if (parts.length === 1) return parts[0]!;
+  return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+}
+
+/**
+ * "invoice INV-0042" — or its Xero id where Xero never numbered it, because a
+ * treasurer cannot search Xero by GUID and the link is what makes it findable.
+ */
+export function sharedInvoiceLabel(
+  notice: MembershipCancellationSharedInvoiceNotice,
+): string {
+  return notice.invoiceNumber
+    ? `invoice ${notice.invoiceNumber}`
+    : `an invoice with no number (Xero id ${notice.invoiceId})`;
+}
+
+/**
+ * The whole explanation, split where the invoice link belongs — the same
+ * label/detail shape the unpaid-invoice line uses, and for the same reason: the
+ * panel hyperlinks the label and the server logs one sentence, and neither can
+ * drift from the other.
+ */
+export function describeMembershipCancellationSharedInvoiceParts(
+  notice: MembershipCancellationSharedInvoiceNotice,
+): { before: string; label: string; href: string; after: string } {
+  const names = formatMemberNameList(
+    notice.sharedWith.map((member) => member.name),
+  );
+
+  return {
+    before: "This member's membership was billed on ",
+    label: sharedInvoiceLabel(notice),
+    href: notice.xeroUrl,
+    after: `, which also covers ${names}. They are staying, so approving raises no Xero credit note: crediting this invoice would wipe their share of the bill as well, and the club is still owed it. The invoice is left exactly as it is. If this member is owed something back, raise that credit note yourself in Xero. If the rest of the family is leaving too, approve them first — the last cancellation on this invoice credits it in full.`,
+  };
+}
+
+/** The same explanation as one sentence, for the server's logs and records. */
+export function buildMembershipCancellationSharedInvoiceMessage(
+  notice: MembershipCancellationSharedInvoiceNotice,
+): string {
+  const { before, label, after } =
+    describeMembershipCancellationSharedInvoiceParts(notice);
+  return `${before}${label}${after}`;
 }
 
 /** Heading for the amber panel above the blocker list in the review queue. */

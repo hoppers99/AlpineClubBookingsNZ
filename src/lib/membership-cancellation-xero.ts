@@ -2,6 +2,7 @@ import { Contact, CreditNote, LineAmountTypes, type Contacts, type LineItem } fr
 import { getManagedGroupUniverse } from "@/lib/xero-member-grouping";
 import { buildMembershipCancellationApprovalBlockedMessage } from "@/lib/membership-cancellation-blocker-messages";
 import { loadMembershipCancellationInvoiceBlockersByMemberId } from "@/lib/membership-cancellation-invoice-blockers";
+import { findOtherLiveMembersCoveredBySubscriptionInvoice } from "@/lib/membership-cancellation-subscription-credit";
 import {
   loadMembershipCancellationSettings,
   type MembershipCancellationXeroContactGroupSetting,
@@ -259,8 +260,64 @@ export async function createXeroMembershipCancellationCreditNote(
     },
   });
 
-  const { xero, tenantId } = await getAuthenticatedXeroClient();
   const invoiceId = subscription.xeroInvoiceId!;
+
+  // #2400: a family or billing group is billed with ONE invoice covering
+  // everyone in it, and the credit raised below is for the invoice's WHOLE
+  // remaining balance. Raising it while other covered members are staying wipes
+  // their share of the bill too — revenue the club is still owed, gone silently.
+  // The owner's decision is to credit in full only when the leaver is the last
+  // covered member still with the club, and otherwise to raise nothing and leave
+  // it to an admin to settle deliberately in Xero.
+  //
+  // Asked here rather than at approval, and asked again rather than trusted from
+  // then: a family's composition can change between a cancellation being
+  // requested, approved, and this operation draining off the outbox, and the
+  // only answer safe to act on is the one true at the instant the credit note
+  // would be raised. The approval gate asks the same question of the same module
+  // at its own moment, which is what keeps the two in step.
+  //
+  // Deliberately BEFORE the Xero client is authenticated: the answer is entirely
+  // local, so the skip costs no Xero call at all. It also sits AFTER the
+  // existing-credit-note lookup above — once a credit note exists for this
+  // cancellation the money is already credited in Xero, and finishing its
+  // allocation is better than abandoning it half-done.
+  if (!existingCreditLink) {
+    const sharedWith = await findOtherLiveMembersCoveredBySubscriptionInvoice({
+      invoiceId,
+      leavingMemberId: subscription.memberId,
+    });
+    if (sharedWith.length > 0) {
+      logger.warn(
+        {
+          subscriptionId: subscription.id,
+          memberId: subscription.memberId,
+          xeroInvoiceId: invoiceId,
+          requestId: params.requestId,
+          participantId: params.participantId,
+          sharedWithMemberIds: sharedWith.map((member) => member.memberId),
+        },
+        "Membership cancellation credit note skipped: the subscription invoice also covers members who are staying",
+      );
+      if (operationId) {
+        await completeXeroSyncOperation(operationId, {
+          responsePayload: {
+            skipped: true,
+            reason: "shared_invoice_covers_remaining_members",
+            invoiceId,
+            sharedWith,
+          },
+          xeroObjectType: "INVOICE",
+          xeroObjectId: invoiceId,
+          xeroObjectNumber: subscription.xeroInvoiceNumber ?? null,
+          xeroObjectUrl: buildXeroInvoiceUrl(invoiceId),
+        });
+      }
+      return null;
+    }
+  }
+
+  const { xero, tenantId } = await getAuthenticatedXeroClient();
   const invoiceResponse = await callXeroApi(
     () => xero.accountingApi.getInvoice(tenantId, invoiceId),
     {

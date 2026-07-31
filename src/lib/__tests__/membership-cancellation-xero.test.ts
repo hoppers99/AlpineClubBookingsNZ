@@ -29,6 +29,9 @@ const mocks = vi.hoisted(() => ({
   // #2392 (review NEW-1): the archive re-asks the unpaid-invoice question live,
   // immediately before it archives. Default: nothing owing.
   loadInvoiceBlockers: vi.fn(),
+  // #2400: who else the subscription invoice still covers. Default: nobody, so
+  // the leaver is the last one out and the invoice is credited in full.
+  findOtherLiveMembersCovered: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -76,6 +79,11 @@ vi.mock("@/lib/membership-cancellation-settings", () => ({
 
 vi.mock("@/lib/membership-cancellation-invoice-blockers", () => ({
   loadMembershipCancellationInvoiceBlockersByMemberId: mocks.loadInvoiceBlockers,
+}));
+
+vi.mock("@/lib/membership-cancellation-subscription-credit", () => ({
+  findOtherLiveMembersCoveredBySubscriptionInvoice:
+    mocks.findOtherLiveMembersCovered,
 }));
 
 vi.mock("@/lib/xero-member-grouping", () => ({
@@ -138,6 +146,7 @@ describe("membership cancellation Xero operations", () => {
       async (memberIds: readonly string[]) =>
         new Map(memberIds.map((memberId) => [memberId, []])),
     );
+    mocks.findOtherLiveMembersCovered.mockResolvedValue([]);
   });
 
   it("creates and allocates a subscription cancellation credit note using the membership cancellation mapping", async () => {
@@ -278,6 +287,199 @@ describe("membership cancellation Xero operations", () => {
         }),
       }),
     );
+  });
+
+  // #2400: a family is billed with ONE invoice covering everyone in it, and the
+  // credit note below is for that invoice's WHOLE remaining balance.
+  describe("shared family invoices", () => {
+    function unpaidFamilySubscription() {
+      mocks.memberSubscriptionFindUnique.mockResolvedValue({
+        id: "sub_1",
+        memberId: "member_1",
+        seasonYear: 2026,
+        status: "UNPAID",
+        xeroInvoiceId: "inv_family",
+        xeroInvoiceNumber: "INV-0042",
+        member: {
+          id: "member_1",
+          firstName: "Ada",
+          lastName: "Smith",
+          xeroContactId: "contact_1",
+        },
+      });
+      mocks.getInvoice.mockResolvedValue({
+        body: {
+          invoices: [
+            {
+              invoiceID: "inv_family",
+              invoiceNumber: "INV-0042",
+              amountDue: 300,
+              contact: { contactID: "contact_1" },
+            },
+          ],
+        },
+      });
+      mocks.createCreditNotes.mockResolvedValue({
+        body: { creditNotes: [{ creditNoteID: "cn_1", creditNoteNumber: "CN-1" }] },
+      });
+      mocks.createCreditNoteAllocation.mockResolvedValue({
+        body: { allocations: [{ amount: 300 }] },
+      });
+    }
+
+    it("credits the invoice's whole remaining balance when the leaver is the last member it covers", async () => {
+      unpaidFamilySubscription();
+      mocks.findOtherLiveMembersCovered.mockResolvedValue([]);
+
+      await expect(
+        createXeroMembershipCancellationCreditNote({
+          subscriptionId: "sub_1",
+          requestId: "request_1",
+          participantId: "participant_1",
+          syncOperationId: "op_1",
+        }),
+      ).resolves.toBe("cn_1");
+
+      expect(mocks.findOtherLiveMembersCovered).toHaveBeenCalledWith({
+        invoiceId: "inv_family",
+        leavingMemberId: "member_1",
+      });
+      expect(
+        mocks.createCreditNotes.mock.calls[0][1].creditNotes[0].lineItems[0]
+          .unitAmount,
+      ).toBe(300);
+      expect(mocks.createCreditNoteAllocation).toHaveBeenCalledWith(
+        "tenant_1",
+        "cn_1",
+        { allocations: [{ invoice: { invoiceID: "inv_family" }, amount: 300, date: expect.any(String) }] },
+        undefined,
+        expect.any(String),
+      );
+    });
+
+    it("raises nothing at all while the invoice still covers a member who is staying", async () => {
+      unpaidFamilySubscription();
+      mocks.findOtherLiveMembersCovered.mockResolvedValue([
+        { memberId: "member_2", name: "Bob Smith" },
+      ]);
+
+      await expect(
+        createXeroMembershipCancellationCreditNote({
+          subscriptionId: "sub_1",
+          requestId: "request_1",
+          participantId: "participant_1",
+          syncOperationId: "op_1",
+        }),
+      ).resolves.toBeNull();
+
+      expect(mocks.createCreditNotes).not.toHaveBeenCalled();
+      expect(mocks.createCreditNoteAllocation).not.toHaveBeenCalled();
+      // The whole answer is local, so the skip does not even authenticate.
+      expect(mocks.getAuthenticatedXeroClient).not.toHaveBeenCalled();
+      expect(mocks.getInvoice).not.toHaveBeenCalled();
+      expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
+        "op_1",
+        expect.objectContaining({
+          responsePayload: expect.objectContaining({
+            skipped: true,
+            reason: "shared_invoice_covers_remaining_members",
+            invoiceId: "inv_family",
+            sharedWith: [{ memberId: "member_2", name: "Bob Smith" }],
+          }),
+        }),
+      );
+    });
+
+    it("skips again on a re-run rather than drifting into a credit note", async () => {
+      unpaidFamilySubscription();
+      mocks.findOtherLiveMembersCovered.mockResolvedValue([
+        { memberId: "member_2", name: "Bob Smith" },
+      ]);
+
+      for (const _run of [1, 2, 3]) {
+        await expect(
+          createXeroMembershipCancellationCreditNote({
+            subscriptionId: "sub_1",
+            requestId: "request_1",
+            participantId: "participant_1",
+            syncOperationId: "op_1",
+          }),
+        ).resolves.toBeNull();
+      }
+
+      expect(mocks.createCreditNotes).not.toHaveBeenCalled();
+      expect(mocks.startXeroSyncOperation).not.toHaveBeenCalled();
+    });
+
+    it("credits in full on the retry that follows the rest of the family being cancelled", async () => {
+      unpaidFamilySubscription();
+      mocks.findOtherLiveMembersCovered.mockResolvedValueOnce([
+        { memberId: "member_2", name: "Bob Smith" },
+      ]);
+
+      await expect(
+        createXeroMembershipCancellationCreditNote({
+          subscriptionId: "sub_1",
+          requestId: "request_1",
+          participantId: "participant_1",
+          syncOperationId: "op_1",
+        }),
+      ).resolves.toBeNull();
+
+      // Bob has since been cancelled, so the same operation retried now finds
+      // nobody left and credits the invoice in full.
+      mocks.findOtherLiveMembersCovered.mockResolvedValue([]);
+
+      await expect(
+        createXeroMembershipCancellationCreditNote({
+          subscriptionId: "sub_1",
+          requestId: "request_1",
+          participantId: "participant_1",
+          syncOperationId: "op_1",
+        }),
+      ).resolves.toBe("cn_1");
+
+      expect(mocks.createCreditNotes).toHaveBeenCalledTimes(1);
+      expect(
+        mocks.createCreditNotes.mock.calls[0][1].creditNotes[0].lineItems[0]
+          .unitAmount,
+      ).toBe(300);
+    });
+
+    it("finishes allocating a credit note that already exists, whoever the invoice now covers", async () => {
+      unpaidFamilySubscription();
+      // A previous run created the note; only the allocation is outstanding.
+      mocks.xeroObjectLinkFindFirst
+        .mockResolvedValueOnce({
+          xeroObjectId: "cn_existing",
+          xeroObjectNumber: "CN-9",
+          xeroObjectUrl: "https://xero/cn_existing",
+        })
+        .mockResolvedValueOnce(null);
+      mocks.findOtherLiveMembersCovered.mockResolvedValue([
+        { memberId: "member_2", name: "Bob Smith" },
+      ]);
+
+      await expect(
+        createXeroMembershipCancellationCreditNote({
+          subscriptionId: "sub_1",
+          requestId: "request_1",
+          participantId: "participant_1",
+          syncOperationId: "op_1",
+        }),
+      ).resolves.toBe("cn_existing");
+
+      // The money is already credited in Xero — abandoning it unallocated would
+      // be worse than finishing the job, so the shared check is not consulted.
+      expect(mocks.findOtherLiveMembersCovered).not.toHaveBeenCalled();
+      expect(mocks.createCreditNoteAllocation).toHaveBeenCalledWith(
+        "tenant_1",
+        "cn_existing",
+        { allocations: [{ invoice: { invoiceID: "inv_family" }, amount: 300, date: expect.any(String) }] },
+        undefined,
+        expect.any(String),
+      );
+    });
   });
 
   it("removes managed age-tier groups, adds cancelled groups, and archives the Xero contact", async () => {

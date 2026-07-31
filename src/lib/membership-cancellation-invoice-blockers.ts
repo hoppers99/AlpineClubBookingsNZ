@@ -47,7 +47,7 @@
  * ## What is deliberately NOT counted
  *
  * The member's own current-season subscription invoice, when the cancellation
- * itself is about to credit it. `queueApprovedMembershipCancellationXeroOperations`
+ * itself is about to credit it IN FULL. `queueApprovedMembershipCancellationXeroOperations`
  * raises an allocated credit note against an UNPAID/OVERDUE subscription invoice
  * on approval — that is the documented refund policy. Counting it would deadlock
  * the single most common cancellation there is: the thing that clears the
@@ -55,6 +55,19 @@
  * own rule (current season, status UNPAID or OVERDUE, invoice linked) and is
  * applied per member, so one member's subscription invoice never excuses another
  * member who happens to share the same Xero contact.
+ *
+ * "In full" is load-bearing, and is the whole reason #2400 had to move with this
+ * module. A family invoice covers everybody in the group, and since #2400 the
+ * cancellation raises NO credit note at all while other covered members are
+ * staying — crediting the full balance would wipe their share of the bill too.
+ * An invoice nobody is going to credit is a real balance, so it must not be
+ * excused here: excusing it would let the approval archive a Xero contact with
+ * money still owing on it, which is precisely the harm this module exists to
+ * prevent. The exclusion is therefore decided by
+ * `loadMembershipCancellationSubscriptionCreditPlansByMemberId`, the same module
+ * the credit note itself consults, so the set excluded here is exactly the set
+ * that will be cleared. That is the invariant: **this check excuses an invoice
+ * if and only if the approval is about to credit its full balance.**
  *
  * ## When the check runs at all
  *
@@ -127,8 +140,8 @@ import type {
   MembershipCancellationUnpaidInvoiceBlocker,
 } from "@/lib/membership-cancellation-blocker-messages";
 import { loadMembershipCancellationSettingsStrict } from "@/lib/membership-cancellation-settings";
+import { loadMembershipCancellationSubscriptionCreditPlansByMemberId } from "@/lib/membership-cancellation-subscription-credit";
 import { prisma } from "@/lib/prisma";
-import { getSeasonYear } from "@/lib/utils";
 import {
   callXeroApi,
   getAuthenticatedXeroClient,
@@ -144,9 +157,6 @@ export const MEMBERSHIP_CANCELLATION_OPEN_INVOICE_STATUSES = [
   "AUTHORISED",
   "SUBMITTED",
 ] as const;
-
-/** Subscription states whose invoice this approval is itself about to credit. */
-const SELF_CREDITED_SUBSCRIPTION_STATUSES = ["UNPAID", "OVERDUE"] as const;
 
 const XERO_PAGE_SIZE = 100;
 /**
@@ -572,8 +582,10 @@ export async function loadMembershipCancellationInvoiceBlockersByMemberId(
     return blockersByMemberId;
   }
 
-  // The invoice this approval will itself credit, per member — see the module
-  // note: counting it would deadlock the ordinary unpaid-subscription case.
+  // The invoice this approval will itself credit IN FULL, per member — see the
+  // module note: counting it would deadlock the ordinary unpaid-subscription
+  // case, and excusing one that will NOT be credited would archive a contact
+  // with a real balance behind it (#2400).
   //
   // The season is read from NOW, which matters for the archive-time re-check in
   // `membership-cancellation-xero.ts`: an outbox operation still draining after
@@ -581,35 +593,25 @@ export async function loadMembershipCancellationInvoiceBlockersByMemberId(
   // subscription invoice would no longer be excluded here. That cannot deadlock
   // the archive in practice, because by then the credit note has already been
   // raised — the archive is not even attempted until
-  // `isMembershipCancellationCreditNoteSettled` says so — and it is raised for
-  // the invoice's full `amountDue`, which takes the invoice to PAID in Xero and
-  // out of the open-invoice read this check performs. The exclusion is therefore
-  // only load-bearing at APPROVAL time, when the credit note has not been raised
-  // yet and the season cannot have moved. Written down because that safety
-  // depends on another module's behaviour, not on anything visible here
-  // (#2392 review).
-  const seasonYear = getSeasonYear(new Date(options.nowMs ?? Date.now()));
-  const selfCreditedSubscriptions = await prisma.memberSubscription.findMany({
-    where: {
-      memberId: { in: memberIdsWithContact },
-      seasonYear,
-      status: { in: [...SELF_CREDITED_SUBSCRIPTION_STATUSES] },
-      NOT: { xeroInvoiceId: null },
-    },
-    select: { memberId: true, xeroInvoiceId: true },
-  });
+  // `isMembershipCancellationCreditNoteSettled` says so — and where it WAS
+  // raised it was raised for the invoice's full `amountDue`, which takes the
+  // invoice to PAID in Xero and out of the open-invoice read this check
+  // performs. Where it was not raised, because the invoice covers members who
+  // are staying, the balance is real and blocking the archive is the correct
+  // outcome, not a deadlock: the invoice belongs to the members who remain and
+  // an admin settles it in Xero. Written down because that safety depends on
+  // another module's behaviour, not on anything visible here (#2392 review,
+  // #2400).
+  const creditPlansByMemberId =
+    await loadMembershipCancellationSubscriptionCreditPlansByMemberId(
+      memberIdsWithContact,
+      { nowMs: options.nowMs },
+    );
   const selfCreditedByMemberId = new Map<string, Set<string>>();
-  for (const subscription of selfCreditedSubscriptions) {
-    if (!subscription.xeroInvoiceId) continue;
-    const existing = selfCreditedByMemberId.get(subscription.memberId);
-    if (existing) {
-      existing.add(subscription.xeroInvoiceId);
-    } else {
-      selfCreditedByMemberId.set(
-        subscription.memberId,
-        new Set([subscription.xeroInvoiceId]),
-      );
-    }
+  for (const [memberId, plan] of creditPlansByMemberId) {
+    // Only a plan that clears the WHOLE balance earns the exclusion.
+    if (!plan?.creditsInFull) continue;
+    selfCreditedByMemberId.set(memberId, new Set([plan.invoiceId]));
   }
 
   const contactIds = [...new Set(contactIdByMemberId.values())];
