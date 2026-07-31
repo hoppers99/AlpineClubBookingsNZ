@@ -7,7 +7,11 @@ import {
   clearMailbox,
   waitForEmail,
 } from "./helpers/mailpit";
-import { seasonForWindow, stayWindow, type StayWindow } from "./helpers/stay-dates";
+import {
+  seasonForWindow,
+  stayWindowForAttempt,
+  type StayWindow,
+} from "./helpers/stay-dates";
 import { clubConfig } from "../src/config/club";
 import { PLACEHOLDER_CONTACT_EMAIL_DOMAIN } from "../src/lib/placeholder-contact-email";
 
@@ -36,10 +40,12 @@ import { PLACEHOLDER_CONTACT_EMAIL_DOMAIN } from "../src/lib/placeholder-contact
 // on-behalf create both require. Reusing the saved session (rather than a fresh
 // UI login) keeps this spec off the login rate-limit ceiling (#1779).
 //
-// Windows: indexes 6/7/8 — disjoint from every other stayWindow spec (0–5). A
+// Windows: base indexes 6/7/8 — disjoint from every other stayWindow spec. A
 // PENDING non-member booking holds no capacity (#737/#738), so these never
 // perturb other specs' availability, but distinct windows keep the flow
-// deterministic regardless of run date.
+// deterministic regardless of run date. `stayWindowForAttempt` additionally
+// shifts each RETRY onto its own band of Mondays (#2302), so a group retry never
+// re-books the window its own previous attempt already took.
 
 test.describe.configure({ mode: "serial" });
 test.use({ storageState: storageStatePath(E2E_ADMIN.email) });
@@ -157,8 +163,11 @@ async function pickDatesAddGuestAndQuote(
 
 test("inline-creates a non-member owner, prices them as a non-member, and emails a real-email owner on opt-in", async ({
   page,
-}) => {
-  const window = stayWindow(6);
+}, testInfo) => {
+  // Retry-scoped window (#2302): this file is a serial group, so any later
+  // failure re-runs this test against the booking its own previous attempt left
+  // behind. Attempt 0 is unchanged.
+  const window = stayWindowForAttempt(6, testInfo.retry);
   await openBookOnBehalf(page);
 
   // (1) Inline create of a non-login non-member contact.
@@ -242,8 +251,8 @@ test("inline-creates a non-member owner, prices them as a non-member, and emails
 
 test("suggest-and-pick reuses the existing non-member contact instead of duplicating it", async ({
   page,
-}) => {
-  const window = stayWindow(7);
+}, testInfo) => {
+  const window = stayWindowForAttempt(7, testInfo.retry);
   await openBookOnBehalf(page);
 
   // (2) Dedupe = suggest-and-pick: typing the same email the previous test used
@@ -311,8 +320,8 @@ test("suggest-and-pick reuses the existing non-member contact instead of duplica
 
 test("a no-email walk-in owner is created with a placeholder and never emailed", async ({
   page,
-}) => {
-  const window = stayWindow(8);
+}, testInfo) => {
+  const window = stayWindowForAttempt(8, testInfo.retry);
   await openBookOnBehalf(page);
 
   // (3) No-email walk-in: name only, "No email address" ticked. The server

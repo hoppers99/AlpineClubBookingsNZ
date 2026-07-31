@@ -6,7 +6,7 @@ import {
   fetchOccupiedBeds,
 } from "./helpers/booking";
 import { personas } from "./helpers/personas";
-import { stayWindow } from "./helpers/stay-dates";
+import { stayWindowForAttempt } from "./helpers/stay-dates";
 import {
   payWithCard,
   STRIPE_SKIP_REASON,
@@ -34,13 +34,22 @@ test.skip(!configured, STRIPE_SKIP_REASON);
 // /confirm request, no card_declined). A fresh browser context per retry clears
 // Stripe's Link cookies and usually recovers; the constant datacenter IP means
 // Radar can still re-challenge, so retries reduce — not eliminate — the flake.
-// The e2e job is non-blocking by design, which tolerates the residual.
+// (The "the e2e job is non-blocking by design" note that used to close this
+// paragraph is stale: `Playwright E2E` has been a required check since #1315.)
+//
+// Those retries only help if they are IDEMPOTENT (#2302). Each test books the
+// same persona, so an attempt that got as far as creating the booking leaves the
+// persona holding its stay window; a retry on that same window then never gets
+// past the review step (the member-night guard), which is how run 30586027310
+// turned one Stripe challenge into three failures whose reported error was the
+// collision rather than the challenge. `stayWindowForAttempt` gives every
+// attempt its own window; attempt 0 is unchanged.
 test.describe.configure({ retries: 2 });
 
 test("test-mode card payment succeeds and confirms the booking", async ({
   page,
-}) => {
-  const window = stayWindow(1);
+}, testInfo) => {
+  const window = stayWindowForAttempt(1, testInfo.retry);
   const occupiedBefore = await fetchOccupiedBeds(page, window.nights);
   await bookSelfToReviewStep(page, personas.booker, window);
   await confirmBookingToPaymentStep(page);
@@ -86,8 +95,10 @@ test("test-mode card payment succeeds and confirms the booking", async ({
   await expect(page.getByText(/confirmed|paid/i).first()).toBeVisible();
 });
 
-test("declined test-mode card leaves the booking payable", async ({ page }) => {
-  const window = stayWindow(2);
+test("declined test-mode card leaves the booking payable", async ({
+  page,
+}, testInfo) => {
+  const window = stayWindowForAttempt(2, testInfo.retry);
   await bookSelfToReviewStep(page, personas.booker, window);
   await confirmBookingToPaymentStep(page);
 
