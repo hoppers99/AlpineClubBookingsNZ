@@ -91,7 +91,6 @@ interface RedemptionsResponse {
     active: boolean;
     archived: boolean;
     internal: boolean;
-    currentRedemptions: number;
     // What the usage caps count: applications that actually gave a benefit
     // (#2299). The tiles below report every application, so the cap progress
     // has to be driven from here or a fruitlessly-applied code reads as over

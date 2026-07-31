@@ -69,9 +69,13 @@ Future reviews and issues should cite this file when proposing changes.
     booking — `booking-modify-plan.ts`, the add-guests route,
     `booking-date-modification-service.ts`,
     `booking-guest-removal-service.ts` — takes the `FOR UPDATE` promo row lock
-    before its first cap read, and the three reprice paths re-read the counter
-    under that lock via `lockAndRefreshPromoCodeUsage`, because the `PromoCode`
-    snapshot they carry was loaded with the booking, before the locks. See
+    before its first cap read, and re-reads the counter under that lock, because
+    the `PromoCode` snapshot it carries was loaded with the booking, before the
+    locks. All four reprice call sites do that re-read through
+    `lockAndRefreshPromoCodeUsage` (including `booking-modify-plan.ts` on its
+    no-swap reprice branch; its swap branch re-reads the whole promo row under
+    the same lock instead), and each must then validate against the object the
+    wrapper RETURNS — validating the snapshot that went in reopens the race. See
     `docs/CONCURRENCY_AND_LOCKING.md` → "Narrow row-lock protocols".
   - **A cap check that excludes a booking must exclude it from
     `currentRedemptions` too.** The counter includes the rows the excluded

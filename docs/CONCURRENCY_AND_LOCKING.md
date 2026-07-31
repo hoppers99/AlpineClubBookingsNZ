@@ -240,10 +240,18 @@ do not use unnamespaced `hashtext(<id>)` for new lock families.
   `booking-guest-removal-service.ts` (removing guests). Each of the four has
   already taken the per-lodge capacity lock, so the order is again
   lodge -> promo row. The reprice wrapper also **re-reads
-  `currentRedemptions` under the lock**, because those three paths carry a
+  `currentRedemptions` under the lock**, because a reprice carries a
   `PromoCode` snapshot loaded with the booking before the locks were taken;
   locking and then deciding against a number read outside the lock would leave
-  the race open. A promo **swap** touches two promo rows in one
+  the race open. It has **four** call sites, not three: the batch-modification
+  path calls it too, on the branch that re-prices a booking whose promo code is
+  not changing (there the multi-id lock is already held, so the call is for the
+  refreshed counter and its re-lock is a no-op; the swap branch instead re-reads
+  the whole promo row under that same lock). Every caller must then validate
+  against the object the wrapper **returns** — validating the snapshot that went
+  in would serialise correctly and still decide on a stale number, so the source
+  contract in `src/lib/__tests__/promo-reprice-cap-exclusion.test.ts` pins that
+  threading at all four sites. A promo **swap** touches two promo rows in one
   transaction (the outgoing code's counter is refunded, the incoming code's is
   charged), so the helper sorts the ids and locks them one statement at a time:
   every caller therefore takes promo row locks in the same global order and two

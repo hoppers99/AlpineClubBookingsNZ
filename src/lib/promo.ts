@@ -1351,8 +1351,11 @@ export async function validatePromoCodeFull(
  * it: the batch modification path (`booking-modify-plan.ts`), adding guests
  * (`/api/bookings/[id]/guests`), a date change
  * (`booking-date-modification-service.ts`) and removing guests
- * (`booking-guest-removal-service.ts`) — the last three via
- * `lockAndRefreshPromoCodeUsage` below.
+ * (`booking-guest-removal-service.ts`). The last three reach it through
+ * `lockAndRefreshPromoCodeUsage` below; the batch path calls this multi-id form
+ * directly (it is the only one that can touch TWO codes, in a swap) and then
+ * ALSO calls the wrapper on its no-swap reprice branch, where re-locking a row
+ * it already holds is a no-op and the point is the refreshed counter.
  *
  * Two properties keep it safe:
  *
@@ -1381,9 +1384,13 @@ export async function lockPromoCodeRowsForUpdate(
 }
 
 /**
- * The reprice form of the protocol above, for the three modification paths that
- * hold an existing redemption and re-price it in place (adding guests, changing
- * dates, removing guests).
+ * The reprice form of the protocol above, for the four call sites that hold an
+ * existing redemption and re-price it in place: adding guests, changing dates,
+ * removing guests, and the batch-modification path's own reprice branch (the
+ * branch that leaves the promo code as it is — see `booking-modify-plan.ts`,
+ * where the swap branch instead takes the multi-id lock above and re-reads the
+ * whole promo row under it; on the reprice branch the lock is already held, so
+ * this call is here for the refreshed counter and its re-lock is a no-op).
  *
  * They each carry a `PromoCode` snapshot loaded with the booking, BEFORE the
  * transaction's locks were taken, so its `currentRedemptions` may already be
@@ -1391,6 +1398,12 @@ export async function lockPromoCodeRowsForUpdate(
  * theatre: the transaction would serialise correctly and then decide against a
  * number it read outside the lock. So this both takes the row lock and returns
  * the snapshot with the counter as it stands UNDER that lock.
+ *
+ * Callers MUST validate against the RETURNED object. Calling this and then
+ * passing the snapshot that went in reopens exactly the race it closes, and
+ * would look correct in review, so the source contract in
+ * `src/lib/__tests__/promo-reprice-cap-exclusion.test.ts` pins the threading at
+ * every call site.
  *
  * Only `currentRedemptions` is refreshed, deliberately. It is the one cap input
  * a concurrent booking flow mutates; the cap ceilings themselves

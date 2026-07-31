@@ -276,8 +276,15 @@ const PROMO_ROW = {
  * allocation rows the booking under reprice holds for this code; every other
  * allocation query (per-member caps, unique members) sees nothing, so the ONLY
  * thing standing between the booking and its discount is the total-uses check.
+ *
+ * `refreshedRedemptions` is what the counter reads UNDER the lock. Leaving it
+ * unset makes the refreshed row identical to the snapshot, which is the ordinary
+ * case; setting it to something the snapshot disagrees with is how the tests
+ * below prove which of the two numbers the cap check actually used.
  */
-function makeRepriceTx(options: { ownAllocationRows?: number } = {}) {
+function makeRepriceTx(
+  options: { ownAllocationRows?: number; refreshedRedemptions?: number } = {}
+) {
   const calls: string[] = [];
   const lockedIds: string[] = [];
 
@@ -290,7 +297,9 @@ function makeRepriceTx(options: { ownAllocationRows?: number } = {}) {
     promoCode: {
       findUnique: vi.fn(async () => {
         calls.push("promoCode.findUnique");
-        return PROMO_ROW;
+        return options.refreshedRedemptions === undefined
+          ? PROMO_ROW
+          : { ...PROMO_ROW, currentRedemptions: options.refreshedRedemptions };
       }),
       update: vi.fn(async () => {
         calls.push("promoCode.update");
@@ -344,6 +353,18 @@ const STORED_REDEMPTION = {
   promoCode: PROMO_ROW,
 };
 
+/**
+ * The same redemption, but carrying a snapshot that was loaded with the booking
+ * BEFORE the transaction's locks and has since gone stale: it still reads the
+ * code's one slot as free. Paired with `refreshedRedemptions: 1` it is the F2
+ * race in miniature — another booking took the slot in between, and the two
+ * numbers disagree about whether this reprice may proceed.
+ */
+const STALE_REDEMPTION = {
+  ...STORED_REDEMPTION,
+  promoCode: { ...PROMO_ROW, currentRedemptions: 0 },
+};
+
 const GUEST_NIGHT_RATES = [
   {
     bookingGuestId: "bg-1",
@@ -360,12 +381,15 @@ describe("path 1 — batch modification reprice (booking-modify-plan)", () => {
 
   type ApplyArgs = Parameters<typeof applyPromoCodeChanges>;
 
-  function run(tx: ReturnType<typeof makeRepriceTx>["tx"]) {
+  function run(
+    tx: ReturnType<typeof makeRepriceTx>["tx"],
+    promoRedemption: typeof STORED_REDEMPTION = STORED_REDEMPTION
+  ) {
     return applyPromoCodeChanges(tx as unknown as ApplyArgs[0], {
       booking: {
         memberId: "member-1",
         lodgeId: "lodge-1",
-        promoRedemption: STORED_REDEMPTION,
+        promoRedemption,
       } as unknown as ApplyArgs[1]["booking"],
       bookingId: "booking-1",
       input: {} as unknown as ApplyArgs[1]["input"],
@@ -407,6 +431,21 @@ describe("path 1 — batch modification reprice (booking-modify-plan)", () => {
       calls.indexOf("allocation.createMany")
     );
   });
+
+  it("decides on the REFRESHED counter, not the snapshot it locked with (#2299 F2)", async () => {
+    // The snapshot loaded with the booking says the code's one slot is free;
+    // under the lock it is gone — another booking took it. This booking holds
+    // no allocation rows of its own, so nothing is subtracted:
+    // 1 - 0 + 1 = 2 > 1 and the promo cannot stand. Take the refreshed value
+    // away and the stale 0 gives 0 - 0 + 1 = 1, the discount survives, and two
+    // bookings hold a one-use code.
+    const { tx } = makeRepriceTx({ ownAllocationRows: 0, refreshedRedemptions: 1 });
+
+    const result = await run(tx, STALE_REDEMPTION);
+
+    expect(result.promoRemoved).toBe(true);
+    expect(result.newDiscountCents).toBe(0);
+  });
 });
 
 describe("path 4 — guest removal reprice (booking-guest-removal-service)", () => {
@@ -416,7 +455,10 @@ describe("path 4 — guest removal reprice (booking-guest-removal-service)", () 
 
   type RemovalArgs = Parameters<typeof recalculateBookingPromo>[0];
 
-  function run(tx: ReturnType<typeof makeRepriceTx>["tx"]) {
+  function run(
+    tx: ReturnType<typeof makeRepriceTx>["tx"],
+    promoRedemption: typeof STORED_REDEMPTION = STORED_REDEMPTION
+  ) {
     return recalculateBookingPromo({
       tx: tx as unknown as RemovalArgs["tx"],
       bookingId: "booking-1",
@@ -424,7 +466,7 @@ describe("path 4 — guest removal reprice (booking-guest-removal-service)", () 
         memberId: "member-1",
         lodgeId: "lodge-1",
         checkIn: new Date("2026-08-01T00:00:00Z"),
-        promoRedemption: STORED_REDEMPTION,
+        promoRedemption,
       } as unknown as RemovalArgs["booking"],
       newTotalPriceCents: 10000,
       guestNightRates: GUEST_NIGHT_RATES,
@@ -454,6 +496,17 @@ describe("path 4 — guest removal reprice (booking-guest-removal-service)", () 
       calls.indexOf("lock")
     );
   });
+
+  it("decides on the REFRESHED counter, not the snapshot it locked with (#2299 F2)", async () => {
+    // As in path 1: locking and then validating the stale snapshot would
+    // serialise perfectly and still hand out a slot that no longer exists.
+    const { tx } = makeRepriceTx({ ownAllocationRows: 0, refreshedRedemptions: 1 });
+
+    const result = await run(tx, STALE_REDEMPTION);
+
+    expect(result.promoRemoved).toBe(true);
+    expect(result.newDiscountCents).toBe(0);
+  });
 });
 
 // --- The two inline paths, pinned by their source ----------------------------
@@ -461,8 +514,11 @@ describe("path 4 — guest removal reprice (booking-guest-removal-service)", () 
 // Adding guests and changing dates repeat the same reprice block inside much
 // larger functions that cannot be called without standing up most of the
 // booking pipeline. What can regress there is the WIRING — dropping the
-// exclusion, or dropping the lock — so that is what is pinned. The arithmetic
-// itself is covered above, at the choke point all four share.
+// exclusion, dropping the lock, or (the quiet one) keeping both and then
+// validating the stale pre-transaction snapshot anyway — so that is what is
+// pinned. The arithmetic itself is covered above, at the choke point all four
+// share, and the two directly-callable paths prove behaviourally that it is the
+// refreshed counter the cap check uses.
 
 function readSource(relativePath: string) {
   return readFileSync(join(process.cwd(), relativePath), "utf8");
@@ -474,9 +530,9 @@ function readSource(relativePath: string) {
  * `excludeBookingId: bookingId` (the member-night conflict guard does), so
  * searching the whole file would pass even with the promo exclusion deleted.
  */
-function promoValidationCallArguments(source: string): string[] {
+function promoValidationCalls(source: string): Array<{ at: number; text: string }> {
   const marker = "validateAndCalculatePromoDiscount(";
-  const calls: string[] = [];
+  const calls: Array<{ at: number; text: string }> = [];
   let from = source.indexOf(marker);
   while (from !== -1) {
     let depth = 0;
@@ -488,10 +544,36 @@ function promoValidationCallArguments(source: string): string[] {
         if (depth === 0) break;
       }
     }
-    calls.push(source.slice(from, index + 1));
+    calls.push({ at: from, text: source.slice(from, index + 1) });
     from = source.indexOf(marker, index + 1);
   }
   return calls;
+}
+
+function promoValidationCallArguments(source: string): string[] {
+  return promoValidationCalls(source).map((call) => call.text);
+}
+
+/**
+ * The text of a call's FIRST argument — for these call sites, the promo subject
+ * the caps are read off. Brackets of every kind are tracked so the scan stops at
+ * a comma that really is at argument level and not one inside the options object
+ * a few arguments later.
+ */
+function firstArgumentOf(call: string): string {
+  const open = call.indexOf("(");
+  let depth = 0;
+  for (let index = open; index < call.length; index += 1) {
+    const character = call[index];
+    if (character === "(" || character === "[" || character === "{") depth += 1;
+    else if (character === ")" || character === "]" || character === "}") {
+      depth -= 1;
+      if (depth === 0) return call.slice(open + 1, index).trim();
+    } else if (character === "," && depth === 1) {
+      return call.slice(open + 1, index).trim();
+    }
+  }
+  return "";
 }
 
 const REPRICE_CALL_SITES: Array<[string, string]> = [
@@ -526,6 +608,29 @@ describe("every reprice path excludes its own booking and takes the promo lock",
       expect(lockIndex).toBeGreaterThan(-1);
       expect(validateIndex).toBeGreaterThan(-1);
       expect(lockIndex).toBeLessThan(validateIndex);
+    }
+  );
+
+  it.each(REPRICE_CALL_SITES)(
+    "%s validates the REFRESHED promo, not the snapshot it passed in",
+    (_name, path) => {
+      const source = readSource(path);
+      // `lockAndRefreshPromoCodeUsage` is only worth calling for what it
+      // RETURNS. A path that locks, throws the refreshed object away, and
+      // validates the snapshot loaded with the booking would still satisfy the
+      // two assertions above — lock present, exclusion present — while quietly
+      // reopening the race the lock exists to close (#2299 F2). So bind the
+      // refreshed value to a name and require that name to BE the promo subject
+      // the very next validation reads its caps off.
+      const binding = /const (\w+) = await lockAndRefreshPromoCodeUsage\(/.exec(source);
+      expect(binding).not.toBeNull();
+      const refreshed = binding![1];
+
+      const validation = promoValidationCalls(source).find(
+        (call) => call.at > binding!.index
+      );
+      expect(validation).toBeDefined();
+      expect(firstArgumentOf(validation!.text)).toBe(refreshed);
     }
   );
 
