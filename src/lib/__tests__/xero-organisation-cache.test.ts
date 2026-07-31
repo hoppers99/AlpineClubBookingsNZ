@@ -267,19 +267,26 @@ describe("connected-organisation summary: live read (#2261 review F1/F2)", () =>
     );
   });
 
-  // `maxTransientRetries` defaults to `min(maxRetries, 1)` in withXeroRetry, so
-  // `maxRetries: 0` alone would ALSO zero the transient budget — and exhausting
-  // that budget arms `rememberXeroTransientOutage`, the process-global breaker
-  // that fails every Xero call (invoicing and sync included) for two minutes.
-  // This decorative read must never be one 5xx away from stopping invoicing.
-  it("keeps the transient budget so one 5xx cannot trip the global outage breaker", async () => {
+  // #2394 review, F2. This read sits behind an operator-facing Try again button
+  // that is rendered precisely when Xero is 5xx-ing, so the two options are one
+  // decision. `maxTransientRetries: 1` would spend TWO Xero calls per press and,
+  // on exhausting the budget, arm `rememberXeroTransientOutage` — the
+  // process-global breaker that fails every Xero call (invoicing, sync, webhook
+  // replay) for two minutes. `maxTransientRetries: 0` alone is worse: the very
+  // first 5xx arms it. So: no transient retry, and an explicit opt-out of
+  // arming the breaker at all. A page decoration must not be able to stop
+  // invoicing, however often a human presses.
+  it("spends one call per read and can never arm the global outage breaker", async () => {
     stubLiveOrg({ name: "Live Org", shortCode: "!live1" });
 
     await getXeroConnectedOrganisation();
 
     expect(live.callXeroApi).toHaveBeenCalledWith(
       expect.any(Function),
-      expect.objectContaining({ maxTransientRetries: 1 }),
+      expect.objectContaining({
+        maxTransientRetries: 0,
+        armTransientBreaker: false,
+      }),
     );
   });
 

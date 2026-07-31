@@ -144,7 +144,13 @@ async function readXeroFinancialYearEndMonth(): Promise<number | null> {
         // arms `rememberXeroTransientOutage`, the PROCESS-GLOBAL breaker that
         // fails every Xero call (invoicing and sync included) for two
         // minutes. This read must not be able to trip that on its own first
-        // 5xx. See the summary read below for the full account.
+        // 5xx, so it takes two consecutive transient failures (#2283).
+        //
+        // Deliberately NOT the summary read's posture below: that one is
+        // driven by an operator-facing Try again button, so #2394 opted it out
+        // of arming the breaker entirely. This one has no button — it is
+        // member-facing serial traffic bounded by the throttle above — and
+        // keeps the #2283 decision unchanged.
         maxTransientRetries: 1,
       },
     );
@@ -518,16 +524,28 @@ async function readXeroConnectedOrganisation(): Promise<XeroConnectedOrganisatio
         // minutes and competing for the same minute budget as the sync that
         // caused the 429. One attempt, cached failure, try again in a minute.
         maxRetries: 0,
-        // But KEEP the transient (5xx/408) budget at withXeroRetry's default of
-        // 1, because `maxTransientRetries` otherwise defaults to
-        // `min(maxRetries, 1)` — so `maxRetries: 0` alone would also zero it.
-        // That matters far beyond this read: exhausting the transient budget
-        // calls `rememberXeroTransientOutage`, the PROCESS-GLOBAL breaker that
-        // fails every subsequent Xero call fast for two minutes, invoicing and
-        // sync included. A decorative read must not be able to trip that on its
-        // own first 5xx; with the budget intact it takes two consecutive
-        // transient failures, exactly as it did before this feature existed.
-        maxTransientRetries: 1,
+        // EXACTLY ONE live call, and it can never arm the process-global
+        // transient breaker (#2394 review, F2). The two options are one
+        // decision, taken together:
+        //
+        //   * `maxTransientRetries: 1` (what #2261 chose) means ONE press of the
+        //     wizard's Try again spends TWO Xero calls on a 5xx/408, and
+        //     exhausting that budget calls `rememberXeroTransientOutage` — the
+        //     PROCESS-GLOBAL breaker that then fails every Xero call for two
+        //     minutes, invoicing, sync and webhook replay included. #2394 puts
+        //     an operator-facing button in front of this read, rendered
+        //     precisely when Xero is 5xx-ing, with copy inviting a press. The
+        //     blast radius, not the quota, is the problem.
+        //   * `maxTransientRetries: 0` ALONE is worse: with no budget left, the
+        //     very first 5xx arms the breaker.
+        //
+        // So: no transient retry (one press = one call, which is what the
+        // operator is told), and an explicit opt-out of arming the breaker. This
+        // read still RESPECTS a cooldown armed by a call that matters — it
+        // refuses before any HTTP and reports the wait — it just may not start
+        // one. A page decoration should never be able to stop invoicing.
+        maxTransientRetries: 0,
+        armTransientBreaker: false,
       },
     );
     const org = response.body.organisations?.[0];
@@ -574,13 +592,20 @@ async function readXeroConnectedOrganisation(): Promise<XeroConnectedOrganisatio
  * negative entries included) or to the connect/disconnect invalidation bus.
  *
  * `forceRefresh` skips BOTH the cache (positive and negative) and the in-flight
- * join, so it always makes a live call. That is what makes the setup wizard's
- * **Try again** button real (#2394): within the 60-second negative TTL an
- * ordinary read would hand back the cached failure, and a retry button that
- * re-serves the failure it was pressed to clear teaches the operator the button
- * does nothing. The cost is deliberate and bounded to a human press — the
- * owner's decision on #2394 was explicitly a manual retry, not an automatic
- * one, so no extra Xero quota is spent unless somebody asks for it.
+ * join, so it reaches the underlying read every time. That is what makes the
+ * setup wizard's **Try again** button real (#2394): within the 60-second
+ * negative TTL an ordinary read would hand back the cached failure, and a retry
+ * button that re-serves the failure it was pressed to clear teaches the operator
+ * the button does nothing. The cost is at most ONE `getOrganisations` call per
+ * press (the read takes no transient retry), and the owner's decision on #2394
+ * was explicitly a manual retry, not an automatic one, so no extra Xero quota is
+ * spent unless somebody asks for it.
+ *
+ * "At most" is exact, not hedging: while a process-global cooldown armed
+ * ELSEWHERE is active — the daily-limit gate or the transient-outage breaker —
+ * `withXeroRetry` refuses before any HTTP, so a forced read costs nothing and
+ * comes back classified with the remaining wait. Being reported the wait is the
+ * useful outcome there, so the button is still worth pressing.
  *
  * Honours the test-only mock-Xero harness (#2080): inert in production.
  */
