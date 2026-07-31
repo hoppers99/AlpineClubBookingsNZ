@@ -53,8 +53,11 @@ export function DateRangeControls({
   return (
     <>
       <div className="space-y-1">
-        <Label className="text-xs">{presetLabel}</Label>
+        <Label className="text-xs" htmlFor={`${idPrefix}-preset`}>
+          {presetLabel}
+        </Label>
         <select
+          id={`${idPrefix}-preset`}
           value={selectedPreset}
           onChange={(event: React.ChangeEvent<HTMLSelectElement>) =>
             handlePresetChange(event.target.value)

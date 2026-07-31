@@ -761,6 +761,14 @@ describe("consent columns have exactly one writer", () => {
       // hand-typed guest id cannot write bed rows the next reconcile sweeps away.
       "src/lib/admin-bed-allocation.ts":
         "D-12: the manual bed-allocation chokepoint refuses an unconsented guest",
+      // --- MG3's wizard surface (#2308). A READER, and barely that: it builds
+      // the two consent-column shapes the wizard's badge PREDICTS before
+      // anything is persisted, so the booker is told what confirming will do.
+      // It touches no database and no row — the booking does not exist yet —
+      // and every shape it builds is one of the eight legal sub-states, which
+      // its own test asserts through `classifyMemberGuestConsent`.
+      "src/app/(authenticated)/book/_components/member-guest-preview.tsx":
+        "the wizard's pre-persistence consent prediction",
     };
 
     const mentions = productionFilesUnder("src")
@@ -772,11 +780,12 @@ describe("consent columns have exactly one writer", () => {
   });
 });
 
-describe("the two open-search privacy toggles are inert and off", () => {
+describe("the two open-search privacy toggles are off by default, and have exactly one reader", () => {
   it("ships both off", () => {
     // E.25's target, twice over: the shared defaults constant AND the schema
     // column default, because config transfer reads one and a fresh install
-    // gets the other.
+    // gets the other. UNCHANGED BY MG3 — giving these values a reader must not
+    // change what a club gets without asking for it.
     expect(DEFAULT_MEMBER_GUEST_SETTINGS.openMemberSearchEnabled).toBe(false);
     expect(DEFAULT_MEMBER_GUEST_SETTINGS.openMemberSearchIncludesMinors).toBe(false);
 
@@ -785,30 +794,85 @@ describe("the two open-search privacy toggles are inert and off", () => {
     expect(schema).toMatch(/openMemberSearchIncludesMinors\s+Boolean\s+@default\(false\)/);
   });
 
-  it("is named only by the files that store or administer them, never by a reader", () => {
-    // D.20. Until MG3 ships the type-ahead, the ONLY files allowed to name these
-    // columns are the schema, the shared defaults, the loader that fills them in,
-    // the config-transfer spec that refuses to export them — and, from MG2
-    // (#2307, owner decision D-17), the admin route that lets a club's own admin
-    // set them. That route is a WRITER, not a reader: it validates, persists and
-    // audits the two values, and still nothing anywhere consumes either of them
-    // to decide who is discoverable — that arrives with MG3's type-ahead.
-    const allowed = new Set([
+  it("is named by a short, declared set — and exactly ONE file decides discoverability from it", () => {
+    // D.20, REWRITTEN BY MG3 (#2308) because this is the release its own
+    // predecessor comment anticipated. MG1 and MG2 required that NOTHING read
+    // these two values: they decide whether a club's membership list becomes
+    // browsable, and a value that is stored before it is read is one deploy away
+    // from arming a privacy decision nobody re-made. MG3 is the change that gives
+    // them a reader, and takes the admin card's "not in use yet" notice off in
+    // the same commit.
+    //
+    // What replaces "no readers" is the property that still matters and is
+    // stronger than a count: **exactly one file turns either value into a
+    // decision about who is discoverable.** Everything else either stores them,
+    // administers them, or passes an already-decided boolean along. A second
+    // decision site is how two surfaces come to disagree about whether the roll
+    // is browsable — which is the failure this whole test exists to prevent.
+    const storesOrAdministers = new Set([
       "src/config/club-settings-defaults.ts",
       "src/lib/member-guest-settings.ts",
       "src/lib/config-transfer/categories/club-settings.ts",
+      // D-18: the config-transfer spec REFUSES to export these two, so importing
+      // another club's configuration cannot quietly make your roll browsable.
       "src/app/api/admin/member-guest-settings/route.ts",
-      // MG2's settings card (#2307, MG2-M-1). Also a WRITER surface, not a
-      // reader: it renders the two toggles and posts them to the route above.
-      // Nothing consults either value to decide who is discoverable — that
-      // still arrives with MG3's type-ahead.
       "src/components/admin/member-guest-settings-card.tsx",
     ]);
-    const readers = sourceFilesUnder("src")
+    const decidesDiscoverability = "src/lib/member-guest-find-service.ts";
+    const passesThroughOnly = new Set([
+      // Returns the already-decided boolean to the wizard so the right find box
+      // is DRAWN. It gates nothing: the search route below re-reads the setting
+      // itself, so a browser that flips this in its own memory still gets a 404.
+      "src/app/api/members/guest-candidates/route.ts",
+      // Reads the settings through loadMemberGuestFindGate, which is the single
+      // decision site; the route itself only obeys the answer.
+      "src/app/api/members/guest-candidates/search/route.ts",
+      // Renders one find box or the other from the prop it was handed.
+      "src/app/(authenticated)/book/_components/guests-step.tsx",
+    ]);
+
+    const namers = sourceFilesUnder("src")
       .filter((file) => !file.includes("__tests__"))
-      .filter((file) => !allowed.has(file.replace(/\\/g, "/")))
+      .map((file) => file.replace(/\\/g, "/"))
       .filter((file) => /openMemberSearch/.test(readRepoFile(file)));
-    expect(readers).toEqual([]);
+
+    const undeclared = namers.filter(
+      (file) =>
+        !storesOrAdministers.has(file) &&
+        !passesThroughOnly.has(file) &&
+        file !== decidesDiscoverability,
+    );
+    expect(undeclared).toEqual([]);
+
+    // THE LOAD-BEARING HALF. `loadMemberGuestFindGate` is the only place either
+    // value becomes a decision — it is what turns `openMemberSearchEnabled` into
+    // "this route exists" and `openMemberSearchIncludesMinors` into the age-tier
+    // filter. Nothing else may branch on them.
+    expect(namers).toContain(decidesDiscoverability);
+    const gate = readRepoFile(decidesDiscoverability);
+    expect(gate).toContain("settings.openMemberSearchEnabled");
+
+    // MUTATION PROBE: move either branch into a route and this fails, because
+    // the route would then name the setting outside the declared pass-through
+    // role. A pass-through file may MENTION the value (it forwards it); it may
+    // not be the thing that decides.
+    for (const file of passesThroughOnly) {
+      expect(readRepoFile(file)).not.toContain("openMemberSearchIncludesMinors");
+    }
+  });
+
+  it("keeps the honest admin copy in step with reality — the 'not in use yet' notice is gone", () => {
+    // The promise src/lib/member-guest-settings.ts made while these values were
+    // write-only: the annotation comes off in the SAME change that gives them a
+    // reader. This asserts it did, so a future revert of the reader without a
+    // revert of the copy is visible.
+    const card = readRepoFile("src/components/admin/member-guest-settings-card.tsx");
+    expect(card).not.toContain("Not in use yet");
+    expect(card).not.toContain("still being built");
+    // And the two warnings, which are NOT softened: they are the honest
+    // description of what the switches do.
+    expect(card).toContain("makes your membership list browsable");
+    expect(card).toContain("makes children's names browsable");
   });
 });
 

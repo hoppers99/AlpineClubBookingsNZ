@@ -10,11 +10,7 @@ import {
 } from "@/lib/booking-guest-stay-ranges";
 import { evaluateGuestSelfRemoval } from "@/lib/booking-guest-self-removal";
 import { buildBookingMemberNightConflictMessage } from "@/lib/booking-member-night-conflict-messages";
-import { BookingGuestValidationError } from "@/lib/booking-guests";
-import {
-  MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE,
-  MEMBER_GUEST_CROSS_FAMILY_REFUSAL_STATUS,
-} from "@/lib/member-guest-refusal";
+import { memberGuestCrossFamilyRefusal } from "@/lib/booking-guests";
 
 const BOOKING_MEMBER_NIGHT_CONFLICT_CODE =
   "BOOKING_MEMBER_NIGHT_CONFLICT";
@@ -312,10 +308,7 @@ export async function findBookingMemberNightConflicts(
     // while staying silent about the stranger would let a caller read the same
     // oracle one member at a time.
     if (crossFamilyMemberIds.has(guest.memberId)) {
-      throw new BookingGuestValidationError(
-        MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE,
-        MEMBER_GUEST_CROSS_FAMILY_REFUSAL_STATUS,
-      );
+      throw memberGuestCrossFamilyRefusal([guest.memberId]);
     }
 
     const isOwnBooking = guest.booking.memberId === actorMemberId;
