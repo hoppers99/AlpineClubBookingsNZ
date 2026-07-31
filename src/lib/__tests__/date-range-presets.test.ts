@@ -73,6 +73,28 @@ describe("date-range-presets", () => {
     });
   });
 
+  it.each([
+    {
+      today: "2026-04-13T00:00:00.000Z",
+      expected: { from: "2026-05-01", to: "2026-05-31" },
+    },
+    {
+      today: "2026-12-15T00:00:00.000Z",
+      expected: { from: "2027-01-01", to: "2027-01-31" },
+    },
+    {
+      today: "2024-01-20T00:00:00.000Z",
+      expected: { from: "2024-02-01", to: "2024-02-29" },
+    },
+  ])("builds the next calendar month for reports from $today", ({ today, expected }) => {
+    const preset = reportsDateRangePresets.find(
+      (option) => option.key === "next_month"
+    );
+
+    expect(preset).toBeDefined();
+    expect(getDateRangeForPreset(preset!, new Date(today))).toEqual(expected);
+  });
+
   it("matches an exact preset range", () => {
     expect(
       findMatchingDateRangePreset(
