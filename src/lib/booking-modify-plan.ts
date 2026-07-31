@@ -493,7 +493,9 @@ export async function prepareGuestPlan(
     tx,
     booking.memberId,
     proposedGuestRows,
-    { skipAuthorization: role === "ADMIN" },
+    // `bookingId` arms the owner's gate (finding 4) — see
+    // `markCrossFamilyGuestsOnBooking`.
+    { skipAuthorization: role === "ADMIN", bookingId: booking.id },
   );
 
   const totalGuestCount = guestsForPricing.length;
@@ -799,6 +801,7 @@ export async function calculateModifiedPricing(
     adminOverride = false,
     confirmOverCapacity = false,
     partnerSharedGuests = [],
+    skipAuthorization = false,
   }: {
     booking: LoadedBookingForModify;
     bookingId: string;
@@ -837,6 +840,13 @@ export async function calculateModifiedPricing(
     // and never falls back to the #1668 overbook path (leave sharers
     // unflagged to overbook the blunt way).
     partnerSharedGuests?: Array<{ memberId: string; partnerMemberId: string }>;
+    /**
+     * True on an admin/on-behalf modification (privacy re-review of MG3 #2308,
+     * finding 2). Keeps the detailed membership-type refusal, which names the
+     * blocked member; a member-initiated modification gets D-8's collapsed one
+     * for a beyond-family target.
+     */
+    skipAuthorization?: boolean;
   },
 ): Promise<PricingResult> {
   const seasonYear = getSeasonYear(newCheckIn);
@@ -844,6 +854,7 @@ export async function calculateModifiedPricing(
     ownerMemberId: booking.memberId,
     guests: guestsForPricing,
     seasonYear,
+    skipAuthorization,
   });
 
   const policyAdjustedGuestsForPricing = await resolveGuestRateMembershipTypes(tx, {
@@ -992,6 +1003,7 @@ export async function calculateModifiedPricing(
             }),
           ),
           seasonYear,
+          skipAuthorization,
         });
   } catch (error) {
     if (error instanceof MembershipTypeBookingPolicyError) {

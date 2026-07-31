@@ -316,6 +316,8 @@ export async function POST(request: NextRequest) {
 
   try {
     const price = await priceBookingGuestsWithMembershipTypePolicy(prisma, {
+      // Finding 2 (privacy re-review of MG3 #2308).
+      skipAuthorization: isAuthorizedOnBehalf,
       ownerMemberId: effectiveMemberId,
       checkIn,
       checkOut,
@@ -376,6 +378,21 @@ export async function POST(request: NextRequest) {
     });
   } catch (err) {
     if (err instanceof MembershipTypeBookingPolicyError) {
+      // Finding 2 (privacy re-review of MG3 #2308). The membership-type refusal
+      // is D-8's FOURTH collapsing refusal, so when it collapsed it owes the
+      // same three mitigations as its siblings — the throttle unit, the audit
+      // row naming actor and target, and the timing floor. A no-op for every
+      // other membership-type block: the handler returns immediately unless the
+      // error carries `crossFamilyMemberIds`, which only a collapsed one does.
+      await handleMemberGuestAddRefusal({
+        request,
+        actorMemberId: session.user.id,
+        error: err,
+        route: "bookings/quote",
+        startedAt,
+        throttle: "ALREADY_CHARGED",
+        skipAuthorization: isAuthorizedOnBehalf,
+      });
       return NextResponse.json(
         getMembershipTypeBookingPolicyErrorBody(err),
         { status: err.status },

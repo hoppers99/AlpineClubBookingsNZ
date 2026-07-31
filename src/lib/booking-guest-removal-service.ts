@@ -470,6 +470,10 @@ export async function removeBookingGuestInTransaction({
     ownerMemberId: booking.memberId,
     guests: guestsForPricing,
     seasonYear,
+    // Finding 2 (privacy re-review of MG3 #2308): a member removing a guest must
+    // not be told the NAME and membership category of a beyond-family member
+    // still on the booking; an admin doing the same is entitled to both.
+    skipAuthorization: actorRole === "ADMIN",
   });
 
   const groupDiscountSetting = await tx.groupDiscountSetting.findUnique({
@@ -486,6 +490,7 @@ export async function removeBookingGuestInTransaction({
     // a party dropping below the minimum never loses a discount it bought.
     groupDiscount: toGroupDiscountConfig(groupDiscountSetting),
     seasonYear,
+    skipAuthorization: actorRole === "ADMIN",
   });
   const guestNightRates = guestsForPricing.map((guest, index) => ({
     bookingGuestId: guest.bookingGuestId,

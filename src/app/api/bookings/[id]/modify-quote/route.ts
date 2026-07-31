@@ -51,6 +51,8 @@ import {
   type MemberGuestConsentGuestFields,
 } from "@/lib/member-guest-add-policy";
 import {
+  applyMemberGuestPartyProbeThrottle,
+  createMemberGuestAddThrottleLedger,
   handleMemberGuestAddRefusal,
   memberGuestAddThrottleHook,
   MemberGuestAddThrottledError,
@@ -261,6 +263,12 @@ export async function POST(
   // #2388: taken at the top so the collapsed-refusal timing floor covers the
   // whole request.
   const startedAt = startMemberGuestRefusalClock();
+  // HIGH-1 (privacy re-review of MG3 #2308). This route has TWO places that can
+  // spend the #2388 throttle — the boundary hook when the request names a
+  // beyond-family member, and the whole-party charge when the booking merely
+  // carries one — and on a request that does both they are one attempt. The
+  // ledger is what makes them share a single unit.
+  const memberGuestThrottleLedger = createMemberGuestAddThrottleLedger();
   const session = await auth();
   if (!session) {
     return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
@@ -581,10 +589,17 @@ export async function POST(
           // the cheap surface a probe run would actually use. Spent BEFORE the
           // member records are read (H1) so a real member and an id with nobody
           // behind it get the same answer once the budget is gone.
+          //
+          // This hook covers the ADD half only: with an empty `addGuests` there
+          // is nothing to resolve and it never runs. The other half — a preview
+          // over a booking that already carries a beyond-family member guest —
+          // is charged by `applyMemberGuestPartyProbeThrottle` further down,
+          // against the same ledger (HIGH-1).
           onBoundaryResolved: memberGuestAddThrottleHook({
             request,
             actorMemberId: session.user.id,
             skipAuthorization: isAdmin,
+            ledger: memberGuestThrottleLedger,
           }),
         }
       );
@@ -620,7 +635,10 @@ export async function POST(
         error,
         route: "bookings/modify-quote",
         startedAt,
-        throttle: "ALREADY_CHARGED",
+        // Two conditional charge points on this route, so no refusal can honestly
+        // assert either "already charged" or "charge now" — the ledger decides.
+        throttle: "CHARGE_IF_UNCHARGED",
+        ledger: memberGuestThrottleLedger,
         skipAuthorization: isAdmin,
       });
       return NextResponse.json(
@@ -860,8 +878,32 @@ export async function POST(
     prisma,
     booking.memberId,
     proposedGuestRows,
-    { skipAuthorization: isAdmin },
+    // `bookingId` arms the owner's gate (finding 4): with the module off and no
+    // consent row on this booking, the family-boundary recomputation is skipped.
+    { skipAuthorization: isAdmin, bookingId: booking.id },
   );
+
+  // HIGH-1 (privacy re-review of MG3 #2308). The marking above closed the
+  // read-out; it did not CAP it. Every preview over a party that carries a
+  // beyond-family member guest asks the person-night guard a fresh question
+  // about that member's occupancy, and with an empty `addGuests` the boundary
+  // hook never fired, so the whole sweep — roughly one request per night of the
+  // season — cost nothing but the 250 ms floor. Charge the request's unit here,
+  // on EVERY such preview rather than only the refused ones: the "no clash"
+  // answer maps the calendar just as well as the refusal does.
+  //
+  // Safe to answer 429 from here for the same reason the boundary hook is safe:
+  // the set comes from the booker's own booking and their own family groups, and
+  // nothing has been read about the target. The ledger means a request that
+  // already paid at the hook is not billed twice.
+  const partyThrottled = await applyMemberGuestPartyProbeThrottle({
+    request,
+    actorMemberId: session.user.id,
+    guests: guestsForPricing,
+    skipAuthorization: isAdmin,
+    ledger: memberGuestThrottleLedger,
+  });
+  if (partyThrottled) return partyThrottled;
 
   const totalGuestCount = guestsForPricing.length;
   const seasonYear = getSeasonYear(newCheckIn);
@@ -880,8 +922,9 @@ export async function POST(
   // whether this request is adding them or they were added weeks ago. The booker
   // can of course see who is on their own booking; what they may not see is where
   // ELSE that person is booked, which is exactly what `conflictingNights` is.
-  // The refusal path below spends the throttle, writes the audit row and holds
-  // the timing floor, so a repeat run over dates is capped and recorded.
+  // The unit for this question was already spent above — on this request whether
+  // it is refused or not — and the refusal path below adds the audit row and the
+  // timing floor.
   let memberNightConflicts;
   try {
     memberNightConflicts = await findBookingMemberNightConflicts(prisma, {
@@ -900,7 +943,8 @@ export async function POST(
         error,
         route: "bookings/modify-quote",
         startedAt,
-        throttle: "ALREADY_CHARGED",
+        throttle: "CHARGE_IF_UNCHARGED",
+        ledger: memberGuestThrottleLedger,
         skipAuthorization: isAdmin,
       });
       return NextResponse.json(
@@ -922,9 +966,29 @@ export async function POST(
       ownerMemberId: booking.memberId,
       guests: guestsForPricing,
       seasonYear,
+      // Finding 2 (privacy re-review of MG3 #2308). `guestsForPricing` is the
+      // C1-marked party, so a beyond-family member guest already on the booking
+      // collapses here without a second boundary read.
+      skipAuthorization: isAdmin,
     });
   } catch (error) {
     if (error instanceof MembershipTypeBookingPolicyError) {
+      // Finding 2 (privacy re-review of MG3 #2308). The membership-type refusal
+      // is D-8's FOURTH collapsing refusal, so when it collapsed it owes the
+      // same three mitigations as its siblings — the throttle unit, the audit
+      // row naming actor and target, and the timing floor. A no-op for every
+      // other membership-type block: the handler returns immediately unless the
+      // error carries `crossFamilyMemberIds`, which only a collapsed one does.
+      await handleMemberGuestAddRefusal({
+        request,
+        actorMemberId: session.user.id,
+        error: error,
+        route: "bookings/modify-quote",
+        startedAt,
+        throttle: "CHARGE_IF_UNCHARGED",
+        ledger: memberGuestThrottleLedger,
+        skipAuthorization: isAdmin,
+      });
       return NextResponse.json(
         getMembershipTypeBookingPolicyErrorBody(error),
         { status: error.status },
@@ -947,18 +1011,26 @@ export async function POST(
       if (error instanceof BookingGuestValidationError) {
         // H3 (privacy review of MG3 #2308). This catch used to answer the
         // collapsed refusal directly, skipping the handler — so an
-        // unpaid-subscription refusal wrote no audit row, raised no
-        // repeated-refusal warning, and reported its own uncapped duration.
-        // It fires much later in the request than its two siblings, so on a
-        // stopwatch "subscription unpaid" separated cleanly from "booked those
-        // nights" — the precise distinction D-8 exists to remove.
+        // unpaid-subscription refusal wrote no audit row and raised no
+        // repeated-refusal warning. Routing it through the handler buys those
+        // two things.
+        //
+        // WHAT IT DOES NOT BUY, stated because the earlier version of this
+        // comment claimed it did (privacy re-review, MEDIUM-3): it does not
+        // equalise this refusal with the ones raised at the top of the handler.
+        // The floor is a MINIMUM, not a budget, and by the time this branch runs
+        // the whole pricing path has executed — so once that exceeds 250 ms, the
+        // late refusals still report their own duration and remain separable
+        // from the early ones by stopwatch. `MEMBER_GUEST_REFUSAL_FLOOR_MS` says
+        // why raising the floor to cover it was rejected.
         await handleMemberGuestAddRefusal({
           request,
           actorMemberId: session.user.id,
           error,
           route: "bookings/modify-quote",
           startedAt,
-          throttle: "ALREADY_CHARGED",
+          throttle: "CHARGE_IF_UNCHARGED",
+          ledger: memberGuestThrottleLedger,
           skipAuthorization: isAdmin,
         });
         return NextResponse.json(
@@ -1159,6 +1231,22 @@ export async function POST(
     }
   } catch (error) {
     if (error instanceof MembershipTypeBookingPolicyError) {
+      // Finding 2 (privacy re-review of MG3 #2308). The membership-type refusal
+      // is D-8's FOURTH collapsing refusal, so when it collapsed it owes the
+      // same three mitigations as its siblings — the throttle unit, the audit
+      // row naming actor and target, and the timing floor. A no-op for every
+      // other membership-type block: the handler returns immediately unless the
+      // error carries `crossFamilyMemberIds`, which only a collapsed one does.
+      await handleMemberGuestAddRefusal({
+        request,
+        actorMemberId: session.user.id,
+        error: error,
+        route: "bookings/modify-quote",
+        startedAt,
+        throttle: "CHARGE_IF_UNCHARGED",
+        ledger: memberGuestThrottleLedger,
+        skipAuthorization: isAdmin,
+      });
       return NextResponse.json(
         getMembershipTypeBookingPolicyErrorBody(error),
         { status: error.status },
@@ -1564,6 +1652,7 @@ async function buildShiftPreviewResponse({
   newCheckOutStr,
 }: {
   booking: {
+    memberId: string;
     status: string;
     checkIn: Date;
     checkOut: Date;
@@ -1654,6 +1743,22 @@ async function buildShiftPreviewResponse({
     ),
   }));
 
+  // C1 (privacy re-review of MG3 #2308, LOW-3). This is the file's SECOND
+  // person-night guard call and the source contract now checks every one of
+  // them, not just the first. Today it is unreachable except under
+  // `adminOverride`, so `skipAuthorization` is always true here and the call
+  // returns without a query — but "the only member-facing caller is the one
+  // above" is a property of today's gating, not of this function, and the whole
+  // point of C1 was that an unmarked party is a silent read-out. Marking every
+  // caller uniformly costs nothing and cannot be forgotten if the shift preview
+  // is ever opened up.
+  const translatedRangesForGuard = await markCrossFamilyGuestsOnBooking(
+    prisma,
+    booking.memberId,
+    translatedRanges,
+    { skipAuthorization: actorRole === "ADMIN", bookingId },
+  );
+
   // Member-night conflicts hard-block the shift the same way apply does, so the
   // preview never shows a clean $0 quote for a move that would 409 on save.
   const memberNightConflicts = await findBookingMemberNightConflicts(prisma, {
@@ -1661,7 +1766,7 @@ async function buildShiftPreviewResponse({
     actorRole,
     checkIn: newCheckIn,
     checkOut: newCheckOut,
-    guests: translatedRanges,
+    guests: translatedRangesForGuard,
     excludeBookingId: bookingId,
   });
   if (memberNightConflicts.length > 0) {
