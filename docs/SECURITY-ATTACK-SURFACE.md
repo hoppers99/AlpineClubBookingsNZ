@@ -1122,14 +1122,74 @@ lobby TV display (fork #54) and the global 404 (#2356).
       stack.
     - **With setup complete, every shape above already returns 404** — measured
       on the running app, and independently on a fully configured downstream
-      staging build. `/api/*` misses were the genuine defect and were served the
-      HTML page; they now terminate at `api/[...unmatched]/route.ts` with JSON,
-      in either configuration.
-    - The remaining pre-setup soft 404 for PAGE URLs is unfixed here: the
-      layout cannot set a status, and deciding what an unconfigured site should
-      answer (404 for unknown paths, 503 for the holding screen) needs an owner
-      decision. Tracked separately. Do not read the bullet above as saying every
-      404 URL returns 404 in every configuration.
+      staging build. `/api` misses were the genuine defect and were served the
+      HTML page; they now terminate at `api/[[...unmatched]]/route.ts` with JSON,
+      in either configuration. That route is an **optional** catch-all
+      (double brackets) because the required form matches one segment or more,
+      which left bare `/api` and `/api/` on the HTML path and made "in either
+      configuration" untrue for them.
+    - **The `generateMetadata()` guard in `(website)/[...slug]` is a tidy-up,
+      not the mechanism, and the reason first given for it was wrong.** It was
+      described as the version of the decision that survives a streaming
+      boundary. Read against the vendored next@16.2.11 it is not:
+      `create-component-tree.js` puts `MetadataOutlet` in the SAME `Fragment` as
+      the page element, so a `loading.tsx` on this segment would wrap both
+      together; and when metadata is streamed — the default for any agent
+      outside `HTML_LIMITED_BOT_UA_RE`, which does not include Googlebot —
+      `metadata.js` puts the outlet behind an EXTRA `Suspense`, committing the
+      status LATER than the page's own `notFound()`. What the guard actually
+      buys is the blocking-metadata path (the HTML-limited crawlers) and not
+      computing metadata for a URL with no page. If #2352's static/ISR slices
+      land, or a `loading.tsx` is added here, the decision has to move to a
+      segment-level guard — this line will not cover it.
+    - **That guard is deliberately gated on setup being complete, and this is a
+      security property rather than a nicety.** The root not-found boundary sits
+      ABOVE `(website)/layout.tsx`, so a `notFound()` raised in
+      `generateMetadata()` escapes the holding screen: on a pre-launch club,
+      unknown paths would answer 404 while published pages still answered 200,
+      which is an enumeration oracle for an unlaunched site's page inventory,
+      and the 404 body would serve database-backed content the club has not
+      opened yet. `generateMetadata()` therefore reads the layout's own cached
+      `ClubTheme` render state (no extra query, and only on the miss path) and
+      keeps the previous title-fallback behaviour while `completedAt` is NULL.
+    - The remaining pre-setup soft 404 for PAGE URLs is unfixed here on purpose:
+      the layout cannot set a status, and deciding what an unconfigured site
+      should answer (404 for unknown paths, 503 for the holding screen) needs an
+      owner decision. Tracked on **#2420**, which flips the whole pre-setup site
+      to 503. Do not read the bullet above as saying every 404 URL returns 404
+      in every configuration.
+- **A terminal `/api` 404 is a module-state oracle unless it matches the module
+  gate on EVERY verb, headers included (#2405 security review).** `src/proxy.ts`
+  short-circuits an `/api` path whose module is switched off; with the module on
+  the same path reaches a real handler, or
+  `src/app/api/[[...unmatched]]/route.ts`. The property that has to hold is
+  narrow and worth stating exactly: **for one path under a gated prefix that no
+  handler claims, the reply must be identical whether the module is on or off.**
+  Any difference tells an anonymous prober which optional modules a club runs,
+  from one request and with no login. Two were found and closed:
+  - **HEAD.** The route hand-wrote `HEAD` as `new NextResponse(null, { status:
+    404 })`, which carries no `content-type`; the gate answers HEAD with its
+    `NextResponse.json(...)`, which does. `HEAD /api/<gated-prefix>/zzz` with a
+    `content-type` therefore meant "module off", and without one "module on".
+    Fixed by DELETING the export: Next auto-implements HEAD from GET
+    (`route-modules/app-route/helpers/auto-implement-methods.js`) and strips the
+    body downstream, so the headers match the gate by construction and cannot
+    drift. Hand-writing HEAD on any route that has to be indistinguishable from
+    something else is the anti-pattern here.
+  - **Non-standard verbs.** Next's app-route module rejects any method outside
+    its seven (`GET HEAD OPTIONS POST PUT DELETE PATCH`) with a bare `400`
+    before it resolves a handler, while the gate answered its JSON `404` to
+    anything. `PROPFIND /api/<gated-prefix>/zzz` answering 400 meant "module
+    on", 404 meant "off". `getFeatureFlagBlockResponse()` now takes the request
+    method and mirrors the bare 400 for `/api` paths. Scoped to `/api`: a page
+    is served by a different Next module with different verb handling, so the
+    gate keeps its bodyless 404 there rather than claiming a parity nobody
+    measured.
+  - The parity is asserted verb-by-verb in
+    `src/app/__tests__/unmatched-url-status.test.ts`, comparing status, raw
+    response text (not parsed JSON — parsing hides key order and whitespace) and
+    `content-type`, and resolving the route side through Next's own
+    `autoImplementMethods()` so HEAD is checked as it is served.
 - **The cost is small, and was checked rather than assumed.** #2351 measured a
   cold dynamic render at ~3.5-5 CPU-seconds, so "every 404 now costs a render"
   deserved scrutiny — bot traffic on nonexistent URLs is real load. It turns out

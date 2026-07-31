@@ -17,15 +17,25 @@ All notable public reference-release changes should be recorded here.
   people. Ask for one that does not exist and the reply was the club's entire
   "page not found" web page: about 23KB of layout, fonts and menus, sent to
   something that can only read short structured data and will choke on a web
-  page. Those addresses now answer with a short structured "not found" and the
-  correct status, worded identically to the reply given when a switched-off
-  feature hides an address — so nobody can go fishing to learn which features a
-  club has turned on.
+  page. Every one of those addresses now answers with a short structured "not
+  found" and the correct status — including the bare `/api` address itself,
+  which the first cut of this work still left on the web-page path.
 
-  For ordinary website addresses the decision that a page is missing is now made
-  before the reply starts being sent rather than partway through. That changes
-  nothing a visitor can see today; it is there so the answer stays a genuine
-  "not found" as the work to speed up page delivery lands.
+  Those replies are also worded identically, down to the last detail of the
+  reply, to the one given when a switched-off feature hides an address, and that
+  now holds for every kind of request rather than just the ordinary ones. Two
+  ways of telling the two apart were found while reviewing this work and closed:
+  a "headers only" request revealed the difference through a missing label, and
+  an unusual request type revealed it through a different status. Either would
+  have let a stranger, with no login and a single request, work out which
+  optional features a club has switched on.
+
+  For ordinary website addresses the decision that a page is missing is now
+  taken alongside the page's own title lookup rather than only inside the page.
+  That changes nothing a visitor can see today, and — worth being precise, since
+  it was first described more ambitiously — it is a tidy-up rather than
+  protection against future page-delivery speed-ups, which will need their own
+  guard.
 
   Worth recording plainly, because the original report said otherwise: on a club
   whose website setup is finished — which is every club running normally — the
@@ -34,7 +44,9 @@ All notable public reference-release changes should be recorded here.
   completed, where an unfinished-setup holding screen answers every address. On
   a real club that holding screen only shows before the site goes live, but it
   does mean any address at all is answered as though it were fine until setup is
-  finished. That has been written up separately rather than changed here.
+  finished. That behaviour is deliberately untouched here — changing it halfway
+  would have let a stranger map an unlaunched club's page list by seeing which
+  addresses answered differently — and is being decided separately (#2420).
 - **The public site no longer advertises guest bookings (#2421).** The
   signed-out help corpus previously answered "Can I stay without being a
   member?" with "Yes", and the sign-in page carried a *Request a booking
