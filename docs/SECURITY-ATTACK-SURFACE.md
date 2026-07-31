@@ -1095,14 +1095,35 @@ lobby TV display (fork #54) and the global 404 (#2356).
   longer emitted. On the two shapes that previously hit the artefact
   (`/_next/data/*`, `/_error`) the response now renders per-request, keeps its
   404 status, carries the CSP header, and has zero unnonced inline scripts.
-  - **Not a status claim about 404s generally.** Measured identically on both
-    the pre-fix and post-fix builds, so unchanged by this work:
+  - **Not a status claim about 404s generally.** The 200s recorded here —
     `/definitely-missing`, `/wp-admin/setup-config.php`, `/.env`, `/admin/nope`,
-    `/foo%00bar` and `POST /definitely-missing` all return **200 OK** carrying
-    the 404 page body — a soft 404. The behaviour is consistent with the shell
-    flushing before `(website)/[...slug]`'s database-bound `notFound()` resolves.
-    It is a separate defect with SEO and monitoring consequences, tracked on its
-    own issue; do not read the bullet above as saying every 404 URL returns 404.
+    `/foo%00bar`, `POST /definitely-missing` — were real, but the cause given
+    was wrong, and #2405 re-measured them against a running app in both
+    configurations. Corrected reading:
+    - **The stated cause is refuted.** The shell is not flushing ahead of
+      `(website)/[...slug]`'s database-bound `notFound()`. `notFound()` from a
+      page is caught by Next's `HTTPAccessFallbackBoundary` *inside* the render
+      and the status is set from the render's outcome, so there is no race with
+      the wire to lose. Nothing in `(website)` has a `loading.tsx`, so the page
+      is not behind a streaming boundary in the first place.
+    - **What was actually measured was an unconfigured site.** On a club that
+      has not completed site-style setup (`ClubTheme.completedAt IS NULL` —
+      the state a freshly seeded database, and therefore the E2E stack, is left
+      in), `(website)/layout.tsx` returns its "Site setup in progress" screen
+      INSTEAD of `{children}`. The page component never runs, its `notFound()`
+      never fires, and **every** URL answers 200 — including `/about` and the
+      other real pages. Verified directly: zero `PageContent` reads are issued
+      for `/definitely-missing` in that state.
+    - **With setup complete, every shape above already returns 404** — measured
+      on the running app, and independently on a fully configured downstream
+      staging build. `/api/*` misses were the genuine defect and were served the
+      HTML page; they now terminate at `api/[...unmatched]/route.ts` with JSON,
+      in either configuration.
+    - The remaining pre-setup soft 404 for PAGE URLs is unfixed here: the
+      layout cannot set a status, and deciding what an unconfigured site should
+      answer (404 for unknown paths, 503 for the holding screen) needs an owner
+      decision. Tracked separately. Do not read the bullet above as saying every
+      404 URL returns 404 in every configuration.
 - **The cost is small, and was checked rather than assumed.** #2351 measured a
   cold dynamic render at ~3.5-5 CPU-seconds, so "every 404 now costs a render"
   deserved scrutiny — bot traffic on nonexistent URLs is real load. It turns out

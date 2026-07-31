@@ -4,6 +4,38 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **A web address that does not exist is now told "not found" honestly, so
+  search engines and monitoring are no longer assured a dead address is fine
+  (#2405).** Every reply carries a hidden status line that people never see but
+  machines act on, and "the page you asked for does not exist" is a different
+  status from "here is your page". When the two disagree, Google treats the dead
+  address as real content worth listing, and a broken-link checker reports a
+  club's site as healthy when it is not.
+
+  The clear defect was in the club's data addresses — the `/api/...` ones that
+  the booking screens, and anything a club plugs in later, talk to rather than
+  people. Ask for one that does not exist and the reply was the club's entire
+  "page not found" web page: about 23KB of layout, fonts and menus, sent to
+  something that can only read short structured data and will choke on a web
+  page. Those addresses now answer with a short structured "not found" and the
+  correct status, worded identically to the reply given when a switched-off
+  feature hides an address — so nobody can go fishing to learn which features a
+  club has turned on.
+
+  For ordinary website addresses the decision that a page is missing is now made
+  before the reply starts being sent rather than partway through. That changes
+  nothing a visitor can see today; it is there so the answer stays a genuine
+  "not found" as the work to speed up page delivery lands.
+
+  Worth recording plainly, because the original report said otherwise: on a club
+  whose website setup is finished — which is every club running normally — the
+  ordinary mistyped and probed addresses were already answering correctly. The
+  wrong answers came from a test site that had never had its site style
+  completed, where an unfinished-setup holding screen answers every address. On
+  a real club that holding screen only shows before the site goes live, but it
+  does mean any address at all is answered as though it were fine until setup is
+  finished. That has been written up separately rather than changed here.
+
 - **Clubs can safely record a trusted induction history when moving an
   established membership onto the digital register (#2361).** A new
   dry-run-first operator command classifies every active real-member
