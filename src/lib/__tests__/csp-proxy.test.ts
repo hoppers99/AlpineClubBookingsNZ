@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import {
   unstable_doesMiddlewareMatch as unstable_doesProxyMatch,
@@ -20,6 +20,15 @@ import proxy, {
   getFeatureFlagBlockResponse,
 } from "../../proxy";
 import type { FeatureFlags } from "@/config/schema";
+
+// #2420: the proxy now short-circuits every public-website URL with a 503 until
+// site setup is complete, and with no database it would resolve "incomplete" and
+// never reach the header work these cases are about. Every case here describes a
+// configured, live site, so the gate's single input is pinned complete. The
+// gate's own behaviour in BOTH setup states is covered by setup-gate.test.ts.
+vi.mock("@/lib/club-theme", () => ({
+  getWebsiteThemeRenderState: async () => ({ isComplete: true, css: "" }),
+}));
 
 const allFeaturesOn = Object.fromEntries(
   MODULE_KEYS.map((key) => [key, true]),
