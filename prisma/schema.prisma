@@ -2484,6 +2484,21 @@ model Payment {
   additionalPaymentIntentId     String?       @unique
   additionalAmountCents         Int           @default(0)
   additionalPaymentStatus       String? // PENDING, SUCCEEDED, FAILED
+  // Chase stamps for an OUTSTANDING additional payment (#2350). Each records
+  // when the member was last emailed about the still-uncollected upward
+  // modification delta: the first is the "a few days after it was raised" nudge
+  // (an admin's manual re-send also writes it), the second the one-off nudge
+  // shortly before check-in.
+  //
+  // They are read RELATIVE to the current additional-payment episode rather
+  // than as plain booleans: an episode starts at the latest ADDITIONAL
+  // PaymentTransaction's createdAt, and a stamp older than that belongs to a
+  // previous, already-settled episode and does not suppress anything. That is
+  // why nothing has to reset them when a later modification raises a fresh
+  // delta — see additionalPaymentEpisodeStartedAt in
+  // src/lib/additional-payment-chase.ts.
+  additionalReminderSentAt      DateTime?
+  additionalFinalReminderSentAt DateTime?
   xeroRefundCreditNoteId        String? // Track Xero credit note to prevent duplicates
   creditAppliedCents            Int           @default(0) // Account credit applied to this booking
   internetBankingHoldSlots      Boolean       @default(false)

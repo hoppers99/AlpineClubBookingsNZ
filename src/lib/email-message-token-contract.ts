@@ -62,7 +62,15 @@ export const OPTIONAL_TEMPLATE_TOKENS: Record<string, readonly string[]> = {
   "booking-modified": ["paymentNote"],
   // #2268 sweep. Each of these was an "[only when …]" annotated line.
   "checkin-reminder": ["choreListNote"],
-  "pre-arrival-reminder": ["expectedArrivalNote", "doorCodeNote"],
+  // #2350 adds a third: the outstanding-additional-payment sentence is composed
+  // whole by the sender and empty whenever nothing is owed, which is the
+  // ordinary case — declared here so guard 4 proves the body survives without
+  // it (the declaration discipline described above).
+  "pre-arrival-reminder": [
+    "expectedArrivalNote",
+    "doorCodeNote",
+    "outstandingAdditionalNote",
+  ],
   // A roster only exists for chores that exist, so the chore block itself is
   // never empty; the completion link is (a roster can be sent without one).
   "chore-roster": ["choreLinkNote"],
