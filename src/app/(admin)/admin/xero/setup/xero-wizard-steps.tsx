@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { AlertTriangle, CheckCircle2, ExternalLink, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { cn } from "@/lib/utils";
 import { CopyField } from "@/components/admin/integration-wizard";
 import type { WizardStepHelpers } from "@/components/admin/integration-wizard";
 import { ViewOnlyActionButton } from "@/components/admin/view-only-action";
@@ -316,13 +317,38 @@ function describeWait(seconds: number): string {
 }
 
 /**
- * Plain-English account of a failed organisation read, and whether trying again
+ * "Checked once, at 2:32 pm." / "Checked 3 times, most recently at 2:32 pm."
+ *
+ * Not decoration (#2394 review, F5). Every failure of the same class otherwise
+ * renders byte-identical text, so React mutates no DOM node and the `role=alert`
+ * region announces NOTHING on a repeat — worst on the daily limit, where the
+ * wording cannot change for hours. The count is what guarantees a change; the
+ * time is what makes it useful.
+ */
+function describeChecks(attempts: number, at: number | null): string | null {
+  if (at === null || attempts < 1) return null;
+  const time = new Date(at).toLocaleTimeString("en-NZ", {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  return attempts === 1
+    ? `Checked once, at ${time}.`
+    : `Checked ${attempts} times, most recently at ${time}.`;
+}
+
+/**
+ * Plain-English account of a failed organisation check, and whether trying again
  * could possibly help.
  *
- * The three Xero kinds exist because they need three DIFFERENT actions from the
- * operator — reconnect, wait, or press the button — so this never collapses to
- * "something went wrong" (the owner's binding decision on #2394). `forbidden`
- * is this site refusing, not Xero, and no button can fix it.
+ * The kinds exist because they need DIFFERENT actions from the operator —
+ * reconnect, wait, sign in, press the button, or ask for access — so this never
+ * collapses to "something went wrong" (the owner's binding decision on #2394).
+ *
+ * Every sentence here must be something the code actually KNOWS (#2394 review,
+ * F6). Only `unavailable` reflects an answer from Xero; `check_failed`,
+ * `signed_out` and `forbidden` are all this site failing or refusing, and none
+ * of them may vouch for the Xero connection, because none of them asked it
+ * anything.
  */
 function describeOrgReadError(error: XeroOrgReadError): {
   heading: string;
@@ -332,20 +358,23 @@ function describeOrgReadError(error: XeroOrgReadError): {
   switch (error.kind) {
     case "disconnected":
       return {
-        heading: "Xero needs re-authorising before we can read your organisation name.",
+        heading: "Xero needs re-authorising.",
         detail:
           "The stored authorisation is no longer accepted — usually because it was revoked in Xero, or the app's security key changed. Use Disconnect Xero above (if it is offered), then Connect again and choose your organisation. Trying again without reconnecting will not help.",
         canRetry: false,
       };
     case "rate_limited": {
       if (error.rateLimit === "day") {
-        const when = error.retryAfterSeconds
-          ? `Xero suggests waiting ${describeWait(error.retryAfterSeconds)}.`
-          : "";
+        // ONE answer to "when should I come back", not two (F7). Xero omits
+        // Retry-After on plenty of daily 429s, and our retry layer then
+        // fabricates 86400 — so quoting it produced "resets at midnight UTC …
+        // Xero suggests waiting about 24 hours" in the same breath. The reset
+        // time is the real answer and is always available, so it is the only
+        // one given.
         return {
           heading: "Xero's daily limit for your organisation has been reached.",
           detail:
-            `Xero caps how many requests an app may make each day, and that cap resets at midnight UTC — around midday in New Zealand — so this should clear then. ${when} Setup is safe to leave and come back to; nothing you have entered is lost.`.trim(),
+            "Xero caps how many requests an app may make each day, and that cap resets at midnight UTC — around midday in New Zealand — so this should clear then. Setup is safe to leave and come back to; nothing you have entered is lost.",
           canRetry: true,
         };
       }
@@ -365,14 +394,39 @@ function describeOrgReadError(error: XeroOrgReadError): {
           "Reading the connected organisation needs finance access. Ask a full admin to finish this step, or to give your role finance access first. Trying again will not change this.",
         canRetry: false,
       };
+    case "signed_out":
+      // Split out from `forbidden` (F8). Both used to say "ask for finance
+      // access", but a 401 means the SESSION went, not the role — and this is
+      // the likelier of the two to be seen, because a plain permission problem
+      // fails the status read first and never reaches here.
+      return {
+        heading: "Your sign-in has expired, so we could not check the organisation.",
+        detail:
+          "Sign in again — in another tab is fine — then press Try again. Nothing you have entered in this wizard is lost, and your Xero connection is unaffected.",
+        canRetry: true,
+      };
+    case "check_failed":
+      // We never got an answer out of THIS site, so we never asked Xero
+      // anything. Saying "we could not reach Xero" here would be a guess, and
+      // when the browser is simply offline it would be flatly wrong (F6).
+      return {
+        heading: "We could not check your Xero organisation just now.",
+        detail:
+          "This page could not get an answer from the site itself, so nothing was asked of Xero — your connection may well be fine. Check your internet connection, then press Try again.",
+        canRetry: true,
+      };
     case "unavailable":
     default: {
+      // Source-neutral wording for the wait (F7): this kind covers both Xero's
+      // own advice and OUR process-wide cooldown after a run of failures, and
+      // the message cannot tell which. "Give it N" is true either way, where
+      // "Xero suggests waiting N" was not.
       const when = error.retryAfterSeconds
-        ? ` Xero suggests waiting ${describeWait(error.retryAfterSeconds)} first.`
+        ? ` Give it ${describeWait(error.retryAfterSeconds)} before trying again.`
         : "";
       return {
         heading: "We could not reach Xero just now to confirm your organisation name.",
-        detail: `This is almost always temporary — a brief outage or a dropped connection.${when} Your Xero connection itself is fine; only the name check failed.`,
+        detail: `This is almost always temporary — a brief outage, a dropped connection, or a short pause we take after repeated failures.${when} Nothing you have entered is lost.`,
         canRetry: true,
       };
     }
@@ -394,22 +448,19 @@ export function ConnectStep({
   const { status, handleDisconnect, error: connectionError } =
     useXeroConnection();
 
-  // On return from the OAuth round-trip (?connected=true), re-derive the wizard
-  // context so gating + the org name update. Still a one-shot mount effect (the
-  // connect redirect is a full navigation) — what changed in #2394 is that a
-  // failure here is now visible and re-runnable by hand, rather than leaving
-  // the step waiting on a read that will never happen again.
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("connected") === "true") {
-      helpers.refresh();
-    }
-    // Only on mount — the connect redirect is a full navigation.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // NO post-OAuth effect here any more (#2394 review, F1). `?connected=true` is
+  // read AND stripped once by `useXeroWizardContext`, which folds the forced
+  // organisation read into its own first load. Doing it here re-fired every time
+  // the operator walked back to this step — the shell mounts only the active
+  // step and `goTo` never navigates, so the parameter was still in the URL —
+  // spending a live Xero call each time with nobody pressing anything, and it
+  // also made the post-connect return cost two live reads instead of one.
 
   const orgFailure = context.orgError
     ? describeOrgReadError(context.orgError)
+    : null;
+  const orgChecks = orgFailure
+    ? describeChecks(context.orgErrorAttempts, context.orgErrorAt)
     : null;
 
   const onConnect = () => {
@@ -463,6 +514,7 @@ export function ConnectStep({
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
               <span>
                 <strong>{orgFailure.heading}</strong> {orgFailure.detail}
+                {orgChecks ? <> {orgChecks}</> : null}
               </span>
             </div>
             {orgFailure.canRetry ? (
@@ -474,13 +526,23 @@ export function ConnectStep({
                     leave a view-only admin looking at an error with no way to
                     clear it. It IS the only thing on this page that spends Xero
                     quota on demand, which is exactly the owner's decision on
-                    #2394: a human press, never an automatic retry. */}
+                    #2394: a human press, never an automatic retry.
+
+                    NOT disabled while busy (#2394 review, F3) — the house rule
+                    from `restore-built-ins.tsx` and AGENTS.md. `orgLoading`
+                    flips in the same turn as the click, so a disabled button
+                    cannot keep focus and the browser drops it to <body>: a
+                    keyboard or screen-reader operator would lose their place in
+                    the one state where pressing again is the point. The label
+                    and `aria-busy` carry the busy state, and a re-entrant press
+                    is dropped by the in-flight ref inside the wizard-context
+                    hook — so this stays exactly one live call per press. */}
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
+                  aria-busy={context.orgLoading}
                   onClick={() => helpers.refresh()}
-                  disabled={context.orgLoading}
                 >
                   {context.orgLoading ? (
                     <>
@@ -498,15 +560,39 @@ export function ConnectStep({
       </div>
 
       {context.connected ? (
-        <div className="flex items-start gap-2 rounded-md border border-success-6 bg-success-3 p-3 text-sm text-success-11">
-          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+        // Green ONLY when the organisation was actually confirmed. A failed
+        // check beside a cached name used to render the full success tick, so
+        // an authorisation revoked inside Xero read as "all set" on the very
+        // step that exists to confirm it (#2394 review, F4).
+        <div
+          className={cn(
+            "flex items-start gap-2 rounded-md border p-3 text-sm",
+            orgFailure
+              ? "border-border bg-muted text-muted-foreground"
+              : "border-success-6 bg-success-3 text-success-11",
+          )}
+        >
+          {orgFailure ? (
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+          ) : (
+            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+          )}
           <span>
             {context.orgName ? (
-              <>
-                Connected to <strong>{context.orgName}</strong>. Check this is the
-                right Xero organisation — if not, disconnect above and reconnect,
-                choosing the correct one.
-              </>
+              orgFailure ? (
+                <>
+                  The last organisation we saw was{" "}
+                  <strong>{context.orgName}</strong>, but we could not re-check
+                  that just now — see above. Treat it as the last name we read,
+                  not as confirmation.
+                </>
+              ) : (
+                <>
+                  Connected to <strong>{context.orgName}</strong>. Check this is
+                  the right Xero organisation — if not, disconnect above and
+                  reconnect, choosing the correct one.
+                </>
+              )
             ) : orgFailure ? (
               // The warning box above already says what went wrong and what to
               // do. Repeating "Confirming…" underneath it would contradict it.
