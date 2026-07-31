@@ -277,9 +277,11 @@ export function buildBookingHistoryItems({
         });
         break;
       }
-      // #2265 (#2319 door 2). The member asked to put account credit towards
-      // this booking and the settlement could not honour it — most plainly,
-      // an Internet Banking invoice that was raised and paid at the full price.
+      // #2265 (#2319 door 2; #2262 door 3). The member asked to put account
+      // credit towards this booking and the settlement could not honour it —
+      // most plainly, an Internet Banking invoice that was raised and paid at
+      // the full price, or a cash / off-Xero payment an admin recorded for the
+      // full amount owing.
       // Their balance was never touched, so the honest note is "we did not use
       // it, and you still have it": a silent cleared column would leave them
       // believing credit had been spent that is in fact still theirs. Rendered
@@ -290,16 +292,38 @@ export function buildBookingHistoryItems({
           typeof parsedDetails?.creditElectionCents === "number"
             ? parsedDetails.creditElectionCents
             : null;
+        // #2262 delta MED-2. The elected figure is a record of a PAST choice —
+        // possibly months and several bookings ago — and quoting it as what is
+        // "still available" overstated the balance for anyone who had spent
+        // some of it since. The reporter records the live balance at the moment
+        // of the clear alongside the election; when it is present, that is the
+        // figure the member is given, because it is the one they can spend.
+        // Older rows (and rows whose balance read failed) carry no balance, so
+        // they fall back to saying only what is certainly true: the credit was
+        // not used here and the balance was not debited.
+        const availableCreditCents =
+          typeof parsedDetails?.availableCreditCents === "number"
+            ? parsedDetails.availableCreditCents
+            : null;
+
+        const electedSentence =
+          electionCents != null
+            ? `You had chosen to put ${formatCents(electionCents)} of account credit towards this booking, but it was paid in full before the credit could be applied.`
+            : "The account credit saved against this booking was not applied, because the booking was paid in full first.";
+        const balanceSentence =
+          availableCreditCents != null
+            ? ` Your credit was not used for this booking and your balance was not reduced — you had ${formatCents(availableCreditCents)} of account credit available at the time.`
+            : " Your credit was not used for this booking and your balance was not reduced.";
 
         items.push({
           id: `audit-${auditLog.id}`,
           occurredAt: auditLog.createdAt,
           category: "Payment",
           title: "Saved account credit was not applied",
-          detail:
-            electionCents != null
-              ? `You had chosen to put ${formatCents(electionCents)} of account credit towards this booking, but it was paid in full before the credit could be applied. Your account credit has not been used and is still available.`
-              : "The account credit saved against this booking was not applied, because the booking was paid in full first. Your account credit has not been used and is still available.",
+          detail: `${electedSentence}${balanceSentence}`,
+          // The amount of the EVENT — how much credit went unapplied — not a
+          // claim about what is available; the detail above owns that, and owns
+          // it with the live figure.
           amountDisplay: electionCents != null ? formatCents(electionCents) : null,
           tone: "warning",
         });

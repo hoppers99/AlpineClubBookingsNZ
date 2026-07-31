@@ -95,6 +95,7 @@ export async function GET(
         creditRestoredCents,
         totalPaidCents: 0,
         hasPayment: false,
+        manualRefund: false,
       });
     }
 
@@ -109,6 +110,13 @@ export async function GET(
     return NextResponse.json({
       ...preview,
       hasPayment: true,
+      // B5 (#2262): this booking was settled in cash / by an off-Xero bank
+      // transfer, so cancelling raises a hand-back task an admin pays by hand —
+      // no card refund and no account credit. The FIGURES are unchanged (the
+      // owner-decided tier for a manual settlement is the bank-transfer/credit
+      // tier, which is what the executed cancel uses), so preview parity holds;
+      // this flag only lets the dialog say honestly what will happen.
+      manualRefund: booking.payment.manuallyMarkedPaidAt !== null,
     });
   } catch (error) {
     logger.error({ err: error }, "Error generating cancel preview");

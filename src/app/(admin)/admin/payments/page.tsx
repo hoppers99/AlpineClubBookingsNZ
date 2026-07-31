@@ -56,6 +56,7 @@ import {
 import Link from "next/link";
 import { cn } from "@/lib/utils";
 import { AdminPageHeader } from "@/components/admin/admin-page-header";
+import { ManualRefundTaskQueue } from "@/components/admin/manual-refund-task-queue";
 import { AdminDataTable } from "@/components/admin/admin-data-table";
 import {
   AdminFilterBar,
@@ -638,6 +639,10 @@ export default function PaymentsPage() {
         title="Payments"
         description="View and filter payment records"
       />
+
+      {/* B5 (#2262): cash / off-Xero refunds waiting to be paid back by hand.
+          Renders nothing when the queue is empty. */}
+      <ManualRefundTaskQueue />
 
       <AdminFilterBar
         idPrefix="payments-filters"

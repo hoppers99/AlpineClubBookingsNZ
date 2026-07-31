@@ -244,6 +244,7 @@ export async function enqueueXeroBookingInvoiceOperation(
         select: {
           id: true,
           xeroInvoiceId: true,
+          manuallyMarkedPaidAt: true,
         },
       },
     },
@@ -261,6 +262,46 @@ export async function enqueueXeroBookingInvoiceOperation(
     return {
       queueOperationId: null,
       message: "Xero booking invoice already linked for this booking.",
+    };
+  }
+
+  // B5 (#2262) HIGH #2, level 1 — the outbound invoice-mint fence, placed at
+  // the CHOKE POINT so it covers all thirteen enqueuers (booking-create,
+  // confirm-draft, waitlist-confirm, charge-saved-method, switch-to-IB,
+  // confirm-pending-guests, cron-confirm-pending, group-settlement,
+  // school-booking-request, xero-booking-edit-settlement,
+  // admin-payment-invoice-service, the invoice queue, and the admin
+  // missing-invoices / force-sync / repair surfaces) plus every future one.
+  //
+  // A manually settled booking is PAID with source INTERNET_BANKING and no
+  // invoice — exactly the shape these surfaces read as "missing invoice, mint
+  // one". Left unfenced they would create a real AWAITING-PAYMENT invoice in
+  // Xero and EMAIL IT TO THE MEMBER (createXeroInvoiceForBooking emails the
+  // invoice precisely when source is INTERNET_BANKING) for money the club
+  // already holds in cash.
+  //
+  // Provenance is `manuallyMarkedPaidAt` ALONE — never conjoined with "has no
+  // Xero id" — because two stampers outside the cash-settle loop can
+  // legitimately stamp a Xero id onto a manual row, and that must not launder
+  // the row's provenance away from this fence.
+  //
+  // Returns the existing skip shape, which every caller already handles (the
+  // repair pass maps a null queueOperationId to "skipped"; the force-sync and
+  // missing-invoices routes surface the message), but logs at WARN so a
+  // repeated attempt is visible rather than silent.
+  if (booking.payment.manuallyMarkedPaidAt) {
+    logger.warn(
+      {
+        bookingId,
+        paymentId: booking.payment.id,
+        manuallyMarkedPaidAt: booking.payment.manuallyMarkedPaidAt,
+      },
+      "Refusing to queue a Xero booking invoice for a manually marked-paid booking (#2262)"
+    );
+    return {
+      queueOperationId: null,
+      message:
+        "Booking was manually marked paid (cash / off-Xero) — no Xero invoice is expected.",
     };
   }
 

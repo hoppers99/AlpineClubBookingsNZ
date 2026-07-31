@@ -1065,6 +1065,27 @@ describe("Email templates - Phase 6a", () => {
     expect(html).toContain("&lt;img");
   });
 
+  it("adminPaymentFailureTemplate labels its identifier slot 'Reference', not 'Stripe PI'", async () => {
+    // #2262 delta LOW-f. This is the club's general payment-anomaly alert and
+    // its senders pass a Xero invoice id, or a booking id (the cash / off-Xero
+    // mark-paid has neither a Stripe intent nor an invoice by definition), as
+    // well as Stripe intents. A label naming the wrong system sends an officer
+    // hunting in Stripe for something that was never there.
+    const { adminPaymentFailureTemplate } = await import("../email-templates");
+    const html = adminPaymentFailureTemplate({
+      memberName: "John Doe",
+      checkIn: new Date("2026-04-10"),
+      checkOut: new Date("2026-04-12"),
+      amountCents: 15000,
+      errorMessage: "Stored credit election cleared",
+      paymentIntentId: "booking-1",
+    });
+
+    expect(html).toContain("Reference");
+    expect(html).not.toContain("Stripe PI");
+    expect(html).toContain("booking-1");
+  });
+
   it("adminPaymentFailureTemplate includes stripe PI ID", async () => {
     const { adminPaymentFailureTemplate } = await import("../email-templates");
     const html = adminPaymentFailureTemplate({

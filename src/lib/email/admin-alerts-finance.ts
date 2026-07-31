@@ -1,6 +1,8 @@
 import {
   adminPaymentFailureTemplate,
   adminDuplicateCaptureRefundTemplate,
+  adminManualSettlementConflictTemplate,
+  adminManualRefundTaskTemplate,
   adminXeroSyncErrorTemplate,
   adminXeroRepeatedFailureTemplate,
   adminXeroReconciliationReportTemplate,
@@ -100,6 +102,82 @@ export async function sendAdminDuplicateCaptureRefundAlert(data: {
           : ""),
       reviewUrl,
       refundFailed: data.refundFailed,
+    },
+    preferenceKey: "adminPaymentFailure",
+  });
+}
+
+/**
+ * B5 (#2262): the reciprocal fence's alert. An inbound Xero PAID landed on a
+ * booking this system already recorded as settled in cash / off-Xero, so the
+ * club may be holding the same money twice. Admin audience, so it is exempt
+ * from the per-booking "No emails" switch (#2258 rule 2) — that switch silences
+ * the MEMBER, and an operator must still hear about unreconciled money.
+ *
+ * Repeat sends are throttled by the caller with a cross-instance
+ * AlertCooldown claim keyed on (payment, invoice), so webhook replays re-count
+ * the conflict without re-spamming.
+ */
+export async function sendAdminManualSettlementConflictAlert(data: {
+  memberName: string;
+  checkIn: Date;
+  checkOut: Date;
+  amountCents: number;
+  bookingId: string;
+  bookingStatus: string;
+  xeroInvoiceNumber: string | null;
+  xeroInvoiceUrl: string | null;
+}) {
+  const baseUrl = process.env.NEXTAUTH_URL || "http://localhost:3000";
+  const reviewUrl = `${baseUrl}/admin/payments`;
+
+  await sendToAdmins({
+    subject: `Cash settlement vs Xero payment — reconcile: ${data.memberName}`,
+    html: adminManualSettlementConflictTemplate({ ...data, reviewUrl }),
+    templateName: "admin-manual-settlement-conflict",
+    templateData: {
+      memberName: data.memberName,
+      checkIn: formatNZDate(data.checkIn),
+      checkOut: formatNZDate(data.checkOut),
+      amount: formatMoneyCents(data.amountCents),
+      bookingId: data.bookingId,
+      status: data.bookingStatus,
+      xeroInvoiceNumber: data.xeroInvoiceNumber ?? "",
+      xeroObjectUrl: data.xeroInvoiceUrl ?? "",
+      reviewUrl,
+    },
+    preferenceKey: "adminPaymentFailure",
+  });
+}
+
+/**
+ * B5 (#2262): a cash-settled booking was cancelled, so the refund has to be
+ * paid back by hand. Admin audience (exempt from the #2258 switch); the durable
+ * ManualRefundTask row is the record, this is the nudge.
+ */
+export async function sendAdminManualRefundTaskAlert(data: {
+  memberName: string;
+  checkIn: Date;
+  checkOut: Date;
+  refundAmountCents: number;
+  bookingId: string;
+  reason: string;
+}) {
+  const baseUrl = process.env.NEXTAUTH_URL || "http://localhost:3000";
+  const reviewUrl = `${baseUrl}/admin/payments`;
+
+  await sendToAdmins({
+    subject: `Manual refund needed — cash booking cancelled: ${data.memberName}`,
+    html: adminManualRefundTaskTemplate({ ...data, reviewUrl }),
+    templateName: "admin-manual-refund-task",
+    templateData: {
+      memberName: data.memberName,
+      checkIn: formatNZDate(data.checkIn),
+      checkOut: formatNZDate(data.checkOut),
+      refundAmount: formatMoneyCents(data.refundAmountCents),
+      bookingId: data.bookingId,
+      reason: data.reason,
+      reviewUrl,
     },
     preferenceKey: "adminPaymentFailure",
   });

@@ -236,3 +236,117 @@ describe("CancelBookingButton — restored applied credit on a no-payment cancel
     ).toBeTruthy();
   });
 });
+
+describe("CancelBookingButton — manual (cash / off-Xero) settlement copy (#2262 H4)", () => {
+  // Credit tier deliberately differs from the card tier so a wrong-tier figure
+  // is caught: card 90% = $45.00, credit 80% = $40.00, kept $10.00.
+  const manualPreview = {
+    refundAmountCents: 4500,
+    keptAmountCents: 500,
+    changeFeeCents: 0,
+    refundPercentage: 90,
+    creditRefundAmountCents: 4000,
+    creditRefundPercentage: 80,
+    creditRestoredCents: 0,
+    totalPaidCents: 5000,
+    hasPayment: true,
+    manualRefund: true,
+  };
+
+  function stubManualFetch() {
+    const calls: { url: string; init?: RequestInit }[] = [];
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, init });
+      if (url.includes("cancel-preview")) {
+        return { ok: true, json: async () => manualPreview };
+      }
+      // The executed cancel raises the hand-back task at the CREDIT tier and
+      // reports refundMethod "manual" (booking-cancel.ts manual branch).
+      return {
+        ok: true,
+        json: async () => ({ refundAmountCents: 4000, refundMethod: "manual" }),
+      };
+    }) as unknown as typeof fetch;
+    vi.stubGlobal("fetch", fetchMock);
+    return { calls };
+  }
+
+  it("preview shows the credit-tier figure the club will hand back — never the card-tier 'Refund to card' row or the method radios", async () => {
+    stubManualFetch();
+    render(<CancelBookingButton bookingId="bk_1" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel Booking" }));
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "Confirm Cancellation" })
+      ).toBeTruthy();
+    });
+
+    // The explanatory paragraph carries the credit-tier amount.
+    expect(
+      screen.getByText(/paid in cash or by bank transfer/i)
+    ).toBeTruthy();
+    // The summary row is the club-arranged figure at the credit tier…
+    expect(screen.getByText("Refund arranged by the club:")).toBeTruthy();
+    expect(screen.getAllByText("$40.00").length).toBeGreaterThan(0);
+    // …with the kept amount derived from the credit percentage.
+    expect(screen.getByText(/Amount kept \(80% refund\):/)).toBeTruthy();
+    expect(screen.getByText("$10.00")).toBeTruthy();
+    // The card-tier row, figure and radios never render.
+    expect(screen.queryByText("Refund to card:")).toBeNull();
+    expect(screen.queryByText("$45.00")).toBeNull();
+    expect(screen.queryByRole("radio")).toBeNull();
+  });
+
+  it("success panel says the club will arrange the refund — the 'original payment method' sentence never renders for manual", async () => {
+    stubManualFetch();
+    render(<CancelBookingButton bookingId="bk_1" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel Booking" }));
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "Confirm Cancellation" })
+      ).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Cancellation" }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/The club will arrange your refund of \$40\.00 directly/)
+      ).toBeTruthy();
+    });
+    // The plan-forbidden sentence.
+    expect(screen.queryByText(/original payment method/i)).toBeNull();
+    // And no false account-credit claim either.
+    expect(screen.queryByText(/added to your account/i)).toBeNull();
+  });
+
+  it("admin-on-behalf success panel frames the manual hand-back for the member", async () => {
+    stubManualFetch();
+    render(
+      <CancelBookingButton bookingId="bk_1" onBehalfOfMember canChooseMemberEmail />
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Cancel on behalf of member" })
+    );
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "Confirm Cancellation" })
+      ).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm Cancellation" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Cancel without emailing" })
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          /The club will arrange the member.?s refund of \$40\.00 directly/
+        )
+      ).toBeTruthy();
+    });
+    expect(screen.queryByText(/original payment method/i)).toBeNull();
+  });
+});

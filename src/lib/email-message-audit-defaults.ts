@@ -248,11 +248,19 @@ export const EMAIL_AUDIT_DEFAULTS = {
   },
   "admin-payment-failure": {
     "defaultSubject": "Payment Failed — {{CLUB_BOOKINGS_NAME}}",
-    "defaultBody": "Payment Failed\n\nA payment has failed and may require manual attention.\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nAmount: {{amount}}\nError: {{errorMessage}}\nStripe PI: {{paymentIntentId}}\n\nView Payments: {{BASE_URL}}/admin/payments"
+    "defaultBody": "Payment Failed\n\nA payment has failed and may require manual attention.\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nAmount: {{amount}}\nError: {{errorMessage}}\nReference: {{paymentIntentId}}\n\nView Payments: {{BASE_URL}}/admin/payments"
   },
   "admin-duplicate-capture-refund": {
     "defaultSubject": "Duplicate capture auto-refunded: {{memberName}}",
     "defaultBody": "Duplicate Card Capture Auto-Refunded\n\n{{refundOutcomeNote}}\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nAmount refunded: {{amount}}\nDuplicate Stripe PI: {{paymentIntentId}}\nRecovery operation: {{operation}}\n\nView Payments: {{reviewUrl}}"
+  },
+  "admin-manual-settlement-conflict": {
+    "defaultSubject": "Cash settlement vs Xero payment — reconcile: {{memberName}}",
+    "defaultBody": "Cash Settlement vs Xero Payment - Reconcile By Hand\n\nThis booking looks paid TWICE: once as a cash / off-Xero settlement recorded here, and again by a payment Xero now reports against its invoice. Nothing further has been written - please reconcile.\n\nAn admin recorded this booking's payment manually (cash, or a bank transfer that never reached Xero). Xero has since reported the booking's invoice as PAID. The system stopped rather than settling it a second time or minting member credit, so the two records now disagree and only a person can decide which money is real.\n\nCheck whether the Xero payment is genuinely separate funds - a second payment that needs refunding - or the same money reaching Xero late. Reverse the manual settlement, or refund the duplicate, whichever is true.\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nBooking: {{bookingId}}\nBooking status: {{status}}\nAmount recorded as cash: {{amount}}\nXero invoice: {{xeroInvoiceNumber}}\nOpen the invoice in Xero: {{xeroObjectUrl}}\n\nView Payments: {{reviewUrl}}"
+  },
+  "admin-manual-refund-task": {
+    "defaultSubject": "Manual refund needed - cash booking cancelled: {{memberName}}",
+    "defaultBody": "Manual Refund Needed - Cash Booking Cancelled\n\nA booking settled in cash (or by an off-Xero bank transfer) has been cancelled. The refund has to be paid back by hand - nothing was refunded automatically.\n\nThe member's cancellation refund has been worked out under the club's normal policy, but there is no card charge to reverse and no Xero invoice to credit, so the system has raised a hand-back task instead of pretending money moved. The member has been told the club will arrange the refund.\n\nPay the member back, then mark the task complete on the payments board so the ledger records the refund. If the member declines it, or it was settled another way, dismiss the task with a note.\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nBooking: {{bookingId}}\nAmount to refund: {{refundAmount}}\nReason: {{reason}}\n\nView Payments: {{reviewUrl}}"
   },
   "admin-pending-deadline": {
     "defaultSubject": "{{count}} Pending Booking{{s}} Approaching Deadline",

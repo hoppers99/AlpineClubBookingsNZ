@@ -146,7 +146,11 @@ export async function sendBookingConfirmedEmail(
   const paymentOutcome = paymentDue
     ? `Total Due: ${formatMoneyCents(totalCents)}\n\n${paymentDueNote}`
     : `Total Paid: ${formatMoneyCents(totalCents)}\n\nPayment has been processed successfully.`;
-  await sendEmail({
+  // #2262: the outcome is RETURNED so a caller that promised the admin a
+  // receipt can report honestly what became of it (queued vs withheld vs
+  // failed) instead of turning a decision into a delivery claim. Existing
+  // callers ignore it and are unaffected.
+  return await sendEmail({
     to: email,
     subject: `Booking Confirmed - ${EMAIL_DEFAULT_LODGE_NAME}`,
     html: bookingConfirmedTemplate(
@@ -301,7 +305,8 @@ export async function sendBookingCancelledEmail(
   checkIn: Date,
   checkOut: Date,
   refundCents: number,
-  refundMethod: "card" | "credit" = "card",
+  // B5 (#2262): "manual" — a cash / off-Xero settlement handed back by a person.
+  refundMethod: "card" | "credit" | "manual" = "card",
   creditRestoredCents: number = 0,
   // Booking's lodge (multi-lodge phase 8): see sendBookingConfirmedEmail.
   lodgeId?: string | null,
@@ -325,11 +330,13 @@ export async function sendBookingCancelledEmail(
       checkOut: formatNZDate(checkOut),
       refundAmount: formatMoneyCents(refundCents),
       refundMessage:
-        refundCents > 0 && refundMethod === "credit"
-          ? `A credit of ${formatMoneyCents(refundCents)} has been added to your account for future bookings.`
-          : refundCents > 0
-            ? `A refund of ${formatMoneyCents(refundCents)} has been processed to your original payment method.`
-            : "No refund was applicable based on the cancellation policy.",
+        refundCents > 0 && refundMethod === "manual"
+          ? `You paid for this booking in cash or by bank transfer, so there is no card payment to reverse. The club will arrange your refund of ${formatMoneyCents(refundCents)} directly and will be in touch.`
+          : refundCents > 0 && refundMethod === "credit"
+            ? `A credit of ${formatMoneyCents(refundCents)} has been added to your account for future bookings.`
+            : refundCents > 0
+              ? `A refund of ${formatMoneyCents(refundCents)} has been processed to your original payment method.`
+              : "No refund was applicable based on the cancellation policy.",
       // #1164 / D7: applied account credit is restored subject to the same
       // cancellation policy as the card slice. Empty when nothing was restored
       // so the override body renders no line (mirrors the refundMessage token).

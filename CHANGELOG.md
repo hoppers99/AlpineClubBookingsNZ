@@ -4,6 +4,42 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **A booking paid in cash — or by a bank transfer that never reached Xero —
+  can now be recorded as paid, properly (#2262).** Open the booking, and under
+  **Admin tools** you will find **Cash / off-Xero payment**: it shows the exact
+  amount owing after any account credit, takes a note for the club's records,
+  and asks whether the member should get the usual booking confirmation. The
+  booking then becomes Paid and claims its beds exactly as a card payment does —
+  it runs through the same locking, the same capacity check and the same ledger
+  writes, so a bed can never be admitted into a full lodge on the strength of a
+  manual click. Nothing is sent to Xero: no invoice is created, and none is
+  emailed to the member for money the club already holds. It is refused, with
+  the reason shown, when the booking already has a Xero invoice or has one
+  queued (record the payment against that invoice in Xero instead), when it was
+  settled as part of a group booking, when there is nothing owing, when the
+  booking no longer fits the lodge, or when the amount changed while your screen
+  was open. Recorded it against the wrong booking? **Reverse manual payment**
+  puts it back to unpaid without cancelling it, while nothing has happened since
+  that could not be undone. And if Xero later reports that booking's invoice as
+  paid anyway, the club now gets an alert saying the two records disagree,
+  instead of the second payment vanishing silently. Cancelling a cash-settled
+  booking raises a **Refunds to pay back by hand** task on the Payments page
+  rather than pretending a card refund happened: the member is told the club
+  will arrange their refund, and the ledger records it at the moment an admin
+  marks it paid back. And if the member had saved a choice to put account
+  credit towards the booking that was never applied, recording the cash does
+  not quietly spend or discard it: the saved choice is cleared, the booking's
+  history tells the member their credit was not used and their balance was not
+  reduced, and the club is alerted. The dialog warns you about that saved choice
+  BEFORE you record anything, so it is never a surprise, and the confirmation on
+  screen repeats it afterwards. Reversing the payment puts the saved choice back
+  on the booking, so the member can still spend their credit when the booking is
+  paid properly. Everywhere those figures are quoted — to the member and to the
+  club, on this door and on the card and Xero ones — they are now the member's
+  LIVE credit balance rather than the amount they once elected, so nobody is
+  invited to refund more than the account actually holds. Recording, reversing
+  and closing all need finance edit access and are written to the audit log with
+  your name.
 - **Emails no longer print the wording notes their authors left behind, or a
   label with nothing after it (#2268).** Thirty-three built-in email templates
   carried instructions to whoever might edit them — `[only when a door code is
@@ -362,12 +398,13 @@ All notable public reference-release changes should be recorded here.
   Xero, Stripe and Google steps, which appeared and then vanished for actual Full
   Admins, because the page read "still working out who you are" as "not a Full
   Admin". All three are gone or now wait until they know. The published
-  banner-coverage figures were re-measured with it (and again after the
-  in-booking Bed allocation card, #2252, added its three, and once more when
-  #2286's Release/Change bed controls landed): **291**
+  banner-coverage figures were re-measured with it (again after the in-booking
+  Bed allocation card, #2252, added its three, once more when #2286's
+  Release/Change bed controls landed, and again when the cash / off-Xero
+  payment feature, #2262, landed its four per-button-reason controls): **295**
   gated admin controls, **248** of them covered by a banner (222 in their own
   file, 26 by a verified vouching parent — 5 of those through the wizard frame),
-  and **43** across 23 files deliberately keeping their own reason.
+  and **47** across 25 files deliberately keeping their own reason.
 - **Choosing to use your account credit and then saving the booking as a draft
   no longer throws that choice away (#2265).** Ticking "use my credit" in the
   booking wizard and pressing **Save as draft** used to discard the amount you
@@ -618,7 +655,6 @@ All notable public reference-release changes should be recorded here.
   a few seconds before trying Xero again so a struggling connection is not made
   worse, and an admin re-checking the connection still gets a live read
   straight away.
-
 - **Writing a Lodge TV footer or CSS override no longer means remembering the
   tokens (#2248).** Every field where a board's HTML or CSS is typed by hand —
   the Visual builder's **Footer HTML**, **CSS overrides** and a zone's **HTML

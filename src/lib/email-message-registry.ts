@@ -46,6 +46,15 @@ const ADMIN_SYSTEM_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
   // gated by the adminPaymentFailure notification preference at send time, like
   // its siblings.
   "admin-duplicate-capture-refund",
+  // B5 (#2262): the reciprocal fence's conflict alert and the cash-cancellation
+  // hand-back task alert. Both ship via sendToAdmins, so admin audience, and
+  // both are operator nudges rather than money movers — the conflict alert
+  // reports a state the pipeline deliberately refused to act on, and the
+  // hand-back task is durable in the database whether or not the mail lands —
+  // so neither is delivery-locked. Both are gated by the adminPaymentFailure
+  // notification preference at send time, like their siblings.
+  "admin-manual-settlement-conflict",
+  "admin-manual-refund-task",
   "admin-pending-deadline",
   "admin-booking-bumped",
   "admin-capacity-warning",
@@ -400,6 +409,10 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
   // #1992/#2007: memberName identifies the affected member and reviewUrl is the
   // admin action link (the payments board), mirroring the other admin alerts.
   "admin-duplicate-capture-refund": ["memberName", "reviewUrl"],
+  // B5 (#2262): memberName identifies the affected member and reviewUrl is the
+  // admin action link (the payments board), mirroring the other admin alerts.
+  "admin-manual-settlement-conflict": ["memberName", "reviewUrl"],
+  "admin-manual-refund-task": ["memberName", "reviewUrl"],
   "admin-split-settlement-unpaid": ["memberName", "reviewUrl"],
   // #1993 Part A: terminal notice — memberName identifies the member and
   // reviewUrl is the admin action link, mirroring the recurring alert.
@@ -456,6 +469,17 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
       "A second, distinct Stripe capture arrived on an already-settled booking, so the duplicate charge was auto-refunded (inline in full, or a durable retry queued when the inline refund could not complete)",
     frequency:
       "On duplicate-capture adjudication — rare; once per distinct duplicate capture that is auto-refunded",
+  },
+  "admin-manual-settlement-conflict": {
+    triggerSummary:
+      "Xero reported a booking's invoice PAID for a booking this system had already recorded as settled in cash or by an off-Xero bank transfer, so the club may be holding the same money twice",
+    frequency:
+      "On the inbound reciprocal fence firing — rare; throttled per payment and invoice by a cross-instance cooldown so webhook replays do not re-send",
+  },
+  "admin-manual-refund-task": {
+    triggerSummary:
+      "A booking settled in cash (or by an off-Xero bank transfer) was cancelled with a refund owing, so a hand-back task was raised for an admin to pay the member back",
+    frequency: "On cancellation of a cash-settled booking with a non-zero refund",
   },
   "admin-minors-review": {
     triggerSummary:

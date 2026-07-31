@@ -97,6 +97,21 @@ export async function PUT(
       );
     }
 
+    // B5 (#2262): this booking was settled in cash / by an off-Xero bank
+    // transfer, so there is NO Stripe money to refund. Approving here would
+    // plan $0, log the drift, tell the member their refund is on its way, and
+    // hand nothing back — the exact silent-$0 hazard this feature exists to
+    // avoid. Refuse and point at the flow that can actually return the money.
+    if (payment.manuallyMarkedPaidAt) {
+      return NextResponse.json(
+        {
+          error:
+            "This booking was paid in cash or by an off-Xero bank transfer, so there is no card payment to refund. Cancel the booking to raise a manual refund task, then pay the member back and close the task on the payments board.",
+        },
+        { status: 409 }
+      );
+    }
+
     const maxRefundable = getRemainingRefundableCents(payment);
     if (approvedAmountCents > maxRefundable) {
       return NextResponse.json(
