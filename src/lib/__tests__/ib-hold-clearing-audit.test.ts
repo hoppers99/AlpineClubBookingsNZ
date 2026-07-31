@@ -97,6 +97,10 @@ function makeStrandRow(
     creditAppliedCents: 3000,
     finalPriceCents: 10000,
     ledgerAppliedCents: 3000,
+    // #2397: no upward-modification delta on this payment — the ordinary shape,
+    // where a mirror residual has no legitimate cause and IS drift.
+    additionalAmountCents: 0,
+    additionalPaymentStatus: null,
     ...overrides,
   };
 }
@@ -148,6 +152,37 @@ describe("deriveIbAppliedCreditStrandFinding (#1620 enumeration)", () => {
     );
     expect(finding?.mirrorLedgerMismatchCents).toBe(0);
     expect(finding?.mirrorInvariantDeltaCents).toBe(0);
+  });
+
+  it("names the uncollected addition that legitimately explains a negative residual (#2397)", () => {
+    // A cash settlement the admin said did NOT cover a $21.00 addition: the
+    // club recorded $79.00 against a $100.00 booking with $0 credit, so the
+    // residual is −$21.00 and the generalised mirror
+    // (amount + credit + uncollected = price) holds exactly. Without the extra
+    // reported beside it, an operator reads −$21.00 with nothing naming its
+    // cause and treats correct books as drift.
+    const finding = deriveIbAppliedCreditStrandFinding(
+      makeStrandRow({
+        amountCents: 7900,
+        creditAppliedCents: 0,
+        finalPriceCents: 10000,
+        ledgerAppliedCents: 3000,
+        additionalAmountCents: 2100,
+        additionalPaymentStatus: "PENDING",
+      }),
+    );
+    expect(finding?.mirrorInvariantDeltaCents).toBe(-2100);
+    expect(finding?.uncollectedAdditionalCents).toBe(2100);
+  });
+
+  it("reports a COLLECTED addition as no residual cause at all (#2397)", () => {
+    const finding = deriveIbAppliedCreditStrandFinding(
+      makeStrandRow({
+        additionalAmountCents: 2100,
+        additionalPaymentStatus: "SUCCEEDED",
+      }),
+    );
+    expect(finding?.uncollectedAdditionalCents).toBe(0);
   });
 });
 

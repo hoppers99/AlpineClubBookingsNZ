@@ -68,15 +68,31 @@ for an interactive Claude Code session:
 - **One worktree per lane**; stack dependent issues (PR base = parent branch).
   Because CI only runs on `main`-based PRs, validate a stacked PR via a
   throwaway draft "CI probe" PR of the same commit against `main`.
+- **Delegate deliberately.** Every subagent re-establishes context, re-explores,
+  and reports back, and the orchestrator then re-reads that report — so the
+  payoff has to exceed that overhead. Do not spawn one for work you could finish
+  in a handful of tool calls, do not split one modest job across several, and
+  keep routine verification in the orchestrator loop rather than delegating it.
+  Reserve subagents for genuinely independent, sizeable tracks: per-issue
+  implementation lanes, wide multi-file investigations, and the review lenses
+  below.
 - **Orchestrator picks the review angle and reviewer count, scaled to risk:**
   3 distinct adversarial lenses for Critical issues (money / schema / auth /
   Xero / capacity / lifecycle), 2 for standard issues. Reviewers try to refute
-  each finding before reporting; a fix subagent resolves confirmed findings and
-  the orchestrator re-runs the lens to verify (especially security blockers).
+  each finding before reporting; a fix subagent then resolves confirmed findings.
+  **Re-run the lens only for security blockers**, where the fix itself can reopen
+  a symmetric hole — elsewhere stop after the fix rather than paying a third pass
+  over ground two agents already covered.
 - **Prefer Opus subagents;** escalate to the top Mythos-class tier (Fable) only
   for genuinely frontier-complexity Critical work (deep Xero idempotency,
-  immutable-charge backfill, irreversible merge / DMMF reasoning, an uncertain
-  security blocker). Scale model *and* reasoning effort to the task.
+  immutable-charge backfill, irreversible merge / DMMF reasoning). Scale model
+  *and* reasoning effort to the task.
+- **Never route security work to Fable — keep it on Opus at `max` effort.**
+  Fable's safety classifiers target cyber content, so a security review can come
+  back refused as `stop_reason: "refusal"` on an HTTP 200 — it reads like a clean
+  pass, not an error — and Fable's bug-finding gains explicitly exclude security
+  analysis. Opus refuses far less here, and falls back rather than stopping
+  outright.
 - **Run the full `npm test` before opening a PR**, not just the targeted subset —
   a subagent's targeted run routinely misses regressions its diff caused in
   adjacent suites (frozen snapshots, mocks a new call needs, route-area

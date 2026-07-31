@@ -72,6 +72,44 @@ export function buildAdditionalOwedWhere(): Prisma.BookingWhereInput {
 }
 
 /**
+ * The MONEY half of the owed test, in memory: the `Payment` clause inside
+ * `buildAdditionalOwedWhere` above, and nothing else. An upward modification
+ * delta was recorded and the money has not arrived — PENDING, FAILED
+ * (abandoned / declined) and a null status on a legacy row all mean uncollected;
+ * only SUCCEEDED means it was collected.
+ *
+ * It is deliberately only HALF the owed test. Every queue and every chase must
+ * ALSO test the booking's lifecycle status, because a cancelled booking keeps
+ * its delta columns unchanged and would otherwise read as still owing. This
+ * half is split out for the ONE caller where the status half is constant by
+ * construction: the manual cash / off-Xero mark-paid (#2397,
+ * `prepareManualSettlement` in src/lib/payment-reconciliation.ts) always lands
+ * the booking on PAID, which is in `ADDITIONAL_OWED_BOOKING_STATUSES`, so the
+ * settle only has to ask whether the money arrived.
+ *
+ * MERGE POINT with #2386 (issue #2350): that PR introduces
+ * `isAdditionalPaymentOwed({ bookingStatus, payment })` in
+ * `src/lib/additional-payment-chase.ts`, which is this predicate conjoined with
+ * the booking-status half. When the two land together it MUST be implemented as
+ * `isAdditionalOwedBookingStatus(bookingStatus) &&
+ * isAdditionalAmountUncollected(payment)` rather than restating the columns, so
+ * the codebase keeps exactly one money-half and this call site cannot drift from
+ * the chase it is meant to silence.
+ */
+export function isAdditionalAmountUncollected<
+  T extends {
+    additionalAmountCents: number;
+    additionalPaymentStatus: string | null;
+  },
+>(payment: T | null | undefined): payment is T {
+  if (!payment) return false;
+  return (
+    payment.additionalAmountCents > 0 &&
+    payment.additionalPaymentStatus !== "SUCCEEDED"
+  );
+}
+
+/**
  * Unsettled finished-stay additions (#1723 path 2): a settled (usually PAID or
  * COMPLETED) booking whose stay has ended but whose upward modification delta
  * was never collected. The booking is not PAYMENT_PENDING, so the primary
