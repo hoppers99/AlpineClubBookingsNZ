@@ -1006,7 +1006,11 @@ describe("membership cancellation request workflow", () => {
     });
 
     // Mirrors the admin-route table above, class for class, because the answer
-    // must now be the same on both routes.
+    // must now be the same on both routes. Only two rows are NEW behaviour —
+    // the Full Admin and the organisation account, the two classes the old
+    // gate (`isMemberLevelRole`: legacy role `USER`) refused. Every scoped-role
+    // admin below stores legacy `USER` and was already accepted; those rows are
+    // here to pin that the widening did not disturb them.
     const accepted: Array<[string, Record<string, unknown>]> = [
       ["an ordinary member", {}],
       [
@@ -1027,7 +1031,9 @@ describe("membership cancellation request workflow", () => {
         },
       ],
       [
-        // Fails unless `roleDefinitionId` is selected and read.
+        // Fails unless the predicate reads `roleDefinitionId`. (Prisma is
+        // mocked here, so the fixture carries the field whatever the query
+        // selects; the select itself is asserted separately below.)
         "a custom definition-backed role holder who also holds lodge access",
         {
           role: "USER",
@@ -1038,7 +1044,8 @@ describe("membership cancellation request workflow", () => {
         },
       ],
       [
-        // Fails unless the legacy finance column is selected and read.
+        // Fails unless the predicate reads the legacy finance column. (Same
+        // caveat as above: mocked Prisma, so the select is asserted below.)
         "a Treasurer recorded only by the legacy finance column",
         {
           role: "USER",
@@ -1119,7 +1126,9 @@ describe("membership cancellation request workflow", () => {
 
     it("still cancels a non-login dependant through a relative's family list", async () => {
       // The other half of the login condition: it narrows who may RAISE a
-      // request, never whose membership can be included in one.
+      // request, never whose membership can be included in one. A regression
+      // guard, not new behaviour — this held before #2391 too, and the point
+      // is that widening the requester gate did not disturb it.
       mocks.memberFindUnique.mockResolvedValue(member());
       mocks.memberFindMany.mockResolvedValue([
         member(),
@@ -1145,7 +1154,12 @@ describe("membership cancellation request workflow", () => {
       });
     });
 
-    it("lists an admin spouse in the family list, eligible like anyone else", async () => {
+    it("lists a Full Admin spouse in the family list, eligible like anyone else", async () => {
+      // A Full Admin stores legacy role `ADMIN`, which the old family query
+      // filtered out (`role in ["USER"]`) and the old per-candidate test
+      // rejected. This is one of the exactly two classes #2391 admits — a
+      // scoped-role admin spouse (legacy `USER`) was listed and eligible all
+      // along, so a fixture built that way would prove nothing.
       mocks.memberFindUnique.mockResolvedValue(member());
       mocks.memberFindMany.mockResolvedValue([
         member(),
@@ -1153,7 +1167,8 @@ describe("membership cancellation request workflow", () => {
           id: "spouse-1",
           firstName: "Dana",
           email: "dana@example.org",
-          accessRoles: [{ role: "ADMIN_MEMBERSHIP" }],
+          role: "ADMIN",
+          accessRoles: [{ role: "ADMIN" }, { role: "USER" }],
         }),
       ]);
 
@@ -1165,16 +1180,52 @@ describe("membership cancellation request workflow", () => {
       expect(spouse).toMatchObject({
         eligible: true,
         ineligibleReason: null,
+        relationship: "family_adult",
         // An own-login adult still confirms for themselves.
         requiresOwnConfirmation: true,
       });
     });
 
+    it("lists an organisation sharing the family group, badged as one", async () => {
+      // The other class #2391 admits. An organisation carries `ageTier =
+      // NOT_APPLICABLE`, so before the label gained an `organisation` case it
+      // would have rendered as "Dependant" *and* "Confirms by email" at once —
+      // a combination the old role filter kept unreachable.
+      mocks.memberFindUnique.mockResolvedValue(member());
+      mocks.memberFindMany.mockResolvedValue([
+        member(),
+        member({
+          id: "org-1",
+          firstName: "Alpine",
+          lastName: "College",
+          email: "office@alpine.example.org",
+          ageTier: "NOT_APPLICABLE",
+          role: "SCHOOL",
+          accessRoles: [{ role: "ORG" }],
+        }),
+      ]);
+
+      const overview = await getMembershipCancellationOverview("member-1");
+      const organisation = overview.candidates.find(
+        (candidate) => candidate.id === "org-1",
+      );
+
+      expect(organisation).toMatchObject({
+        eligible: true,
+        ineligibleReason: null,
+        relationship: "organisation",
+        // Its own login answers the confirmation email; there is no separate
+        // person to ask.
+        requiresOwnConfirmation: true,
+      });
+    });
+
     it("never filters the family query by role", async () => {
-      // Filtering in the QUERY is what dropped an admin relative from the list
-      // with no reason shown — the silent-omission failure #2354 and #2383 both
-      // set out to end. Eligibility is decided per candidate instead, so a
-      // record that cannot be included can say why.
+      // Filtering in the QUERY is what dropped a full-admin relative, and an
+      // organisation sharing the family group, from the list with no reason
+      // shown — the silent-omission failure #2354 and #2383 both set out to
+      // end. Eligibility is decided per candidate instead, so a record that
+      // cannot be included can say why.
       await getMembershipCancellationOverview("member-1");
 
       const [[query]] = mocks.memberFindMany.mock.calls as [
