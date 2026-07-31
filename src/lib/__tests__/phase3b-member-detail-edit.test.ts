@@ -241,6 +241,102 @@ describe("Phase 3b: Member Detail Edit — PUT /api/admin/members/[id]", () => {
     expect(prisma.member.findFirst).not.toHaveBeenCalled();
   });
 
+  // ── #2385: enabling login claims the address as a login identity ──
+
+  // The Account & Access form posts canLogin/active/roles and NO email
+  // (buildAccountPayload), so this is the exact shape of a real "tick Can
+  // Login" save: the address is unchanged, but it becomes a login identity.
+  const noLoginMember = { ...baseMember, canLogin: false, accessRoles: [] };
+
+  it("returns 409 when enabling login on an email another member already logs in with", async () => {
+    mockedAuth.mockResolvedValue(adminSession);
+    vi.mocked(prisma.member.findUnique).mockResolvedValue(noLoginMember as any);
+    vi.mocked(prisma.member.findFirst).mockResolvedValue({ id: "other" } as any);
+
+    const res = await updateMember(
+      makePutRequest("m1", { canLogin: true, active: true, role: "USER", accessRoles: ["USER"] }),
+      { params: Promise.resolve({ id: "m1" }) }
+    );
+
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toMatchObject({
+      error: "A member with this email already exists",
+    });
+    // The member's own stored address is what gets checked — the payload carries none.
+    expect(prisma.member.findFirst).toHaveBeenCalledWith({
+      where: { email: "alice@test.com", canLogin: true, id: { not: "m1" } },
+    });
+    expect(prisma.member.update).not.toHaveBeenCalled();
+  });
+
+  it("allows enabling login when no one else logs in with that email", async () => {
+    mockedAuth.mockResolvedValue(adminSession);
+    vi.mocked(prisma.member.findUnique).mockResolvedValue(noLoginMember as any);
+    vi.mocked(prisma.member.findFirst).mockResolvedValue(null);
+    vi.mocked(prisma.member.update).mockResolvedValue({
+      ...noLoginMember,
+      canLogin: true,
+      accessRoles: [{ role: "USER" }],
+      xeroContactId: null,
+    } as any);
+
+    const res = await updateMember(
+      makePutRequest("m1", { canLogin: true, active: true, role: "USER", accessRoles: ["USER"] }),
+      { params: Promise.resolve({ id: "m1" }) }
+    );
+
+    expect(res.status).toBe(200);
+    expect(prisma.member.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ canLogin: true }),
+    }));
+  });
+
+  it("returns the same 409 when a concurrent write claims the login email first", async () => {
+    mockedAuth.mockResolvedValue(adminSession);
+    vi.mocked(prisma.member.findUnique).mockResolvedValue(noLoginMember as any);
+    // The pre-check passes: nobody holds the address when it runs.
+    vi.mocked(prisma.member.findFirst).mockResolvedValue(null);
+    // Between the check and the write, another admin enables login on the same
+    // address, so the partial unique index Member_email_login_unique rejects
+    // this update. This is the shape Prisma 7 raises through the pg driver
+    // adapter: the SQLSTATE 23505 "Key (email)=…" detail becomes a field list,
+    // and meta.target is not populated.
+    vi.mocked(prisma.member.update).mockRejectedValue(
+      Object.assign(new Error("Unique constraint failed on the fields: (`email`)"), {
+        code: "P2002",
+      })
+    );
+
+    const res = await updateMember(
+      makePutRequest("m1", { canLogin: true, active: true, role: "USER", accessRoles: ["USER"] }),
+      { params: Promise.resolve({ id: "m1" }) }
+    );
+
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toMatchObject({
+      error: "A member with this email already exists",
+    });
+  });
+
+  it("does not blame the email for a unique-constraint failure on another column", async () => {
+    mockedAuth.mockResolvedValue(adminSession);
+    vi.mocked(prisma.member.findUnique).mockResolvedValue(baseMember as any);
+    vi.mocked(prisma.member.update).mockRejectedValue(
+      Object.assign(new Error("Unique constraint failed on the fields: (`googleSub`)"), {
+        code: "P2002",
+      })
+    );
+
+    const res = await updateMember(makePutRequest("m1", { firstName: "Bob" }), {
+      params: Promise.resolve({ id: "m1" }),
+    });
+
+    expect(res.status).toBe(500);
+    await expect(res.json()).resolves.toMatchObject({
+      error: "Failed to update member",
+    });
+  });
+
   // ── Successful updates ──
 
   it("updates firstName and lastName", async () => {
