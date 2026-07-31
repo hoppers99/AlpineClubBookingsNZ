@@ -55,9 +55,66 @@ import {
 
 const SEARCH_DEBOUNCE_MS = 300;
 
+/**
+ * Where the panel asks its two questions.
+ *
+ * ADDED BY MG4 (#2309) SO THE PANEL ITSELF STAYS UNCHANGED. The admin picker
+ * needs the same state machine, the same keyboard contract, the same copy and
+ * the same fixed-envelope handling as the member one — it differs only in which
+ * route answers, because an officer's lookup is gated and audited differently
+ * (see the admin route's own note). Parameterising the two fetches, rather than
+ * branching inside the component on "am I an admin?", keeps every behavioural
+ * rule in one implementation: there is no admin variant of the panel that could
+ * drift, only an admin pair of URLs.
+ *
+ * Each returns the raw `Response` because the panel's STATUS handling is part
+ * of its contract — 429 means rate limited, 400 in email mode reads as a miss,
+ * anything else non-ok is the ordinary failure — and moving that into the
+ * transport would be exactly the kind of split-brain this seam exists to avoid.
+ */
+export interface MemberGuestFindEndpoints {
+  resolveByEmail(email: string, signal: AbortSignal): Promise<Response>;
+  searchByName(q: string, signal: AbortSignal): Promise<Response>;
+}
+
+/** The member-facing routes: what every caller before MG4 used, unchanged. */
+export const MEMBER_GUEST_FIND_ENDPOINTS: MemberGuestFindEndpoints = {
+  resolveByEmail: (email, signal) =>
+    fetch("/api/members/guest-candidates/resolve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+      signal,
+    }),
+  searchByName: (q, signal) =>
+    fetch(`/api/members/guest-candidates/search?q=${encodeURIComponent(q)}`, {
+      signal,
+    }),
+};
+
+/**
+ * The admin picker's routes (MG4 #2309), scoped to the booking being edited.
+ *
+ * One route, two modes — see its own doc comment for why the name mode needs
+ * `membership:view` and the email mode does not.
+ */
+export function adminMemberGuestFindEndpoints(
+  bookingId: string,
+): MemberGuestFindEndpoints {
+  const base = `/api/admin/bookings/${encodeURIComponent(bookingId)}/member-guest-candidates`;
+  return {
+    resolveByEmail: (email, signal) =>
+      fetch(`${base}?mode=email&email=${encodeURIComponent(email)}`, { signal }),
+    searchByName: (q, signal) =>
+      fetch(`${base}?q=${encodeURIComponent(q)}`, { signal }),
+  };
+}
+
 export interface MemberGuestFindPanelProps {
-  /** Whether the club turned the name type-ahead on. Decoration only — the routes re-check. */
+  /** Whether the name type-ahead is available to this reader. Decoration only — the routes re-check. */
   openSearchEnabled: boolean;
+  /** Defaults to the member-facing routes; the admin picker passes its own. */
+  endpoints?: MemberGuestFindEndpoints;
   /** Member ids already in the party, so their rows render disabled rather than vanishing. */
   existingMemberIds: readonly string[];
   /** True when the party is already at the lodge capacity. */
@@ -90,6 +147,7 @@ type PanelState =
 
 export function MemberGuestFindPanel({
   openSearchEnabled,
+  endpoints = MEMBER_GUEST_FIND_ENDPOINTS,
   existingMemberIds,
   atCapacity,
   onAdd,
@@ -123,12 +181,7 @@ export function MemberGuestFindPanel({
     abortRef.current = controller;
     setState({ kind: "LOADING", mode: "EMAIL" });
     try {
-      const res = await fetch("/api/members/guest-candidates/resolve", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
-        signal: controller.signal,
-      });
+      const res = await endpoints.resolveByEmail(email, controller.signal);
       if (res.status === 429) {
         setState({ kind: "RATE_LIMITED" });
         return;
@@ -171,10 +224,7 @@ export function MemberGuestFindPanel({
       previous: current.kind === "RESULTS" ? current.response : undefined,
     }));
     try {
-      const res = await fetch(
-        `/api/members/guest-candidates/search?q=${encodeURIComponent(q)}`,
-        { signal: controller.signal },
-      );
+      const res = await endpoints.searchByName(q, controller.signal);
       if (res.status === 429) {
         setState({ kind: "RATE_LIMITED" });
         return;

@@ -106,7 +106,12 @@ import {
   formatConsentWeekdayDate,
   resolveBookingConsentCard,
 } from "@/lib/member-guest-consent-card";
-import { isOperationallyPresentConsent } from "@/lib/member-guest-consent";
+import {
+  isOperationallyPresentConsent,
+  MEMBER_GUEST_MODULE_KEY,
+} from "@/lib/member-guest-consent";
+import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
+import { loadMemberGuestSettings } from "@/lib/member-guest-settings";
 import { eachDateOnlyInRange, getTodayDateOnly } from "@/lib/date-only";
 import {
   bookingManagementAuthorizationRole,
@@ -787,6 +792,45 @@ export default async function BookingDetailPage({
       }
     : null;
 
+  /**
+   * MG4 (#2309): the edit panel's "+ Add Member Guest" surface, decided HERE.
+   *
+   * SERVER-SIDE, ON PURPOSE. The module flag and the policy singleton are
+   * settings reads, and `BookingEditorData` is serialised into a client
+   * component's payload — so the panel is handed an answer rather than left to
+   * guess one and render a finder whose routes then 404.
+   *
+   * ABSENT WHEN THE MODULE IS OFF, as a conditional SPREAD rather than a
+   * false-valued key. React Flight serialises the key as well as the value, so
+   * `memberGuest: undefined` would still ship `"memberGuest":"$undefined"` and
+   * change every club's payload; omitting the key leaves a non-adopting club's
+   * booking page byte-for-byte what it was.
+   *
+   * TWO READERS, ONE FIELD. `openSearchEnabled` answers "may THIS reader search
+   * by name", which is a different question for each: the club's own privacy
+   * setting for a member, and `membership:view` for an officer (owner decision
+   * D-20 — an admin picker is not bound by a member-facing privacy switch, and
+   * the #1376 persona without membership access falls back to exact email).
+   *
+   * THE FAMILY BOUNDARY IS NOT SHIPPED FROM HERE, and that is deliberate rather
+   * than an omission. The panel already fetches the booking owner's family list
+   * for its quick-add row — `/api/members/family` for a member, the booking's
+   * `eligible-family` for an officer — so it holds the same set this page would
+   * have had to query for, and reading it from the row it already renders means
+   * the panel's idea of "my family" cannot disagree with the buttons above it.
+   * That is the create wizard's rule (`predictMemberGuestConsent`), applied to
+   * the second surface rather than re-derived for it.
+   */
+  const memberGuestModuleEnabled = await isEffectiveModuleEnabled(
+    MEMBER_GUEST_MODULE_KEY,
+  );
+  const memberGuestSettings = memberGuestModuleEnabled
+    ? await loadMemberGuestSettings()
+    : null;
+  const canSearchMembersByName =
+    isAdmin || canViewAsAdmin
+      ? hasAdminAreaAccess(session.user, { area: "membership", level: "view" })
+      : (memberGuestSettings?.openMemberSearchEnabled ?? false);
   const editorData: BookingEditorData = {
     id: booking.id,
     checkIn: new Date(booking.checkIn).toISOString().split("T")[0],
@@ -836,6 +880,15 @@ export default async function BookingDetailPage({
     nonMemberHoldUntil: booking.nonMemberHoldUntil?.toISOString() ?? null,
     canEditNonMemberGuestNames,
     canFixNonMemberGuestNameTypos,
+    ...(memberGuestSettings
+      ? {
+          memberGuest: {
+            enabled: true,
+            openSearchEnabled: canSearchMembersByName,
+            approvalRequired: memberGuestSettings.approvalRequired,
+          },
+        }
+      : {}),
     // #2104: an already-flagged/reviewed booking must not re-prompt the member
     // for a justification when the guest list shuffles — the edit panel keys the
     // proactive field on these (the server only demands a reason on the FIRST

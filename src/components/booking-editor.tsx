@@ -98,6 +98,15 @@ export interface BookingEditorData {
   // #2266: the booking's lodge, so promo lodge restrictions validate against
   // the right lodge. Optional so pre-existing fixtures stay valid.
   lodgeId?: string | null;
+  // MG4 (#2309): the member-guest add surface's server-computed shape, read on
+  // the booking page and threaded here so the edit panel never guesses whether
+  // the module is on. Absent — not false-valued — for a club with the module
+  // off, so their payload is unchanged.
+  memberGuest?: {
+    enabled: boolean;
+    openSearchEnabled: boolean;
+    approvalRequired: boolean;
+  };
 }
 
 
@@ -145,6 +154,7 @@ export function BookingEditor({
           credit: booking.credit,
           memberId: booking.memberId,
           lodgeId: booking.lodgeId,
+          memberGuest: booking.memberGuest,
         }}
         canAdminOverride={canAdminOverride}
         onDone={() => setEditing(false)}

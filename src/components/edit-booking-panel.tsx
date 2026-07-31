@@ -19,6 +19,9 @@ import {
 import { formatCents } from "@/lib/utils";
 import { getAgeTierLabel, useAgeTierOptions } from "@/lib/use-age-tier-options";
 import { GuestNightGrid } from "@/components/guest-night-grid";
+import { EditMemberGuestSection } from "@/components/booking/edit-member-guest-section";
+import { describeMemberGuestConsentBadge } from "@/lib/member-guest-consent-card";
+import type { MemberGuestCandidate } from "@/lib/member-guest-find";
 import { BookingNoEmailsNotice } from "@/components/booking-no-emails-notice";
 import { PromoCodeInput, type PromoResult } from "@/components/promo-code-input";
 import { useScrollToFeedback } from "@/hooks/use-scroll-to-feedback";
@@ -27,6 +30,7 @@ import { useScrollToFeedback } from "@/hooks/use-scroll-to-feedback";
 // strings rather than the booking-guest server module they used to sit beside.
 import {
   MEMBER_GUEST_CHANGE_REFUSAL_MESSAGE,
+  MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE,
   MEMBER_GUEST_NOT_ADDABLE_CODE,
 } from "@/lib/member-guest-refusal";
 
@@ -90,6 +94,60 @@ function quoteRefusalMessage(
   return typeof data?.error === "string" && data.error
     ? data.error
     : "Failed to get quote";
+}
+
+/**
+ * The pre-save consent badge and helper line for one newly added guest.
+ *
+ * Two composed strings, both from shared code rather than from wording written
+ * here: the badge from `describeMemberGuestConsentBadge`'s WIZARD audience —
+ * the warmer, name-bearing form the create path already uses — and the helper
+ * from a tense-corrected version of the same sentence.
+ *
+ * The columns handed to the badge function are a REAL sub-state of the eight-
+ * shape table, not an approximation: `AWAITING_TARGET` without its expiry (the
+ * wizard audience shows no date, and a null cannot leak into a rendered
+ * deadline the way an invented one could), or `NOTIFY_ONLY_AUTO_CONFIRMED`
+ * exactly. Returns null for every other added guest.
+ */
+function renderAddedGuestConsent(guest: NewGuest) {
+  if (!guest.memberGuestConsentPreview) return null;
+  const pending = guest.memberGuestConsentPreview === "PENDING";
+  const badge = describeMemberGuestConsentBadge({
+    guest: {
+      memberId: guest.memberId ?? null,
+      consentStatus: pending ? "PENDING" : "CONFIRMED",
+      consentRequestedAt: null,
+      consentRespondedAt: null,
+      consentRespondedByMemberId: null,
+      consentExpiresAt: null,
+    },
+    audience: "WIZARD",
+    targetFirstName: guest.firstName,
+  });
+  const name = guest.firstName.trim() || "They";
+  return (
+    <>
+      {badge ? (
+        <span
+          className={
+            badge.tone === "pending"
+              ? "mt-1 inline-block rounded-md border border-warning-6 bg-warning-3 px-2 py-0.5 text-xs font-semibold text-warning-11"
+              : badge.tone === "ok"
+                ? "mt-1 inline-block rounded-md border border-success-6 bg-success-3 px-2 py-0.5 text-xs font-semibold text-success-11"
+                : "mt-1 inline-block rounded-md border border-danger-6 bg-danger-3 px-2 py-0.5 text-xs font-semibold text-danger-11"
+          }
+        >
+          {badge.label}
+        </span>
+      ) : null}
+      <p className="mt-1 text-xs text-muted-foreground">
+        {pending
+          ? `${name} will be emailed when you save this change, and their bed is held until they answer.`
+          : "Your club adds member guests straight away and emails them to say so."}
+      </p>
+    </>
+  );
 }
 
 function shiftDateKey(date: string, days: number): string {
@@ -191,6 +249,27 @@ interface BookingData {
   // #2266: the booking's lodge, so promo lodge restrictions validate against
   // the right lodge in the shared PromoCodeInput.
   lodgeId?: string | null;
+  /**
+   * MG4 (#2309): the member-guest surface's server-computed shape.
+   *
+   * SERVER-PROVIDED, NOT A CLIENT GUESS, and threaded through the booking page
+   * rather than fetched by the panel: the module flag and both policy values are
+   * settings reads, and a client that decided for itself would show a finder
+   * that 404s when used. Absent entirely — not false-valued — when the module is
+   * off, so a club that never adopted the feature ships the same payload it did
+   * before MG4.
+   */
+  memberGuest?: {
+    /** The `memberGuests` module, effectively enabled for this club. */
+    enabled: boolean;
+    /**
+     * Whether the name type-ahead is available to THIS reader: the club's
+     * open-search setting for a member, `membership:view` for an officer (D-20).
+     */
+    openSearchEnabled: boolean;
+    /** `MemberGuestSettings.approvalRequired` (D-3) — copy only. */
+    approvalRequired: boolean;
+  };
 }
 
 // #2266: an eligible promo chip, as returned by GET /api/promo-codes/available
@@ -215,6 +294,19 @@ interface NewGuest {
   // shared double with their confirmed partner (a member already on the
   // booking) — capacity runs through the reserved partner slots.
   partnerSharedWithMemberId?: string;
+  /**
+   * MG4 (#2309): what SAVING this edit will do to this person's consent, for
+   * the badge and helper line shown before the booker saves.
+   *
+   * A PREDICTION, and undefined for every other kind of added guest — family
+   * quick-adds (consent-free under D-6), partner adds and typed-in non-members
+   * all stay byte-identical to before. Predicted rather than fetched because
+   * nothing has been written yet: the row does not exist, so there is no
+   * `consentRequestedAt` and no real expiry to show, and inventing one is how a
+   * fake deadline ends up on screen. The server recomputes the family boundary
+   * and is the only thing that decides what is persisted.
+   */
+  memberGuestConsentPreview?: "PENDING" | "NOTIFY_ONLY";
 }
 
 // Server-computed partner-sharer quick-add candidate (#1746): a confirmed
@@ -389,6 +481,23 @@ export function EditBookingPanel({
     )
   );
   const [familyMembers, setFamilyMembers] = useState<FamilyMember[]>([]);
+  // MG4 (#2309): has the family list ANSWERED yet?
+  //
+  // Not cosmetic. The consent prediction below asks "is this candidate in the
+  // booking owner's family group?", and an empty list makes EVERY candidate look
+  // beyond-family — so predicting from an unloaded (or failed) list would
+  // promise "waiting for Mia to approve" over the booker's own child, the case
+  // where the finder is most likely to be used for one's own household. An
+  // unanswered list predicts nothing at all, which under-informs rather than
+  // misinforms: the server still asks whoever it must, and the booking page
+  // shows the true state as soon as the edit is saved.
+  const [familyMembersLoaded, setFamilyMembersLoaded] = useState(false);
+  // MG4 (#2309): the server's neutral D-8 refusal for the last member-guest
+  // add, kept separate from `quoteError` so it can be drawn beside the person it
+  // is about instead of only in the panel's page-level error line.
+  const [memberGuestAddError, setMemberGuestAddError] = useState<string | null>(
+    null,
+  );
   // #1746: partner-sharer quick-adds (admin fetch only — the member family
   // route never returns them, so this stays empty for members).
   const [partnerCandidates, setPartnerCandidates] = useState<
@@ -530,11 +639,14 @@ export function EditBookingPanel({
         if (!cancelled) {
           setFamilyMembers(data.familyMembers || []);
           setPartnerCandidates(data.partnerSharingCandidates || []);
+          setFamilyMembersLoaded(true);
         }
       })
       .catch(() => {
         if (!cancelled) {
           setFamilyMembers([]);
+          // Deliberately NOT set: a failed fetch is "unknown", not "no family".
+          // See the flag's own note.
         }
       });
 
@@ -983,12 +1095,22 @@ export function EditBookingPanel({
         // A newer edit superseded this request; drop the stale response.
         if (seq !== quoteRequestSeqRef.current) return;
         if (!res.ok) {
-          setQuoteError(
-            quoteRefusalMessage(data, quotePayloadAddsGuests(payloadJson)),
+          const addsGuests = quotePayloadAddsGuests(payloadJson);
+          setQuoteError(quoteRefusalMessage(data, addsGuests));
+          // MG4 (#2309): D-8's collapsed refusal about an add the booker just
+          // made is ALSO shown inside the find panel, beside the person it is
+          // about. Only that one code, and only when the request actually tried
+          // to add somebody — see `quotePayloadAddsGuests` for why a refusal on
+          // a request that added nobody must not be re-attributed to an add.
+          setMemberGuestAddError(
+            addsGuests && data?.code === MEMBER_GUEST_NOT_ADDABLE_CODE
+              ? MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE
+              : null,
           );
           setQuote(null);
           return;
         }
+        setMemberGuestAddError(null);
         setQuote(data);
         // A fresh quote that no longer needs an over-capacity confirm clears any
         // stale apply-side warning (#1668).
@@ -1111,6 +1233,67 @@ export function EditBookingPanel({
         isMember: true,
         memberId: candidate.id,
         partnerSharedWithMemberId: candidate.partnerOfMemberId,
+        ...(perGuestDatesEnabled && !isInProgressEdit
+          ? { stayStart: checkIn, stayEnd: checkOut }
+          : {}),
+      },
+    ]);
+  }
+
+  /**
+   * Add a member the booker (or an officer) found through MG3's finder.
+   *
+   * THE INVALIDATION LIST IS THE FAMILY QUICK-ADD'S, and it has to be: a member
+   * guest changes the party in exactly the same ways a family member does — it
+   * prices at member rates, counts toward the group discount, and can collide on
+   * person-nights — so it must reset exactly the same derived state. The panel's
+   * quote is refetched from the serialised payload, so adding the guest is what
+   * invalidates it; the promo and the settlement choice are cleared explicitly
+   * because neither is recomputed by that refetch.
+   *
+   * The consent PREDICTION is computed here rather than on the server for the
+   * same reason the create wizard computes it: nothing has been written, so
+   * there is no row to read. It is undefined when the target is in the booking
+   * owner's own family group — a parent CAN type their child's household address
+   * into the finder, and a family-scope add is consent-free under D-6, so
+   * promising "waiting for Mia to approve" over one would describe an email that
+   * is never sent and a hold that does not exist.
+   */
+  function handleAddMemberGuest(candidate: MemberGuestCandidate) {
+    const alreadyAdded =
+      booking.guests.some((guest) => guest.memberId === candidate.memberId) ||
+      addedGuests.some((guest) => guest.memberId === candidate.memberId);
+    if (alreadyAdded) return;
+
+    const memberGuest = booking.memberGuest;
+    // Undefined, never a guessed value — see `familyMembersLoaded`. The list is
+    // the booking OWNER's on both paths: a member fetches their own family, an
+    // officer fetches the booking's `eligible-family`, which is the owner's.
+    const crossFamily =
+      memberGuest && familyMembersLoaded
+        ? !familyMembers.some((member) => member.id === candidate.memberId)
+        : false;
+
+    setMemberGuestAddError(null);
+    setAppliedNewPromo(null);
+    setPromoAction({ type: "keep" });
+    setSettlementMethod(null);
+    setAddedGuests((prev) => [
+      ...prev,
+      {
+        key: crypto.randomUUID(),
+        firstName: candidate.firstName,
+        lastName: candidate.lastName,
+        ageTier: candidate.ageTier,
+        isMember: true,
+        memberId: candidate.memberId,
+        ...(crossFamily && memberGuest
+          ? {
+              memberGuestConsentPreview: memberGuest.approvalRequired
+                ? ("PENDING" as const)
+                : ("NOTIFY_ONLY" as const),
+            }
+          : {}),
         ...(perGuestDatesEnabled && !isInProgressEdit
           ? { stayStart: checkIn, stayEnd: checkOut }
           : {}),
@@ -1626,6 +1809,42 @@ export function EditBookingPanel({
             </div>
           )}
 
+          {/*
+            MG4 (#2309): "+ Add Member Guest", between the family quick-add and
+            the partner block.
+
+            GATED ON THE SERVER'S FLAG **AND** `!overrideEnabled`. The module
+            answer is computed on the booking page, never guessed here. The
+            override gate matches both blocks above it for the same reason they
+            have it: an admin date-override edit is date-only by construction, so
+            growing a guest surface on it would offer a change the override path
+            does not carry.
+
+            No `isInProgressEdit` gate, deliberately — an in-progress edit can
+            still add a FUTURE guest (the panel's own "+ Add Future Guest"
+            label), and a member guest is no different from any other addition
+            there.
+          */}
+          {booking.memberGuest?.enabled && !overrideEnabled ? (
+            <EditMemberGuestSection
+              bookingId={booking.id}
+              actingAsAdmin={booking.viewerRole === "ADMIN"}
+              openSearchEnabled={booking.memberGuest.openSearchEnabled}
+              approvalRequired={booking.memberGuest.approvalRequired}
+              existingMemberIds={[
+                ...remainingGuests
+                  .map((guest) => guest.memberId)
+                  .filter((id): id is string => Boolean(id)),
+                ...addedGuests
+                  .map((guest) => guest.memberId)
+                  .filter((id): id is string => Boolean(id)),
+              ]}
+              atCapacity={false}
+              addError={memberGuestAddError}
+              onAdd={handleAddMemberGuest}
+            />
+          ) : null}
+
           {partnerCandidates.length > 0 && !overrideEnabled && (
             <div className="space-y-2 rounded-md border border-dashed p-3">
               <p className="text-sm font-medium text-muted-foreground">
@@ -1885,6 +2104,14 @@ export function EditBookingPanel({
                 <p className="text-sm text-muted-foreground">
                   {getAgeTierLabel(ageTierOptions, guest.ageTier)} &middot; {guest.isMember ? "Member" : "Non-member"}
                 </p>
+                {/*
+                  MG4 (#2309): what saving will do to this person's consent,
+                  before the booker saves. Rendered from the SHARED badge
+                  function so the wording here and on the booking page after the
+                  save cannot drift, and only for a cross-family member guest —
+                  every other added row is byte-identical to before.
+                */}
+                {renderAddedGuestConsent(guest)}
                 {perGuestDatesEnabled ? (
                   <div className="mt-2 grid grid-cols-2 gap-2">
                     <div className="space-y-1">
