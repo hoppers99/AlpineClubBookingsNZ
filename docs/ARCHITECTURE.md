@@ -797,11 +797,11 @@ tree** (#2160, extended by #2168 and #2324) — not a claim that nothing is left
 Measured
 on the current tree by `view-only-banner-contract.test.ts`, which asserts these
 figures rather than trusting a hand count: **80 components render a banner, and
-250 of the 297 `ViewOnlyActionButton` call sites opt out** of the per-button
+252 of the 299 `ViewOnlyActionButton` call sites opt out** of the per-button
 reason. (Earlier revisions of this page published 76/232/264/211 — those were
 upstream-historical and had drifted; the numbers here are the ones the contract
-test currently pins, which is the only authority.) Those 250 split by WHICH rule
-covers them: **224** pass the literal
+test currently pins, which is the only authority.) Those 252 split by WHICH rule
+covers them: **226** pass the literal
 `describeReason={false}` and are covered by a banner in the same file, and **26**
 pass `describeReason={!ancestorRendersViewOnlyBanner}` and are covered by a
 verified vouching parent — 21 by a parent's own JSX render site (#2168), 5 by the
@@ -1486,6 +1486,16 @@ sequenceDiagram
    other bookings into idle or freed beds; lodge-wide re-planning is the
    explicit admin "Run auto-allocation" board action. Admins can also manually
    move or approve allocations.
+   Existing-chip moves are bed-only operations: `PATCH
+   /api/admin/bed-allocation/allocations` carries allocation ids and the
+   destination bed, never a target date. The service takes global booking
+   `lock(1)` first and the destination-lodge capacity lock second, re-reads each
+   source row and its original NZ lodge night under both, then commits all
+   selected row moves, shared-double partner promotions and audit rows in one
+   transaction. Sharing cancellation's global key prevents a move from
+   resurrecting an allocation after cancellation pruned it. A conflict rolls a
+   grouped move back wholesale; bucket-to-board bulk placement retains its
+   separate per-night partial-conflict contract.
 
 In-progress member self-service edits are limited to future unused nights from
 NZ tomorrow onward. NZ today and earlier are locked for admin review through
@@ -1546,7 +1556,17 @@ never collected (`additionalAmountCents > 0`, `additionalPaymentStatus` null
 or not `SUCCEEDED`) — follows the same pattern: its predicate/href helpers
 live in the same module, badge the sidebar, drive a second dashboard
 attention card, and deep-link to the bookings list's `additionalOwed=owed`
-filter.
+filter. #2350 widened that queue past finished stays: the same uncollected
+delta on a stay whose check-out is still ahead is counted too
+(`buildUnsettledAdditionalUpcomingStaysWhere`, disjoint from the finished
+predicate by the direction of its check-out bound), the dashboard card carries
+a split "N upcoming, M finished" label, the sidebar badge shows the sum, and
+both link to `buildUnsettledAdditionalStaysHref()` - the owed filter with no
+date bound, which is the only link that covers both halves. The in-memory twin
+of that predicate is `isAdditionalPaymentOwed`
+(`src/lib/additional-payment-chase.ts`), which takes the booking status as a
+required argument and shares one status list with the SQL builder, so no
+surface can read a cancelled booking's untouched delta columns as money owed.
 All sidebar badge counts come from the single `GET /api/admin/pending-counts`
 endpoint (`src/lib/admin-pending-counts.ts`), whose per-queue where-clauses
 mirror the individual queue routes. Sidebar sections render expanded by
@@ -2088,7 +2108,7 @@ flowchart TD
     Leader["app cron-leader<br/>(CRON_ENABLED=true)"]
     Leader --> Q15["Every 15 min<br/>payment-recovery, xero-outbox,<br/>xero-operation-replay, xero-inbound-reconcile"]
     Leader --> Q30["Every 30 min<br/>waitlist-processor, email-retry"]
-    Leader --> Q3h["Every 3 h<br/>confirm-pending, pre-arrival-reminders,<br/>purge-booking-requests, quote-expiry-reminders,<br/>school-attendee-confirmations, group-settlement-reaper"]
+    Leader --> Q3h["Every 3 h<br/>additional-payment-reminders, confirm-pending,<br/>pre-arrival-reminders, purge-booking-requests,<br/>quote-expiry-reminders, school-attendee-confirmations,<br/>group-settlement-reaper"]
     Leader --> Daily["Daily<br/>complete-bookings, data-pruning, draft-cleanup,<br/>age-up, capacity-warnings, admin-digest,<br/>credit-reconciliation, hut-leader-auto-assign,<br/>checkin-reminders, pending-deadline-alerts,<br/>member-guest-consent-expiry,<br/>nomination-reminders, finance-daily-sync,<br/>xero-membership-refresh, xero-link-backfill,<br/>xero-link-cleanup, xero-reconciliation-report"]
     Leader --> Cfg["Configurable<br/>backup"]
 ```
@@ -2097,6 +2117,7 @@ flowchart TD
 | --- | --- | --- |
 | `confirm-pending` | Every 3 hours | Confirm pending bookings after hold deadlines |
 | `group-settlement-reaper` | Every 3 hours | Release CONFIRMED-unpaid group children when an organiser-pays settlement stays unpaid past its window (default 48h, clamped to check-in); voids the open intent and notifies the group. Second phase (#1094): cancels the reverted PAYMENT_PENDING children, with a joiner notice, once the FAILED settlement sits unretried through another full window. Third phase (#1236): resumes a crash-interrupted organiser-cancel cleanup (ORGANISER_PAYS group still not CANCELLED under a CANCELLED organiser booking, older than `GROUP_CANCEL_RESUME_GRACE_MINUTES`, default 15m), re-driving the idempotent joiner cleanup — its persisted refund plan reconstructs the per-child refund mirror rather than recomputing |
+| `additional-payment-reminders` | Every 3 hours | Chase an uncollected additional payment while the stay is still ahead (#2350) |
 | `pre-arrival-reminders` | Every 3 hours | Send current directions and door-code reminders before check-in |
 | `purge-booking-requests` | Every 3 hours | Delete expired declined and never-verified public booking requests after the retention window |
 | `quote-expiry-reminders` | Every 3 hours | Remind public booking-request quote recipients before their quote link expires (sends a fresh working link) |

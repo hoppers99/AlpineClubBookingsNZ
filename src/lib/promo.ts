@@ -310,7 +310,7 @@ function filterGuestsByIndexes(guests: PromoDiscountGuest[], indexes: number[]) 
  *
  * LOCKSTEP: this predicate, `BENEFICIAL_PROMO_ALLOCATION_FILTER` below, and the
  * `DELETE` predicate in
- * `prisma/migrations/20260731130000_repair_zero_benefit_promo_allocations`
+ * `prisma/migrations/20260731140000_repair_zero_benefit_promo_allocations`
  * are the same rule expressed three times (TypeScript, Prisma, SQL). Change one
  * and you must change all three, or the repair migration will delete rows the
  * runtime counts, or leave rows it does not.

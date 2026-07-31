@@ -919,7 +919,7 @@ describe("lockPromoCodeRowsForUpdate", () => {
 const repairSql = readFileSync(
   join(
     process.cwd(),
-    "prisma/migrations/20260731130000_repair_zero_benefit_promo_allocations/migration.sql"
+    "prisma/migrations/20260731140000_repair_zero_benefit_promo_allocations/migration.sql"
   ),
   "utf8"
 );
