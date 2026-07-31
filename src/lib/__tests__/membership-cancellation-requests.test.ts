@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   issueActionToken: vi.fn(),
   hashActionToken: vi.fn(),
   logAudit: vi.fn(),
+  loadSettings: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => {
@@ -67,11 +68,19 @@ vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 
+vi.mock("@/lib/membership-cancellation-settings", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/lib/membership-cancellation-settings")
+  >()),
+  loadMembershipCancellationSettings: mocks.loadSettings,
+}));
+
 import {
   MembershipCancellationRequestError,
   createAdminMembershipCancellationRequest,
   createMembershipCancellationRequest,
   getMembershipCancellationConfirmationDetails,
+  getMembershipCancellationOverview,
   reissueParticipantConfirmationToken,
   respondToMembershipCancellationConfirmation,
 } from "@/lib/membership-cancellation-requests";
@@ -86,6 +95,7 @@ function member(overrides: Record<string, unknown> = {}) {
     active: true,
     canLogin: true,
     role: "USER",
+    financeAccessLevel: "NONE",
     accessRoles: [{ role: "USER" }],
     cancelledAt: null,
     parentMemberId: null,
@@ -955,6 +965,385 @@ describe("membership cancellation request workflow", () => {
       expect(result.emailWarnings).toEqual([
         "Admin review alert could not be sent",
       ]);
+    });
+  });
+
+  // #2391: the member-raised route (the Membership Cancellation panel in a
+  // member's own profile) now asks the SAME question as the admin-raised route
+  // — is there an account holder here with a membership? — and keeps only the
+  // two conditions that are about being able to operate your own profile.
+  describe("the member-raised route asks one question (#2391)", () => {
+    function requester(overrides: Record<string, unknown> = {}) {
+      return member({ familyGroupMemberships: [], ...overrides });
+    }
+
+    /** Requester and family list are the same single record. */
+    function aloneInTheClub(overrides: Record<string, unknown> = {}) {
+      const record = requester(overrides);
+      mocks.memberFindUnique.mockResolvedValue(record);
+      mocks.memberFindMany.mockResolvedValue([record]);
+      return record;
+    }
+
+    function raiseOwnCancellation() {
+      return createMembershipCancellationRequest({
+        requesterMemberId: "member-1",
+        participantMemberIds: ["member-1"],
+        reason: "Leaving the club",
+        acknowledgedWarning: true,
+      });
+    }
+
+    beforeEach(() => {
+      mocks.loadSettings.mockResolvedValue({
+        warningText: "Cancelling ends your membership.",
+        rejoinProcessText: "Rejoin by applying again.",
+        xeroCancelledContactGroups: [],
+        archiveXeroContactOnCancellation: false,
+      });
+      mocks.requestFindMany.mockResolvedValue([]);
+      aloneInTheClub();
+    });
+
+    // Mirrors the admin-route table above, class for class, because the answer
+    // must now be the same on both routes. Only two rows are NEW behaviour —
+    // the Full Admin and the organisation account, the two classes the old
+    // gate (`isMemberLevelRole`: legacy role `USER`) refused. Every scoped-role
+    // admin below stores legacy `USER` and was already accepted; those rows are
+    // here to pin that the widening did not disturb them.
+    const accepted: Array<[string, Record<string, unknown>]> = [
+      ["an ordinary member", {}],
+      [
+        "a Full Admin cancelling their own membership",
+        { role: "ADMIN", accessRoles: [{ role: "ADMIN" }, { role: "USER" }] },
+      ],
+      [
+        "a scoped-role admin (Membership Officer)",
+        { role: "USER", accessRoles: [{ role: "ADMIN_MEMBERSHIP" }] },
+      ],
+      [
+        // Fails unless the LODGE row is judged against the whole
+        // classification rather than its mere presence.
+        "a Booking Officer who also runs the lodge screen",
+        {
+          role: "USER",
+          accessRoles: [{ role: "ADMIN_BOOKINGS" }, { role: "LODGE" }],
+        },
+      ],
+      [
+        // Fails unless the predicate reads `roleDefinitionId`. (Prisma is
+        // mocked here, so the fixture carries the field whatever the query
+        // selects; the select itself is asserted separately below.)
+        "a custom definition-backed role holder who also holds lodge access",
+        {
+          role: "USER",
+          accessRoles: [
+            { role: null, roleDefinitionId: "def-lodge-ops" },
+            { role: "LODGE" },
+          ],
+        },
+      ],
+      [
+        // Fails unless the predicate reads the legacy finance column. (Same
+        // caveat as above: mocked Prisma, so the select is asserted below.)
+        "a Treasurer recorded only by the legacy finance column",
+        {
+          role: "USER",
+          financeAccessLevel: "MANAGER",
+          accessRoles: [{ role: "LODGE" }],
+        },
+      ],
+      [
+        "an organisation account",
+        { role: "SCHOOL", accessRoles: [{ role: "ORG" }] },
+      ],
+    ];
+
+    for (const [label, overrides] of accepted) {
+      it(`lets ${label} raise their own cancellation`, async () => {
+        aloneInTheClub(overrides);
+
+        await expect(raiseOwnCancellation()).resolves.toBeDefined();
+        expect(mocks.requestCreate).toHaveBeenCalledTimes(1);
+      });
+    }
+
+    const refusedRecords: Array<[string, Record<string, unknown>]> = [
+      ["the lodge kiosk device login", { role: "LODGE", accessRoles: [] }],
+      [
+        "a kiosk carrying only a LODGE access-role row",
+        { role: "USER", accessRoles: [{ role: "LODGE" }] },
+      ],
+      [
+        "a booking-request guest record",
+        { role: "NON_MEMBER", canLogin: false, accessRoles: [] },
+      ],
+      [
+        "a school booking-request contact",
+        { role: "SCHOOL", canLogin: false, accessRoles: [] },
+      ],
+    ];
+
+    for (const [label, overrides] of refusedRecords) {
+      it(`refuses ${label}, saying it holds no membership`, async () => {
+        aloneInTheClub(overrides);
+
+        await expect(raiseOwnCancellation()).rejects.toMatchObject({
+          message: expect.stringContaining("holds no membership of its own"),
+          statusCode: 403,
+        } satisfies Partial<MembershipCancellationRequestError>);
+        expect(mocks.requestCreate).not.toHaveBeenCalled();
+      });
+    }
+
+    // The two retained conditions. Both are about being able to USE your own
+    // profile, and the refusal has to say that — not the old role rule.
+    const refusedStates: Array<[string, Record<string, unknown>]> = [
+      ["a cancelled or otherwise closed account", { active: false }],
+      [
+        "a family dependant with no login of their own",
+        { ageTier: "CHILD", canLogin: false, accessRoles: [] },
+      ],
+      [
+        "an adult member whose login has been disabled",
+        { canLogin: false, accessRoles: [] },
+      ],
+    ];
+
+    for (const [label, overrides] of refusedStates) {
+      it(`refuses ${label}, naming the login requirement`, async () => {
+        aloneInTheClub(overrides);
+
+        await expect(raiseOwnCancellation()).rejects.toMatchObject({
+          message: expect.stringContaining(
+            "needs an active account with its own login",
+          ),
+          statusCode: 403,
+        } satisfies Partial<MembershipCancellationRequestError>);
+        expect(mocks.requestCreate).not.toHaveBeenCalled();
+      });
+    }
+
+    it("still cancels a non-login dependant through a relative's family list", async () => {
+      // The other half of the login condition: it narrows who may RAISE a
+      // request, never whose membership can be included in one. A regression
+      // guard, not new behaviour — this held before #2391 too, and the point
+      // is that widening the requester gate did not disturb it.
+      mocks.memberFindUnique.mockResolvedValue(member());
+      mocks.memberFindMany.mockResolvedValue([
+        member(),
+        member({
+          id: "child-1",
+          firstName: "Charlie",
+          ageTier: "CHILD",
+          canLogin: false,
+          accessRoles: [],
+          parentMemberId: "member-1",
+        }),
+      ]);
+
+      const overview = await getMembershipCancellationOverview("member-1");
+      const child = overview.candidates.find(
+        (candidate) => candidate.id === "child-1",
+      );
+
+      expect(child).toMatchObject({
+        eligible: true,
+        ineligibleReason: null,
+        requiresOwnConfirmation: false,
+      });
+    });
+
+    it("lists a Full Admin spouse in the family list, eligible like anyone else", async () => {
+      // A Full Admin stores legacy role `ADMIN`, which the old family query
+      // filtered out (`role in ["USER"]`) and the old per-candidate test
+      // rejected. This is one of the exactly two classes #2391 admits — a
+      // scoped-role admin spouse (legacy `USER`) was listed and eligible all
+      // along, so a fixture built that way would prove nothing.
+      mocks.memberFindUnique.mockResolvedValue(member());
+      mocks.memberFindMany.mockResolvedValue([
+        member(),
+        member({
+          id: "spouse-1",
+          firstName: "Dana",
+          email: "dana@example.org",
+          role: "ADMIN",
+          accessRoles: [{ role: "ADMIN" }, { role: "USER" }],
+        }),
+      ]);
+
+      const overview = await getMembershipCancellationOverview("member-1");
+      const spouse = overview.candidates.find(
+        (candidate) => candidate.id === "spouse-1",
+      );
+
+      expect(spouse).toMatchObject({
+        eligible: true,
+        ineligibleReason: null,
+        relationship: "family_adult",
+        // An own-login adult still confirms for themselves.
+        requiresOwnConfirmation: true,
+      });
+    });
+
+    it("lists an organisation sharing the family group, badged as one", async () => {
+      // The other class #2391 admits. An organisation carries `ageTier =
+      // NOT_APPLICABLE`, so before the label gained an `organisation` case it
+      // would have rendered as "Dependant" *and* "Confirms by email" at once —
+      // a combination the old role filter kept unreachable.
+      mocks.memberFindUnique.mockResolvedValue(member());
+      mocks.memberFindMany.mockResolvedValue([
+        member(),
+        member({
+          id: "org-1",
+          firstName: "Alpine",
+          lastName: "College",
+          email: "office@alpine.example.org",
+          ageTier: "NOT_APPLICABLE",
+          role: "SCHOOL",
+          accessRoles: [{ role: "ORG" }],
+        }),
+      ]);
+
+      const overview = await getMembershipCancellationOverview("member-1");
+      const organisation = overview.candidates.find(
+        (candidate) => candidate.id === "org-1",
+      );
+
+      expect(organisation).toMatchObject({
+        eligible: true,
+        ineligibleReason: null,
+        relationship: "organisation",
+        // Its own login answers the confirmation email; there is no separate
+        // person to ask.
+        requiresOwnConfirmation: true,
+      });
+    });
+
+    it("never filters the family query by role", async () => {
+      // Filtering in the QUERY is what dropped a full-admin relative, and an
+      // organisation sharing the family group, from the list with no reason
+      // shown — the silent-omission failure #2354 and #2383 both set out to
+      // end. Eligibility is decided per candidate instead, so a record that
+      // cannot be included can say why.
+      await getMembershipCancellationOverview("member-1");
+
+      const [[query]] = mocks.memberFindMany.mock.calls as [
+        [{ where: Record<string, unknown> }],
+      ];
+      expect(query.where).not.toHaveProperty("role");
+    });
+
+    it("explains a non-holder in the family list rather than dropping it", async () => {
+      mocks.memberFindUnique.mockResolvedValue(member());
+      mocks.memberFindMany.mockResolvedValue([
+        member(),
+        member({
+          id: "kiosk-1",
+          firstName: "Lodge",
+          lastName: "Kiosk",
+          role: "LODGE",
+          accessRoles: [],
+        }),
+      ]);
+
+      const overview = await getMembershipCancellationOverview("member-1");
+      const kiosk = overview.candidates.find(
+        (candidate) => candidate.id === "kiosk-1",
+      );
+
+      expect(kiosk?.eligible).toBe(false);
+      expect(kiosk?.ineligibleReason).toContain("holds no membership to cancel");
+    });
+
+    it("selects every field the eligibility rule reads, on both queries", async () => {
+      // Prisma is mocked, so every case above would still pass if a query
+      // stopped selecting a field the rule depends on — in production it would
+      // arrive `undefined` and the record would be misclassified as the kiosk
+      // device. Assert the queries themselves, as the admin path already does.
+      await getMembershipCancellationOverview("member-1");
+
+      const [[requesterQuery]] = mocks.memberFindUnique.mock.calls as [
+        [{ select: Record<string, unknown> }],
+      ];
+      const [[familyQuery]] = mocks.memberFindMany.mock.calls as [
+        [{ select: Record<string, unknown> }],
+      ];
+
+      for (const query of [requesterQuery, familyQuery]) {
+        expect(query.select).toMatchObject({
+          role: true,
+          canLogin: true,
+          active: true,
+          financeAccessLevel: true,
+          accessRoles: { select: { role: true, roleDefinitionId: true } },
+        });
+      }
+    });
+
+    describe("a self-raised request is the same shape as an admin-raised one", () => {
+      it("confirms the requester at creation and waits on no email", async () => {
+        aloneInTheClub({
+          role: "ADMIN",
+          accessRoles: [{ role: "ADMIN" }, { role: "USER" }],
+        });
+
+        await raiseOwnCancellation();
+
+        const createArgs = mocks.requestCreate.mock.calls[0][0];
+        const participants = createArgs.data.participants.create;
+        expect(participants).toHaveLength(1);
+        expect(participants[0]).toMatchObject({
+          memberId: "member-1",
+          status: "REQUESTED",
+          confirmationTokenHash: null,
+          confirmationTokenExpiresAt: null,
+        });
+        expect(participants[0].confirmedAt).toBeInstanceOf(Date);
+        // Nobody is emailed a confirmation link for their own request.
+        expect(mocks.sendConfirmationEmail).not.toHaveBeenCalled();
+        // ...and it reaches the review queue immediately.
+        expect(mocks.sendAdminRequestAlert).toHaveBeenCalled();
+      });
+
+      it("records the raiser as the member themselves, which is what the approval guard compares", async () => {
+        // `assertCancellationApprovalIsIndependent` compares the stored
+        // `requestedByMemberId` against the approving admin's session id, so a
+        // self-raised request is refusable by exactly that admin and no other
+        // — the separation-of-duties property the widened rule leans on.
+        aloneInTheClub({
+          role: "ADMIN",
+          accessRoles: [{ role: "ADMIN" }, { role: "USER" }],
+        });
+
+        await raiseOwnCancellation();
+
+        const createArgs = mocks.requestCreate.mock.calls[0][0];
+        expect(createArgs.data.requestedByMemberId).toBe("member-1");
+        expect(createArgs.data.participants.create[0].memberId).toBe(
+          "member-1",
+        );
+      });
+
+      it("does not park an organisation's own request behind a confirmation nobody would action", async () => {
+        // An organisation has no "adult participant" in the human sense. It is
+        // the requester, so `requiresOwnConfirmation` is false and the row is
+        // born confirmed — the same branch an admin-raised request takes.
+        aloneInTheClub({
+          role: "SCHOOL",
+          accessRoles: [{ role: "ORG" }],
+          email: "club@example.org",
+        });
+
+        await raiseOwnCancellation();
+
+        const participants =
+          mocks.requestCreate.mock.calls[0][0].data.participants.create;
+        expect(participants[0].status).toBe("REQUESTED");
+        expect(participants[0].confirmedAt).toBeInstanceOf(Date);
+        expect(mocks.issueActionToken).not.toHaveBeenCalled();
+        expect(mocks.sendConfirmationEmail).not.toHaveBeenCalled();
+      });
     });
   });
 
