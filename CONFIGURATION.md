@@ -248,6 +248,16 @@ staying at a lodge with no door code, and a body written as
 `Requested: {{requestedAmount}}` prints a bare `Requested:` on an appeal that
 named no figure.
 
+The one security-specific exception is `{{bookingUrl}}` (#2362). It is offered
+as an **optional** chip only on templates tied to one concrete booking. The
+mailer supplies the canonical `/bookings/<encoded-id>` URL only after confirming
+that the exact signed-in recipient is the booking owner, a linked member, or an
+admin with bookings-view access. For a public/non-login contact, an aggregate
+operator message, or an unauthorized member, the renderer removes the whole
+line containing `{{bookingUrl}}`; it does not leave a bare label. Existing
+stored overrides are not rewritten, and public bearer links such as `/pay/<token>`
+or consent/respond URLs remain separate and unchanged.
+
 Anything optional is therefore supplied as a **pre-composed line**: the sender
 builds the whole line — label, value and its trailing blank line — or the empty
 string, and the default body carries only the token. `{{doorCodeNote}}`,

@@ -217,6 +217,7 @@ export async function DELETE(
     if (member) {
       sendBookingModifiedEmail({
         bookingId: result.booking.id,
+        recipientMemberId: member.id,
         email: member.email,
         firstName: member.firstName,
         modificationType: "GUEST_REMOVE",

@@ -1314,7 +1314,10 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
             memberId: fullBooking.memberId,
           });
           sendBookingConfirmedEmail(
-            { bookingId: fullBooking.id },
+            {
+              bookingId: fullBooking.id,
+              recipientMemberId: fullBooking.memberId,
+            },
             fullBooking.member.email,
             fullBooking.member.firstName,
             fullBooking.checkIn,
@@ -1389,7 +1392,7 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
     // Suppressed when an admin on-behalf create opts out of member email (#1695).
     if (member && notifyMember) {
       sendBookingPendingEmail(
-        { bookingId: booking.id },
+        { bookingId: booking.id, recipientMemberId: effectiveMemberId },
         member.email,
         member.firstName,
         booking.checkIn,
@@ -1657,7 +1660,7 @@ export async function createWaitlistedBooking(input: WaitlistedBookingInput): Pr
   const notifyWaitlistedMember = !isOnBehalf || input.notifyMember !== false;
   if (member && notifyWaitlistedMember) {
     sendWaitlistConfirmationEmail(
-      { bookingId: newBooking.id },
+      { bookingId: newBooking.id, recipientMemberId: effectiveMemberId },
       member.email,
       member.firstName,
       checkIn,

@@ -1861,7 +1861,10 @@ export async function approveBookingRequest(input: {
 
     try {
       await sendBookingRequestApprovedEmail({
-        bookingContext: { bookingId: conversion.bookingId },
+        bookingContext: {
+          bookingId: conversion.bookingId,
+          recipientMemberId: conversion.memberId,
+        },
         email: request.contactEmail,
         firstName: request.contactFirstName,
         token: paymentToken,

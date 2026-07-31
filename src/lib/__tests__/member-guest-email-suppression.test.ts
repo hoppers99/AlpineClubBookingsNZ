@@ -128,6 +128,7 @@ const SENDERS: Array<{ templateName: string; send: () => Promise<unknown> }> = [
     send: () =>
       sendMemberGuestConsentRequestEmail({
         bookingId: "bkg_1",
+        recipient: { kind: "member", memberId: "member_1" },
         email: "priya@example.nz",
         firstName: "Priya",
         bookerName: "Dave Ngata",
@@ -145,6 +146,7 @@ const SENDERS: Array<{ templateName: string; send: () => Promise<unknown> }> = [
     send: () =>
       sendMemberGuestAddedEmail({
         bookingId: "bkg_1",
+        recipient: { kind: "member", memberId: "member_1" },
         email: "hana@example.nz",
         firstName: "Hana",
         bookerName: "Dave Ngata",
@@ -170,6 +172,7 @@ const SENDERS: Array<{ templateName: string; send: () => Promise<unknown> }> = [
     send: () =>
       sendMemberGuestConsentOutcomeEmail({
         bookingId: "bkg_1",
+        recipient: { kind: "member", memberId: "owner_1" },
         email: "dave@example.nz",
         firstName: "Dave",
         guest: { firstName: "Priya", lastName: "Kaur" },
@@ -183,6 +186,7 @@ const SENDERS: Array<{ templateName: string; send: () => Promise<unknown> }> = [
     send: () =>
       sendMemberGuestConsentExpiredEmail({
         bookingId: "bkg_1",
+        recipient: { kind: "member", memberId: "member_1" },
         email: "priya@example.nz",
         firstName: "Priya",
         bookerName: "Dave Ngata",

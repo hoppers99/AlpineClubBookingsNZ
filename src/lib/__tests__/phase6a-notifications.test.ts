@@ -495,7 +495,7 @@ describe("N-10: EmailLog tracking", () => {
     const { sendBookingPendingEmail } = await import("../email");
 
     await sendBookingPendingEmail(
-      { bookingId: "bk_test" },
+      { bookingId: "bk_test", recipientMemberId: "member_1" },
       "member@example.com",
       "Casey",
       new Date("2026-07-15"),

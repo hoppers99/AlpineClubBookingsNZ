@@ -200,7 +200,7 @@ export async function POST(
 
   // Fire-and-forget: confirmation email + Xero invoice
   sendBookingConfirmedEmail(
-    { bookingId: booking.id },
+    { bookingId: booking.id, recipientMemberId: booking.memberId },
     booking.member.email,
     booking.member.firstName,
     booking.checkIn,

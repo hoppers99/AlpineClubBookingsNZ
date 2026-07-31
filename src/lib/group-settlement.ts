@@ -666,7 +666,7 @@ interface LoadedSettlementForApply {
   groupBooking: {
     organiserBookingId: string;
     status: GroupBookingStatus;
-    organiserMember: { email: string; firstName: string; lastName: string };
+    organiserMember: { id: string; email: string; firstName: string; lastName: string };
     organiserBooking: { checkIn: Date; checkOut: Date };
   };
 }
@@ -677,7 +677,9 @@ const APPLY_SETTLEMENT_INCLUDE = {
     select: {
       organiserBookingId: true,
       status: true,
-      organiserMember: { select: { email: true, firstName: true, lastName: true } },
+      organiserMember: {
+        select: { id: true, email: true, firstName: true, lastName: true },
+      },
       organiserBooking: { select: { checkIn: true, checkOut: true } },
     },
   },
@@ -898,6 +900,7 @@ async function settleConfirmedChildrenAndNotify(
       await sendGroupSettlementReceiptEmail({
         bookingContext: {
           bookingId: settlement.groupBooking.organiserBookingId,
+          recipientMemberId: organiser.id,
         },
         email: organiser.email,
         firstName: organiser.firstName,
@@ -918,6 +921,7 @@ async function settleConfirmedChildrenAndNotify(
       select: {
         // #2258: each joiner's own booking id gates their settled-spot email.
         id: true,
+        memberId: true,
         checkIn: true,
         checkOut: true,
         member: { select: { email: true, firstName: true } },
@@ -927,7 +931,10 @@ async function settleConfirmedChildrenAndNotify(
     for (const booking of settledBookings) {
       try {
         await sendGroupJoinSettledEmail({
-          bookingContext: { bookingId: booking.id },
+          bookingContext: {
+            bookingId: booking.id,
+            recipientMemberId: booking.memberId,
+          },
           email: booking.member.email,
           firstName: booking.member.firstName,
           organiserName,

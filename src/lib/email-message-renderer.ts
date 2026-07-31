@@ -31,6 +31,7 @@ export interface PreparedEmailMessage {
   html: string;
   settings: EmailMessageSettings;
   overrideApplied: boolean;
+  bodyOverrideApplied: boolean;
 }
 
 interface EmailTemplateValidationIssue {
@@ -342,7 +343,14 @@ export function renderTemplateString(
   template: string,
   data: EmailTemplateData,
 ): string {
-  return template.replace(/\{\{([^{}]+)\}\}/g, (_match, tokenName: string) => {
+  // `bookingUrl` is deliberately optional: public contacts, aggregate messages,
+  // and members without detail-page authority must not receive a dead or
+  // privacy-leaking authenticated URL. Remove the whole authored line when the
+  // authority resolver supplied no URL, instead of leaving a dangling label.
+  const renderable = data.bookingUrl
+    ? template
+    : template.replace(/^.*\{\{\s*bookingUrl\s*\}\}.*(?:\r?\n|$)/gm, "");
+  return renderable.replace(/\{\{([^{}]+)\}\}/g, (_match, tokenName: string) => {
     const key = tokenName.trim();
     const value = data[key];
     if (value === null || value === undefined) return "";
@@ -452,6 +460,7 @@ export async function prepareEmailMessage({
   let nextSubject = subject;
   let nextHtml = html;
   let overrideApplied = false;
+  let bodyOverrideApplied = false;
 
   if (override?.subject?.trim()) {
     // Subjects render without sensitive values so a stored override can never
@@ -468,6 +477,7 @@ export async function prepareEmailMessage({
       renderTemplateString(override.bodyText.trim(), data),
     );
     overrideApplied = true;
+    bodyOverrideApplied = true;
   }
 
   return {
@@ -478,6 +488,7 @@ export async function prepareEmailMessage({
     html: applyEmailMessageSettingsToHtml(nextHtml, settings),
     settings,
     overrideApplied,
+    bodyOverrideApplied,
   };
 }
 

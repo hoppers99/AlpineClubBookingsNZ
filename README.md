@@ -52,6 +52,9 @@ illustrated with captured screenshots — plus member-facing
 [user guides](docs/user-guide/README.md), all indexed in the
 [documentation hub](docs/README.md).
 
+Concrete-booking emails can link authorized signed-in recipients straight to
+the booking detail, while public bearer actions remain separate.
+
 ## See it in action
 
 | | |

@@ -4,6 +4,16 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Booking emails now open the booking they are about, without exposing a
+  private booking link to the wrong reader (#2362).** A signed-in booking owner,
+  linked member, or Booking Officer/read-only bookings admin can follow **View
+  this booking** straight to the encoded booking detail page. Public contacts
+  without a login and aggregate operator emails do not receive that
+  authenticated link; their secure payment, quote, consent, or response links
+  remain unchanged. Clubs may use the optional `{{bookingUrl}}` chip in each
+  concrete-booking template. Existing saved wording is not rewritten, and a
+  recipient who is no longer authorized gets no dangling or dead link line.
+
 - **Clubs that had saved their own email wording stop emailing our editing notes
   (#2269).** Older releases shipped little square-bracketed notes inside the
   built-in email wording — things like `Door code: {{doorCode}} [only when a door

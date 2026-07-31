@@ -2071,14 +2071,27 @@ Editable subjects reject secret-bearing tokens (including nomination, quote
 response, and optional chore links), and the render path strips bearer-link
 aliases from legacy stored overrides before SMTP, `EmailLog`, or application
 logging receives the subject.
-Every send carries a REQUIRED, typed `bookingContext` (`{ bookingId } | "none"`)
-so the mailer knows which booking a message belongs to; that is the choke point
+Every send carries a REQUIRED, typed `bookingContext`
+(`{ bookingId, recipient } | "none"`) so the mailer knows which booking a
+message belongs to and which exact recipient authority it must verify; that is
+the choke point
 for the per-booking "No emails" switch (`Booking.noEmails`, #2258), which
 withholds every member-facing message for a booking, records each withhold as an
 `EmailLog` row with status `SKIPPED_NO_EMAILS`, never touches admin-audience or
 account/security mail, and fails closed if the switch cannot be read. The retry
 cron and the two Xero-sent invoice emails re-check the same switch because they
 bypass `sendEmail`. See `docs/DOMAIN_INVARIANTS.md` for the full contract.
+For every live registered template in the booking-scoped suppression inventory,
+that same choke point may add the canonical encoded
+`/bookings/<booking-id>` detail URL (#2362). `booking-email-authority.ts`
+re-reads the booking and recipient member, then mirrors the detail page's read
+gate: active login-capable owner, linked member, or bookings-area viewer; deleted
+bookings remain Full-Admin-only. Public/non-login contacts and aggregate reports
+are explicit recipient categories and never receive the authenticated URL.
+Built-in HTML rewrites or adds one booking CTA only after authorization, while
+stored body overrides are left byte-for-byte alone and receive only the optional
+`{{bookingUrl}}` data they explicitly use. Bearer action URLs are not booking
+detail URLs and are never removed by this policy.
 If an admin/system alert cannot be delivered to any opted-in admin recipient
 because every send is suppressed or fails, the app records a critical
 communication audit event and surfaces it in Admin Email Deliverability.

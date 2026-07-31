@@ -1,0 +1,73 @@
+/**
+ * Live registered templates from the booking-scoped suppression inventory that
+ * may expose the OPTIONAL `bookingUrl` token after recipient authorization.
+ *
+ * The token-contract suite compares this set mechanically with
+ * `ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES` intersected with the live registry.
+ * The retired `refund-request-resolved` name is intentionally absent.
+ */
+export const BOOKING_URL_TEMPLATE_NAMES: ReadonlySet<string> = new Set([
+  "booking-confirmed",
+  "booking-pending",
+  "booking-bumped",
+  "booking-guests-cancelled",
+  "booking-cancelled",
+  "split-guest-portion-cancelled",
+  "booking-review-approved",
+  "booking-review-rejected",
+  "checkin-reminder",
+  "pre-arrival-reminder",
+  "additional-payment-reminder",
+  "booking-modified",
+  "setup-intent-failed",
+  "waitlist-confirmation",
+  "waitlist-offer",
+  "waitlist-offer-expired",
+  "chore-roster",
+  "booking-request-approved",
+  "split-guest-payment-link",
+  "booking-request-payment-expired",
+  "school-attendee-confirmation",
+  "group-settlement-receipt",
+  "group-join-settled",
+  "group-settlement-expired",
+  "group-join-released",
+  "group-join-cancelled",
+  "refund-request-approved",
+  "refund-request-declined",
+  "member-guest-consent-request",
+  "member-guest-added",
+  "member-guest-consent-outcome",
+  "member-guest-consent-answered",
+  "member-guest-consent-expired",
+]);
+
+export interface BookingUrlTemplateContractFinding {
+  kind: "missing" | "extra";
+  templateName: string;
+}
+
+/**
+ * Compare a candidate booking-URL set with the registered portion of the
+ * suppression inventory. Kept pure so the mutation test can prove that either
+ * a new inventory entry or an accidental classification removal is detected.
+ */
+export function findBookingUrlTemplateContractFindings(params: {
+  bookingScopedInventory: ReadonlySet<string>;
+  registeredTemplates: ReadonlySet<string>;
+  bookingUrlTemplates: ReadonlySet<string>;
+}): BookingUrlTemplateContractFinding[] {
+  const expected = new Set(
+    Array.from(params.bookingScopedInventory).filter((templateName) =>
+      params.registeredTemplates.has(templateName),
+    ),
+  );
+  return [
+    ...Array.from(expected)
+      .filter((templateName) => !params.bookingUrlTemplates.has(templateName))
+      .map((templateName) => ({ kind: "missing" as const, templateName })),
+    ...Array.from(params.bookingUrlTemplates)
+      .filter((templateName) => !expected.has(templateName))
+      .map((templateName) => ({ kind: "extra" as const, templateName })),
+  ].sort((left, right) => left.templateName.localeCompare(right.templateName));
+}

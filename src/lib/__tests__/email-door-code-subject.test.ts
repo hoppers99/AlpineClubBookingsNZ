@@ -130,7 +130,7 @@ describe("sensitive values never reach email subjects, EmailLog, or app logs", (
     );
 
     await sendBookingConfirmedEmail(
-      { bookingId: "bk_test" },
+      { bookingId: "bk_test", recipientMemberId: "member_1" },
       "member@example.com",
       "Ada",
       new Date("2026-07-10T00:00:00.000Z"),
@@ -166,6 +166,7 @@ describe("sensitive values never reach email subjects, EmailLog, or app logs", (
 
     await sendPreArrivalReminderEmail({
       bookingId: "bk_test",
+      recipientMemberId: "member_1",
       email: "member@example.com",
       firstName: "Ada",
       checkIn: new Date("2026-07-10T00:00:00.000Z"),
@@ -195,7 +196,7 @@ describe("sensitive values never reach email subjects, EmailLog, or app logs", (
     );
 
     await sendBookingConfirmedEmail(
-      { bookingId: "bk_test" },
+      { bookingId: "bk_test", recipientMemberId: "member_1" },
       "member@example.com",
       "Ada",
       new Date("2026-07-10T00:00:00.000Z"),
@@ -220,7 +221,7 @@ describe("sensitive values never reach email subjects, EmailLog, or app logs", (
     );
 
     await sendChoreRosterEmail(
-      { bookingId: "bk_test" },
+      { bookingId: "bk_test", recipient: { kind: "member", memberId: "member_1" } },
       "member@example.com",
       "Ada",
       "2026-07-10",
@@ -302,7 +303,7 @@ describe("sensitive values never reach email subjects, EmailLog, or app logs", (
 
   it("keeps the default subject clean when no override exists", async () => {
     await sendBookingConfirmedEmail(
-      { bookingId: "bk_test" },
+      { bookingId: "bk_test", recipientMemberId: "member_1" },
       "member@example.com",
       "Ada",
       new Date("2026-07-10T00:00:00.000Z"),

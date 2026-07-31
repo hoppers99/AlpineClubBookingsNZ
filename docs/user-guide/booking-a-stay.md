@@ -108,6 +108,12 @@ Paying by card versus by internet banking is covered in
 Your bookings live at **My Bookings** (`/bookings`), sortable by start date and
 filterable by status.
 
+Emails about one of your bookings take you straight to that booking's detail
+page when you are signed in and allowed to open it. If an email is sent to a
+public contact who does not have a login, its secure payment, quote, or response
+link still works as described in that email; it is not replaced with a sign-in
+link the recipient cannot use.
+
 ![The My Bookings list showing two bookings, one with a Waitlist Offered badge and one with a Payment Pending badge, each with dates, guest count, and price](../images/public/member-bookings.png)
 
 A provisional non-member guest created by a Members First split appears as an

@@ -35,7 +35,9 @@ import { getEmailTemplateDefinition } from "@/lib/email-message-registry";
  * `bookingId?: string`, so every call site — including every future one — has to
  * state which it is and cannot silently default to "not a booking email".
  */
-export type EmailBookingContext = { bookingId: string } | "none";
+export type { EmailBookingContext } from "@/lib/booking-email-contract";
+
+type EmailBookingSuppressionContext = { bookingId: string } | "none";
 
 /**
  * Pseudo template names for the two messages XERO sends on our behalf. They are
@@ -172,7 +174,7 @@ export type BookingEmailGateDecision =
  * Resolve the gate for one send. Never throws.
  */
 export async function resolveBookingEmailGate(
-  bookingContext: EmailBookingContext,
+  bookingContext: EmailBookingSuppressionContext,
   templateName: string,
 ): Promise<BookingEmailGateDecision> {
   if (bookingContext === "none") return { decision: "send" };

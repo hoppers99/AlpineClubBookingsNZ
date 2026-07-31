@@ -98,7 +98,7 @@ describe('sendEmail gate: booking "No emails" switch on', () => {
         subject: "Something about your booking",
         html: "<p>body</p>",
         templateName,
-        bookingContext: { bookingId: "bk_1" },
+        bookingContext: { bookingId: "bk_1", recipient: { kind: "non-login-public-contact" } },
       });
 
       expect(outcome).toEqual({
@@ -178,7 +178,7 @@ describe('sendEmail gate: booking "No emails" switch on', () => {
         templateName,
         // Deliberately the strongest case: a real booking id AND the switch on.
         // The registry audience is the authority, so the alert still goes out.
-        bookingContext: { bookingId: "bk_1" },
+        bookingContext: { bookingId: "bk_1", recipient: { kind: "non-login-public-contact" } },
       });
 
       expect(outcome.status).toBe("sent");
@@ -194,7 +194,7 @@ describe('sendEmail gate: booking "No emails" switch on', () => {
       subject: "Email delivery permanently failed",
       html: "<p>alert</p>",
       templateName: "admin-email-failure",
-      bookingContext: { bookingId: "bk_1" },
+      bookingContext: { bookingId: "bk_1", recipient: { kind: "non-login-public-contact" } },
     });
 
     expect(outcome.status).toBe("sent");
@@ -209,7 +209,7 @@ describe('sendEmail gate: booking "No emails" switch off', () => {
       subject: "Something about your booking",
       html: "<p>body</p>",
       templateName,
-      bookingContext: { bookingId: "bk_1" },
+      bookingContext: { bookingId: "bk_1", recipient: { kind: "non-login-public-contact" } },
     });
 
     expect(outcome.status).toBe("sent");
@@ -223,7 +223,7 @@ describe('sendEmail gate: booking "No emails" switch off', () => {
       subject: "Confirmed",
       html: "<p>body</p>",
       templateName: "booking-confirmed",
-      bookingContext: { bookingId: "bk_42" },
+      bookingContext: { bookingId: "bk_42", recipient: { kind: "non-login-public-contact" } },
     });
 
     expect(mocks.emailLogCreate).toHaveBeenCalledWith({
@@ -255,7 +255,7 @@ describe("sendEmail gate: fail closed", () => {
       subject: "Confirmed",
       html: "<p>body</p>",
       templateName: "booking-confirmed",
-      bookingContext: { bookingId: "bk_1" },
+      bookingContext: { bookingId: "bk_1", recipient: { kind: "non-login-public-contact" } },
     });
 
     expect(outcome).toEqual({
@@ -283,7 +283,7 @@ describe("sendEmail gate: fail closed", () => {
       subject: "Confirmed",
       html: "<p>body</p>",
       templateName: "booking-confirmed",
-      bookingContext: { bookingId: "bk_1" },
+      bookingContext: { bookingId: "bk_1", recipient: { kind: "non-login-public-contact" } },
     });
 
     expect(outcome.status).toBe("withheld_for_booking");
@@ -299,7 +299,7 @@ describe("sendEmail gate: fail closed", () => {
       subject: "Confirmed",
       html: "<p>body</p>",
       templateName: "booking-confirmed",
-      bookingContext: { bookingId: "bk_1" },
+      bookingContext: { bookingId: "bk_1", recipient: { kind: "non-login-public-contact" } },
     });
 
     expect(outcome.status).toBe("withheld_for_booking");
@@ -324,7 +324,7 @@ describe("fail-closed withholds are surfaced to an operator (#2258)", () => {
       subject: "Confirmed",
       html: "<p>body</p>",
       templateName: "booking-confirmed",
-      bookingContext: { bookingId: "bk_alert_1" },
+      bookingContext: { bookingId: "bk_alert_1", recipient: { kind: "non-login-public-contact" } },
     });
 
     const alerts = mocks.sendMail.mock.calls.map((call) => call[0]);
@@ -347,7 +347,7 @@ describe("fail-closed withholds are surfaced to an operator (#2258)", () => {
       subject: "Confirmed",
       html: "<p>body</p>",
       templateName: "booking-confirmed",
-      bookingContext: { bookingId: "bk_alert_2" },
+      bookingContext: { bookingId: "bk_alert_2", recipient: { kind: "non-login-public-contact" } },
     });
 
     expect(mocks.sendMail).not.toHaveBeenCalled();
@@ -363,7 +363,7 @@ describe("fail-closed withholds are surfaced to an operator (#2258)", () => {
         subject: "Confirmed",
         html: "<p>body</p>",
         templateName: "booking-confirmed",
-        bookingContext: { bookingId: "bk_throttle" },
+        bookingContext: { bookingId: "bk_throttle", recipient: { kind: "non-login-public-contact" } },
       });
     }
 
@@ -379,7 +379,7 @@ describe("fail-closed withholds are surfaced to an operator (#2258)", () => {
       subject: "Confirmed",
       html: "<p>body</p>",
       templateName: "booking-confirmed",
-      bookingContext: { bookingId: "bk_alert_3" },
+      bookingContext: { bookingId: "bk_alert_3", recipient: { kind: "non-login-public-contact" } },
     });
 
     expect(outcome.status).toBe("withheld_for_booking");
@@ -399,7 +399,7 @@ describe("fail-closed withholds are surfaced to an operator (#2258)", () => {
       subject: "Confirmed",
       html: "<p>body</p>",
       templateName: "booking-confirmed",
-      bookingContext: { bookingId: "bk_retry_alert" },
+      bookingContext: { bookingId: "bk_retry_alert", recipient: { kind: "non-login-public-contact" } },
     });
     expect(mocks.sendMail).not.toHaveBeenCalled();
 
@@ -410,7 +410,7 @@ describe("fail-closed withholds are surfaced to an operator (#2258)", () => {
       subject: "Confirmed",
       html: "<p>body</p>",
       templateName: "booking-confirmed",
-      bookingContext: { bookingId: "bk_retry_alert" },
+      bookingContext: { bookingId: "bk_retry_alert", recipient: { kind: "non-login-public-contact" } },
     });
 
     expect(mocks.sendMail).toHaveBeenCalledTimes(1);
@@ -427,7 +427,7 @@ describe("fail-closed withholds are surfaced to an operator (#2258)", () => {
         subject: "Confirmed",
         html: "<p>body</p>",
         templateName: "booking-confirmed",
-        bookingContext: { bookingId: `bk_cap_${i}` },
+        bookingContext: { bookingId: `bk_cap_${i}`, recipient: { kind: "non-login-public-contact" } },
       });
     }
 
@@ -443,7 +443,7 @@ describe("fail-closed withholds are surfaced to an operator (#2258)", () => {
       subject: "Confirmed",
       html: "<p>body</p>",
       templateName: "booking-confirmed",
-      bookingContext: { bookingId: "bk_token" },
+      bookingContext: { bookingId: "bk_token", recipient: { kind: "non-login-public-contact" } },
     });
 
     expect(mocks.emailLogCreate).toHaveBeenCalledWith({

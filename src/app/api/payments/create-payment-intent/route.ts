@@ -408,7 +408,7 @@ export async function POST(request: NextRequest) {
         include: { promoCode: true },
       });
       sendBookingConfirmedEmail(
-        { bookingId: booking.id },
+        { bookingId: booking.id, recipientMemberId: booking.memberId },
         booking.member.email,
         booking.member.firstName,
         booking.checkIn,

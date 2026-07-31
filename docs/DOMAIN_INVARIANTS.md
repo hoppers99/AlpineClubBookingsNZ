@@ -2115,8 +2115,18 @@ The rules are:
   address-keyed switch would also swallow two-factor codes, password resets,
   magic-link logins and email-change notices — account lockout, not a
   preference. Every send therefore carries a REQUIRED, typed `bookingContext`
-  (`{ bookingId } | "none"`), so a new send site is a compile error until its
-  author states which it is.
+  (`{ bookingId, recipient } | "none"`), so a new send site is a compile error
+  until its author states which it is. For a concrete booking the context also
+  names the recipient category (an explicit member id, public/non-login, or
+  aggregate operator), so address matching can never stand in for authority.
+- **Authenticated booking links follow the booking-detail read gate (#2362).**
+  A concrete booking email receives the canonical, encoded
+  `/bookings/<booking-id>` URL only when the recipient is active, can sign in,
+  and is the owner, a linked booking guest, or holds bookings-view admin access.
+  Deleted bookings remain Full-Admin-only. Public/non-login contacts, aggregate
+  reports, unrelated members, failed authority reads, and templates outside the
+  live booking-scoped inventory receive no authenticated booking URL. Bearer
+  payment, quote, consent, and response links stay distinct and unchanged.
 - **Admin-audience mail is never withheld.** The registry's
   `EmailTemplateDefinition.audience` is the authority, so admin/system alerts
   (payment failure, duplicate-capture refund, and the rest) still reach an

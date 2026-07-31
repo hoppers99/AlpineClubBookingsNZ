@@ -4,6 +4,7 @@ import {
   APPROVED_EMAIL_TEMPLATE_TOKEN_SET,
   EXTRA_TEMPLATE_TOKENS,
   EMAIL_TEMPLATE_DEFINITIONS,
+  EMAIL_TEMPLATE_KEY_SET,
   getEmailTemplateDefinition,
   sampleValue,
 } from "@/lib/email-message-registry";
@@ -27,6 +28,10 @@ import {
   ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES,
   isBookingSuppressibleTemplate,
 } from "@/lib/booking-email-suppression";
+import {
+  BOOKING_URL_TEMPLATE_NAMES,
+  findBookingUrlTemplateContractFindings,
+} from "@/lib/booking-email-template-contract";
 
 // #2268 — the guard these replace was circular. The old check ran
 // validateEmailTemplateContent over every default body, but the per-template
@@ -43,6 +48,73 @@ const DEFAULTS = EMAIL_AUDIT_DEFAULTS as unknown as Record<
   string,
   EmailTemplateDefaults
 >;
+
+describe("#2362 booking detail URL template contract", () => {
+  it("classifies exactly the live registered booking-scoped inventory", () => {
+    expect(
+      findBookingUrlTemplateContractFindings({
+        bookingScopedInventory: ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES,
+        registeredTemplates: EMAIL_TEMPLATE_KEY_SET,
+        bookingUrlTemplates: BOOKING_URL_TEMPLATE_NAMES,
+      }),
+    ).toEqual([]);
+  });
+
+  it("detects a deliberately removed booking template classification", () => {
+    const mutated = new Set(BOOKING_URL_TEMPLATE_NAMES);
+    mutated.delete("booking-confirmed");
+
+    expect(
+      findBookingUrlTemplateContractFindings({
+        bookingScopedInventory: ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES,
+        registeredTemplates: EMAIL_TEMPLATE_KEY_SET,
+        bookingUrlTemplates: mutated,
+      }),
+    ).toContainEqual({ kind: "missing", templateName: "booking-confirmed" });
+  });
+
+  it("makes bookingUrl optional, sampled, and visible in every classified default", () => {
+    for (const templateName of BOOKING_URL_TEMPLATE_NAMES) {
+      const definition = getEmailTemplateDefinition(templateName);
+      expect(definition, templateName).toBeDefined();
+      expect(definition?.allowedTokens, templateName).toContain("bookingUrl");
+      expect(definition?.requiredTokens, templateName).not.toContain("bookingUrl");
+      expect(definition?.defaultBody, templateName).toContain("{{bookingUrl}}");
+      expect(definition?.sampleData.bookingUrl, templateName).toBe(
+        "https://bookings.example.org/bookings/bkg_example",
+      );
+    }
+  });
+
+  it("renders the preview sample but removes the entire optional line when unauthorized", () => {
+    const definition = getEmailTemplateDefinition("booking-confirmed");
+    if (!definition) throw new Error("missing booking-confirmed");
+
+    expect(renderTemplateString(definition.defaultBody, definition.sampleData)).toContain(
+      "View this booking: https://bookings.example.org/bookings/bkg_example",
+    );
+    const withoutAuthority = renderTemplateString(definition.defaultBody, {
+      ...definition.sampleData,
+      bookingUrl: "",
+    });
+    expect(withoutAuthority).not.toContain("View this booking:");
+    expect(withoutAuthority).not.toContain("/bookings/bkg_example");
+  });
+
+  it("does not alter or invalidate an existing override that omits bookingUrl", () => {
+    const storedBody = "Hi {{firstName}}, your booking is confirmed.";
+    expect(renderTemplateString(storedBody, { firstName: "Aroha", bookingUrl: "" })).toBe(
+      "Hi Aroha, your booking is confirmed.",
+    );
+    expect(
+      validateEmailTemplateContent({
+        templateName: "booking-pending",
+        subject: "Booking pending",
+        bodyText: storedBody,
+      }).valid,
+    ).toBe(true);
+  });
+});
 
 describe("#2268 guard 1 — no authoring annotations in a shipped default", () => {
   it("finds none in the shipped defaults", () => {

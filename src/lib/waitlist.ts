@@ -486,7 +486,10 @@ export async function processWaitlistForDates(freedDates: {
   // Send emails after transaction commits
   if (offerDetails) {
     sendWaitlistOfferEmail(
-      { bookingId: offerDetails.bookingId },
+      {
+        bookingId: offerDetails.bookingId,
+        recipientMemberId: offerDetails.memberId,
+      },
       offerDetails.email,
       offerDetails.firstName,
       offerDetails.checkIn,
@@ -828,7 +831,7 @@ export async function expireStaleOffers(): Promise<{
 
   for (const offer of staleOffers) {
     sendWaitlistOfferExpiredEmail(
-      { bookingId: offer.id },
+      { bookingId: offer.id, recipientMemberId: offer.memberId },
       offer.member.email,
       offer.member.firstName,
       offer.checkIn,

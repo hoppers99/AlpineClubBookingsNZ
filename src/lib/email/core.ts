@@ -18,6 +18,8 @@ import {
   type EmailBookingContext,
 } from "@/lib/booking-email-suppression";
 import { isPlaceholderContactEmail } from "@/lib/placeholder-contact-email";
+import { resolveBookingEmailLink } from "@/lib/booking-email-authority";
+import { finalizeBookingEmailHtml } from "@/lib/booking-email-html";
 import {
   getEmailTransporter,
   shouldPersistEmailHtml,
@@ -212,12 +214,29 @@ export async function sendEmail({
   // thread the real id wherever one exists.
   bookingContext: EmailBookingContext;
 }): Promise<EmailSendOutcome> {
+  const bookingLink =
+    bookingContext === "none"
+      ? null
+      : await resolveBookingEmailLink({
+          bookingId: bookingContext.bookingId,
+          templateName,
+          recipient: bookingContext.recipient,
+        });
   const prepared = await prepareEmailMessage({
     templateName,
     subject,
     html,
-    templateData,
+    templateData: {
+      ...(templateData ?? {}),
+      bookingUrl: bookingLink?.bookingUrl ?? "",
+    },
     lodgeId,
+  });
+  prepared.html = finalizeBookingEmailHtml({
+    html: prepared.html,
+    bookingUrl: bookingLink?.bookingUrl ?? null,
+    bookingScoped: bookingContext !== "none",
+    bodyOverrideApplied: prepared.bodyOverrideApplied,
   });
   const from = formatEmailFromAddressWithSettings(
     prepared.settings,
