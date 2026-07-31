@@ -106,6 +106,13 @@ vi.mock("@/lib/booking-modify", async () => {
 });
 vi.mock("@/lib/booking-guests", () => ({
   resolveLinkedBookingMembers: vi.fn().mockResolvedValue([]),
+  // MG2 (#2307): the widened call sites use the boundary-returning variant. An
+  // empty boundary is "everybody is inside the booker's family", which is this
+  // test's world unchanged. Added when #2266 and #2307 met in the merge.
+  resolveLinkedBookingMembersWithBoundary: vi.fn().mockResolvedValue({
+    members: new Map(),
+    boundary: { scopeByMemberId: new Map(), beyondFamilyMemberIds: [] },
+  }),
   assertLinkedBookingMembersCanBeBooked: vi.fn().mockResolvedValue(undefined),
   normalizeBookingGuestInputs: vi.fn().mockReturnValue([]),
   BookingGuestValidationError: class extends Error {},
@@ -119,9 +126,17 @@ vi.mock("@/lib/cancellation", () => ({
   daysUntilDate: vi.fn().mockReturnValue(5),
 }));
 vi.mock("@/lib/change-fee", () => ({ calculateChangeFee: h.calculateChangeFee }));
-vi.mock("@/lib/module-settings", () => ({
-  loadEffectiveModuleFlags: h.loadModuleFlags,
-}));
+// Partial rather than replacing the module wholesale: this route's graph reaches
+// `admin-modules.ts`, which re-exports `normalizeClubModuleSettings` at module
+// scope, so a mock that returns only `loadEffectiveModuleFlags` makes the whole
+// file fail to import the moment anything else in the graph pulls
+// `admin-modules` in (#2307's member-guest add policy did exactly that). Keeping
+// the real module underneath means a future export cannot break this suite for a
+// reason that has nothing to do with what it tests.
+vi.mock("@/lib/module-settings", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/module-settings")>();
+  return { ...actual, loadEffectiveModuleFlags: h.loadModuleFlags };
+});
 vi.mock("@/lib/xero-token-store", () => ({
   isXeroConnected: h.isXeroConnected,
 }));

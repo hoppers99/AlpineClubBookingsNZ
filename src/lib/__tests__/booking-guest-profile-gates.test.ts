@@ -263,8 +263,12 @@ describe("booking profile gate route integration", () => {
   it("add-guests route validates linked member profiles before writing guests", () => {
     const source = readRepoFile("src/app/api/bookings/[id]/guests/route.ts");
     const gateIndex = source.indexOf("await assertLinkedBookingMembersCanBeBooked");
+    // MG2 (#2307) feeds the normalised guests straight into
+    // `planMemberGuestConsentWrites`, so the assignment is now
+    // `normalizedNewGuests = consentPlan.guests`. The invariant this asserts is
+    // unchanged and is what matters: normalisation happens AFTER the gate.
     const normalizeIndex = source.indexOf(
-      "normalizedNewGuests = normalizeBookingGuestInputs",
+      "normalizeBookingGuestInputs(newGuests, linkedMembers)",
       gateIndex
     );
 

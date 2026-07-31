@@ -11,6 +11,7 @@ import type { GroupDiscountConfig } from "@/lib/pricing";
 import type { BookingPaymentMethod } from "@/lib/booking-payment-methods";
 import type { InternetBankingPaymentSettingsValues } from "@/lib/internet-banking-settings";
 import type { GuestNightInput } from "@/lib/booking-guest-stay-ranges";
+import type { MemberGuestConsentGuestFields } from "@/lib/member-guest-add-policy";
 
 export type BookingWithGuests = Booking & { guests: BookingGuest[] };
 
@@ -21,7 +22,7 @@ export type BookingWithGuests = Booking & { guests: BookingGuest[] };
  */
 export const RETROACTIVE_BOOKING_MAX_LOOKBACK_DAYS = 365;
 
-export interface BookingGuestInput {
+export interface BookingGuestInput extends MemberGuestConsentGuestFields {
   firstName: string;
   lastName: string;
   ageTier: AgeTier;
@@ -33,6 +34,13 @@ export interface BookingGuestInput {
   // exactly these nights (which may be non-contiguous) and stayStart/stayEnd
   // are the derived min/max envelope.
   nights?: ReadonlyArray<GuestNightInput> | null;
+  // The two member-guest fields come from MemberGuestConsentGuestFields
+  // ("+ Add Member Guest", epic #2305, MG2 #2307): `memberGuestConsent` is the
+  // five consent columns this row must be created with, and
+  // `crossFamilyMemberGuest` is D-8's marker. Both are absent on every path that
+  // does not add a member from beyond the booker's family, so a guest built by
+  // any other flow is byte-identical to what it was before MG2. The import is
+  // type-only: nothing at runtime is pulled into this types module.
 }
 
 interface BaseInput {

@@ -4,6 +4,115 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **The browser test suite stopped crying wolf (#2302).** Over three days five
+  different browser tests went red on code that was perfectly fine, each costing
+  someone an investigation and one of them turning the main branch red for the
+  best part of an hour. None of it was a real defect, and none of it was
+  "slowness" either. Two causes were behind all five.
+
+  The first: when a browser test fails, it is automatically run again — but it
+  was run again against the *leftovers* of the attempt that just failed. A test
+  that books a bed on its way to the thing it actually checks left that booking
+  behind, so the second and third attempts failed on the booking clash rather
+  than on the original problem, and the error finally reported was the clean-up
+  mess rather than the cause. Tests that permanently change something now put it
+  back before each attempt, and each attempt books different nights, so a repeat
+  run starts from where the first one did. Where a test genuinely has to re-use
+  or move the booking an earlier test made, and so cannot simply pick different
+  nights, it clears that booking before every attempt instead. Groups of tests
+  that used to be chained together end to end have also been unchained down to
+  the pairs that genuinely depend on each other, so one test's bad luck can no
+  longer drag its neighbours down with it. Relatedly, the tests reach a booking's
+  dates by paging forward through the booking calendar a month at a time: that
+  walk now has room for the furthest dates a repeat run can ask for, and says so
+  plainly if it ever runs out, instead of quietly stopping on the wrong month and
+  failing later on a day it was never showing.
+
+  The second: the pages that stream in progressively briefly contain each piece
+  of text twice — once in the version being delivered and once in the version
+  being shown — and a test that looked for text by wording alone could catch the
+  invisible copy and give up. Those checks now look for the copy that is actually
+  on screen.
+
+  Also fixed: the stand-in Xero server used by the tests calls the app back
+  through its own network loopback, which on a busy build machine occasionally
+  refuses the connection; a single refused connection used to leave the Xero
+  setup wizard stuck on "Confirming the organisation name…" for the rest of the
+  test. That call now retries. The testing guide gains a "Flake invariants"
+  section so a future test cannot quietly reintroduce any of this. No part of
+  this touches the running club site.
+
+
+
+- **Adding another club member as a guest (#2306, #2307).** Until now a member
+  could only put people from their own family group on a booking. There is now a
+  new **Add another member as a guest** switch on **Admin → Modules**, off by
+  default, and with it on a member can put *any* active club member on their
+  booking — with that member's agreement. By default the other member is emailed
+  and asked first, and a bed is held for them until they answer or the request
+  lapses. A club can instead choose to tell them rather than ask, and can set how
+  long a request waits (7 days by default, anywhere from 1 to 60) on the new
+  **Member guests** card under **Admin → Bookings setup**. An unanswered request
+  lapses on its own the night before check-in at the latest, the held bed is
+  released, and the person who made the booking is told what happened — including
+  the money, which comes back as account credit rather than an unasked-for card
+  refund.
+  A member who has been asked but has not answered yet holds a bed and nothing
+  else: they are deliberately kept off the kiosk arrivals list, the chore roster,
+  bed allocation, the hut-leader pickers, the lodge TV board and the arrival
+  emails until they accept, so nobody is counted, rostered or given a bed for a
+  stay they have not agreed to. And two settings that would make your membership
+  list browsable to any member ship **off** and never travel in a club config
+  transfer, so importing another club's settings can never widen your members'
+  privacy without your own admin choosing it.
+  **The screens are here too, so the module is usable end to end.** A member who
+  has been asked sees the question on the booking itself: a **consent card** at
+  the top of the booking page states who added them, the lodge, the dates, their
+  own nights, the deadline, and everyone on the booking — names only, no money —
+  with **Yes, add me** and **No thanks** side by side. When saying no cannot
+  actually work (they are the last guest, or the booking was priced by hand),
+  the card says so *before* the click and names who really can act; when only
+  the server can know (an already-paid booking needs a refund-or-credit
+  decision), the card keeps both buttons and repeats the server's answer word
+  for word. For a member with no login of their own — a child, or an adult on a
+  household login — the emailed request goes to the adults in their family
+  group, whose link opens a dedicated **consent page** showing just the
+  question and the facts: a delegate answers *for* the member, with their name
+  recorded against the answer, and deliberately never sees the booking page or
+  any of its money. Everyone who can see the booking now also sees each member
+  guest's consent state as a badge on the guest list — *Waiting for consent*,
+  *Consented*, *Consented by …*, *Told, not asked*, *Added by …*, or the two
+  stuck states below — while family and non-member guests are unchanged. And
+  admins get the leftovers that genuinely need a human: two filter chips on
+  **Admin → Bookings** — **Waiting for consent** and **Consent needs
+  attention** — where the attention view lists each stuck request with why it
+  is stuck and what actually fixes it (cancel the booking, add another guest,
+  re-quote the request), never a dead-end "ask the club".
+  The published banner-coverage figures were re-measured with the new settings
+  card: **297** gated admin controls, **250** of them covered by a banner (224
+  in their own file, 26 by a verified vouching parent — 5 of those through the
+  wizard frame), and **47** across 25 files deliberately keeping their own
+  reason.
+  **Review hardening in the same change.** A "no thanks" that the system cannot
+  carry out — an already-paid booking whose refund-or-credit choice only the club
+  can make, or a booking the member is the only guest on — now leaves the member
+  exactly where they were, on the booking and on the club's list, instead of
+  half-removing them. The person who made the booking is told what actually
+  happened: a decline is reported as a decline rather than as "did not answer in
+  time", a lapse is dated by the day the request really ran out, and a
+  paid-booking refusal says so plainly instead of "this booking is in a state the
+  system cannot change on its own". Nobody in a family can answer for a member who
+  has a login of their own — that member decides for themselves — and when an
+  adult does answer for a member who has no login, that member and the rest of the
+  household are now emailed to say who answered and what they said. The consent
+  request and the consent card no longer promise that the held bed is always
+  released when a request lapses, because occasionally it cannot be. A member who
+  has been asked but has not answered is also no longer shown the lodge door code,
+  and an officer can no longer hand-write a bed for one.
+  We also fixed an unrelated bug we found next door while doing this: the
+  **check-in reminder** email joined every guest's first names together and then
+  every guest's last names, so the guest list read `Ada, Bob, Cleo Lovelace,
+  Smith, Jones`. It now lists each guest's own full name, one per line.
 - **A member's membership can now be cancelled without first destroying their
   admin access, and school and organisation accounts can be cancelled at all
   (#2383).** The old rule claimed to allow "only member accounts", but what it
@@ -476,11 +585,13 @@ All notable public reference-release changes should be recorded here.
   Xero, Stripe and Google steps, which appeared and then vanished for actual Full
   Admins, because the page read "still working out who you are" as "not a Full
   Admin". All three are gone or now wait until they know. The published
-  banner-coverage figures were re-measured with it (again after the in-booking
-  Bed allocation card, #2252, added its three, once more when #2286's
-  Release/Change bed controls landed, and again when the cash / off-Xero
-  payment feature, #2262, landed its four per-button-reason controls): **295**
-  gated admin controls, **248** of them covered by a banner (222 in their own
+  banner-coverage figures were re-measured on the merged tree rather than taken
+  from either change (again after the in-booking Bed allocation card, #2252,
+  added its three, once more when #2286's Release/Change bed controls landed,
+  again when the cash / off-Xero payment feature, #2262, landed its four
+  per-button-reason controls, and again with #2307's Member guests settings
+  card): **297**
+  gated admin controls, **250** of them covered by a banner (224 in their own
   file, 26 by a verified vouching parent — 5 of those through the wizard frame),
   and **47** across 25 files deliberately keeping their own reason.
 - **Choosing to use your account credit and then saving the booking as a draft
@@ -602,28 +713,6 @@ All notable public reference-release changes should be recorded here.
   instead of a bare "Invalid email template". Only clubs that saved an
   override of these templates ever saw the broken email; clubs on the defaults
   always got the correct built-in HTML version.
-- **Groundwork for adding another club member as a guest (#2306).** Members can
-  currently only put people from their own family group on a booking as linked
-  members. Work has started on letting a member add *any* club member as a
-  guest, with that member's consent. This first change lays the foundations —
-  the database columns that record whether a member agreed, a new
-  "Add another member as a guest" switch on Admin > Modules, and the settings
-  row that will hold the club's policy — and **deliberately changes nothing you
-  can see or do**. Adding somebody outside your own family group is still
-  declined exactly as before, whether the new module switch is on or off — and
-  the switch says so itself. Its description on **Admin → Modules** opens with
-  "Not available yet", and switching it on shows a **Not available yet** badge
-  instead of the usual green **Enabled** one, so nobody is left thinking a live
-  feature just came on. That is on purpose: the consent request
-  emails, the approval screen, and the timer that releases a held bed when
-  nobody answers all arrive together in the next change, so there is never a
-  version where turning the switch on could hold beds for approvals that
-  nothing can grant. The settings this will eventually use ship with sensible
-  defaults already chosen: consent is required by default, a held bed is
-  released after 7 days, and the two settings that would make the club's member
-  list browsable are off and never travel in a club config transfer, so
-  importing another club's settings can never widen your members' privacy
-  without your admin choosing it.
 
 - **Setting up a lodge TV is now one guided path instead of five cards and a
   guess (#2249).** **Admin → Lobby Display** leads with a **Guided setup** card

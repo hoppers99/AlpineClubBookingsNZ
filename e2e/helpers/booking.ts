@@ -83,23 +83,55 @@ export async function completeMemberDetailsGateIfShown(page: Page): Promise<void
   await dialogTitle.waitFor({ state: "hidden" });
 }
 
+// How many "Next ›" clicks the walk below may spend reaching a stay window's
+// month (#2302).
+//
+// `BookingCalendar` opens on the RUN DATE's own month, moves exactly one month
+// per click, never disables Next, and the wizard has no booking horizon — so the
+// cost of reaching a window is simply the number of calendar months between
+// today and that window. The bound must therefore cover the FURTHEST window the
+// date helpers can produce, not just the ones specs use today:
+// `stayWindowForAttempt` shifts a retry by RETRY_WINDOW_STRIDE (16) indexes, so
+// the reachable set is base 0–15 × attempt 0–2, i.e. stay indexes 0–47.
+//
+// Swept over 400 consecutive run dates, that whole set costs at most 14 hops.
+// The previous bound of 12 was exactly the worst case of the windows already in
+// use (base 6, attempt 2 on 2026-07-31 needs all 12) and one SHORT of the base
+// range docs/E2E_PLAYWRIGHT.md tells authors to convert (base 9, attempt 2 needs
+// 13) — and running out did not fail here at all: the walk simply stopped on the
+// wrong month and the DAY click timed out, which reads as a calendar bug and
+// only ever appears on a retry. Hence both halves of this fix: real margin, and
+// an explicit arrival assertion so exhausting the budget fails loudly, on the
+// month it could not reach.
+const MAX_MONTH_HOPS = 24;
+
 export async function selectCalendarDay(page: Page, dateOnly: string): Promise<void> {
   const [year, month] = dateOnly.split("-").map(Number);
   const monthHeading = new Date(year, month - 1).toLocaleDateString("en-NZ", {
     month: "long",
     year: "numeric",
   });
-  for (let hops = 0; hops < 12; hops += 1) {
-    if (
-      await page
-        .getByRole("heading", { name: monthHeading })
-        .isVisible()
-        .catch(() => false)
-    ) {
+  // getByRole, not getByText: the streamed (hidden) copy of a Suspense boundary
+  // is out of the accessibility tree, so this cannot resolve to the template.
+  const heading = page.getByRole("heading", { name: monthHeading });
+  for (let hops = 0; hops < MAX_MONTH_HOPS; hops += 1) {
+    if (await heading.isVisible().catch(() => false)) {
       break;
     }
     await page.getByRole("button", { name: /Next/ }).click();
   }
+  // Assert ARRIVAL before clicking the day. Without this the final hop is
+  // unverified and a miss surfaces as `locator.click: Timeout … getByRole(
+  // 'button', { name: /^Monday, 2 August 2027,/ })` — the reported error being
+  // the symptom rather than the cause, which is the whole pathology #2302 is
+  // about.
+  await expect(
+    heading,
+    `calendar never reached ${monthHeading} within ${MAX_MONTH_HOPS} "Next" ` +
+      `hops of the run date's month (target day ${dateOnly}) — see ` +
+      `MAX_MONTH_HOPS in e2e/helpers/booking.ts and RETRY_WINDOW_STRIDE in ` +
+      `e2e/helpers/stay-dates.ts`,
+  ).toBeVisible();
   await page.getByRole("button", { name: calendarDayLabel(dateOnly) }).click();
 }
 

@@ -1039,6 +1039,127 @@ describe("#2200 portable singletons export/import and stay schema-bound", () => 
   });
 });
 
+// ---------------------------------------------------------------------------
+// Owner decision D-18 (#2306/#2307, epic #2305). The member-guest singleton is a
+// deliberate SPLIT: the two POLICY fields travel, the two PRIVACY toggles never
+// do. The reverse guard above only demands that every column be classified
+// somehow; these tests pin WHICH side of the split each column is on, and prove
+// it behaviourally — because MG2 (#2307) adds the admin route that lets an admin
+// turn open member search on, and from that point a bundle able to carry the
+// toggle would be a way to widen a target club's member privacy without its own
+// admin ever choosing to.
+// ---------------------------------------------------------------------------
+describe("D-18: the two open-search privacy toggles never travel", () => {
+  const spec = () =>
+    SINGLETONS.find((entry) => entry.entity === "member-guest-settings")!;
+
+  it("classifies the split exactly: two fields exported, two excluded with reasons", () => {
+    expect(spec().fields).toEqual(["approvalRequired", "pendingHoldExpiryDays"]);
+    const excluded = spec().excluded ?? {};
+    expect(Object.keys(excluded).sort()).toEqual([
+      "openMemberSearchEnabled",
+      "openMemberSearchIncludesMinors",
+    ]);
+    // A reason is not decoration: the reverse guard accepts any non-empty string,
+    // so pin that both name the owner judgement rather than being back-filled
+    // with "not needed".
+    for (const reason of Object.values(excluded)) {
+      expect(reason).toMatch(/OWNER JUDGEMENT \(#2306, D-18\)/);
+    }
+  });
+
+  it("omits both toggles from the exported file even when the source club has them ON", async () => {
+    const { zip } = await buildConfigExport({
+      db: stubDb({
+        memberGuestSettings: {
+          approvalRequired: false,
+          pendingHoldExpiryDays: 21,
+          openMemberSearchEnabled: true,
+          openMemberSearchIncludesMinors: true,
+        },
+      }),
+      categories: ["club-settings"],
+      includeDoorCodes: false,
+      appVersion: "0.14.0",
+      prismaMigration: null,
+      generatedAt: "2026-07-30T00:00:00.000Z",
+    });
+    const { files } = readBundle(zip);
+    const exported = readJson(files, "member-guest-settings");
+    // The policy half travels...
+    expect(exported).toEqual({ approvalRequired: false, pendingHoldExpiryDays: 21 });
+    // ...and the privacy half is absent, not merely false.
+    expect("openMemberSearchEnabled" in exported).toBe(false);
+    expect("openMemberSearchIncludesMinors" in exported).toBe(false);
+  });
+
+  it("refuses to apply the toggles even when a HAND-EDITED bundle carries them true", async () => {
+    // The real attack shape: a bundle is a zip an operator can edit. Applying it
+    // must move the policy fields and leave the target's privacy posture alone.
+    const files = new Map<string, Uint8Array>([
+      [
+        "club-settings/member-guest-settings.json",
+        strToU8(
+          JSON.stringify({
+            approvalRequired: false,
+            pendingHoldExpiryDays: 30,
+            openMemberSearchEnabled: true,
+            openMemberSearchIncludesMinors: true,
+          }),
+        ),
+      ],
+    ]);
+    const { tx, delegates } = stubTx({
+      memberGuestSettings: { ...DEFAULT_MEMBER_GUEST_SETTINGS },
+    });
+    await clubSettingsImporter.apply(applyCtx(tx, files, "overwrite"));
+
+    expect(delegates.memberGuestSettings.upsert).toHaveBeenCalledTimes(1);
+    const args = delegates.memberGuestSettings.upsert.mock.calls[0][0];
+    for (const half of [args.create, args.update]) {
+      expect(half).not.toHaveProperty("openMemberSearchEnabled");
+      expect(half).not.toHaveProperty("openMemberSearchIncludesMinors");
+    }
+    expect(args.update).toEqual({ approvalRequired: false, pendingHoldExpiryDays: 30 });
+  });
+
+  it("never reports a privacy toggle as a changed field in the dry-run either", async () => {
+    // An admin reviewing the plan must not be shown a privacy change the apply
+    // will not make (and vice versa).
+    const zip = buildBundle({
+      entries: [
+        {
+          path: "club-settings/member-guest-settings.json",
+          category: "club-settings",
+          rowCount: 1,
+          bytes: strToU8(
+            JSON.stringify({
+              ...DEFAULT_MEMBER_GUEST_SETTINGS,
+              openMemberSearchEnabled: true,
+              openMemberSearchIncludesMinors: true,
+            }),
+          ),
+        },
+      ],
+      appVersion: "0.14.0",
+      prismaMigration: null,
+      includedCategories: ["club-settings"],
+      doorCodesIncluded: false,
+      generatedAt: "2026-07-30T00:00:00.000Z",
+    });
+    const plan = await buildImportPlan(
+      stubDb({ memberGuestSettings: { ...DEFAULT_MEMBER_GUEST_SETTINGS } }),
+      zip,
+      { mode: "overwrite" },
+    );
+    const item = plan.categories
+      .flatMap((category) => category.items)
+      .find((entry) => entry.entity === "member-guest-settings");
+    expect(item?.action).toBe("unchanged");
+    expect(item?.changedFields ?? []).toEqual([]);
+  });
+});
+
 describe("every singleton spec declares defaults for every field it exports", () => {
   it("covers each exported field, and only the two override-only singletons opt out", () => {
     // Assert the MEMBERSHIP of the exemption set, not just its effect: without
