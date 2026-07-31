@@ -199,7 +199,10 @@ Apply additionally requires `--apply` plus exact club-name, parsed database
 host, and parsed database-name confirmations from the reviewed report. It
 preserves all existing induction rows, blocks on every eligible Draft or In
 Progress workflow, and commits the new rows and audit event atomically under a
-PostgreSQL table lock. See the full
+PostgreSQL lock against direct `MemberInduction` DML. The lock does not freeze
+the wider member population: pause membership approvals, member
+creation/import, induction writes, and lifecycle writes from the final dry run
+through apply. See the full
 [trusted legacy induction baseline runbook](INDUCTION_BASELINE_RUNBOOK.md)
 before using it. Do not expose `DATABASE_URL` or credentials in an operator
 report.

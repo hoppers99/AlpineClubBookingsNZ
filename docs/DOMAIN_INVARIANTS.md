@@ -2999,13 +2999,17 @@ not count as completion.
 Apply requires an active, login-enabled Full Admin actor, one valid active
 `NEW_MEMBER` template, an exact effective-club-name confirmation, exact parsed
 database host and database-name confirmations, one New Zealand date-only
-value, and stable provenance. It creates only new `NEW_MEMBER` / `COMPLETED` /
-`ADMIN_OVERRIDE` rows. `inductionDate` and `completedAt` are the same supplied
-date, and every row stores the actor, template, and provenance. It creates no
-signers, sign-offs, email, or `hutLeaderEligible` side effect; existing
-induction rows are never updated or deleted. The rows and audit event are one
-transaction, a concurrent open workflow aborts the whole apply, and an
-identical rerun writes nothing.
+value no later than the current New Zealand date, and stable provenance. It
+creates only new `NEW_MEMBER` / `COMPLETED` / `ADMIN_OVERRIDE` rows.
+`inductionDate` and `completedAt` are the same supplied date, and every row
+stores the actor, template, and provenance. It creates no signers, sign-offs,
+email, or `hutLeaderEligible` side effect; existing induction rows are never
+updated or deleted. The rows and audit event are one transaction, an open
+workflow visible after the direct-`MemberInduction` DML lock aborts the whole
+apply, and an identical rerun writes nothing. That table lock does not freeze
+the member population or a composed writer before it reaches this table, so
+the final dry run and apply require the operator write freeze in
+`docs/INDUCTION_BASELINE_RUNBOOK.md`.
 
 A `HutLeaderAssignment` may additionally hold ONE bed (`bedId`), which makes it
 a **custodian occupancy** (#2286). The invariants:

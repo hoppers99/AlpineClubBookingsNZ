@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   assertDatabaseTargetConfirmation,
+  buildBlockedInductionBaselineResult,
+  formatInductionBaselineOutput,
   formatInductionBaselineReport,
+  INDUCTION_BASELINE_JSON_BEGIN,
+  INDUCTION_BASELINE_JSON_END,
   InductionBaselineCliError,
   parseInductionBaselineArgs,
   parseSafeDatabaseTarget,
@@ -110,17 +114,46 @@ describe("induction baseline CLI", () => {
     });
   });
 
-  it("rejects conflicting modes and unknown arguments", () => {
+  it.each([
+    ["--apply", "--apply"],
+    ["--dry-run", "--dry-run"],
+    ["--apply", "--dry-run"],
+    ["--dry-run", "--apply"],
+  ])("rejects repeated mode flags %s %s", (first, second) => {
     expect(() =>
-      parseInductionBaselineArgs([
-        "--apply",
-        "--dry-run",
-        ...REQUIRED_ARGS,
-      ]),
-    ).toThrow("--apply and --dry-run cannot be used together.");
+      parseInductionBaselineArgs([first, second, ...REQUIRED_ARGS]),
+    ).toThrow("mode flag");
+  });
+
+  it.each([
+    "--actor-member-id",
+    "--baseline-date",
+    "--provenance-note",
+    "--confirm-club-name",
+    "--confirm-db-host",
+    "--confirm-db-name",
+  ])("rejects duplicate %s values", (flag) => {
     expect(() =>
-      parseInductionBaselineArgs([...REQUIRED_ARGS, "--surprise"]),
-    ).toThrow("Unknown argument: --surprise");
+      parseInductionBaselineArgs([flag, "first", flag, "second"]),
+    ).toThrow(`${flag} option may be supplied only once`);
+  });
+
+  it("never echoes an unknown argument token, URL, username, or credential", () => {
+    const secret =
+      "postgresql://example-user:example-password@db.internal/private";
+    let thrown: unknown;
+    try {
+      parseInductionBaselineArgs([...REQUIRED_ARGS, secret]);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(InductionBaselineCliError);
+    expect((thrown as Error).message).toBe(
+      "Unknown argument. Run with --help to see the supported options.",
+    );
+    expect((thrown as Error).message).not.toContain(secret);
+    expect((thrown as Error).message).not.toContain("example-user");
+    expect((thrown as Error).message).not.toContain("example-password");
   });
 
   it("parses only the safe target fields and never returns credentials or the raw URL", () => {
@@ -210,6 +243,32 @@ describe("induction baseline CLI", () => {
     });
     expect(text).toContain("Apply blocked: no changes written.");
     expect(text).not.toContain("Apply was a no-op");
+
+    const output = formatInductionBaselineOutput(
+      blocked,
+      {
+        host: "db.internal:55432",
+        databaseName: "club_bookings",
+      },
+      true,
+    );
+    expect(output).toContain(INDUCTION_BASELINE_JSON_BEGIN);
+    expect(output).toContain(INDUCTION_BASELINE_JSON_END);
+    expect(output).toContain('"mode": "apply"');
+    expect(output).toContain('"openWorkflow": 1');
+    expect(output).not.toContain("postgresql://");
+    expect(output).not.toContain("password");
+
+    const blockedResult = buildBlockedInductionBaselineResult(
+      blocked,
+      {
+        host: "db.internal:55432",
+        databaseName: "club_bookings",
+      },
+      true,
+    );
+    expect(blockedResult.exitCode).toBe(1);
+    expect(blockedResult.output).toBe(output);
   });
 
   it("rejects invalid database URLs without echoing their secret input", () => {

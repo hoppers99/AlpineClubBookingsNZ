@@ -7,7 +7,11 @@ import type {
 import { clubConfig, clubConfigSource, type ClubConfigSource } from "@/config/club";
 import { DEFAULT_MEMBERSHIP_NOMINATION_SETTINGS } from "@/config/club-settings-defaults";
 import { buildStructuredAuditLogCreateArgs } from "@/lib/audit";
-import { isDateOnlyString, parseDateOnly } from "@/lib/date-only";
+import {
+  isDateOnlyString,
+  parseDateOnly,
+  todayDateOnlyForTimeZone,
+} from "@/lib/date-only";
 import { MEMBER_IMPORT_ROLE_VALUES } from "@/lib/member-roles";
 import { prisma } from "@/lib/prisma";
 import {
@@ -199,6 +203,11 @@ function validateInputs(options: RunInductionBaselineOptions): {
   if (!isDateOnlyString(options.baselineDate)) {
     throw new InductionBaselineError(
       "The baseline date must be a real NZ date-only value in YYYY-MM-DD form.",
+    );
+  }
+  if (options.baselineDate > todayDateOnlyForTimeZone()) {
+    throw new InductionBaselineError(
+      "The baseline date cannot be later than the current New Zealand date.",
     );
   }
 

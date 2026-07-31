@@ -1359,11 +1359,13 @@ an active, non-archived, non-cancelled real-member row (`USER` or `ADMIN`) in a
 configured person age tier who has neither an open workflow nor a completed
 induction of any kind. Login is not required, so non-login dependants remain
 included; `LODGE`, `NON_MEMBER`, and `SCHOOL` rows are excluded. It preserves
-all existing rows and creates no signers or sign-offs. All new rows
-use the same supplied New Zealand date for `inductionDate` and `completedAt`,
-record the Full Admin actor and stable provenance, and commit atomically. An
-open `DRAFT` or `IN_PROGRESS` row blocks the entire apply; a repeat apply is a
-no-op. `N/A` members are reported but never transitioned.
+all existing rows and creates no signers or sign-offs. All new rows use the
+same supplied, non-future New Zealand date for `inductionDate` and
+`completedAt`, record the Full Admin actor and stable provenance, and commit
+atomically. An open `DRAFT` or `IN_PROGRESS` row visible under the direct-DML
+table lock blocks the entire apply; a repeat apply is a no-op. The required
+operator freeze protects the wider member population from the final dry run
+through apply. `N/A` members are reported but never transitioned.
 
 Completing a `HUT_LEADER` induction sets the member's hut-leader eligibility
 flag. Actual `HutLeaderAssignment` rows remain separate dated roster/coverage

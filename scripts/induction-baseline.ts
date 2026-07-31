@@ -10,10 +10,10 @@ import "dotenv/config";
 import process from "node:process";
 import {
   assertDatabaseTargetConfirmation,
-  formatInductionBaselineReport,
+  buildBlockedInductionBaselineResult,
+  formatInductionBaselineOutput,
   parseInductionBaselineArgs,
   parseSafeDatabaseTarget,
-  safeInductionBaselineJson,
 } from "../src/lib/induction-baseline-cli";
 
 function printUsage() {
@@ -78,18 +78,18 @@ async function main() {
       apply: args.apply,
       confirmClubName: args.confirmClubName,
     });
-    console.log(formatInductionBaselineReport(report, databaseTarget));
-    if (args.json) {
-      console.log("");
-      console.log("---BEGIN SAFE INDUCTION BASELINE JSON---");
-      console.log(safeInductionBaselineJson(report, databaseTarget));
-      console.log("---END SAFE INDUCTION BASELINE JSON---");
-    }
+    console.log(
+      formatInductionBaselineOutput(report, databaseTarget, args.json),
+    );
   } catch (error) {
     if (error instanceof baseline.InductionBaselineBlockedError) {
-      console.log(
-        formatInductionBaselineReport(error.report, databaseTarget),
+      const blocked = buildBlockedInductionBaselineResult(
+        error.report,
+        databaseTarget,
+        args.json,
       );
+      console.log(blocked.output);
+      process.exitCode = blocked.exitCode;
     }
     throw error;
   } finally {

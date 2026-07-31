@@ -232,25 +232,35 @@ do not use unnamespaced `hashtext(<id>)` for new lock families.
   database statement** in its Serializable transaction. The mode conflicts
   with the `ROW EXCLUSIVE` lock PostgreSQL takes for every insert, update, or
   delete on `MemberInduction`, including cascade deletes, so the command first
-  waits for existing induction DML and then makes every new induction writer
-  wait until apply commits. It re-reads the complete active `USER`/`ADMIN`
+  waits for existing direct induction DML and then makes later direct DML wait
+  until apply commits. It re-reads the complete active `USER`/`ADMIN`
   real-member population and all of their induction rows only after that lock,
   refuses the entire apply if any eligible member has a `DRAFT` or
-  `IN_PROGRESS` row, and performs its `createMany` plus audit write in the same
-  transaction. Dry run never takes the lock and never writes.
+  `IN_PROGRESS` row visible in that locked read, and performs its `createMany`
+  plus audit write in the same transaction. Dry run never takes the lock and
+  never writes.
 
   This is deliberately a table lock rather than a new advisory-lock family:
-  existing writers in `src/lib/induction.ts`, application approval, member
-  lifecycle/merge cascade paths, and admin induction routes need no retrofit
-  to participate. PostgreSQL makes their ordinary
-  `MemberInduction` DML contend automatically. The baseline transaction takes
-  no application advisory lock and mutates no `Member` or template row, so it
-  cannot invert the global -> lodge -> member advisory order. Foreign-key
-  checks can still wait on a concurrent member lifecycle transaction; if
-  PostgreSQL detects a deadlock or the transaction times out, the whole apply
-  rolls back and the operator starts again from a fresh dry run. Do not move
-  validation reads before the table lock or weaken the lock mode: either
-  change would reopen a plan/apply race.
+  PostgreSQL makes ordinary `MemberInduction` DML in
+  `src/lib/induction.ts`, application approval, member lifecycle/merge cascade
+  paths, and admin induction routes contend **when that DML reaches this
+  table**. This does not serialize those workflows' earlier reads, member
+  creation/import, other lifecycle writes, configuration changes, or any side
+  effect outside this table. Operators must therefore pause membership
+  approvals, member creation/import, induction writes, and member lifecycle
+  writes from the final dry run through apply; the runbook makes that freeze
+  mandatory.
+
+  The baseline transaction takes no application advisory lock and mutates no
+  `Member` or template row, so it cannot invert the global -> lodge -> member
+  advisory order. Foreign-key checks can still wait on a concurrent member
+  lifecycle transaction; if PostgreSQL detects a deadlock or the transaction
+  times out, the whole apply rolls back and the operator starts again from a
+  fresh dry run. Do not move validation reads before the table lock or weaken
+  the lock mode: either change would reopen the locked
+  classification/direct-DML race. Do not claim this table lock freezes the
+  wider population or composes with writers before they touch
+  `MemberInduction`.
 
 - `booking-create-promo.ts` locks the selected `PromoCode` row with `FOR UPDATE`
   before validating and consuming its use count. Booking creation has already

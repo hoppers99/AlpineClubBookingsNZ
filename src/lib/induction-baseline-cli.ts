@@ -25,6 +25,11 @@ export class InductionBaselineCliError extends Error {
   }
 }
 
+export const INDUCTION_BASELINE_JSON_BEGIN =
+  "---BEGIN SAFE INDUCTION BASELINE JSON---";
+export const INDUCTION_BASELINE_JSON_END =
+  "---END SAFE INDUCTION BASELINE JSON---";
+
 function readValue(argv: string[], index: number, flag: string): string {
   const value = argv[index + 1];
   if (value === undefined || value.startsWith("--")) {
@@ -46,6 +51,7 @@ export function parseInductionBaselineArgs(
   let confirmDatabaseName: string | undefined;
   let json = false;
   let help = false;
+  const seenValueFlags = new Set<string>();
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -59,9 +65,9 @@ export function parseInductionBaselineArgs(
     }
     if (arg === "--apply" || arg === "--dry-run") {
       const mode = arg === "--apply" ? "apply" : "dry-run";
-      if (explicitMode && explicitMode !== mode) {
+      if (explicitMode) {
         throw new InductionBaselineCliError(
-          "--apply and --dry-run cannot be used together.",
+          "Specify exactly one mode flag; --apply and --dry-run cannot be repeated or combined.",
         );
       }
       explicitMode = mode;
@@ -92,12 +98,20 @@ export function parseInductionBaselineArgs(
     };
     const assign = valueFlags[arg];
     if (assign) {
+      if (seenValueFlags.has(arg)) {
+        throw new InductionBaselineCliError(
+          `The ${arg} option may be supplied only once.`,
+        );
+      }
+      seenValueFlags.add(arg);
       assign(readValue(argv, index, arg));
       index += 1;
       continue;
     }
 
-    throw new InductionBaselineCliError(`Unknown argument: ${arg}`);
+    throw new InductionBaselineCliError(
+      "Unknown argument. Run with --help to see the supported options.",
+    );
   }
 
   if (help) {
@@ -299,4 +313,33 @@ export function safeInductionBaselineJson(
     null,
     2,
   );
+}
+
+export function formatInductionBaselineOutput(
+  report: InductionBaselineReport,
+  target: SafeDatabaseTarget,
+  includeJson: boolean,
+): string {
+  const parts = [formatInductionBaselineReport(report, target)];
+  if (includeJson) {
+    parts.push(
+      [
+        INDUCTION_BASELINE_JSON_BEGIN,
+        safeInductionBaselineJson(report, target),
+        INDUCTION_BASELINE_JSON_END,
+      ].join("\n"),
+    );
+  }
+  return parts.join("\n\n");
+}
+
+export function buildBlockedInductionBaselineResult(
+  report: InductionBaselineReport,
+  target: SafeDatabaseTarget,
+  includeJson: boolean,
+): { output: string; exitCode: 1 } {
+  return {
+    output: formatInductionBaselineOutput(report, target, includeJson),
+    exitCode: 1,
+  };
 }

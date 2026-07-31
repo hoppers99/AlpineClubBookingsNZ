@@ -49,10 +49,47 @@ separately and are not changed. A member with any completed induction kind is
 preserved and classified as `ALREADY_COMPLETED`; the command does not add
 another completion.
 
+### Freeze related writers before the final dry run
+
+The table lock covers direct insert, update, and delete statements against
+`MemberInduction`; it does not freeze the member population or every earlier
+step of a larger workflow. Arrange an operator freeze from the start of the
+**final** dry run until apply finishes. Pause:
+
+- membership-application approvals;
+- admin member creation and CSV import;
+- induction creation, sign-off, completion, void, and signer reassignment; and
+- membership cancellation, archive, delete, merge, and other lifecycle writes.
+
+Also defer club identity, age-tier, nomination, and induction-template settings
+changes. If the dry run finds a blocker, end the final-run attempt, resolve it,
+then start a new freeze and generate a fresh final dry run. Do not review one
+plan while those writers continue and later apply it as though the population
+were unchanged.
+
 ## 1. Run and retain the dry-run report
 
-Run from the application checkout whose `DATABASE_URL` targets the intended
-database:
+On a supported Compose deployment, run the command from the pinned migrate
+image for the deployed commit. This uses the Compose-internal `postgres`
+hostname and does not publish a new database port or require Node/npm on the
+host:
+
+```bash
+docker compose run --rm migrate \
+  ./node_modules/.bin/tsx scripts/induction-baseline.ts \
+  --actor-member-id <full-admin-member-id> \
+  --baseline-date <YYYY-MM-DD> \
+  --provenance-note "<legacy register and committee-authorisation reference>" \
+  --json
+```
+
+Confirm `MIGRATE_IMAGE` names the same reviewed commit as the deployed app
+before a live run. Do not substitute an unreviewed local image. Compose supplies
+`DATABASE_URL` inside the container; do not override it on the command line or
+enable shell tracing.
+
+For a local rehearsal with the repository's supported Node version and a
+sanitised non-production database, use:
 
 ```bash
 npm run induction:baseline -- \
@@ -61,9 +98,37 @@ npm run induction:baseline -- \
   --provenance-note "<legacy register and committee-authorisation reference>"
 ```
 
-The date is a New Zealand date-only lodge date. The note is stored with the
-stable prefix `Trusted legacy induction baseline:` on every new row, so choose
-wording that remains meaningful as a permanent audit record.
+To rehearse entirely in containers, create a separate staging Compose project,
+start its new database, and build the migrate image:
+
+```bash
+cp .env.staging.example .env.induction-rehearsal
+# Set a unique DB_PASSWORD and STAGING_POSTGRES_PORT in this local-only file.
+docker compose --env-file .env.induction-rehearsal \
+  -p induction-baseline-rehearsal \
+  -f docker-compose.yml -f docker-compose.staging.yml up -d postgres
+docker compose --env-file .env.induction-rehearsal \
+  -p induction-baseline-rehearsal \
+  -f docker-compose.yml -f docker-compose.staging.yml build migrate
+```
+
+Restore only a sanitised non-production copy into that separate project, then
+bring it to the current schema:
+
+```bash
+docker compose --env-file .env.induction-rehearsal \
+  -p induction-baseline-rehearsal \
+  -f docker-compose.yml -f docker-compose.staging.yml run --rm migrate
+```
+
+Replace `docker compose` in the deployed dry-run command with the full
+`docker compose --env-file ... -p ... -f ... -f ...` prefix above. The staging
+override binds PostgreSQL to `127.0.0.1` only, never to an external interface.
+
+The date is a New Zealand date-only lodge date and cannot be later than the
+current New Zealand date. The note is stored with the stable prefix
+`Trusted legacy induction baseline:` on every new row, so choose wording that
+remains meaningful as a permanent audit record.
 
 The report displays only the parsed database host (including an explicit port)
 and database name. It never displays the database URL, username, or password.
@@ -83,6 +148,15 @@ A member with both a completed row and an open row is reported as
 `OPEN_WORKFLOW`; the open workflow must be resolved before apply. Voided rows
 are preserved but do not make a member completed.
 
+For each opaque member ID under `OPEN_WORKFLOW`, sign in to the admin site and
+open `/admin/members/<member-id>` directly. That authenticated page lets you
+verify whose ID it is without adding identity data to the CLI output. Then open
+`/admin/induction`, search using the identity shown on the member page, and
+complete or void the open workflow according to the evidence. Never append a
+member's name or email to the retained CLI report; it intentionally contains
+IDs only. After resolving blockers, restart the writer freeze and run a fresh
+final dry run.
+
 Stop if the club, database host, database name, population, template, date, or
 provenance is not exactly what you expected. Resolve the discrepancy and
 generate a fresh dry run. Do not edit a saved report and treat it as current.
@@ -90,26 +164,38 @@ generate a fresh dry run. Do not edit a saved report and treat it as current.
 ## 2. Apply with exact confirmations
 
 Use the exact effective club name, parsed host, and database name printed by
-the reviewed dry run:
+the reviewed dry run. On the supported deployment path:
 
 ```bash
-npm run induction:baseline -- \
+docker compose run --rm migrate \
+  ./node_modules/.bin/tsx scripts/induction-baseline.ts \
   --apply \
   --actor-member-id <full-admin-member-id> \
   --baseline-date <YYYY-MM-DD> \
   --provenance-note "<same legacy register and committee-authorisation reference>" \
   --confirm-club-name "<exact club name from the dry run>" \
   --confirm-db-host "<exact host[:port] from the dry run>" \
-  --confirm-db-name "<exact database name from the dry run>"
+  --confirm-db-name "<exact database name from the dry run>" \
+  --json
 ```
+
+For the local Node rehearsal path, use the same arguments after
+`npm run induction:baseline --`.
 
 All confirmations are case-sensitive and exact. Apply validates the actor,
 configuration, template, and population again. It then locks the
-`MemberInduction` table against concurrent insert, update, and delete writers
-before re-reading and classifying every row. If an induction writer is already
-running, apply waits for it; new induction writes wait until apply commits. A
-timeout, lock error, changed club or database target, invalid configuration,
-or newly-open workflow fails the whole transaction.
+`MemberInduction` table against direct concurrent insert, update, and delete
+statements before re-reading and classifying every row. Direct DML already in
+progress finishes before the locked read; direct DML that reaches the table
+later waits until apply commits. The lock does **not** serialize earlier member
+creation, import, approval, lifecycle, or configuration steps, which is why the
+operator freeze is required. A timeout, lock error, changed club or database
+target, invalid configuration, or open workflow visible under the lock fails
+the whole transaction.
+
+Supply each mode and value flag exactly once. If apply is blocked and `--json`
+was requested, the command still prints the human report and safe JSON between
+the marker lines, then exits nonzero. Treat that as a failed apply.
 
 Each created row is:
 
