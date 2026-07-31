@@ -4,7 +4,10 @@ import {
   BookingGuestRemovalError,
   removeBookingGuestInTransaction,
 } from "@/lib/booking-guest-removal-service";
-import { familyAdultDelegateResolver } from "@/lib/member-guest-delegate";
+import {
+  familyAdultDelegateResolver,
+  resolveDelegateAnswerRecipients,
+} from "@/lib/member-guest-delegate";
 import type { MemberGuestConsentDelegateResolver } from "@/lib/member-guest-delegate";
 import { getDefaultLodgeId } from "@/lib/lodges";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
@@ -12,10 +15,15 @@ import { ApiError } from "@/lib/api-error";
 import { MembershipTypeBookingPolicyError } from "@/lib/membership-type-policy";
 import { logAudit } from "@/lib/audit";
 import {
+  sendMemberGuestConsentAnsweredEmail,
   sendMemberGuestConsentExpiredEmail,
   sendMemberGuestConsentOutcomeEmail,
 } from "@/lib/email/member-guest";
-import type { GuestSelfRemovalBlocker } from "@/lib/booking-guest-self-removal";
+import type {
+  MemberGuestConsentOutcome as EmailConsentOutcome,
+  MemberGuestDelegateAnswer,
+  MemberGuestStillOnBookingReason,
+} from "@/lib/member-guest-email-notes";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 
@@ -43,6 +51,16 @@ import { prisma } from "@/lib/prisma";
  * claim succeeded but the removal was refused. That row is *blocked*: still
  * holding a bed, needing a human, and surfaced on the admin exception list
  * (owner decision **D-15**).
+ *
+ * A REFUSED REMOVAL IS TWO WRITES, NOT ONE, and it has to be. The shared removal
+ * path deletes the chore assignments and the guest row BEFORE its last two gates
+ * run, so a refusal caught inside the transaction and returned as a value would
+ * let Prisma commit a half-completed removal — the row gone, the price never
+ * recalculated, no credit, no bed reconcile, and no blocked row for D-15's
+ * exception list to find. So the refusal is THROWN out of the transaction
+ * (`ConsentRemovalRefusal`), which rolls all of that back, and the terminal
+ * status is written afterwards by `recordBlockedConsentTransition` over the row
+ * the rollback restored.
  */
 
 export type MemberGuestConsentAction = "APPROVE" | "DECLINE";
@@ -207,8 +225,40 @@ async function claimConsentTransition(
 }
 
 /**
- * Remove a just-claimed guest through the shared removal path, or classify the
- * refusal.
+ * A refusal from the shared removal path, carried OUT of the transaction on
+ * purpose so that Postgres rolls the whole attempt back.
+ *
+ * THIS CLASS IS THE FIX FOR A HALF-COMPLETED REMOVAL. The removal path's gates
+ * are not all at the front: it deletes the guest's chore assignments and then the
+ * guest row itself, and only afterwards checks the membership-type policy on the
+ * REMAINING guests and asks whether a settled booking needs a refund-or-credit
+ * election. Catching those refusals inside the `$transaction` callback and
+ * returning a value made the callback RESOLVE, and Prisma commits a callback that
+ * resolves — so the guest row and its chore assignments stayed deleted while the
+ * price was never recalculated, no `BookingModification` was written, no credit
+ * was issued and no bed was reconciled. Worse, the row that D-15 requires to
+ * survive as a *blocked* row had vanished, so it never reached the admin
+ * exception list, while the member was told "ask the booking owner or an admin to
+ * remove this guest" about a guest who was already gone.
+ *
+ * Throwing instead means the refusal unwinds the transaction, exactly as the
+ * sibling guest-DELETE route (`/api/bookings/[id]/guests/[guestId]`) has always
+ * let it. The BLOCKED status is then written by a SEPARATE, tiny transaction —
+ * see `recordBlockedConsentTransition` — over the row the rollback restored.
+ */
+class ConsentRemovalRefusal extends Error {
+  constructor(
+    readonly blockedReason: MemberGuestConsentBlockedReason,
+    readonly refusalMessage: string,
+  ) {
+    super(refusalMessage);
+    this.name = "ConsentRemovalRefusal";
+  }
+}
+
+/**
+ * Remove a just-claimed guest through the shared removal path, or throw the
+ * classified refusal so the caller's transaction rolls back.
  *
  * ONE removal semantics, never a bespoke second delete: capacity release, night
  * deletion, repricing, promo revalidation, chore cleanup, bed reconcile and
@@ -226,10 +276,7 @@ async function removeClaimedConsentGuest(
     /** D-15's credit election. Only the sweep passes it. */
     settlementMethod?: "credit";
   },
-): Promise<
-  | { removed: true; creditCents: number }
-  | { removed: false; reason: MemberGuestConsentBlockedReason; message: string }
-> {
+): Promise<{ removed: true; creditCents: number }> {
   try {
     const result = await removeBookingGuestInTransaction({
       tx,
@@ -248,14 +295,50 @@ async function removeClaimedConsentGuest(
   } catch (err) {
     const refusal = consentRemovalRefusalMessage(err);
     if (refusal !== null) {
-      return {
-        removed: false,
-        reason: classifyConsentRemovalRefusal(refusal),
-        message: refusal,
-      };
+      throw new ConsentRemovalRefusal(classifyConsentRemovalRefusal(refusal), refusal);
     }
     throw err;
   }
+}
+
+/**
+ * Write the BLOCKED outcome after the refusal has rolled the removal back.
+ *
+ * A separate, minimal transaction that touches ONE column set on ONE row, so
+ * there is nothing here for a later gate to refuse. It re-uses the same
+ * status-guarded claim, which matters: the rollback put the row back to
+ * `PENDING`, and between the rollback and this write the nightly sweep (or the
+ * other delegate) may legitimately have claimed it. A lost claim is reported as
+ * `ALREADY_RESOLVED` and takes no side effects, which is the same answer every
+ * other loser of that race gets.
+ *
+ * The row is deliberately left ON the booking, still holding its bed, carrying
+ * its terminal status — that is what makes it visible to
+ * `ATTENTION_GUEST_WHERE` on the admin exception list (owner decision D-15), and
+ * it is the state the member-facing copy already promises when it says to ask
+ * the booking owner or an admin.
+ */
+async function recordBlockedConsentTransition(params: {
+  db: typeof prisma;
+  guestId: string;
+  status: "DECLINED" | "EXPIRED";
+  respondedByMemberId: string | null;
+  now: Date;
+  refusal: ConsentRemovalRefusal;
+}): Promise<MemberGuestConsentOutcome> {
+  const { db, guestId, status, respondedByMemberId, now, refusal } = params;
+
+  const claimed = await db.$transaction((tx) =>
+    claimConsentTransition(tx, guestId, status, respondedByMemberId, now),
+  );
+  if (!claimed) return { outcome: "ALREADY_RESOLVED" };
+
+  return {
+    outcome: "BLOCKED",
+    status,
+    reason: refusal.blockedReason,
+    message: refusal.refusalMessage,
+  };
 }
 
 /**
@@ -322,67 +405,75 @@ export async function respondToMemberGuestConsent(params: {
 
   if (!isTarget && !isDelegate) forbidden();
 
-  const result = await db.$transaction(async (tx) => {
-    // Global money/status lock first, then the per-lodge capacity lock: this
-    // transaction can reprice a booking AND release a bed, so it belongs in both
-    // cohorts and must take them in the repo's declared order.
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
-    const booking = await tx.booking.findUnique({
-      where: { id: bookingId },
-      select: { id: true, lodgeId: true },
-    });
-    if (!booking) forbidden();
-    await acquireLodgeCapacityLock(tx, booking.lodgeId ?? (await getDefaultLodgeId(tx)));
+  try {
+    return await db.$transaction(async (tx) => {
+      // Global money/status lock first, then the per-lodge capacity lock: this
+      // transaction can reprice a booking AND release a bed, so it belongs in
+      // both cohorts and must take them in the repo's declared order.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+      const booking = await tx.booking.findUnique({
+        where: { id: bookingId },
+        select: { id: true, lodgeId: true },
+      });
+      if (!booking) forbidden();
+      await acquireLodgeCapacityLock(
+        tx,
+        booking.lodgeId ?? (await getDefaultLodgeId(tx)),
+      );
 
-    if (action === "APPROVE") {
+      if (action === "APPROVE") {
+        const claimed = await claimConsentTransition(
+          tx,
+          guestId,
+          "CONFIRMED",
+          actorMemberId,
+          now,
+        );
+        return claimed
+          ? ({ outcome: "APPROVED" } as const)
+          : ({ outcome: "ALREADY_RESOLVED" } as const);
+      }
+
       const claimed = await claimConsentTransition(
         tx,
         guestId,
-        "CONFIRMED",
+        "DECLINED",
         actorMemberId,
         now,
       );
-      return claimed
-        ? ({ outcome: "APPROVED" } as const)
-        : ({ outcome: "ALREADY_RESOLVED" } as const);
-    }
+      if (!claimed) return { outcome: "ALREADY_RESOLVED" } as const;
 
-    const claimed = await claimConsentTransition(
-      tx,
-      guestId,
-      "DECLINED",
-      actorMemberId,
-      now,
-    );
-    if (!claimed) return { outcome: "ALREADY_RESOLVED" } as const;
+      // D-14 as ticked: NO exemption from the ordinary self-removal blockers. A
+      // member who never consented can still be refused, and the honest answer
+      // is to tell them who can act rather than to invent a bypass. A refusal
+      // THROWS from here, unwinding this transaction — the claim, the chore
+      // deletions and the guest-row delete all go back — and the blocked status
+      // is written afresh below.
+      const removal = await removeClaimedConsentGuest(tx, {
+        bookingId,
+        guestId,
+        targetMemberId,
+        actorMemberId,
+        kind: "CONSENT_DECLINE",
+      });
 
-    // D-14 as ticked: NO exemption from the ordinary self-removal blockers. A
-    // member who never consented can still be refused, and the honest answer is
-    // to tell them who can act rather than to invent a bypass.
-    const removal = await removeClaimedConsentGuest(tx, {
-      bookingId,
-      guestId,
-      targetMemberId,
-      actorMemberId,
-      kind: "CONSENT_DECLINE",
-    });
-
-    if (removal.removed) {
       return {
         outcome: "DECLINED",
         removed: true,
         creditCents: removal.creditCents,
       } as const;
-    }
-    return {
-      outcome: "BLOCKED",
+    });
+  } catch (err) {
+    if (!(err instanceof ConsentRemovalRefusal)) throw err;
+    return recordBlockedConsentTransition({
+      db,
+      guestId,
       status: "DECLINED",
-      reason: removal.reason,
-      message: removal.message,
-    } as const;
-  });
-
-  return result;
+      respondedByMemberId: actorMemberId,
+      now,
+      refusal: err,
+    });
+  }
 }
 
 /**
@@ -407,69 +498,78 @@ export async function expireMemberGuestConsent(params: {
 }): Promise<MemberGuestConsentOutcome> {
   const { guestId, now = new Date(), db = prisma } = params;
 
-  return db.$transaction(async (tx) => {
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+  try {
+    return await db.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
 
-    const guest = await tx.bookingGuest.findUnique({
-      where: { id: guestId },
-      select: {
-        id: true,
-        memberId: true,
-        consentStatus: true,
-        consentExpiresAt: true,
-        bookingId: true,
-        booking: { select: { id: true, lodgeId: true, memberId: true } },
-      },
-    });
+      const guest = await tx.bookingGuest.findUnique({
+        where: { id: guestId },
+        select: {
+          id: true,
+          memberId: true,
+          consentStatus: true,
+          consentExpiresAt: true,
+          bookingId: true,
+          booking: { select: { id: true, lodgeId: true, memberId: true } },
+        },
+      });
 
-    if (!guest || guest.memberId === null || guest.consentStatus !== "PENDING") {
-      return { outcome: "ALREADY_RESOLVED" } as const;
-    }
+      if (!guest || guest.memberId === null || guest.consentStatus !== "PENDING") {
+        return { outcome: "ALREADY_RESOLVED" } as const;
+      }
 
-    await acquireLodgeCapacityLock(
-      tx,
-      guest.booking.lodgeId ?? (await getDefaultLodgeId(tx)),
-    );
+      await acquireLodgeCapacityLock(
+        tx,
+        guest.booking.lodgeId ?? (await getDefaultLodgeId(tx)),
+      );
 
-    // Re-assert the clock on the FRESH row under the lock. The settlement
-    // reaper's hard-won lesson: an expiry window can be extended between the
-    // candidate scan and the transaction, and expiring a row whose deadline has
-    // moved is not idempotent, it is wrong.
-    if (!guest.consentExpiresAt || guest.consentExpiresAt > now) {
-      return { outcome: "ALREADY_RESOLVED" } as const;
-    }
+      // Re-assert the clock on the FRESH row under the lock. The settlement
+      // reaper's hard-won lesson: an expiry window can be extended between the
+      // candidate scan and the transaction, and expiring a row whose deadline
+      // has moved is not idempotent, it is wrong.
+      if (!guest.consentExpiresAt || guest.consentExpiresAt > now) {
+        return { outcome: "ALREADY_RESOLVED" } as const;
+      }
 
-    const claimed = await claimConsentTransition(tx, guestId, "EXPIRED", null, now);
-    if (!claimed) return { outcome: "ALREADY_RESOLVED" } as const;
+      const claimed = await claimConsentTransition(tx, guestId, "EXPIRED", null, now);
+      if (!claimed) return { outcome: "ALREADY_RESOLVED" } as const;
 
-    const removal = await removeClaimedConsentGuest(tx, {
-      bookingId: guest.bookingId,
-      guestId,
-      targetMemberId: guest.memberId,
-      // No person acted, so no person is named as the actor. The booking OWNER
-      // is passed because they are the party whose booking is repriced and who
-      // receives the credit; the true actor is recorded separately in the audit
-      // log as `cron:member-guest-consent-expiry`. The target's id is NOT used —
-      // writing it here would attribute to them an act they did not take.
-      actorMemberId: guest.booking.memberId,
-      kind: "CONSENT_EXPIRY",
-      settlementMethod: "credit",
-    });
+      // As on the decline path, a refusal THROWS out of this transaction so the
+      // half-done removal is rolled back, and the EXPIRED-but-blocked status is
+      // written separately over the restored row.
+      const removal = await removeClaimedConsentGuest(tx, {
+        bookingId: guest.bookingId,
+        guestId,
+        targetMemberId: guest.memberId,
+        // No person acted, so no person is named as the actor. The booking OWNER
+        // is passed because they are the party whose booking is repriced and who
+        // receives the credit; the true actor is recorded separately in the audit
+        // log as `cron:member-guest-consent-expiry`. The target's id is NOT used —
+        // writing it here would attribute to them an act they did not take.
+        actorMemberId: guest.booking.memberId,
+        kind: "CONSENT_EXPIRY",
+        settlementMethod: "credit",
+      });
 
-    if (removal.removed) {
       return {
         outcome: "EXPIRED",
         removed: true,
         creditCents: removal.creditCents,
       } as const;
-    }
-    return {
-      outcome: "BLOCKED",
+    });
+  } catch (err) {
+    if (!(err instanceof ConsentRemovalRefusal)) throw err;
+    return recordBlockedConsentTransition({
+      db,
+      guestId,
+      // An expiry is nobody's decision, so it records no responder — the same
+      // distinction `claimConsentTransition` draws on the happy path.
       status: "EXPIRED",
-      reason: removal.reason,
-      message: removal.message,
-    } as const;
-  });
+      respondedByMemberId: null,
+      now,
+      refusal: err,
+    });
+  }
 }
 
 /**
@@ -517,9 +617,23 @@ export async function finaliseMemberGuestConsentTransition(params: {
   actorMemberId: string | null;
   /** `cron:member-guest-consent-expiry` for the sweep; undefined for a person. */
   actorLabel?: string;
+  /**
+   * The deadline the member was given, read off the row BEFORE the transition
+   * deleted it. Only the sweep can supply it and only a lapse needs it; without
+   * it the outcome email has to date the lapse "now", which is the moment the
+   * mail was composed rather than the day the request actually ran out.
+   */
+  consentExpiresAt?: Date | null;
 }): Promise<void> {
-  const { bookingId, guestId, targetMemberId, outcome, actorMemberId, actorLabel } =
-    params;
+  const {
+    bookingId,
+    guestId,
+    targetMemberId,
+    outcome,
+    actorMemberId,
+    actorLabel,
+    consentExpiresAt,
+  } = params;
 
   if (outcome.outcome === "ALREADY_RESOLVED") {
     // The claim was lost. No email, no removal, no bed write, no audit entry —
@@ -546,6 +660,8 @@ export async function finaliseMemberGuestConsentTransition(params: {
     guestId,
     targetMemberId,
     outcome,
+    actorMemberId,
+    consentExpiresAt,
   });
 
   try {
@@ -594,7 +710,8 @@ export async function finaliseMemberGuestConsentTransition(params: {
  */
 function selfRemovalBlockerForConsentReason(
   reason: MemberGuestConsentBlockedReason,
-): GuestSelfRemovalBlocker {
+  message: string,
+): MemberGuestStillOnBookingReason {
   switch (reason) {
     case "LAST_GUEST":
       return "LAST_GUEST";
@@ -603,11 +720,110 @@ function selfRemovalBlockerForConsentReason(
     case "STAY_NOT_FUTURE":
       return "STAY_NOT_FUTURE";
     case "BOOKING_STATUS":
-    case "OTHER":
-      // An unclassified refusal is described with the booking-status wording,
-      // which is the honest general case: something about the booking's state
-      // stops it changing, and only the club can look at it.
       return "BOOKING_STATUS";
+    case "OTHER":
+      // The one refusal that is genuinely common in this bucket has a concrete,
+      // sayable cause: an already-settled booking whose reduction needs a
+      // refund-or-credit election that no self-removing guest is allowed to make
+      // (see `booking-guest-removal-service.ts`). The shared self-removal
+      // predicate keeps it server-only because it cannot be predicted from the
+      // facts a card renders, so the refusal MESSAGE is the only place it is
+      // named — describing it as "the booking is in a state the system cannot
+      // change on its own" told the owner nothing they could act on. Anything
+      // else unclassified keeps that general wording, which remains the honest
+      // answer when we do not know more.
+      return isSettlementChoiceRefusal(message) ? "SETTLEMENT_CHOICE" : "BOOKING_STATUS";
+  }
+}
+
+/**
+ * Does this refusal message name the settled-payment election?
+ *
+ * Matched on the removal service's own sentence for the same reason
+ * `classifyConsentRemovalRefusal` matches on messages rather than re-deriving
+ * the gates: the sentence the member is shown and the reason the owner is given
+ * must be the same fact, not two independent guesses that can drift.
+ */
+function isSettlementChoiceRefusal(message: string): boolean {
+  return message.includes("settled payment");
+}
+
+/**
+ * Send the "somebody answered for you" notices, each independently guarded.
+ *
+ * Split out rather than inlined because it has its own failure surface — a
+ * resolver query and one send per recipient — and none of it may prevent the
+ * booking owner's outcome email, the audit entry, or the next row of a sweep.
+ * A delegate answer with nobody to tell is logged rather than passed over: a
+ * member who can be answered for but never told is a fact an operator should be
+ * able to find.
+ */
+async function notifyDelegateAnswer(params: {
+  bookingId: string;
+  guestId: string;
+  targetMemberId: string;
+  actorMemberId: string;
+  booking: {
+    lodgeId: string | null;
+    checkIn: Date;
+    checkOut: Date;
+  };
+  target: { firstName: string; lastName: string };
+  answer: MemberGuestDelegateAnswer;
+}): Promise<void> {
+  const { bookingId, guestId, targetMemberId, actorMemberId, booking, target, answer } =
+    params;
+
+  const responder = await prisma.member
+    .findUnique({
+      where: { id: actorMemberId },
+      select: { firstName: true, lastName: true },
+    })
+    .catch(() => null);
+  const responderName =
+    [responder?.firstName, responder?.lastName].filter(Boolean).join(" ").trim() ||
+    "Somebody in your family group";
+
+  const recipients = await resolveDelegateAnswerRecipients({
+    resolver: familyAdultDelegateResolver,
+    targetMemberId,
+    actorMemberId,
+    db: prisma,
+  }).catch((err: unknown) => {
+    logger.error(
+      { err, bookingId, guestId },
+      "Failed to resolve who to tell that a delegate answered a member-guest request",
+    );
+    return [];
+  });
+
+  if (recipients.length === 0) {
+    logger.warn(
+      { bookingId, guestId, targetMemberId, actorMemberId },
+      "A delegate answered a member-guest request with nobody to notify",
+    );
+    return;
+  }
+
+  for (const recipient of recipients) {
+    try {
+      await sendMemberGuestConsentAnsweredEmail({
+        bookingId,
+        email: recipient.email,
+        firstName: recipient.firstName,
+        target,
+        responderName,
+        answer,
+        checkIn: booking.checkIn,
+        checkOut: booking.checkOut,
+        lodgeId: booking.lodgeId,
+      });
+    } catch (err) {
+      logger.error(
+        { err, bookingId, guestId, recipient: recipient.memberId },
+        "Failed to tell somebody that a delegate answered a member-guest request",
+      );
+    }
   }
 }
 
@@ -634,8 +850,13 @@ async function notifyMemberGuestConsentOutcome(params: {
   guestId: string;
   targetMemberId: string;
   outcome: MemberGuestConsentOutcome;
+  /** Who clicked, or null for the sweep. A delegate is the interesting case. */
+  actorMemberId: string | null;
+  /** The deadline as recorded on the row; see `finaliseMemberGuestConsentTransition`. */
+  consentExpiresAt?: Date | null;
 }): Promise<void> {
-  const { bookingId, guestId, targetMemberId, outcome } = params;
+  const { bookingId, guestId, targetMemberId, outcome, actorMemberId, consentExpiresAt } =
+    params;
   if (outcome.outcome === "ALREADY_RESOLVED") return;
 
   try {
@@ -664,22 +885,47 @@ async function notifyMemberGuestConsentOutcome(params: {
       lastName: target?.lastName ?? "",
     };
 
-    const emailOutcome =
+    // The lapse date is the deadline the member was actually given, never "now".
+    // `new Date()` here is the moment the email happened to be composed — which
+    // is after the sweep ran, on whatever day the sweep ran — so it could tell
+    // the booking's owner their request lapsed on a date the member was never
+    // working to. It falls back to `now` only when the caller could not supply
+    // the deadline, and every real caller can.
+    const lapsedAt = consentExpiresAt ?? new Date();
+
+    const emailOutcome: EmailConsentOutcome =
       outcome.outcome === "APPROVED"
-        ? ({ kind: "APPROVED" } as const)
+        ? { kind: "APPROVED" }
         : outcome.outcome === "DECLINED"
-          ? ({ kind: "DECLINED", creditCents: outcome.creditCents } as const)
+          ? { kind: "DECLINED", creditCents: outcome.creditCents }
           : outcome.outcome === "EXPIRED"
-            ? ({
+            ? {
                 kind: "EXPIRED_REMOVED",
-                expiredAt: new Date(),
+                expiredAt: lapsedAt,
                 creditCents: outcome.creditCents,
-              } as const)
-            : ({
-                kind: "EXPIRED_STILL_ON_BOOKING",
-                expiredAt: new Date(),
-                blocker: selfRemovalBlockerForConsentReason(outcome.reason),
-              } as const);
+              }
+            : // BLOCKED, and WHICH blocked outcome matters. A member who clicked
+              // "No thanks" made a decision, promptly; reporting that to the
+              // booking's owner as "did not answer in time" — with a lapse date
+              // invented on the spot — described the wrong event, blamed the
+              // member for silence they are not guilty of, and quoted a date
+              // that never happened.
+              outcome.status === "DECLINED"
+              ? {
+                  kind: "DECLINED_STILL_ON_BOOKING",
+                  blocker: selfRemovalBlockerForConsentReason(
+                    outcome.reason,
+                    outcome.message,
+                  ),
+                }
+              : {
+                  kind: "EXPIRED_STILL_ON_BOOKING",
+                  expiredAt: lapsedAt,
+                  blocker: selfRemovalBlockerForConsentReason(
+                    outcome.reason,
+                    outcome.message,
+                  ),
+                };
 
     if (booking.member?.email) {
       try {
@@ -699,6 +945,39 @@ async function notifyMemberGuestConsentOutcome(params: {
           "Failed to send the member-guest consent outcome email to the booking owner",
         );
       }
+    }
+
+    // A DELEGATE ANSWERING IS TOLD ABOUT, ALWAYS.
+    //
+    // The old reasoning here — "a decline needs no notice: they just made the
+    // decision themselves" — is true of a member answering for themselves and
+    // false of a delegate. Under owner decision D-10 an adult in the household
+    // can answer for a member with no login, and a decline releases that
+    // member's bed and takes them off a booking somebody put them on. Without
+    // this notice the only people who learnt of it were the booking's owner and
+    // the adult who clicked.
+    const delegateAnswered =
+      actorMemberId !== null &&
+      actorMemberId !== targetMemberId &&
+      (outcome.outcome === "APPROVED" ||
+        outcome.outcome === "DECLINED" ||
+        (outcome.outcome === "BLOCKED" && outcome.status === "DECLINED"));
+
+    if (delegateAnswered && actorMemberId) {
+      await notifyDelegateAnswer({
+        bookingId,
+        guestId,
+        targetMemberId,
+        actorMemberId,
+        booking,
+        target: guest,
+        answer:
+          outcome.outcome === "APPROVED"
+            ? { kind: "APPROVED" }
+            : outcome.outcome === "DECLINED"
+              ? { kind: "DECLINED_REMOVED" }
+              : { kind: "DECLINED_STILL_ON_BOOKING" },
+      });
     }
 
     // Only a LAPSE gets a notice back to the member who was asked, and it reaches

@@ -67,6 +67,7 @@ const h = vi.hoisted(() => {
     logAudit: vi.fn(),
     sendOutcomeEmail: vi.fn(),
     sendExpiredEmail: vi.fn(),
+    sendAnsweredEmail: vi.fn(),
     loggerError: vi.fn(),
     loggerWarn: vi.fn(),
     loggerInfo: vi.fn(),
@@ -109,6 +110,7 @@ vi.mock("@/lib/audit", () => ({ logAudit: h.logAudit }));
 vi.mock("@/lib/email/member-guest", () => ({
   sendMemberGuestConsentOutcomeEmail: h.sendOutcomeEmail,
   sendMemberGuestConsentExpiredEmail: h.sendExpiredEmail,
+  sendMemberGuestConsentAnsweredEmail: h.sendAnsweredEmail,
 }));
 vi.mock("@/lib/logger", () => ({
   default: {
@@ -201,6 +203,14 @@ type World = ReturnType<typeof makeWorld>;
 
 function makeWorld(rows: GuestRow[]) {
   const guests = new Map(rows.map((row) => [row.id, { ...row }]));
+  // The shared removal path deletes a guest's chore assignments BEFORE the two
+  // gates that can still refuse, so they are the second thing a half-completed
+  // removal destroys. Modelled here so "the removal was rolled back" is an
+  // observable fact about two tables rather than an assertion about one.
+  const choreAssignments = new Map<string, string[]>([
+    [GUEST, ["chore-fire", "chore-dishes"]],
+    [OTHER_GUEST, ["chore-fire"]],
+  ]);
   const bookings = new Map([
     [
       BOOKING,
@@ -314,6 +324,8 @@ function makeWorld(rows: GuestRow[]) {
 
   return {
     guests,
+    choreAssignments,
+    members,
     bookings,
     state,
     bookingGuest,
@@ -321,9 +333,34 @@ function makeWorld(rows: GuestRow[]) {
     member,
     familyGroupMember,
     tx,
+    /**
+     * A transaction that actually ROLLS BACK, which this fake previously did not.
+     *
+     * Without it the tests could not tell a refusal that unwound its writes from
+     * one that committed them, and that difference is the whole of finding H1: the
+     * removal path deletes the chore assignments and the guest row before its last
+     * two gates run, so a refusal that merely RETURNS lets Prisma commit a
+     * half-completed removal — the guest gone, the price never recalculated, no
+     * credit, and no blocked row for the admin exception list to show. Postgres
+     * would have thrown all of that away; so does this.
+     */
     $transaction: vi.fn(async (cb: (client: typeof tx) => unknown) => {
       state.raceHook?.();
-      return cb(tx);
+      const guestSnapshot = new Map(
+        [...guests.entries()].map(([id, row]) => [id, { ...row }]),
+      );
+      const choreSnapshot = new Map(
+        [...choreAssignments.entries()].map(([id, list]) => [id, [...list]]),
+      );
+      try {
+        return await cb(tx);
+      } catch (err) {
+        guests.clear();
+        for (const [id, row] of guestSnapshot) guests.set(id, row);
+        choreAssignments.clear();
+        for (const [id, list] of choreSnapshot) choreAssignments.set(id, list);
+        throw err;
+      }
     }),
   };
 }
@@ -350,14 +387,35 @@ beforeEach(() => {
   h.logAudit.mockResolvedValue(undefined);
   h.sendOutcomeEmail.mockResolvedValue(undefined);
   h.sendExpiredEmail.mockResolvedValue(undefined);
+  h.sendAnsweredEmail.mockResolvedValue(undefined);
   // The shared removal path succeeds and DELETES the row, exactly as the real one
   // does — so "the row is gone" and "the row survived as blocked" are different
   // observable states in these tests rather than the same one.
   h.removeGuest.mockImplementation(async ({ guestId }: { guestId: string }) => {
+    world().choreAssignments.delete(guestId);
     world().guests.delete(guestId);
     return { accountCreditAmountCents: 0 };
   });
 });
+
+/**
+ * A refusal that WRITES FIRST, exactly where the real removal path writes.
+ *
+ * `removeBookingGuestInTransaction` runs its last-guest and quote-priced gates,
+ * then deletes the guest's chore assignments and the guest row, and only THEN
+ * checks the membership-type policy on the remaining guests and asks whether a
+ * settled booking needs a refund-or-credit election. A test whose refusal mock
+ * throws without writing anything cannot distinguish a rolled-back refusal from a
+ * committed half-removal — it asserts against a mock that did nothing — so every
+ * refusal in this file goes through here.
+ */
+function refuseAfterPartialRemoval(error: Error) {
+  h.removeGuest.mockImplementationOnce(async ({ guestId }: { guestId: string }) => {
+    world().choreAssignments.delete(guestId);
+    world().guests.delete(guestId);
+    throw error;
+  });
+}
 
 // ---------------------------------------------------------------------------
 // 1. Who may answer
@@ -658,6 +716,7 @@ describe("the status-guarded claim resolves every race to one winner", () => {
     expect(h.logAudit).not.toHaveBeenCalled();
     expect(h.sendOutcomeEmail).not.toHaveBeenCalled();
     expect(h.sendExpiredEmail).not.toHaveBeenCalled();
+    expect(h.sendAnsweredEmail).not.toHaveBeenCalled();
   });
 
   it("reconciles beds and audits exactly once for a real approval", async () => {
@@ -712,6 +771,89 @@ describe("the status-guarded claim resolves every race to one winner", () => {
     expect(h.logAudit.mock.calls[0][0].metadata.actor).toBe(
       "cron:member-guest-consent-expiry",
     );
+  });
+
+  it("tells the member when a DELEGATE answered for them", async () => {
+    // The loop D-10 left open. The booking's owner was told the outcome and the
+    // adult who clicked obviously knew, but the member the answer was given FOR
+    // heard nothing — even though a decline releases their bed and takes them off
+    // a booking somebody else put them on. "A decline needs no notice: they just
+    // made the decision themselves" is true of a member answering for themselves
+    // and false of a delegate.
+    world().members.get(TARGET)!.canLogin = false;
+
+    await finaliseMemberGuestConsentTransition({
+      bookingId: BOOKING,
+      guestId: GUEST,
+      targetMemberId: TARGET,
+      outcome: { outcome: "DECLINED", removed: true, creditCents: 0 },
+      actorMemberId: DELEGATE,
+    });
+
+    expect(h.sendAnsweredEmail).toHaveBeenCalledTimes(1);
+    expect(h.sendAnsweredEmail.mock.calls[0][0]).toMatchObject({
+      bookingId: BOOKING,
+      email: "target@example.com",
+      answer: { kind: "DECLINED_REMOVED" },
+      target: { firstName: "Tania", lastName: "Target" },
+    });
+  });
+
+  it("sends no such notice when the member answered for themselves", async () => {
+    // The contrast case, so the test above is a statement about DELEGATES rather
+    // than about the finaliser mailing everybody twice.
+    await finaliseMemberGuestConsentTransition({
+      bookingId: BOOKING,
+      guestId: GUEST,
+      targetMemberId: TARGET,
+      outcome: { outcome: "DECLINED", removed: true, creditCents: 0 },
+      actorMemberId: TARGET,
+    });
+
+    expect(h.sendAnsweredEmail).not.toHaveBeenCalled();
+  });
+
+  it("reports a blocked DECLINE to the booker as a decline, not as a lapse", async () => {
+    // The member clicked "No thanks" the same day. Folding every BLOCKED outcome
+    // into EXPIRED_STILL_ON_BOOKING told the booking's owner they "did not answer
+    // in time", blamed them for silence they are not guilty of, and dated it with
+    // whenever the email happened to be composed.
+    await finaliseMemberGuestConsentTransition({
+      bookingId: BOOKING,
+      guestId: GUEST,
+      targetMemberId: TARGET,
+      outcome: {
+        outcome: "BLOCKED",
+        status: "DECLINED",
+        reason: "OTHER",
+        message: REFUSALS.SETTLED,
+      },
+      actorMemberId: TARGET,
+    });
+
+    const sent = h.sendOutcomeEmail.mock.calls[0][0];
+    expect(sent.outcome.kind).toBe("DECLINED_STILL_ON_BOOKING");
+    // ...and the reason names the settled payment rather than the vague
+    // "this booking is in a state the system cannot change on its own".
+    expect(sent.outcome.blocker).toBe("SETTLEMENT_CHOICE");
+    expect(sent.outcome).not.toHaveProperty("expiredAt");
+  });
+
+  it("dates a lapse by the deadline the member was given, not by when the mail was written", async () => {
+    await finaliseMemberGuestConsentTransition({
+      bookingId: BOOKING,
+      guestId: GUEST,
+      targetMemberId: TARGET,
+      outcome: { outcome: "EXPIRED", removed: true, creditCents: 0 },
+      actorMemberId: null,
+      actorLabel: "cron:member-guest-consent-expiry",
+      consentExpiresAt: EXPIRES_AT,
+    });
+
+    expect(h.sendOutcomeEmail.mock.calls[0][0].outcome).toMatchObject({
+      kind: "EXPIRED_REMOVED",
+      expiredAt: EXPIRES_AT,
+    });
   });
 
   it("keeps a failed email from undoing a committed consent decision", async () => {
@@ -790,7 +932,7 @@ function membershipPolicyRefusal() {
 
 describe("D-14 — a decline refused, and a row left blocked rather than half-removed", () => {
   async function declineRefusedWith(error: Error) {
-    h.removeGuest.mockRejectedValueOnce(error);
+    refuseAfterPartialRemoval(error);
     return respondToMemberGuestConsent({
       bookingId: BOOKING,
       guestId: GUEST,
@@ -813,13 +955,22 @@ describe("D-14 — a decline refused, and a row left blocked rather than half-re
       reason,
       message,
     });
-    // The claim committed and the guest did NOT come off: that combination IS the
-    // blocked row D-15 puts on the admin exception list.
+    // The row SURVIVES, carrying its terminal status: that combination IS the
+    // blocked row D-15 puts on the admin exception list, and it is only reachable
+    // because the refusal rolled the removal back and the status was then written
+    // again over the restored row.
     expect(world().guests.get(GUEST)).toMatchObject({
       consentStatus: "DECLINED",
       consentRespondedByMemberId: TARGET,
       consentRespondedAt: NOW,
     });
+    // And it survives WHOLE. The removal path had already deleted the chore
+    // assignments and the guest row by the time these gates refused; if the
+    // refusal were caught inside the transaction and returned, Prisma would have
+    // committed both deletions and the "blocked row" above would be a row that no
+    // longer exists — which is what the member is simultaneously told to ask an
+    // admin about.
+    expect(world().choreAssignments.get(GUEST)).toEqual(["chore-fire", "chore-dishes"]);
     // The operator's reason and the member's sentence are the same fact.
     expect(classifyConsentRemovalRefusal(message)).toBe(reason);
   }
@@ -1065,7 +1216,7 @@ describe("expireMemberGuestConsent", () => {
     // and the reason the status column earns its keep: the claim succeeded, the
     // removal was refused, so the row is *blocked* — holding a bed, needing a
     // human, and on D-15's exception list.
-    h.removeGuest.mockRejectedValueOnce(
+    refuseAfterPartialRemoval(
       new h.BookingGuestRemovalError(REFUSALS.LAST_GUEST, 400),
     );
     const result = await expireMemberGuestConsent({ guestId: GUEST, now: NOW });
@@ -1077,6 +1228,9 @@ describe("expireMemberGuestConsent", () => {
       message: REFUSALS.LAST_GUEST,
     });
     expect(world().guests.get(GUEST)).toMatchObject({ consentStatus: "EXPIRED" });
+    // Whole, not half-removed: the sweep's refusal rolled back the guest-row and
+    // chore deletions the removal path had already made before it refused.
+    expect(world().choreAssignments.get(GUEST)).toEqual(["chore-fire", "chore-dishes"]);
   });
 
   it("takes the global money lock before the per-lodge capacity lock", async () => {
