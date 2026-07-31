@@ -39,9 +39,21 @@ booking if you would rather not go.
    - **Yes** confirms your place. The person who made the booking is emailed.
    - **No** releases the bed that was held for you and takes you off the
      booking. They are emailed about that too.
-4. If you do nothing, the request **lapses on its own** at the answer-by date —
-   at the latest, the day before check-in. The bed is released and the person
-   who made the booking is told. You never have to do anything to decline.
+4. If you do nothing, the request **lapses on its own** at the answer-by date.
+   The bed is released and the person who made the booking is told. You never
+   have to do anything to decline.
+   - The answer-by date is normally pulled back so that it falls no later than
+     the day before check-in, which is what stops a lapsed request tying up a
+     bed on the night itself. There is one exception: every request is given at
+     least two hours to be answered, and on a booking made in the last hours
+     before check-in those two hours win. An answer-by date on the check-in day
+     itself means the booking was made that late — not that something has gone
+     wrong.
+   - Releasing the bed is not always possible. If you are the only guest on the
+     booking, the club priced it by hand, the booking's state no longer allows
+     changes, or check-in has already started, the lapse cannot take you off.
+     The request is recorded as lapsed either way, and it goes on a list the
+     club office works through by hand instead of quietly holding the bed.
 
 Sometimes saying no cannot be actioned from your side — for example you are the
 only guest on the booking (removing you would leave it empty), or the club
