@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import {
+  addDaysDateOnly,
+  formatDateOnly,
+  formatDateOnlyForTimeZone,
+  parseDateOnly,
+} from "@/lib/date-only";
+
 const mocks = vi.hoisted(() => ({
   bookingFindUnique: vi.fn(),
   createDraftBooking: vi.fn(),
@@ -72,9 +79,19 @@ import { copyBookingToDraft } from "@/lib/admin-booking-copy";
  *
  * Only `Date` is faked, so real timers still run and awaited promises resolve
  * normally. 2026-07-01T00:00:00Z reads as 1 July in NZ (12:00 NZST) and in UTC
- * alike, so the pinned "today" does not depend on the runner's own zone.
+ * alike — but `APP_TIME_ZONE` falls back to `process.env.TZ`, so on a runner
+ * with TZ set to a negative-offset zone the club-zone "today" under this pin is
+ * 2026-06-30. Any date the assertions compare against "today" is therefore
+ * DERIVED through the club timezone below rather than hardcoded, so the suite
+ * holds regardless of the runner's TZ.
  */
 const FIXED_NOW = new Date("2026-07-01T00:00:00.000Z"); // NZ 2026-07-01 12:00
+
+// Club-zone boundary dates under the pin, derived the way production derives
+// "today" (`getTodayDateOnly` = `formatDateOnlyForTimeZone(now)`).
+const TODAY = formatDateOnlyForTimeZone(FIXED_NOW);
+const YESTERDAY = formatDateOnly(addDaysDateOnly(parseDateOnly(TODAY), -1));
+const TODAY_PLUS_3 = formatDateOnly(addDaysDateOnly(parseDateOnly(TODAY), 3));
 
 function makeSourceBooking(overrides: Record<string, unknown> = {}) {
   return {
@@ -246,16 +263,16 @@ describe("copyBookingToDraft", () => {
   });
 
   // The guard the clock pin above exists to keep out of the way. Stated against
-  // the pinned "today" (2026-07-01 NZ) rather than a date that merely happens to
-  // be behind the wall clock, so it asserts the boundary itself: yesterday is
-  // refused, today is not.
+  // the DERIVED club-zone "today" rather than a date that merely happens to be
+  // behind the wall clock, so it asserts the boundary itself — yesterday is
+  // refused, today is not — in every runner timezone.
   it("refuses a target check-in before today but allows today itself", async () => {
     mocks.bookingFindUnique.mockResolvedValue(makeSourceBooking());
 
     await expect(
       copyBookingToDraft({
         sourceBookingId: "source-booking",
-        targetCheckIn: "2026-06-30",
+        targetCheckIn: YESTERDAY,
         adminMemberId: "admin-1",
       }),
     ).rejects.toMatchObject({
@@ -267,9 +284,9 @@ describe("copyBookingToDraft", () => {
     await expect(
       copyBookingToDraft({
         sourceBookingId: "source-booking",
-        targetCheckIn: "2026-07-01",
+        targetCheckIn: TODAY,
         adminMemberId: "admin-1",
       }),
-    ).resolves.toMatchObject({ checkIn: "2026-07-01", checkOut: "2026-07-04" });
+    ).resolves.toMatchObject({ checkIn: TODAY, checkOut: TODAY_PLUS_3 });
   });
 });

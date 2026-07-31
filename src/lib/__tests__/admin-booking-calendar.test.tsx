@@ -17,16 +17,19 @@ vi.mock("next/navigation", () => ({
 // The calendar initially shows the current month, so build booking dates
 // inside it (days 5-20 exist in every month).
 //
-// These fixtures — and the two describes that use them — run on a PINNED clock
-// rather than the runner's (the two describes further down pin their own instant
-// for a deterministic June grid). The instant is chosen, not arbitrary:
-// 2026-06-30T22:00Z is 30 June in UTC and 1 July in NZ (10:00 NZST). The
-// component seeds its month from the club
-// timezone (`getTodayDateOnly`), so it must render JULY here — a component that
-// regressed to the runner's local date would render June on a UTC runner and
-// paint none of the fixtures below. That disagreement used to exist only during
-// the last hours of a month, which is exactly why it reached CI unnoticed
-// (#2426); pinning it makes the same regression fail every run, everywhere.
+// These fixtures — and the first two describes, which use them — run on a
+// PINNED clock rather than the runner's. (The LAST two describes pin a
+// different instant of their own for a deterministic June grid.) The instant is
+// chosen, not arbitrary: 2026-06-30T22:00Z is 30 June in UTC and 1 July in NZ
+// (10:00 NZST). The component seeds its month from the club timezone
+// (`getTodayDateOnly`), so with the club on NZ time it renders JULY here — a
+// component that regressed to the runner's local date would render June on a
+// UTC runner and paint none of the fixtures below. That disagreement used to
+// exist only during the last hours of a month, which is exactly why it reached
+// CI unnoticed (#2426); pinning it makes the same regression fail on every run
+// where the club zone differs from the runner's — the CI shape (TZ unset,
+// club Pacific/Auckland). When TZ is set, `APP_TIME_ZONE` follows it, the two
+// zones agree, and this particular check is inert by construction.
 //
 // The month is then resolved the way the COMPONENT resolves it — the club
 // timezone's calendar date for that instant, as UTC midnight. This is
