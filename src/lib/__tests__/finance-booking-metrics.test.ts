@@ -813,6 +813,68 @@ describe("finance-booking-metrics", () => {
   });
 
   /*
+    #2408, the case the fix must NOT break. Not every settled payment has a
+    ledger row behind its primary leg: an organiser-settled group booking, and
+    any payment written before the transaction ledger existed, can carry a
+    captured `amountCents` with no PRIMARY row at all. The cash figure therefore
+    reads the payment's own captured amount and uses the ledger only to prove
+    or disprove a CLAIMED increase — never to derive the total. Deriving it from
+    ledger rows would report the $121 the club took as the $21 it did not.
+  */
+  it("counts the full captured amount when no ledger row backs the payment", async () => {
+    mockPrisma.booking.findMany.mockResolvedValue([
+      {
+        id: "booking-organiser-settled",
+        checkIn: new Date("2026-04-10T00:00:00.000Z"),
+        checkOut: new Date("2026-04-11T00:00:00.000Z"),
+        status: BookingStatus.PAID,
+        finalPriceCents: 12_100,
+        guests: [{ id: "g-1" }],
+        payment: {
+          status: PaymentStatus.SUCCEEDED,
+          amountCents: 12_100,
+          refundedAmountCents: 0,
+          creditAppliedCents: 0,
+          changeFeeCents: 0,
+          additionalAmountCents: 0,
+          additionalPaymentStatus: null,
+          // Settled without a ledger row of its own.
+          transactions: [],
+        },
+      },
+      {
+        // Older still: the relation is absent from the record entirely.
+        id: "booking-pre-ledger",
+        checkIn: new Date("2026-04-10T00:00:00.000Z"),
+        checkOut: new Date("2026-04-11T00:00:00.000Z"),
+        status: BookingStatus.PAID,
+        finalPriceCents: 8_000,
+        guests: [{ id: "g-2" }],
+        payment: {
+          status: PaymentStatus.SUCCEEDED,
+          amountCents: 8_000,
+          refundedAmountCents: 0,
+          creditAppliedCents: 0,
+          changeFeeCents: 0,
+          additionalAmountCents: 0,
+          additionalPaymentStatus: null,
+        },
+      },
+    ]);
+
+    const metrics = await getFinanceBookingMetrics({
+      realized: { from: "2026-04-10", to: "2026-04-11" },
+    });
+
+    // The whole $201, not the $0 the ledger could prove.
+    expect(metrics.paymentSummary.capturedGrossCents).toBe(20_100);
+    expect(metrics.paymentSummary.netCollectedCents).toBe(20_100);
+    // Nothing CLAIMS a collected increase, so there is nothing to disprove.
+    expect(metrics.paymentSummary.additionalLedgerGapBookings).toBe(0);
+    expect(mockLogger.error).not.toHaveBeenCalled();
+  });
+
+  /*
     #2350: a legacy row written before `additionalPaymentStatus` was populated
     still carries a real uncollected delta. The owed total counted it while the
     status split filed it under NONE, so a legacy club read "Awaiting 0,

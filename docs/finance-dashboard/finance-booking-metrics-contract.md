@@ -113,6 +113,13 @@ The booking metrics response includes:
   something to add to it. `additionalLedgerGapCents` measures exactly the
   population where that containment cannot be proved from the ledger, and is
   zero in healthy data.
+- The cash total is read from `Payment.amountCents` and is **never rebuilt by
+  summing `PaymentTransaction` rows** (#2408). A captured payment can legitimately
+  have no PRIMARY row — an organiser-settled group booking, or anything written
+  before the ledger existed — so a ledger-derived total would report a booking
+  that collected $121 as having collected nothing, or as having collected only
+  its $21 increase. The ledger's job here is narrower: to prove or disprove a
+  CLAIMED increase, which is why only ADDITIONAL rows are loaded.
 - Booked revenue always comes from AlpineClubBookingsNZ `Booking.finalPriceCents`, not `Payment`.
 - When revenue is exposed at nightly granularity, `Booking.finalPriceCents` is allocated evenly across stay nights from `checkIn` inclusive to `checkOut` exclusive.
 - A booking can contribute to both realized and forward sections when its stay spans the realized cutoff or forward `asOfDate`.

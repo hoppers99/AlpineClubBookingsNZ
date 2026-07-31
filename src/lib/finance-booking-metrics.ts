@@ -89,7 +89,17 @@ const bookingMetricsSelect = Prisma.validator<Prisma.BookingSelect>()({
       // tell a genuinely collected price increase (a captured ADDITIONAL row,
       // which is therefore already inside `amountCents`) from a column that
       // merely CLAIMS one, and only the transactions can answer that.
+      //
+      // ADDITIONAL rows only. The cash total comes from `Payment.amountCents`,
+      // never from the ledger — a payment can be captured with no PRIMARY row
+      // behind it (an organiser-settled group booking, anything written before
+      // the ledger existed), and rebuilding the total from rows would report
+      // such a booking as having collected nothing. So the primary rows are
+      // not needed, and a range covering a season should not drag them across
+      // the wire. `kind` is still selected and re-checked in code: the filter
+      // is an optimisation, not the correctness boundary.
       transactions: {
+        where: { kind: PaymentTransactionKind.ADDITIONAL },
         select: {
           kind: true,
           status: true,
@@ -710,6 +720,13 @@ function summarizePayments(
     //
     // `capturedAdditionalCents` survives as the BREAKDOWN — how much of that
     // gross came from a later price increase — and must never be added back.
+    //
+    // Read from the COLUMN, never rebuilt by summing ledger rows. A captured
+    // payment can legitimately have no PRIMARY row — an organiser-settled group
+    // booking, or anything settled before the ledger existed — so a
+    // ledger-derived total would report a booking that collected $121 as having
+    // collected nothing, or (worse, once an addition exists) as having
+    // collected only the $21.
     const capturedGrossCents = FINANCE_CAPTURED_PAYMENT_STATUSES.has(
       payment.status
     )
