@@ -146,6 +146,7 @@ test("existing-chip pointer and keyboard drops preserve dates, while keyboard ca
       bedId: string;
       stayDate: string;
       guestName: string;
+      approvedAt: string | null;
     }>;
     custodianHolds: Array<{ bedId: string; nights: string[] }>;
   };
@@ -194,15 +195,22 @@ test("existing-chip pointer and keyboard drops preserve dates, while keyboard ca
     throw new Error("Ken's seeded full-stay placement has no source bed");
   }
   const allocationIds = kensAllocations.map((allocation) => allocation.id);
+  const originalApprovedAllocationIds = kensAllocations
+    .filter((allocation) => allocation.approvedAt !== null)
+    .map((allocation) => allocation.id);
+  expect(
+    originalApprovedAllocationIds,
+    "the preceding serial scenario leaves every Ken allocation approved",
+  ).toEqual(allocationIds);
 
   const page = await adminContext.newPage();
+  const moveRequests: Array<{
+    allocationIds: string[];
+    bedId: string;
+    stayDate?: string;
+  }> = [];
   let scenarioError: unknown;
   try {
-    const moveRequests: Array<{
-      allocationIds: string[];
-      bedId: string;
-      stayDate?: string;
-    }> = [];
     page.on("request", (request) => {
       if (
         request.method() === "PATCH" &&
@@ -446,25 +454,47 @@ test("existing-chip pointer and keyboard drops preserve dates, while keyboard ca
     throw error;
   } finally {
     const cleanupErrors: unknown[] = [];
-    try {
-      const restored = await adminContext.request.patch(
-        "/api/admin/bed-allocation/allocations",
-        {
-          data: {
-            allocationIds,
-            bedId: originalBedId,
+    // A failure before the first drop has changed nothing, so cleanup must be a
+    // no-op too. Once a page move was attempted, restore through the product's
+    // allocation-scoped APIs: move back first (which re-drafts), then restore
+    // only the stable ids that were approved on entry.
+    if (moveRequests.length > 0) {
+      let placementRestored = false;
+      try {
+        const restored = await adminContext.request.patch(
+          "/api/admin/bed-allocation/allocations",
+          {
+            data: {
+              allocationIds,
+              bedId: originalBedId,
+            },
           },
-        },
-      );
-      if (!restored.ok()) {
-        cleanupErrors.push(
-          new Error(
-            `restore seeded bed (${restored.status()}): ${await restored.text()}`,
-          ),
         );
+        if (!restored.ok()) {
+          throw new Error(
+            `restore seeded bed (${restored.status()}): ${await restored.text()}`,
+          );
+        }
+        placementRestored = true;
+      } catch (error) {
+        cleanupErrors.push(error);
       }
-    } catch (error) {
-      cleanupErrors.push(error);
+
+      if (placementRestored && originalApprovedAllocationIds.length > 0) {
+        try {
+          const restoredApproval = await adminContext.request.post(
+            "/api/admin/bed-allocation/approve",
+            { data: { allocationIds: originalApprovedAllocationIds } },
+          );
+          if (!restoredApproval.ok()) {
+            throw new Error(
+              `restore seeded approval (${restoredApproval.status()}): ${await restoredApproval.text()}`,
+            );
+          }
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
     }
     try {
       await page.close();
