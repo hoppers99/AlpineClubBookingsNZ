@@ -225,9 +225,15 @@ export function useXeroWizardContext(serverConfig: XeroWizardServerConfig): {
       }
 
       let isConnected = false;
+      // Whether the status read ANSWERED, as distinct from what it answered.
+      // Without the distinction a failed status read looks exactly like
+      // "disconnected", which then clears the organisation name and leaves the
+      // step waiting on a read it decided not to make (#2394).
+      let connectionKnown = false;
       if (statusRes.ok) {
         const data = (await statusRes.json()) as StatusResponse;
         isConnected = Boolean(data.connected);
+        connectionKnown = true;
         setConnected(isConnected);
         setNeedsReentry(Boolean(data.needsReentry));
       }
@@ -281,9 +287,18 @@ export function useXeroWizardContext(serverConfig: XeroWizardServerConfig): {
           setOrgName(null);
           setOrgError(UNAVAILABLE);
         }
-      } else {
+      } else if (connectionKnown) {
+        // Positively not connected: there is no organisation to name and
+        // nothing to report.
         setOrgName(null);
         setOrgError(null);
+      } else {
+        // The status read failed, so we never learned whether Xero is
+        // connected — and therefore never even attempted the organisation
+        // read. Keep whatever name we already had (it is the last thing we
+        // knew) and say the check did not happen, rather than blanking the
+        // name into a "Confirming…" that nothing will ever resolve.
+        setOrgError(UNAVAILABLE);
       }
     } catch {
       // The load itself failed (offline, a dropped connection, unparseable

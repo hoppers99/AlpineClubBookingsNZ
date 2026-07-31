@@ -46,6 +46,7 @@ type RouteReply = { ok: boolean; status?: number; body: unknown } | Error;
  */
 function stubFetch(options: {
   connected?: boolean;
+  statusOk?: boolean;
   orgReplies: RouteReply[];
 }) {
   const orgUrls: string[] = [];
@@ -65,6 +66,9 @@ function stubFetch(options: {
       };
     }
     if (url.startsWith("/api/admin/xero/status")) {
+      if (options.statusOk === false) {
+        return { ok: false, status: 500, json: async () => ({}) };
+      }
       return {
         ok: true,
         status: 200,
@@ -200,6 +204,20 @@ describe("useXeroWizardContext: a failed read is surfaced (#2394)", () => {
     await waitFor(() =>
       expect(result.current.context.orgError?.kind).toBe("unavailable"),
     );
+  });
+
+  // A failed STATUS read used to look exactly like "disconnected": the org read
+  // was skipped and the name cleared, so a step that had been showing a name
+  // dropped back to "Confirming…" and stayed there.
+  it("says so when it could not even find out whether Xero is connected", async () => {
+    const { orgUrls } = stubFetch({ statusOk: false, orgReplies: [okOrg("X")] });
+
+    const { result } = renderHook(() => useXeroWizardContext(SERVER_CONFIG));
+
+    await waitFor(() =>
+      expect(result.current.context.orgError?.kind).toBe("unavailable"),
+    );
+    expect(orgUrls).toEqual([]);
   });
 
   it("degrades an unrecognised failure kind rather than dropping it", async () => {
