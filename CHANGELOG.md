@@ -16,11 +16,12 @@ All notable public reference-release changes should be recorded here.
     save is attempted rather than by letting the database reject it. Admins see
     the same message as before — "A member with this email already exists" — so
     nothing looks different; the save simply stops earlier.
-  - What *has* changed is what happens when a save is refused for some **other**
-    reason. Any refusal of this kind used to be reported as an email clash, even
-    when the email was fine. Only a genuine email clash says so now; anything
-    else is reported as a general failure and recorded in the logs for an
-    administrator to look at. Nobody is sent off to fix an address that was
+  - What *has* changed is what a member save says when the database refuses it
+    because two records would end up sharing something that has to be unique to
+    one of them. Whatever the duplicated detail actually was, that used to be
+    reported as an email clash. Only a genuine email clash says so now;
+    anything else is reported as a general failure and recorded in the logs for
+    an administrator to look at. Nobody is sent off to fix an address that was
     never wrong.
   - On a family group's **Shared email & login** panel, handing the login to a
     different adult when someone **outside that family** already signs in with
