@@ -202,6 +202,16 @@ interface QuoteResult {
   // #1746: why a partner-shared admission was rejected (shown verbatim).
   partnerSharedReason?: string | null;
   promoStillValid: boolean;
+  // #2390: present only when a promotion's usage cap stops it reaching somebody
+  // this edit adds. The edit still saves and everyone already covered keeps
+  // their discount — the member is simply told, before they save, who is
+  // covered and who is at the normal rate.
+  promoCoverage?: {
+    promoCode: string;
+    coveredNames: string[];
+    excludedNames: string[];
+    message: string;
+  } | null;
   promoValidation: {
     valid: boolean;
     error?: string;
@@ -2403,6 +2413,20 @@ export function EditBookingPanel({
                 {!quote.promoStillValid && promoAction.type === "keep" && booking.promo && (
                   <div className="rounded-md bg-warning-3 p-3 text-sm text-warning-11">
                     Your promo code &apos;{booking.promo.code}&apos; is no longer valid and will be removed.
+                  </div>
+                )}
+
+                {/* #2390: the promotion is keeping everyone who already had it
+                    and simply not reaching the people this edit adds. Said
+                    here, before Save, because a member who adds two guests and
+                    silently gets a different rate for one of them reads that as
+                    a bug. The totals above already include it. */}
+                {quote.promoCoverage && promoAction.type === "keep" && (
+                  <div
+                    className="rounded-md bg-warning-3 p-3 text-sm text-warning-11"
+                    data-testid="promo-coverage-notice"
+                  >
+                    {quote.promoCoverage.message}
                   </div>
                 )}
               </div>

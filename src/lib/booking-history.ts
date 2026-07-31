@@ -116,6 +116,23 @@ function isRemovedGuest(
   return Boolean(value) && typeof value === "object";
 }
 
+/**
+ * The plain-English promo-coverage sentence a reprice stored on its own
+ * modification record (#2390), or null when the promotion covered everybody.
+ * Read defensively: `newData` is free-form JSON, and every modification written
+ * before this existed simply has no such key.
+ */
+function promoCoverageNoteOf(
+  modification: BookingHistoryModification
+): string | null {
+  const next =
+    modification.newData && typeof modification.newData === "object"
+      ? (modification.newData as Record<string, unknown>)
+      : {};
+  const note = next.promoCoverageNote;
+  return typeof note === "string" && note.trim().length > 0 ? note : null;
+}
+
 function describeModification(modification: BookingHistoryModification): string | null {
   const previous =
     modification.previousData && typeof modification.previousData === "object"
@@ -374,6 +391,14 @@ export function buildBookingHistoryItems({
     const detailParts = [describeModification(modification)];
     if (modification.changeFeeCents > 0) {
       detailParts.push(`Change fee applied: ${formatCents(modification.changeFeeCents)}.`);
+    }
+    // #2390: when a promotion's usage cap stopped it reaching somebody this
+    // edit added, the reprice recorded the exact sentence the member was shown
+    // at the time. Replayed verbatim so the booking's own summary, the edit
+    // preview and the modification email all tell the one story.
+    const promoCoverageNote = promoCoverageNoteOf(modification);
+    if (promoCoverageNote) {
+      detailParts.push(promoCoverageNote);
     }
 
     items.push({

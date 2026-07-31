@@ -678,6 +678,11 @@ export async function sendBookingModifiedEmail(params: {
   additionalPaymentMethod?: "STRIPE" | "INTERNET_BANKING";
   paymentReference?: string | null;
   xeroInvoiceNumber?: string | null;
+  // #2390: the plain-English sentence about who a capped promotion still covers
+  // after this edit. Flows into the shared change rows, so the HTML email, the
+  // admin-editable body, the edit preview and the booking's own history all
+  // carry the identical wording.
+  promoCoverageNote?: string | null;
   // Booking's lodge (multi-lodge phase 8): see sendBookingConfirmedEmail.
   lodgeId?: string | null;
 }) {

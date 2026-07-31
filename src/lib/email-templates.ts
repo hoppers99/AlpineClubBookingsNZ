@@ -1834,6 +1834,12 @@ export function bookingModificationSummaryRows(params: {
   oldFinalPriceCents: number;
   newFinalPriceCents: number;
   changeFeeCents: number;
+  // #2390: present only when a promotion's usage cap stopped it reaching
+  // somebody this edit added. Added as a row here, rather than as a new
+  // template token, so the hand-built HTML email and the admin-editable flat
+  // body cannot end up telling different stories about the same split — the
+  // whole reason this helper exists.
+  promoCoverageNote?: string | null;
 }): Array<{ label: string; value: string }> {
   const dateRange = (from: Date, to: Date) =>
     `${formatNZDate(from)} – ${formatNZDate(to)}`;
@@ -1888,6 +1894,11 @@ export function bookingModificationSummaryRows(params: {
     });
   }
 
+  // Last, deliberately: it explains the New Total above it.
+  if (params.promoCoverageNote && params.promoCoverageNote.trim().length > 0) {
+    rows.push({ label: "Promo coverage", value: params.promoCoverageNote });
+  }
+
   return rows;
 }
 
@@ -1933,6 +1944,9 @@ export function bookingModifiedTemplate(params: {
   additionalPaymentMethod?: "STRIPE" | "INTERNET_BANKING";
   paymentReference?: string | null;
   xeroInvoiceNumber?: string | null;
+  // #2390: see bookingModificationSummaryRows — it renders as one more change
+  // row, so the HTML and the flat body stay identical.
+  promoCoverageNote?: string | null;
 }): string {
   const {
     firstName,
@@ -1952,6 +1966,7 @@ export function bookingModifiedTemplate(params: {
     additionalPaymentMethod,
     paymentReference,
     xeroInvoiceNumber,
+    promoCoverageNote,
   } = params;
 
   // The change rows come from the shared helper the flat {{changeSummary}}
@@ -1967,6 +1982,7 @@ export function bookingModifiedTemplate(params: {
     oldFinalPriceCents,
     newFinalPriceCents,
     changeFeeCents,
+    promoCoverageNote,
   }).map((row) => ({
     label: escapeHtml(row.label),
     value: escapeHtml(row.value),
