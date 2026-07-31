@@ -4,6 +4,35 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **A member's membership can now be cancelled without first destroying their
+  admin access, and school and organisation accounts can be cancelled at all
+  (#2383).** The old rule claimed to allow "only member accounts", but what it
+  actually tested was whether the account held the full admin bundle — so a
+  Membership Officer, Booking Officer, Treasurer, Content Manager or holder of
+  a club-defined custom role was cancellable all along, and only a Full Admin
+  was refused. That refusal had no way out worth using: to cancel a Full
+  Admin's membership you first had to strip their access, which throws away
+  every privileged role they held and cannot be given back from the member page
+  afterwards, because a cancelled member cannot be reactivated there. Worse,
+  nobody can strip their own access, so a departing sole admin could not cancel
+  their own membership by any route at all. The same rule also refused school
+  and organisation accounts, which hold real fee-paying memberships and had no
+  cancellation path whatsoever. Cancellation now asks the only question that
+  matters — is there an account holder here with a membership? — so every
+  member is cancellable whatever admin access they hold, as is every
+  organisation account. Two kinds of record are still refused, because they are
+  not people and hold no membership: the lodge kiosk device login, and the
+  contact records the booking-request flows create (a public request's guest
+  contact, and a school request's owner contact and teacher records). Those
+  simply show no cancellation action, with nothing to explain, because nothing
+  is being withheld. The safeguards that matter sit where the decision is
+  actually made, at approval: only a full admin may approve a cancellation for
+  an account with admin access, an admin can never approve a cancellation they
+  raised themselves, and the club can never be left with no full admin — so a
+  sole admin who wants to leave must appoint their successor first, and then
+  that successor approves. Cancelling a member no longer needs their roles
+  deleted, so the record of what they once did for the club stays intact.
+
 - **Admins can now cancel the membership of a member who has no login of
   their own (#2354).** Opening such a member's admin page used to show no
   **Request Cancellation** action at all — not greyed out, simply absent —

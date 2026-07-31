@@ -2390,6 +2390,41 @@ strand an existing admin. The one remaining path that can clear `canLogin` on an
 admin and is NOT guarded is indirect — the age-down cron, where editing a date
 of birth to a minor tier can indirectly clear `canLogin` (informational).
 
+Membership-cancellation eligibility is an account-holder question, never a
+permissions one (#2383). `accountCanHoldMembership` (`src/lib/member-roles.ts`)
+is the single rule, shared by `createAdminMembershipCancellationRequest` and the
+admin member page's gate, and pinned to that call site by the #2354 AST contract
+test. It refuses exactly two record classes, both of which are not account
+holders: the lodge kiosk device login (legacy `LODGE` role or a `LODGE`
+access-role row), and booking-request contact records (`NON_MEMBER`, plus
+non-login `SCHOOL` — the school flow's owner contact and teacher records). The
+`canLogin` term applies to `SCHOOL` alone and must not be generalised: `SCHOOL`
+is the legacy role of BOTH a real organisation account (User Type
+"Organisation", which stores an `ORG` row and is only settable on a login-capable
+account) and every school booking-request contact (always created
+`canLogin: false`); non-login is the line `MAPPABLE_CONTACT_SCOPE`
+(`src/lib/non-member-contact.ts`) already draws between them. Every other
+account is cancellable, including admins of every class — the rule this replaced
+was legacy `role === "USER"`, which refused only the Full Admin bundle while
+accepting all four scoped admin classes, and swept up organisations that hold
+real fee-paying memberships. The privileged-target and last-Full-Admin guards
+above are what make widening this safe: they run inside the approval
+transaction, so a cancellation can never strand the club with no active,
+login-enabled Full Admin, and only a Full Admin may approve one against a
+privileged account. Separation of duties holds on the self-cancellation case a
+widened rule newly reaches — `assertCancellationApprovalIsIndependent` refuses
+an approval by the member who raised the request — so a club's sole Full Admin
+must appoint a successor before their own cancellation can be approved.
+
+Cancellation approval does NOT clear `MemberAccessRole` rows,
+`financeAccessLevel`, or the legacy `role` column (#2383, confirming existing
+behaviour). Archive approval, deletion anonymisation, and bulk deactivate all
+leave them too; the safety property is carried by `active: false` (every server
+guard re-reads it) plus `canLogin: false` (the admin permission matrix resolves
+to all-none), while the dormant rows keep the account inside the canLogin-blind
+`memberHoldsPrivilegedRole` guard for any later archive. Deleting them on
+cancellation would be novel and would weaken that later guard.
+
 Application-approval mapping (link + overwrite of an existing member at approval
 time) preserves the login-uniqueness and auth invariants: it never creates a
 second `canLogin: true` member for an email (the create-path `canLogin` guard is

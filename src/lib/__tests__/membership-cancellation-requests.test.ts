@@ -781,22 +781,83 @@ describe("membership cancellation request workflow", () => {
       expect(mocks.requestCreate).not.toHaveBeenCalled();
     });
 
-    it("rejects an admin request when the target is an admin role", async () => {
-      mocks.memberFindUnique.mockResolvedValue(
-        targetMember({ role: "ADMIN", accessRoles: [{ role: "ADMIN" }] }),
-      );
+    // #2383: the account classes that may be cancelled, and the two that may
+    // not. The rule used to be legacy role === "USER", which refused Full
+    // Admins and organisations while quietly accepting every scoped admin.
+    describe("which account classes may be cancelled (#2383)", () => {
+      const accepted: Array<[string, Record<string, unknown>]> = [
+        ["an ordinary member", {}],
+        [
+          "a dependant with no login",
+          { canLogin: false, accessRoles: [] },
+        ],
+        [
+          "a Full Admin",
+          { role: "ADMIN", accessRoles: [{ role: "ADMIN" }, { role: "USER" }] },
+        ],
+        [
+          "a scoped-role admin (Membership Officer)",
+          { role: "USER", accessRoles: [{ role: "ADMIN_MEMBERSHIP" }] },
+        ],
+        [
+          "a custom definition-backed role holder",
+          { role: "USER", accessRoles: [{ role: null }] },
+        ],
+        [
+          "an organisation account",
+          { role: "SCHOOL", accessRoles: [{ role: "ORG" }] },
+        ],
+      ];
 
-      await expect(
-        createAdminMembershipCancellationRequest({
-          targetMemberId: "target-1",
-          adminMemberId: "admin-1",
-          reason: "Test",
-        }),
-      ).rejects.toMatchObject({
-        message: "Only member accounts can be cancelled",
-        statusCode: 422,
-      } satisfies Partial<MembershipCancellationRequestError>);
-      expect(mocks.requestCreate).not.toHaveBeenCalled();
+      for (const [label, overrides] of accepted) {
+        it(`accepts ${label}`, async () => {
+          mocks.memberFindUnique.mockResolvedValue(targetMember(overrides));
+
+          const result = await createAdminMembershipCancellationRequest({
+            targetMemberId: "target-1",
+            adminMemberId: "admin-1",
+            reason: "Test",
+          });
+
+          expect(result.request.id).toBe("request-2");
+          expect(mocks.requestCreate).toHaveBeenCalled();
+        });
+      }
+
+      const refused: Array<[string, Record<string, unknown>]> = [
+        ["the lodge kiosk device login", { role: "LODGE", accessRoles: [] }],
+        [
+          "a kiosk carrying only a LODGE access-role row",
+          { role: "USER", accessRoles: [{ role: "LODGE" }] },
+        ],
+        [
+          "a booking-request guest record",
+          { role: "NON_MEMBER", canLogin: false, accessRoles: [] },
+        ],
+        [
+          "a school booking-request contact or teacher record",
+          { role: "SCHOOL", canLogin: false, accessRoles: [] },
+        ],
+      ];
+
+      for (const [label, overrides] of refused) {
+        it(`refuses ${label}`, async () => {
+          mocks.memberFindUnique.mockResolvedValue(targetMember(overrides));
+
+          await expect(
+            createAdminMembershipCancellationRequest({
+              targetMemberId: "target-1",
+              adminMemberId: "admin-1",
+              reason: "Test",
+            }),
+          ).rejects.toMatchObject({
+            message:
+              "Lodge kiosk logins and booking-request contact records hold no membership to cancel",
+            statusCode: 422,
+          } satisfies Partial<MembershipCancellationRequestError>);
+          expect(mocks.requestCreate).not.toHaveBeenCalled();
+        });
+      }
     });
 
     it("rejects an admin request when an open participant already exists", async () => {

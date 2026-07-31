@@ -4,14 +4,28 @@ import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 /*
-  #2354 — the admin member page must decide "may this membership be cancelled?"
-  with the same question the server asks, never with a permissions question.
+  #2354, extended by #2383 — the admin member page must decide "may this
+  membership be cancelled?" with the same question the server asks, never with
+  a permissions question.
 
-  The bug this pins: the page gated the action on `hasAccessRole(member,
-  "USER")`. Access roles are deliberately cleared for anyone who cannot log in
-  (`normalizeAssignableAccessRoles`), so every family dependant and every
-  non-login adult resolved to zero roles and the cancel action vanished — while
-  `createAdminMembershipCancellationRequest` accepted exactly those members.
+  The original bug this pins (#2354): the page gated the action on
+  `hasAccessRole(member, "USER")`. Access roles are deliberately cleared for
+  anyone who cannot log in (`normalizeAssignableAccessRoles`), so every family
+  dependant and every non-login adult resolved to zero roles and the cancel
+  action vanished — while `createAdminMembershipCancellationRequest` accepted
+  exactly those members.
+
+  #2383 widened the shared helper: eligibility is now an account-holder
+  question (`accountCanHoldMembership`) rather than legacy `role === "USER"`,
+  so admins of every class and organisation accounts are cancellable and only
+  the lodge kiosk login and the booking-request contact records are refused.
+  That gave the helper two more inputs, `canLogin` and `accessRoles`. The
+  assertions below are unchanged in force and deliberately kept: the page must
+  still hand the whole member to the helper and decide nothing itself. A bare
+  `canLogin` or `accessRoles` conjunct ON THE PAGE is exactly the #2354
+  regression; the helper consulting those fields internally, with the reasoning
+  written beside it, is not. Whichever way the shared rule moves next, page and
+  server move together — which is the property this file exists to hold.
 
   Unit tests over the helper cannot catch a regression here: restoring the old
   expression on the page leaves the helper, and its tests, untouched and green.
@@ -65,7 +79,7 @@ function declarationInitialiser(
   return found;
 }
 
-describe("admin membership-cancellation gate (#2354)", () => {
+describe("admin membership-cancellation gate (#2354, #2383)", () => {
   const sourceFile = parse(PAGE);
   const gate = declarationInitialiser(sourceFile, "canRequestCancellation");
 
@@ -74,12 +88,31 @@ describe("admin membership-cancellation gate (#2354)", () => {
     expect(gate).toContain("canAdminRequestMembershipCancellation");
   });
 
-  it("never gates cancellation on access roles", () => {
-    // The regression itself: any access-role predicate here re-hides the
-    // action for dependants and non-login adults, whom the API accepts.
+  it("hands the whole member to the helper", () => {
+    // #2383: the helper reads `role`, `canLogin`, `accessRoles`, `active`,
+    // `cancelledAt` and `archivedAt`, and will read whatever the rule needs
+    // next. Passing the member wholesale is what lets the shared rule change
+    // without the page having to be found and changed too.
+    expect(gate).toContain("canAdminRequestMembershipCancellation(member)");
+  });
+
+  it("never gates cancellation on access roles or login state", () => {
+    // The #2354 regression itself: any access-role or login predicate HERE
+    // re-hides the action for dependants and non-login adults, whom the API
+    // accepts. The helper's own narrow use of those fields — refusing the
+    // lodge kiosk and the non-login booking-request contact records — is
+    // documented at its definition and covered by member-roles.test.ts.
     expect(gate).not.toContain("hasAccessRole");
     expect(gate).not.toContain("accessRoles");
     expect(gate).not.toContain("canLogin");
+  });
+
+  it("never re-implements the rule with a role comparison", () => {
+    // #2383: the rule it replaced was a bare legacy-role equality test whose
+    // name and behaviour disagreed. The page must not grow its own copy.
+    expect(gate).not.toContain("role");
+    expect(gate).not.toContain("ADMIN");
+    expect(gate).not.toContain("SCHOOL");
   });
 
   it("still requires no open request before offering the action", () => {

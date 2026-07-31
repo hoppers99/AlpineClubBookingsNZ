@@ -18,6 +18,7 @@ import {
 } from "@/lib/membership-cancellation-settings";
 import {
   MEMBER_LEVEL_ROLE_VALUES,
+  accountCanHoldMembership,
   isMemberLevelRole,
 } from "@/lib/member-roles";
 import { prisma } from "@/lib/prisma";
@@ -707,6 +708,9 @@ export async function createAdminMembershipCancellationRequest({
       role: true,
       cancelledAt: true,
       archivedAt: true,
+      // #2383: read alongside the legacy role column so a lodge kiosk carrying
+      // only a LODGE access-role row is still recognised as a device login.
+      accessRoles: { select: { role: true } },
     },
   });
 
@@ -719,9 +723,28 @@ export async function createAdminMembershipCancellationRequest({
   // admin UI offers the action exactly where this function accepts it (#2354).
   // Keep them in step; the distinct status codes and messages here are why
   // this stays inline rather than calling the helper.
-  if (!isMemberLevelRole(target.role)) {
+  //
+  // #2383: the only accounts refused here are the records that are not an
+  // account holder at all — the shared lodge kiosk device login, and the guest
+  // and school contacts minted by the public booking-request flows. Whatever
+  // admin access a real member holds is irrelevant to whether their membership
+  // can be cancelled; who may APPROVE that cancellation against a privileged
+  // account, and the rule that the club can never be left without a Full
+  // Admin, are enforced at approval time by the #1604/#1622 guards in
+  // membership-cancellation-admin.
+  if (
+    !accountCanHoldMembership({
+      role: target.role,
+      canLogin: target.canLogin,
+      // `role` is null on a definition-backed custom-role row; only the
+      // bundled system roles are of interest here, so drop those.
+      accessRoles: target.accessRoles
+        .map((assignment) => assignment.role)
+        .filter((role): role is NonNullable<typeof role> => role !== null),
+    })
+  ) {
     throw new MembershipCancellationRequestError(
-      "Only member accounts can be cancelled",
+      "Lodge kiosk logins and booking-request contact records hold no membership to cancel",
       422,
     );
   }
