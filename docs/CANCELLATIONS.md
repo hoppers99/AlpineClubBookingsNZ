@@ -161,11 +161,22 @@ so the club has one meaning of the word:
   same mistake in the other direction.
 
 The member's own current-season subscription invoice is deliberately **not**
-counted when the cancellation is about to credit it. Approval raises an
-allocated credit note against an unpaid or overdue subscription invoice — that
-is the [refund policy](#refund-policy) — so counting it would make the most
+counted when the cancellation is about to credit it **in full**. Approval raises
+an allocated credit note against an unpaid or overdue subscription invoice —
+that is the [refund policy](#refund-policy) — so counting it would make the most
 ordinary cancellation there is impossible to approve: the thing that clears the
 invoice is the very approval being refused.
+
+"In full" is the whole of it. A family or billing group is billed with one
+invoice covering everyone in it, and since #2400 a cancellation credits that
+invoice only when the leaver is the last member it covers who is still with the
+club — see [Shared family invoices](#shared-family-invoices). While anyone else
+it covers is staying, nothing is credited, so the invoice is a real balance and
+it is **not** excused: it blocks the approval like any other. That is the rule in
+one line: **this check excuses an invoice if and only if the approval is about to
+credit its full balance.** Otherwise approving would archive a Xero contact with
+money still owing behind it, which is the exact harm the refusal exists to
+prevent.
 
 That exclusion covers the **current** season only, which is the same season the
 approval credits. A club that raises next season's subscription invoices early
@@ -273,7 +284,69 @@ stays with the club.
 
 Unpaid or overdue membership subscriptions are cleared in Xero. The cancellation
 approval path queues a Xero credit note against the subscription invoice so the
-invoice is no longer due.
+invoice is no longer due — unless that invoice also covers other members who are
+staying, in which case nothing is credited automatically. See
+[Shared family invoices](#shared-family-invoices).
+
+## Shared Family Invoices
+
+When a family or billing group is charged for memberships, **one** Xero invoice
+covers everyone in the group. Its lines are one per fee component, not one per
+member, so the invoice does not say what any individual's share of it is.
+
+Until #2400, cancelling any one of those members credited that invoice's whole
+remaining balance. Cancelling one child therefore wiped the entire family's bill,
+including the part belonging to members who were staying — and nothing said so.
+The invoice simply went to zero and the club quietly lost the money.
+
+The rule now (owner decision, 31 July 2026):
+
+- **The leaver is the last member the invoice covers who is still with the
+  club** → unchanged from before: the invoice's whole remaining balance is
+  credited with an allocated credit note. Nobody is left owing.
+- **Other members it covers are staying** → **nothing is credited
+  automatically.** The invoice is left exactly as it is, because the club is
+  still owed it by the members who remain. The review queue says so plainly
+  before the admin approves, names the members who are staying, and links the
+  invoice into Xero. If something genuinely is owed back to the leaver, the
+  admin raises that credit note in Xero deliberately.
+
+### Cancelling a whole family
+
+Approve them one at a time, and the **last** approval credits the invoice in
+full — because by then everyone else it covers has themselves been cancelled and
+none of them keeps it alive any more. The member holding the family's Xero
+contact is normally the one who has to go last: while the others are still with
+the club their share of that invoice is genuinely owing, so the
+[unpaid-invoice refusal](#unpaid-invoices-block-approval) stops that contact
+being archived over a live balance. Cancel the rest of the family first and the
+refusal clears by itself.
+
+Where the whole family shares **one** Xero contact — which happens when children
+inherit a parent's email address — every one of them is refused at once, because
+each is blocked by the same shared invoice sitting on the contact they all use.
+That is not a bug to work around: the club is owed that invoice, and the way
+through is to settle, credit or void it in Xero, or to switch **Archive Xero
+contacts after cancellation approval** off, exactly as the refusal says.
+
+### What decides who an invoice still covers
+
+Two records say who a subscription invoice covers: the invoice link stamped on
+each member's season subscription, and the charge's coverage claims. They are
+written together and normally agree; they can disagree after a re-bill or on
+records old enough to predate coverage claims. Both are counted, because an
+uncertain answer must never be the licence to wipe a balance — the worst
+over-counting can do is decline to credit something automatically, which an
+admin can put right in Xero, while under-counting destroys revenue silently.
+
+A member stops keeping an invoice alive once **they** have been cancelled. A
+member who is merely deactivated still counts: their season is still billed on
+that invoice, so the money is still owed.
+
+The question is asked afresh every time it is acted on — when the approval is
+checked, and again at the moment the credit note would be raised — never
+remembered from when the cancellation was requested, because families change in
+between.
 
 ## Scenarios
 
@@ -314,9 +387,21 @@ states.
 - Each participant is reviewed and processed independently.
 - Paid participant subscriptions remain non-refundable.
 - Unpaid or overdue participant invoices are cleared with allocated Xero credit
-  notes.
+  notes — but where one invoice covers several members, only the **last** of
+  them to be cancelled credits it, and only then in full. See
+  [Shared family invoices](#shared-family-invoices).
 - The family request completes only after all included participants are resolved
   through approval, rejection, withdrawal, or decline.
+
+### One Member Leaves a Family That Stays
+
+The family's invoice covers members who remain.
+
+- Admin approval cancels the local membership.
+- **No Xero credit note is created.** The invoice keeps its full balance,
+  because the club is still owed it by the members who stayed.
+- The review queue says so before the approval, names who is staying, and links
+  the invoice, so an admin can raise a credit note by hand if one is due.
 
 ## GST Treatment
 

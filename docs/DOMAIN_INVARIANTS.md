@@ -2726,6 +2726,27 @@ dependent changes must preserve financial history, booking and guest history,
 audit history, required family/dependent history, privacy preferences, and Xero
 contact/link history where required.
 
+A membership cancellation never credits money owed for a membership that
+continues (#2400). One Xero subscription invoice covers every member of a family
+or billing group, its lines are per fee component rather than per member, and the
+cancellation credit note is for the invoice's whole `amountDue` — so it is raised
+only when the leaving member is the last member that invoice covers who has not
+themselves been cancelled. "Covered" is the union of
+`MemberSubscription.xeroInvoiceId` and the charge's ACTIVE
+(`releasedAt IS NULL`) coverage claims: the two are written together but can
+disagree, and an uncertain covered set must never authorise wiping a balance.
+The union only ever SHRINKS over the life of a cancellation, because a covered
+member leaves it when `cancelledAt` is set and nothing in the app writes
+`cancelledAt: null` (see the reactivation constraint below) — so an approval
+decided on "the leaver is last" cannot be falsified before the outbox drains.
+
+Paired with it: the unpaid-invoice approval blocker (#2392) excuses the member's
+own subscription invoice **if and only if** the approval is about to credit its
+full balance. Both sides derive that from
+`loadMembershipCancellationSubscriptionCreditPlansByMemberId`, so the excused set
+is by construction the cleared set, and no cancellation can archive a Xero
+contact with a balance nobody is going to credit.
+
 Access role, seasonal membership type, age tier, Xero contact-group rule, and
 committee assignment are separate axes. `MemberAccessRole` controls application
 access via the legacy enum values (`USER`, `ADMIN`, `ADMIN_READONLY`,
