@@ -198,178 +198,178 @@ test("existing-chip pointer and keyboard drops preserve dates, while keyboard ca
   const page = await adminContext.newPage();
   let scenarioError: unknown;
   try {
-  const moveRequests: Array<{
-    allocationIds: string[];
-    bedId: string;
-    stayDate?: string;
-  }> = [];
-  page.on("request", (request) => {
-    if (
-      request.method() === "PATCH" &&
-      new URL(request.url()).pathname ===
-        "/api/admin/bed-allocation/allocations"
-    ) {
-      moveRequests.push(
-        request.postDataJSON() as {
-          allocationIds: string[];
-          bedId: string;
-          stayDate?: string;
+    const moveRequests: Array<{
+      allocationIds: string[];
+      bedId: string;
+      stayDate?: string;
+    }> = [];
+    page.on("request", (request) => {
+      if (
+        request.method() === "PATCH" &&
+        new URL(request.url()).pathname ===
+          "/api/admin/bed-allocation/allocations"
+      ) {
+        moveRequests.push(
+          request.postDataJSON() as {
+            allocationIds: string[];
+            bedId: string;
+            stayDate?: string;
+          },
+        );
+      }
+    });
+    await page.goto(`/admin/bed-allocation?from=${ken.checkIn}&to=${extendedTo}`);
+
+    const dragHandle = () =>
+      page
+      .getByRole("button", {
+        name: /Drag Ken King to another bed; original lodge night .* will be kept/,
+      })
+      .first();
+    const targetRow = () =>
+      page
+      .getByRole("row")
+      .filter({ has: page.getByText(destination!.name, { exact: true }) });
+    const targetCell = () =>
+      targetRow().locator(`td[data-stay-date="${ken.checkOut}"]`);
+    const preview = () =>
+      page.getByText(
+        `to ${destination!.roomName} / ${destination!.name}, snapped to original lodge night`,
+        { exact: false },
+      );
+
+    // Pointer preview + cancel: real sensor wiring, no request.
+    const from = await dragHandle().boundingBox();
+    const to = await targetCell().boundingBox();
+    expect(from).toBeTruthy();
+    expect(to).toBeTruthy();
+    await page.mouse.move(from!.x + from!.width / 2, from!.y + from!.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(to!.x + to!.width / 2, to!.y + to!.height / 2, {
+      steps: 12,
+    });
+    await expect(preview()).toBeVisible();
+    await page.keyboard.press("Escape");
+    await page.mouse.up();
+    await expect.poll(() => moveRequests.length).toBe(0);
+
+    // Pointer success: release over the real cell, then prove the page emitted
+    // the date-free PATCH and the server persisted the original nights.
+    await page.mouse.move(from!.x + from!.width / 2, from!.y + from!.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(to!.x + to!.width / 2, to!.y + to!.height / 2, {
+      steps: 12,
+    });
+    await expect(preview()).toBeVisible();
+    await page.mouse.up();
+    await expect(page.getByText("Visible guest nights moved")).toBeVisible({
+      timeout: 30_000,
+    });
+    expect(moveRequests).toHaveLength(1);
+    expect(moveRequests[0]).toEqual({
+      allocationIds,
+      bedId: destination!.id,
+    });
+    expect(moveRequests[0]).not.toHaveProperty("stayDate");
+
+    const readPersisted = async () => {
+      const response = await adminContext.request.get(dashboardPath);
+      expect(
+        response.ok(),
+        `read persisted board (${response.status()})`,
+      ).toBeTruthy();
+      const current = (await response.json()) as typeof payload;
+      return current.allocations
+        .filter((allocation) => allocation.guestName.includes("Ken"))
+        .sort((left, right) => left.stayDate.localeCompare(right.stayDate));
+    };
+    let persisted = await readPersisted();
+    expect(persisted.map((allocation) => allocation.stayDate)).toEqual(
+      originalDates,
+    );
+    expect(
+      persisted.every(
+        (allocation) => allocation.bedId === destination!.id,
+      ),
+    ).toBe(true);
+
+    // Restore the seeded bed through the service before exercising the keyboard
+    // sensor. This keeps the fixture deterministic and prevents the successful
+    // pointer proof from deciding the keyboard source/destination geometry.
+    const restoreAfterPointer = await adminContext.request.patch(
+      "/api/admin/bed-allocation/allocations",
+      {
+        data: {
+          allocationIds,
+          bedId: originalBedId,
         },
+      },
+    );
+    expect(
+      restoreAfterPointer.ok(),
+      `restore after pointer drop (${restoreAfterPointer.status()})`,
+    ).toBeTruthy();
+    await page.reload();
+    await expect(dragHandle()).toBeVisible();
+
+    async function moveKeyboardFocusToDestination() {
+      const sourceBox = await dragHandle().boundingBox();
+      const destinationBox = await targetCell().boundingBox();
+      expect(sourceBox).toBeTruthy();
+      expect(destinationBox).toBeTruthy();
+      const direction =
+        destinationBox!.y >= sourceBox!.y ? "ArrowDown" : "ArrowUp";
+      const maxSteps =
+        Math.ceil(
+          Math.abs(
+            destinationBox!.y +
+              destinationBox!.height / 2 -
+              (sourceBox!.y + sourceBox!.height / 2),
+          ) / 25,
+        ) + 4;
+      for (let step = 0; step < maxSteps; step += 1) {
+        await page.keyboard.press(direction);
+        if (await preview().isVisible().catch(() => false)) return;
+      }
+      throw new Error(
+        `Keyboard sensor did not reach ${destination!.roomName} / ${destination!.name}`,
       );
     }
-  });
-  await page.goto(`/admin/bed-allocation?from=${ken.checkIn}&to=${extendedTo}`);
 
-  const dragHandle = () =>
-    page
-    .getByRole("button", {
-      name: /Drag Ken King to another bed; original lodge night .* will be kept/,
-    })
-    .first();
-  const targetRow = () =>
-    page
-    .getByRole("row")
-    .filter({ has: page.getByText(destination!.name, { exact: true }) });
-  const targetCell = () =>
-    targetRow().locator(`td[data-stay-date="${ken.checkOut}"]`);
-  const preview = () =>
-    page.getByText(
-      `to ${destination!.roomName} / ${destination!.name}, snapped to original lodge night`,
-      { exact: false },
-    );
-
-  // Pointer preview + cancel: real sensor wiring, no request.
-  const from = await dragHandle().boundingBox();
-  const to = await targetCell().boundingBox();
-  expect(from).toBeTruthy();
-  expect(to).toBeTruthy();
-  await page.mouse.move(from!.x + from!.width / 2, from!.y + from!.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(to!.x + to!.width / 2, to!.y + to!.height / 2, {
-    steps: 12,
-  });
-  await expect(preview()).toBeVisible();
-  await page.keyboard.press("Escape");
-  await page.mouse.up();
-  await expect.poll(() => moveRequests.length).toBe(0);
-
-  // Pointer success: release over the real cell, then prove the page emitted
-  // the date-free PATCH and the server persisted the original nights.
-  await page.mouse.move(from!.x + from!.width / 2, from!.y + from!.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(to!.x + to!.width / 2, to!.y + to!.height / 2, {
-    steps: 12,
-  });
-  await expect(preview()).toBeVisible();
-  await page.mouse.up();
-  await expect(page.getByText("Visible guest nights moved")).toBeVisible({
-    timeout: 30_000,
-  });
-  expect(moveRequests).toHaveLength(1);
-  expect(moveRequests[0]).toEqual({
-    allocationIds,
-    bedId: destination!.id,
-  });
-  expect(moveRequests[0]).not.toHaveProperty("stayDate");
-
-  const readPersisted = async () => {
-    const response = await adminContext.request.get(dashboardPath);
+    // Keyboard preview + cancel: pickup and navigation are real key events.
+    await dragHandle().focus();
+    await page.keyboard.press("Space");
+    await moveKeyboardFocusToDestination();
+    await expect(preview()).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect.poll(() => moveRequests.length).toBe(1);
+    persisted = await readPersisted();
     expect(
-      response.ok(),
-      `read persisted board (${response.status()})`,
-    ).toBeTruthy();
-    const current = (await response.json()) as typeof payload;
-    return current.allocations
-      .filter((allocation) => allocation.guestName.includes("Ken"))
-      .sort((left, right) => left.stayDate.localeCompare(right.stayDate));
-  };
-  let persisted = await readPersisted();
-  expect(persisted.map((allocation) => allocation.stayDate)).toEqual(
-    originalDates,
-  );
-  expect(
-    persisted.every(
-      (allocation) => allocation.bedId === destination!.id,
-    ),
-  ).toBe(true);
+      persisted.every((allocation) => allocation.bedId === originalBedId),
+    ).toBe(true);
 
-  // Restore the seeded bed through the service before exercising the keyboard
-  // sensor. This keeps the fixture deterministic and prevents the successful
-  // pointer proof from deciding the keyboard source/destination geometry.
-  const restoreAfterPointer = await adminContext.request.patch(
-    "/api/admin/bed-allocation/allocations",
-    {
-      data: {
-        allocationIds,
-        bedId: originalBedId,
-      },
-    },
-  );
-  expect(
-    restoreAfterPointer.ok(),
-    `restore after pointer drop (${restoreAfterPointer.status()})`,
-  ).toBeTruthy();
-  await page.reload();
-  await expect(dragHandle()).toBeVisible();
-
-  async function moveKeyboardFocusToDestination() {
-    const sourceBox = await dragHandle().boundingBox();
-    const destinationBox = await targetCell().boundingBox();
-    expect(sourceBox).toBeTruthy();
-    expect(destinationBox).toBeTruthy();
-    const direction =
-      destinationBox!.y >= sourceBox!.y ? "ArrowDown" : "ArrowUp";
-    const maxSteps =
-      Math.ceil(
-        Math.abs(
-          destinationBox!.y +
-            destinationBox!.height / 2 -
-            (sourceBox!.y + sourceBox!.height / 2),
-        ) / 25,
-      ) + 4;
-    for (let step = 0; step < maxSteps; step += 1) {
-      await page.keyboard.press(direction);
-      if (await preview().isVisible().catch(() => false)) return;
-    }
-    throw new Error(
-      `Keyboard sensor did not reach ${destination!.roomName} / ${destination!.name}`,
+    // Keyboard drop: the live preview is followed by a real Space drop and a
+    // second date-free PATCH. The persisted nights remain byte-for-byte equal.
+    await dragHandle().focus();
+    await page.keyboard.press("Space");
+    await moveKeyboardFocusToDestination();
+    await page.keyboard.press("Space");
+    await expect(page.getByText("Visible guest nights moved")).toBeVisible({
+      timeout: 30_000,
+    });
+    expect(moveRequests).toHaveLength(2);
+    expect(moveRequests[1]).toEqual({
+      allocationIds,
+      bedId: destination!.id,
+    });
+    expect(moveRequests[1]).not.toHaveProperty("stayDate");
+    persisted = await readPersisted();
+    expect(persisted.map((allocation) => allocation.stayDate)).toEqual(
+      originalDates,
     );
-  }
-
-  // Keyboard preview + cancel: pickup and navigation are real key events.
-  await dragHandle().focus();
-  await page.keyboard.press("Space");
-  await moveKeyboardFocusToDestination();
-  await expect(preview()).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect.poll(() => moveRequests.length).toBe(1);
-  persisted = await readPersisted();
-  expect(
-    persisted.every((allocation) => allocation.bedId === originalBedId),
-  ).toBe(true);
-
-  // Keyboard drop: the live preview is followed by a real Space drop and a
-  // second date-free PATCH. The persisted nights remain byte-for-byte equal.
-  await dragHandle().focus();
-  await page.keyboard.press("Space");
-  await moveKeyboardFocusToDestination();
-  await page.keyboard.press("Space");
-  await expect(page.getByText("Visible guest nights moved")).toBeVisible({
-    timeout: 30_000,
-  });
-  expect(moveRequests).toHaveLength(2);
-  expect(moveRequests[1]).toEqual({
-    allocationIds,
-    bedId: destination!.id,
-  });
-  expect(moveRequests[1]).not.toHaveProperty("stayDate");
-  persisted = await readPersisted();
-  expect(persisted.map((allocation) => allocation.stayDate)).toEqual(
-    originalDates,
-  );
-  expect(
-    persisted.every((allocation) => allocation.bedId === destination!.id),
-  ).toBe(true);
+    expect(
+      persisted.every((allocation) => allocation.bedId === destination!.id),
+    ).toBe(true);
 
   } catch (error) {
     scenarioError = error;
