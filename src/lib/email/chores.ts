@@ -4,6 +4,10 @@ import {
   hutLeaderAssignmentTemplate,
 } from "../email-templates";
 import {
+  composeChoreLine,
+  composeOptionalEmailLine,
+} from "../email-message-notes";
+import {
   CLUB_HUT_LEADER_LABEL,
   CLUB_NAME,
 } from "@/config/club-identity";
@@ -48,6 +52,24 @@ export async function sendChoreRosterEmail(
         .filter(Boolean)
         .join(", "),
       choreLink: choreLink ?? "",
+      // #2268: pre-composed optional lines — the flat body has no conditional
+      // syntax, so a chore with no description must not leave a dangling
+      // "Sweep the deck:" and a roster sent without a link must not leave a
+      // dangling "Mark Chores Complete:" plus an instruction for a link that
+      // is not there.
+      // A roster is only ever sent for chores that exist, so this block always
+      // renders; only each chore's description is optional.
+      choreListNote:
+        chores
+          .map((chore) => composeChoreLine(chore.name, chore.description))
+          .join("") + "\n",
+      choreLinkNote: choreLink
+        ? composeOptionalEmailLine("Mark Chores Complete", choreLink) +
+          composeOptionalEmailLine(
+            null,
+            "Use this link to mark your chores as done from your phone. Link expires in 48 hours.",
+          )
+        : "",
     },
     lodgeId,
   });

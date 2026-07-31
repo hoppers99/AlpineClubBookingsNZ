@@ -6,6 +6,10 @@ import {
   type ExclusiveHoldConflict,
 } from "@/components/admin/admin-exclusive-hold-controls";
 import { BookingNoEmailsControls } from "@/components/admin/booking-no-emails-controls";
+import {
+  BookingManualPaymentControls,
+  type BookingManualPaymentState,
+} from "@/components/admin/booking-manual-payment-controls";
 import { ConfirmPendingGuestsButton } from "@/components/admin/confirm-pending-guests-button";
 import { CopyBookingButton } from "@/components/admin/copy-booking-button";
 import type { BookingProviderMismatch } from "@/lib/booking-provider-mismatches";
@@ -37,6 +41,7 @@ export function AdminBookingToolsCard({
   capacityHold,
   exclusiveHold,
   noEmails,
+  manualPayment,
 }: {
   bookingId: string;
   memberId: string;
@@ -86,6 +91,13 @@ export function AdminBookingToolsCard({
     hasLiveWaitlistOffer: boolean;
     isWaitlisted: boolean;
   };
+  /**
+   * B5 (#2262): cash / off-Xero payment controls. Server-computed advisory
+   * flags — the settle path re-derives every one under its locks — so this is
+   * about what to OFFER, never about what is allowed. Omitted for a deleted
+   * booking, which settles nothing.
+   */
+  manualPayment?: BookingManualPaymentState;
 }) {
   const returnTo = `/bookings/${bookingId}`;
   const bedAllocationParams = new URLSearchParams({
@@ -155,6 +167,17 @@ export function AdminBookingToolsCard({
               setByName={noEmails.setByName}
               hasLiveWaitlistOffer={noEmails.hasLiveWaitlistOffer}
               isWaitlisted={noEmails.isWaitlisted}
+            />
+          )}
+          {/* B5 (#2262): record (or reverse) a cash / off-Xero bank-transfer
+              payment. Gated finance:edit by the component itself, because the
+              route it writes is finance-area despite its bookings-shaped path. */}
+          {!isDeleted && manualPayment && (
+            <BookingManualPaymentControls
+              bookingId={bookingId}
+              memberName={memberName}
+              state={manualPayment}
+              noEmails={noEmails?.noEmails ?? false}
             />
           )}
           {!isDeleted && (

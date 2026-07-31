@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { FeatureFlags } from "@/config/schema";
 import {
+  MANUAL_SETTLEMENT_CONFLICT_EVENT_REASON,
+  MANUAL_SETTLEMENT_REVERSAL_EVENT_REASON,
+} from "@/lib/manual-settlement-reversal-event";
+import {
   getStuckStateDashboard,
   type StuckStateDashboardDependencies,
 } from "@/lib/stuck-state-dashboard";
@@ -458,6 +462,12 @@ describe("getStuckStateDashboard", () => {
     // narrative event — deliberate zero-refund cancels (which write their
     // CANCELLED BookingEvent), refunded cancels (refundedAmountCents > 0),
     // and #1349 in-transaction enqueues (recovery op exists) are all excluded.
+    //
+    // #2262 L1: the two manual-settlement admin markers are CANCELLED events
+    // that cancel nothing, so the "no cancellation event" leg must ignore them
+    // — otherwise a marker would blind the detector to a genuinely crashed
+    // cancel. The OR keeps NULL-reason genuine cancel events counted (a bare
+    // notIn drops NULLs under SQL three-valued logic).
     expect(bookingCount).toHaveBeenCalledWith({
       where: {
         status: "CANCELLED",
@@ -475,7 +485,20 @@ describe("getStuckStateDashboard", () => {
           none: { type: "REFUND_BOOKING_MODIFICATION" },
         },
         events: {
-          none: { type: "CANCELLED" },
+          none: {
+            type: "CANCELLED",
+            OR: [
+              { reason: null },
+              {
+                reason: {
+                  notIn: [
+                    MANUAL_SETTLEMENT_REVERSAL_EVENT_REASON,
+                    MANUAL_SETTLEMENT_CONFLICT_EVENT_REASON,
+                  ],
+                },
+              },
+            ],
+          },
         },
       },
     });

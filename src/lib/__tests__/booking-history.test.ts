@@ -171,25 +171,66 @@ describe("buildBookingHistoryItems — unapplied credit election (#2265)", () =>
     });
   }
 
-  it("names the amount and says the credit is still available", () => {
+  it("names the amount that went unapplied and quotes the member's LIVE balance, never the elected figure", () => {
+    // #2262 delta MED-2: elected $450 long ago, $50 left today. The old copy
+    // said the elected figure "is still available", which overstated the
+    // balance ninefold and invited a refund the account could not cover.
     const item = build(
       JSON.stringify({
         source: "xero-inbound-invoice",
-        creditElectionCents: 4500,
+        creditElectionCents: 45000,
         paidAmountCents: 12000,
+        availableCreditCents: 5000,
+        refundableCents: 5000,
       })
     ).find((entry) => entry.id === "audit-audit-election");
 
     expect(item).toMatchObject({
       category: "Payment",
       title: "Saved account credit was not applied",
-      amountDisplay: "$45.00",
+      // The amount of the EVENT: how much credit went unapplied.
+      amountDisplay: "$450.00",
       tone: "warning",
     });
-    expect(item?.detail).toContain("$45.00");
+    // The elected figure appears only as a past choice...
+    expect(item?.detail).toContain("You had chosen to put $450.00");
+    // ...and the only figure described as available is the live balance.
+    expect(item?.detail).toContain("$50.00 of account credit available");
+    expect(item?.detail).not.toContain("$450.00 of account credit available");
     // The load-bearing sentence: nothing was spent.
-    expect(item?.detail).toContain("still available");
+    expect(item?.detail).toContain("balance was not reduced");
     expect(item?.detail).not.toContain("undefined");
+  });
+
+  it("a balance of zero is stated plainly rather than dressed up as availability", () => {
+    const item = build(
+      JSON.stringify({
+        source: "manual-mark-paid",
+        creditElectionCents: 45000,
+        paidAmountCents: 12000,
+        availableCreditCents: 0,
+        refundableCents: 0,
+      })
+    ).find((entry) => entry.id === "audit-audit-election");
+
+    expect(item?.detail).toContain("$0.00 of account credit available");
+    expect(item?.detail).toContain("balance was not reduced");
+  });
+
+  it("omits the availability figure entirely on a legacy row that carries no balance", () => {
+    // Rows written before the balance was recorded must not fall back to the
+    // elected figure — they say only what is certainly true.
+    const item = build(
+      JSON.stringify({
+        source: "xero-inbound-invoice",
+        creditElectionCents: 45000,
+        paidAmountCents: 12000,
+      })
+    ).find((entry) => entry.id === "audit-audit-election");
+
+    expect(item?.detail).toContain("You had chosen to put $450.00");
+    expect(item?.detail).toContain("balance was not reduced");
+    expect(item?.detail).not.toContain("available");
   });
 
   it("still renders an honest note when the amount cannot be read", () => {
@@ -204,6 +245,6 @@ describe("buildBookingHistoryItems — unapplied credit election (#2265)", () =>
       amountDisplay: null,
       tone: "warning",
     });
-    expect(item?.detail).toContain("still available");
+    expect(item?.detail).toContain("balance was not reduced");
   });
 });

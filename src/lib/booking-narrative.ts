@@ -22,6 +22,7 @@ import type {
   BumpEventSnapshot,
 } from "@/lib/booking-events";
 import { isDuplicateCaptureRefundEvent } from "@/lib/duplicate-capture-refund-event";
+import { isManualSettlementMarkerEvent } from "@/lib/manual-settlement-reversal-event";
 
 export type BookingNarrativeState =
   | "payable"
@@ -175,6 +176,15 @@ function buildCancelledPostPaymentNarrative(
       retainedAmountCents > 0
         ? `${formatCents(settledAmountCents)} was ${verb} on ${settledOn} and ${formatCents(retainedAmountCents)} was retained`
         : `${formatCents(settledAmountCents)} was ${verb} on ${settledOn}`;
+  } else if (snapshot?.refundMethod === "manual" && settledAmountCents > 0) {
+    // B5 (#2262): a cash / off-Xero settlement is handed back by a person, so
+    // there is no settlement event YET — one is written when the club marks the
+    // hand-back complete. Saying "no refund was due" here would be a lie about
+    // the member's money.
+    settlementClause =
+      retainedAmountCents > 0
+        ? `${formatCents(settledAmountCents)} is being refunded to you by the club directly (you paid in cash or by bank transfer, so there is no card payment to reverse) and ${formatCents(retainedAmountCents)} was retained`
+        : `${formatCents(settledAmountCents)} is being refunded to you by the club directly — you paid in cash or by bank transfer, so there is no card payment to reverse`;
   } else {
     settlementClause = `no refund was due and the full ${formatCents(retainedAmountCents)} was retained`;
   }
@@ -207,7 +217,16 @@ function buildCancelledNarrative(
     };
   }
 
-  const cancelEvent = events.find((e) => e.type === BookingEventType.CANCELLED);
+  // #2262 — the two manual-settlement admin markers (a mark-paid REVERSAL, and
+  // the reciprocal fence firing on an inbound Xero PAID) are stored as CANCELLED
+  // events, because there is no neutral event type for "the settlement was
+  // un-recorded" / "these two records disagree". NEITHER cancels the booking.
+  // Excluding them here means a booking that hits one and is LATER genuinely
+  // cancelled shows the member the REAL cancellation's date, not the marker's.
+  const cancelEvent = events.find(
+    (e) =>
+      e.type === BookingEventType.CANCELLED && !isManualSettlementMarkerEvent(e)
+  );
 
   // A provisional booking whose dates filled up before its guests were
   // confirmed is released (status BUMPED, or CANCELLED carrying a BUMPED event)
