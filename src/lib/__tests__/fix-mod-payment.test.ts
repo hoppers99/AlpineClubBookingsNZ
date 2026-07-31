@@ -10,7 +10,7 @@
  * - additional-payment-secret endpoint: returns clientSecret for pending additional PI
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
 
 // --- Mocks ---
@@ -253,6 +253,21 @@ function makeSession() {
   return { user: { id: "m1", role: "MEMBER", accessRoles: [{ role: "USER" }], email: "alice@test.com" } };
 }
 
+/**
+ * The bookings below run 2026-08-01 onward and every scenario edits a stay that
+ * has NOT started — the "future" edit mode these routes serve. Left on the real
+ * clock the suite quietly changed meaning once the NZ calendar date reached the
+ * fixture check-in: getBookingEditPolicy then classifies the same booking as
+ * "in-progress" and the routes correctly answer 400 ("Use the full booking edit
+ * flow ..."), so the payment/refund assertions never ran. Pin the clock so the
+ * scenario under test stays the intended one; the in-progress edit path has its
+ * own deliberate coverage in batch-modify-payment.test.ts.
+ *
+ * Only `Date` is faked — real timers still run, so awaited promises resolve
+ * normally. Booking dates are untouched, so every money assertion is unchanged.
+ */
+const FIXED_NOW = new Date("2026-07-15T00:00:00.000Z"); // NZ 2026-07-15 12:00
+
 function makeBooking(overrides: Record<string, unknown> = {}) {
   return {
     id: "bk1",
@@ -378,6 +393,8 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
 }
 
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(FIXED_NOW);
   mockQueueSupersededAdditionalIntentCancellations.mockResolvedValue([]);
   mockQueueSupersededPrimaryIntentCancellations.mockResolvedValue([]);
   mockUpsertPaymentIntentTransaction.mockResolvedValue({});
@@ -394,6 +411,10 @@ beforeEach(() => {
   });
   mockMarkPaymentIntentTransactionSucceeded.mockResolvedValue({});
   mockMarkPaymentIntentTransactionFailed.mockResolvedValue({});
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 // ============================================================================
