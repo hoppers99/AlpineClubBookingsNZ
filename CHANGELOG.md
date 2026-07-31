@@ -4,6 +4,32 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Clubs that had saved their own email wording stop emailing our editing notes
+  (#2269).** Older releases shipped little square-bracketed notes inside the
+  built-in email wording — things like `Door code: {{doorCode}} [only when a door
+  code is set]`. They were written for whoever was reading the template, but
+  emails fill in `{{tokens}}` and copy everything else through exactly as typed,
+  so those notes were being sent to members word for word. Earlier fixes cleaned
+  the built-in wording, which quietly fixed every club that had not customised
+  the message. A club that had **saved its own copy** of a message kept its copy,
+  and so kept the notes, for ever. This release repairs those saved copies on
+  upgrade. It removes only the notes this project itself shipped and leaves the
+  rest of your wording byte for byte as it was — including any square-bracketed
+  text your own admins wrote, which is still flagged for a person to decide
+  about rather than deleted by a script. Every message it changes is recorded in
+  the audit log with the whole before and after, so a club can see exactly what
+  we changed and put anything back.
+  **And the editor now tells you when your saved wording has fallen behind.**
+  **Admin → Email messages** names any message whose saved copy no longer shows
+  something that message is required to tell the recipient — most often a
+  booking confirmation saved before the promo explanation moved into its own
+  token, which now shows a subtotal and a total with nothing in between to
+  explain the difference. Open that message and **Show differences** lays your
+  saved copy beside the current built-in wording line by line, so you can patch
+  your own words or restore the default knowing exactly what you would be giving
+  up. Wording that simply *reads* differently is reported as a plain difference
+  and never as a problem — that is what saving your own copy is for.
+
 - **Adding another club member as a guest (#2306, #2307).** Until now a member
   could only put people from their own family group on a booking. There is now a
   new **Add another member as a guest** switch on **Admin → Modules**, off by

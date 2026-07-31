@@ -11,6 +11,7 @@ import {
 import { findBracketAnnotations } from "@/lib/email-message-token-contract";
 import { validateEmailTemplateContent } from "@/lib/email-message-renderer";
 import { prisma } from "@/lib/prisma";
+import { isSameText } from "@/lib/text-diff";
 import { requireAdmin } from "@/lib/session-guards";
 
 interface EmailTemplateOverrideRecord {
@@ -165,10 +166,15 @@ export async function GET() {
     );
     // A null field means "fall back to the built-in wording", which is not a
     // difference — only a stored value that is not the default is.
+    // isSameText, not ===, so a saved copy that differs only in line-ending
+    // style (a browser/textarea round trip can introduce CRLF) is not reported
+    // as a difference an admin should look at.
     const subjectDiffersFromDefault =
-      override.subject !== null && override.subject !== definition.defaultSubject;
+      override.subject !== null &&
+      !isSameText(override.subject, definition.defaultSubject);
     const bodyDiffersFromDefault =
-      override.bodyText !== null && override.bodyText !== definition.defaultBody;
+      override.bodyText !== null &&
+      !isSameText(override.bodyText, definition.defaultBody);
     const reasons = [
       validation.missingRequiredTokens.length > 0
         ? "missing_required_token"

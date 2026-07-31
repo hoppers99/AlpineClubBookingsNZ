@@ -80,10 +80,40 @@ Two consequences worth knowing:
   `[only when a door code is set]` is not understood by anything — it is
   printed verbatim to the member. Older built-in wording carried such notes;
   they were all removed in v0.13, the build refuses any that come back, and
-  **Save now refuses square-bracketed text in an override** too. A
-  customisation you saved from the old built-in wording may still carry these
-  notes — a warning at the top of this page names each such template; open it,
+  **Save now refuses square-bracketed text in an override** too. The notes the
+  project itself shipped were also **stripped out of every saved customisation
+  on upgrade** — only those, leaving the rest of your wording exactly as it was,
+  and every message changed is recorded in the audit log with the whole before
+  and after so you can see what happened and put anything back. Square-bracketed
+  text your own admins wrote is deliberately **not** deleted for you: a warning
+  at the top of this page names each template still carrying some, so open it,
   delete the bracketed text and save, or reset it to the corrected default.
+
+### When your saved wording falls behind the built-in wording
+
+Saving your own copy of a message freezes it. If a later release improves the
+built-in wording, your copy keeps sending as you wrote it — which is the point.
+Occasionally, though, the built-in wording changes because the message now has
+to tell the recipient something it did not before, and a frozen copy quietly
+stops saying it.
+
+The page handles the two situations differently, on purpose.
+
+- **Your copy is missing something the message must say.** A warning at the top
+  names each affected template and the token to add back. The commonest case is
+  a booking confirmation saved before the promo explanation moved into
+  `{{promoSummary}}`: it now shows a subtotal and a total with nothing in
+  between to explain why they differ. Wording of your own that carries the same
+  information counts — a hand-written `Discount ({{promoCode}}): -{{discount}}`
+  line satisfies the requirement and is never flagged.
+- **Your copy simply reads differently.** That is stated as a plain fact under
+  the template you have open, with no warning attached, because a customisation
+  differing from the built-in wording is exactly what you asked for.
+
+In both cases **Show differences** lays your saved copy beside the current
+built-in wording line by line — red is yours, green is the built-in — so you can
+decide whether to patch your own words or press **Restore Default**, knowing
+exactly what you would be giving up. Nothing is ever changed for you here.
 
 For the same reason, **each template covers exactly one outcome.** Where a
 message could go two ways there are two templates to edit, not one with a

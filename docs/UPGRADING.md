@@ -86,7 +86,63 @@ as a red flag and check the release notes before deploying.
 
 ## Unreleased
 
-_No schema or migration changes are staged for the next release yet._
+### One-off repair of saved email template wording (#2269)
+
+`20260801150000_strip_email_override_bracket_annotations` is a **data-only
+repair**. It adds and removes no schema, touches no hot table, and is safe to
+run in the ordinary deploy window with the previous app colour still serving.
+
+**What it fixes.** Older releases shipped square-bracketed authoring notes
+inside the built-in email wording — for example `Door code: {{doorCode}} [only
+when a door code is set]`. Emails substitute `{{tokens}}` and copy everything
+else through untouched, so those notes were being emailed to recipients word
+for word. Releases carrying #2267 and #2268 removed them from the built-in
+wording, which fixes every club that has not customised that message, because
+the built-in wording is compiled into the code and not stored in your database.
+A club that had **saved its own copy** of a message under **Admin → Email
+messages** keeps its saved copy for ever, so it also keeps the notes. This
+migration removes them from those saved copies.
+
+**What it changes, exactly.** Only the bracketed notes this project itself
+shipped: `[only when …]`, `[when …]`, `[heading becomes …]` and `[falls back to
+…]`. Everything else in your wording is left byte for byte as it was, including
+any square-bracketed text your own admins wrote — that keeps appearing in the
+admin banner for a person to decide about, rather than being deleted by a
+script. A saved copy with none of those notes is not touched at all.
+
+**How to see what was changed.** Every altered row writes one
+`EMAIL_TEMPLATE_OVERRIDE_UPDATED` entry to the audit log with no actor (no
+member did this), recording the whole previous saved copy, the whole new one,
+and the exact notes removed. Find them under **Admin → Audit log** filtered to
+`EMAIL_TEMPLATE_OVERRIDE_UPDATED` around your upgrade time, or:
+
+```sql
+SELECT "entityId", "metadata" -> 'removedAnnotations'
+FROM "AuditLog"
+WHERE "action" = 'EMAIL_TEMPLATE_OVERRIDE_UPDATED'
+  AND "metadata" ->> 'source' LIKE 'migration:20260801150000%';
+```
+
+If a club decides one of those notes was actually theirs, the previous text is
+in `metadata -> 'previousOverride'` and can be pasted back — although the editor
+will refuse to save square brackets, because they are always emailed verbatim.
+
+**Re-running is safe.** The repair selects only rows that still contain a
+shipped note, so a second run changes nothing and writes no second audit entry.
+
+### Post-upgrade action: check the email templates screen
+
+**Admin → Email messages** now tells an admin when a saved copy no longer shows
+something the message is required to tell the recipient — the commonest case is
+a booking confirmation saved before the promo explanation moved into
+`{{promoSummary}}`, which now shows a subtotal and a total with nothing in
+between to explain the difference. Each affected template is named in a banner
+at the top of the screen, and the template you have open offers **Show
+differences**, a line-by-line comparison of your saved copy against the current
+built-in wording, so you can decide whether to patch your wording or press
+**Restore Default**. Nothing is changed for you: this is advisory only, and a
+saved copy that merely reads differently — which is the whole point of saving
+one — is reported as a plain difference and never as a problem.
 
 ---
 
