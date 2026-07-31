@@ -5,8 +5,8 @@ Audience: Member, Guest
 ## What it is
 
 The booking wizard where you choose your lodge nights, add everyone in your
-party, and confirm. Members start at **Book** in the top navigation (`/book`);
-guests without a login can instead request a booking (see
+party, and confirm. Members start at **Book** in the top navigation (`/book`).
+Whether someone without a login can stay at all is the club's own decision (see
 [Guests without a login](#guests-without-a-login) below). The wizard runs in four
 steps — **1. Select Dates → 2. Add Guests → 3. Review & Confirm → 4. Pay** — and
 the last step becomes **Admin Review** for a booking that needs committee
@@ -141,16 +141,28 @@ your dates" occupancy meter.
 
 ## Guests without a login
 
-You do not need to be a member to stay. From the sign-in page (`/login`) there
-are two guest paths:
+**Whether the club hosts non-members, and on what terms, is set by the club — not
+by this website.** Many clubs only take non-members as guests accompanied by a
+member, if at all. Before you plan a stay, read the club's own FAQ, rules, or
+policy pages (look in the site menu or footer) or ask through the club's contact
+page.
 
-- **Request a booking without an account** — sends your request to the club, who
-  reply with a secure quote link. You open it to review the price, options, and
-  expiry, then **accept**, **cancel**, **ask a question**, or **request
-  changes**. Accepting is how a guest confirms; the quote states when it expires.
-- **Request a school group booking** — for a school or organisation trip. The
-  club prices it and, closer to check-in, emails you a secure link to confirm
-  each attendee's name for the lodge roster.
+There are two paths that need no login. Neither is an open invitation to book —
+both are requests the club reviews and can decline:
+
+- **Request a guest booking** — the request form is **not linked from the
+  sign-in page, or from any other page you can browse to**. The club sends its
+  direct link to a guest it has agreed to host (its admins copy that link from
+  the Booking Requests area); the only other way back to it is the **Book these
+  dates again** button on a payment link the club emailed you for an earlier
+  stay. Once your request is in, the club replies with a secure quote link. You
+  open it to review the price, options, and expiry, then **accept**, **cancel**,
+  **ask a question**, or **request changes**. Accepting is how a guest confirms;
+  the quote states when it expires.
+- **Request a school group booking** — for a school or organisation trip, still
+  linked from the sign-in page (`/login`). The club prices it and, closer to
+  check-in, emails you a secure link to confirm each attendee's name for the
+  lodge roster.
 
 These flows are the "Public quote requester" and "School contact" journeys in
 [`UX_FLOW_MAP.md`](../UX_FLOW_MAP.md); operators handle them with the

@@ -982,6 +982,27 @@ describe("review finding source/schema contracts", () => {
     );
   });
 
+  it("executes the email-override annotation strip against a real PostgreSQL in CI (#2269, #2418)", () => {
+    // The audit half of that migration was pinned by string-matching the SQL
+    // only: mutating `) AS found ON TRUE` to `... WHERE FALSE` wrote zero audit
+    // rows and every assertion still passed. The suite now runs the statement
+    // in a disposable schema — and it describe.skip's itself without the env
+    // var, so the step going missing would silently un-test it again.
+    const workflow = readRepoFile(".github/workflows/ci.yml");
+    expect(workflow).toContain(
+      "EMAIL_OVERRIDE_ANNOTATION_STRIP_TEST_DATABASE_URL:"
+    );
+    expect(workflow).toContain(
+      "npx vitest run src/lib/__tests__/email-message-annotation-strip.test.ts"
+    );
+    const suite = readRepoFile(
+      "src/lib/__tests__/email-message-annotation-strip.test.ts"
+    );
+    expect(suite).toContain(
+      "process.env.EMAIL_OVERRIDE_ANNOTATION_STRIP_TEST_DATABASE_URL"
+    );
+  });
+
   it("wraps age-up membership upgrades and token issuance in a transaction", () => {
     const source = readRepoFile("src/lib/cron-age-up.ts");
 

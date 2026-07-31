@@ -47,6 +47,9 @@ import {
   NOMINATION_TOKEN_ONE,
   NOMINATION_TOKEN_TWO,
   NOMINATOR_TWO,
+  ADDITIONAL_OWED_AMOUNT_CENTS,
+  ADDITIONAL_OWED_BOOKING_ID,
+  ADDITIONAL_OWED_WINDOW,
   PAID_CANCEL_BOOKING_ID,
   PAID_CANCEL_WINDOW,
   ROLE_PERSONAS,
@@ -1047,6 +1050,54 @@ async function main() {
     data: { paymentId: paidCancelPayment.id, kind: "PRIMARY", source: "STRIPE", amountCents: paidCancelBooking.finalPriceCents, status: "SUCCEEDED", stripePaymentIntentId: "pi_e2e_paid_cancel" },
   });
   await prisma.bookingEvent.create({ data: { bookingId: paidCancelBooking.id, type: "MEMBER_PAID", actorMemberId: nadia.id, amountCents: paidCancelBooking.finalPriceCents } });
+
+  // Outstanding additional payment spec (#2350): a PAID booking whose price was
+  // pushed up after payment, with the extra still uncollected. Seeded directly
+  // (rather than raised through an admin edit) so the spec never needs Stripe:
+  // the PENDING ADDITIONAL transaction and the Payment summary columns are
+  // written in the same shape syncPaymentAdditionalSummary would leave them.
+  const additionalOwedNights = nightsBetween(
+    ADDITIONAL_OWED_WINDOW.checkIn,
+    ADDITIONAL_OWED_WINDOW.checkOut,
+  ).length;
+  const additionalOwedBooking = await prisma.booking.create({
+    data: {
+      id: ADDITIONAL_OWED_BOOKING_ID,
+      memberId: nadia.id,
+      checkIn: d(ADDITIONAL_OWED_WINDOW.checkIn),
+      checkOut: d(ADDITIONAL_OWED_WINDOW.checkOut),
+      status: "PAID",
+      totalPriceCents: NIGHTLY * additionalOwedNights + ADDITIONAL_OWED_AMOUNT_CENTS,
+      finalPriceCents: NIGHTLY * additionalOwedNights + ADDITIONAL_OWED_AMOUNT_CENTS,
+    },
+  });
+  await addGuest(
+    additionalOwedBooking.id,
+    { firstName: NOMINATOR_TWO.firstName, lastName: NOMINATOR_TWO.lastName, ageTier: "ADULT", isMember: true, memberId: nadia.id },
+    ADDITIONAL_OWED_WINDOW.checkIn,
+    ADDITIONAL_OWED_WINDOW.checkOut,
+    NIGHTLY,
+  );
+  const additionalOwedPayment = await prisma.payment.create({
+    data: {
+      bookingId: additionalOwedBooking.id,
+      // Only the original stay has been collected; the addition has not.
+      amountCents: NIGHTLY * additionalOwedNights,
+      source: "STRIPE",
+      status: "SUCCEEDED",
+      stripePaymentIntentId: "pi_e2e_additional_owed",
+      stripeCustomerId: "cus_e2e_additional_owed",
+      additionalPaymentIntentId: "pi_e2e_additional_owed_add",
+      additionalAmountCents: ADDITIONAL_OWED_AMOUNT_CENTS,
+      additionalPaymentStatus: "PENDING",
+    },
+  });
+  await prisma.paymentTransaction.createMany({
+    data: [
+      { paymentId: additionalOwedPayment.id, kind: "PRIMARY", source: "STRIPE", amountCents: NIGHTLY * additionalOwedNights, status: "SUCCEEDED", stripePaymentIntentId: "pi_e2e_additional_owed" },
+      { paymentId: additionalOwedPayment.id, kind: "ADDITIONAL", source: "STRIPE", amountCents: ADDITIONAL_OWED_AMOUNT_CENTS, status: "PENDING", stripePaymentIntentId: "pi_e2e_additional_owed_add" },
+    ],
+  });
 
   // Membership application spec: PENDING_NOMINATORS with two nomination tokens
   // whose raw values are known (SHA-256 stored, matching action-tokens.ts), so

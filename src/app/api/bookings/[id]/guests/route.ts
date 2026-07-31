@@ -34,6 +34,10 @@ import {
   replacePromoRedemptionAllocations,
   validateAndCalculatePromoDiscount,
 } from "@/lib/promo";
+import {
+  describePromoCapCoverage,
+  type PromoCoverageNotice,
+} from "@/lib/promo-cap-coverage";
 import { ApiError as SharedApiError } from "@/lib/api-error";
 import { logAudit } from "@/lib/audit";
 import { sendBookingModifiedEmail } from "@/lib/email";
@@ -569,6 +573,7 @@ export async function POST(
       let newDiscountCents = 0;
       let newPromoAdjustmentCents = 0;
       let promoRemoved = false;
+      let promoCoverage: PromoCoverageNotice | null = null;
 
       if (booking.promoRedemption?.promoCode) {
         // Row-lock the promo code and re-read its usage counter before the caps
@@ -597,7 +602,16 @@ export async function POST(
           promo.assignments.length > 0
             ? promo.assignments.map((assignment) => assignment.memberId)
             : null,
-          { excludeBookingId: bookingId, db: tx, selectedGuestIndexes, lodgeId: bookingLodgeId }
+          {
+            excludeBookingId: bookingId,
+            db: tx,
+            selectedGuestIndexes,
+            lodgeId: bookingLodgeId,
+            // #2390: adding guests is the edit most likely to outgrow a cap.
+            // Everyone already benefiting keeps the discount; the new arrivals
+            // are priced normally and named in the response.
+            capOverflow: "coverExisting",
+          }
         );
 
         if (application.error || !application.discount) {
@@ -607,6 +621,10 @@ export async function POST(
           const promoResult = application.discount;
           newDiscountCents = promoResult.discountCents;
           newPromoAdjustmentCents = promoResult.priceAdjustmentCents;
+          promoCoverage = await describePromoCapCoverage(tx, {
+            promoCode: promo.code,
+            capCoverage: application.capCoverage,
+          });
 
           await replacePromoRedemptionAllocations(
             tx,
@@ -753,6 +771,9 @@ export async function POST(
             discountCents: newDiscountCents,
             promoAdjustmentCents: newPromoAdjustmentCents,
             finalPriceCents: newFinalPriceCents,
+            // #2390: the same sentence the member was shown, kept on the
+            // booking's own history so the split has an answer later.
+            ...(promoCoverage ? { promoCoverageNote: promoCoverage.message } : {}),
           },
           priceDiffCents,
           changeFeeCents: 0,
@@ -765,6 +786,7 @@ export async function POST(
         priceDiffCents,
         additionalAmountCents,
         promoRemoved,
+        promoCoverage,
         oldGuestCount: booking.guests.length,
         hasSucceededPayment,
         hasIssuedXeroInvoice,
@@ -909,6 +931,8 @@ export async function POST(
               : undefined,
         paymentReference: result.paymentReference,
         xeroInvoiceNumber: result.xeroInvoiceNumber,
+        // #2390: same words as the edit preview and the booking history.
+        promoCoverageNote: result.promoCoverage?.message ?? null,
         lodgeId: result.booking.lodgeId,
       }).catch((err) =>
         logger.error({ err, bookingId }, "Failed to send booking modified email")
@@ -922,6 +946,9 @@ export async function POST(
       additionalAmountCents: result.additionalAmountCents,
       additionalPaymentClientSecret: additionalPaymentClientSecret ?? null,
       promoRemoved: result.promoRemoved,
+      // #2390: who the promotion still covers, and who it does not. Null unless
+      // a usage cap left somebody out.
+      promoCoverage: result.promoCoverage,
     });
   } catch (err) {
     if (err instanceof MembershipTypeBookingPolicyError) {

@@ -78,6 +78,10 @@ import {
   replacePromoRedemptionAllocations,
   validateAndCalculatePromoDiscount,
 } from "@/lib/promo";
+import {
+  describePromoCapCoverage,
+  type PromoCoverageNotice,
+} from "@/lib/promo-cap-coverage";
 import { prisma } from "@/lib/prisma";
 import {
   type SeasonRateData,
@@ -132,6 +136,9 @@ type DateModificationTransactionResult =
     settlementMethod: BookingModificationSettlementMethod | null;
     policyRetainedAmountCents: number;
     promoRemoved: boolean;
+    // #2390: set only when a usage cap stopped the promotion reaching somebody
+    // on the repriced booking; null means everyone it applies to is covered.
+    promoCoverage: PromoCoverageNotice | null;
     choreWarnings: string[];
     datesChanged: boolean;
     adminOverride: boolean;
@@ -207,6 +214,7 @@ export type DateModificationResponse = {
   additionalPaymentClientSecret: string | null;
   stripeRefundId: string | null;
   promoRemoved: boolean;
+  promoCoverage: PromoCoverageNotice | null;
   choreWarnings: string[];
   // Admin override (issue #1668): true when an over-capacity target was
   // explicitly confirmed. Always false on the standard (hard-blocked) path.
@@ -566,6 +574,7 @@ export async function modifyBookingDates({
     let newDiscountCents = 0;
     let newPromoAdjustmentCents = 0;
     let promoRemoved = false;
+    let promoCoverage: PromoCoverageNotice | null = null;
 
     if (booking.promoRedemption?.promoCode) {
       // Row-lock the promo code and re-read its usage counter before the caps
@@ -593,7 +602,15 @@ export async function modifyBookingDates({
         promo.assignments.length > 0
           ? promo.assignments.map((assignment) => assignment.memberId)
           : null,
-        { excludeBookingId: bookingId, db: tx, selectedGuestIndexes, lodgeId: bookingLodgeId },
+        {
+          excludeBookingId: bookingId,
+          db: tx,
+          selectedGuestIndexes,
+          lodgeId: bookingLodgeId,
+          // #2390: a member moving their dates is never blocked by somebody
+          // else's cap consumption, and never loses a discount they already had.
+          capOverflow: "coverExisting",
+        },
       );
 
       if (application.error || !application.discount) {
@@ -603,6 +620,10 @@ export async function modifyBookingDates({
         const promoResult = application.discount;
         newDiscountCents = promoResult.discountCents;
         newPromoAdjustmentCents = promoResult.priceAdjustmentCents;
+        promoCoverage = await describePromoCapCoverage(tx, {
+          promoCode: promo.code,
+          capCoverage: application.capCoverage,
+        });
 
         await replacePromoRedemptionAllocations(
           tx,
@@ -884,6 +905,9 @@ export async function modifyBookingDates({
           settlementMethod: payments.settlementMethod,
           accountCreditAmountCents: payments.accountCreditAmountCents,
           policyRetainedAmountCents: payments.policyRetainedAmountCents,
+          // #2390: the same sentence the member was shown at the edit, kept on
+          // the booking's own history so the split has an answer later.
+          ...(promoCoverage ? { promoCoverageNote: promoCoverage.message } : {}),
           ...(adminOverride
             ? { pricingMode: "recalculate", capacityOverridden }
             : {}),
@@ -920,6 +944,7 @@ export async function modifyBookingDates({
       additionalAmountCents,
       pendingRefundAmountCents,
       promoRemoved,
+      promoCoverage,
       choreWarnings,
       datesChanged,
       adminOverride,
@@ -997,6 +1022,7 @@ export async function modifyBookingDates({
     additionalPaymentClientSecret: additionalPaymentClientSecret ?? null,
     stripeRefundId: stripeRefundId ?? null,
     promoRemoved: result.promoRemoved,
+    promoCoverage: result.promoCoverage,
     choreWarnings: result.choreWarnings,
     capacityOverridden: result.capacityOverridden,
   };
@@ -1061,6 +1087,7 @@ async function dispatchDatePostTransactionSideEffects({
       settlementMethod: result.settlementMethod,
       policyRetainedAmountCents: result.policyRetainedAmountCents,
       promoRemoved: result.promoRemoved,
+      promoCoverageNote: result.promoCoverage?.message ?? null,
     }),
     metadata: {
       bookingId,
@@ -1076,6 +1103,7 @@ async function dispatchDatePostTransactionSideEffects({
       settlementMethod: result.settlementMethod,
       policyRetainedAmountCents: result.policyRetainedAmountCents,
       promoRemoved: result.promoRemoved,
+      promoCoverageNote: result.promoCoverage?.message ?? null,
     },
     ipAddress,
   });
@@ -1140,6 +1168,8 @@ async function dispatchDatePostTransactionSideEffects({
             : undefined,
       paymentReference: result.paymentReference,
       xeroInvoiceNumber: result.xeroInvoiceNumber,
+      // #2390: same words as the edit preview and the booking history.
+      promoCoverageNote: result.promoCoverage?.message ?? null,
       lodgeId: result.booking.lodgeId,
     }).catch((err) =>
       logger.error({ err, bookingId }, "Failed to send booking modified email"),
@@ -1616,6 +1646,9 @@ export async function adminShiftBookingDates({
     additionalPaymentClientSecret: null,
     stripeRefundId: null,
     promoRemoved: false,
+    // The admin date SHIFT keeps every price exactly as it stands, so it never
+    // re-runs the promo caps and can never change who a promotion covers.
+    promoCoverage: null,
     choreWarnings: result.choreWarnings,
     capacityOverridden: result.capacityOverridden,
   };

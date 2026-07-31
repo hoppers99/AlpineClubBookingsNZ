@@ -323,6 +323,22 @@ do not use unnamespaced `hashtext(<id>)` for new lock families.
   serialised. The helper selects only `"id"` and discards the result — it exists
   purely for its lock and never reads a value out of a raw row, which is the
   trap #2289 documents.
+  #2390 added one more read under the same lock and changed what the decision
+  produces. The reprice paths pass `capOverflow: "coverExisting"`, which makes
+  `validateAndCalculatePromoDiscount` read — still under the lock, and still
+  before any write — which members already hold a **beneficial** allocation on
+  the booking being repriced, and then divide the remaining allowance among the
+  rest instead of refusing. No new lock, no new key, no change of order: the
+  same row lock now protects a "who is covered" decision rather than a yes/no
+  one. That read must stay ahead of the redemption write for the trigger reason
+  documented in `docs/DOMAIN_INVARIANTS.md` — and ahead of the beneficiary list
+  itself, because `maxGuestsPerBooking` is spent while that list is built and a
+  protected member cut there would be invisible to every later check. The edit
+  preview (`/api/bookings/[id]/modify-quote`) runs the same rule off `prisma`
+  with no lock — it writes nothing, and a preview that disagreed with the save
+  would be worse than one that is momentarily stale. Where they do disagree the
+  edit panel shows the SAVE's sentence before it closes, so the member reads the
+  outcome that was actually applied rather than the one that was previewed.
 - `admin-bed-allocation.ts` locks the owning `LodgeRoom` row with `FOR UPDATE`
   before checking and changing one room's bunk-group membership. This protocol
   is independent of the booking/capacity/credit lock cluster.
@@ -679,6 +695,27 @@ lock** (not `lock(1)`) so its `BOOKING_APPLIED` writes mutually exclude the
 credit spend engine, which takes the same key. The orphan-heal repair
 (`orphaned-applied-credit-backfill.ts`) also takes the per-member credit ledger
 lock and re-derives an "already restored?" predicate.
+
+### Send-bookkeeping on `Payment` → deliberately NO lock (#2350)
+
+`Payment.additionalReminderSentAt` and `Payment.additionalFinalReminderSentAt`
+are the only `Payment` columns written outside `lock(1)`. The two writers are
+the additional-payment chase cron
+(`src/lib/cron-additional-payment-reminders.ts`) and the admin re-send
+(`src/lib/additional-payment-resend-service.ts`), and both write **only** those
+two columns: no money, no status, no lifecycle. They record "this member has
+been emailed about this obligation", so they join no lock cohort — taking
+`lock(1)` would serialise a three-hourly mailer behind every cancel, capture and
+settlement in the system for no invariant.
+
+Single-flight comes from the guarded `updateMany` instead: the claim re-states
+the full owed test (booking status included), pins the exact
+`additionalAmountCents`, requires no ADDITIONAL `PaymentTransaction` newer than
+the episode being chased, and requires the stamp to be unset for that episode.
+Two runners racing therefore leave one winner, and a money writer landing in the
+read→claim window makes the claim match nothing rather than producing an email
+about a stale obligation. Nothing else reads these columns for a money decision,
+so a stamp written concurrently with a locked money write cannot corrupt one.
 
 ## Rules of thumb when working here
 

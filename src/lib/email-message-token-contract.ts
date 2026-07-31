@@ -62,7 +62,15 @@ export const OPTIONAL_TEMPLATE_TOKENS: Record<string, readonly string[]> = {
   "booking-modified": ["paymentNote"],
   // #2268 sweep. Each of these was an "[only when …]" annotated line.
   "checkin-reminder": ["choreListNote"],
-  "pre-arrival-reminder": ["expectedArrivalNote", "doorCodeNote"],
+  // #2350 adds a third: the outstanding-additional-payment sentence is composed
+  // whole by the sender and empty whenever nothing is owed, which is the
+  // ordinary case — declared here so guard 4 proves the body survives without
+  // it (the declaration discipline described above).
+  "pre-arrival-reminder": [
+    "expectedArrivalNote",
+    "doorCodeNote",
+    "outstandingAdditionalNote",
+  ],
   // A roster only exists for chores that exist, so the chore block itself is
   // never empty; the completion link is (a roster can be sent without one).
   "chore-roster": ["choreLinkNote"],
@@ -101,6 +109,85 @@ export const OPTIONAL_TEMPLATE_TOKENS: Record<string, readonly string[]> = {
   "membership-payment-recorded": ["amountRecordedNote"],
 };
 
+/**
+ * #2269 — tokens a send site can supply EMPTY that are no longer in the current
+ * default body, so only a SAVED OVERRIDE can still be using them.
+ *
+ * OPTIONAL_TEMPLATE_TOKENS above cannot hold these: guard 5
+ * (`findStaleOptionalTokens`) requires every name declared there to appear in
+ * the default it describes, and by construction none of these do — they are the
+ * legacy per-piece tokens the defaults stopped using when #2263/#2267 moved to
+ * pre-composed blocks. The senders still supply them, precisely so an override
+ * written against an older default keeps rendering.
+ *
+ * WHY THIS EXISTS AT ALL. #2269's migration strips the "[only when …]" notes
+ * out of saved overrides. On three real shipped defaults those notes were
+ * padded onto money lines:
+ *
+ *   Subtotal: {{subtotal}}                  [only when discountCents > 0]
+ *   Discount ({{promoCode}}): -{{discount}} [only when promoCode exists]
+ *   Discount: -{{discount}}                 [only when discount exists ...]
+ *
+ * The brackets were the only thing telling an admin those lines were
+ * conditional. Once they are gone the row renders "Discount (): -" on an
+ * ordinary booking and "Discount (PEAK): -" on a promo that RAISED the price —
+ * the #2267 incident verbatim — and nothing would say a word. Declaring the
+ * tokens here is what turns guard 4 on for them, so the editor names the exact
+ * broken lines instead.
+ *
+ * Maintained BY HAND — but NOT unpoliced (#2269 review). GUARD 6
+ * (`findUnsupportedEmptyableTokens`) below holds every entry to the three
+ * properties that make the declaration meaningful: the key is a registered
+ * template, the token is still SUPPLIED for that template (so it is in
+ * EXTRA_TEMPLATE_TOKENS, which is also what keeps it approved and gives it a
+ * preview sample), and the token is NOT in the current default body (a token
+ * that comes back into a default belongs in OPTIONAL_TEMPLATE_TOKENS, under
+ * guard 5). Every entry below was additionally read off its sender in
+ * src/lib/email/booking.ts, and every one of them is a literal `""` or `?? ""`
+ * on some branch — that last part is the half a guard cannot check, so it is
+ * the half the discipline is for.
+ *
+ * ONE KNOWN IMPRECISION, recorded rather than hidden: guard 4 renders every
+ * declared token empty AT ONCE, while {{totalPaid}} / {{totalDue}} are two
+ * halves of one money story and no real send empties both. On an unpaid
+ * confirmation {{totalPaid}} is empty; on a fully paid one {{totalDue}} is;
+ * and on a PARTLY paid one (#2397) NEITHER is, because both are true. An
+ * override that put both on one line is therefore reported as dangling when it
+ * is not. The error only ever runs that way — it over-reports, never
+ * under-reports — and the trade is deliberate: "Total Paid: {{totalPaid}}"
+ * alone is the line the pre-#2263 default shipped and it really does render
+ * "Total Paid:" on an unpaid booking, so leaving the pair undeclared would miss
+ * a live defect to avoid a cosmetic one. The report is advisory and quotes the
+ * exact rendered line, so an admin can see for themselves — and
+ * docs/guides/email-messages.md says so in the same words, because the admin
+ * reading the warning is the person who needs to know it can be over-eager.
+ */
+export const EMPTYABLE_OVERRIDE_TOKENS: Record<string, readonly string[]> = {
+  // sendBookingConfirmedEmail: subtotal/promoAdjustment are "" when no promo
+  // applied, discount is "" unless the adjustment is a price CUT, promoCode is
+  // `?? ""`, and totalPaid/totalDue are the two halves of one story — exactly
+  // one of them is "" on every send.
+  "booking-confirmed": [
+    "subtotal",
+    "discount",
+    "promoCode",
+    "promoAdjustment",
+    "totalPaid",
+    "totalDue",
+  ],
+  // sendBookingModifiedEmail: each of these is `?? ""` when the change did not
+  // involve an additional payment.
+  "booking-modified": [
+    "additionalPaymentMethod",
+    "paymentReference",
+    "xeroInvoiceNumber",
+  ],
+  // #2307: {{guestLastName}} is supplied DELIBERATELY EMPTY (surnames on their
+  // own cannot be shown truthfully), so any override line built around it alone
+  // renders a bare label.
+  "checkin-reminder": ["guestLastName"],
+};
+
 export function extractTokens(value: string): string[] {
   return Array.from(value.matchAll(TOKEN_PATTERN), (match) =>
     match[1].trim(),
@@ -129,6 +216,246 @@ export function findBracketAnnotations(
     }
   }
   return findings;
+}
+
+/**
+ * #2269 (F3) — the EXACT authoring annotations this project ever SHIPPED
+ * inside a default subject or body.
+ *
+ * Guard 1 above treats ANY square-bracketed span as an authoring note, which is
+ * the right rule for a save-time refusal and for a "your row still carries
+ * junk" banner: the admin is told, and the admin decides. It is the WRONG rule
+ * for a migration that rewrites club-authored content without asking. A club
+ * that typed "[see the noticeboard]" into its own wording wrote that on
+ * purpose; deleting it silently is the "forced reset destroys legitimate
+ * customisation" failure mode #2269 exists to avoid.
+ *
+ * WHY LITERAL STRINGS AND NOT A PREFIX FAMILY (owner decision, #2269 review).
+ * The first cut of this matched a prefix family — anything opening "[only when",
+ * "[when", "[heading becomes" or "[falls back to". Three reviewers reproduced
+ * real club prose being destroyed by it, and a word boundary only fixed two of
+ * the three:
+ *
+ *   "Ring the bell [whenever you arrive after 8pm]."          prefix match
+ *   "the hut sits on [whenua administered by the rūnanga]"    prefix match
+ *   "Ring the lodge [when you are 30 minutes away]."          SURVIVES a
+ *                                                            boundary fix
+ *
+ * The last one is ordinary New Zealand alpine-club wording that a boundary can
+ * never tell apart from "[when dates did not change]", because it genuinely is
+ * the same shape. What decides it is that the damage is NOT RECOVERABLE in the
+ * product: the editor refuses to save square brackets (#2320), so a club whose
+ * wording we delete by mistake cannot paste it back — only a DBA reading the
+ * audit row can. A rule that can be wrong must not be the one that writes.
+ *
+ * So the migration strips only the exact strings we ourselves shipped. The list
+ * below is the complete set, recovered by replaying EVERY historical revision
+ * of `email-message-registry.ts`, `email-message-audit-defaults.ts` and
+ * `email-message-notes.ts` across every ref, extracting every bracketed span
+ * that appears on a non-comment line, and un-escaping the TypeScript string
+ * literals. 38 distinct spans, all four families, none containing a `]` or a
+ * newline. Guard 1 above fails the registry test if an annotation is ever put
+ * back into a shipped default, so the list cannot fall behind the code.
+ *
+ * THE ACCEPTED COST, stated plainly because it is a real one: a club that
+ * reflowed the whitespace INSIDE a shipped annotation, or retyped it with a
+ * different word, keeps it. That row is not healed by this migration. It is not
+ * abandoned either — #2320's bracket banner and #2269's per-template indicator
+ * both still name it, and an admin resolves it deliberately. That is the same
+ * choice made everywhere else in this change: an ambiguous case goes to a
+ * person, never to a script.
+ */
+export const SHIPPED_ANNOTATIONS: readonly string[] = [
+  "[falls back to \"your school group's stay\" when no school name is recorded]",
+  "[heading becomes \"Reminder: Confirm Your Attendee List\" on reminders]",
+  "[only when a door code is set]",
+  "[only when additional payment is due]",
+  "[only when adminNote exists]",
+  "[only when adminNotes exists]",
+  "[only when adminNotes is non-empty]",
+  "[only when changeFeeCents > 0]",
+  "[only when choreLink exists]",
+  "[only when chores exist]",
+  "[only when dates changed]",
+  "[only when discount exists without promoCode]",
+  "[only when discountCents > 0]",
+  "[only when familyMemberCount > 0]",
+  "[only when guest count changed]",
+  "[only when localUrl exists]",
+  "[only when non-member guests are held provisionally as a split linked booking]",
+  "[only when payment is still owing - states the amount owing and the internet-banking reference {{paymentReference}}]",
+  "[only when promoCode exists]",
+  "[only when provided]",
+  "[only when reason exists]",
+  "[only when rejoinProcessText exists]",
+  "[only when requestedAmountCents is truthy]",
+  "[only when reviewNote exists]",
+  "[only when reviewReason exists]",
+  "[only when the booking is already paid]",
+  "[only when the booking is confirmed but payment is still owing]",
+  "[only when the club has a recorded fee amount for this season]",
+  "[only when total changed]",
+  "[only when xeroObjectUrl exists]",
+  "[only when your own linked booking reference is available]",
+  "[when dates did not change]",
+  "[when guest count did not change]",
+  "[when the automatic refund could not complete inline: the refund could not complete and a durable recovery operation is queued — the payment recovery cron will retry it with backoff; watch the recovery queue and confirm the refund lands. Failure detail: {{errorMessage}}]",
+  "[when the member's own linked booking is also unpaid: no payment link is sent and a human must chase payment for the whole booking, because the guest portion must not settle ahead of the member's own place]",
+  "[when the member's own linked booking is not settled: the member's own linked booking is not settled either (it may be unpaid or already cancelled), so review the whole booking]",
+  "[when total did not change]",
+  "[when your own linked booking is not settled: your own linked booking has not been changed by this cancellation]",
+];
+
+/** Escape a literal so it matches itself in both JS and PostgreSQL ARE. */
+function escapeForBothRegexEngines(value: string): string {
+  // Punctuation only. Backslash before an ALPHANUMERIC is an error in ARE, so
+  // this must never touch letters or digits.
+  return value.replace(/[\\^$.|?*+()[\]{}]/g, (character) => `\\${character}`);
+}
+
+/**
+ * One shipped authoring annotation, as an alternation of the exact strings
+ * above — e.g. "[only when a door code is set]".
+ *
+ * Case-sensitive and whitespace-exact on purpose: this matches the text this
+ * project shipped, not an approximation of it. There are no wildcards at all,
+ * so it cannot reach a club's own bracketed wording however similar it looks.
+ *
+ * Sorted longest-first. No entry is a prefix of another (the test asserts it),
+ * so leftmost-first alternation in JavaScript and PostgreSQL ARE's preference
+ * for the longest match cannot disagree; the ordering makes that independent of
+ * the assertion rather than reliant on it. Ties break by CODE POINT, not
+ * `localeCompare`, because this exact byte sequence is also written into the
+ * migration SQL and a locale-dependent order would make that parity depend on
+ * the machine the generator ran on.
+ */
+export const SHIPPED_ANNOTATION_PATTERN = `(?:${[...SHIPPED_ANNOTATIONS]
+  .sort(
+    (left, right) =>
+      right.length - left.length ||
+      (left < right ? -1 : left > right ? 1 : 0),
+  )
+  .map(escapeForBothRegexEngines)
+  .join("|")})`;
+
+/**
+ * The strip, as an ORDERED list of regex sources, each applied globally with an
+ * EMPTY replacement.
+ *
+ * This exact list is what the #2269 migration runs: the migration defines the
+ * annotation alternation once, builds these six pass patterns from it, and
+ * `email-message-annotation-strip.test.ts` reads the SQL file back, rebuilds
+ * the patterns the SQL will actually use, proves they equal this list, and runs
+ * the fixture corpus through the ones lifted OUT OF THE SQL. Every construct
+ * used here means the same thing in PostgreSQL's ARE engine and in
+ * JavaScript's — verified against postgres:16:
+ *
+ *   `(?=\n|$)`        lookahead; `$` is end-of-STRING in both (no n/m flag)
+ *   `(?<=\n)`         fixed-width lookbehind
+ *   `(?:…)+`          non-capturing group with a greedy repeat
+ *   `^`               start-of-STRING in both (no n/m flag)
+ *
+ * Deliberately NOT used: `\b` / `\y`, which do not mean the same thing in
+ * the two engines and so cannot live in a shared pattern string.
+ *
+ * Why six passes rather than one:
+ *
+ *   1. a run of whole-line annotations sitting between two BLANK lines takes
+ *      one of the blank lines with it, or the paragraph break either side would
+ *      add up to a stray empty line in the delivered email;
+ *   2. the same, for a run at the very start of the value;
+ *   3. any remaining annotation that occupies a whole line takes the line with
+ *      it, so a stripped body does not grow a blank line where a note sat;
+ *   4. the same, for an annotation on the very first line;
+ *   5. an annotation with content before it on the line takes the whitespace
+ *      that separated it — the defaults padded them into a column
+ *      ("Subtotal: {{subtotal}}          [only when discountCents > 0]"), and
+ *      leaving that padding behind would be its own trailing-whitespace defect;
+ *   6. whatever is left is an annotation at the start of a line with content
+ *      after it, which takes the whitespace that follows instead.
+ *
+ * Order matters twice: 1 before 3 and 2 before 4 (the blank-line-aware forms
+ * are strictly more specific), and 5 before 6, or a padded end-of-line
+ * annotation would be removed by 6 and leave its padding as trailing
+ * whitespace.
+ */
+export const SHIPPED_ANNOTATION_STRIP_PATTERNS: readonly string[] = [
+  `(?<=\\n)(?:\\n[ \\t]*${SHIPPED_ANNOTATION_PATTERN}[ \\t\\r]*)+\\n(?=\\n)`,
+  `^(?:[ \\t]*${SHIPPED_ANNOTATION_PATTERN}[ \\t\\r]*\\n)+\\n`,
+  `\\n[ \\t]*${SHIPPED_ANNOTATION_PATTERN}[ \\t\\r]*(?=\\n|$)`,
+  `^[ \\t]*${SHIPPED_ANNOTATION_PATTERN}[ \\t\\r]*\\n`,
+  `(?<=[^ \\t\\r\\n])[ \\t]*${SHIPPED_ANNOTATION_PATTERN}`,
+  `${SHIPPED_ANNOTATION_PATTERN}[ \\t]*`,
+];
+
+
+/** Every shipped annotation present in a value, in the order they appear. */
+export function findShippedAnnotations(value: string): string[] {
+  return Array.from(
+    value.matchAll(new RegExp(SHIPPED_ANNOTATION_PATTERN, "g")),
+    (match) => match[0],
+  );
+}
+
+/**
+ * Remove every shipped authoring annotation from a stored template value.
+ *
+ * Idempotent by construction: the output contains no span matching
+ * SHIPPED_ANNOTATION_PATTERN, so a second run matches nothing and returns its
+ * input unchanged. A value with no shipped annotation is returned as-is
+ * (identity), which is what lets the migration write an audit row only for rows
+ * it genuinely changed.
+ */
+export function stripShippedAnnotations(value: string): string {
+  return SHIPPED_ANNOTATION_STRIP_PATTERNS.reduce(
+    (current, pattern) => current.replace(new RegExp(pattern, "g"), ""),
+    value,
+  );
+}
+
+/**
+ * #2269 (second review) — the lines a shipped annotation was MARKING, read off
+ * the value as it stood BEFORE the strip.
+ *
+ * Guard 4 cannot see these. It renders tokens and inspects the result, so a
+ * conditional line with NO token in it is structurally invisible to it, and
+ * `findDanglingDefaultLines` additionally exempts anything ending in `:` as a
+ * heading. Replaying every historical revision of the default modules turns up
+ * ten such lines, and they are not marginal:
+ *
+ *   "Payment has been processed successfully."   [only when the booking is already paid]
+ *   "Your arrival day chores:"                   [only when chores exist]
+ *   "This only affects your guests' provisional place — your own booking is
+ *    unaffected and remains confirmed."          [when your own linked booking is not settled: …]
+ *
+ * The first of those, rendered on a booking that still owes money, reads
+ * "Payment has been processed successfully." immediately above "Please pay
+ * $240.00 using reference ACB-1234". Before the migration the bracket itself
+ * made the editor say something ("bracket_annotation"); after it, nothing did.
+ *
+ * So the signal is derived from what the migration REMOVED rather than from
+ * re-detecting a marker we deleted: the migration records the previous wording
+ * per row in its audit metadata, and this function turns that wording back into
+ * the exact lines that are now unconditional.
+ *
+ * A line whose annotation occupied the WHOLE line is not reported — the strip
+ * takes the line with it, so nothing new is sent. Only a line that keeps
+ * content after the strip is a line that now goes out every time.
+ *
+ * Applied per line on purpose: the multi-line passes (1-4) delete whole lines
+ * and would shift the line numbering, and what an admin needs to read is what
+ * THIS line became. Passes 5 and 6 are the only ones that can fire on a lone
+ * line with content, which is exactly the case being reported.
+ */
+export function findUnconditionalLines(value: string): string[] {
+  const lines: string[] = [];
+  for (const line of value.split("\n")) {
+    if (findShippedAnnotations(line).length === 0) continue;
+    const stripped = stripShippedAnnotations(line).trimEnd();
+    if (stripped.trim() === "") continue;
+    if (!lines.includes(stripped)) lines.push(stripped);
+  }
+  return lines;
 }
 
 /**
@@ -273,6 +600,77 @@ export function findStaleOptionalTokens(
     const stale = tokens.filter((token) => !present.has(token));
     if (stale.length > 0) {
       findings.push({ key, field: "defaultBody", detail: stale.join(", ") });
+    }
+  }
+  return findings;
+}
+
+/**
+ * GUARD 6 — EMPTYABLE_OVERRIDE_TOKENS must stay a description of reality.
+ *
+ * #2269 added a SECOND hand-maintained token table, and the whole reason #2268
+ * built this module is that hand-maintained token tables rot. Guard 5 polices
+ * OPTIONAL_TEMPLATE_TOKENS; nothing policed this one, so its own comment's
+ * claim to be kept "under the same discipline" was not true (#2269 second
+ * review). This is that discipline.
+ *
+ * Three properties, each of them checkable, and each of them a way the table
+ * has a live consequence — the admin editor runs guard 4 over a SAVED override
+ * with every name declared here rendered empty:
+ *
+ *   1. the key names a REGISTERED template, or the declaration describes
+ *      nothing at all;
+ *   2. the token is still SUPPLIED for that template, which for a token that is
+ *      by construction absent from the default body means it is listed in
+ *      EXTRA_TEMPLATE_TOKENS. That listing is also what keeps the token in
+ *      `allowedTokens` (so an override using it stays re-savable) and what
+ *      gives it a preview sample. A name that falls out of there is a name the
+ *      sender has stopped supplying, and guard 4 would then be reporting a line
+ *      as conditionally-empty when it is unconditionally empty — a different,
+ *      worse fault that `retired_token` already covers;
+ *   3. the token is NOT in the current default subject or body. If a later
+ *      release puts it back, the declaration belongs in
+ *      OPTIONAL_TEMPLATE_TOKENS, where guard 5 keeps it honest and where the
+ *      shipped default itself is held to rendering cleanly without it.
+ *
+ * What no guard can check is the honest half — that the sender really can emit
+ * the value EMPTY. That stays a reading of the send site, recorded in the
+ * table's comment, and it is why the table is prose-documented per entry.
+ */
+export function findUnsupportedEmptyableTokens(
+  defaults: Record<string, EmailTemplateDefaults>,
+  extraTokens: Partial<Record<string, readonly string[]>>,
+  emptyableTokens: Record<string, readonly string[]>,
+): TemplateFinding[] {
+  const findings: TemplateFinding[] = [];
+  for (const [key, tokens] of Object.entries(emptyableTokens)) {
+    const entry = defaults[key];
+    if (!entry) {
+      findings.push({
+        key,
+        field: "defaultBody",
+        detail: "no such registered template",
+      });
+      continue;
+    }
+    const supplied = new Set(extraTokens[key] ?? []);
+    const inDefault = new Set([
+      ...extractTokens(entry.defaultSubject),
+      ...extractTokens(entry.defaultBody),
+    ]);
+    const detail: string[] = [];
+    for (const token of tokens) {
+      if (!supplied.has(token)) {
+        detail.push(`${token} is not supplied by this template any more`);
+      }
+      if (inDefault.has(token)) {
+        detail.push(
+          `${token} is back in the default body — declare it in OPTIONAL_TEMPLATE_TOKENS instead`,
+        );
+      }
+    }
+    if (detail.length > 0) {
+      findings.push({ key, field: "defaultBody", detail: detail.join(", ") });
     }
   }
   return findings;

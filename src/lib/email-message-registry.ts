@@ -149,7 +149,22 @@ export const EXTRA_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, strin
   // Lodge the warning is about; empty for single-lodge clubs (ADR-002).
   "admin-capacity-warning": ["lodgeName"],
   // #2268 raw values behind the pre-composed lines (see the note above).
-  "checkin-reminder": ["choreName", "choreDescription"],
+  // #2269 review: {{guestFirstName}}/{{guestLastName}} are STILL SUPPLIED by
+  // sendCheckinReminderEmail (src/lib/email/booking.ts) precisely so a club
+  // holding a pre-#2307 override keeps rendering a correct guest list. They
+  // left the default body when #2307 moved to a one-guest-per-line
+  // {{guestName}}, and without them here `allowedTokens` omits them: the
+  // editor then reported "uses {{guestFirstName}}, {{guestLastName}}, which
+  // this template no longer supplies" — both clauses false — and, because
+  // disallowed_token makes the validation invalid, that club could not re-save
+  // its template at all. The only remedy offered was Restore Default, which
+  // destroys the wording the back-compatibility exists to protect.
+  "checkin-reminder": [
+    "choreName",
+    "choreDescription",
+    "guestFirstName",
+    "guestLastName",
+  ],
   "pre-arrival-reminder": ["doorCode", "expectedArrivalTime"],
   "chore-roster": ["choreName", "choreDescription", "choreLink"],
   "membership-application-rejected": ["adminNotes"],
@@ -323,7 +338,24 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
   // body carries {{doorCodeNote}} instead of a bare "Door code:" heading that
   // printed even for a lodge with no code. An override written before the
   // change still satisfies this through REQUIRED_TOKEN_ALTERNATIVES.
-  "pre-arrival-reminder": ["CLUB_LODGE_TRAVEL_NOTE", "doorCodeNote"],
+  //
+  // #2350: {{outstandingAdditionalNote}} is the only place a pre-arrival
+  // reminder says money is still owed on the booking. Dropping it in an override
+  // would silence that for every booking, so it is pinned like the travel note.
+  "pre-arrival-reminder": [
+    "CLUB_LODGE_TRAVEL_NOTE",
+    "doorCodeNote",
+    "outstandingAdditionalNote",
+  ],
+  // #2350: this email exists to ask for money, so the amount, the date it was
+  // raised and the stay it belongs to are all load-bearing — an override that
+  // drops any of them leaves a demand a member cannot act on or check.
+  "additional-payment-reminder": [
+    "additionalAmount",
+    "requestedOn",
+    "checkIn",
+    "checkOut",
+  ],
   "password-reset": ["token"],
   "admin-password-reset": ["token"],
   "member-setup-invite": ["token"],
@@ -608,6 +640,12 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
   "pre-arrival-reminder": {
     triggerSummary: "Pre-arrival reminder with current lodge access details",
     frequency: "Once per confirmed or paid booking in the reminder window",
+  },
+  "additional-payment-reminder": {
+    triggerSummary:
+      "A booking change increased the total and the extra amount is still uncollected",
+    frequency:
+      "Twice per outstanding amount at most — a few days after the change, and once more shortly before check-in — plus any manual re-send an admin triggers from the booking page. The chase stops when the money arrives or the stay ends",
   },
   "booking-request-verification": {
     triggerSummary: "Public booking request submitted",
@@ -936,6 +974,17 @@ export function sampleValue(token: string): string {
   if (token === "ownBookingNote") {
     return splitGuestPortionOwnBookingLine(true);
   }
+  // #2350: pre-composed like {{doorCodeNote}} above — the whole sentence as the
+  // send builds it, so the preview reads as a member reads it instead of
+  // printing the token's own name mid-paragraph. Empty on a live send when
+  // nothing is owed. The amount reconciles with the sample below.
+  if (token === "outstandingAdditionalNote") {
+    return "There is still $123.45 to pay on this booking after a change to your stay. Please pay it from your booking page before you arrive.";
+  }
+  // #2350: the day the outstanding extra was raised. Named like a date but
+  // matching none of the generic date rules below, so it would otherwise
+  // preview as the literal word "requestedOn" where a date belongs.
+  if (token === "requestedOn") return "1 Jul 2026";
   // #2267: mirror what sendBookingConfirmedEmail composes — each row carries
   // its own trailing newline so the default body's
   // "{{promoSummary}}Total Paid: …" previews as a contiguous block.
@@ -1025,6 +1074,17 @@ const TEMPLATE_SAMPLE_VALUE_OVERRIDES: Partial<
   },
   "booking-review-rejected": {
     adminNotesLine: "Reason from admin: No adult guest is listed.\n\n",
+  },
+  // #2269 second review. {{guestLastName}} is now an allowed token again (the
+  // sender still supplies the pre-#2307 pair so an old saved override keeps
+  // naming its guests), and an allowed token gets a preview sample. Left to
+  // sampleValue that sample would be a plausible surname — so an admin who
+  // NEWLY typed {{guestLastName}} would see a name in Preview and get an empty
+  // string on every real send, because sendCheckinReminderEmail supplies it
+  // DELIBERATELY EMPTY (a bare list of surnames cannot be shown truthfully; see
+  // src/lib/email/booking.ts). The preview shows what the send does.
+  "checkin-reminder": {
+    guestLastName: "",
   },
 };
 
@@ -1236,6 +1296,10 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "oldTotal",
   "operation",
   "operationType",
+  // #2350: pre-composed "there is still $X to pay on this booking" sentence for
+  // the pre-arrival reminder; empty when nothing is owed, so the body never
+  // carries a dangling claim (the {{doorCodeNote}} convention).
+  "outstandingAdditionalNote",
   "organiserName",
   "originalRecipient",
   "originalTemplateName",
@@ -1305,6 +1369,9 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   // never approved (see lodgeName). Stays subject-sensitive.
   "respondUrl",
   "requestedAmountNote",
+  // #2350: the day the uncollected additional payment was raised, so the
+  // reminder can say how long it has been outstanding.
+  "requestedOn",
   "requesterName",
   "rejoinProcessNote",
   "rejoinProcessText",

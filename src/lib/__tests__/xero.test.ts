@@ -950,6 +950,51 @@ describe("withXeroRetry", () => {
     ).rejects.toBe(error)
     expect(calls).toBe(3) // initial + 2 transient retries
   })
+
+  // #2394 review, F2. Exhausting the transient budget arms a PROCESS-GLOBAL
+  // breaker that then fails every Xero call — invoicing, sync, webhook replay.
+  // A decorative read behind an operator-facing button (the setup wizard's Try
+  // again, rendered precisely when Xero is 5xx-ing, with copy inviting a press)
+  // must be able to fail as often as a human presses it without taking the rest
+  // of the integration down with it.
+  it("does not arm the global outage breaker when the caller opts out", async () => {
+    const error = { response: { statusCode: 503 }, message: "Xero unavailable" }
+    const fn = vi.fn(() => Promise.reject(error))
+
+    await expect(
+      withXeroRetry(fn, {
+        maxRetries: 0,
+        maxTransientRetries: 0,
+        armTransientBreaker: false,
+        maxWaitSec: 0,
+      })
+    ).rejects.toBe(error)
+    // Exactly one live call per press — no transient retry either.
+    expect(fn).toHaveBeenCalledTimes(1)
+
+    // The next Xero call — an invoice push, say — is untouched.
+    const next = vi.fn(() => Promise.resolve("posted"))
+    await expect(withXeroRetry(next)).resolves.toBe("posted")
+    expect(next).toHaveBeenCalledTimes(1)
+  })
+
+  // Opting out of ARMING the breaker is not opting out of RESPECTING it: a
+  // cooldown started by a call that matters must still stop this one.
+  it("still refuses while a cooldown armed elsewhere is active", async () => {
+    const error = { response: { statusCode: 503 }, message: "Xero unavailable" }
+    await expect(
+      withXeroRetry(() => Promise.reject(error), {
+        maxRetries: 2,
+        maxWaitSec: 0,
+      })
+    ).rejects.toBe(error)
+
+    const opted = vi.fn(() => Promise.resolve("should not run"))
+    await expect(
+      withXeroRetry(opted, { armTransientBreaker: false })
+    ).rejects.toBeInstanceOf(XeroTransientOutageError)
+    expect(opted).not.toHaveBeenCalled()
+  })
 })
 
 describe("callXeroApi", () => {

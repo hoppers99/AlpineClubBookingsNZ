@@ -354,6 +354,103 @@ describe("booking detail write-surface gates (issue #1313 + option A2)", () => {
 // because the identity logic being right is worthless if the page renders the
 // card outside it.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Outstanding additional payment panel visibility (#2350).
+//
+// The member-facing AdditionalPaymentCard is owner-only (#1303) because it
+// carries the member's own card-entry controls. That left every other admin
+// viewer with no sign that money was owing, which is the whole bug. The new
+// panel is the read-only counterpart, so its gate is the READ gate — the same
+// bookings-area view access that admits a Booking Officer or read-only admin to
+// the detail page at all — while the re-send button inside it needs edit.
+//
+// The predicate pin is paired with a SOURCE pin on the render site, because the
+// identity logic being right is worthless if the page renders the panel outside
+// it — and in particular the owner must keep seeing their own card and NOT this.
+// ---------------------------------------------------------------------------
+describe("outstanding additional payment panel visibility (#2350)", () => {
+  const bookingPageSource = () =>
+    fs.readFileSync(
+      path.join(
+        process.cwd(),
+        "src/app/(authenticated)/bookings/[id]/page.tsx",
+      ),
+      "utf8",
+    );
+
+  const canSeePanel = (accessRoles: AppAccessRole[], isBookingOwner = false) =>
+    !isBookingOwner &&
+    hasAdminAreaAccess({ accessRoles }, { area: "bookings", level: "view" });
+
+  const canResend = (accessRoles: AppAccessRole[]) => {
+    const subject = { accessRoles };
+    return (
+      hasAdminAccess(subject) ||
+      hasAdminAreaAccess(subject, { area: "bookings", level: "edit" })
+    );
+  };
+
+  it("shows the panel to every admin who can read bookings", () => {
+    expect(canSeePanel(["ADMIN"])).toBe(true);
+    expect(canSeePanel(["ADMIN_BOOKINGS"])).toBe(true);
+    expect(canSeePanel(["ADMIN_READONLY"])).toBe(true);
+  });
+
+  it("withholds it from a plain member and from the booking's own owner", () => {
+    expect(canSeePanel(["USER"])).toBe(false);
+    // An admin looking at their OWN booking keeps the member card (#1303) and
+    // does not get a second, admin-framed copy of the same fact.
+    expect(canSeePanel(["ADMIN"], true)).toBe(false);
+  });
+
+  it("withholds it from an admin with no bookings scope at all", () => {
+    // ADMIN_MEMBERSHIP and FINANCE_ADMIN both carry bookings:view, so they DO
+    // reach the detail page and DO see this panel — reading that money is owing
+    // is exactly what a membership or finance officer is entitled to. Only a
+    // scope with no bookings access is excluded.
+    expect(canSeePanel(["ADMIN_CONTENT"])).toBe(false);
+    expect(canSeePanel(["ADMIN_MEMBERSHIP"])).toBe(true);
+    expect(canSeePanel(["FINANCE_ADMIN"])).toBe(true);
+  });
+
+  it("offers the re-send only to admins who may write bookings", () => {
+    expect(canResend(["ADMIN"])).toBe(true);
+    expect(canResend(["ADMIN_BOOKINGS"])).toBe(true);
+    expect(canResend(["ADMIN_READONLY"])).toBe(false);
+    expect(canResend(["ADMIN_MEMBERSHIP"])).toBe(false);
+    expect(canResend(["FINANCE_ADMIN"])).toBe(false);
+    expect(canResend(["USER"])).toBe(false);
+  });
+
+  it("renders the panel only behind the non-owner admin-viewer gate", () => {
+    const source = bookingPageSource();
+
+    expect(source).toMatch(
+      /\{nonOwnerAdminViewer && !isDeleted && booking\.payment \? \(\s*<BookingAdditionalPaymentPanel/,
+    );
+    // Exactly one render site, so a second ungated copy cannot creep in.
+    expect(source.match(/<BookingAdditionalPaymentPanel/g)).toHaveLength(1);
+    // …and the re-send is handed the edit gate, never the view gate.
+    expect(source).toMatch(/canResend=\{canSeeAdminTools\}/);
+  });
+
+  /*
+    The member's own card stays owner-only (#1303). #2350 round 2 added ONE
+    clause to that condition and nothing else: the booking's lifecycle, because
+    cancelling leaves the delta columns untouched and the card was still
+    offering a cancelled booking's owner a payment form (see
+    src/components/__tests__/additional-payment-card-gate.test.ts). The owner
+    gate itself is unchanged, which is what this pin is for.
+  */
+  it("leaves the member's own owner-only card exactly where it was (#1303)", () => {
+    const source = bookingPageSource();
+
+    expect(source).toMatch(
+      /booking\.payment &&\s*isBookingOwner &&\s*!isDeleted &&\s*isAdditionalPayableBookingStatus\(booking\.status\) &&\s*booking\.payment\.additionalAmountCents > 0 &&\s*booking\.payment\.additionalPaymentStatus !== "SUCCEEDED" && \(\s*<AdditionalPaymentCard/,
+    );
+  });
+});
+
 describe("in-booking bed allocation panel visibility (#2252)", () => {
   const bookingPageSource = () =>
     fs.readFileSync(

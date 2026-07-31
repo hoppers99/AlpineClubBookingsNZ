@@ -61,6 +61,10 @@ import {
   shouldPersistPromoRedemption,
   validateAndCalculatePromoDiscount,
 } from "@/lib/promo";
+import {
+  describePromoCapCoverage,
+  type PromoCoverageNotice,
+} from "@/lib/promo-cap-coverage";
 import { findUnpaidMemberGuestNames } from "@/lib/booking-member-guest-subscriptions";
 import { isLikelyTypoCorrection } from "@/lib/guest-name-similarity";
 import {
@@ -1040,6 +1044,9 @@ export type PromoChangeResult = {
   newPromoAdjustmentCents: number;
   promoRemoved: boolean;
   promoChanged: boolean;
+  // #2390: set only when a usage cap stopped the promotion reaching somebody on
+  // the repriced booking; null means everyone it applies to is covered.
+  promoCoverage: PromoCoverageNotice | null;
 };
 
 function promoRequiresStoredGuestTargets(
@@ -1177,6 +1184,8 @@ export async function applyPromoCodeChanges(
       newPromoAdjustmentCents: inProgressPlan.newPromoAdjustmentCents,
       promoRemoved: false,
       promoChanged: false,
+      // An in-progress plan reuses prices already agreed; it re-runs no cap.
+      promoCoverage: null,
     };
   }
 
@@ -1184,6 +1193,7 @@ export async function applyPromoCodeChanges(
   let newPromoAdjustmentCents = 0;
   let promoRemoved = false;
   let promoChanged = false;
+  let promoCoverage: PromoCoverageNotice | null = null;
   const bookingLodgeId = booking.lodgeId ?? (await getDefaultLodgeId(tx));
 
   // Row-lock every promo code whose usage caps this transaction may charge or
@@ -1317,7 +1327,18 @@ export async function applyPromoCodeChanges(
       promo.assignments.length > 0
         ? promo.assignments.map((assignment) => assignment.memberId)
         : null,
-      { excludeBookingId: bookingId, db: tx, selectedGuestIndexes, lodgeId: bookingLodgeId },
+      {
+        excludeBookingId: bookingId,
+        db: tx,
+        selectedGuestIndexes,
+        lodgeId: bookingLodgeId,
+        // #2390: the reprice branch keeps the code the booking already has, so
+        // a cap must narrow who it covers rather than refuse the whole edit.
+        // The swap branch above deliberately does NOT do this: there the member
+        // is applying a code, nobody holds a discount from it yet, and "this
+        // code is full" is the honest answer.
+        capOverflow: "coverExisting",
+      },
     );
 
     if (application.error || !application.discount) {
@@ -1327,6 +1348,10 @@ export async function applyPromoCodeChanges(
       const promoResult = application.discount;
       newDiscountCents = promoResult.discountCents;
       newPromoAdjustmentCents = promoResult.priceAdjustmentCents;
+      promoCoverage = await describePromoCapCoverage(tx, {
+        promoCode: promo.code,
+        capCoverage: application.capCoverage,
+      });
 
       await replacePromoRedemptionAllocations(
         tx,
@@ -1344,7 +1369,13 @@ export async function applyPromoCodeChanges(
     }
   }
 
-  return { newDiscountCents, newPromoAdjustmentCents, promoRemoved, promoChanged };
+  return {
+    newDiscountCents,
+    newPromoAdjustmentCents,
+    promoRemoved,
+    promoChanged,
+    promoCoverage,
+  };
 }
 
 export async function calculateModificationChangeFee({
