@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useConfirm } from "@/components/confirm-dialog";
 
 /**
  * The delegate's answer panel on `/bookings/consent/[guestId]` ("+ Add Member
@@ -20,6 +21,15 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
  * server-composed warning for a PREDICTABLE decline refusal (the "No thanks"
  * button is withheld), and an unpredictable refusal comes back as the
  * server's 400 message repeated verbatim with both buttons still offered.
+ *
+ * SAYING NO ASKS FIRST HERE, and only here. A delegate is answering for
+ * SOMEBODY ELSE: one click released the bed held for that person, took them off
+ * the booking, and emailed the person who made it — none of which the delegate
+ * can undo from this page. The member's own card (`member-guest-consent-card`)
+ * deliberately has no such step; a person declining their own place is entitled
+ * to do it in one click, and asking them twice would only be in the way. Saying
+ * yes needs no confirmation on either card: it is the answer the request is
+ * hoping for, and it can still be taken back afterwards.
  */
 export function MemberGuestDelegateConsentCard({
   bookingId,
@@ -55,6 +65,7 @@ export function MemberGuestDelegateConsentCard({
   >("idle");
   const [errorMessage, setErrorMessage] = useState("");
   const outcomeRef = useRef<HTMLDivElement>(null);
+  const { confirm, confirmDialog } = useConfirm();
 
   useEffect(() => {
     if (step === "approved" || step === "declined" || step === "error") {
@@ -63,6 +74,26 @@ export function MemberGuestDelegateConsentCard({
   }, [step]);
 
   const busy = step === "approving" || step === "declining";
+
+  // Confirming a decline is not politeness — it is the only thing standing
+  // between a mis-click and an irreversible answer given on another person's
+  // behalf. The wording names who it is for and what it does, so the dialog is
+  // readable on its own without the card behind it.
+  async function declineWithConfirmation() {
+    const confirmed = await confirm({
+      title: `Say no for ${guestFirstName}?`,
+      description:
+        `This answers for ${guestFirstName}. Their place is given up, the bed ` +
+        `being held for them is released, and ${bookerFirstName} is emailed. ` +
+        `You cannot undo this here — ${bookerFirstName} would have to add ` +
+        `${guestFirstName} again.`,
+      confirmLabel: `Say no for ${guestFirstName}`,
+      cancelLabel: "Go back",
+      destructive: true,
+    });
+    if (!confirmed) return;
+    await answer("DECLINE");
+  }
 
   async function answer(action: "APPROVE" | "DECLINE") {
     setErrorMessage("");
@@ -234,7 +265,7 @@ export function MemberGuestDelegateConsentCard({
               variant="outline"
               className="border-danger-6 text-danger-11 hover:bg-danger-3"
               disabled={busy}
-              onClick={() => void answer("DECLINE")}
+              onClick={() => void declineWithConfirmation()}
             >
               {step === "declining" ? "Recording your answer..." : "No thanks"}
             </Button>
@@ -243,6 +274,7 @@ export function MemberGuestDelegateConsentCard({
         <p aria-live="polite" className="sr-only">
           {busy ? "Recording your answer..." : ""}
         </p>
+        {confirmDialog}
       </CardContent>
     </Card>
   );

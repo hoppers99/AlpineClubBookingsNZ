@@ -43,6 +43,17 @@ function renderCard(overrides: Record<string, unknown> = {}) {
   );
 }
 
+/**
+ * Say no, then agree to the "are you sure" step. Declining here answers for
+ * somebody else and cannot be undone from this page, so the card asks first —
+ * every decline path in these tests goes through the same two clicks a real
+ * delegate makes.
+ */
+async function declineAndConfirm() {
+  fireEvent.click(screen.getByRole("button", { name: "No thanks" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Say no for Tama" }));
+}
+
 describe("MemberGuestDelegateConsentCard", () => {
   it("addresses the delegate, names the child, and asks in the third person", () => {
     renderCard();
@@ -101,13 +112,38 @@ describe("MemberGuestDelegateConsentCard", () => {
     expect(screen.getByText(/recorded against your name/)).toBeInTheDocument();
   });
 
+  it("asks before saying no on the child's behalf, and does nothing if the delegate backs out", async () => {
+    // One click used to release Tama's bed, take her off the booking and email
+    // Dave — an answer given for somebody else, with no way back from this
+    // page. Backing out of the question must leave the booking untouched.
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    renderCard();
+    fireEvent.click(screen.getByRole("button", { name: "No thanks" }));
+
+    expect(await screen.findByText("Say no for Tama?")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /the bed being held for them is released, and Dave is emailed/,
+      ),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Go back" }));
+
+    await waitFor(() =>
+      expect(screen.queryByText("Say no for Tama?")).toBeNull(),
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "No thanks" })).toBeEnabled();
+  });
+
   it("records a no and confirms the release", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse({ outcome: "DECLINED" }),
     );
 
     renderCard();
-    fireEvent.click(screen.getByRole("button", { name: "No thanks" }));
+    await declineAndConfirm();
 
     await waitFor(() =>
       expect(screen.getByText("You've said no for Tama")).toBeInTheDocument(),
@@ -125,7 +161,7 @@ describe("MemberGuestDelegateConsentCard", () => {
     );
 
     renderCard();
-    fireEvent.click(screen.getByRole("button", { name: "No thanks" }));
+    await declineAndConfirm();
 
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent(serverSentence);
