@@ -4,6 +4,8 @@ import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ComponentProps, ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ClubIdentityProvider } from "@/components/club-identity-provider";
+import { clubIdentity } from "@/config/club-identity";
 import { BookingBedAllocationPanel } from "@/components/admin/booking-bed-allocation-panel";
 
 /*
@@ -57,7 +59,30 @@ vi.mock("@/components/ui/dialog", () => ({
 }));
 
 vi.mock("@/components/ui/select", () => ({
-  Select: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  Select: ({
+    children,
+    onValueChange,
+    disabled,
+  }: {
+    children: ReactNode;
+    onValueChange?: (value: string) => void;
+    disabled?: boolean;
+  }) => (
+    <div>
+      {/* Test-only handle: the Radix select cannot be driven through
+          fireEvent, so the mock exposes one button that picks bed-1 — enough
+          for the range dialog to submit from inside the panel. */}
+      <button
+        type="button"
+        data-testid="range-bed-pick-bed-1"
+        disabled={disabled}
+        onClick={() => onValueChange?.("bed-1")}
+      >
+        pick bed-1
+      </button>
+      {children}
+    </div>
+  ),
   SelectContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   SelectGroup: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   SelectItem: ({ children }: { children: ReactNode }) => <div>{children}</div>,
@@ -156,23 +181,32 @@ function jsonResponse(body: unknown, ok = true, status = 200) {
   return { ok, status, json: async () => body };
 }
 
-function renderPanel(overrides: Record<string, unknown> = {}) {
-  return render(
-    <BookingBedAllocationPanel
-      bookingId="booking-1"
-      lodgeId="lodge-1"
-      memberName="Ada Member"
-      checkIn="2026-06-01"
-      checkOut="2026-06-04"
-      wholeLodgeHold={false}
-      bookingStatus="CONFIRMED"
-      isDeleted={false}
-      canHoldBeds
-      approvedBedNightCount={0}
-      guests={[{ id: "guest-1", name: "Ada Guest" }]}
-      {...overrides}
-    />,
+// The panel (and the shared range dialog inside it) reads the club's own word
+// for a hut leader (#2286); the provider is always mounted above it in the app
+// shell, so the tests mount it too.
+function panelElement(overrides: Record<string, unknown> = {}) {
+  return (
+    <ClubIdentityProvider value={clubIdentity}>
+      <BookingBedAllocationPanel
+        bookingId="booking-1"
+        lodgeId="lodge-1"
+        memberName="Ada Member"
+        checkIn="2026-06-01"
+        checkOut="2026-06-04"
+        wholeLodgeHold={false}
+        bookingStatus="CONFIRMED"
+        isDeleted={false}
+        canHoldBeds
+        approvedBedNightCount={0}
+        guests={[{ id: "guest-1", name: "Ada Guest" }]}
+        {...overrides}
+      />
+    </ClubIdentityProvider>
   );
+}
+
+function renderPanel(overrides: Record<string, unknown> = {}) {
+  return render(panelElement(overrides));
 }
 
 describe("BookingBedAllocationPanel", () => {
@@ -634,21 +668,7 @@ describe("BookingBedAllocationPanel", () => {
     const { rerender } = renderPanel();
 
     // A second read starts while the first is still outstanding.
-    rerender(
-      <BookingBedAllocationPanel
-        bookingId="booking-1"
-        lodgeId="lodge-2"
-        memberName="Ada Member"
-        checkIn="2026-06-01"
-        checkOut="2026-06-04"
-        wholeLodgeHold={false}
-        bookingStatus="CONFIRMED"
-        isDeleted={false}
-        canHoldBeds
-        approvedBedNightCount={0}
-        guests={[{ id: "guest-1", name: "Ada Guest" }]}
-      />,
-    );
+    rerender(panelElement({ lodgeId: "lodge-2" }));
 
     await screen.findByText("Room One / Bed Two");
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -677,21 +697,7 @@ describe("BookingBedAllocationPanel", () => {
 
     const { rerender } = renderPanel();
 
-    rerender(
-      <BookingBedAllocationPanel
-        bookingId="booking-1"
-        lodgeId="lodge-2"
-        memberName="Ada Member"
-        checkIn="2026-06-01"
-        checkOut="2026-06-04"
-        wholeLodgeHold={false}
-        bookingStatus="CONFIRMED"
-        isDeleted={false}
-        canHoldBeds
-        approvedBedNightCount={0}
-        guests={[{ id: "guest-1", name: "Ada Guest" }]}
-      />,
-    );
+    rerender(panelElement({ lodgeId: "lodge-2" }));
 
     await screen.findByText("Ada Guest");
     gate.release();
@@ -800,5 +806,152 @@ describe("BookingBedAllocationPanel", () => {
         expect.stringContaining("1 of 2 nights were removed"),
       );
     });
+  });
+
+  /*
+   * Custodian occupancy (#2286 wired into #2252's panel). A custodian bed hold
+   * is a bed held for a season by a hut-leader assignment, with no booking and
+   * no BedAllocation row anywhere. The panel reads the same dashboard payload
+   * the board does, so it must show the same three honest facts: which beds in
+   * the window are held (they are offered in Assign… and the server WILL
+   * refuse them), that a run of this booking sitting on a held bed-night is
+   * blocked rather than clean-looking, and — when an assign attempt does hit a
+   * hold — the server's standard CUSTODIAN_HOLD refusal report, never a
+   * silent failure.
+   */
+  const custodianHold = {
+    assignmentId: "assign-1",
+    memberName: "Custodian Chris",
+    bedId: "bed-2",
+    bedName: "Bed Two",
+    roomName: "Room One",
+    startDate: "2026-06-02",
+    endDate: "2026-06-03",
+    nights: ["2026-06-02", "2026-06-03"],
+  };
+
+  it("renders a custodian-held run blocked with the board's neutral hatched treatment and the shared refusal category", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(
+        payload({
+          allocations: [
+            allocation({ id: "alloc-1", stayDate: "2026-06-01" }),
+            // This booking's row sitting on the held bed-night — the board's
+            // CUSTODIAN_BED_CONFLICT, seen from the booking.
+            allocation({
+              id: "alloc-held",
+              bedId: "bed-2",
+              bedName: "Bed Two",
+              stayDate: "2026-06-02",
+            }),
+          ],
+          unallocatedGuestNights: [],
+          custodianHolds: [custodianHold],
+        }),
+      ),
+    );
+    renderPanel();
+
+    const marker = await screen.findByTestId("bed-run-custodian-hold");
+    // The category is the SERVER's union member, reached through the shared
+    // dialog's re-export — the wiring imports it, never re-declares it.
+    expect(marker).toHaveAttribute("data-refusal-category", "CUSTODIAN_HOLD");
+    // The labelled pill carries the meaning, in the club's own word for the
+    // role (the same copy the shared dialog titles the category with)…
+    expect(marker).toHaveTextContent(
+      `Held for a ${clubIdentity.hutLeaderLabel.toLowerCase()}`,
+    );
+    // …and the hatching is the board cell's neutral treatment, a redundant
+    // second signal rather than the only one.
+    expect(marker.style.backgroundImage).toContain("repeating-linear-gradient");
+
+    // The availability note mirrors the board's copy and names the page that
+    // actually fixes it.
+    expect(screen.getByTestId("bed-custodian-holds")).toHaveTextContent(
+      "no guest can be placed on them",
+    );
+    expect(
+      screen.getByRole("link", {
+        name: `${clubIdentity.hutLeaderLabel} Assignments`,
+      }),
+    ).toHaveAttribute("href", "/admin/hut-leaders");
+    expect(screen.getByText("Custodian Chris")).toBeInTheDocument();
+
+    // …and the Assign dialog's bed list says so up front, before any round
+    // trip — the held bed stays listed (a hold may cover only part of a
+    // range; the server's per-night refusal is the authority), labelled.
+    fireEvent.click(screen.getAllByRole("button", { name: "Assign…" })[0]);
+    await screen.findByRole("dialog");
+    expect(
+      screen.getByText(
+        `Room One / Bed Two — held for a ${clubIdentity.hutLeaderLabel.toLowerCase()} (2026-06-02 → 2026-06-03)`,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("renders no custodian marker or note when the payload has none — including an old-colour payload without the field", async () => {
+    // The base payload() deliberately carries NO custodianHolds field at all
+    // (the deploy-drain shape an old-colour server answers with): the panel
+    // must neither crash nor invent a hold. Together with the test above this
+    // is the mutation check on the wiring — the marker appears exactly when
+    // the payload says a hold covers a rendered bed-night.
+    renderPanel();
+
+    await screen.findByText("Ada Guest");
+    expect(
+      screen.queryByTestId("bed-run-custodian-hold"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("bed-custodian-holds")).not.toBeInTheDocument();
+  });
+
+  it("surfaces the standard CUSTODIAN_HOLD refusal report when an assign attempt hits a held bed-night", async () => {
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Assign…" }));
+    await screen.findByRole("dialog");
+    fireEvent.click(screen.getByTestId("range-bed-pick-bed-1"));
+
+    // The atomic range endpoint refuses the whole attempt (409 + report);
+    // nothing is written and nothing is silent.
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      json: async () => ({
+        error: "Nothing was written",
+        result: {
+          applied: false,
+          partialByConsent: false,
+          bookingId: "booking-1",
+          bookingGuestId: "guest-1",
+          guestName: "Ada Guest",
+          bedId: "bed-1",
+          bedName: "Bed One",
+          roomName: "Room One",
+          fromDate: "2026-06-01",
+          toDate: "2026-06-04",
+          requestedNights: ["2026-06-01", "2026-06-02", "2026-06-03"],
+          freeNights: ["2026-06-01"],
+          writtenNights: [],
+          refusals: [
+            { stayDate: "2026-06-02", category: "CUSTODIAN_HOLD" },
+            { stayDate: "2026-06-03", category: "CUSTODIAN_HOLD" },
+          ],
+        },
+      }),
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^Assign 3 nights$/ }));
+
+    const block = await screen.findByTestId("refusal-category-CUSTODIAN_HOLD");
+    expect(block).toHaveTextContent(
+      `Held for a ${clubIdentity.hutLeaderLabel.toLowerCase()}`,
+    );
+    expect(block).toHaveTextContent(
+      new RegExp(`${clubIdentity.hutLeaderLabel} Assignments page`),
+    );
+    expect(block).toHaveTextContent("2026-06-02");
+    expect(block).toHaveTextContent("2026-06-03");
+    expect(
+      screen.getByText(/Nothing was written — 2 of 3 nights are blocked/),
+    ).toBeInTheDocument();
   });
 });

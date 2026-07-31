@@ -121,6 +121,11 @@ function boardDb(wholeLodgeHold: boolean) {
       findMany: vi.fn().mockResolvedValue([boardBooking(wholeLodgeHold)]),
     },
     bedAllocation: { findMany: vi.fn().mockResolvedValue([]) },
+    // #2286: custodian bed holds. None here — this file is about the
+    // whole-lodge-hold short-circuit, which the custodian never contends with.
+    hutLeaderAssignment: { findMany: vi.fn().mockResolvedValue([]) },
+    // #2286: runAutoBedAllocation now writes inside a locked transaction.
+    $executeRaw: vi.fn().mockResolvedValue(1),
   };
 }
 
@@ -130,6 +135,8 @@ function lifecycleDb(wholeLodgeHold: boolean) {
     clubModuleSettings: {
       findUnique: vi.fn().mockResolvedValue({ bedAllocation: true }),
     },
+    // #2286: custodian bed holds. None here.
+    hutLeaderAssignment: { findMany: vi.fn().mockResolvedValue([]) },
     booking: {
       findUnique: vi.fn().mockResolvedValue({
         id: BOOKING_ID,
@@ -366,6 +373,8 @@ describe("requested-room lock is OFF after a hold set and after a hold clear (#2
         findUnique: vi.fn().mockResolvedValue({ autoAllocationEnabled: true }),
       },
       lodgeRoom: { findMany: vi.fn().mockResolvedValue([ROOM]) },
+      // #2286: custodian bed holds. None here.
+      hutLeaderAssignment: { findMany: vi.fn().mockResolvedValue([]) },
       auditLog: { create: vi.fn().mockResolvedValue({}) },
     };
     db.$transaction = vi.fn((cb: (client: unknown) => unknown) => cb(db));

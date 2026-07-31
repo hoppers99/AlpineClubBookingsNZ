@@ -513,7 +513,8 @@ describe("SiteStyleWizard view-only gating (#1927)", () => {
     expect(
       screen.getByText(/can view the site style but cannot change it/i),
     ).toBeInTheDocument();
-  });
+    // Full-wizard jsdom render; exceeds the 5s default under full-suite load.
+  }, 30_000);
 
   it("enables Save and next and Reset neutral for a content:edit admin", async () => {
     sessionMatrix = matrix("edit");
@@ -527,7 +528,7 @@ describe("SiteStyleWizard view-only gating (#1927)", () => {
     expect(
       screen.getByRole("button", { name: /Reset neutral/i }),
     ).toBeEnabled();
-  });
+  }, 30_000);
 });
 
 describe("LodgeInstructionsPanel area wiring (#1927)", () => {

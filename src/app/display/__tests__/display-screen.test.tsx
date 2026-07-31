@@ -3,6 +3,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DisplayScreen } from "@/app/display/display-screen";
+import { clubIdentity } from "@/config/club-identity";
 
 // Issue #32 (LTV-007): the display page lifecycle — pairing (code shown,
 // claim polled), active (template rendered from the payload), transient
@@ -11,7 +12,7 @@ import { DisplayScreen } from "@/app/display/display-screen";
 
 const PAYLOAD = {
   lodge: { name: "Silverpeak Lodge" },
-  club: { name: "Alpine Sports Club", logoDataUrl: null },
+  club: { name: "Alpine Sports Club", logoUrl: null, logoDataUrl: null },
   generatedAt: "2026-04-13T00:00:00.000Z",
   window: { start: "2026-04-13", days: 3 },
   rooms: null,
@@ -826,5 +827,71 @@ describe("DisplayScreen render-branch error boundaries (issue #176)", () => {
     // the in-tree React boundaries; assert it exists and is a client component.
     const mod = await import("@/app/display/error");
     expect(typeof mod.default).toBe("function");
+  });
+});
+
+// #2286: the custodian slot in the built-in info footer. The role word on the
+// lobby TV is the FIXED string "Custodian"/"Custodians" for every club (owner
+// decision, 29 Jul) — deliberately NOT the configurable `hutLeaderLabel` that
+// every admin surface uses. Pinned here because the decision is invisible in the
+// code otherwise: it looks exactly like a place someone forgot to thread the
+// label through.
+describe("InfoFooter custodian slot (#2286)", () => {
+  async function renderWithCustodian(
+    custodian: { label: string | null; count: number } | null,
+  ) {
+    enqueue(isState, { status: 200, body: { ...PAYLOAD, custodian } });
+    const result = render(<DisplayScreen />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    return result;
+  }
+
+  it("uses the FIXED role word, never the club's configurable hut-leader label", async () => {
+    const { container } = await renderWithCustodian({
+      label: "Sam R",
+      count: 1,
+    });
+
+    const slot = container.querySelector<HTMLElement>(
+      '[data-testid="display-custodian"]',
+    );
+    expect(slot).not.toBeNull();
+    expect(slot!.textContent).toContain("Custodian");
+    expect(slot!.textContent).toContain("Sam R");
+    // The club's own word must not appear anywhere on the wall's footer.
+    expect(container.textContent).not.toContain(clubIdentity.hutLeaderLabel);
+  });
+
+  it("renders the role word alone when the person must not be named", async () => {
+    // label null = counts-only granularity, or a minor-age custodian at any
+    // granularity. The slot still appears: that somebody is on site is the
+    // useful part.
+    const { container } = await renderWithCustodian({ label: null, count: 1 });
+
+    const slot = container.querySelector<HTMLElement>(
+      '[data-testid="display-custodian"]',
+    );
+    expect(slot!.textContent?.replace(/\s+/g, " ").trim()).toBe("🛎Custodian");
+  });
+
+  it("says Custodians and shows the count on an un-named handover night", async () => {
+    const { container } = await renderWithCustodian({ label: null, count: 2 });
+
+    const slot = container.querySelector<HTMLElement>(
+      '[data-testid="display-custodian"]',
+    );
+    expect(slot!.textContent).toContain("Custodians");
+    // Never "Custodian" alone when two people hold two beds tonight.
+    expect(slot!.textContent).toContain("2");
+  });
+
+  it("shows no slot at all when nobody is in residence", async () => {
+    const { container } = await renderWithCustodian(null);
+
+    expect(
+      container.querySelector('[data-testid="display-custodian"]'),
+    ).toBeNull();
   });
 });

@@ -155,6 +155,14 @@ export async function GET(request: NextRequest) {
     // 1. Occupancy by date
     const days = eachDayOfInterval({ start: occupancyFromDate, end: occupancyToDate });
 
+    // Custodian occupancy (#2286) is deliberately EXCLUDED here. Utilisation
+    // reporting measures how much the lodge was BOOKED, so a bed held for a
+    // season by a custodian — which no member could have booked — must not
+    // inflate the occupancy rate. The consequence is stated in
+    // docs/CAPACITY_MODEL.md: during custodian season this report reads
+    // slightly low against the lodge's true fullness. Every ADMISSION path and
+    // the capacity-warnings cron count the custodian; only this report and the
+    // other utilisation surfaces do not.
     const occupancyByDate = days.map((day) => {
       const beds = getOccupiedBedsForNight(day, occupancyBookings);
       return {

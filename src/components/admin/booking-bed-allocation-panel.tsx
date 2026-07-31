@@ -25,8 +25,10 @@ import {
   BedRangeAssignDialog,
   type BedRangeAssignResult,
   type BedRangeAssignTarget,
+  type BedRangeRefusalCategory,
   type RangeBedOptionGroup,
 } from "@/components/admin/bed-range-assign-dialog";
+import { useClubIdentity } from "@/components/club-identity-provider";
 import {
   ADMIN_VIEW_ONLY_ACTION_REASON,
   useAdminAreaEditAccess,
@@ -114,6 +116,23 @@ interface PanelRoom {
   beds: Array<{ id: string; name: string; sortOrder: number; active: boolean }>;
 }
 
+// A custodian bed hold overlapping the window (#2286): a bed held for a season
+// by a hut-leader assignment, with NO booking and NO BedAllocation row
+// anywhere. Structural mirror of the dashboard's DashboardCustodianHold, for
+// the same reason as the mirrors above.
+interface PanelCustodianHold {
+  assignmentId: string;
+  memberName: string;
+  bedId: string;
+  bedName: string;
+  roomName: string;
+  /** The hold's own inclusive range, so a note can state the whole season. */
+  startDate: string;
+  endDate: string;
+  /** The held nights that fall within the window read. */
+  nights: string[];
+}
+
 interface PanelPayload {
   range: { fromDate: string; toDate: string };
   rooms: PanelRoom[];
@@ -121,6 +140,14 @@ interface PanelPayload {
   allocations: PanelAllocation[];
   unallocatedGuestNights: PanelGuestNight[];
   exclusiveHolds: PanelExclusiveHold[];
+  /*
+   * Optional, and every read below tolerates its absence (#2286, the board's
+   * own rule): during a deploy drain a new-colour browser bundle can be served
+   * a payload from the old colour, which has no `custodianHolds` at all, and
+   * crashing the booking page in that window would be worse than the drain
+   * exposure the feature already accepts.
+   */
+  custodianHolds?: PanelCustodianHold[];
 }
 
 export interface BookingBedAllocationPanelProps {
@@ -162,6 +189,29 @@ export interface BookingBedAllocationPanelProps {
   guests: Array<{ id: string; name: string }>;
 }
 
+/*
+ * The custodian refusal category is the SERVER's, reached through the shared
+ * range dialog's re-export (#2286) — imported, never re-declared. If the union
+ * ever renames or drops the member, this line is a compile error here rather
+ * than a marker that silently stops matching what the server refuses.
+ */
+const CUSTODIAN_HOLD = "CUSTODIAN_HOLD" satisfies BedRangeRefusalCategory;
+
+/*
+ * The board's custodian band treatment (#2286, owner decision 29 Jul): a
+ * hatched NEUTRAL pattern plus a labelled pill — never colour-alone. Mirrors
+ * CUSTODIAN_BAND_STYLE in the board's `board-cell.tsx` rather than importing
+ * it, for the same reason as the payload mirrors above: this component renders
+ * on the member-facing booking page and must not import from the admin route
+ * tree. 1px `currentColor` stripes with 6px gaps — no opacity (the app-shell
+ * theme contract bans endpoint-crossing alpha on text surfaces), inheriting
+ * the surrounding `text-muted-foreground` so light and dark both work.
+ */
+const CUSTODIAN_BAND_STYLE: React.CSSProperties = {
+  backgroundImage:
+    "repeating-linear-gradient(135deg, currentColor 0, currentColor 1px, transparent 1px, transparent 7px)",
+};
+
 interface PlacedRun {
   key: string;
   bedId: string;
@@ -176,6 +226,14 @@ interface PlacedRun {
   hasAutoSuggestion: boolean;
   /** Nights of this run that came from an AUTO suggestion, not a hand placement. */
   autoCount: number;
+  /*
+   * Nights of this run sitting on a bed-night a custodian holds (#2286).
+   * Unreachable through the guarded write paths, so each one is evidence of a
+   * pre-feature row or a deploy-drain write — the same anomaly the board
+   * surfaces as its CUSTODIAN_BED_CONFLICT warning, shown here so the officer
+   * looking at the booking sees it too instead of a clean-looking run.
+   */
+  custodianNights: string[];
 }
 
 interface GuestRow {
@@ -234,6 +292,14 @@ export function BookingBedAllocationPanel({
   // write, so a view-only admin sees the state and the reason, never a button
   // that would 403.
   const canEdit = useAdminAreaEditAccess("bookings");
+  /*
+   * Admin copy uses the club's own word for the role (#2286 review M8); only
+   * the lobby TV is pinned to the fixed word "Custodian". This panel is
+   * admin-only by construction (the page gates it with the admin-tools gate),
+   * so no member ever receives the label — the owner's "no member-visible
+   * custodian label" decision is preserved by the gate, not by wording.
+   */
+  const { hutLeaderLabel } = useClubIdentity();
 
   /*
    * Server truth, not an inference (#2252 review). A deleted booking holds no
@@ -364,6 +430,19 @@ export function BookingBedAllocationPanel({
       ),
     [payload, bookingId],
   );
+  // Tolerant of the field's absence (old-colour drain payload) — see the
+  // PanelPayload note. Every custodian read below goes through this list.
+  const custodianHolds = useMemo(
+    () => payload?.custodianHolds ?? [],
+    [payload],
+  );
+  const custodianHeldBedNights = useMemo(() => {
+    const map = new Map<string, PanelCustodianHold>();
+    for (const hold of custodianHolds) {
+      for (const night of hold.nights) map.set(`${hold.bedId}:${night}`, hold);
+    }
+    return map;
+  }, [custodianHolds]);
 
   const bedOptionGroups = useMemo<RangeBedOptionGroup[]>(
     () =>
@@ -376,10 +455,32 @@ export function BookingBedAllocationPanel({
           beds: [...room.beds]
             .filter((bed) => bed.active)
             .sort((left, right) => left.sortOrder - right.sortOrder)
-            .map((bed) => ({ id: bed.id, bedName: bed.name })),
+            .map((bed) => {
+              /*
+               * A custodian-held bed stays in the list — a hold may cover
+               * only part of the range, and the server's per-night
+               * CUSTODIAN_HOLD refusal is the authority — but its option
+               * label says so up front (#2286), so the officer is not sent
+               * on a round trip to learn what this payload already knew.
+               */
+              const holdsForBed = custodianHolds.filter(
+                (hold) => hold.bedId === bed.id,
+              );
+              return {
+                id: bed.id,
+                bedName: bed.name,
+                ...(holdsForBed.length > 0
+                  ? {
+                      heldNote: `held for a ${hutLeaderLabel.toLowerCase()} (${holdsForBed
+                        .map((hold) => `${hold.startDate} → ${hold.endDate}`)
+                        .join(", ")})`,
+                    }
+                  : {}),
+              };
+            }),
         }))
         .filter((group) => group.beds.length > 0),
-    [payload],
+    [payload, custodianHolds, hutLeaderLabel],
   );
 
   const rows = useMemo<GuestRow[]>(() => {
@@ -455,6 +556,11 @@ export function BookingBedAllocationPanel({
           approvedCount: items.filter((item) => item.approvedAt).length,
           hasAutoSuggestion: items.some((item) => item.source === "AUTO"),
           autoCount: items.filter((item) => item.source === "AUTO").length,
+          custodianNights: items
+            .filter((item) =>
+              custodianHeldBedNights.has(`${item.bedId}:${item.stayDate}`),
+            )
+            .map((item) => item.stayDate),
         });
       }
     }
@@ -468,7 +574,7 @@ export function BookingBedAllocationPanel({
     return [...byId.values()].sort((left, right) =>
       left.name.localeCompare(right.name),
     );
-  }, [allocations, guestNights, guests, bookingRow]);
+  }, [allocations, guestNights, guests, bookingRow, custodianHeldBedNights]);
 
   const draftCount = allocations.filter(
     (allocation) => !allocation.approvedAt,
@@ -821,6 +927,40 @@ export function BookingBedAllocationPanel({
           </Alert>
         ) : null}
 
+        {/* Custodian bed holds in this window (#2286): the same honest
+            availability note the board gives, because Assign… below offers
+            every active bed and the server refuses a held bed-night with a
+            CUSTODIAN_HOLD report — the officer should read it here first, not
+            discover it as a refusal. Copy mirrors the board's; the role word is
+            the club's own (only the lobby TV is pinned to "Custodian"). */}
+        {!loading && !loadError && !notAllocatable && !held &&
+        custodianHolds.length > 0 ? (
+          <Alert
+            variant="info"
+            title={`Bed held for a ${hutLeaderLabel.toLowerCase()} — not available to allocate`}
+          >
+            <p className="mb-1" data-testid="bed-custodian-holds">
+              {custodianHolds.length === 1 ? "This bed is" : "These beds are"}{" "}
+              held for a {hutLeaderLabel.toLowerCase()} with no booking, so no
+              guest can be placed on them for those nights. Change the dates or
+              the bed on the{" "}
+              <Link className="underline" href="/admin/hut-leaders">
+                {hutLeaderLabel} Assignments
+              </Link>{" "}
+              page.
+            </p>
+            <ul className="space-y-1">
+              {custodianHolds.map((hold) => (
+                <li key={hold.assignmentId}>
+                  <span className="font-medium">{hold.memberName}</span> ·{" "}
+                  {hold.roomName} · {hold.bedName} · {hold.startDate} →{" "}
+                  {hold.endDate}
+                </li>
+              ))}
+            </ul>
+          </Alert>
+        ) : null}
+
         {!loading && !loadError && !notAllocatable && !held ? (
           <div className="space-y-3" data-testid="bed-guest-rows">
             {rows.length === 0 ? (
@@ -890,6 +1030,30 @@ export function BookingBedAllocationPanel({
                             Suggested
                             {run.autoCount < run.nightCount ? " in part" : ""}
                           </Badge>
+                        ) : null}
+                        {/* A run sitting on custodian-held bed-nights (#2286)
+                            is the board's CUSTODIAN_BED_CONFLICT, seen from
+                            the booking: blocked, never clean-looking. The
+                            hatching is the board cell's own neutral treatment
+                            and is a second, redundant signal — the labelled
+                            pill carries the meaning, never colour (or pattern)
+                            alone. The title copy is the shared dialog's for
+                            the same CUSTODIAN_HOLD category. */}
+                        {run.custodianNights.length > 0 ? (
+                          <span
+                            data-testid="bed-run-custodian-hold"
+                            data-refusal-category={CUSTODIAN_HOLD}
+                            style={CUSTODIAN_BAND_STYLE}
+                            className="inline-flex items-center rounded-md border border-dashed px-1.5 py-0.5 text-muted-foreground"
+                            title={`Held for a ${hutLeaderLabel.toLowerCase()} on ${run.custodianNights.join(", ")} — remove the allocation, or change the assignment on the ${hutLeaderLabel} Assignments page.`}
+                          >
+                            <span className="rounded-full bg-background px-1.5 font-semibold uppercase tracking-wide">
+                              Held for a {hutLeaderLabel.toLowerCase()}
+                              {run.custodianNights.length < run.nightCount
+                                ? " in part"
+                                : ""}
+                            </span>
+                          </span>
                         ) : null}
                         <ViewOnlyActionButton
                           canEdit={canEdit}

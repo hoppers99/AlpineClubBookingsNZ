@@ -42,6 +42,57 @@ lodge **edit** to assign, delete, or reset a PIN. The feature is on by default
    then click to confirm. An assignment overlapping an existing one by more than a
    day is blocked.
 
+### Hold a bed for a custodian
+
+Some clubs keep someone on site for a whole season — a custodian who lives in
+the lodge without ever making a booking. An assignment can **hold one bed** for
+its whole range to represent exactly that.
+
+1. Pick the nights and the member as above. For a season-long custodian with no
+   booking of their own, use the **Any member** tab.
+2. In **Hold a bed (optional)**, choose the bed they sleep in. The default,
+   **No bed — role only**, is the original behaviour and changes no capacity.
+3. Confirm. From that moment the bed is out of the bookable pool and off the
+   allocation board for every covered night — with **no booking anywhere**.
+
+What a held bed does, and does not, do:
+
+- **Members** simply see one fewer bed on the availability calendar for those
+  nights. There is deliberately no custodian label on any member-facing screen.
+- The **allocation board** draws a hatched *Custodian* band across the bed's
+  cells. It is not a drop target, and the server refuses any placement onto it.
+- The **lodge screen** shows a `Custodian` line in its footer while the
+  assignment is running — the fixed word for every club, whatever your club
+  calls the role in the admin area. On a handover night, when two people hold two
+  beds, it reads `Custodians` with both names or, if either of them may not be
+  named, with the count. A minor-age custodian is never named there at any
+  name-display setting, and neither is anyone else once a minor is among them —
+  naming one of two would identify the other by elimination.
+- The custodian is **not a guest**: no chore-roster entry, no booking row, no
+  invoice for the held bed. They can still make an ordinary booking of their
+  own, anywhere — including at the same lodge.
+- **Ending or shortening** the assignment frees the bed immediately; there is
+  nothing to clean up.
+
+**Changing your mind later.** The assignments table has two bed controls on each
+row, so you never have to delete an assignment to change its bed:
+
+- **Release bed** (the undo icon) hands the bed straight back to the bookable
+  pool and keeps the assignment, its coverage record and its kiosk PIN. This is
+  the button every "clear the bed first" message elsewhere in the app is asking
+  you to press. It keeps working even if the `bedAllocation` module is later
+  turned off — a bed held while it was on is still a real bed with someone in it.
+- **Change bed** (the bed icon) opens the same picker in the row, checked against
+  that assignment's own dates. It also works on rows the automatic assignment
+  created, which never come with a bed.
+
+> **The end date is a night, not a departure.** The hold covers the start date
+> to the end date **inclusive** — the night of the end date included. The
+> automatic assignment cron sets an assignment's end date to a guest's
+> *check-out* day, which is a morning rather than a slept night, so adding a bed
+> to one of those rows holds the bed for one night longer than anyone is there.
+> Trim the end date by a day first.
+
 ### Manage assignments and kiosk PINs
 
 1. In the assignments table, each row shows the member, the date range, and a
@@ -58,6 +109,9 @@ lodge **edit** to assign, delete, or reset a PIN. The feature is on by default
 | Start Date / End Date | The nights the leader covers | NZ date-only; an >1-day overlap with an existing assignment is blocked |
 | Eligible members list | Members whose bookings make them a natural fit | Adopts each member's conflict-free suggested range |
 | Pick any member | Assign a member with no booking (e.g. a visiting custodian) | Keeps the range you picked |
+| Hold a bed (optional) | Holds one bed for every covered night, with no booking | Default is **No bed — role only** (no capacity effect). Needs the `bedAllocation` module on to *set* a bed. Inclusive of the end date's night. Each choice names the bed type, so a double is obvious before you take it |
+| Release bed (undo icon) | Hands the held bed back and keeps the assignment | Available whether or not the `bedAllocation` module is on — a hold made while it was on still occupies a real bed |
+| Change bed (bed icon) | Opens the bed picker for that row's own dates | Works on automatically created assignments too, which never come with a bed |
 | Reset kiosk PIN (key icon) | Issues a new kiosk PIN for that leader | Shown once; emailed if delivery works; old PIN is revoked |
 | Delete (trash icon) | Removes the assignment | Frees those nights (they may go red again) |
 | Lodge selector | Which lodge new assignments apply to | Only shown with more than one active lodge |
@@ -69,13 +123,22 @@ lodge **edit** to assign, delete, or reset a PIN. The feature is on by default
 | Hut Leaders is missing from the sidebar / 404s | The `hutLeaders` module is off | Enable it under **Admin → Setup → Modules** — see [`CONFIGURATION.md`](../../CONFIGURATION.md#module-controls-and-admin-modules) |
 | Everything is read-only ("… can view … but cannot change them") | Your admin role has lodge view but not edit | Ask a full admin for **lodge edit** access |
 | "This member overlaps an existing assignment" | The range overlaps another leader's by more than a day | Shorten the range or delete the conflicting assignment |
-| The label says "Custodian"/"Warden", not "Hut Leader" | The club renamed the hut-leader label in its identity settings | Expected — the page follows the club's label |
+| The label says "Custodian"/"Warden", not "Hut Leader" | The club renamed the hut-leader label in its identity settings | Expected — this page, the allocation board's band and every refusal message on screen all follow the club's label |
+| The **lodge TV** says "Custodian" even though we renamed the role | Deliberate: the wall uses one fixed word for every club, so a visitor reads it without knowing the club's vocabulary | Expected. Only the public screen does this; every admin surface uses your label |
 | A leader's PIN doesn't work on the kiosk | Their PIN was reset (old one revoked), or their kiosk account is ambiguous | Reset the PIN again; check the [Lodge Kiosk](lodge.md) account binding |
+| The **Hold a bed** step is missing | The `bedAllocation` module is off, so the lodge has no rooms or beds to hold | Enable it under **Admin → Setup → Modules**, or leave the assignment role-only |
+| "That bed already has guests allocated on …" | A guest is placed on that bed on one or more of the covered nights | Clear those nights on [Bed Allocation](bed-allocation.md) first, then set the bed here. Nothing is ever displaced automatically |
+| "That bed is already held by another hut-leader assignment on …" | Two assignments want the same bed on the same night | A one-day handover overlap is fine, but only on **different** beds — give the incoming custodian another bed, or trim a date |
+| "Holding that bed puts the lodge over capacity" | The lodge is already full on those nights | This is often correct — the custodian really is sleeping there. The card lists the nights and, separately, any live booking those figures could **not** count (an overridden booking still to settle), so read both before you confirm. Confirm to proceed, or free a night first |
+| The bed is held for one night longer than expected | The dates came from the auto-assign cron, whose end date is a guest's *departure* day | Trim the end date by one day; the hold is inclusive of the end date's night |
+| "Cannot deactivate/delete this bed while it is held by a hut-leader assignment" | A live or historic assignment holds that bed | Press **Release bed** on that row (or delete the assignment) first |
+| The board shows a custodian-conflict warning | An allocation row is sitting on a held bed-night — usually written just before a deploy finished rolling out | Remove the allocation on [Bed Allocation](bed-allocation.md), or change the custodian's bed here |
 
 ## Related links
 
 - Back to the [documentation hub](../README.md).
 - Sibling guides: [Lodge Kiosk](lodge.md), [Chore Roster](roster.md),
-  [Chore Templates](chores.md), [Lodges](lodges.md).
+  [Chore Templates](chores.md), [Lodges](lodges.md),
+  [Bed Allocation](bed-allocation.md).
 - Reference: [Admin and Lodge](../ARCHITECTURE.md#admin-and-lodge) and the
   `hut-leader-auto-assign` job in [Cron Jobs](../ARCHITECTURE.md#cron-jobs).

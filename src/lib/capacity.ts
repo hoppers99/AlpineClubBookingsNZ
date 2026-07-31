@@ -19,6 +19,7 @@ import {
   countActiveGuestsForNight,
   type GuestStayRange,
 } from "@/lib/booking-guest-stay-ranges";
+import { buildLodgeCustodianNightCounter } from "@/lib/custodian-occupancy";
 
 type PrismaClient = typeof prisma;
 type TransactionClient = Omit<PrismaClient, "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends">;
@@ -451,8 +452,23 @@ export async function checkCapacity(
 
   const occupancyIndex = buildOccupancyIndex(overlappingBookings);
   const holdIndex = buildWholeLodgeHoldIndex(overlappingBookings);
+  // Custodian occupancy (#2286): a bed held for a season by a hut-leader
+  // assignment has no booking and no guest row, so it is invisible to the
+  // occupancy index. Count it as an OCCUPANT, not as a reduction of
+  // lodgeCapacity — identical arithmetic for availableBeds, but
+  // occupiedBeds + availableBeds === lodgeCapacity still holds on every night
+  // (the #155 payload contract) and no consumer changes shape.
+  const custodianCount = await buildLodgeCustodianNightCounter({
+    lodgeId,
+    from: start,
+    toExclusive: exclusiveEnd,
+    nights,
+    db,
+  });
   const nightDetails: NightAvailability[] = nights.map((night) => {
-    const occupiedBeds = getOccupiedBedsForNightFromIndex(night, occupancyIndex);
+    const occupiedBeds =
+      getOccupiedBedsForNightFromIndex(night, occupancyIndex) +
+      custodianCount(night);
     const wholeLodgeHeld = isNightWholeLodgeHeld(night, holdIndex);
 
     return {
@@ -534,8 +550,21 @@ export async function checkCapacityForGuestRanges(
 
   const occupancyIndex = buildOccupancyIndex(overlappingBookings);
   const holdIndex = buildWholeLodgeHoldIndex(overlappingBookings);
+  // Custodian occupancy (#2286) counted as base occupancy, exactly as in
+  // checkCapacity — this propagates the reduction to every admission path
+  // (booking create, modify, request, waitlist confirm, payment, cron) with no
+  // call-site change.
+  const custodianCount = await buildLodgeCustodianNightCounter({
+    lodgeId,
+    from: start,
+    toExclusive: exclusiveEnd,
+    nights,
+    db,
+  });
   const nightDetails: NightAvailability[] = nights.map((night) => {
-    const occupiedBeds = getOccupiedBedsForNightFromIndex(night, occupancyIndex);
+    const occupiedBeds =
+      getOccupiedBedsForNightFromIndex(night, occupancyIndex) +
+      custodianCount(night);
     const proposedBeds = countActiveGuestsForNight(guests, night, {
       checkIn: start,
       checkOut: exclusiveEnd,
@@ -782,10 +811,29 @@ export async function checkCapacityForPartnerSharedAdmission(
 
   const occupancyIndex = buildOccupancyIndex(overlappingBookings);
   const holdIndex = buildWholeLodgeHoldIndex(overlappingBookings);
+  // Custodian occupancy (#2286) counted as base occupancy here too, so an
+  // admin-initiated shared admission cannot admit into a bed a custodian
+  // holds. ACCEPTED OVERSHOOT, documented in docs/CAPACITY_MODEL.md and pinned
+  // by a test: `headroom` comes from getLodgePartnerSharedCapacityStatus,
+  // which is undated and still counts a custodian-held DOUBLE toward
+  // partnerSharedHeadroom — so an admin can be admitted a sharer when zero
+  // physically shareable doubles remain. At PLACEMENT level nothing can go
+  // wrong (a custodian bed has no primary allocation row to share, and the
+  // allocation guard sits in front), and the overshoot is admin-only and
+  // analogous to the accepted #1668 over-capacity override.
+  const custodianCount = await buildLodgeCustodianNightCounter({
+    lodgeId,
+    from: start,
+    toExclusive: exclusiveEnd,
+    nights,
+    db,
+  });
   let reason: string | null = null;
   const nightDetails: PartnerSharedNightDetail[] = nights.map((night) => {
     const nightKey = formatDateOnly(night);
-    const occupied = getOccupiedBedsForNightFromIndex(night, occupancyIndex);
+    const occupied =
+      getOccupiedBedsForNightFromIndex(night, occupancyIndex) +
+      custodianCount(night);
     const ordinary = countActiveGuestsForNight(ordinaryGuests, night, envelope);
     const wholeLodgeHeld = isNightWholeLodgeHeld(night, holdIndex);
     if (wholeLodgeHeld) {
@@ -900,6 +948,20 @@ export async function getMonthAvailability(
   const nights = eachDateOnlyInRange(startDate, endDate);
   const occupancyIndex = buildOccupancyIndex(overlappingBookings);
   const holdIndex = buildWholeLodgeHoldIndex(overlappingBookings);
+  // Custodian occupancy (#2286). Every consumer of this map computes
+  // `available = capacity - occupied` itself (member calendar
+  // api/availability/route.ts; admin calendar api/admin/bookings/route.ts), so
+  // counting the custodian here makes BOTH calendars correct with zero
+  // consumer changes. Owner decision (29 Jul): the member-facing calendar gets
+  // NO custodian-specific label — the lodge simply shows one fewer bed,
+  // indistinguishable from any occupied bed, so nothing about who is in the
+  // building leaks to a member.
+  const custodianCount = await buildLodgeCustodianNightCounter({
+    lodgeId,
+    from: startDate,
+    toExclusive: endDate,
+    nights,
+  });
 
   for (const night of nights) {
     // A whole-lodge-held night (ADR-001, issue #118) must be indistinguishable
@@ -909,7 +971,8 @@ export async function getMonthAvailability(
     // the hold — a member could tell it apart from a full lodge.
     const occupiedBeds = isNightWholeLodgeHeld(night, holdIndex)
       ? lodgeCapacity
-      : getOccupiedBedsForNightFromIndex(night, occupancyIndex);
+      : getOccupiedBedsForNightFromIndex(night, occupancyIndex) +
+        custodianCount(night);
 
     const key = formatDateOnly(night);
     availability.set(key, occupiedBeds);
