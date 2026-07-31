@@ -893,25 +893,45 @@ PaymentTransaction: an INTERNET_BANKING PRIMARY row with NO Stripe intent id,
 
 #2397 — an OUTSTANDING upward-modification delta on the same booking. The admin
 is asked whether the cash covers it (no default, and the answer is part of the
-settle's contract). Only when they say it does:
+settle's contract). The delta is a SLICE of the amount owing — an upward
+modification raised `finalPriceCents` by the same amount it recorded as the
+extra — so the PRIMARY transaction is the booking's worth BEFORE the change
+under **both** answers, and the answer decides what sits beside it:
 
 ```text
-Payment: additionalPaymentStatus PENDING|FAILED|null -> "SUCCEEDED"
-  (re-asserted in the fenced write on the exact additionalAmountCents)
-PaymentTransaction: an INTERNET_BANKING ADDITIONAL row with NO Stripe intent
-  id, reason "manual_mark_paid_additional", -> SUCCEEDED, AND the PRIMARY row
-  above drops by the same amount — the cash is SPLIT, never doubled, because
-  the delta is already inside finalPriceCents. The two rows sum to
-  `finalPriceCents - credit`, so Payment.amountCents is unchanged.
-AuditLog: a second row, "booking-payment.manual-payment.additional-settled",
-  which is what puts the extra on the booking-history timeline
+covered:
+  Payment: amountCents = finalPriceCents - credit
+           additionalPaymentStatus PENDING|FAILED|null -> "SUCCEEDED"
+           (re-asserted in the fenced write on the exact additionalAmountCents)
+  PaymentTransaction: PRIMARY = (finalPriceCents - credit - delta), plus an
+    INTERNET_BANKING ADDITIONAL row with NO Stripe intent id, reason
+    "manual_mark_paid_additional", -> SUCCEEDED. The two sum to amountCents:
+    the cash is SPLIT, never doubled.
+  AuditLog: a second row, "booking-payment.manual-payment.additional-settled",
+    which is what puts the extra on the booking-history timeline
+
+NOT covered (owner decision, 31 Jul 2026 — record what was handed over):
+  Payment: amountCents = finalPriceCents - credit - delta
+           additional* columns UNTOUCHED, so the delta is still owed and still
+           chased
+  PaymentTransaction: PRIMARY = (finalPriceCents - credit - delta). No
+    ADDITIONAL row.
 ```
 
-Said NOT covered, none of the above is written and the delta stays owed. On the
-reversal, a covered extra goes back: the ADDITIONAL row SUCCEEDED -> FAILED
-(reason "manual_mark_paid_additional_reversed") and `additionalPaymentStatus` is
-restored by a guarded claim matching exactly the amount and status the settle
-recorded.
+The generalised ledger mirror the settle asserts before writing, and which holds
+for both answers (and already held for a card-settled booking carrying an
+uncollected addition):
+
+```text
+amountCents + creditAppliedCents + (uncollected addition) = finalPriceCents
+```
+
+On the reversal, the reversed amount is the figure that was written. A covered
+extra goes back to owing: the ADDITIONAL row SUCCEEDED -> FAILED (reason
+"manual_mark_paid_additional_reversed") and `additionalPaymentStatus` is restored
+by a guarded claim matching exactly the amount and status the settle recorded. A
+not-covered settle left the extra owing throughout, so there is nothing to
+restore.
 
 Refused (409, nothing written) when the booking is already PAID, is not in a
 payable status, participates in a group settlement, has ANY Xero invoice
@@ -920,7 +940,9 @@ evidence including a queued mint, carries any refund history
 the amount owing moved since the admin's dialog rendered, or (#2397) when the
 outstanding extra moved, appeared, or vanished since it did — including when an
 answer arrives for an extra that no longer exists, when an extra exists and no
-answer was given, and when the extra is larger than the whole amount owing.
+answer was given, when the extra is larger than the whole amount owing (either
+answer), and when a "not covered" answer would leave nothing to record because
+the extra IS the whole amount owing.
 
 Reversal (`direction: "unpaid"`), permitted only while nothing has happened
 that it could not undo:

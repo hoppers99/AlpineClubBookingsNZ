@@ -526,31 +526,84 @@ async function prepareManualSettlement(
     );
   }
 
-  const additionalSettlementCents =
-    coverage !== null && coverage.covered ? outstandingAdditionalCents : 0;
-
-  // The extra is recorded as a SLICE of the amount owing, never on top of it:
-  // an upward modification raises `Booking.finalPriceCents` by the same delta it
+  // The extra is a SLICE of the amount owing, never a sum on top of it: an
+  // upward modification raises `Booking.finalPriceCents` by the same delta it
   // records on the payment, and this settle collects `finalPriceCents - credit`
-  // in one go. Splitting the cash into a primary and an additional transaction
-  // is what makes the ledger read like the card equivalent; adding the delta a
-  // second time would record cash the club never took. An extra LARGER than the
-  // whole amount owing therefore cannot be a slice of it (a modification change
-  // fee lives outside `finalPriceCents`, so this is reachable) — refuse rather
-  // than guess which part of it the cash covered.
-  if (additionalSettlementCents > effectiveAmountCents) {
+  // in one go. An extra LARGER than the whole amount owing therefore cannot be
+  // a slice of it (a modification change fee is added to the recorded extra but
+  // never to `finalPriceCents`, so this is reachable) — refuse rather than guess
+  // which part of it the cash covered. Checked for BOTH answers, because both
+  // now derive their settled figure from the same subtraction.
+  if (outstandingAdditionalCents > effectiveAmountCents) {
     throw new ManualBookingPaymentError(
       "The extra recorded on this booking is larger than the amount owing, so this payment cannot settle it — check the booking's price and settle the extra separately.",
       409
     );
   }
 
+  const additionalSettlementCents =
+    coverage !== null && coverage.covered ? outstandingAdditionalCents : 0;
+  const uncollectedAdditionalCents =
+    outstandingAdditionalCents - additionalSettlementCents;
+
+  // THE SETTLED FIGURE (owner decision, 31 Jul 2026). The club records what it
+  // actually took, not what the booking is worth:
+  //
+  //  * covered   — the cash was the whole amount owing, so the settled figure is
+  //    `finalPriceCents - credit` and the extra is a slice of it (the PRIMARY
+  //    transaction drops by the delta, the ADDITIONAL transaction carries it);
+  //  * NOT covered — only the amount owing BEFORE the change was handed over, so
+  //    the extra is subtracted from the settled figure. It stays outstanding and
+  //    is still chased, and the books say $100 received / $21 owing rather than
+  //    $121 received / $21 owing, which was the old contradiction.
+  //
+  // The PRIMARY transaction is the same figure either way; the only difference
+  // is whether an ADDITIONAL row exists alongside it saying the delta was
+  // collected too.
+  const settlementAmountCents = effectiveAmountCents - uncollectedAdditionalCents;
+
+  if (settlementAmountCents <= 0) {
+    // Everything owing IS the extra, and the admin has said the cash did not
+    // cover it — so there is nothing to record. Refusing beats writing a $0
+    // settlement that would flip the booking to PAID for no money.
+    throw new ManualBookingPaymentError(
+      "Everything owing on this booking is the extra you have said the cash does not cover, so there is nothing to record — collect the extra, or record the payment once it covers it.",
+      409
+    );
+  }
+
+  // THE GENERALISED LEDGER MIRROR. `amountCents + creditAppliedCents =
+  // finalPriceCents` was only ever the special case where nothing is left owing;
+  // it CANNOT hold on a partially settled booking, and asserting it would forbid
+  // the honest "no" answer outright. What holds in every case — and what already
+  // held for a CARD-settled booking carrying an uncollected addition, so this
+  // makes the manual path match the card path rather than diverging from it — is
+  //
+  //     amountCents + creditAppliedCents + (uncollected addition) = finalPriceCents
+  //
+  // i.e. every cent of the booking's price is either collected, paid with
+  // credit, or still owed. The covered answer leaves the third term at 0 and
+  // reduces to the original mirror exactly.
+  if (
+    settlementAmountCents + creditAppliedCents + uncollectedAdditionalCents !==
+    booking.finalPriceCents
+  ) {
+    throw new ManualBookingPaymentError(
+      "This booking's payment ledger does not reconcile — refresh and try again.",
+      409
+    );
+  }
+
   return {
-    effectiveAmountCents,
+    /** `finalPriceCents - credit`: everything the booking still owes. */
+    amountOwingCents: effectiveAmountCents,
+    /** What this settlement records as RECEIVED — the figure that is written. */
+    settlementAmountCents,
     creditAppliedCents,
     paymentId: payment?.id ?? null,
     outstandingAdditionalCents,
     additionalSettlementCents,
+    uncollectedAdditionalCents,
     previousAdditionalPaymentStatus: payment?.additionalPaymentStatus ?? null,
   };
 }
@@ -668,9 +721,12 @@ async function settleBookingPaymentInTransaction(
     // The amount this settlement moves. The Stripe path takes the captured
     // amount as given (and validates it against the booking below); the manual
     // path recomputed it under the locks and never accepts one from a client.
+    // #2397: for the manual path this is what the club actually RECEIVED, which
+    // is the amount owing minus any extra the admin said the cash did not cover
+    // — never the booking's whole worth when only part of it was handed over.
     const settlementAmountCents =
       manual !== null
-        ? manual.effectiveAmountCents
+        ? manual.settlementAmountCents
         : (settlement as StripeSettlementSource).amountCents;
 
     // #1641 — split the captured amount into cash + credit so the mirror invariant
@@ -691,15 +747,24 @@ async function settleBookingPaymentInTransaction(
     const manualAdditionalSettlementCents = manual?.additionalSettlementCents ?? 0;
     const manualOutstandingAdditionalCents =
       manual?.outstandingAdditionalCents ?? 0;
+    const manualUncollectedAdditionalCents =
+      manual?.uncollectedAdditionalCents ?? 0;
+    const manualAmountOwingCents =
+      manual?.amountOwingCents ?? settlementAmountCents;
     const manualPreviousAdditionalPaymentStatus =
       manual?.previousAdditionalPaymentStatus ?? null;
-    // The cash is SPLIT, not increased: the primary transaction drops by the
-    // delta and the additional transaction carries it, so the two rows still sum
-    // to `settlementAmountCents` and `Payment.amountCents` — and therefore the
-    // mirror `amountCents + creditAppliedCents = finalPriceCents` — is unchanged.
-    // This is exactly the shape a card-paid booking with a later addition has,
-    // so `reconcilePaymentAggregates` re-deriving the payment from its ledger
-    // reproduces these figures instead of inflating them.
+    // The cash is SPLIT, never increased: the additional transaction carries the
+    // delta and the primary carries the rest, so the two rows sum to
+    // `settlementAmountCents` = `Payment.amountCents` — the money the club
+    // actually took. This is exactly the shape a card-paid booking with a later
+    // addition has, so `reconcilePaymentAggregates` re-deriving the payment from
+    // its ledger reproduces these figures instead of inflating them.
+    //
+    // The PRIMARY figure is deliberately the SAME under both answers — the
+    // booking's worth before the change. "Covered" adds an ADDITIONAL row beside
+    // it; "not covered" leaves the delta uncollected and out of the settled
+    // total. That is why one subtraction serves both, and why the answer can
+    // never change what the primary row says was received.
     const manualPrimaryTransactionAmountCents =
       settlementAmountCents - manualAdditionalSettlementCents;
 
@@ -1392,6 +1457,15 @@ async function settleBookingPaymentInTransaction(
               settlement.additionalCoverage === null
                 ? null
                 : settlement.additionalCoverage.covered,
+            // #2397 (owner decision, 31 Jul 2026): the three figures a later
+            // reader needs to reconstruct which branch ran and what it meant.
+            // `effectiveAmountCents` above is the settled figure that was
+            // actually WRITTEN; this is what the booking still owed in total,
+            // and what of that was deliberately left uncollected. On the covered
+            // answer the two are `amountOwing` and 0; on the not-covered answer
+            // `effectiveAmountCents + uncollectedAdditionalCents = amountOwing`.
+            amountOwingCents: manualAmountOwingCents,
+            uncollectedAdditionalCents: manualUncollectedAdditionalCents,
             settledAdditionalAmountCents:
               manualAdditionalSettlementCents > 0
                 ? manualAdditionalSettlementCents
@@ -1453,8 +1527,10 @@ async function settleBookingPaymentInTransaction(
         settledAt: manualSettledAt,
         outstandingIntentIds,
         staleCreditElectionCents,
+        amountOwingCents: manualAmountOwingCents,
         outstandingAdditionalCents: manualOutstandingAdditionalCents,
         settledAdditionalAmountCents: manualAdditionalSettlementCents,
+        uncollectedAdditionalCents: manualUncollectedAdditionalCents,
       };
     }
 
@@ -1919,6 +1995,12 @@ function readSettledAdditionalPayment(
 export type ManualBookingSettlementResult = {
   bookingId: string;
   paymentId: string;
+  /**
+   * What this settlement RECORDED AS RECEIVED, in integer cents — the figure
+   * written to `Payment.amountCents`. It is `finalPriceCents - credit` less any
+   * outstanding extra the admin said the cash did not cover (#2397), so it is
+   * the money the club actually took and never the booking's whole worth.
+   */
   effectiveAmountCents: number;
   creditAppliedCents: number;
   previousStatus: BookingStatus;
@@ -1935,12 +2017,17 @@ export type ManualBookingSettlementResult = {
   memberFirstName: string;
   memberEmail: string | null;
   /**
-   * #2397: the outstanding upward-modification delta this settle found, in
-   * integer cents (0 when the booking carried none), and how much of it this
-   * settle recorded as covered by the cash — 0 when the admin said it was not.
+   * #2397. `amountOwingCents` is everything the booking owed
+   * (`finalPriceCents - credit`); `outstandingAdditionalCents` is the
+   * uncollected upward-modification delta inside it (0 when there was none);
+   * `settledAdditionalAmountCents` is how much of that delta the cash covered
+   * and `uncollectedAdditionalCents` how much it did not. Always
+   * `effectiveAmountCents + uncollectedAdditionalCents === amountOwingCents`.
    */
+  amountOwingCents: number;
   outstandingAdditionalCents: number;
   settledAdditionalAmountCents: number;
+  uncollectedAdditionalCents: number;
 };
 
 /**
@@ -2075,8 +2162,10 @@ export async function markBookingPaymentManuallySettled({
     staleCreditElectionCents: reconciliation.staleCreditElectionCents,
     memberFirstName: reconciliation.booking.member.firstName,
     memberEmail: reconciliation.booking.member.email ?? null,
+    amountOwingCents: reconciliation.amountOwingCents,
     outstandingAdditionalCents: reconciliation.outstandingAdditionalCents,
     settledAdditionalAmountCents: reconciliation.settledAdditionalAmountCents,
+    uncollectedAdditionalCents: reconciliation.uncollectedAdditionalCents,
   };
 }
 

@@ -371,7 +371,11 @@ describe("POST /api/admin/bookings/[id]/mark-paid — the outstanding extra (#23
       amountCents: 12100,
       bookingStatus: "PAID",
       creditElectionCents: null,
-      additional: { outstandingCents: 2100, settled: true },
+      additional: {
+        outstandingCents: 2100,
+        settled: true,
+        recordedAmountCents: 12100,
+      },
     });
     const settled = await POST(
       makeRequest({
@@ -396,10 +400,15 @@ describe("POST /api/admin/bookings/[id]/mark-paid — the outstanding extra (#23
       direction: "paid",
       memberNotified: false,
       receipt: "not_requested",
-      amountCents: 12100,
+      // The not-covered branch records only what was handed over.
+      amountCents: 10000,
       bookingStatus: "PAID",
       creditElectionCents: null,
-      additional: { outstandingCents: 2100, settled: false },
+      additional: {
+        outstandingCents: 2100,
+        settled: false,
+        recordedAmountCents: 10000,
+      },
     });
     const unsettled = await POST(
       makeRequest({
@@ -414,8 +423,12 @@ describe("POST /api/admin/bookings/[id]/mark-paid — the outstanding extra (#23
       }),
       { params },
     );
-    expect((await unsettled.json()).message).toMatch(
-      /still be asked for it/,
+    const unsettledMessage = (await unsettled.json()).message as string;
+    expect(unsettledMessage).toMatch(/still be asked for it/);
+    // Owner decision, 31 Jul 2026: the RECORDED figure is named, because this is
+    // the branch where the club deliberately books less than the booking's worth.
+    expect(unsettledMessage).toMatch(
+      /Only \$100\.00 was recorded as received/,
     );
   });
 });

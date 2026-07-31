@@ -161,13 +161,13 @@ describe("BookingManualPaymentControls — the outstanding-extra question (#2397
     vi.unstubAllGlobals();
   });
 
-  it("shows the extra, the amount before it, and the total being recorded", () => {
+  it("shows the extra, the amount before it, and what is owed in total", () => {
     openMarkPaidDialog(
       payableState({ amountOwingCents: 12100, outstandingAdditionalCents: 2100 })
     );
 
     const block = screen.getByTestId("manual-payment-additional-coverage");
-    expect(block.textContent).toMatch(/part of the total shown above/i);
+    expect(block.textContent).toMatch(/not\s+on top of it/i);
     // The split is spelled out rather than left to be inferred from one number.
     expect(
       screen.getByTestId("manual-payment-additional-base").textContent
@@ -176,8 +176,55 @@ describe("BookingManualPaymentControls — the outstanding-extra question (#2397
       screen.getByTestId("manual-payment-additional-extra").textContent
     ).toBe("$21.00");
     expect(
-      screen.getByTestId("manual-payment-additional-total").textContent
+      screen.getByTestId("manual-payment-additional-owing").textContent
     ).toBe("$121.00");
+  });
+
+  /**
+   * Owner decision, 31 Jul 2026: "no" records only what was handed over. The
+   * dialog must therefore never assert one total before the question is
+   * answered, and must name the figure each answer will actually record.
+   */
+  it("names the total each answer records, and asserts none before one is chosen", () => {
+    openMarkPaidDialog(
+      payableState({ amountOwingCents: 12100, outstandingAdditionalCents: 2100 })
+    );
+
+    const total = () =>
+      screen.getByTestId("manual-payment-additional-total").textContent;
+    expect(total()).toBe("answer below");
+    // No figure in the title either, until there is one it can stand behind.
+    expect(screen.getByText("Record a payment for Ada Lovelace?")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("radio", { name: /^No —/ }));
+    expect(total()).toBe("$100.00");
+    expect(
+      screen.getByText("Record $100.00 as paid for Ada Lovelace?")
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("radio", { name: /^Yes —/ }));
+    expect(total()).toBe("$121.00");
+    expect(
+      screen.getByText("Record $121.00 as paid for Ada Lovelace?")
+    ).toBeTruthy();
+  });
+
+  it("spells out what each answer does, with its figure", () => {
+    openMarkPaidDialog(
+      payableState({ amountOwingCents: 12100, outstandingAdditionalCents: 2100 })
+    );
+
+    const yes = screen.getByRole("radio", { name: /^Yes —/ });
+    expect(yes.closest("label")?.textContent).toContain("$121.00");
+    expect(yes.closest("label")?.textContent).toMatch(/not be asked for/i);
+
+    const no = screen.getByRole("radio", { name: /^No —/ });
+    // The stronger statement: we are recording ONLY the amount before the
+    // change, and the addition stays owing.
+    expect(no.closest("label")?.textContent).toMatch(
+      /record only the \$100\.00 owed before the change/i
+    );
+    expect(no.closest("label")?.textContent).toMatch(/stays\s+recorded as owing/i);
   });
 
   it("blocks recording until the question is answered — neither answer is a default", () => {

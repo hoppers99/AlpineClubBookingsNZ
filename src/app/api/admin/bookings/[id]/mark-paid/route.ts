@@ -77,7 +77,11 @@ function additionalNote(
   }
   return additional.settled
     ? ` The ${amount} extra owing on this booking was recorded as settled too, so the member will not be asked for it again.`
-    : ` The ${amount} extra owing on this booking was left unpaid, so the member will still be asked for it.`;
+    : // #2397 (owner decision, 31 Jul 2026): naming the RECORDED figure matters
+      // most here. This is the branch where the club deliberately books less
+      // than the booking is worth, and the person who just took the cash has to
+      // see that the two figures are meant to differ.
+      ` Only ${formatCents(additional.recordedAmountCents)} was recorded as received: the ${amount} extra was left unpaid, so the member will still be asked for it.`;
 }
 
 /**

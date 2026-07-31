@@ -13,14 +13,19 @@ All notable public reference-release changes should be recorded here.
   against a fully settled booking, the reports counted the money as uncollected,
   and the reminder emails would have gone on asking the member for money the
   club already had. **Record manual payment** now shows the split — the booking
-  amount before the change, the extra, and the total you are recording as paid —
-  and asks whether the money you received covers the addition as well. Say yes
-  and the addition is recorded as settled with it, so nothing chases the member
-  again and the booking's history says the payment covered it; say no and it is
-  left exactly as before, so the club rightly keeps asking. Neither answer is a
-  default, and you cannot record the payment until you have chosen. Bookings
-  with no such extra — nearly all of them — see the dialog completely unchanged.
-  Reversing a manual payment puts a covered extra back to owing too.
+  amount before the change, the extra, and what the booking owes in total — and
+  asks whether the money you received covers the addition as well. Say **yes**
+  and the full amount is recorded and the addition marked settled, so nothing
+  chases the member again and the booking's history says the payment covered it.
+  Say **no** and only the amount owed *before* the change is recorded: the
+  booking is still marked paid, but the books say the club received that smaller
+  amount and is still owed the addition, so the figures add up and the member is
+  rightly still asked for the rest. Neither answer is a default, you cannot
+  record the payment until you have chosen, and the dialog does not name a total
+  until you have — because your answer changes it. Bookings with no such extra —
+  nearly all of them — see the dialog completely unchanged. Reversing a manual
+  payment gives back exactly what it recorded, putting a covered addition back
+  to owing.
 
 - **Adding another club member as a guest (#2306, #2307).** Until now a member
   could only put people from their own family group on a booking. There is now a

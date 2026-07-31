@@ -790,18 +790,43 @@ Future reviews and issues should cite this file when proposing changes.
     ledger reconcile. **No money is created:** an upward modification raises
     `Booking.finalPriceCents` by the same delta it records as the extra, and
     this settle collects `finalPriceCents - credit` in one go, so the cash is
-    SPLIT (the PRIMARY row drops by the delta, the ADDITIONAL row carries it)
-    and `Payment.amountCents` — and the mirror
-    `amountCents + creditAppliedCents = finalPriceCents` — is unchanged. An
-    extra LARGER than the whole amount owing cannot be a slice of it (a
-    modification change fee is added to the extra but never to `finalPriceCents`)
-    and is refused rather than guessed. Said NOT covered, nothing about the
-    extra is written and the chase continuing is correct. Either answer is
-    recorded on the mark-paid audit row BOTH ways, a covered extra also writes
-    its own `booking-payment.manual-payment.additional-settled` audit row so the
-    booking history shows it, and the REVERSAL puts a covered extra back to
-    owing (ADDITIONAL row → FAILED, column restored by a guarded claim matching
-    exactly what the settle wrote).
+    SPLIT (the ADDITIONAL row carries the delta, the PRIMARY row the rest) and
+    `Payment.amountCents` is the money the club took, never more. An extra
+    LARGER than the whole amount owing cannot be a slice of it (a modification
+    change fee is added to the extra but never to `finalPriceCents`) and is
+    refused rather than guessed, on BOTH answers.
+    Said NOT covered, the extra stays outstanding **and is subtracted from the
+    settled figure** (owner decision, 31 Jul 2026): the settlement records
+    `finalPriceCents - credit - outstandingAdditionalCents`, so the books show
+    what was actually handed over ($100 received, $21 owing) instead of the old
+    contradiction ($121 received, $21 owing). The PRIMARY transaction figure is
+    identical under both answers — the booking's worth before the change — and
+    the answer only decides whether an ADDITIONAL row sits beside it. A "not
+    covered" answer whose extra IS the whole amount owing is refused: there is
+    nothing left to record, and a $0 settlement must never flip a booking to
+    PAID. Downstream this is a strengthening, not a loosening: the cancellation
+    refund basis (`paidAmountCents = amountCents - refunded`) and every captured
+    figure now follow the cash the club actually holds.
+  - **The ledger mirror, generalised (#2397).**
+    `amountCents + creditAppliedCents = finalPriceCents` is only the special
+    case where nothing is left owing; it cannot hold on a partially settled
+    booking. What holds in every case — and what a CARD-settled booking carrying
+    an uncollected addition already satisfied, so the manual path now MATCHES
+    the card path rather than diverging from it — is
+    `amountCents + creditAppliedCents + (uncollected addition) = finalPriceCents`:
+    every cent of the price is collected, paid with credit, or still owed. The
+    manual settle asserts exactly this before it writes, and the covered answer
+    reduces it to the original mirror with the third term at 0.
+    Either answer is recorded on the mark-paid audit row BOTH ways — together
+    with the settled figure actually written, the amount owing, and what was
+    deliberately left uncollected, so a later reader can reconstruct which
+    branch ran and what it meant. A covered extra also writes its own
+    `booking-payment.manual-payment.additional-settled` audit row so the booking
+    history shows it, and the REVERSAL gives back exactly what its settle took:
+    the reversed amount is the figure that was written, and a covered extra goes
+    back to owing (ADDITIONAL row → FAILED, column restored by a guarded claim
+    matching exactly what the settle wrote), while a not-covered settle has
+    nothing about the extra to restore.
   - A stored, unconsumed credit election (#2265) on the booking is never
     silently stranded or ignored (door 3 of the #2319 invariant below): the
     settle clears it with the shared guarded claim, records the cleared cents

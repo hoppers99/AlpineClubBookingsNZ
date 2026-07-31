@@ -45,8 +45,10 @@ import { prisma } from "@/lib/prisma";
  *  * #2397: when the booking carries an OUTSTANDING upward-modification delta,
  *    the admin is asked whether the cash covers it and the answer travels with
  *    the settle. Said covered, the extra is settled through the same columns
- *    every surface reads (so nothing chases it); said not covered, it is left
- *    exactly as before. A booking with no extra sends nothing and behaves
+ *    every surface reads (so nothing chases it). Said NOT covered, the extra is
+ *    left outstanding AND subtracted from the settled figure (owner decision,
+ *    31 Jul 2026), so the club records what it actually took rather than the
+ *    booking's whole worth. A booking with no extra sends nothing and behaves
  *    identically to before this feature existed.
  */
 export { ManualBookingPaymentError };
@@ -109,6 +111,13 @@ export type ManualBookingAdditionalOutcome = {
    * surface will chase it. On "unpaid": this reversal put it back to owing.
    */
   settled: boolean;
+  /**
+   * #2397 (owner decision, 31 Jul 2026): what the club recorded as received.
+   * When the extra was NOT covered this is the amount owing before the change —
+   * strictly less than the booking's worth — because the books must show what
+   * was actually handed over.
+   */
+  recordedAmountCents: number;
 };
 
 export type ApplyManualBookingPaymentResult = {
@@ -118,7 +127,13 @@ export type ApplyManualBookingPaymentResult = {
   /** The admin's email decision as recorded in the audit log. */
   memberNotified: boolean;
   receipt: ManualBookingPaymentReceipt;
-  /** Settlement amount (paid) or the amount un-recorded (unpaid), in cents. */
+  /**
+   * Settlement amount (paid) or the amount un-recorded (unpaid), in cents.
+   *
+   * #2397: on "paid" this is what the club RECORDED AS RECEIVED, which is the
+   * amount owing less any outstanding extra the admin said the cash did not
+   * cover — not the booking's whole worth.
+   */
   amountCents: number;
   /** Booking status after the action. */
   bookingStatus: string;
@@ -174,6 +189,7 @@ export async function applyManualBookingPayment(
           ? {
               outstandingCents: reversal.restoredAdditionalAmountCents,
               settled: false,
+              recordedAmountCents: reversal.reversedAmountCents,
             }
           : null,
     };
@@ -292,6 +308,7 @@ export async function applyManualBookingPayment(
         ? {
             outstandingCents: settlement.outstandingAdditionalCents,
             settled: settlement.settledAdditionalAmountCents > 0,
+            recordedAmountCents: settlement.effectiveAmountCents,
           }
         : null,
   };
