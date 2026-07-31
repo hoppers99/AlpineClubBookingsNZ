@@ -1563,11 +1563,26 @@ admin/application creates induction -> assigned signers review checklist
 signer records overall Pass -> sign-off count increments
 required sign-offs reached -> COMPLETED
 admin override -> COMPLETED
+trusted legacy baseline -> NEW_MEMBER COMPLETED (ADMIN_OVERRIDE)
 admin void -> VOIDED
 ```
 
 Checklist templates are versioned and active per workflow kind, so a Hut Leader
 Induction can use different checklist wording from a New Member Induction.
+The trusted legacy baseline transition is the guarded, dry-run-first exception
+for an authorised pre-register history (#2361). It creates a new row only for
+an active, non-archived, non-cancelled real-member row (`USER` or `ADMIN`) in a
+configured person age tier who has neither an open workflow nor a completed
+induction of any kind. Login is not required, so non-login dependants remain
+included; `LODGE`, `NON_MEMBER`, and `SCHOOL` rows are excluded. It preserves
+all existing rows and creates no signers or sign-offs. All new rows use the
+same supplied, non-future New Zealand date for `inductionDate` and
+`completedAt`, record the Full Admin actor and stable provenance, and commit
+atomically. An open `DRAFT` or `IN_PROGRESS` row visible under the direct-DML
+table lock blocks the entire apply; a repeat apply is a no-op. The required
+operator freeze protects the wider member population from the final dry run
+through apply. `N/A` members are reported but never transitioned.
+
 Completing a `HUT_LEADER` induction sets the member's hut-leader eligibility
 flag. Actual `HutLeaderAssignment` rows remain separate dated roster/coverage
 records and are not created by induction completion.
@@ -1605,17 +1620,26 @@ visible. The list API (`/api/admin/member-lifecycle-action-requests`) takes an
 `action` of `ARCHIVE` (default) or `DELETE` and maps the page-filter status
 `PENDING` onto the lifecycle `REQUESTED` state.
 
-Entry eligibility (#2383): an admin-raised cancellation request is accepted for
-any account holder — every member whatever admin access they hold, and
-organisation/school accounts — and refused only for the lodge kiosk device login
-and booking-request contact records, which hold no membership. The kiosk is
+Entry eligibility (#2383, #2391): a cancellation request — raised by an admin
+from the member page, or by the member themselves from the **Membership
+Cancellation** panel in their own profile — is accepted for any account holder
+— every member whatever admin access they hold, and organisation/school
+accounts — and refused only for the lodge kiosk device login and
+booking-request contact records, which hold no membership. The kiosk is
 recognised by the record's whole classification, so a person who merely also
 holds the lodge tools stays cancellable. One rule,
-`isMembershipHolderRecord`, shared by server and admin page. Approval is where
+`isMembershipHolderRecord`, shared by three call sites: the admin-raised server
+route, the admin member page's gate, and (since #2391) the member-raised route
+in `loadCancellationCandidates`, which applies it both to the requester and to
+every candidate in the family list. The member-raised route adds exactly two
+further conditions, and they are about being able to operate your own profile
+rather than about the class of account: the requester must be `active` and
+`canLogin`. Approval is where
 the admin-account guards bite: a privileged target needs a Full Admin approver,
 and the last active login-enabled Full Admin can never be cancelled, both
 evaluated inside the approval transaction. A self-raised cancellation is
-allowed but cannot be self-approved. See
+allowed but cannot be self-approved — including one raised from the profile
+panel, where the requester is recorded as the member themselves. See
 [`DOMAIN_INVARIANTS.md`](DOMAIN_INVARIANTS.md#membership-lifecycle) and
 [`CANCELLATIONS.md`](CANCELLATIONS.md#who-can-be-cancelled).
 
