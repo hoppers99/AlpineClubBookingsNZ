@@ -277,7 +277,9 @@ function groupTrailAreas(areas: WhakapapaTrailArea[]): TrailAreaGroup[] {
     const current = areas[index];
     const next = areas[index + 1];
     const currentIsSmall = current.trails.length <= SMALL_TRAIL_AREA_MAX;
-    const nextIsSmall = Boolean(next && next.trails.length <= SMALL_TRAIL_AREA_MAX);
+    const nextIsSmall = Boolean(
+      next && next.trails.length <= SMALL_TRAIL_AREA_MAX,
+    );
 
     if (currentIsSmall && nextIsSmall) {
       const run: WhakapapaTrailArea[] = [current];
