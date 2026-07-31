@@ -13,6 +13,7 @@ import {
 } from "@/lib/membership-type-policy";
 import {
   deletePromoRedemptionAndAdjustCount,
+  lockAndRefreshPromoCodeUsage,
   replacePromoRedemptionAllocations,
   validateAndCalculatePromoDiscount,
 } from "@/lib/promo";
@@ -781,7 +782,15 @@ export async function recalculateBookingPromo({
   let promoRemoved = false;
 
   if (booking.promoRedemption?.promoCode) {
-    const promo = booking.promoRedemption.promoCode;
+    // Row-lock the promo code and re-read its usage counter before the caps are
+    // checked (#2299). Removing guests can drop the booking's benefit to
+    // nothing and RELEASE a total-redemptions slot, so this transaction is a
+    // promo-counter writer and must serialise with the others. The per-lodge
+    // capacity lock is already held, so the order stays lodge -> promo row.
+    const promo = await lockAndRefreshPromoCodeUsage(
+      tx,
+      booking.promoRedemption.promoCode
+    );
     const selectedGuestIndexes = selectedIndexesForStoredGuestTargets(
       booking.promoRedemption,
       guestNightRates

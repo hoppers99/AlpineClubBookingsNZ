@@ -73,6 +73,7 @@ import { sendBookingModifiedEmail } from "@/lib/email";
 import logger from "@/lib/logger";
 import {
   deletePromoRedemptionAndAdjustCount,
+  lockAndRefreshPromoCodeUsage,
   replacePromoRedemptionAllocations,
   validateAndCalculatePromoDiscount,
 } from "@/lib/promo";
@@ -550,7 +551,16 @@ export async function modifyBookingDates({
     let promoRemoved = false;
 
     if (booking.promoRedemption?.promoCode) {
-      const promo = booking.promoRedemption.promoCode;
+      // Row-lock the promo code and re-read its usage counter before the caps
+      // are checked (#2299). This reprice can release a total-redemptions slot
+      // (the new dates leave the promo with no benefit) or re-take one, so
+      // check-then-consume must be serialised against every other promo writer.
+      // The per-lodge capacity lock is already held, so the order stays
+      // lodge -> promo row.
+      const promo = await lockAndRefreshPromoCodeUsage(
+        tx,
+        booking.promoRedemption.promoCode
+      );
       const selectedGuestIndexes = selectedIndexesForStoredGuestTargets(
         booking.promoRedemption,
         guestNightRates
