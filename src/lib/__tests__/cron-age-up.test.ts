@@ -441,6 +441,100 @@ describe("checkAgeUpMembers", () => {
     );
   });
 
+  /**
+   * The IN-TRANSACTION re-check, which nothing exercised (found by mutation
+   * probe while re-verifying #2282's safeguarding claims: blanking the whole
+   * in-transaction condition left the suite green, because every existing case
+   * is decided by `resolveAgeUpParentEmailHandoff` on the candidate row read
+   * OUTSIDE the transaction).
+   *
+   * It is not redundant. The candidate list is read, then each member is
+   * processed one at a time, so an admin can link a member as an inheriting
+   * dependant in between — and under READ COMMITTED the transaction sees that
+   * write while the candidate row in memory does not. Without this clause the
+   * job would enable a login and clear the inheritance that had just been set,
+   * which is the one automatic action in the system that can hand a minor's
+   * mailbox back to them without anyone deciding to.
+   *
+   * Mutation probe: replace the `currentMember.inheritEmailFromId || (...)`
+   * condition with `false` and this test upgrades the member instead.
+   */
+  it("abandons the upgrade when inheritance appears between the read and the write", async () => {
+    const member = {
+      id: "m-race",
+      email: "race@example.com",
+      firstName: "Rae",
+      lastName: "Race",
+      dateOfBirth: dobForAge(18),
+      parentMemberId: null,
+      inheritParentEmail: false,
+      inheritEmailFromId: null,
+      inheritEmailFrom: null,
+      parent: null,
+    };
+
+    mockedFindMany.mockResolvedValue([member] as any);
+    mockedEmailLogFind.mockResolvedValue(null);
+    mockedUpdate.mockResolvedValue({} as any);
+    mockedCreateToken.mockResolvedValue({} as any);
+    mockedSendEmail.mockResolvedValue(undefined);
+    // The transaction's own view: a link landed while this member was queued.
+    // ONLY the resolved-source column is set, so this test isolates the first
+    // half of the disjunction — with `inheritParentEmail`/`parentMemberId` also
+    // set, the legacy half would catch it and the first half could be deleted
+    // with the suite still green (which is exactly what the probe found).
+    mockTxMemberFindUnique.mockResolvedValue({
+      canLogin: false,
+      ageTier: "YOUTH",
+      inheritEmailFromId: "parent-late",
+      inheritParentEmail: false,
+      parentMemberId: null,
+    });
+
+    const result = await checkAgeUpMembers();
+
+    expect(result.upgraded).toBe(0);
+    expect(mockedUpdate).not.toHaveBeenCalled();
+    expect(mockedCreateToken).not.toHaveBeenCalled();
+    expect(mockedSendEmail).not.toHaveBeenCalled();
+    expect(mockTriggerGroupSync).not.toHaveBeenCalled();
+  });
+
+  it("abandons the upgrade on a LEGACY inheritance appearing mid-run", async () => {
+    // The second half of the same disjunction — `inheritParentEmail` with a
+    // parent but no resolved source — so deleting either half fails a test.
+    const member = {
+      id: "m-race-legacy",
+      email: "race2@example.com",
+      firstName: "Rob",
+      lastName: "Race",
+      dateOfBirth: dobForAge(18),
+      parentMemberId: null,
+      inheritParentEmail: false,
+      inheritEmailFromId: null,
+      inheritEmailFrom: null,
+      parent: null,
+    };
+
+    mockedFindMany.mockResolvedValue([member] as any);
+    mockedEmailLogFind.mockResolvedValue(null);
+    mockedUpdate.mockResolvedValue({} as any);
+    mockedCreateToken.mockResolvedValue({} as any);
+    mockedSendEmail.mockResolvedValue(undefined);
+    mockTxMemberFindUnique.mockResolvedValue({
+      canLogin: false,
+      ageTier: "YOUTH",
+      inheritEmailFromId: null,
+      inheritParentEmail: true,
+      parentMemberId: "parent-late",
+    });
+
+    const result = await checkAgeUpMembers();
+
+    expect(result.upgraded).toBe(0);
+    expect(mockedUpdate).not.toHaveBeenCalled();
+  });
+
   it("should skip members who already received age-up email", async () => {
     const member = {
       id: "m2",

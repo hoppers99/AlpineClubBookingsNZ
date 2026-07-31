@@ -53,8 +53,15 @@ vi.mock("@/lib/use-member-fields-settings", () => ({
   useMemberFieldsSettings: () => ({ showTitle: false, showGender: false }),
 }));
 
+// The header renders a role-name picker that fetches its options; the fallback
+// list it serves until then is fine for these assertions.
+vi.mock("@/hooks/use-access-role-options", () => ({
+  useAccessRoleOptions: () => [],
+}));
+
 import { MemberDependentsCard } from "../member-dependents-card";
 import { MemberDependentDialog } from "../member-dependent-dialog";
+import { MemberDetailHeader } from "../member-detail-header";
 import {
   DEPENDENT_PARENT_BLOCK_EXPLANATIONS,
   DEPENDENT_PARENT_CREATE_ERRORS,
@@ -306,6 +313,62 @@ describe("MemberDependentDialog — both paths are gated, not one (#2282)", () =
     );
     expect(
       screen.getByText(/notifications for them go to Nan Rangi/i),
+    ).toBeInTheDocument();
+  });
+});
+
+/**
+ * The SECOND entry point. `Add Dependent` sits in the page header toolbar as
+ * well as on the Dependents card, and before #2282 both hid on the same
+ * condition — so fixing one and not the other would leave the identical dead
+ * end one scroll position away.
+ */
+describe("MemberDetailHeader — the toolbar copy of the same control (#2282)", () => {
+  function renderHeader(member: MemberDetail, onOpen = vi.fn()) {
+    render(
+      <MemberDetailHeader
+        member={member}
+        backHref="/admin/members"
+        backLabel="Members"
+        pendingDeleteRequest={undefined}
+        xeroConnected={false}
+        xeroOrgShortCode={null}
+        xeroPushing={false}
+        xeroUnlinking={false}
+        canEditMembership
+        canEditFinance
+        onOpenDependentDialog={onOpen}
+        onOpenLinkXero={vi.fn()}
+        onOpenCreateXero={vi.fn()}
+        onUnlinkXero={vi.fn()}
+      />,
+    );
+    return onOpen;
+  }
+
+  it("offers Add Dependent on a YOUTH member", () => {
+    const onOpen = renderHeader(buildMember({ ageTier: "YOUTH" }));
+    const button = screen.getByRole("button", { name: /add dependent/i });
+    expect(button).toBeEnabled();
+    fireEvent.click(button);
+    expect(onOpen).toHaveBeenCalled();
+  });
+
+  it("disables it WITH the reason when the member is inactive", () => {
+    renderHeader(buildMember({ active: false }));
+    expect(screen.getByRole("button", { name: /add dependent/i })).toBeDisabled();
+    expect(
+      screen.getByText(DEPENDENT_PARENT_BLOCK_EXPLANATIONS.INACTIVE),
+    ).toBeInTheDocument();
+  });
+
+  it("disables it WITH the reason when the member is archived", () => {
+    renderHeader(
+      buildMember({ active: false, archivedAt: "2026-01-01T00:00:00.000Z" }),
+    );
+    expect(screen.getByRole("button", { name: /add dependent/i })).toBeDisabled();
+    expect(
+      screen.getByText(DEPENDENT_PARENT_BLOCK_EXPLANATIONS.ARCHIVED),
     ).toBeInTheDocument();
   });
 });

@@ -3106,10 +3106,44 @@ two depths counts at its deeper one, because that is the chain that would grow),
 and a walk that hits the bound reports "at least bound+1", which refuses the new
 link rather than accepting it on incomplete information.
 
-Alongside the cap, the admin link route requires: the parent must be an active,
-non-archived adult; the target must not be archived, must not already be linked
-to that parent, must not already have two parents, and **must not be an ancestor
-of the parent**. That last one is now stated in its own right. Under the old
+**Parentage is recorded at ANY age; responsibility is not** (#2282, owner
+decision 2026-07-26). A 16 or 17 year old can genuinely be a parent, and the
+system previously could not record it: the admin link route refused a non-adult
+parent, the candidate search never offered one, and the only workarounds were to
+leave the child apparently parentless or to hang them off a grandparent — both of
+which misstate who the parent is. The age rule turned out to be in the wrong
+place. **The parent link is close to a labelling artefact:** every substantial
+power is gated on family-group co-membership plus being an active adult with a
+login, and none of those checks reads the parent columns —
+
+| Power | Actually gated by |
+|---|---|
+| Booking on someone's behalf | `getAllowedGuestMemberIds` / `isActiveLoginAdultMember` (`src/lib/booking-guests.ts`) |
+| Answering a consent request for someone | `familyAdultDelegateResolver` (`src/lib/member-guest-delegate.ts`) |
+| Editing or confirming another member's details | active + login + ADULT + shared group (`/api/members/family/[memberId]/details`) |
+| Being the contact of record for their mail | `validateInheritEmailSource` + `isUsableEmailSource` |
+| Being billed | `billingFamilyGroupId` — group-based; no billing path reads a parent link |
+
+So the only things recording a young parent grants are the word "Parent" on an
+admin card and a mail-routing question, and the second is answered by the
+transitive resolver walking **past** them to the nearest adult ancestor. The
+lowering of the ADULT tier's minimum age to 16 was considered and **rejected**:
+the boundaries are admin-configurable, but moving them would change fees,
+subscription requirements and booking rules for every 16–17 year old in the club
+to solve a records problem.
+
+What remains on the parent side is `active` and `archivedAt` — whether the record
+is CURRENT, not capacity to take responsibility — shared by both write paths and
+by the admin UI as `dependentParentStateBlocker` in
+`src/lib/dependent-link-eligibility.ts`. An inactive or archived member therefore
+shows "Add Dependent" **disabled with the reason** ("This member is inactive —
+reactivate them to add dependants") on both the create and link paths, rather
+than the control vanishing or failing on save.
+
+Alongside the cap, the admin link route requires: the parent must be active and
+non-archived (**at any age tier**); the target must not be archived, must not
+already be linked to that parent, must not already have two parents, and **must
+not be an ancestor of the parent**. That last one is now stated in its own right. Under the old
 two-generation rule it was enforced only as a side effect — every ancestor of
 the parent necessarily has a dependant, so the "already has dependants" clause
 excluded the whole ancestor set — and relaxing the cap removed that cover. The
@@ -3127,7 +3161,9 @@ identity grounds** — subject to the request's own options, which the route
 still validates separately (family groups the parent does not belong to, an
 invalid inherit-email source, and the privileged-target and last-full-admin
 guards when "disable login" is ticked). The mirror-image "Add Parent" search
-(`parentLinkEligibleFor`) applies the cap the other way round: the member's own
+(`parentLinkEligibleFor`) filters `active: true` and `archivedAt: null` — and,
+since #2282, **no age clause at all**, matching what the write route now accepts
+— then applies the cap the other way round: the member's own
 dependants eat into the budget, the candidate parent's ancestors must fit in
 what is left, and the member's descendants are excluded outright so the dialog
 cannot offer a cycle.
@@ -3200,7 +3236,16 @@ nomination approval and admin member-create both stored one-hop pointers until
 #2255, and the Xero contact import wrote one with no validation at all.
 
 `validateInheritEmailSource` enforces the guarantees that follow: the source is
-an adult, with a real address, who does not itself inherit. Its former "must
+an adult, with a real address, who does not itself inherit. The **adult** clause
+there — and the matching one in `isUsableEmailSource`, which is what makes the
+walk step past an unusable generation — is deliberate and survived #2282: a
+16-year-old may be recorded as a parent, but being the club's contact of record
+for someone else's notifications is a responsibility function, so their child's
+mail routes on up to the nearest adult ancestor (most often the young parent's
+own parent), and the link is **refused** if there is no such adult rather than
+quietly making the minor the family's contact. The admin member detail page
+resolves and displays that adult (`dependentEmailSource`) with the same walk the
+writes use, so the routing is on screen before the dependant is added. Its former "must
 point to a **primary** adult member" rule (the source must have no parents) is
 retired — it barred exactly the middle-generation source the four-generation
 model needs — and the "inherit email from" candidate search was relaxed to match

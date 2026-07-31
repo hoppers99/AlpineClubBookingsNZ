@@ -4,6 +4,33 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **A young member can now be recorded as a parent (#2282).** A 16 or 17 year
+  old can genuinely be a parent, and until now the club simply could not write
+  that down: adding a dependant refused with "Dependants can only be linked
+  under active adult members", and the search never offered a non-adult, so the
+  only options were to leave the child looking parentless or to attach them to a
+  grandparent. Both record the wrong thing. **The family relationship can now be
+  recorded at any age.**
+  **Nothing about responsibility has moved.** Being someone's recorded parent
+  never granted the powers people assume it does — booking on another member's
+  behalf, editing or confirming their details, answering a consent request for
+  them, and billing are all decided by family-group membership plus being an
+  active adult with a login, and none of them looks at the parent link at all.
+  Those rules are untouched. In particular the club's **contact of record** for
+  a child's mail is still an adult: a dependant added under a young parent has
+  their notifications routed on up to the nearest adult in the family, usually
+  the young parent's own parent, and the member's page now says on screen which
+  adult that is *before* you add the dependant. If no adult in the family has a
+  real email address, adding the dependant is refused with that reason rather
+  than quietly leaving the child unreachable.
+  **Two dead ends are gone too.** "Add Dependent" used to disappear entirely on
+  a member who could not have one, teaching an admin nothing; on an inactive or
+  archived member it stayed and then failed on save. It is now always shown, and
+  disabled with the reason — "This member is inactive — reactivate them to add
+  dependants" — on both the *create new* and *link existing* paths. And the copy
+  that claimed only adults can manage dependants is gone, because that is no
+  longer the rule.
+
 - **Adding another club member as a guest (#2306, #2307).** Until now a member
   could only put people from their own family group on a booking. There is now a
   new **Add another member as a guest** switch on **Admin → Modules**, off by
