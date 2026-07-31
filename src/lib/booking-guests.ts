@@ -275,7 +275,17 @@ export async function resolveLinkedBookingMembersWithBoundary(
     }
   }
 
-  const members = await resolveLinkedMemberRecords(db, normalizedMemberIds);
+  const members = await resolveLinkedMemberRecords(db, normalizedMemberIds, {
+    // #2388, response equalisation. On a MEMBER path the two refusals below
+    // must be indistinguishable from D-8's neutral one for a beyond-family
+    // target — see the note on `collapseForMemberIds`. An admin/on-behalf path
+    // (skipAuthorization) keeps the detailed errors: an officer is entitled to
+    // know the id is wrong, and hiding it from them would only produce support
+    // tickets.
+    collapseForMemberIds: options?.skipAuthorization
+      ? undefined
+      : new Set(boundary.beyondFamilyMemberIds),
+  });
   return { members, boundary };
 }
 
@@ -294,10 +304,44 @@ export async function resolveLinkedBookingMembers(
   return members;
 }
 
+/**
+ * Load the member rows behind a set of ids, refusing anything that cannot be a
+ * booking guest.
+ *
+ * `collapseForMemberIds` (#2388, MG3 #2308) is the set of BEYOND-FAMILY ids on a
+ * member-initiated path, and it exists because D-8's collapse had a hole that
+ * needed no stopwatch to find. Both refusals below used to answer a
+ * cross-family probe with their own message and their own status:
+ *
+ *   * "Linked member is inactive or not found" (400) — a straight existence
+ *     oracle. Try an id, and the status alone told you whether an active member
+ *     was behind it.
+ *   * "This account is age-exempt (N/A)…" (400) — told you the target is an
+ *     organisation or school account rather than a person.
+ *
+ * Neither is a leak inside a family, where the booker already knows who they are
+ * adding, so the collapse is applied ONLY to the beyond-family set and only on
+ * paths that enforce authorization. For those ids both become the same neutral
+ * 403 every other cross-family refusal returns, which is what makes the timing
+ * floor in `member-guest-probe-guard.ts` worth having at all: equalising the
+ * clock is pointless while the body still says which refusal it was.
+ */
 async function resolveLinkedMemberRecords(
   db: BookingGuestLookupDb,
   normalizedMemberIds: string[],
+  options?: { collapseForMemberIds?: ReadonlySet<string> },
 ): Promise<Map<string, LinkedBookingMember>> {
+  const collapseFor = options?.collapseForMemberIds;
+  const refuse = (memberId: string, message: string, status: number): never => {
+    if (collapseFor?.has(memberId)) {
+      throw new BookingGuestValidationError(
+        MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE,
+        MEMBER_GUEST_CROSS_FAMILY_REFUSAL_STATUS,
+      );
+    }
+    throw new BookingGuestValidationError(message, status);
+  };
+
   const linkedMembers = await db.member.findMany({
     where: { id: { in: normalizedMemberIds }, active: true },
     select: {
@@ -335,7 +379,7 @@ async function resolveLinkedMemberRecords(
   const linkedMemberMap = new Map(linkedMembers.map((member) => [member.id, member]));
   for (const memberId of normalizedMemberIds) {
     if (!linkedMemberMap.has(memberId)) {
-      throw new BookingGuestValidationError("Linked member is inactive or not found", 400);
+      refuse(memberId, "Linked member is inactive or not found", 400);
     }
   }
 
@@ -347,7 +391,8 @@ async function resolveLinkedMemberRecords(
   // listed as guests instead.
   for (const member of linkedMemberMap.values()) {
     if (member.ageTier === "NOT_APPLICABLE") {
-      throw new BookingGuestValidationError(
+      refuse(
+        member.id,
         "This account is age-exempt (N/A) and cannot be added as a booking guest. Add the people attending instead.",
         400
       );

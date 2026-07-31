@@ -285,6 +285,49 @@ export async function applyRateLimit(
   return null;
 }
 
+/**
+ * Rate limit an AUTHENTICATED surface by client IP **and** by acting member,
+ * first failure winning. Returns a `Response` when either budget is spent.
+ *
+ * WHY `applyRateLimit` IS THE WRONG TOOL FOR THESE SURFACES. It keys on the
+ * client IP alone, which is right for a public door and wrong for an
+ * authenticated enumeration surface, in both directions at once:
+ *
+ *  - one household behind a single NAT — a family all booking from the lodge's
+ *    own wifi, or a club night — shares ONE budget, so an honest member is
+ *    locked out by their relatives;
+ *  - one member can rotate addresses (phone data, a VPN, a coffee shop) and get
+ *    a fresh budget each time, which is precisely what somebody probing the
+ *    membership list would do.
+ *
+ * Keying on both closes each hole with the other. The IP key is checked FIRST so
+ * an unauthenticated flood is rejected before it can cost a member-keyed write,
+ * and both keys are namespaced (`ip:` / `member:`) so a member id that happens
+ * to look like an address cannot collide with one.
+ *
+ * The pattern was already written by hand in the whole-lodge request routes
+ * (#2263); this is that pattern lifted into one function so MG3's find routes
+ * and the add-path throttle cannot get the ordering or the namespacing subtly
+ * different.
+ */
+export async function applyMemberScopedRateLimit(
+  config: RateLimitConfig,
+  request: Request,
+  memberId: string
+): Promise<Response | null> {
+  const ipResult = await checkRateLimit(config, `ip:${getClientIp(request)}`);
+  if (!ipResult.success) {
+    return rateLimitedResponse(ipResult);
+  }
+
+  const memberResult = await checkRateLimit(config, `member:${memberId}`);
+  if (!memberResult.success) {
+    return rateLimitedResponse(memberResult);
+  }
+
+  return null;
+}
+
 // Pre-configured rate limiters for common routes
 export const rateLimiters = {
   /** Login: 10 attempts per 15 minutes */
@@ -375,6 +418,60 @@ export const rateLimiters = {
    * cannot be used to multiply the allowance.
    */
   memberGuestConsentRespond: { id: "member-guest-consent-respond", limit: 30, windowSeconds: 15 * 60, authSensitive: true } as RateLimitConfig,
+  /**
+   * Member-guest EMAIL resolve (#2308): 20 per 15 minutes, per IP and per member.
+   *
+   * Deliberately NOT `authSensitive`. Degrading it to a quarter on a shared-store
+   * outage would cut a legitimate booker off at five lookups mid-flow, and the
+   * surface it protects returns only a name and an age tier for an address the
+   * caller already possessed — a much smaller prize than a login attempt. The
+   * real controls here are the uniform envelope and the audit trail; this cap
+   * exists so that GUESSING addresses is uneconomic, not to defend a secret.
+   */
+  memberGuestResolve: { id: "member-guest-resolve", limit: 20, windowSeconds: 15 * 60 } as RateLimitConfig,
+  /**
+   * Member-guest NAME type-ahead (#2308): 60 per 5 minutes, per IP and per member.
+   *
+   * Sized for the interaction rather than for an attacker: a 300 ms debounce and
+   * a two-character floor mean a fifteen-letter name costs four to six queries,
+   * so an ordinary booker uses well under ten. The five-minute window smooths
+   * bursts; it is NOT the anti-harvest control — that is the daily cap below.
+   */
+  memberGuestSearch: { id: "member-guest-search", limit: 60, windowSeconds: 5 * 60 } as RateLimitConfig,
+  /**
+   * Member-guest name type-ahead, DAILY (#2308): 400 per 24 hours per member.
+   *
+   * This is the actual anti-harvest cap, and it is honest about what it buys:
+   * with open search ON the membership list is browsable BY DESIGN, so this does
+   * not make harvesting impossible — it makes it take weeks and leave 400 audit
+   * rows a day with the member's name on them.
+   */
+  memberGuestSearchDaily: { id: "member-guest-search-daily", limit: 400, windowSeconds: 24 * 60 * 60 } as RateLimitConfig,
+  /**
+   * CROSS-FAMILY member-guest add attempts on the booking add paths (#2388):
+   * 15 per 15 minutes and 50 per day, per acting member.
+   *
+   * THE OWNER'S 31 JUL DECISION, and the reason it is a separate limiter rather
+   * than a tightening of `bookingQuery`: the channel #2388 describes is a run of
+   * quote/create attempts naming ONE other member across many dates, from which
+   * the pattern of refusals maps the nights that member is already booked. So
+   * this limiter counts only the attempts that actually name a beyond-family
+   * member, which means an ordinary family booking — the overwhelming majority,
+   * forever — is not rate-limited by it at all, however many times the booker
+   * changes their dates.
+   *
+   * The sizing is what makes the mitigation real rather than decorative. Fifty
+   * probes a day is three weeks to map a season, against an honest booker who
+   * would struggle to exceed fifteen cross-family quote attempts in a sitting.
+   *
+   * It is a THROTTLE, not the "cap or block on repeated refusals" the owner
+   * explicitly rejected: it counts attempts (successful and refused alike), it
+   * is not keyed on the target, it clears itself, and it never turns into a
+   * permanent refusal. See `member-guest-probe-guard.ts`.
+   */
+  memberGuestAddProbe: { id: "member-guest-add-probe", limit: 15, windowSeconds: 15 * 60 } as RateLimitConfig,
+  /** The daily backstop for the above (#2388): 50 cross-family add attempts per member per day. */
+  memberGuestAddProbeDaily: { id: "member-guest-add-probe-daily", limit: 50, windowSeconds: 24 * 60 * 60 } as RateLimitConfig,
   // AI help assistant (#2211, C3). These caps only throttle abuse/burst; the
   // real spend cap is the monthly budget gate (checkAiBudget) in the route —
   // authSensitive so a degraded shared-store fallback cannot be used to multiply
