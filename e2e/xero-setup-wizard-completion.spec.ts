@@ -2,6 +2,7 @@ import { type BrowserContext, expect, test } from "@playwright/test";
 import { storageStatePath } from "./helpers/auth";
 import { E2E_ADMIN } from "./helpers/fixtures";
 import { overrideModules, setModuleSettings, type ModuleSettings } from "./helpers/modules";
+import { resetXeroSetupWizard } from "./helpers/reset";
 
 // Kept in lockstep with MOCK_XERO_ORG_NAME in src/lib/xero-mock-endpoint.ts.
 const MOCK_XERO_ORG_NAME = "Alpine Test Club Ltd";
@@ -25,10 +26,24 @@ test.beforeAll(async ({ browser }) => {
   previousModules = await overrideModules(adminContext.request, {
     xeroIntegration: true,
   });
+  // RETRY IDEMPOTENCY (#2302): a retry must start from step one on a
+  // disconnected club, exactly like a first attempt. Re-runs on every attempt
+  // (a retry restarts the worker).
+  await resetXeroSetupWizard(adminContext.request);
 });
 
 test.afterAll(async () => {
   try {
+    if (adminContext) {
+      // Hand the sibling wizard spec (which sorts AFTER this file) a
+      // disconnected club whose wizard cursor is back on step one. This lives in
+      // afterAll, NOT at the end of the test body (#2302): a mid-test failure
+      // used to strand the sibling on a connected, step-3 wizard, which is one
+      // of the ways xero-setup-wizard.spec.ts:48 went red on content that was
+      // green on main. Runs BEFORE the module restore below, because
+      // /api/admin/xero/disconnect needs xeroIntegration still enabled.
+      await resetXeroSetupWizard(adminContext.request);
+    }
     if (adminContext && previousModules) {
       await setModuleSettings(adminContext.request, previousModules);
     }
@@ -50,7 +65,23 @@ test("operator completes the whole Xero wizard including verified webhooks", asy
   // Step 2 — credentials.
   await page.getByLabel("Client ID").fill("mock-client-id");
   await page.getByLabel("Client Secret").fill("mock-client-secret");
-  await page.getByRole("button", { name: /save credentials/i }).click();
+  // "Save credentials" on a fresh club; "Replace credentials" once a pair is
+  // stored — which is the state a RETRY of this test starts from, since the
+  // beforeAll reset deliberately leaves credentials in place (#2302). Matching
+  // only /save/ made every retry of this spec fail here.
+  await page
+    .getByRole("button", { name: /(save|replace) credentials/i })
+    .click();
+  // Assert on what THIS save changed, not on standing state (#2302). "Both
+  // credentials stored" renders whenever a pair is stored, and the beforeAll
+  // reset deliberately leaves the pair in place — so from attempt 1 onwards that
+  // badge is already on screen before the click and would pass even if the save
+  // silently failed. The success banner is written only by a save that returned
+  // OK, so it holds the assertion honest on every attempt; the badge is still
+  // checked afterwards for the stored-pair state the next step depends on.
+  await expect(
+    page.getByRole("status").getByText(/Credentials saved/i),
+  ).toBeVisible();
   await expect(page.getByText(/Both credentials stored/i)).toBeVisible();
   await page.getByRole("button", { name: "Continue" }).click();
 
@@ -121,23 +152,9 @@ test("operator completes the whole Xero wizard including verified webhooks", asy
   // The whole wizard is now complete.
   await expect(page.getByText(/Setup complete/i)).toBeVisible();
 
-  // Restore a re-runnable state for the sibling wizard spec (this file sorts
-  // first, so it runs first): disconnect Xero and rewind the wizard cursor to
-  // step one. Credentials stay stored — the sibling spec re-enters them via
-  // the Replace flow, which is itself worth exercising.
-  const disconnectRes = await page.request.post("/api/admin/xero/disconnect");
-  expect(disconnectRes.ok()).toBeTruthy();
-  const rewindRes = await page.request.post(
-    "/api/admin/integrations/wizard-progress",
-    {
-      data: {
-        wizardId: "xero",
-        currentStepId: "create-app",
-        completedStepIds: [],
-      },
-    },
-  );
-  expect(rewindRes.ok()).toBeTruthy();
-
+  // The disconnect + cursor rewind that hands the sibling wizard spec a
+  // re-runnable state now lives in afterAll, so it also runs when this test
+  // fails partway (#2302). Credentials stay stored either way — the sibling spec
+  // re-enters them via the Replace flow, which is itself worth exercising.
   await page.close();
 });

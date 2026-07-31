@@ -2,6 +2,7 @@ import { type BrowserContext, expect, test } from "@playwright/test";
 import { storageStatePath } from "./helpers/auth";
 import { E2E_ADMIN } from "./helpers/fixtures";
 import { overrideModules, setModuleSettings, type ModuleSettings } from "./helpers/modules";
+import { resetXeroSetupWizard } from "./helpers/reset";
 
 // Kept in lockstep with MOCK_XERO_ORG_NAME in src/lib/xero-mock-endpoint.ts,
 // which the gated mock organisation endpoint returns. Duplicated as a literal
@@ -33,6 +34,16 @@ test.beforeAll(async ({ browser }) => {
   previousModules = await overrideModules(adminContext.request, {
     xeroIntegration: true,
   });
+  // RETRY IDEMPOTENCY (#2302). The wizard persists its step cursor server-side
+  // (/api/admin/integrations/wizard-progress), so an attempt that reached step 3
+  // leaves /admin/xero/setup RESUMING on step 3. Without this rewind every retry
+  // failed instantly on the step-1 heading at line 55 instead of re-running the
+  // flow — observed in runs 30478504882 and 30530889448, where one transient
+  // failure at the org-name assertion became three, and the reported error was
+  // the pollution rather than the cause. Also disconnects, so step 3's OAuth
+  // round-trip is a genuine connect on every attempt. This hook re-runs on each
+  // retry (a retry restarts the worker), which is what makes it the right place.
+  await resetXeroSetupWizard(adminContext.request);
 });
 
 test.afterAll(async () => {
