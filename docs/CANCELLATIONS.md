@@ -105,12 +105,92 @@ Two consequences of that worth knowing before you approve:
 - **A cancelled ex-admin cannot be hard-deleted.** Deletion refuses any account
   that still holds admin access, and cancellation deliberately keeps the rows.
   Remove the roles first if the club also wants the record deleted.
-- **Approving an organisation or school account's cancellation can archive a
-  Xero contact that is still billing.** When "archive Xero contacts on
-  cancellation" is switched on, approval queues an archive of the member's Xero
-  contact — and for an organisation that is often the invoice contact for its
-  booking invoices. The approval blockers cover future bookings, not open
-  invoices, so check the organisation has nothing outstanding in Xero first.
+- **A cancellation is refused while the member's Xero contact still has money
+  owing** — see [Unpaid invoices block approval](#unpaid-invoices-block-approval)
+  below. This matters most for organisation and school accounts, which are
+  usually the invoice contact for their booking invoices rather than only their
+  own membership.
+
+## Unpaid Invoices Block Approval
+
+Approving a cancellation archives the member's contact in Xero when **Archive
+Xero contacts after cancellation approval** is switched on. An archived contact
+drops out of Xero's pickers and can no longer have invoices, credit notes or
+payments raised against it, so archiving one the club is still chasing money
+from — or still owes money to — takes a live account out of circulation. The
+approval is therefore **refused** while anything is outstanding (#2392).
+
+### What counts as outstanding
+
+An invoice blocks when Xero says it is **AUTHORISED or SUBMITTED with an amount
+still due**. That is the same definition of "open" the finance dashboard ages,
+so the club has one meaning of the word:
+
+- **Drafts do not block.** A draft has never been issued and creates no
+  obligation on anybody.
+- **Submitted invoices do block.** They are issued and awaiting internal
+  approval, and Xero already ages them as receivables.
+- **Voided and deleted invoices never block.** They are cancelled documents
+  owing nothing — and voiding is one of the ways to clear this refusal.
+- **Paid invoices never block**, because Xero takes the amount due to zero and
+  flips the status to PAID once payments and credit notes fully settle it.
+- **A credit note that only partly offsets an invoice still blocks**, on
+  whatever is left. The figure the reviewer is shown is the remaining balance,
+  not the original total, because the remainder is what the accounts are still
+  waiting for.
+- **Bills block too.** If the club owes this contact money, archiving it is the
+  same mistake in the other direction.
+
+The member's own current-season subscription invoice is deliberately **not**
+counted when the cancellation is about to credit it. Approval raises an
+allocated credit note against an unpaid or overdue subscription invoice — that
+is the [refund policy](#refund-policy) — so counting it would make the most
+ordinary cancellation there is impossible to approve: the thing that clears the
+invoice is the very approval being refused.
+
+### Clearing the refusal
+
+The refusal names each invoice and its balance, and there is always a way
+forward. Any one of these works:
+
+- Take the payment in Xero, or
+- Raise a credit note in Xero and **allocate** it against the invoice, or
+- Void the invoice in Xero — the right answer when nobody intends to collect it,
+- or switch **Archive Xero contacts after cancellation approval** off, which is
+  an honest escape hatch rather than a bypass: with it off, approval never
+  archives the contact, so the accounts keep it and every invoice on it stays
+  exactly as actionable as before.
+
+### When Xero cannot be asked
+
+If Xero is disconnected, rate limited, or simply unreachable, the check cannot
+run — and **the approval is still refused**, deliberately. "We could not find
+out" is not the same answer as "nothing is owing", and the two mistakes are not
+equal: a refusal is temporary and costs nothing (the request stays in the queue
+and approves as soon as Xero answers), while letting it through queues an
+archive that runs later, quietly, against a contact the accounts still need.
+During a Xero outage the archive would fail and sit in the outbox anyway, so
+almost nothing is lost by waiting.
+
+The reviewer is told which of the two situations it is, because they need
+different actions:
+
+- **Xero is not connected** — reconnect it from the admin Xero page, or switch
+  the archive setting off. This one needs an admin to do something; it will not
+  clear on its own.
+- **Xero could not be reached, or its API limit is in force** — try again in a
+  few minutes, or once the limit resets.
+
+This check only runs when it can matter. If **Archive Xero contacts after
+cancellation approval** is off, nothing is archived, so no check is made and a
+Xero outage cannot hold up a single cancellation. If the member has no linked
+Xero contact at all, there is no contact to archive, so again nothing is checked
+— a club that does not use Xero never sees this refusal.
+
+The refusal is raised at **approval**, not when the request is raised, and the
+outstanding invoices are shown in the review queue as soon as the request lands
+there. A request is never rejected for a debt that may well be settled by the
+time somebody reviews it.
 
 ## Refund Policy
 

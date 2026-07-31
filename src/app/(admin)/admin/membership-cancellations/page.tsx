@@ -36,6 +36,12 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
+import {
+  describeMembershipCancellationBlocker,
+  membershipCancellationBlockerHeading,
+  membershipCancellationBlockerHint,
+  type MembershipCancellationBlocker,
+} from "@/lib/membership-cancellation-blocker-messages";
 import { formatNZDate, formatNZDateTime } from "@/lib/nzst-date";
 import { cn } from "@/lib/utils";
 
@@ -68,14 +74,10 @@ function pickDetachedLinks(value: OrphanedLinks | undefined): OrphanedLinks | nu
     : null;
 }
 
-type Blocker = {
-  type: "owned_booking" | "guest_appearance";
-  bookingId: string;
-  bookingStatus: string;
-  checkIn: string;
-  checkOut: string;
-  guestAppearanceId?: string;
-};
+// #2392: the blocker shapes and their wording are shared with the server, so
+// the panel below says exactly what the server would say if Approve were
+// pressed — including the unpaid-Xero-invoice refusal and how to clear it.
+type Blocker = MembershipCancellationBlocker;
 
 type CancellationParticipant = {
   id: string;
@@ -237,11 +239,49 @@ function statusBadge(status: string) {
 }
 
 function blockerText(blocker: Blocker) {
-  const prefix =
-    blocker.type === "owned_booking" ? "Owned booking" : "Guest appearance";
-  return `${prefix} ${blocker.bookingId} (${blocker.bookingStatus}) from ${formatDateOnly(
-    blocker.checkIn,
-  )} to ${formatDateOnly(blocker.checkOut)}`;
+  return describeMembershipCancellationBlocker(blocker, {
+    formatDate: formatDateOnly,
+  });
+}
+
+/** Stable list key across every blocker kind. */
+function blockerKey(blocker: Blocker) {
+  if (blocker.type === "unpaid_invoice") {
+    return `unpaid_invoice-${blocker.invoiceId}`;
+  }
+  if (blocker.type === "invoice_check_unavailable") {
+    return `invoice_check_unavailable-${blocker.reason}`;
+  }
+  return `${blocker.type}-${blocker.bookingId}-${blocker.guestAppearanceId ?? "owner"}`;
+}
+
+/**
+ * Everything standing between this participant and an approval, in the server's
+ * own words — and, for the Xero ones, the way out of it. A reviewer told only
+ * "blocked" has nowhere to go (#2392).
+ */
+function BlockerNotice({ blockers }: { blockers: Blocker[] }) {
+  if (blockers.length === 0) return null;
+  const hint = membershipCancellationBlockerHint(blockers);
+
+  return (
+    <div className="mt-3 rounded-md border border-warning-6 bg-warning-3 p-3 text-sm text-warning-11">
+      <div className="flex gap-2">
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+        <div>
+          <p className="font-medium">
+            {membershipCancellationBlockerHeading(blockers)}
+          </p>
+          <ul className="mt-1 list-disc space-y-1 pl-5">
+            {blockers.map((blocker) => (
+              <li key={blockerKey(blocker)}>{blockerText(blocker)}</li>
+            ))}
+          </ul>
+          {hint && <p className="mt-2">{hint}</p>}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function canApprove(participant: CancellationParticipant) {
@@ -896,27 +936,7 @@ export default function MembershipCancellationsPage() {
                             </div>
                           </div>
 
-                          {participant.blockers.length > 0 && (
-                            <div className="mt-3 rounded-md border border-warning-6 bg-warning-3 p-3 text-sm text-warning-11">
-                              <div className="flex gap-2">
-                                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-                                <div>
-                                  <p className="font-medium">
-                                    Resolve these bookings before approval.
-                                  </p>
-                                  <ul className="mt-1 list-disc space-y-1 pl-5">
-                                    {participant.blockers.map((blocker) => (
-                                      <li
-                                        key={`${blocker.type}-${blocker.bookingId}-${blocker.guestAppearanceId ?? "owner"}`}
-                                      >
-                                        {blockerText(blocker)}
-                                      </li>
-                                    ))}
-                                  </ul>
-                                </div>
-                              </div>
-                            </div>
-                          )}
+                          <BlockerNotice blockers={participant.blockers} />
 
                           {(canApprove(participant) || canReject(participant)) && (
                             <div className="mt-4 space-y-3">

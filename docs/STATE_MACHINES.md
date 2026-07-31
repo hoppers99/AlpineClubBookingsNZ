@@ -1488,6 +1488,26 @@ allowed but cannot be self-approved. See
 [`DOMAIN_INVARIANTS.md`](DOMAIN_INVARIANTS.md#membership-lifecycle) and
 [`CANCELLATIONS.md`](CANCELLATIONS.md#who-can-be-cancelled).
 
+Approval blockers (#2392): `loadMembershipCancellationBlockersByMemberId` is the
+single entry point for "why can this not be approved yet", and it now answers in
+two parts — future owned bookings / guest appearances (local), and unpaid Xero
+invoices on the member's contact. The invoice half runs only when
+`xeroArchiveContactsOnCancellation` is on AND the member has a linked
+`xeroContactId`, because those are exactly the conditions under which approval
+archives a Xero contact; otherwise no Xero call is made. "Unpaid" means
+AUTHORISED or SUBMITTED with `AmountDue > 0` (the finance dashboard's own open-
+invoice definition), across ACCREC and ACCPAY, minus the member's current-season
+subscription invoice when the approval is itself about to credit it — mirroring
+`queueApprovedMembershipCancellationXeroOperations`, which would otherwise
+deadlock the ordinary unpaid-subscription cancellation. If Xero cannot be
+reached the check FAILS CLOSED: the participant gets an
+`invoice_check_unavailable` blocker (`disconnected` / `rate_limited` /
+`unavailable`) and the approval is refused, because an unknown answer is not
+"nothing owing". The review queue reads through a 60s in-process memo; the
+approval guard always passes `freshInvoiceCheck` so a decision is never taken on
+a cached answer. See
+[`CANCELLATIONS.md`](CANCELLATIONS.md#unpaid-invoices-block-approval).
+
 To verify: financial blockers, future booking blockers, family cleanup, Xero
 group/archive behavior, and email visibility.
 

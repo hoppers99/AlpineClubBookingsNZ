@@ -4,6 +4,40 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **A cancellation is no longer approved while the member's Xero contact still
+  has money owing (#2392).** Approving a cancellation archives that member's
+  contact in Xero, and an archived contact drops out of Xero's pickers and can
+  no longer be invoiced, credited or paid. Nothing used to check whether the
+  club was still owed anything by it — the approval only looked at future
+  bookings — so the club could quietly archive an account it was in the middle
+  of chasing. That became likelier once school and organisation accounts became
+  cancellable, because an organisation is usually the billing contact for its
+  booking invoices rather than only its own membership. The approval is now
+  refused instead, and the refusal tells the reviewer exactly what is in the way:
+  each invoice by number and the amount still owing, and that each one needs to
+  be paid, credited with an allocated credit note, or voided in Xero before the
+  cancellation can go through. Voiding is the right answer for an invoice nobody
+  intends to collect, so a cancellation is never held hostage by a debt the club
+  has already written off. "Owing" means what an accountant means by it — an
+  approved or submitted invoice with a balance left. Drafts are ignored, since
+  they have never been issued; voided, deleted and paid invoices are ignored,
+  since nothing is due; and a credit note that only partly covers an invoice
+  still counts, for whatever is left, which is the figure shown. Bills the club
+  owes the contact count too, for the same reason. The member's own unpaid
+  season subscription is deliberately not counted, because approving the
+  cancellation is what credits it — counting it would make the most ordinary
+  cancellation of all impossible to approve. If Xero cannot be asked at all —
+  not connected, rate limited, or simply unreachable — the approval is refused
+  rather than let through, because "we could not find out" is not the same
+  answer as "nothing is owing"; the notice says which of those it is and what to
+  do, since a disconnected Xero needs reconnecting while an unreachable one just
+  needs another try in a few minutes. None of this applies to a club that has
+  **Archive Xero contacts after cancellation approval** switched off, or to a
+  member with no Xero contact: nothing is archived in either case, so nothing is
+  checked and a Xero outage cannot hold up a cancellation. The review queue
+  shows the outstanding invoices next to the participant as soon as the request
+  arrives, so a reviewer finds out before they press Approve rather than after.
+
 - **A member's membership can now be cancelled without first destroying their
   admin access, and school and organisation accounts can be cancelled at all
   (#2383).** The old rule claimed to allow "only member accounts", but what it

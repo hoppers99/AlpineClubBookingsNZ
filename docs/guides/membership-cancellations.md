@@ -49,8 +49,11 @@ allocated Xero credit note.
 
 1. In the **Cancellation Review Queue**, open a request and its participants. A
    participant can be approved once its status is *Ready for review* and the
-   member has confirmed; if bookings are outstanding, a notice lists them —
-   resolve those first.
+   member has confirmed; if bookings are outstanding, or the member's Xero
+   contact still has money owing, an amber notice lists them and says what to do
+   — resolve those first. See
+   [unpaid invoices block approval](../CANCELLATIONS.md#unpaid-invoices-block-approval)
+   for what counts as owing and the ways to clear it.
 2. Add an optional **Admin note** (sent to the member and the audit log). The blue
    notice reminds you: paid subscriptions are not refunded; unpaid/overdue
    subscription invoices are cleared with an allocated Xero credit note.
@@ -99,7 +102,10 @@ There you can edit:
   cancelled members (each a Group ID + optional Group name; **Add Group** /
   remove).
 - **Archive Xero contacts after cancellation approval** — whether approving a
-  cancellation also archives the member's Xero contact.
+  cancellation also archives the member's Xero contact. While this is on,
+  approval is refused for anyone whose Xero contact still has money owing, and
+  refused too if Xero cannot be asked; with it off no contact is archived, so
+  that check is not made at all.
 
 Click **Save Cancellation Settings**. These settings are audited and do not call
 Xero on save.
@@ -126,6 +132,9 @@ approval (checkbox).
 | --- | --- | --- |
 | Everything is read-only ("… can view membership cancellations but cannot approve or reject them") | Your admin role has membership view but not edit | Ask a full admin for membership edit access |
 | A participant can't be approved | Bookings are outstanding, or the member has not confirmed their own inclusion (member-raised requests only — an admin-raised one is already confirmed) | Resolve the listed bookings; wait for the member to confirm their request |
+| **Approve** says Xero still shows money owing, and names the invoices | Approving archives the member's Xero contact, and an archived contact cannot be invoiced, credited or paid — so the club would be archiving an account it still needs. Most often an organisation or school account, which is usually the billing contact for its booking invoices. Drafts, voided and paid invoices are ignored; a part-allocated credit note leaves the remainder, which still counts | Open each named invoice in Xero and do one of: take the payment, raise a credit note and **allocate** it against the invoice, or **void** the invoice if nobody intends to collect it. Then approve again. The member's own current-season subscription invoice is never the cause — the cancellation credits that one itself. If the club does not want Xero contacts archived at all, switch **Archive Xero contacts after cancellation approval** off on the Membership Cancellation settings page; that lifts the check entirely, because the contact is then left alone |
+| **Approve** says Xero is not connected, so its unpaid invoices could not be checked | Approving would archive the member's Xero contact, and the club's Xero authorisation is missing or no longer valid, so the check could not run. An unknown answer is treated as "there may be money owing", never as "nothing owing" | Reconnect Xero from **Admin → Xero**, then approve again. If the club is not using Xero archiving, switch **Archive Xero contacts after cancellation approval** off instead — with it off no contact is archived, so the check is not needed. This one will not clear by itself |
+| **Approve** says Xero could not be reached, or that its API limit has been reached | Same check, but a temporary failure rather than a broken connection | Wait a few minutes (or until the daily limit resets) and approve again. Nothing is lost — the request stays in the queue, and during a Xero outage the contact archive would have failed anyway |
 | A member's page shows no **Request Cancellation** action | Their membership is already cancelled or archived, or is not active. Otherwise the record is not an account holder at all — the lodge kiosk account, or a booking-request contact (a public booking request's guest contact, or a school request's owner contact or teacher record). For a person, having no login does *not* hide it, and neither does holding admin access | Check the member's status first. If they are active and it is still missing, look at their **User Type**: "Lodge (kiosk account)" is the shared device login and has no membership — a real person who needs the kiosk should hold another role too — and a record created by a booking request is a contact, not a member |
 | **Approve** on a cancellation says only a Full Admin can do it | The member holds a privileged access role (any admin, finance, lodge, or custom role), and only a Full Admin may approve a cancellation for such an account | Ask a full admin to approve it |
 | **Approve** says this is the last Full Admin account | Approving would disable the login of the club's only remaining active Full Admin, leaving nobody able to administer the club | Give another active account Full Admin access first, then approve. This applies to an admin cancelling their own membership too — appoint your successor first |

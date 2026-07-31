@@ -18,6 +18,7 @@ import {
 } from "@/lib/email";
 import logger from "@/lib/logger";
 import { classifyAccountRecord } from "@/lib/member-roles";
+import { buildMembershipCancellationApprovalBlockedMessage } from "@/lib/membership-cancellation-blocker-messages";
 import {
   emptyMembershipCancellationBlockerMap,
   loadMembershipCancellationBlockersByMemberId,
@@ -517,12 +518,24 @@ export async function reviewMembershipCancellationParticipant({
       adminMemberId,
     );
     assertParticipantCanBeApproved(participant);
+    // #2392: the approval decision is always taken on a LIVE unpaid-invoice
+    // answer, never the review queue's short-lived memo — approving archives the
+    // member's Xero contact, so a stale "nothing owing" must not be able to let
+    // one through.
     const blockersByMemberId =
-      await loadMembershipCancellationBlockersByMemberId([
-        participant.memberId,
-      ]);
+      await loadMembershipCancellationBlockersByMemberId(
+        [participant.memberId],
+        prisma,
+        { freshInvoiceCheck: true },
+      );
     const blockers = blockersByMemberId.get(participant.memberId) ?? [];
     if (blockers.length > 0) {
+      // The refusal has to be actionable — it names the invoices and says how to
+      // clear them — so the audit record and the message the approver sees are
+      // the same sentence, built once.
+      const blockedMessage =
+        buildMembershipCancellationApprovalBlockedMessage(blockers);
+
       await createAuditLog({
         action: "membership_cancellation.approval_blocked",
         memberId: adminMemberId,
@@ -535,17 +548,17 @@ export async function reviewMembershipCancellationParticipant({
         severity: "important",
         outcome: "blocked",
         summary: "Membership cancellation approval blocked",
-        details:
-          "Future owned bookings or member guest appearances must be resolved before cancellation.",
-        metadata: { blockers },
+        details: blockedMessage,
+        metadata: {
+          blockers,
+          blockerTypes: [...new Set(blockers.map((blocker) => blocker.type))],
+        },
         ipAddress,
       });
 
-      throw new MembershipCancellationAdminError(
-        "Approval is blocked while this member has future bookings or guest appearances.",
-        409,
-        { blockers },
-      );
+      throw new MembershipCancellationAdminError(blockedMessage, 409, {
+        blockers,
+      });
     }
   } else {
     assertParticipantCanBeRejected(participant);

@@ -991,6 +991,13 @@ variables. `/admin/setup` exposes:
 These settings are audited when saved. They do not call Xero on save; future
 approval processing must keep Xero writes outside long database transactions.
 
+While **archive the Xero contact** is on, a cancellation approval is refused
+whenever the member's Xero contact still has an open invoice or bill with an
+amount due — and refused too when Xero cannot be asked (disconnected, rate
+limited, or unreachable), because an unknown answer is not a clean one. Turning
+the setting off removes the archive and with it the check. See
+[`docs/CANCELLATIONS.md`](docs/CANCELLATIONS.md#unpaid-invoices-block-approval).
+
 ## Member Deletion Requests Page
 
 `/admin/deletion-requests` surfaces two distinct member-deletion flows in one
