@@ -32,6 +32,14 @@ allocated Xero credit note.
   See [who can be cancelled](../CANCELLATIONS.md#who-can-be-cancelled) for the
   two record types that are not offered the action, and for the two rules that
   govern approving a cancellation for an account with admin access.
+- A member has started their own cancellation from the **Membership
+  Cancellation** panel in their profile. That panel now follows the same rule as
+  the member page, so requests can arrive from an admin cancelling their own
+  membership, or from an organisation account, and a relative's family list can
+  include a spouse who is also an admin. It adds only two conditions of its own,
+  both about being able to use your own profile: the account must be active and
+  must have its own login. Whoever raised it, approval is still a separate
+  decision by a *different* admin.
 - An admin has requested to archive a member and a *different* admin must approve.
 - You are auditing completed, rejected, or withdrawn lifecycle requests.
 
@@ -140,6 +148,7 @@ approval (checkbox).
 | **Approve** says Xero refused the request for this member's contact | The Xero contact stored against the member no longer exists there — usually merged into another contact, or deleted. Waiting will not fix it, because the request itself is the problem | Open the member's page and re-link them to the right Xero contact, then approve again. Or switch **Archive Xero contacts after cancellation approval** off, since with it off there is no contact to archive and no check to run |
 | **Approve** says the contact has more open invoices than the check can list | Genuinely unusual — a contact carrying hundreds of open invoices. The check reads a bounded number of them, so rather than report a partial answer as "nothing owing", it says it could not tell | Open the contact in Xero and settle or void what is outstanding, then approve again. Or switch **Archive Xero contacts after cancellation approval** off |
 | A refusal ends "The review queue below could not be reloaded either, so it may be out of date" | Two things went wrong at once: the approval was refused, and the automatic refresh that follows a refusal also failed — usually a dropped connection or a restart between the two | Treat the list on screen as stale. Press the refresh button beside the status filter, or reload the page, before acting on anything below. The refusal itself still stands and its reason is the first part of the same message |
+| A member says the **Membership Cancellation** panel in their profile refuses them | It is open to any account holder, including admins and organisation accounts, but it needs an active account with **its own login** — so a dependant or any other member without a login of their own cannot use it. The lodge kiosk login and booking-request contact records are refused too: they hold no membership | Include them in a family request raised by a relative, or open their member page and use **Request Cancellation** on their behalf |
 | A member's page shows no **Request Cancellation** action | Their membership is already cancelled or archived, or is not active. Otherwise the record is not an account holder at all — the lodge kiosk account, or a booking-request contact (a public booking request's guest contact, or a school request's owner contact or teacher record). For a person, having no login does *not* hide it, and neither does holding admin access | Check the member's status first. If they are active and it is still missing, look at their **User Type**: "Lodge (kiosk account)" is the shared device login and has no membership — a real person who needs the kiosk should hold another role too — and a record created by a booking request is a contact, not a member |
 | **Approve** on a cancellation says only a Full Admin can do it | The member holds a privileged access role (any admin, finance, lodge, or custom role), and only a Full Admin may approve a cancellation for such an account | Ask a full admin to approve it |
 | **Approve** says this is the last Full Admin account | Approving would disable the login of the club's only remaining active Full Admin, leaving nobody able to administer the club | Give another active account Full Admin access first, then approve. This applies to an admin cancelling their own membership too — appoint your successor first |

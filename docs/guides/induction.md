@@ -23,6 +23,10 @@ change settings and templates.
 - You want to resend or reassign the sign-off request to a different signer.
 - An induction was raised in error and needs voiding, or is complete in real life
   and needs an override.
+- The committee has approved one trusted historical baseline for members
+  inducted before this register existed. This is a guarded command-line
+  maintenance procedure, not a register action; follow the
+  [trusted legacy induction baseline runbook](../INDUCTION_BASELINE_RUNBOOK.md).
 - You are tightening (or relaxing) who is allowed to nominate new members, or
   updating the induction checklist itself.
 
@@ -66,6 +70,24 @@ change settings and templates.
    sections and items. Templates already used by an induction are locked —
    duplicate them to make a new version.
 
+### Record a trusted legacy baseline
+
+Do not start and override one register row at a time for a club-wide historical
+baseline. The dedicated maintenance command classifies the active,
+non-archived, non-cancelled `USER`/`ADMIN` member population first, including
+non-login dependants but excluding lodge devices, non-member contacts, and
+school contacts. It includes every configured Infant / Child / Youth / Adult
+age tier and reports `N/A` separately. It preserves every existing induction,
+skips anyone with any completed induction kind, and refuses to apply while an
+eligible member has a Draft or In Progress workflow.
+
+This operation needs a Full Admin actor, a common New Zealand baseline date,
+stable provenance, and exact club and database confirmations. It creates
+completed New Member records with the Admin Override source but no signers,
+sign-offs, email, or hut-leader side effect. Always follow the
+[dry-run-first operator runbook](../INDUCTION_BASELINE_RUNBOOK.md); the normal
+register remains the right workflow for individual inductions.
+
 ## Settings reference
 
 ### Nomination eligibility gate
@@ -104,6 +126,8 @@ change settings and templates.
 - Back to the [documentation hub](../README.md).
 - Sibling guides: [Members](members.md),
   [Member Applications](member-applications.md), [Committee](committee.md).
+- Maintenance runbook:
+  [Trusted legacy induction baseline](../INDUCTION_BASELINE_RUNBOOK.md).
 - Reference: the
   [lodge induction lifecycle](../STATE_MACHINES.md#lodge-induction-lifecycle)
   and [nomination lifecycle](../STATE_MACHINES.md#nomination-lifecycle), and the

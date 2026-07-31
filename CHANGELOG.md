@@ -47,6 +47,66 @@ All notable public reference-release changes should be recorded here.
   queue rather than at the moment of approval, it asks the same question again
   just before it runs and holds off if the answer has changed since.
 
+
+- **Clubs can safely record a trusted induction history when moving an
+  established membership onto the digital register (#2361).** A new
+  dry-run-first operator command classifies every active real-member
+  (`USER`/`ADMIN`) record across the configured Infant, Child, Youth, and Adult
+  tiers, includes non-login dependants, excludes operational and non-member
+  contacts, reports an in-scope `N/A` separately, and preserves anyone who
+  already has a completed induction of any kind. Apply needs a login-enabled
+  Full Admin actor, one New Zealand baseline date, stable source provenance,
+  and exact club, database, and reviewed SHA-256 plan-digest confirmations.
+  Apply rebuilds the complete safe plan under its table lock and rejects stale
+  digests before blocker, no-op, or write handling. It refuses to run
+  over an open induction, locks direct induction-table writes during apply, and
+  commits all completed New Member baseline rows with one audit event or none
+  at all. The runbook requires a short member-population, induction, and
+  configuration, group-join member-creation, and actor-access freeze from the
+  final dry run through post-apply verification because the table lock does not
+  freeze those inputs.
+  The records are explicit Admin Overrides with no invented signers, sign-offs,
+  emails, or hut-leader eligibility; a fresh post-apply dry-run digest permits
+  an identical no-op rerun while the stale pre-apply digest fails closed. The new
+  operator runbook documents rehearsal, review, verification, and recovery.
+- **The browser test suite stopped crying wolf (#2302).** Over three days five
+  different browser tests went red on code that was perfectly fine, each costing
+  someone an investigation and one of them turning the main branch red for the
+  best part of an hour. None of it was a real defect, and none of it was
+  "slowness" either. Two causes were behind all five.
+
+  The first: when a browser test fails, it is automatically run again — but it
+  was run again against the *leftovers* of the attempt that just failed. A test
+  that books a bed on its way to the thing it actually checks left that booking
+  behind, so the second and third attempts failed on the booking clash rather
+  than on the original problem, and the error finally reported was the clean-up
+  mess rather than the cause. Tests that permanently change something now put it
+  back before each attempt, and each attempt books different nights, so a repeat
+  run starts from where the first one did. Where a test genuinely has to re-use
+  or move the booking an earlier test made, and so cannot simply pick different
+  nights, it clears that booking before every attempt instead. Groups of tests
+  that used to be chained together end to end have also been unchained down to
+  the pairs that genuinely depend on each other, so one test's bad luck can no
+  longer drag its neighbours down with it. Relatedly, the tests reach a booking's
+  dates by paging forward through the booking calendar a month at a time: that
+  walk now has room for the furthest dates a repeat run can ask for, and says so
+  plainly if it ever runs out, instead of quietly stopping on the wrong month and
+  failing later on a day it was never showing.
+
+  The second: the pages that stream in progressively briefly contain each piece
+  of text twice — once in the version being delivered and once in the version
+  being shown — and a test that looked for text by wording alone could catch the
+  invisible copy and give up. Those checks now look for the copy that is actually
+  on screen.
+
+  Also fixed: the stand-in Xero server used by the tests calls the app back
+  through its own network loopback, which on a busy build machine occasionally
+  refuses the connection; a single refused connection used to leave the Xero
+  setup wizard stuck on "Confirming the organisation name…" for the rest of the
+  test. That call now retries. The testing guide gains a "Flake invariants"
+  section so a future test cannot quietly reintroduce any of this. No part of
+  this touches the running club site.
+
 - **Adding another club member as a guest (#2306, #2307).** Until now a member
   could only put people from their own family group on a booking. There is now a
   new **Add another member as a guest** switch on **Admin → Modules**, off by
@@ -158,9 +218,40 @@ All notable public reference-release changes should be recorded here.
   that nothing may quietly un-cancel a membership. Related hardening found
   while checking this: the lobby-display preview endpoint now re-checks that the
   admin previewing it still has an active account, which every other admin
-  endpoint already did. The member-facing **Cancel Membership** flow in a
-  member's own profile is unchanged and still limited to ordinary member
-  accounts; its wording no longer implies otherwise.
+  endpoint already did. The member-facing **Membership Cancellation** panel in a
+  member's own profile follows the same rule — see the next entry.
+
+- **A full admin, and an organisation account, can now start a cancellation
+  from their own profile (#2391).** The **Membership Cancellation** panel in a
+  member's profile asked a narrower question than the member page did, and it
+  turned away exactly the two kinds of account the member page used to turn away
+  before the entry above fixed it: a **Full Admin**, and an **organisation or
+  school account**. A departing full admin was told to ring the office; an
+  organisation was told the same and had no self-service route at all.
+  Committee members were never affected — a Membership Officer, Booking Officer,
+  Treasurer, Content Manager or holder of a club-defined custom role keeps an
+  ordinary member account underneath their access, so they were always offered
+  the panel and always appeared in a relative's family list. Family lists had
+  the matching gap for the two classes that were refused: a relative who is a
+  full admin, and an organisation sharing a family group, were simply missing
+  from the list of memberships you could include, with no reason shown, so it
+  looked as though they held no membership at all. The profile panel now asks
+  exactly the question the member page asks: is there an account holder here
+  with a membership? So a full admin can start their own cancellation, an
+  organisation can start its own, and a relative who is a full admin appears in
+  the family list and can be included. Two conditions remain, and both are about
+  being able to use your own profile rather than about what kind of account it
+  is: the account must be active, and it must have its own login. A member with
+  no login of their own — most family dependants — is still cancelled either by a
+  relative including them in a family request or by an admin from their member
+  page, and the refusal now says that instead of implying they are not a proper
+  member. The lodge kiosk login and the contact records created by booking
+  requests are refused here as everywhere else, because they hold no membership,
+  and if one ever appears in a family list it now says so rather than vanishing.
+  Nothing about approval changed: whoever raises a cancellation, a *different*
+  admin must approve it, and the club can still never be left with no full
+  admin — so a sole full admin who starts their own departure from their profile
+  must appoint a successor before anyone can approve it.
 
 - **A booking paid in cash — or by a bank transfer that never reached Xero —
   can now be recorded as paid, properly (#2262).** Open the booking, and under
