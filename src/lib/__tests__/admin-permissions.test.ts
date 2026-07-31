@@ -434,11 +434,19 @@ describe("outstanding additional payment panel visibility (#2350)", () => {
     expect(source).toMatch(/canResend=\{canSeeAdminTools\}/);
   });
 
+  /*
+    The member's own card stays owner-only (#1303). #2350 round 2 added ONE
+    clause to that condition and nothing else: the booking's lifecycle, because
+    cancelling leaves the delta columns untouched and the card was still
+    offering a cancelled booking's owner a payment form (see
+    src/components/__tests__/additional-payment-card-gate.test.ts). The owner
+    gate itself is unchanged, which is what this pin is for.
+  */
   it("leaves the member's own owner-only card exactly where it was (#1303)", () => {
     const source = bookingPageSource();
 
     expect(source).toMatch(
-      /booking\.payment &&\s*isBookingOwner &&\s*!isDeleted &&\s*booking\.payment\.additionalAmountCents > 0 &&\s*booking\.payment\.additionalPaymentStatus !== "SUCCEEDED" && \(\s*<AdditionalPaymentCard/,
+      /booking\.payment &&\s*isBookingOwner &&\s*!isDeleted &&\s*isAdditionalPayableBookingStatus\(booking\.status\) &&\s*booking\.payment\.additionalAmountCents > 0 &&\s*booking\.payment\.additionalPaymentStatus !== "SUCCEEDED" && \(\s*<AdditionalPaymentCard/,
     );
   });
 });
