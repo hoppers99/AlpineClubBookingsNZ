@@ -3,7 +3,7 @@
 // must not work as an existence oracle, a delegate must never be handed the
 // booking page or its money, and only the delegate rule's accepted callers
 // ever see anything specific.
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { parseDateOnly } from "@/lib/date-only";
 import type { MemberGuestConsentDelegateResolver } from "@/lib/member-guest-delegate";
@@ -72,8 +72,19 @@ function resolver(accepts: boolean): MemberGuestConsentDelegateResolver {
 
 const moduleOn = vi.fn(async () => true);
 
+// `stateFor` below pins `now` to 1 August 2026 against a check-in of 8 August
+// 2026, and STAY_NOT_FUTURE outranks the blocker each refusal test is actually
+// about. The wall clock is therefore pushed well PAST every fixture date: if
+// the resolver ever stops threading its own `now` down into the refusal
+// prediction, these tests fail immediately instead of on 8 August 2026.
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2027-03-01T00:00:00.000Z"));
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("who gets past the neutral state", () => {
@@ -229,6 +240,31 @@ describe("the states an accepted delegate sees", () => {
   it("predicts the quote-priced decline refusal for the warning copy", async () => {
     const state = await stateFor(guestRow(), { quotePriced: true });
     expect(state.kind === "ASK" && state.facts.refusalBlocker).toBe("QUOTE_PRICED");
+  });
+
+  it("predicts the refusal against the clock it was given, not the wall clock", async () => {
+    // `stateFor` pins now to 1 August 2026 while the wall clock is pinned to
+    // 1 March 2027 — long after the 8 August 2026 check-in. Reading the wall
+    // clock would report STAY_NOT_FUTURE and drop the "No thanks" button for a
+    // stay that has not happened yet.
+    const state = await stateFor(guestRow(), { quotePriced: true });
+    expect(state.kind === "ASK" && state.facts.refusalBlocker).not.toBe(
+      "STAY_NOT_FUTURE",
+    );
+
+    // ...and it does report STAY_NOT_FUTURE when the caller's own clock says
+    // the stay has started, so the assertion above is not vacuous.
+    const started = await resolveDelegateConsentPageState({
+      guestId: GUEST_ID,
+      viewerMemberId: DELEGATE,
+      db: makeDb(guestRow()),
+      delegateResolver: resolver(true),
+      moduleEnabled: moduleOn,
+      now: new Date("2026-08-08T12:00:00.000+12:00"),
+    });
+    expect(started.kind === "ASK" && started.facts.refusalBlocker).toBe(
+      "STAY_NOT_FUTURE",
+    );
   });
 
   it("falls back to the stay envelope when the row has no night rows", async () => {

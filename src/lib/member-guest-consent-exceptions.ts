@@ -1,5 +1,7 @@
 import { BookingStatus, type Prisma } from "@prisma/client";
 import { isQuotePricedBooking } from "@/lib/booking-modify-validation";
+import { hasCapturedPayment } from "@/lib/booking-payment-state";
+import { getTodayDateOnly } from "@/lib/date-only";
 import type { MemberGuestConsentBlockedReason } from "@/lib/member-guest-consent-service";
 import {
   predictConsentDeclineRefusal,
@@ -64,18 +66,68 @@ const ATTENTION_GUEST_WHERE: Prisma.BookingGuestWhereInput = {
   },
 };
 
+/**
+ * `waitingScope` IS WHAT MAKES THE WAITING CHIP'S NUMBER TRUE. Clicking that
+ * chip does not replace the operator's filters, it STACKS with them (the chip
+ * is AND-composed into the bookings query, by design), so a global count over
+ * every booking in the club would promise rows that the operator's own date,
+ * status, lodge or search filter is about to hide. The page therefore hands in
+ * the SQL filter its current URL already applies — with the consent chips
+ * themselves removed, or the waiting count would be narrowed by whichever chip
+ * happens to be open — and the count is taken inside it.
+ *
+ * ONE CAVEAT, STATED RATHER THAN HIDDEN: three of the bookings list's filters
+ * (Xero state, bed state, change state) are derived in JavaScript after the
+ * query, so no `where` clause can express them. While one of those three is
+ * active the waiting count is an upper bound on what the click will show. It is
+ * the price of not running the whole heavy list pipeline a second time just to
+ * number a chip.
+ *
+ * The attention count needs no scope: clicking that chip SWAPS the table for
+ * the per-guest exception list, which is deliberately unfiltered — a stuck row
+ * needs a human whatever the operator was looking at — so a global count is
+ * exactly what the click reveals.
+ */
 export async function loadMemberGuestConsentQueueCounts(
   db: typeof prisma = prisma,
+  options: { waitingScope?: Prisma.BookingWhereInput } = {},
 ): Promise<MemberGuestConsentQueueCounts> {
+  const waitingWhere: Prisma.BookingWhereInput = options.waitingScope
+    ? {
+        AND: [
+          options.waitingScope,
+          { guests: { some: { consentStatus: "PENDING" } } },
+        ],
+      }
+    : WAITING_BOOKING_WHERE;
   const [waitingBookings, attentionGuests] = await Promise.all([
-    db.booking.count({ where: WAITING_BOOKING_WHERE }),
+    db.booking.count({ where: waitingWhere }),
     db.bookingGuest.count({ where: ATTENTION_GUEST_WHERE }),
   ]);
   return { waitingBookings, attentionGuests };
 }
 
+/**
+ * What the exception list reports, which is D-15's five reasons PLUS one the
+ * removal path itself can never report.
+ *
+ * `NO_LONGER_BLOCKED` exists because this column is re-derived from the live
+ * booking (see the module docblock) and the booking moves on. A row refused as
+ * LAST_GUEST whose booker has since added a second guest is not stuck any more
+ * — nothing about the booking blocks the removal today. Nothing re-attempts it
+ * either: the nightly sweep scans PENDING rows only, so a resolved-but-refused
+ * row sits here until a human touches it. Reporting that row as `OTHER` told
+ * the operator the booking "could not be repriced automatically", which was
+ * simply false, and pointed them at the wrong remedy.
+ */
+export type LiveConsentExceptionReason =
+  | MemberGuestConsentBlockedReason
+  | "NO_LONGER_BLOCKED";
+
 export interface MemberGuestConsentExceptionRow {
   bookingId: string;
+  /** The stuck `BookingGuest` row's own id — the stable identity of this row. */
+  guestId: string;
   lodgeName: string | null;
   checkIn: Date;
   checkOut: Date;
@@ -86,7 +138,7 @@ export interface MemberGuestConsentExceptionRow {
   status: "DECLINED" | "EXPIRED";
   /** When they said no (DECLINED) or when the request lapsed (EXPIRED). */
   statusAt: Date | null;
-  reason: MemberGuestConsentBlockedReason;
+  reason: LiveConsentExceptionReason;
   /** The "Why it is stuck" column. */
   why: string;
   /** The "What fixes it" column — always the real remedy, never "ask the club". */
@@ -100,7 +152,7 @@ export interface MemberGuestConsentExceptionRow {
  * the same why/fix shape.
  */
 export function describeConsentExceptionColumns(params: {
-  reason: MemberGuestConsentBlockedReason;
+  reason: LiveConsentExceptionReason;
   guestFirstName: string;
 }): { why: string; fix: string } {
   const { reason, guestFirstName } = params;
@@ -130,28 +182,56 @@ export function describeConsentExceptionColumns(params: {
         why: "The booking could not be repriced automatically.",
         fix: `Open the booking and take ${guestFirstName} off through the edit flow.`,
       };
+    case "NO_LONGER_BLOCKED":
+      return {
+        why: "Nothing is blocking this now — the booking has changed since the removal was refused.",
+        fix: `Open the booking and take ${guestFirstName} off; it should go through this time.`,
+      };
   }
 }
 
 /**
  * Classify why a surviving DECLINED/EXPIRED row is stuck, from the booking as
  * it stands NOW. The four predictable blockers reuse the member-card
- * prediction (same gates, same order as the removal service); a row none of
- * them explains is the settled-payment / repricing case, reported as OTHER.
+ * prediction (same gates, same order as the removal service).
+ *
+ * WHEN NO PREDICTABLE BLOCKER APPLIES, `hasSettledPayment` DECIDES, and it is
+ * the honest divider rather than a guess. The one refusal the prediction cannot
+ * see is the settled-payment election: `removeBookingGuestInTransaction` refuses
+ * when the reduction needs an explicit refund-vs-credit choice, and that
+ * refusal is reachable ONLY on a booking with a captured payment — with nothing
+ * captured there is nothing to elect. So a row with no predictable blocker AND
+ * no captured payment is not stuck on anything at all; it is a row the booking
+ * has moved past, and telling the operator it "could not be repriced
+ * automatically" would be inventing a problem.
  */
 export function classifyLiveConsentExceptionReason(params: {
   bookingStatus: string;
   bookingCheckIn: Date;
   bookingGuestCount: number;
   isQuotePriced: boolean;
-  today?: Date;
-}): MemberGuestConsentBlockedReason {
-  return predictConsentDeclineRefusal(params) ?? "OTHER";
+  /** Whether the booking holds a captured payment — see above. */
+  hasSettledPayment: boolean;
+  today: Date;
+}): LiveConsentExceptionReason {
+  const { hasSettledPayment, ...prediction } = params;
+  const blocker = predictConsentDeclineRefusal(prediction);
+  if (blocker) return blocker;
+  return hasSettledPayment ? "OTHER" : "NO_LONGER_BLOCKED";
 }
 
+/**
+ * `today` is read ONCE, here, and threaded into every row's derivation — never
+ * left to a default deep inside the prediction. One list must be classified
+ * against one date: a sweep that straddled midnight NZ time would otherwise
+ * report two rows on the same booking under two different rules, and a test
+ * that pins a check-in date would pass or fail depending on the day it ran.
+ */
 export async function listMemberGuestConsentExceptions(
   db: typeof prisma = prisma,
+  options: { today?: Date } = {},
 ): Promise<MemberGuestConsentExceptionRow[]> {
+  const today = options.today ?? getTodayDateOnly();
   const rows = await db.bookingGuest.findMany({
     where: ATTENTION_GUEST_WHERE,
     orderBy: { booking: { checkIn: "asc" } },
@@ -171,6 +251,15 @@ export async function listMemberGuestConsentExceptions(
           lodge: { select: { name: true } },
           member: { select: { firstName: true, lastName: true } },
           guests: { select: { id: true } },
+          // Only to tell a genuine settled-payment refusal from a row the
+          // booking has moved past — see classifyLiveConsentExceptionReason.
+          payment: {
+            select: {
+              status: true,
+              amountCents: true,
+              refundedAmountCents: true,
+            },
+          },
         },
       },
     },
@@ -184,6 +273,8 @@ export async function listMemberGuestConsentExceptions(
         bookingCheckIn: row.booking.checkIn,
         bookingGuestCount: row.booking.guests.length,
         isQuotePriced: await isQuotePricedBooking(db, row.booking.id),
+        hasSettledPayment: hasCapturedPayment(row.booking.payment),
+        today,
       });
       const columns = describeConsentExceptionColumns({
         reason,
@@ -191,6 +282,7 @@ export async function listMemberGuestConsentExceptions(
       });
       return {
         bookingId: row.booking.id,
+        guestId: row.id,
         lodgeName: row.booking.lodge?.name ?? null,
         checkIn: row.booking.checkIn,
         checkOut: row.booking.checkOut,

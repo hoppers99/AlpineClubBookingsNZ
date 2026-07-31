@@ -1,7 +1,7 @@
 import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
 import { isQuotePricedBooking } from "@/lib/booking-modify-validation";
 import { APP_TIME_ZONE } from "@/config/operational";
-import { eachDateOnlyInRange } from "@/lib/date-only";
+import { eachDateOnlyInRange, normalizeDateOnlyForTimeZone } from "@/lib/date-only";
 import {
   familyAdultDelegateResolver,
   type MemberGuestConsentDelegateResolver,
@@ -221,6 +221,12 @@ export async function resolveDelegateConsentPageState(params: {
         bookingCheckIn: guest.booking.checkIn,
         bookingGuestCount: guest.booking.guests.length,
         isQuotePriced: quotePriced,
+        // The SAME clock the age above is worked out from. `now` is already an
+        // injectable parameter of this resolver, so leaving the prediction to
+        // read the wall clock for itself would have meant one call answering
+        // two questions against two different days — and a caller that pinned
+        // the clock would still have got a wall-clock answer here.
+        today: normalizeDateOnlyForTimeZone(now),
       }),
     },
   };

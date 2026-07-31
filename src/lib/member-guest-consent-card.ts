@@ -2,7 +2,7 @@ import { APP_TIME_ZONE } from "@/config/operational";
 import {
   SELF_REMOVABLE_GUEST_BOOKING_STATUSES,
 } from "@/lib/booking-guest-self-removal";
-import { getTodayDateOnly, normalizeDateOnlyForTimeZone } from "@/lib/date-only";
+import { normalizeDateOnlyForTimeZone } from "@/lib/date-only";
 import {
   classifyMemberGuestConsent,
   type MemberGuestConsentColumns,
@@ -46,20 +46,29 @@ export type PredictableConsentDeclineBlocker =
  * The two actor-identity blockers (`OWN_BOOKING` / `NOT_THEIR_OWN_GUEST`) do
  * not exist here: a consent decline runs under the consent authority, which
  * names the target's own row by construction.
+ *
+ * `today` IS REQUIRED, AND DELIBERATELY SO. The STAY_NOT_FUTURE gate outranks
+ * two of the three below it, so a wall-clock default silently changes this
+ * function's answer the morning a fixture's check-in date arrives — every
+ * caller that forgot to pass a clock flips at midnight NZ time, and the tests
+ * that pinned a check-in date go red on that day and no other. Every caller
+ * that legitimately means "now" reads the clock once, by name, and passes it
+ * down; nothing in this module reads it for them.
  */
 export function predictConsentDeclineRefusal(params: {
   bookingStatus: string;
   bookingCheckIn: Date;
   bookingGuestCount: number;
   isQuotePriced: boolean;
-  today?: Date;
+  /** Today as an NZ lodge date. Callers meaning "now" pass `getTodayDateOnly()`. */
+  today: Date;
 }): PredictableConsentDeclineBlocker | null {
   const {
     bookingStatus,
     bookingCheckIn,
     bookingGuestCount,
     isQuotePriced,
-    today = getTodayDateOnly(),
+    today,
   } = params;
 
   if (!SELF_REMOVABLE_GUEST_BOOKING_STATUSES.has(bookingStatus)) {
@@ -202,7 +211,8 @@ export function resolveBookingConsentCard(params: {
   isQuotePriced: boolean;
   /** Whether the #2250 self-removal card renders on this page for this viewer. */
   selfRemovalCardPresent: boolean;
-  today?: Date;
+  /** Today as an NZ lodge date — required for the same reason as above. */
+  today: Date;
 }): BookingConsentCard | null {
   const {
     actorMemberId,
@@ -231,7 +241,7 @@ export function resolveBookingConsentCard(params: {
         bookingCheckIn,
         bookingGuestCount: guests.length,
         isQuotePriced,
-        ...(today ? { today } : {}),
+        today,
       }),
     };
   }
@@ -255,18 +265,44 @@ export interface MemberGuestConsentBadge {
   label: string;
 }
 
+/** Who is reading the guest list: an ordinary member, or an admin-area viewer. */
+export type MemberGuestConsentBadgeAudience = "MEMBER" | "ADMIN";
+
 /**
  * The per-guest consent badge, or null for the rows that must not change.
  *
  * Family and non-member guests — the overwhelming majority of rows, forever —
- * return null: no badge, no layout change. Member and admin read the same
- * page, so this is the ONE badge set both see; the wording is owner decision
- * MG2-M-2 as ticked (30 Jul).
+ * return null: no badge, no layout change. The wording is owner decision
+ * MG2-M-2 as ticked (30 Jul), drawn on two mockups, and THE TWO MOCKUPS DO NOT
+ * SAY THE SAME THING — which is why this function takes an audience:
+ *
+ *  - `docs/member-guests/mockups/member-surfaces.html` (the guest list a member
+ *    reads) signs off the BARE forms: "Consented", "Added by the club",
+ *    "Told, not asked", and "Said no — still on the booking".
+ *  - `docs/member-guests/mockups/admin-surfaces.html` (the same list read by the
+ *    club) signs off the NAMED AND DATED forms: "Consented 2 Aug", "Consented
+ *    by Ana Kaur, 2 Aug", "Added by Jo Admin", and the operational "Said no —
+ *    could not be removed" / "Lapsed — could not be removed".
+ *
+ * The split is a privacy rule, not a styling preference. The responder is very
+ * often a family adult who is NOT on the booking at all (D-9 makes a member
+ * with no login the normal consent target, so a parent or partner answers for
+ * them). Naming that person to every member who can open the booking would
+ * disclose someone who is not a participant in it. The club, which already
+ * holds the whole family record and has to act on these rows, sees the name and
+ * the date. Members see only that the answer was given.
  *
  * `responderName` is the display name of `consentRespondedByMemberId`, looked
- * up by the caller (this module stays database-free). When the responder's
- * member record has since vanished, the delegate badge falls back to a plain
- * "Consented" and the admin badge to "Added by the club" — both still true.
+ * up by the caller (this module stays database-free) and only worth looking up
+ * for an ADMIN audience. When the responder's member record has since vanished
+ * the badge falls back to a form that is still true — "Added by the club", or a
+ * "Consented" with only the date on it.
+ *
+ * The member wording for a LAPSED row ("Lapsed — still on the booking") is the
+ * one badge the member mockup does not draw; it is composed in the member
+ * mockup's own voice from the declined row directly above it, because "could
+ * not be removed" is club-operations language and says nothing a member can act
+ * on. That is a declared deviation.
  *
  * A row that matches NO legal sub-state still gets an honest badge from its
  * raw status rather than disappearing: a broken row a viewer cannot see is a
@@ -274,9 +310,11 @@ export interface MemberGuestConsentBadge {
  */
 export function describeMemberGuestConsentBadge(params: {
   guest: { memberId: string | null } & MemberGuestConsentColumns;
+  audience: MemberGuestConsentBadgeAudience;
   responderName?: string | null;
 }): MemberGuestConsentBadge | null {
-  const { guest, responderName } = params;
+  const { guest, audience, responderName } = params;
+  const forClub = audience === "ADMIN";
 
   if (guest.consentStatus === null) return null;
 
@@ -297,10 +335,13 @@ export function describeMemberGuestConsentBadge(params: {
       if (subState === "ADMIN_ASSIGNED") {
         return {
           tone: "ok",
-          label: responderName ? `Added by ${responderName}` : "Added by the club",
+          label:
+            forClub && responderName
+              ? `Added by ${responderName}`
+              : "Added by the club",
         };
       }
-      if (subState === "DELEGATE_APPROVED" && responderName) {
+      if (forClub && subState === "DELEGATE_APPROVED" && responderName) {
         return {
           tone: "ok",
           label: guest.consentRespondedAt
@@ -308,11 +349,27 @@ export function describeMemberGuestConsentBadge(params: {
             : `Consented by ${responderName}`,
         };
       }
+      if (forClub && guest.consentRespondedAt) {
+        return {
+          tone: "ok",
+          label: `Consented ${formatConsentShortDate(guest.consentRespondedAt)}`,
+        };
+      }
       return { tone: "ok", label: "Consented" };
     case "DECLINED":
-      return { tone: "blocked", label: "Said no — could not be removed" };
+      return {
+        tone: "blocked",
+        label: forClub
+          ? "Said no — could not be removed"
+          : "Said no — still on the booking",
+      };
     case "EXPIRED":
-      return { tone: "blocked", label: "Lapsed — could not be removed" };
+      return {
+        tone: "blocked",
+        label: forClub
+          ? "Lapsed — could not be removed"
+          : "Lapsed — still on the booking",
+      };
     default:
       return null;
   }

@@ -6,7 +6,14 @@
 // refusal copy is the signed-off mockup pack's, so several tests below pin
 // EXACT strings on purpose: changing them is changing an owner decision, and
 // the failing test is the reminder to go get a new tick first.
-import { describe, expect, it } from "vitest";
+//
+// EVERY sentence is pinned verbatim, in both voices and for both audiences,
+// rather than probed for a name or a keyword. A "contains the booker's name"
+// assertion is true of all four refusal sentences at once, so it would pass
+// happily with two of them swapped — telling a member a stay had started when
+// the real problem was the booking's status. Pinning is the only assertion
+// that fails when the copy is wrong rather than merely absent.
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { parseDateOnly } from "@/lib/date-only";
 import type { MemberGuestConsentColumns } from "@/lib/member-guest-consent";
@@ -21,6 +28,7 @@ import {
   formatConsentWeekdayDate,
   predictConsentDeclineRefusal,
   resolveBookingConsentCard,
+  type PredictableConsentDeclineBlocker,
 } from "@/lib/member-guest-consent-card";
 
 const TODAY = parseDateOnly("2026-08-01");
@@ -50,6 +58,21 @@ const PENDING = {
   consentRequestedAt: TODAY,
   consentExpiresAt: EXPIRES,
 };
+
+// The fixtures above pin a check-in of 8 August 2026, and STAY_NOT_FUTURE
+// outranks two of the blockers below it. Left to the wall clock these tests
+// would quietly change their answers on 8 August 2026 and never again, so the
+// clock is pinned to a day well after every fixture date: if a production
+// default ever creeps back in, it produces STAY_NOT_FUTURE here and now rather
+// than on one future morning in CI.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2027-03-01T00:00:00.000Z"));
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("predictConsentDeclineRefusal (D-14's predictable half)", () => {
   const base = {
@@ -95,67 +118,96 @@ describe("predictConsentDeclineRefusal (D-14's predictable half)", () => {
 });
 
 describe("describeConsentDeclineRefusal — the signed-off warning copy", () => {
-  it("uses the mockup's variant A copy verbatim for the last guest", () => {
-    expect(
-      describeConsentDeclineRefusal({
-        blocker: "LAST_GUEST",
-        voice: { kind: "TARGET" },
-        bookerFirstName: "Dave",
-      }),
-    ).toBe(
+  // Every sentence, both voices, pinned word for word. Swapping any two of
+  // them — the exact mistake a "contains Dave" assertion cannot catch — turns
+  // one of these red.
+  const MEMBER_VOICE: Record<PredictableConsentDeclineBlocker, string> = {
+    // The mockup's variant A, verbatim.
+    LAST_GUEST:
       "You are the only guest on this booking, so taking you off would leave it empty. " +
-        "Only Dave or the club can cancel it. Ask Dave to cancel the booking if you do " +
-        "not want to go.",
-    );
-  });
-
-  it("uses the mockup's variant C copy verbatim for a quote-priced booking", () => {
-    expect(
-      describeConsentDeclineRefusal({
-        blocker: "QUOTE_PRICED",
-        voice: { kind: "TARGET" },
-        bookerFirstName: "Dave",
-      }),
-    ).toBe(
+      "Only Dave or the club can cancel it. Ask Dave to cancel the booking if you do " +
+      "not want to go.",
+    // The mockup's variant C, verbatim.
+    QUOTE_PRICED:
       "This booking was priced by hand, so guests cannot be taken off it here. " +
-        "Only the club can take you off — it will re-quote the request. " +
-        "Reply to the club and they will sort it.",
-    );
-  });
+      "Only the club can take you off — it will re-quote the request. " +
+      "Reply to the club and they will sort it.",
+    // Not drawn on the mockup pack; composed in the same voice from the shared
+    // self-removal wording, and pinned here so it stays that way.
+    BOOKING_STATUS:
+      "This booking is in a state where guests cannot be taken off it, so saying no " +
+      "cannot release your place. Ask Dave or the club to take you off if you do not " +
+      "want to go.",
+    STAY_NOT_FUTURE:
+      "This stay starts today or has already started, so your place can no longer be " +
+      "released here. Ask Dave or the club if your plans have changed.",
+  };
 
-  it("names who can act in every member-voice variant", () => {
-    for (const blocker of [
-      "BOOKING_STATUS",
-      "STAY_NOT_FUTURE",
-      "LAST_GUEST",
-    ] as const) {
-      const copy = describeConsentDeclineRefusal({
-        blocker,
-        voice: { kind: "TARGET" },
-        bookerFirstName: "Dave",
-      });
-      expect(copy).toContain("Dave");
-      expect(copy).toContain("club");
+  const DELEGATE_VOICE: Record<PredictableConsentDeclineBlocker, string> = {
+    LAST_GUEST:
+      "Tama is the only guest on this booking, so taking Tama off would leave it " +
+      "empty. Only Dave or the club can cancel it. Ask Dave to cancel the booking " +
+      "if Tama does not want to go.",
+    QUOTE_PRICED:
+      "This booking was priced by hand, so guests cannot be taken off it here. " +
+      "Only the club can take Tama off — it will re-quote the request. " +
+      "Reply to the club and they will sort it.",
+    BOOKING_STATUS:
+      "This booking is in a state where guests cannot be taken off it, so saying no " +
+      "cannot release Tama's place. Ask Dave or the club to take Tama off if they " +
+      "do not want to go.",
+    STAY_NOT_FUTURE:
+      "This stay starts today or has already started, so the place can no longer be " +
+      "released here. Ask Dave or the club if Tama's plans have changed.",
+  };
+
+  const ALL_BLOCKERS = Object.keys(
+    MEMBER_VOICE,
+  ) as PredictableConsentDeclineBlocker[];
+
+  it.each(ALL_BLOCKERS)(
+    "gives the member their own %s sentence, word for word",
+    (blocker) => {
+      expect(
+        describeConsentDeclineRefusal({
+          blocker,
+          voice: { kind: "TARGET" },
+          bookerFirstName: "Dave",
+        }),
+      ).toBe(MEMBER_VOICE[blocker]);
+    },
+  );
+
+  it.each(ALL_BLOCKERS)(
+    "restates the %s sentence in the third person for a delegate, word for word",
+    (blocker) => {
+      expect(
+        describeConsentDeclineRefusal({
+          blocker,
+          voice: { kind: "DELEGATE", guestFirstName: "Tama" },
+          bookerFirstName: "Dave",
+        }),
+      ).toBe(DELEGATE_VOICE[blocker]);
+    },
+  );
+
+  it("never addresses a delegate as the person whose place it is", () => {
+    for (const blocker of ALL_BLOCKERS) {
+      const copy = DELEGATE_VOICE[blocker];
+      expect(copy).not.toMatch(/\byou\b/i);
+      expect(copy).not.toContain("your");
+      // ...and it does name the guest whose place it actually is.
+      expect(copy).toContain("Tama");
     }
   });
 
-  it("restates every variant in the third person for a delegate", () => {
-    for (const blocker of [
-      "BOOKING_STATUS",
-      "STAY_NOT_FUTURE",
-      "LAST_GUEST",
-      "QUOTE_PRICED",
-    ] as const) {
-      const copy = describeConsentDeclineRefusal({
-        blocker,
-        voice: { kind: "DELEGATE", guestFirstName: "Tama" },
-        bookerFirstName: "Dave",
-      });
-      // The delegate is never addressed as the person whose place it is.
-      expect(copy).not.toMatch(/\byou off\b/i);
-      expect(copy).not.toContain("your place");
-      expect(copy).toContain(blocker === "QUOTE_PRICED" ? "Tama" : "Tama");
-    }
+  it("gives each blocker its own distinct sentence in both voices", () => {
+    // A swap between two reasons would leave four values here, not eight.
+    const all = [
+      ...Object.values(MEMBER_VOICE),
+      ...Object.values(DELEGATE_VOICE),
+    ];
+    expect(new Set(all).size).toBe(all.length);
   });
 });
 
@@ -278,108 +330,174 @@ describe("resolveBookingConsentCard", () => {
 });
 
 describe("describeMemberGuestConsentBadge (owner decision MG2-M-2 as ticked)", () => {
-  it("gives family and non-member rows no badge at all", () => {
-    expect(
-      describeMemberGuestConsentBadge({ guest: guest("g", "m-family") }),
-    ).toBeNull();
-    expect(describeMemberGuestConsentBadge({ guest: guest("g", null) })).toBeNull();
+  // The two mockups do not agree, on purpose, so every badge is pinned for
+  // BOTH audiences. docs/member-guests/mockups/member-surfaces.html:199-203 is
+  // the member column; docs/member-guests/mockups/admin-surfaces.html:142-148
+  // is the admin one.
+  const TARGET_APPROVED = {
+    consentStatus: "CONFIRMED" as const,
+    consentRequestedAt: TODAY,
+    consentRespondedAt: RESPONDED,
+    consentRespondedByMemberId: "m-1",
+  };
+  const DELEGATE_APPROVED = {
+    consentStatus: "CONFIRMED" as const,
+    consentRequestedAt: TODAY,
+    consentRespondedAt: RESPONDED,
+    consentRespondedByMemberId: "m-2",
+  };
+  const ADMIN_ASSIGNED = {
+    consentStatus: "CONFIRMED" as const,
+    consentRespondedAt: RESPONDED,
+    consentRespondedByMemberId: "m-admin",
+  };
+  const DECLINED = {
+    consentStatus: "DECLINED" as const,
+    consentRequestedAt: TODAY,
+    consentRespondedAt: RESPONDED,
+    consentRespondedByMemberId: "m-1",
+  };
+  const LAPSED = {
+    consentStatus: "EXPIRED" as const,
+    consentRequestedAt: TODAY,
+    consentExpiresAt: EXPIRES,
+  };
+
+  it("gives family and non-member rows no badge at all, whoever is looking", () => {
+    for (const audience of ["MEMBER", "ADMIN"] as const) {
+      expect(
+        describeMemberGuestConsentBadge({ guest: guest("g", "m-family"), audience }),
+      ).toBeNull();
+      expect(
+        describeMemberGuestConsentBadge({ guest: guest("g", null), audience }),
+      ).toBeNull();
+    }
   });
 
-  it("labels a pending row with its expiry date", () => {
-    expect(
-      describeMemberGuestConsentBadge({ guest: guest("g", "m-1", PENDING) }),
-    ).toEqual({
-      tone: "pending",
-      label: "Waiting for consent · expires 7 Aug",
-    });
+  it("labels a pending row with its expiry date, the same way for both", () => {
+    for (const audience of ["MEMBER", "ADMIN"] as const) {
+      expect(
+        describeMemberGuestConsentBadge({
+          guest: guest("g", "m-1", PENDING),
+          audience,
+        }),
+      ).toEqual({ tone: "pending", label: "Waiting for consent · expires 7 Aug" });
+    }
   });
 
-  it("labels the target's own yes as Consented", () => {
+  it("labels a notify-only row Told, not asked for both audiences", () => {
+    for (const audience of ["MEMBER", "ADMIN"] as const) {
+      expect(
+        describeMemberGuestConsentBadge({
+          guest: guest("g", "m-1", { consentStatus: "CONFIRMED" }),
+          audience,
+        }),
+      ).toEqual({ tone: "ok", label: "Told, not asked" });
+    }
+  });
+
+  it("shows a member the bare forms the member mockup signs off", () => {
+    // Nothing here names anybody or carries a date. The responder is routinely
+    // a family adult who is not on this booking at all, and a name is passed in
+    // anyway to prove the member wording ignores it rather than merely lacking
+    // it.
     expect(
       describeMemberGuestConsentBadge({
-        guest: guest("g", "m-1", {
-          consentStatus: "CONFIRMED",
-          consentRequestedAt: TODAY,
-          consentRespondedAt: RESPONDED,
-          consentRespondedByMemberId: "m-1",
-        }),
+        guest: guest("g", "m-1", TARGET_APPROVED),
+        audience: "MEMBER",
       }),
     ).toEqual({ tone: "ok", label: "Consented" });
-  });
-
-  it("names the delegate and the date when somebody answered for the target", () => {
     expect(
       describeMemberGuestConsentBadge({
-        guest: guest("g", "m-1", {
-          consentStatus: "CONFIRMED",
-          consentRequestedAt: TODAY,
-          consentRespondedAt: RESPONDED,
-          consentRespondedByMemberId: "m-2",
-        }),
+        guest: guest("g", "m-1", DELEGATE_APPROVED),
+        audience: "MEMBER",
+        responderName: "Ana Kaur",
+      }),
+    ).toEqual({ tone: "ok", label: "Consented" });
+    expect(
+      describeMemberGuestConsentBadge({
+        guest: guest("g", "m-1", ADMIN_ASSIGNED),
+        audience: "MEMBER",
+        responderName: "Jo Admin",
+      }),
+    ).toEqual({ tone: "ok", label: "Added by the club" });
+    expect(
+      describeMemberGuestConsentBadge({
+        guest: guest("g", "m-1", DECLINED),
+        audience: "MEMBER",
+      }),
+    ).toEqual({ tone: "blocked", label: "Said no — still on the booking" });
+    expect(
+      describeMemberGuestConsentBadge({
+        guest: guest("g", "m-1", LAPSED),
+        audience: "MEMBER",
+      }),
+    ).toEqual({ tone: "blocked", label: "Lapsed — still on the booking" });
+  });
+
+  it("never leaks a responder's name to a member, for any row shape", () => {
+    for (const consent of [TARGET_APPROVED, DELEGATE_APPROVED, ADMIN_ASSIGNED]) {
+      const badge = describeMemberGuestConsentBadge({
+        guest: guest("g", "m-1", consent),
+        audience: "MEMBER",
+        responderName: "Ana Kaur",
+      });
+      expect(badge?.label).not.toContain("Ana");
+      expect(badge?.label).not.toContain("Kaur");
+    }
+  });
+
+  it("shows the club the named and dated forms the admin mockup signs off", () => {
+    expect(
+      describeMemberGuestConsentBadge({
+        guest: guest("g", "m-1", TARGET_APPROVED),
+        audience: "ADMIN",
+      }),
+    ).toEqual({ tone: "ok", label: "Consented 2 Aug" });
+    expect(
+      describeMemberGuestConsentBadge({
+        guest: guest("g", "m-1", DELEGATE_APPROVED),
+        audience: "ADMIN",
         responderName: "Ana Kaur",
       }),
     ).toEqual({ tone: "ok", label: "Consented by Ana Kaur, 2 Aug" });
-  });
-
-  it("falls back to a plain Consented when the delegate's record is gone", () => {
     expect(
       describeMemberGuestConsentBadge({
-        guest: guest("g", "m-1", {
-          consentStatus: "CONFIRMED",
-          consentRequestedAt: TODAY,
-          consentRespondedAt: RESPONDED,
-          consentRespondedByMemberId: "m-2",
-        }),
-        responderName: null,
-      }),
-    ).toEqual({ tone: "ok", label: "Consented" });
-  });
-
-  it("labels a notify-only row Told, not asked", () => {
-    expect(
-      describeMemberGuestConsentBadge({
-        guest: guest("g", "m-1", { consentStatus: "CONFIRMED" }),
-      }),
-    ).toEqual({ tone: "ok", label: "Told, not asked" });
-  });
-
-  it("names the admin who placed an admin-assigned row, with an honest fallback", () => {
-    const adminAssigned = {
-      consentStatus: "CONFIRMED" as const,
-      consentRespondedAt: RESPONDED,
-      consentRespondedByMemberId: "m-admin",
-    };
-    expect(
-      describeMemberGuestConsentBadge({
-        guest: guest("g", "m-1", adminAssigned),
+        guest: guest("g", "m-1", ADMIN_ASSIGNED),
+        audience: "ADMIN",
         responderName: "Jo Admin",
       }),
     ).toEqual({ tone: "ok", label: "Added by Jo Admin" });
     expect(
-      describeMemberGuestConsentBadge({ guest: guest("g", "m-1", adminAssigned) }),
-    ).toEqual({ tone: "ok", label: "Added by the club" });
-  });
-
-  it("labels the two stuck states with the could-not-be-removed wording", () => {
-    expect(
       describeMemberGuestConsentBadge({
-        guest: guest("g", "m-1", {
-          consentStatus: "DECLINED",
-          consentRequestedAt: TODAY,
-          consentRespondedAt: RESPONDED,
-          consentRespondedByMemberId: "m-1",
-        }),
+        guest: guest("g", "m-1", DECLINED),
+        audience: "ADMIN",
       }),
     ).toEqual({ tone: "blocked", label: "Said no — could not be removed" });
     expect(
       describeMemberGuestConsentBadge({
-        guest: guest("g", "m-1", {
-          consentStatus: "EXPIRED",
-          consentRequestedAt: TODAY,
-          consentExpiresAt: EXPIRES,
-        }),
+        guest: guest("g", "m-1", LAPSED),
+        audience: "ADMIN",
       }),
     ).toEqual({ tone: "blocked", label: "Lapsed — could not be removed" });
+  });
+
+  it("falls back to a still-true form for the club when the responder's record is gone", () => {
+    // The date survives even when the name does not, and an admin-placed row
+    // still says the club placed it.
+    expect(
+      describeMemberGuestConsentBadge({
+        guest: guest("g", "m-1", DELEGATE_APPROVED),
+        audience: "ADMIN",
+        responderName: null,
+      }),
+    ).toEqual({ tone: "ok", label: "Consented 2 Aug" });
+    expect(
+      describeMemberGuestConsentBadge({
+        guest: guest("g", "m-1", ADMIN_ASSIGNED),
+        audience: "ADMIN",
+      }),
+    ).toEqual({ tone: "ok", label: "Added by the club" });
   });
 
   it("still badges a row that matches no legal sub-state, from its raw status", () => {
@@ -391,6 +509,7 @@ describe("describeMemberGuestConsentBadge (owner decision MG2-M-2 as ticked)", (
           consentStatus: "CONFIRMED",
           consentExpiresAt: EXPIRES,
         }),
+        audience: "MEMBER",
       }),
     ).toEqual({ tone: "ok", label: "Consented" });
     // A PENDING row with no expiry (the shape the writer refuses) still warns.
@@ -400,6 +519,7 @@ describe("describeMemberGuestConsentBadge (owner decision MG2-M-2 as ticked)", (
           consentStatus: "PENDING",
           consentRequestedAt: TODAY,
         }),
+        audience: "ADMIN",
       }),
     ).toEqual({ tone: "pending", label: "Waiting for consent" });
   });
