@@ -1769,7 +1769,7 @@ member creates group -> memberless FamilyGroup + PENDING GROUP_CREATE (+ bundled
 create-group names an unregistered partner email -> single-use PartnerInviteToken minted + emailed (see Partner Invite Token Lifecycle) instead of an invitedMemberId
 create-group marks the named partner as a declared partner (#1742) -> registered partner gets a PENDING MemberPartnerLink request; unregistered partner's token carries createPartnerLink (see Partner Link Lifecycle)
 dependent inherits email or has explicit email inheritance source
-parent link requested -> ancestors(parent) + 1 + descendants(child) <= 3 links -> linked | 422 (four-generation cap) | 422 (would close a family loop)
+parent link requested -> parent is active + not archived + not an organisation account (ANY age tier) -> ancestors(parent) + 1 + descendants(child) <= 3 links -> linked | 422 (parent inactive/archived/organisation) | 422 (four-generation cap) | 422 (would close a family loop)
 dependent inherits email -> walk up from the chosen parent to the nearest adult, non-archived, real-address ancestor -> store that terminal source | 422 (nobody reachable)
 family removal/cancellation/delete -> relationship cleanup while preserving history
 cancellation approved for a middle generation -> its dependants' links cleared, NOT re-parented -> detached members named in the response and the audit log
@@ -1778,6 +1778,17 @@ cancellation approved for a middle generation -> its dependants' links cleared, 
 A `CHILD_REQUEST` whose family group still has zero memberships (a bundled
 group-creation child) cannot be approved until the `GROUP_CREATE` request for
 that group is approved first (422 guard).
+
+A parent link may be recorded at **any age tier** (#2282): a 16 or 17 year old
+can genuinely be a parent, so recording the relationship is age-blind while
+every responsibility function — the contact of record for a dependant's mail,
+details confirmation, booking delegation — stays gated on an active adult, none
+of which consults the parent link. A dependant of a non-adult parent therefore
+inherits email from the nearest adult ancestor, and the admin member page names
+that adult before the dependant is added. Organisation and school ACCOUNTS are
+the one exclusion, and it is by role rather than by age tier: they are not
+people, and `NOT_APPLICABLE` is the age-exempt tier that age-exempt humans carry
+too.
 
 Family links run to at most **four generations** (great-grandparent →
 grandparent → parent → child) and two parents per member, checked symmetrically

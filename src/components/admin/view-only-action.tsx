@@ -150,6 +150,16 @@ export function ViewOnlyActionButton({
   const isDisabled = canEdit !== true || disabled;
   // Opted out => the caller's own title/aria-describedby survive untouched.
   const annotate = isReadOnly && describeReason;
+  // ADDED to, never replaced (#2282 review). A caller's `aria-describedby`
+  // explains something ORTHOGONAL to permissions — on the member detail page,
+  // why this particular member cannot take a dependent. When both apply
+  // (a view-only admin looking at an archived member) replacing the caller's id
+  // announced the permission reason and silently dropped the other, so the
+  // admin heard only half of why the control is dead. `aria-describedby` takes
+  // a space-separated id list precisely for this.
+  const describedBy =
+    [annotate ? reasonId : null, ariaDescribedBy].filter(Boolean).join(" ") ||
+    undefined;
 
   return (
     <>
@@ -157,7 +167,7 @@ export function ViewOnlyActionButton({
         {...props}
         disabled={isDisabled}
         title={annotate ? readOnlyReason : title}
-        aria-describedby={annotate ? reasonId : ariaDescribedBy}
+        aria-describedby={describedBy}
       >
         {children}
       </Button>

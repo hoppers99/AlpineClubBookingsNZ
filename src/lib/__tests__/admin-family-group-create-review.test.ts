@@ -785,6 +785,97 @@ describe("reviewAdminFamilyGroupRequest — CHILD_REQUEST memberless-group guard
       })
     );
   });
+
+  /**
+   * THE REQUESTER-ADULT GATE ON APPROVAL (#2282 review).
+   *
+   * #2282 relaxed the age rule on ADMIN-recorded parentage, and left every
+   * RESPONSIBILITY gate alone — including this one, which the issue names as a
+   * blocker that must not be relaxed: a minor cannot have the club create or
+   * adopt a child member on their strength. The member-side gates that stop a
+   * minor RAISING such a request were covered; the APPROVAL side, where an admin
+   * acts on it, had no test at all. Replacing both
+   * `request.requester.ageTier !== "ADULT"` checks with `false` passed 448 tests
+   * across 28 files, so the safeguarding claim rested on nothing here.
+   *
+   * Two checks, two paths, two tests: the pre-transaction one guards
+   * `createNewMember`, the in-transaction one guards linking an existing child.
+   */
+  it("422s approval of a child request raised by a NON-ADULT requester (create path)", async () => {
+    const request = childRequest();
+    request.requester.ageTier = "YOUTH";
+    mockedPrisma.familyGroupJoinRequest.findUnique.mockResolvedValue(
+      request as any
+    );
+    mockedPrisma.familyGroupMember.count.mockResolvedValue(1);
+
+    const result = await reviewAdminFamilyGroupRequest({
+      adminMemberId: ADMIN_ID,
+      data: { requestId: "req-child", action: "approve", createNewMember: true },
+    });
+
+    expect(result.init?.status).toBe(422);
+    expect((result.body as { error: string }).error).toBe(
+      "Child requests can only be approved for active adult requesters."
+    );
+    expect(mockedPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("422s approval of a child request raised by a NON-ADULT requester (link path)", async () => {
+    const request = childRequest();
+    request.requester.ageTier = "YOUTH";
+    mockedPrisma.familyGroupJoinRequest.findUnique.mockResolvedValue(
+      request as any
+    );
+    mockedPrisma.familyGroupMember.count.mockResolvedValue(1);
+    mockedPrisma.member.findUnique.mockResolvedValue({
+      id: "child-1",
+      active: true,
+      archivedAt: null,
+      ageTier: "CHILD",
+      canLogin: false,
+      parentMemberId: null,
+      secondaryParentId: null,
+      inheritEmailFromId: null,
+      parent: null,
+      secondaryParent: null,
+      dependents: [],
+      secondaryDependents: [],
+    } as any);
+
+    const txUpsert = vi.fn();
+    mockedPrisma.$transaction.mockImplementation(async (fn: any) =>
+      fn({
+        $executeRaw: vi.fn().mockResolvedValue(undefined),
+        member: {
+          findUnique: vi.fn().mockResolvedValue({
+            id: "member-1",
+            ageTier: "YOUTH",
+            email: "member-1@test.com",
+            archivedAt: null,
+            parentMemberId: null,
+            secondaryParentId: null,
+            inheritEmailFromId: null,
+          }),
+          findMany: vi.fn().mockResolvedValue([]),
+          update: vi.fn(),
+        },
+        familyGroupMember: { upsert: txUpsert },
+        familyGroupJoinRequest: { update: vi.fn() },
+      })
+    );
+
+    const result = await reviewAdminFamilyGroupRequest({
+      adminMemberId: ADMIN_ID,
+      data: { requestId: "req-child", action: "approve", linkedMemberId: "child-1" },
+    });
+
+    expect(result.init?.status).toBe(422);
+    expect((result.body as { error: string }).error).toBe(
+      "Child requests can only be approved for active adult requesters."
+    );
+    expect(txUpsert).not.toHaveBeenCalled();
+  });
 });
 
 describe("reviewAdminFamilyGroupRequest — ADULT_INVITE stays self-service", () => {
