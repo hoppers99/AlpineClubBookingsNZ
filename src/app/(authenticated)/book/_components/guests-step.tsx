@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { MemberGuestFindPanel } from "@/components/book/member-guest-find-panel";
 import { GuestForm, type GuestData } from "@/components/guest-form";
@@ -13,7 +13,10 @@ import {
 } from "@/lib/family-booking";
 import { describeMemberGuestConsentBadge } from "@/lib/member-guest-consent-card";
 import type { MemberGuestCandidate } from "@/lib/member-guest-find";
-import { memberGuestConsentPreviewColumns } from "./member-guest-preview";
+import {
+  describeMemberGuestWizardHelper,
+  memberGuestConsentPreviewColumns,
+} from "./member-guest-preview";
 import {
   PROFILE_FAMILY_GROUP_RETURN_TO_BOOK,
   type FamilyMember,
@@ -83,6 +86,20 @@ export function GuestsStep({
   // The find panel opens INLINE, underneath the Guests heading (owner sign-off
   // answer 3) — never a dialog.
   const [findPanelOpen, setFindPanelOpen] = useState(false);
+  // Who the last add was about, so a refusal can be shown beneath a chip naming
+  // them (mockup panel 13) instead of floating above a blank search box. The
+  // panel closes on add and the server answers on the quote that follows, so by
+  // the time the refusal arrives the panel's own selection is gone (F9).
+  const [lastAddAttempt, setLastAddAttempt] = useState<MemberGuestCandidate | null>(
+    null,
+  );
+  // Focus has to go somewhere when the panel unmounts, or Escape drops it on the
+  // document body and a keyboard user is stranded at the top of the page (F5).
+  const findTriggerRef = useRef<HTMLButtonElement>(null);
+  const closeFindPanel = () => {
+    setFindPanelOpen(false);
+    findTriggerRef.current?.focus();
+  };
   // A D-8 refusal comes back AFTER the panel has closed (the add is optimistic;
   // the server answers on the quote that follows). Re-opening puts the one
   // neutral sentence beside the person the booker was adding, which is where the
@@ -274,6 +291,7 @@ export function GuestsStep({
           headerActions={
             memberGuestEnabled ? (
               <Button
+                ref={findTriggerRef}
                 type="button"
                 variant={findPanelOpen ? "secondary" : "outline"}
                 size="sm"
@@ -293,14 +311,17 @@ export function GuestsStep({
                   .filter((id): id is string => Boolean(id))}
                 atCapacity={guests.length >= lodgeCapacity}
                 addError={memberGuestAddError}
+                refusedCandidate={memberGuestAddError ? lastAddAttempt : null}
                 onAdd={(candidate) => {
+                  setLastAddAttempt(candidate);
                   addMemberGuest(candidate);
-                  setFindPanelOpen(false);
+                  closeFindPanel();
                 }}
-                onCancel={() => setFindPanelOpen(false)}
+                onCancel={closeFindPanel}
               />
             ) : null
           }
+          renderGuestHelper={(guest) => describeMemberGuestWizardHelper(guest)}
           renderGuestBadge={(guest) => {
             const columns = memberGuestConsentPreviewColumns(guest);
             if (!columns) return null;

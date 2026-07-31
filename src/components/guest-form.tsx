@@ -63,6 +63,16 @@ interface GuestFormProps {
   belowHeader?: React.ReactNode;
   /** Optional per-guest badge (MG3's consent states), rendered in the guest row header. */
   renderGuestBadge?: (guest: GuestData, index: number) => React.ReactNode;
+  /**
+   * Optional replacement for the one explanatory sentence under a guest row.
+   *
+   * The default sentence for a member-linked row says "Linked family members
+   * keep their member details and member pricing" — true for every such row
+   * until MG3, and false for the cross-family people the finder now adds
+   * (#2308). Returning a string replaces it; returning null keeps the default,
+   * which is what every existing caller gets by passing nothing at all.
+   */
+  renderGuestHelper?: (guest: GuestData, index: number) => string | null;
 }
 
 function shiftDateOnly(date: string, days: number): string {
@@ -97,6 +107,7 @@ export function GuestForm({
   headerActions,
   belowHeader,
   renderGuestBadge,
+  renderGuestHelper,
 }: GuestFormProps) {
   const ageTierOptions = useAgeTierOptions();
   const showPerGuestDatesToggle = Boolean(
@@ -295,9 +306,10 @@ export function GuestForm({
           </div>
 
           <p className="text-sm text-muted-foreground">
-            {isLinkedMember
-              ? "Linked family members keep their member details and member pricing."
-              : "Typed-in guests are treated as non-members and charged at non-member rates."}
+            {renderGuestHelper?.(guest, index) ??
+              (isLinkedMember
+                ? "Linked family members keep their member details and member pricing."
+                : "Typed-in guests are treated as non-members and charged at non-member rates.")}
           </p>
           {perGuestDatesEnabled && !multiDateRangesEnabled && bookingCheckIn && bookingCheckOut && (
             <div className="grid grid-cols-1 gap-3 border-t pt-3 sm:grid-cols-2">

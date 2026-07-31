@@ -18,7 +18,10 @@ import { shouldShowInviteFamilyGroupMembersLink } from "@/lib/family-booking";
 import { hasAccessRole, hasAdminAccess } from "@/lib/access-roles";
 import { isPaymentOwedBookingStatus } from "@/lib/booking-status";
 import { MEMBER_ONBOARDING_CONFIRMED_EVENT } from "@/lib/member-onboarding-events";
-import { MEMBER_GUEST_NOT_ADDABLE_CODE } from "@/lib/booking-guests";
+import {
+  GUEST_MEMBER_NOT_ALLOWED_CODE,
+  MEMBER_GUEST_NOT_ADDABLE_CODE,
+} from "@/lib/booking-guests";
 import { MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE } from "@/lib/member-guest-refusal";
 import type { MemberGuestCandidate } from "@/lib/member-guest-find";
 import { predictMemberGuestConsent } from "../_components/member-guest-preview";
@@ -200,6 +203,9 @@ export function useBookingWizard() {
   const [internetBankingHoldSummary, setInternetBankingHoldSummary] = useState<string | null>(null);
   const [bookingMessages, setBookingMessages] = useState<BookingMessageMap>({});
   const [familyMembers, setFamilyMembers] = useState<FamilyMember[]>([]);
+  // Whether `/api/members/family` has answered at all — see the note in the
+  // fetch below and in `predictMemberGuestConsent`.
+  const [familyMembersLoaded, setFamilyMembersLoaded] = useState(false);
   const [subscriptionStatus, setSubscriptionStatus] = useState<SubscriptionStatus | null>(null);
   const [subscriptionLoading, setSubscriptionLoading] = useState(true);
   const [availablePromoCodes, setAvailablePromoCodes] = useState<AvailablePromoCode[]>([]);
@@ -414,10 +420,18 @@ export function useBookingWizard() {
       // seeded ✓ button alongside the amber blocked warning.
       const seq = (familyLoadSeqRef.current += 1);
       fetch("/api/members/family")
-        .then((res) => res.ok ? res.json() : { familyMembers: [] })
+        .then((res) => (res.ok ? res.json() : null))
         .then((data) => {
           if (seq !== familyLoadSeqRef.current) return;
+          // MG3 (#2308): a FAILED load is distinguished from an EMPTY one, and
+          // only the success sets `familyMembersLoaded`. The consent prediction
+          // below decides "is this person my own family?" from this list, so an
+          // empty list that really means "we could not ask" would predict
+          // "Waiting for Mia to approve" over the booker's own child. See
+          // `predictMemberGuestConsent`.
+          if (!data) return;
           setFamilyMembers(data.familyMembers || []);
+          setFamilyMembersLoaded(true);
         })
         .catch(() => {});
     };
@@ -672,6 +686,7 @@ export function useBookingWizard() {
         memberGuestConsentPreview: predictMemberGuestConsent({
           candidateMemberId: candidate.memberId,
           familyMemberIds: familyMembers.map((fm) => fm.id),
+          familyMembersLoaded,
           approvalRequired: memberGuestConfig.approvalRequired,
         }),
         ...(perGuestDatesEnabled && dateStrings
@@ -726,16 +741,47 @@ export function useBookingWizard() {
     // the client renders whatever it is given and never re-derives the choice.
     // Family-scope adds keep both detailed branches unchanged.
     if (data.code === MEMBER_GUEST_NOT_ADDABLE_CODE) {
-      // Shown in the find panel, beside the person the booker was adding
-      // (mockup panel 13), rather than only in the page banner — so the page
-      // banner is deliberately cleared. The panel re-opens itself on this
-      // state, so the message can never be set with nowhere to render.
-      setMemberGuestAddError(
+      const message =
         typeof data.error === "string"
           ? data.error
-          : MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE,
+          : MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE;
+      setMemberGuestAddError(message);
+      // WHERE THIS RENDERS, and why the step is consulted (correctness review of
+      // MG3 #2308, HIGH-1). On the guests step the refusal belongs in the find
+      // panel, beside the person the booker was adding (mockup panel 13), and
+      // the page banner is cleared so the same sentence is not shown twice.
+      //
+      // Everywhere else the panel does not exist: `GuestsStep` — the ONLY
+      // renderer of `memberGuestAddError` — is mounted on the guests step alone,
+      // while three of the four callers of this function (create, join-waitlist
+      // and save-draft) run from the REVIEW step. Clearing the banner there
+      // produced a completely silent failure: the Confirm button simply stopped
+      // working, and each further click spent another unit of cross-family
+      // throttle budget until a 429 became the booker's first feedback of any
+      // kind. It is also reachable without a race — `/api/bookings/quote` does
+      // not run the unpaid-subscription check, so a member guest with an unpaid
+      // subscription quotes cleanly and is refused only at Confirm.
+      //
+      // Setting `memberGuestAddError` as well is still right: the guests step
+      // re-opens the panel on it, so stepping back shows the refusal in context.
+      setError(step === "guests" ? "" : message);
+      setGuestProfileBlocks([]);
+      setMemberNightConflicts([]);
+      setErrorPaymentTargets([]);
+      return;
+    }
+    if (data.code === GUEST_MEMBER_NOT_ALLOWED_CODE) {
+      // MEDIUM-4. The club turned the member-guest module off between this page
+      // loading and the booker submitting (or a client sent a member id it was
+      // never offered). The server's refusal is `"Invalid guest member
+      // reference"` — deliberately byte-for-byte what it was before the feature
+      // existed, which MG2 pins by test — so it is a developer-facing string
+      // that must not be shown to a member. The code is what lets the wizard say
+      // something a person can act on without the server changing its wording.
+      setMemberGuestAddError(null);
+      setError(
+        "One of the members on this booking can't be added any more. Refresh the page and try again — if it keeps happening, ask the club.",
       );
-      setError("");
       setGuestProfileBlocks([]);
       setMemberNightConflicts([]);
       setErrorPaymentTargets([]);

@@ -45,11 +45,14 @@ import {
   applyMemberGuestAddThrottle,
   equaliseMemberGuestRefusalTiming,
   handleMemberGuestAddRefusal,
+  memberGuestAddThrottleHook,
+  MemberGuestAddThrottledError,
   memberGuestRefusalDelayMs,
   recordMemberGuestAddRefusal,
   startMemberGuestRefusalClock,
 } from "@/lib/member-guest-probe-guard";
 import { rateLimiters } from "@/lib/rate-limit";
+import { resolveLinkedBookingMembersWithBoundary } from "@/lib/booking-guests";
 
 const request = () =>
   new Request("https://club.example/api/bookings/quote", {
@@ -304,6 +307,7 @@ describe("handleMemberGuestAddRefusal — the one call every add path makes", ()
       },
       route: "bookings/quote",
       startedAt: startMemberGuestRefusalClock(),
+      throttle: "CHARGE_NOW",
     });
     // The floor must NOT be applied to ordinary errors: a quarter-second (here
     // five seconds) on "check-out must be after check-in" would slow the whole
@@ -323,6 +327,7 @@ describe("handleMemberGuestAddRefusal — the one call every add path makes", ()
       error: { crossFamilyMemberIds: ["m-stranger"] },
       route: "bookings/quote",
       startedAt,
+      throttle: "CHARGE_NOW",
     });
     expect(h.applyMemberScopedRateLimit).toHaveBeenCalled();
     expect(h.createStructuredAuditLog).toHaveBeenCalled();
@@ -340,7 +345,152 @@ describe("handleMemberGuestAddRefusal — the one call every add path makes", ()
         error: { crossFamilyMemberIds: ["m-stranger"] },
         route: "bookings/quote",
         startedAt: startMemberGuestRefusalClock(),
+        throttle: "CHARGE_NOW",
       }),
     ).resolves.toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The fixes the privacy and correctness reviews of MG3 (#2308) landed here
+// ---------------------------------------------------------------------------
+
+describe("H1 — the throttle is spent BEFORE anything is read about the member", () => {
+  it("raises the 429 out of the boundary hook, so both resolution branches answer alike", async () => {
+    h.applyMemberScopedRateLimit.mockResolvedValue(DENIED());
+    const hook = memberGuestAddThrottleHook({
+      request: request(),
+      actorMemberId: "m-booker",
+    });
+    const error = await hook({ beyondFamilyMemberIds: ["m-stranger"] }).catch(
+      (err: unknown) => err,
+    );
+    expect(error).toBeInstanceOf(MemberGuestAddThrottledError);
+    expect((error as MemberGuestAddThrottledError).response.status).toBe(429);
+  });
+
+  it("stays silent for a family-only attempt, so ordinary bookings are never throttled", async () => {
+    const hook = memberGuestAddThrottleHook({
+      request: request(),
+      actorMemberId: "m-booker",
+    });
+    await expect(hook({ beyondFamilyMemberIds: [] })).resolves.toBeUndefined();
+    expect(h.applyMemberScopedRateLimit).not.toHaveBeenCalled();
+  });
+
+  it("exempts an admin acting on behalf, exactly as the direct throttle does", async () => {
+    const hook = memberGuestAddThrottleHook({
+      request: request(),
+      actorMemberId: "m-officer",
+      skipAuthorization: true,
+    });
+    await expect(hook({ beyondFamilyMemberIds: ["m-stranger"] })).resolves.toBeUndefined();
+    expect(h.applyMemberScopedRateLimit).not.toHaveBeenCalled();
+  });
+
+  it("runs before the member records are read, on a real resolve", async () => {
+    // The ordering claim, asserted against `resolveLinkedBookingMembersWithBoundary`
+    // itself rather than against a route: the hook must fire before the member
+    // lookup, or an id with nobody behind it throws first and answers 403 while a
+    // real member answers 429.
+    const calls: string[] = [];
+    const db = {
+      familyGroupMember: { findMany: async () => [] },
+      member: {
+        findMany: async () => {
+          calls.push("member.findMany");
+          return [];
+        },
+      },
+    } as unknown as Parameters<typeof resolveLinkedBookingMembersWithBoundary>[0];
+
+    h.applyMemberScopedRateLimit.mockResolvedValue(DENIED());
+    const error = await resolveLinkedBookingMembersWithBoundary(db, "m-booker", ["m-ghost"], {
+      memberGuestWideningEnabled: true,
+      onBoundaryResolved: memberGuestAddThrottleHook({
+        request: request(),
+        actorMemberId: "m-booker",
+      }),
+    }).catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(MemberGuestAddThrottledError);
+    expect(calls).toEqual([]);
+  });
+});
+
+describe("MEDIUM-1 — exactly one throttle unit per attempt", () => {
+  it("does not charge again on a route whose hook already charged", async () => {
+    await handleMemberGuestAddRefusal({
+      request: request(),
+      actorMemberId: "m-booker",
+      error: { crossFamilyMemberIds: ["m-stranger"] },
+      route: "bookings/quote",
+      startedAt: startMemberGuestRefusalClock(),
+      throttle: "ALREADY_CHARGED",
+    });
+    // Double-charging halved the real budget on the refused path — which is both
+    // the probe channel AND the owner's explicitly protected honest case.
+    expect(h.applyMemberScopedRateLimit).not.toHaveBeenCalled();
+    // The other two mitigations still run.
+    expect(h.createStructuredAuditLog).toHaveBeenCalled();
+  });
+
+  it("charges once on a route that resolves inside its transaction", async () => {
+    await handleMemberGuestAddRefusal({
+      request: request(),
+      actorMemberId: "m-booker",
+      error: { crossFamilyMemberIds: ["m-stranger"] },
+      route: "bookings/guests-add",
+      startedAt: startMemberGuestRefusalClock(),
+      throttle: "CHARGE_NOW",
+    });
+    // Two calls, not four: the burst window and the daily backstop, once each.
+    expect(h.applyMemberScopedRateLimit).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("#2388 acceptance — a run of probes across dates is throttled before it yields a calendar", () => {
+  it("cuts the run off at the burst cap, long before a season is mapped", async () => {
+    // The owner's first acceptance criterion, which had no test at any level.
+    // A real counter is used, not a stub: the limiter's own budget decides.
+    let spent = 0;
+    h.applyMemberScopedRateLimit.mockImplementation(async (config: { limit: number }) => {
+      spent += 1;
+      return spent > config.limit ? DENIED() : ALLOWED;
+    });
+
+    const hook = memberGuestAddThrottleHook({
+      request: request(),
+      actorMemberId: "m-prober",
+    });
+
+    // One attempt per candidate date, all naming the same member.
+    const answers: string[] = [];
+    for (let night = 0; night < 40; night += 1) {
+      const outcome = await hook({ beyondFamilyMemberIds: ["m-target"] }).then(
+        () => "answered",
+        (err: unknown) =>
+          err instanceof MemberGuestAddThrottledError ? "throttled" : "other",
+      );
+      answers.push(outcome);
+    }
+
+    const answered = answers.filter((a) => a === "answered").length;
+    expect(answered).toBe(rateLimiters.memberGuestAddProbe.limit);
+    expect(answers.at(-1)).toBe("throttled");
+    // A lodge season is ~150 nights; the run stops an order of magnitude short of
+    // one sitting's worth of it.
+    expect(answered).toBeLessThan(150);
+  });
+
+  it("leaves an honest family booking completely untouched, however many dates it tries", async () => {
+    const hook = memberGuestAddThrottleHook({
+      request: request(),
+      actorMemberId: "m-honest",
+    });
+    for (let night = 0; night < 40; night += 1) {
+      await expect(hook({ beyondFamilyMemberIds: [] })).resolves.toBeUndefined();
+    }
+    expect(h.applyMemberScopedRateLimit).not.toHaveBeenCalled();
   });
 });

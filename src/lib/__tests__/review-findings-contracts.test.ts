@@ -1,4 +1,11 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "fs";
 import { tmpdir } from "os";
 import path from "path";
 import { spawnSync } from "child_process";
@@ -225,7 +232,126 @@ function runMigrationSafetyCoverage(
   });
 }
 
+/**
+ * Every non-test file under `src/` that calls the person-night guard, found by
+ * walking the tree rather than by a list somebody has to remember to update.
+ */
+function personNightGuardCallers(): string[] {
+  const roots = [path.resolve(process.cwd(), "src")];
+  const found: string[] = [];
+  while (roots.length > 0) {
+    const dir = roots.pop()!;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      // Test helper: walks the repo's own src tree; no user input.
+      // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === "__tests__" || entry.name === "node_modules") continue;
+        roots.push(full);
+        continue;
+      }
+      if (!/\.tsx?$/.test(entry.name)) continue;
+      if (/\.test\.tsx?$/.test(entry.name)) continue;
+      // Test helper: reads a file discovered by walking the repo's src tree.
+      // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+      const source = readFileSync(full, "utf8");
+      if (
+        source.includes("findBookingMemberNightConflicts(") ||
+        source.includes("assertNoBookingMemberNightConflicts(")
+      ) {
+        found.push(path.relative(process.cwd(), full).replace(/\/g, "/"));
+      }
+    }
+  }
+  return found.sort();
+}
+
 describe("review finding source/schema contracts", () => {
+  // MG3 (#2308), privacy finding C1. The person-night 409 always carries the
+  // clashing member's NAME and the exact nights they are booked elsewhere — the
+  // #2250 payload gates everything about the other booking on entitlement, but
+  // those two fields sit outside the gate, justified by "the requester already
+  // knows this: they chose the member and the dates". That justification holds
+  // for the booker's own household and fails completely for a stranger.
+  //
+  // The guard learns which guests are strangers from a marker, and the marker is
+  // set by whoever builds the guest list. So a NEW caller that builds a list and
+  // forgets is a silent re-opening of a CRITICAL leak with no test to catch it —
+  // which is precisely how the original defect survived. This contract makes that
+  // impossible to do accidentally: every caller must be classified here, with a
+  // reason, or the build fails.
+  it("classifies every person-night guard caller as marking or entitled (#2308 C1)", () => {
+    // Callers that must mark the party against the LIVE family boundary before
+    // they ask the guard anything, because a member reads their answer.
+    const mustMark = new Set([
+      "src/app/api/bookings/[id]/modify-quote/route.ts",
+      "src/lib/booking-modify-plan.ts",
+      "src/lib/booking-date-modification-service.ts",
+    ]);
+    // Callers that need no marking, each for a stated reason.
+    const exempt = new Map([
+      [
+        "src/app/api/admin/booking-requests/[id]/link-conflicts/route.ts",
+        "admin-only surface; an officer is entitled to the detail",
+      ],
+      [
+        "src/app/api/bookings/[id]/guests/route.ts",
+        "passes ONLY the guests being added, every beyond-family one of which already carries the marker from planMemberGuestConsentWrites",
+      ],
+      [
+        "src/app/api/bookings/quote/route.ts",
+        "a create-shaped quote has no existing guests; every member-linked guest in the list is one this request supplied and markCrossFamilyMemberGuests marked",
+      ],
+      [
+        "src/app/api/bookings/route.ts",
+        "booking creation: same as the quote route, there is no existing party",
+      ],
+      [
+        "src/lib/booking-create.ts",
+        "creation only, called with the marked list the route built",
+      ],
+      [
+        "src/lib/booking-request-quotes.ts",
+        "public/school booking requests: admin-facing, no member reads the answer",
+      ],
+      [
+        "src/lib/booking-request-shared.ts",
+        "public/school booking requests: admin-facing, no member reads the answer",
+      ],
+      [
+        "src/lib/booking-member-night-conflicts.ts",
+        "the guard itself",
+      ],
+      [
+        "src/lib/booking-guest-self-removal.ts",
+        "type-only import of the conflict shape",
+      ],
+      [
+        "src/lib/booking-member-night-conflict-messages.ts",
+        "message builder; takes conflicts, never calls the guard on a party",
+      ],
+    ]);
+
+    const callers = personNightGuardCallers();
+    const unclassified = callers.filter(
+      (file) => !mustMark.has(file) && !exempt.has(file),
+    );
+    expect(
+      unclassified,
+      "A new caller of the person-night guard must be classified in this test: " +
+        "either it marks cross-family guests with markCrossFamilyGuestsOnBooking " +
+        "before calling the guard, or it is exempt for a reason written down here.",
+    ).toEqual([]);
+
+    for (const file of mustMark) {
+      expect(callers, `${file} still calls the guard`).toContain(file);
+      expect(
+        readRepoFile(file),
+        `${file}: must mark the whole proposed party against the live family boundary`,
+      ).toContain("markCrossFamilyGuestsOnBooking");
+    }
+  });
+
   it("keeps guest chore token links read-only", () => {
     const source = readRepoFile("src/app/api/chores/[token]/route.ts");
     const putBlock = sliceFrom(source, "export async function PUT");

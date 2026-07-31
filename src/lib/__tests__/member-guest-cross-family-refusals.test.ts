@@ -52,6 +52,7 @@ import {
   type LinkedBookingMember,
 } from "@/lib/booking-guests";
 import { findUnpaidMemberGuests } from "@/lib/booking-member-guest-subscriptions";
+import { markCrossFamilyGuestsOnBooking } from "@/lib/member-guest-add-policy";
 import { findBookingMemberNightConflicts } from "@/lib/booking-member-night-conflicts";
 import { MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE } from "@/lib/member-guest-refusal";
 import { parseDateOnly } from "@/lib/date-only";
@@ -166,6 +167,21 @@ describe("D-8 leak 1 — the profile-completeness gate", () => {
 // 2. The person-night conflict
 // ---------------------------------------------------------------------------
 
+/**
+ * The two `FamilyGroupMember` reads `computeMemberGuestBoundary` makes, stubbed:
+ * everyone in `householdMemberIds` shares one group with the booker.
+ */
+function familyBoundaryDb(householdMemberIds: readonly string[]) {
+  return {
+    familyGroupMember: {
+      findMany: async ({ where }: { where: { memberId?: unknown; familyGroupId?: unknown } }) =>
+        where.familyGroupId
+          ? householdMemberIds.map((memberId) => ({ memberId, familyGroupId: "fg-1" }))
+          : [{ memberId: BOOKER, familyGroupId: "fg-1" }],
+    },
+  } as unknown as Parameters<typeof markCrossFamilyGuestsOnBooking>[0];
+}
+
 function conflictDb(conflictMemberId: string) {
   return {
     bookingGuest: {
@@ -221,13 +237,29 @@ describe("D-8 leak 2 — the person-night conflict", () => {
     expect(refusal.message).not.toContain("2026-09-10");
   });
 
-  it("returns the ordinary detailed conflict for an unmarked (family-scope) guest", async () => {
+  // REWRITTEN by the privacy review of MG3 (#2308), finding C1, and the rewrite
+  // is the point rather than a tidy-up. This test used to be called "returns the
+  // ordinary detailed conflict for an unmarked (family-scope) guest" and its body
+  // asserted that an UNMARKED guest gets the detailed answer — treating "unmarked"
+  // and "family-scope" as the same thing.
+  //
+  // They are not, and MG3 is exactly where they come apart: the marker is set
+  // only on guests a request is ADDING, so a cross-family member guest ALREADY on
+  // the booking is unmarked forever. Equating the two is what made the CRITICAL
+  // read-out look correct, and it is why nothing caught it. The two cases are now
+  // separate tests: this one is genuinely family-scope (the guard is given the
+  // booker's own household), and the one below is the unmarked stranger.
+  it("returns the ordinary detailed conflict for a guest inside the booker's family", async () => {
     const conflicts = await findBookingMemberNightConflicts(conflictDb(CHILD), {
       actorMemberId: BOOKER,
       actorRole: "USER",
       checkIn: CHECK_IN,
       checkOut: CHECK_OUT,
-      guests: [{ memberId: CHILD, stayStart: CHECK_IN, stayEnd: CHECK_OUT }],
+      guests: await markCrossFamilyGuestsOnBooking(
+        familyBoundaryDb([BOOKER, CHILD]),
+        BOOKER,
+        [{ memberId: CHILD, stayStart: CHECK_IN, stayEnd: CHECK_OUT }],
+      ),
     });
 
     expect(conflicts).toHaveLength(1);
@@ -236,6 +268,58 @@ describe("D-8 leak 2 — the person-night conflict", () => {
     // #2250's disclosure gate is untouched: this viewer is not entitled to the
     // other booking, so none of its fields are attached.
     expect(conflicts[0].bookingId).toBeUndefined();
+  });
+
+  it("refuses neutrally for a cross-family member guest ALREADY on the booking (C1)", async () => {
+    // The case with no coverage anywhere before this: nobody is being added, so
+    // nothing carries the request-scoped marker, and the guard used to answer in
+    // full — name and exact booked nights — on every date change, through a
+    // side-effect-free preview that spent no throttle and wrote no audit row.
+    const guests = await markCrossFamilyGuestsOnBooking(
+      familyBoundaryDb([BOOKER, CHILD]),
+      BOOKER,
+      [
+        // No `crossFamilyMemberGuest` anywhere in the input: it is DERIVED.
+        { memberId: OUTSIDER, stayStart: CHECK_IN, stayEnd: CHECK_OUT },
+      ],
+    );
+    expect(guests[0]).toMatchObject({ crossFamilyMemberGuest: true });
+
+    const error = await findBookingMemberNightConflicts(conflictDb(OUTSIDER), {
+      actorMemberId: BOOKER,
+      actorRole: "USER",
+      checkIn: CHECK_IN,
+      checkOut: CHECK_OUT,
+      guests,
+    }).catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(BookingGuestValidationError);
+    const refusal = error as BookingGuestValidationError;
+    expect(refusal.message).toBe(MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE);
+    expect(refusal.status).toBe(403);
+    expect(refusal.message).not.toContain("Dana");
+    expect(refusal.message).not.toContain("2026-09-10");
+  });
+
+  it("leaves an ADMIN path's detailed conflict alone", async () => {
+    // An officer is entitled to the detail, exactly as `collapseForMemberIds`
+    // exempts them; withholding it would buy nothing and cost support tickets.
+    const guests = await markCrossFamilyGuestsOnBooking(
+      familyBoundaryDb([BOOKER, CHILD]),
+      BOOKER,
+      [{ memberId: OUTSIDER, stayStart: CHECK_IN, stayEnd: CHECK_OUT }],
+      { skipAuthorization: true },
+    );
+    expect(guests[0]).not.toHaveProperty("crossFamilyMemberGuest");
+
+    const conflicts = await findBookingMemberNightConflicts(conflictDb(OUTSIDER), {
+      actorMemberId: "m-admin",
+      actorRole: "ADMIN",
+      checkIn: CHECK_IN,
+      checkOut: CHECK_OUT,
+      guests,
+    });
+    expect(conflicts[0].memberName).toBe("Dana Doe");
   });
 
   it("says nothing when a marked cross-family guest has no clash at all", async () => {

@@ -88,15 +88,39 @@ export class BookingGuestValidationError extends Error {
    */
   public crossFamilyMemberIds?: readonly string[];
 
+  /**
+   * A machine code for a refusal whose MESSAGE must not change but whose
+   * member-facing wording has to (MG3 #2308, correctness review MEDIUM-4).
+   *
+   * The widening refusal is the case: MG1/MG2 pin its text byte-for-byte, so a
+   * club that has not opted in sees exactly the refusal it always saw and no
+   * error text anywhere mentions member guests. That text is developer-facing
+   * ("Invalid guest member reference"), and MG3's finder made it reachable by an
+   * ordinary member for the first time. The code lets the client say something
+   * actionable without the server rewording anything.
+   */
+  public code?: string;
+
   constructor(
     message: string,
     public status: number,
-    options?: { crossFamilyMemberIds?: readonly string[] }
+    options?: { crossFamilyMemberIds?: readonly string[]; code?: string }
   ) {
     super(message);
     this.crossFamilyMemberIds = options?.crossFamilyMemberIds;
+    this.code = options?.code;
   }
 }
+
+/**
+ * The refusal a member gets for naming a member id they are not allowed to book
+ * — today, a club that has the member-guest module off.
+ *
+ * Says nothing a caller did not already know: they sent the id, and they are
+ * being told it is not usable. It deliberately does NOT say whether the member
+ * exists, nor that a member-guest feature exists at all.
+ */
+export const GUEST_MEMBER_NOT_ALLOWED_CODE = "GUEST_MEMBER_NOT_ALLOWED";
 
 /**
  * Build D-8's one collapsed refusal, tagged with the targets it concerned.
@@ -202,6 +226,10 @@ export function getBookingGuestValidationErrorResponse(
     // not the caller's, and echoing them back would confirm which of several
     // requested members the club refused to discuss.
     return { code: MEMBER_GUEST_NOT_ADDABLE_CODE, error: error.message };
+  }
+
+  if (error.code) {
+    return { code: error.code, error: error.message };
   }
 
   return { error: error.message };
@@ -358,7 +386,12 @@ export async function resolveLinkedBookingMembersWithBoundary(
       options?.memberGuestWideningEnabled !== true &&
       boundary.beyondFamilyMemberIds.length > 0
     ) {
-      throw new BookingGuestValidationError("Invalid guest member reference", 403);
+      throw new BookingGuestValidationError("Invalid guest member reference", 403, {
+        // The MESSAGE is unchanged, byte for byte — MG2 pins it. The code is
+        // additive and lets the wizard render member-facing copy instead of
+        // this developer-facing sentence (MEDIUM-4).
+        code: GUEST_MEMBER_NOT_ALLOWED_CODE,
+      });
     }
   }
 

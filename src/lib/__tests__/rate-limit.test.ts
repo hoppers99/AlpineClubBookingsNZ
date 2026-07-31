@@ -5,6 +5,7 @@ import {
   getClientIp,
   applyRateLimit,
   applyMemberScopedRateLimit,
+  MEMBER_SCOPED_IP_LIMIT_MULTIPLIER,
   rateLimiters,
   _testStore,
   type RateLimitConfig,
@@ -402,14 +403,31 @@ describe("applyMemberScopedRateLimit (#2308)", () => {
     expect(results[results.length - 1]?.status).toBe(429);
   });
 
-  it("spends the IP budget even when the member keeps changing", async () => {
+  // REWRITTEN by the privacy review (finding M1). This test used to assert that
+  // four members behind one address exhausted a budget of two — which is exactly
+  // the NAT lock-out the function's own docblock claimed it had closed, and which
+  // per-IP-only limiting already had. The behaviour deliberately changed: the
+  // MEMBER key is the control, and the shared-IP key is a much larger backstop.
+  it("does not lock out a household NAT, but still bounds one address", async () => {
+    const members = Array.from({ length: 30 }, (_, i) => `m-${i}`);
     const results = [];
-    for (const memberId of ["m-1", "m-2", "m-3", "m-4"]) {
+    for (const memberId of members) {
       results.push(
         await applyMemberScopedRateLimit(config, request("203.0.113.9"), memberId),
       );
     }
+    // Ten honest members on one wifi, one request each, all served — under the
+    // old rule the third one was refused.
+    expect(results.slice(0, 10).every((result) => result === null)).toBe(true);
+    // The IP key is still finite: `limit * MEMBER_SCOPED_IP_LIMIT_MULTIPLIER`.
+    const served = results.filter((result) => result === null).length;
+    expect(served).toBe(config.limit * MEMBER_SCOPED_IP_LIMIT_MULTIPLIER);
     expect(results[results.length - 1]?.status).toBe(429);
+  });
+
+  it("keeps the shared-IP counter under the SAME limiter id, only judged differently", async () => {
+    await applyMemberScopedRateLimit(config, request("203.0.113.12"), "m-y");
+    expect([..._testStore.keys()]).toContain(`${config.id}:ip:203.0.113.12`);
   });
 
   it("namespaces the two keys so a member id cannot collide with an address", async () => {
@@ -432,5 +450,36 @@ describe("applyMemberScopedRateLimit (#2308)", () => {
     expect(denied?.status).toBe(429);
     expect(denied?.headers.get("Retry-After")).toBeTruthy();
     expect(denied?.headers.get("X-RateLimit-Remaining")).toBe("0");
+  });
+});
+
+// The two harvest-cost claims the privacy review found overstated (finding M2),
+// and the daily backstop it found missing on the default-on mode (M3). These are
+// arithmetic assertions on the shipped numbers, so a later "tidy-up" of a limiter
+// cannot quietly make a docblock's honesty claim false again.
+describe("member-guest limiter sizing is honest (#2308 M2/M3)", () => {
+  it("gives the DEFAULT-ON email resolve a daily cap no larger than the opt-in search's", () => {
+    // Without a daily cap, 20 per 15 minutes is 1,920 lookups a day — nearly five
+    // times the budget of the mode the owner accepted as browsable.
+    expect(rateLimiters.memberGuestResolveDaily).toBeDefined();
+    expect(rateLimiters.memberGuestResolveDaily.windowSeconds).toBe(24 * 60 * 60);
+    expect(rateLimiters.memberGuestResolveDaily.limit).toBeLessThanOrEqual(
+      rateLimiters.memberGuestSearchDaily.limit,
+    );
+    const burstPerDay =
+      rateLimiters.memberGuestResolve.limit *
+      ((24 * 60 * 60) / rateLimiters.memberGuestResolve.windowSeconds);
+    expect(rateLimiters.memberGuestResolveDaily.limit).toBeLessThan(burstPerDay);
+  });
+
+  it("does not let the add-probe cap be described as making a season take weeks", () => {
+    // ~150 nights in a lodge season. At 50 a day that is about three days, not
+    // three weeks — the figure the docblock used to claim. The cap is still worth
+    // having (it turns a scripted afternoon into days of logged work), but the
+    // arithmetic has to be stated truthfully.
+    const SEASON_NIGHTS = 150;
+    const daysToMapASeason =
+      SEASON_NIGHTS / rateLimiters.memberGuestAddProbeDaily.limit;
+    expect(daysToMapASeason).toBeLessThan(7);
   });
 });

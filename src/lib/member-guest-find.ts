@@ -320,9 +320,38 @@ export const MEMBER_GUEST_FIND_COPY = Object.freeze({
   noNameMatch: "No members match that name.",
   truncated: "Keep typing to narrow this down.",
   sameName: "Two members match that name — use their email address to be sure.",
+  /**
+   * The same-name hint for the EMAIL mode, where the mockup's sentence would be
+   * circular: the booker has just typed the address it tells them to use (UX
+   * review, finding F8). Two people at one address with the same name and age
+   * group genuinely cannot be told apart from what a row may show (D-19), so
+   * this points at the only person who can tell them apart.
+   */
+  sameNameEmail:
+    "Two members at that address have the same name — ask them or the club which one to add.",
   rateLimited: "Too many searches — try again shortly.",
   networkError: "That didn't work. Try again in a moment.",
   minChars: "Type at least two letters.",
+  /**
+   * What a name typed into the DEFAULT (email-only) box gets told (UX review,
+   * finding F7). Before this, typing a name with open search off did literally
+   * nothing — no request, no message, an inert Enter key — which is the exact
+   * trap the owner's sign-off answer 2 was chosen to avoid, in the mode every
+   * club gets on day one.
+   */
+  nameSearchOff:
+    "This club doesn't list members by name. Enter their email address to find them.",
+  searching: "Searching…",
+  /**
+   * The honest next step under D-8's neutral refusal — the mockup's panel-13
+   * sentence, which was drawn and signed off but never shipped (UX review,
+   * finding F9). It says the only two true things available: the club will not
+   * say why, and there are two people who can.
+   */
+  refusalHelp: "If you think that's wrong, ask them directly, or contact the club.",
+  /** Why "Add to booking" is disabled on a chip, so it is never silently dead. */
+  alreadyAdded: "Already on this booking",
+  atCapacity: "This booking is already full",
 } as const);
 
 /**

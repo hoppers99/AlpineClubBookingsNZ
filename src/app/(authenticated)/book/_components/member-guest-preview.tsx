@@ -75,18 +75,73 @@ export function memberGuestConsentPreviewColumns(
  *
  * Returns `undefined` for a family-scope add, which is what leaves the guest row
  * badge-free and byte-identical to a quick-add.
+ *
+ * AND `undefined` WHEN THE FAMILY LIST IS UNKNOWN, which is the failure mode the
+ * correctness review asked for a guard on. If `/api/members/family` errors, the
+ * list is empty for a reason that has nothing to do with who is in the booker's
+ * family — and an empty list makes EVERY candidate look beyond-family, so the
+ * bug this function exists to prevent comes straight back in the one situation
+ * where the booker is most likely to use the finder for their own household (the
+ * quick-add row is empty too, because it reads the same list).
+ *
+ * Predicting nothing is the safer of the two wrong answers. A missing badge
+ * under-informs: the booker is not told the person will be asked, and the
+ * server still asks them, and the booking page shows the true state the moment
+ * it is created. A wrong PENDING badge actively misinforms: it promises an email
+ * that is never sent and a held bed that does not exist, and it drags the whole
+ * review-step explainer about a stranger seeing the booking onto a row that is
+ * the booker's own child.
  */
 export function predictMemberGuestConsent(params: {
   candidateMemberId: string;
   /** The booker's own family list, including their own row. */
   familyMemberIds: readonly string[];
+  /** False until `/api/members/family` has actually answered — see above. */
+  familyMembersLoaded: boolean;
   /** `MemberGuestSettings.approvalRequired` — D-3, true is the shipped default. */
   approvalRequired: boolean;
 }): GuestData["memberGuestConsentPreview"] {
+  if (!params.familyMembersLoaded) {
+    return undefined;
+  }
   if (params.familyMemberIds.includes(params.candidateMemberId)) {
     return undefined;
   }
   return params.approvalRequired ? "PENDING" : "NOTIFY_ONLY";
+}
+
+/**
+ * The one explanatory sentence under a guest row the finder added.
+ *
+ * WHY THIS EXISTS (UX review of MG3 #2308, finding F3). `GuestForm` prints
+ * "Linked family members keep their member details and member pricing." for
+ * every row carrying a `memberId`, which until MG3 could only ever BE a family
+ * member. The finder now puts people on that row who are emphatically not
+ * family, so a PENDING Sam Whittaker was being told he was the booker's linked
+ * family member — the single explanatory sentence under the person they had just
+ * added, and it was false.
+ *
+ * DECLARED DIVERGENCE FROM THE SIGNED-OFF MOCKUP, recorded there with a dated
+ * note per that file's own amendment rule. Panel 11 draws the PENDING helper as
+ * "Sam has been emailed and their bed is held until they answer." In the WIZARD
+ * that is not true yet: no booking exists, so nothing has been sent and no bed is
+ * held until the booker confirms. The tense is corrected and nothing else.
+ *
+ * Returns `null` for every other row — family adds, non-member guests, and every
+ * booking that predates this feature — which leaves `GuestForm`'s existing
+ * sentence exactly where it was.
+ */
+export function describeMemberGuestWizardHelper(
+  guest: Pick<GuestData, "memberGuestConsentPreview" | "firstName">,
+): string | null {
+  if (guest.memberGuestConsentPreview === "PENDING") {
+    const name = guest.firstName.trim() || "They";
+    return `${name} will be emailed when you confirm this booking, and their bed is held until they answer.`;
+  }
+  if (guest.memberGuestConsentPreview === "NOTIFY_ONLY") {
+    return "Your club adds member guests straight away and emails them to say so.";
+  }
+  return null;
 }
 
 /** The first names of everyone in the party whose answer is still awaited. */
