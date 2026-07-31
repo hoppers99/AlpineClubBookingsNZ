@@ -4,25 +4,32 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
-- **Turning on login for a member now explains an email clash instead of just
-  failing (#2385).** Only one member per email address can sign in — that is why
-  a family's children can share a parent's address as long as they do not log in
-  themselves. Changing a member's address to one that is already someone's login
-  has always said so plainly: "A member with this email already exists". But
-  ticking **Can Login** on **Account & Access** for a member whose *existing*
-  address is already someone else's login went a different way. That form sends
-  the login switch and the access roles, and no email address at all, so the
-  check that produces the friendly message — which only looked at addresses that
-  had *changed* — was skipped, the save went through to the database, the
-  database refused it, and the admin got an unexplained failure with nothing to
-  act on. It is a plausible thing to do: enabling login on an imported record
-  whose address a spouse already signs in with. The check now also runs whenever
-  login is being switched on, against the address the member already has, so the
-  same clear message appears. If two admins happen to claim the same address in
-  the same moment, the one who loses now gets that message too, rather than the
-  unexplained failure. Nothing about who is allowed to sign in has changed — the
-  database rule that permits only one login per address was always doing its job,
-  and still is; this is purely about being told why a save was refused.
+- **A refused save no longer blames the email address when the email address is
+  not the problem, and switching a family's login holder now explains an email
+  clash (#2385).** Only one member per email address can sign in — that is why a
+  family's children can share a parent's address as long as they do not log in
+  themselves. Three changes, all about being told the truth when a save is
+  refused:
+
+  - On a member's **Account & Access** tab, ticking **Can Login** when that
+    member's address is already someone else's login is now spotted before the
+    save is attempted rather than by letting the database reject it. Admins see
+    the same message as before — "A member with this email already exists" — so
+    nothing looks different; the save simply stops earlier.
+  - What *has* changed is what happens when a save is refused for some **other**
+    reason. Any refusal of this kind used to be reported as an email clash, even
+    when the email was fine. Only a genuine email clash says so now; anything
+    else is reported as a general failure and recorded in the logs for an
+    administrator to look at. Nobody is sent off to fix an address that was
+    never wrong.
+  - On a family group's **Shared email & login** panel, handing the login to a
+    different adult when someone **outside that family** already signs in with
+    the address used to fail with an unexplained error. It now says "A member
+    with this email already exists", and the same message is given to whichever
+    of two admins loses a race to claim the address at the same moment.
+
+  Nothing about who is allowed to sign in has changed — the database rule that
+  permits only one login per address was always doing its job, and still is.
 
 - **Clubs can safely record a trusted induction history when moving an
   established membership onto the digital register (#2361).** A new
