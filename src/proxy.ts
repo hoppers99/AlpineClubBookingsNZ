@@ -16,6 +16,7 @@ import {
   REQUEST_METHOD_HEADER,
   REQUEST_PATH_HEADER,
 } from "./lib/internal-return-path";
+import { getSetupInProgressResponse } from "./lib/setup-gate";
 
 /**
  * Public pages a shared cache may store for anonymous visitors (#2322).
@@ -166,6 +167,23 @@ export async function proxy(request: NextRequest) {
     selfOrigin: request.nextUrl.origin,
   });
   const pageSlug = pathname === "/" ? "home" : pathname.replace(/^\//, "");
+
+  // Ahead of the module gate on purpose (#2420). Until site setup is complete
+  // the whole public website answers "not ready yet", and that outranks "this
+  // module is switched off" — a 404 for a module-gated website path would
+  // otherwise tell an anonymous prober which modules an unconfigured install has
+  // on. It also means the module read is skipped entirely while the gate is
+  // closed. Never reached for `/api/*`: those paths are gated by the matcher and
+  // by `isPublicWebsitePath`, so `api/[...unmatched]` keeps answering JSON 404
+  // in both setup states (#2405).
+  const setupInProgressResponse = await getSetupInProgressResponse(request);
+
+  if (setupInProgressResponse) {
+    setupInProgressResponse.headers.set(CSP_HEADER, csp);
+    setSecurityHeaders(setupInProgressResponse.headers, pathname);
+    return setupInProgressResponse;
+  }
+
   const featureFlagBlockResponse = await getEffectiveModuleBlockResponse(
     request.nextUrl.pathname,
   );
