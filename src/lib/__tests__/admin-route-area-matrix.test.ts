@@ -159,6 +159,10 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/bookings/[id]/eligible-family": "bookings",
   "/api/admin/bookings/[id]/exclusive-hold": "bookings",
   "/api/admin/bookings/[id]/force-confirm": "bookings",
+  // B5 (#2262): a bookings-prefixed path deliberately resolved to finance by
+  // SPECIAL_ROUTE_AREA_PATTERNS — recording or reversing a cash settlement is a
+  // money action, gated finance:edit.
+  "/api/admin/bookings/[id]/mark-paid": "finance",
   "/api/admin/bookings/[id]/no-emails": "bookings",
   "/api/admin/bookings/[id]/requested-room": "bookings",
   "/api/admin/bookings/[id]/review": "bookings",
@@ -314,6 +318,11 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/public-content-settings": "content",
   "/api/admin/payments": "finance",
   "/api/admin/payments/[id]/generate-invoice": "finance",
+  // B5 (#2262): the open hand-back queue and the endpoint that closes a task.
+  // The /api/admin/payments prefix already resolves to finance, so no
+  // SPECIAL_ROUTE_AREA_PATTERNS entry is needed for this one.
+  "/api/admin/payments/manual-refund-tasks": "finance",
+  "/api/admin/payments/manual-refund-tasks/[id]": "finance",
   "/api/admin/pending-counts": "overview",
   "/api/admin/promo-codes": "bookings",
   "/api/admin/promo-codes/[id]": "bookings",

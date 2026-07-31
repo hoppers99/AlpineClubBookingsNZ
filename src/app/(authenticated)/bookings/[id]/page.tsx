@@ -19,6 +19,7 @@ import { BookingEditor, type BookingEditorData } from "@/components/booking-edit
 import { AdditionalPaymentCard } from "@/components/additional-payment-card";
 import { ConfirmDraftButton } from "@/components/confirm-draft-button";
 import { AdminBookingToolsCard } from "@/components/admin/admin-booking-tools-card";
+import { getBookingManualPaymentState } from "@/lib/manual-booking-payment-state";
 import { BookingBedAllocationPanel } from "@/components/admin/booking-bed-allocation-panel";
 import { BookingWithheldEmailsBanner } from "@/components/admin/booking-withheld-emails-banner";
 import { getWithheldBookingEmailSummary } from "@/lib/booking-email-suppression";
@@ -1150,6 +1151,15 @@ export default async function BookingDetailPage({
       }
     : null;
 
+  // B5 (#2262): cash / off-Xero payment controls. Advisory only — the settle
+  // path re-derives every condition under lock(1) + the per-lodge lock — so a
+  // stale page can cause a 409 and never a wrong write. Skipped for a deleted
+  // booking, which settles nothing.
+  const manualPaymentState =
+    canSeeAdminTools && !isDeleted
+      ? await getBookingManualPaymentState(booking.id)
+      : null;
+
   // Admin conflict surfacing (ADR-001 decision 1, issue #119): when this
   // booking exclusively holds the whole lodge, list the existing
   // capacity-holding bookings overlapping its nights so the officer can resolve
@@ -1284,6 +1294,7 @@ export default async function BookingDetailPage({
             conflicts: exclusiveHoldConflicts,
           }}
           noEmails={isDeleted ? undefined : (noEmailsState ?? undefined)}
+          manualPayment={manualPaymentState ?? undefined}
         />
       )}
 

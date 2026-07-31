@@ -2,7 +2,19 @@ import { type Invoice } from "xero-node";
 import { BookingEventType, BookingStatus, CreditType, PaymentSource, PaymentStatus, PaymentTransactionKind, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import logger from "@/lib/logger";
-import { sendAdminPaymentFailureAlert, sendBookingCancelledEmail, sendBookingConfirmedEmail } from "@/lib/email";
+import {
+  sendAdminManualSettlementConflictAlert,
+  sendAdminPaymentFailureAlert,
+  sendBookingCancelledEmail,
+  sendBookingConfirmedEmail,
+} from "@/lib/email";
+import { claimAlertCooldown } from "@/lib/alert-cooldown";
+import { buildXeroInvoiceUrl } from "@/lib/xero-links";
+import {
+  MANUAL_SETTLEMENT_CONFLICT_EVENT_KIND,
+  MANUAL_SETTLEMENT_CONFLICT_EVENT_REASON,
+  type ManualSettlementConflictEventSnapshot,
+} from "@/lib/manual-settlement-reversal-event";
 import { applyGroupSettlementSucceededFromInvoice } from "@/lib/group-settlement";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import {
@@ -232,6 +244,105 @@ async function sumInternetBankingMintedCentsForBookings(
   return aggregate._sum.amountCents ?? 0;
 }
 
+/**
+ * B5 (#2262): repeat-alert window for the reciprocal fence. A webhook replay
+ * must RE-COUNT the conflict (it is still unreconciled) without re-mailing the
+ * admins every time Xero redelivers the same event.
+ */
+const MANUAL_SETTLEMENT_CONFLICT_ALERT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * B5 (#2262): the durable half of the reciprocal fence. Records the conflict
+ * ONCE per (payment, invoice) as an admin-only BookingEvent, then alerts the
+ * admins behind a cross-instance cooldown. Runs AFTER the transaction — the
+ * provider call must never sit inside one — and never changes money state.
+ */
+async function recordManualSettlementConflict({
+  payment,
+  bookingStatus,
+  invoiceId,
+  invoiceNumber,
+}: {
+  payment: Prisma.PaymentGetPayload<{
+    include: { booking: { include: { member: true } } };
+  }>;
+  bookingStatus: BookingStatus;
+  invoiceId: string;
+  invoiceNumber: string | null;
+}) {
+  const snapshot: ManualSettlementConflictEventSnapshot = {
+    kind: MANUAL_SETTLEMENT_CONFLICT_EVENT_KIND,
+    invoiceId,
+    invoiceNumber,
+    bookingStatus,
+  };
+
+  // BEST-EFFORT once per (payment, invoice): this is a read-then-create with
+  // no unique key, so two concurrent replays of the same invoice event can
+  // both pass the read and record twice. That duplicate is harmless — the
+  // event is an admin-only history marker, the alert below has its own
+  // cross-instance cooldown, and no money state keys off the event — so a
+  // unique constraint is deliberately not added. A DIFFERENT invoice reporting
+  // paid against the same payment still records its own conflict.
+  const alreadyRecorded = await prisma.bookingEvent
+    .findFirst({
+      where: {
+        bookingId: payment.bookingId,
+        type: BookingEventType.CANCELLED,
+        snapshot: { path: ["kind"], equals: MANUAL_SETTLEMENT_CONFLICT_EVENT_KIND },
+        AND: [{ snapshot: { path: ["invoiceId"], equals: invoiceId } }],
+      },
+      select: { id: true },
+    })
+    .catch((err) => {
+      logger.error(
+        { err, bookingId: payment.bookingId, invoiceId },
+        "Failed to look up an existing manual-settlement conflict event; recording a fresh one"
+      );
+      return null;
+    });
+
+  if (!alreadyRecorded) {
+    await recordBookingEvent({
+      bookingId: payment.bookingId,
+      type: BookingEventType.CANCELLED,
+      actorMemberId: null,
+      amountCents: payment.amountCents,
+      reason: MANUAL_SETTLEMENT_CONFLICT_EVENT_REASON,
+      snapshot: snapshot as unknown as Prisma.InputJsonValue,
+    });
+  }
+
+  const holdsClaim = await claimAlertCooldown({
+    key: `manual-settlement-conflict:${payment.id}:${invoiceId}`,
+    windowMs: MANUAL_SETTLEMENT_CONFLICT_ALERT_COOLDOWN_MS,
+  }).catch((err) => {
+    logger.error(
+      { err, paymentId: payment.id, invoiceId },
+      "Failed to claim the manual-settlement conflict alert cooldown; sending anyway rather than staying silent about unreconciled money"
+    );
+    return true;
+  });
+  if (!holdsClaim) return;
+
+  await sendAdminManualSettlementConflictAlert({
+    memberName: `${payment.booking.member.firstName} ${payment.booking.member.lastName}`,
+    checkIn: payment.booking.checkIn,
+    checkOut: payment.booking.checkOut,
+    amountCents: payment.amountCents,
+    bookingId: payment.bookingId,
+    bookingStatus,
+    xeroInvoiceNumber: invoiceNumber,
+    // Cross-lane #2283: Xero deep links are BUILT, never hand-rolled.
+    xeroInvoiceUrl: buildXeroInvoiceUrl(invoiceId),
+  }).catch((err) =>
+    logger.error(
+      { err, bookingId: payment.bookingId, paymentId: payment.id, invoiceId },
+      "Failed to alert admins about a manual-settlement vs Xero payment conflict"
+    )
+  );
+}
+
 export async function syncInternetBankingPaymentsForPaidInvoice(
   invoice: Invoice,
   linkedPaymentIds: string[]
@@ -246,6 +357,10 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
     partialCashCreditedInternetBankingBookings: 0,
     skippedAlreadyPaidBookings: 0,
     skippedNoCashEvidencePayments: 0,
+    // B5 (#2262): inbound PAID events that landed on a manually settled
+    // booking. Surfaced in the inbound-event result JSON the replay route
+    // returns, so the fence is never a quiet return.
+    manualSettlementConflicts: 0,
   };
 
   if (!invoiceId || !isPaidXeroInvoice(invoice)) {
@@ -432,6 +547,40 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
 
       if (!fresh || fresh.source !== PaymentSource.INTERNET_BANKING) {
         return { type: "missing" as const };
+      }
+
+      // B5 (#2262) — the RECIPROCAL fence, and the counterpart to the outbound
+      // refusal. An admin recorded this booking's payment as cash / an off-Xero
+      // bank transfer; Xero now reports the same booking's invoice PAID. The
+      // club may be holding the same money twice, and only a person can decide
+      // which is real, so this pipeline writes NOTHING further and raises a
+      // durable alert instead of returning quietly.
+      //
+      // Placed BEFORE the transactionUpdate below on purpose, so the settle
+      // loop never stamps a Xero invoice id onto a manually settled payment's
+      // rows.
+      //
+      // Keyed on `manuallyMarkedPaidAt` ALONE, with NO status conjunct:
+      //  * PAID     — the plain double settlement;
+      //  * CANCELLED — must conflict, because the inbound path would otherwise
+      //    mint member credit for this cash while an OPEN ManualRefundTask
+      //    already owes the member the same money: a double refund;
+      //  * COMPLETED — must conflict, because cron-complete-bookings flips
+      //    PAID -> COMPLETED post-stay, so a late bank transfer lands here.
+      // And with no "…and carries no Xero id" conjunct either: two stampers
+      // outside this loop (syncLinkedPaymentInvoiceMetadata, which runs BEFORE
+      // it, and the zero-cash arm below) can legitimately have stamped an id
+      // onto a manual row, and that must not launder its provenance.
+      if (fresh.manuallyMarkedPaidAt) {
+        return {
+          type: "manualSettlementConflict" as const,
+          payment: fresh,
+          bookingStatus: fresh.booking.status,
+          // Carried so the discriminated union keeps type-checking at the
+          // shared `outcome.paymentWasPending` read below; this arm never
+          // counts as a payment the inbound pipeline settled.
+          paymentWasPending: false,
+        };
       }
 
       const transactionUpdate = await tx.paymentTransaction.updateMany({
@@ -872,6 +1021,31 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
     });
 
     if (outcome.type === "missing") {
+      continue;
+    }
+
+    if (outcome.type === "manualSettlementConflict") {
+      // B5 (#2262). Loud on every axis: a counter in the returned result, an
+      // error log, a durable admin-only BookingEvent (once per payment+invoice)
+      // and an admin alert throttled by a cross-instance cooldown so webhook
+      // replays re-count without re-spamming. NO money state was changed.
+      result.manualSettlementConflicts += 1;
+      logger.error(
+        {
+          bookingId: outcome.payment.bookingId,
+          paymentId: outcome.payment.id,
+          bookingStatus: outcome.bookingStatus,
+          invoiceId,
+          invoiceNumber,
+        },
+        "Inbound Xero PAID landed on a manually settled booking (#2262): the club may hold the same money twice — nothing was written"
+      );
+      await recordManualSettlementConflict({
+        payment: outcome.payment,
+        bookingStatus: outcome.bookingStatus,
+        invoiceId,
+        invoiceNumber,
+      });
       continue;
     }
 

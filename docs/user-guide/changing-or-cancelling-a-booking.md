@@ -68,6 +68,10 @@ and will be applied when you confirm."*
    depends on how close to check-in you cancel and your club's policy:
    - **Refund to card** or **account credit** for a paid booking, per the
      schedule.
+   - If you paid the club **in cash or by a direct bank transfer** (the club
+     recorded the payment for you), there is no card to refund and no credit is
+     added — **the club will arrange your refund directly**, and the dialog
+     shows the amount you can expect back under the schedule.
    - If the booking is **unpaid** but still cancellable, you simply see "no
      payment received / no refund" instead of refund tiers — there is nothing to
      refund.
@@ -94,6 +98,7 @@ guide.
 | Change costs less | A refund or account credit for the difference |
 | Nights are locked (near check-in) | The change may need club review before it applies |
 | Cancel a paid booking | Refund to card or account credit, per the cancellation schedule |
+| Cancel a booking paid in cash / by direct bank transfer | The club will arrange your refund directly — no card refund, no account credit |
 | Cancel an unpaid booking | No payment was taken, so no refund — the booking is simply cancelled |
 | Confirmation/cancellation email missing | The booking page always shows the true current state |
 

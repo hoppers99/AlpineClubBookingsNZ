@@ -55,6 +55,51 @@ permission area; a view-only support role can read but not save.
    **Save Template**. Use **Restore Default** to drop your override and return to
    the built-in wording.
 
+### There is no "only if" — write lines that always read correctly
+
+The body is plain text with token substitution and **nothing else**. There is no
+`if`, no conditional, no way to show a line only when a value exists. A token
+whose value is not applicable to a particular send simply renders as **nothing
+at all** — so a line you write as `Door code: {{doorCode}}` prints a bare
+`Door code:` to every member staying at a lodge that has no door code.
+
+That is why several tokens are **pre-composed whole lines** rather than bare
+values: `{{doorCodeNote}}`, `{{reasonNote}}`, `{{adminNoteLine}}`,
+`{{reviewNoteLine}}`, `{{committeeNote}}`, `{{amountRecordedNote}}`,
+`{{promoSummary}}`, `{{provisionalGuestsNote}}` and their siblings each render
+the **entire** line — label, value and the blank line after it — or nothing
+whatsoever. Put one of those tokens on its own, with no label of your own in
+front of it, and the email reads correctly whether or not the value exists.
+
+Two consequences worth knowing:
+
+- **Never write a label in front of a `…Note` / `…Line` token.** Writing
+  `Admin note: {{adminNoteLine}}` reintroduces the dangling label the token
+  exists to prevent.
+- **Never annotate a body with instructions to yourself.** Text such as
+  `[only when a door code is set]` is not understood by anything — it is
+  printed verbatim to the member. Older built-in wording carried such notes;
+  they were all removed in v0.13, the build refuses any that come back, and
+  **Save now refuses square-bracketed text in an override** too. A
+  customisation you saved from the old built-in wording may still carry these
+  notes — a warning at the top of this page names each such template; open it,
+  delete the bracketed text and save, or reset it to the corrected default.
+
+For the same reason, **each template covers exactly one outcome.** Where a
+message could go two ways there are two templates to edit, not one with a
+condition inside it — `Refund Request Approved` and `Refund Request Declined`,
+`Booking Review Approved` and `Booking Review Rejected`, and so on. Edit both if
+you want both reworded; editing only one leaves the other on its built-in text.
+
+> **Upgrade note (v0.13).** The single *Refund Request Resolved* template was
+> split into **Refund Request Approved** and **Refund Request Declined**. If you
+> had customised the old one, its wording said "approved" and was also being
+> sent to members whose appeal was **declined**. Your old customisation is not
+> carried over — both new templates start from the corrected built-in wording,
+> and the leftover row is reported at the top of this page as a stale override
+> needing cleanup. Re-apply your wording to whichever of the two you want to
+> change.
+
 ## Settings reference
 
 Shared email variables (top card):
@@ -73,10 +118,12 @@ Per-template editor:
 | Rule | Detail |
 | --- | --- |
 | Allowed tokens only | Only the chips shown for that template are accepted; unknown `{{tokens}}` are rejected |
+| No conditional syntax | Tokens are substituted, nothing more. A value that does not apply renders as nothing — use the pre-composed `…Note` / `…Line` chips for anything optional, and never write `[only when …]` guidance into a body |
 | Required tokens | The highlighted chip(s) must stay in the body — removing an essential bearer token (e.g. a `/pay/<token>` or sign-in link), the lodge access details, or the promo explanation on a payment confirmation is refused. A sentence under the chips names the required tokens, and any older token that satisfies the same requirement instead (`{{promoSummary}}` **or** `{{promoAdjustment}}`/`{{discount}}`; `{{doorCodeNote}}` **or** your own label around `{{doorCode}}`) |
 | Subject safety | Sensitive token values (e.g. raw tokens) are never allowed in a subject line |
 | Override vs default | Saving stores an override; **Restore Default** deletes it and reverts to the built-in text |
 | Stale overrides | A count is shown if any stored overrides reference templates that no longer exist (a data-cleanup task) |
+| Retired tokens | A warning names any saved override still using a token its template no longer offers. A token that is not supplied renders as **nothing**, so the line it sits on can go out empty — open the named template, swap the old token for the chips now shown, and save (or reset it to the current default) |
 | Audit | Template edits are audited (who changed what, when) |
 | Pre-composed blocks | Some tokens hold a whole sentence or block the system builds for you. You can move one or leave it out, but you cannot reformat what is inside it — see below |
 
@@ -125,6 +172,7 @@ booking.
 | Everything is read-only | Your role has support view, not edit | Ask a full admin for Support & System edit access |
 | Save is rejected | You removed a required token, used an unknown token, or put a sensitive token in the subject | Read the reason in the error — it names what the email must show and which tokens do it. Re-add the highlighted token (or one of its listed alternatives); use only the listed chips; keep tokens out of the subject |
 | A token shows literally to members | It is misspelled or not allowed for that template | Use the exact chip from the **Tokens** list |
+| A line reads "Admin note:" with nothing after it | You wrote your own label in front of a value that was empty for that send | Use the matching pre-composed chip (`{{adminNoteLine}}`, `{{reasonNote}}`, `{{doorCodeNote}}` …) on its own line instead |
 | I want the original wording back | An override is in place | Click **Restore Default** for that template |
 | The change didn't reach a lodge-specific value | Lodge name/travel note/door code are per-lodge now | Set them in [Lodges](../multi-lodge/README.md), not here |
 

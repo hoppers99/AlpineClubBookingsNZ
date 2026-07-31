@@ -384,6 +384,13 @@ const SPECIAL_ROUTE_AREA_PATTERNS: Array<{
     area: "finance",
     pattern: /^\/api\/admin\/members\/[^/]+\/xero-(?:link|push|unlink)$/,
   },
+  // B5 (#2262): the path prefix says "bookings", but recording a booking's
+  // payment as cash / an off-Xero bank transfer (and reversing it) is a MONEY
+  // action, so it is gated finance:edit like its subscription sibling.
+  {
+    area: "finance",
+    pattern: /^\/api\/admin\/bookings\/[^/]+\/mark-paid$/,
+  },
 ];
 
 function cloneEmptyMatrix(): AdminPermissionMatrix {

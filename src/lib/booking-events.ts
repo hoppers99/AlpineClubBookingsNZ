@@ -31,7 +31,14 @@ import {
 export interface CancellationEventSnapshot {
   /** Human summary of the policy tier in effect at cancellation time. */
   policySummary: string;
-  refundMethod: "card" | "credit";
+  /**
+   * B5 (#2262): "manual" means the booking was settled in cash / by an off-Xero
+   * bank transfer, so the refund is a durable ManualRefundTask an admin pays
+   * back by hand. At cancellation time NO settlement event exists yet for it —
+   * the REFUNDED event is written when the task is completed — so the narrative
+   * must not read the absent settlement as "no refund was due".
+   */
+  refundMethod: "card" | "credit" | "manual";
   refundPercentage: number;
   /** Amount the member had paid (net of earlier refunds) before this cancel. */
   paidAmountCents: number;

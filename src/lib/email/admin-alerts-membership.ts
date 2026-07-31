@@ -8,6 +8,9 @@ import {
   adminMemberDeleteApprovedTemplate,
   adminMemberDeleteRejectedTemplate,
 } from "../email-templates";
+import {
+  composeOptionalEmailLine,
+} from "../email-message-notes";
 import { sendEmail } from "./core";
 import {
   sendToAdmins,
@@ -80,6 +83,8 @@ export async function sendAdminMembershipCancellationRequestAlert(params: {
       requesterName: params.requesterName,
       participantSummary: params.participantSummary,
       reason: params.reason ?? "",
+      // #2268: pre-composed optional line — no dangling "Reason:".
+      reasonNote: composeOptionalEmailLine("Reason", params.reason),
       reviewUrl,
     },
     preferenceKey: "adminFamilyGroupRequest",
@@ -109,6 +114,9 @@ export async function sendAdminAccountDeletionRequestedAlert(params: {
       memberName: params.memberName,
       memberEmail: params.memberEmail,
       reason: params.reason ?? "",
+      // #2268: pre-composed optional line — the whole "Reason: …" block, or
+      // nothing at all when the member gave no reason.
+      reasonNote: composeOptionalEmailLine("Reason", params.reason),
       reviewUrl,
     },
     preferenceKey: "adminFamilyGroupRequest",
@@ -203,6 +211,11 @@ export async function sendAdminMemberDeleteApprovedEmail(params: {
       memberName: params.memberName,
       reason: params.reason,
       reviewNote: params.reviewNote ?? "",
+      // #2268: pre-composed optional line — no dangling "Review note:".
+      reviewNoteLine: composeOptionalEmailLine(
+        "Review note",
+        params.reviewNote,
+      ),
     },
   });
 }
@@ -242,6 +255,11 @@ export async function sendAdminMemberDeleteRejectedEmail(params: {
       memberName: params.memberName,
       reason: params.reason,
       reviewNote: params.reviewNote ?? "",
+      // #2268: pre-composed optional line — no dangling "Review note:".
+      reviewNoteLine: composeOptionalEmailLine(
+        "Review note",
+        params.reviewNote,
+      ),
       reviewUrl,
     },
   });

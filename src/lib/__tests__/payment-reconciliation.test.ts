@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   recordCapacityClaimFailedRefundRecoveryInlineError: vi.fn(),
   restoreCreditFromBooking: vi.fn(),
   deriveBookingAppliedCreditCents: vi.fn(),
+  getMemberCreditBalance: vi.fn(),
   sendAdminPaymentFailureAlert: vi.fn(),
   reconcileBedAllocationsForBooking: vi.fn(),
   lodgeFindFirst: vi.fn(),
@@ -63,6 +64,8 @@ vi.mock("@/lib/member-credit", () => ({
     mocks.restoreCreditFromBooking(...args),
   deriveBookingAppliedCreditCents: (...args: unknown[]) =>
     mocks.deriveBookingAppliedCreditCents(...args),
+  getMemberCreditBalance: (...args: unknown[]) =>
+    mocks.getMemberCreditBalance(...args),
 }));
 
 vi.mock("@/lib/email", () => ({
@@ -162,6 +165,7 @@ describe("markBookingPaymentSucceeded", () => {
     mocks.reconcileBedAllocationsForBooking.mockResolvedValue(undefined);
     mocks.restoreCreditFromBooking.mockResolvedValue(undefined);
     mocks.deriveBookingAppliedCreditCents.mockResolvedValue(0);
+    mocks.getMemberCreditBalance.mockResolvedValue(0);
     mocks.sendAdminPaymentFailureAlert.mockResolvedValue(undefined);
     mocks.createAuditLog.mockResolvedValue(undefined);
     mocks.refundPaymentTransactions.mockResolvedValue({ refunds: [] });
@@ -221,13 +225,55 @@ describe("markBookingPaymentSucceeded", () => {
         details: expect.stringContaining('"creditElectionCents":6000'),
       })
     );
-    // And the actionable half: an officer decides whether to refund the
-    // difference or leave the credit for the member's next stay.
+    // And the actionable half: an officer decides whether to refund what is
+    // actually refundable, or leave the credit for the member's next stay.
+    // #2262 delta MED-2 — the figure is CLAMPED to the member's live balance,
+    // which here (the suite default) is nothing at all, so the alert must not
+    // invite a $60 refund against an empty account.
     expect(mocks.sendAdminPaymentFailureAlert).toHaveBeenCalledWith(
       expect.objectContaining({
-        amountCents: 6000,
+        amountCents: 0,
         paymentIntentId: "pi_election",
-        errorMessage: expect.stringContaining("account credit balance is untouched"),
+        errorMessage: expect.stringContaining("never debited"),
+      })
+    );
+  });
+
+  /**
+   * #2262 delta MED-2, on the STRIPE door — the same reporter serves all three,
+   * so proving the clamp here proves it for the payment-link and invoice-paid
+   * doors too.
+   */
+  it("clamps the reported credit to the member's LIVE balance, never the elected figure (#2265)", async () => {
+    mocks.bookingFindUnique.mockResolvedValue({
+      ...makeStaggeredBooking(),
+      creditElectionCents: 45000,
+    });
+    mocks.bookingFindMany.mockResolvedValue([]);
+    // Elected $450 when the booking was made; $50 left by the time it settled.
+    mocks.getMemberCreditBalance.mockResolvedValue(5000);
+
+    await markBookingPaymentSucceeded({
+      bookingId: "booking-1",
+      paymentIntentId: "pi_election_clamped",
+      amountCents: 10000,
+      paymentMethodId: "pm_1",
+    });
+
+    expect(mocks.createAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "booking.credit_election.unapplied",
+        metadata: expect.objectContaining({
+          creditElectionCents: 45000,
+          availableCreditCents: 5000,
+          refundableCents: 5000,
+        }),
+      })
+    );
+    expect(mocks.sendAdminPaymentFailureAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        amountCents: 5000,
+        errorMessage: expect.stringContaining("at most $50.00"),
       })
     );
   });

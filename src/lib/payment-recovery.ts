@@ -29,7 +29,7 @@ import { sendAdminPaymentFailureAlert } from "@/lib/email";
 import { recordDuplicateCaptureRefundEvent } from "@/lib/booking-events";
 import logger from "@/lib/logger";
 import { MAX_PAYMENT_RECOVERY_ATTEMPTS } from "@/lib/payment-recovery-constants";
-import { isPrismaUniqueConstraintError } from "@/lib/prisma-errors";
+import { claimAlertCooldown } from "@/lib/alert-cooldown";
 
 type PaymentRecoveryStore = Prisma.TransactionClient | typeof prisma;
 
@@ -861,9 +861,22 @@ async function enqueueSupersededPaymentRefundRecovery({
   });
 }
 
+/**
+ * Terminal SUCCEEDED close, STATUS-FENCED (#2262 H2). `updateMany` rather than
+ * update-by-id, so an operation the manual-mark-paid reversal DELETED mid-flight
+ * simply matches nothing instead of throwing P2025 — a closed/deleted operation
+ * can never be resurrected by a worker that still holds an in-memory copy. The
+ * fence excludes only SUCCEEDED (already terminal): the webhook-side closers
+ * (completeCanceledSupersededPaymentIntentRecovery and the succeeded-intent
+ * handoff) legitimately close PENDING/FAILED rows whose work verifiably
+ * finished, so fencing to PROCESSING-only would break them.
+ */
 async function completePaymentRecoveryOperation(operationId: string) {
-  await prisma.paymentRecoveryOperation.update({
-    where: { id: operationId },
+  const closed = await prisma.paymentRecoveryOperation.updateMany({
+    where: {
+      id: operationId,
+      status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
+    },
     data: {
       status: PaymentRecoveryOperationStatus.SUCCEEDED,
       nextRetryAt: null,
@@ -872,6 +885,12 @@ async function completePaymentRecoveryOperation(operationId: string) {
       succeededAt: new Date(),
     },
   });
+  if (closed.count === 0) {
+    logger.warn(
+      { operationId },
+      "Payment recovery completion matched no live operation (already succeeded, or deleted by a manual mark-paid reversal); nothing was resurrected"
+    );
+  }
 }
 
 async function alertPaymentRecoveryFailure(
@@ -1083,6 +1102,45 @@ async function handoffSucceededSupersededIntentToRefund({
 }) {
   if (!operation.paymentTransactionId) {
     throw new Error("Payment recovery operation is missing paymentTransactionId");
+  }
+
+  // #2262 H2 — RE-CLAIM the operation immediately before the money-adjacent
+  // writes. The worker's copy of this operation was read before its Stripe
+  // call; a manual mark-paid reversal can DELETE the row in that window (its
+  // disarm — see reverseManualBookingPayment), and without this fence the
+  // stale copy would still flip the transaction SUCCEEDED and enqueue a fresh
+  // superseded-refund operation the disarm never covered, netting a PAID
+  // booking to zero cash. The claim is a status-fenced WRITE, not a read: a
+  // deleted row matches nothing, a SUCCEEDED row is already terminal, and
+  // PENDING/FAILED are included because the webhook-side handoff
+  // (queueSupersededPaymentIntentRefundRecovery) legitimately hands off an
+  // operation the cron has not claimed.
+  const claimed = await prisma.paymentRecoveryOperation.updateMany({
+    where: {
+      id: operation.id,
+      status: {
+        in: [
+          PaymentRecoveryOperationStatus.PENDING,
+          PaymentRecoveryOperationStatus.PROCESSING,
+          PaymentRecoveryOperationStatus.FAILED,
+        ],
+      },
+    },
+    data: {
+      status: PaymentRecoveryOperationStatus.PROCESSING,
+      processingStartedAt: new Date(),
+    },
+  });
+  if (claimed.count === 0) {
+    logger.error(
+      {
+        operationId: operation.id,
+        bookingId: operation.bookingId,
+        paymentIntentId: operation.paymentIntentId,
+      },
+      "Superseded-intent refund handoff ABANDONED: the operation is gone or already terminal (deleted by a manual mark-paid reversal, or completed elsewhere). No transaction flip, no refund enqueued."
+    );
+    return;
   }
 
   await markSupersededTransactionSucceeded({
@@ -1627,7 +1685,22 @@ async function processPaymentRecoveryOperation(
     return;
   }
 
-  await processRefundSupersededPaymentOperation(operation);
+  if (
+    operation.type === PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT
+  ) {
+    await processRefundSupersededPaymentOperation(operation);
+    return;
+  }
+
+  // #2262: the dispatch is EXHAUSTIVE, never a fall-through. The final arm
+  // used to execute any unknown enum member as a superseded-payment REFUND —
+  // which is why a "task a cron must never execute" (ManualRefundTask) was
+  // modeled as its own table rather than a new PaymentRecoveryOperationType.
+  // An unhandled member now fails its operation loudly (the worker's normal
+  // failure path records it and alerts on exhaustion) instead of moving money.
+  throw new Error(
+    `Unhandled payment recovery operation type: ${operation.type}`
+  );
 }
 
 const PAYMENT_RECOVERY_STALE_ALERT_THRESHOLD_MS = 30 * 60 * 1000;
@@ -1655,34 +1728,14 @@ async function alertStalePaymentRecoveryQueueIfNeeded() {
   // Shared cross-instance cooldown: atomically CLAIM the window before sending
   // so N instances raise at most one alert per
   // PAYMENT_RECOVERY_STALE_ALERT_COOLDOWN_MS (not one per instance). The
-  // conditional updateMany only matches when the last alert is older than the
-  // window, so a single caller wins the write.
-  const cooldownStart = new Date(
-    now.getTime() - PAYMENT_RECOVERY_STALE_ALERT_COOLDOWN_MS,
-  );
-  const claimed = await prisma.alertCooldown.updateMany({
-    where: {
-      key: STALE_PAYMENT_RECOVERY_ALERT_COOLDOWN_KEY,
-      lastAlertedAt: { lt: cooldownStart },
-    },
-    data: { lastAlertedAt: now },
+  // claim-before-send pattern was extracted verbatim to @/lib/alert-cooldown
+  // under #2262 so the manual-settlement conflict alert can share it.
+  const holdsClaim = await claimAlertCooldown({
+    key: STALE_PAYMENT_RECOVERY_ALERT_COOLDOWN_KEY,
+    windowMs: PAYMENT_RECOVERY_STALE_ALERT_COOLDOWN_MS,
+    now,
   });
-  if (claimed.count === 0) {
-    // Either the row is fresh-within-window (another instance already alerted)
-    // or it does not exist yet (first alert ever). Try to create it; if a
-    // concurrent instance created it first, we lost the race and must not send.
-    try {
-      await prisma.alertCooldown.create({
-        data: {
-          key: STALE_PAYMENT_RECOVERY_ALERT_COOLDOWN_KEY,
-          lastAlertedAt: now,
-        },
-      });
-    } catch (error) {
-      if (isPrismaUniqueConstraintError(error)) return;
-      throw error;
-    }
-  }
+  if (!holdsClaim) return;
   // We hold the claim → send exactly once cross-instance. The provider call is
   // claim-first and outside any DB transaction; the tiny residual double-send
   // window (two instances reading between claim attempts) is bounded and this

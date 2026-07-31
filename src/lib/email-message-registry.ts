@@ -2,6 +2,13 @@ import {
   EMAIL_AUDIT_DEFAULTS,
   type EmailAuditTemplateName,
 } from "@/lib/email-message-audit-defaults";
+import { buildXeroInvoiceUrl } from "@/lib/xero-links";
+import {
+  adminSplitSettlementCancelledLeadParagraph,
+  adminSplitSettlementUnpaidLeadParagraph,
+  duplicateCaptureRefundOutcomeParagraph,
+  splitGuestPortionOwnBookingLine,
+} from "@/lib/email-message-notes";
 import { FALLBACK_LODGE_CAPACITY } from "@/lib/lodge-capacity";
 
 type EmailTemplateAudience = "member" | "admin" | "system";
@@ -39,6 +46,15 @@ const ADMIN_SYSTEM_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
   // gated by the adminPaymentFailure notification preference at send time, like
   // its siblings.
   "admin-duplicate-capture-refund",
+  // B5 (#2262): the reciprocal fence's conflict alert and the cash-cancellation
+  // hand-back task alert. Both ship via sendToAdmins, so admin audience, and
+  // both are operator nudges rather than money movers — the conflict alert
+  // reports a state the pipeline deliberately refused to act on, and the
+  // hand-back task is durable in the database whether or not the mail lands —
+  // so neither is delivery-locked. Both are gated by the adminPaymentFailure
+  // notification preference at send time, like their siblings.
+  "admin-manual-settlement-conflict",
+  "admin-manual-refund-task",
   "admin-pending-deadline",
   "admin-booking-bumped",
   "admin-capacity-warning",
@@ -121,9 +137,34 @@ const GLOBAL_EMAIL_TEMPLATE_TOKENS = [
   "SUPPORT_EMAIL",
 ] as const;
 
-const EXTRA_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>> = {
+// Tokens a send site supplies that are NOT written into the default body, so
+// an admin override may still reference them. #2268 added a second population
+// here: the raw values behind every pre-composed `...Note` / `...Line` token.
+// The default bodies now carry only the composed token (the sender builds the
+// whole line, or nothing at all, because the render path has no conditional
+// syntax), but the raw value stays supplied so an override written before
+// #2268 keeps rendering and keeps re-saving.
+// Exported as a test seam (#2268): the supplied-token approval guard reads it.
+export const EXTRA_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>> = {
   // Lodge the warning is about; empty for single-lodge clubs (ADR-002).
   "admin-capacity-warning": ["lodgeName"],
+  // #2268 raw values behind the pre-composed lines (see the note above).
+  "checkin-reminder": ["choreName", "choreDescription"],
+  "pre-arrival-reminder": ["doorCode", "expectedArrivalTime"],
+  "chore-roster": ["choreName", "choreDescription", "choreLink"],
+  "membership-application-rejected": ["adminNotes"],
+  "child-request-rejected": ["reason"],
+  "family-group-create-rejected": ["reason"],
+  "account-deletion-rejected": ["adminNote"],
+  "admin-new-booking": ["reviewReason"],
+  "admin-duplicate-capture-refund": ["errorMessage"],
+  "admin-refund-request": ["requestedAmount"],
+  "admin-booking-change-request": ["reason"],
+  "booking-request-declined": ["reason"],
+  "booking-review-approved": ["adminNotes"],
+  "booking-review-rejected": ["adminNotes"],
+  "split-guest-portion-cancelled": ["bookingReference"],
+  "membership-payment-recorded": ["amount"],
   // Split-booking parent (#738): a pre-composed sentence describing the
   // provisional non-member portion; empty for a non-split confirmation.
   // #2267: the legacy per-piece promo and door-code tokens left the default
@@ -183,7 +224,7 @@ const EXTRA_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>> =
   "email-verification": ["verifyUrl"],
   "email-change-verification": ["verifyUrl"],
   "nomination-request": ["reviewUrl"],
-  "membership-application-approved": ["resetUrl"],
+  "membership-application-approved": ["resetUrl", "adminNotes"],
   "admin-membership-application-pending": ["reviewUrl"],
   "family-group-invitation": ["profileUrl"],
   "partner-link-request": ["profileUrl"],
@@ -221,9 +262,15 @@ const EXTRA_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>> =
     "reviewNote",
     "reviewUrl",
   ],
-  "admin-xero-repeated-failure": ["localUrl", "xeroObjectUrl"],
-  "refund-request-resolved": ["status"],
-  "admin-issue-report": ["hasScreenshot"],
+  "admin-xero-repeated-failure": [
+    "localUrl",
+    "xeroObjectUrl",
+    "localModel",
+    "localId",
+    "latestErrorMessage",
+  ],
+  "refund-request-approved": ["adminNotes"],
+  "refund-request-declined": ["adminNotes"],
   "age-up-invitation": ["resetUrl", "targetAgeTier", "targetAgeTierMinAge"],
   "age-up-parent-email-handoff": ["targetAgeTier", "targetAgeTierMinAge"],
   "booking-request-verification": ["verifyUrl"],
@@ -260,6 +307,8 @@ const REQUIRED_TOKEN_ALTERNATIVES: Partial<
     // amounts that differ with nothing in between to say why.
     promoSummary: ["promoAdjustment", "discount"],
   },
+  // #2268: the same door-code swap on the pre-arrival reminder.
+  "pre-arrival-reminder": { doorCodeNote: ["doorCode"] },
 };
 
 const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>> = {
@@ -269,7 +318,12 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
     // Satisfied by any of the promo-adjustment tokens above.
     "promoSummary",
   ],
-  "pre-arrival-reminder": ["CLUB_LODGE_TRAVEL_NOTE", "doorCode"],
+  // #2268: pre-arrival-reminder gets the same treatment #2267 gave
+  // booking-confirmed — the door-code line is composed by the sender, so the
+  // body carries {{doorCodeNote}} instead of a bare "Door code:" heading that
+  // printed even for a lodge with no code. An override written before the
+  // change still satisfies this through REQUIRED_TOKEN_ALTERNATIVES.
+  "pre-arrival-reminder": ["CLUB_LODGE_TRAVEL_NOTE", "doorCodeNote"],
   "password-reset": ["token"],
   "admin-password-reset": ["token"],
   "member-setup-invite": ["token"],
@@ -355,6 +409,10 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
   // #1992/#2007: memberName identifies the affected member and reviewUrl is the
   // admin action link (the payments board), mirroring the other admin alerts.
   "admin-duplicate-capture-refund": ["memberName", "reviewUrl"],
+  // B5 (#2262): memberName identifies the affected member and reviewUrl is the
+  // admin action link (the payments board), mirroring the other admin alerts.
+  "admin-manual-settlement-conflict": ["memberName", "reviewUrl"],
+  "admin-manual-refund-task": ["memberName", "reviewUrl"],
   "admin-split-settlement-unpaid": ["memberName", "reviewUrl"],
   // #1993 Part A: terminal notice — memberName identifies the member and
   // reviewUrl is the admin action link, mirroring the recurring alert.
@@ -426,11 +484,34 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
     triggerSummary: "Locked booking change request submitted",
     frequency: "Per member/admin request submission",
   },
+  // #2321: split from the combined refund-request-resolved template so a
+  // declined member can never receive approval wording.
+  "refund-request-approved": {
+    triggerSummary:
+      "An admin approved a member's refund appeal (and chose to notify them)",
+    frequency: "Per approved refund appeal",
+  },
+  "refund-request-declined": {
+    triggerSummary:
+      "An admin declined a member's refund appeal (and chose to notify them)",
+    frequency: "Per declined refund appeal",
+  },
   "admin-duplicate-capture-refund": {
     triggerSummary:
       "A second, distinct Stripe capture arrived on an already-settled booking, so the duplicate charge was auto-refunded (inline in full, or a durable retry queued when the inline refund could not complete)",
     frequency:
       "On duplicate-capture adjudication — rare; once per distinct duplicate capture that is auto-refunded",
+  },
+  "admin-manual-settlement-conflict": {
+    triggerSummary:
+      "Xero reported a booking's invoice PAID for a booking this system had already recorded as settled in cash or by an off-Xero bank transfer, so the club may be holding the same money twice",
+    frequency:
+      "On the inbound reciprocal fence firing — rare; throttled per payment and invoice by a cross-instance cooldown so webhook replays do not re-send",
+  },
+  "admin-manual-refund-task": {
+    triggerSummary:
+      "A booking settled in cash (or by an off-Xero bank transfer) was cancelled with a refund owing, so a hand-back task was raised for an admin to pay the member back",
+    frequency: "On cancellation of a cash-settled booking with a non-zero refund",
   },
   "admin-minors-review": {
     triggerSummary:
@@ -718,7 +799,9 @@ function uniqueSortedTokens(values: string[]): string[] {
   return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b));
 }
 
-function sampleValue(token: string): string {
+// Exported as a test seam (#2268): the dangling-line guard renders every
+// shipped default from the same preview values the admin editor shows.
+export function sampleValue(token: string): string {
   if (token === "BASE_URL") return "https://bookings.example.org";
   if (token === "CLUB_NAME") return "Example Mountain Club";
   if (token === "CLUB_BOOKINGS_NAME") return "Example Mountain Club - Bookings";
@@ -792,6 +875,67 @@ function sampleValue(token: string): string {
   if (token === "consentUrl") {
     return "https://bookings.example.org/bookings/bkg_example#consent";
   }
+  // #2268 pre-composed line tokens. Each preview mirrors exactly what its
+  // sender composes, so the admin editor shows the shape a member will read
+  // and a value that is absent previews as nothing at all rather than as a
+  // dangling label. ({{doorCodeNote}} is previewed above, with #2267.)
+  if (token === "expectedArrivalNote") return "Expected arrival: 16:30\n";
+  // Shared by checkin-reminder and chore-roster. The chore-roster body
+  // already writes its own lead-in line, so the preview is the chore lines
+  // alone; the check-in reminder's real value prefixes its own heading.
+  if (token === "choreListNote") {
+    return "Wood run: Restock the woodshed\nDishes\n\n";
+  }
+  if (token === "choreLinkNote") {
+    return (
+      "Mark Chores Complete: https://bookings.example.org/chores/sample-token\n\n" +
+      "Use this link to mark your chores as done from your phone. Link expires in 48 hours.\n\n"
+    );
+  }
+  if (token === "committeeNote") return "Committee note: Welcome aboard.\n\n";
+  if (token === "adminNoteLine") {
+    return "Admin note: Reviewed by the committee.\n\n";
+  }
+  if (token === "adminNotesLine") {
+    return "Notes: Reviewed by the committee.\n\n";
+  }
+  if (token === "reasonNote") return "Reason: Moving overseas.\n\n";
+  if (token === "rejoinProcessNote") {
+    return "To rejoin later, submit a new membership application.\n\n";
+  }
+  if (token === "reviewNoteLine") {
+    return "Review note: Approved on review.\n\n";
+  }
+  if (token === "reviewReasonNote") {
+    return "This booking needs review: no adult guest is listed.\n\n";
+  }
+  if (token === "requestedAmountNote") return "Requested: $123.45\n";
+  if (token === "amountRecordedNote") return "Amount recorded: $123.45\n";
+  if (token === "bookingReferenceNote") {
+    return "Your booking reference: BK-1234\n";
+  }
+  if (token === "localRecordNote") return "Local Record: Booking bk_1234\n";
+  if (token === "latestErrorNote") {
+    return "Latest Error: Rate limit exceeded\n";
+  }
+  if (token === "xeroLinksNote") {
+    // #2283: the Xero half is built by the one URL builder rather than spelled
+    // out, so this preview shows the organisation-scoped link an operator will
+    // actually receive — and the xero-links guard stays honest.
+    return (
+      "Open local record: https://bookings.example.org/admin/bookings/bk_1234\n" +
+      `Open Xero object: ${buildXeroInvoiceUrl("sample-invoice-id")}\n`
+    );
+  }
+  if (token === "refundOutcomeNote") {
+    return duplicateCaptureRefundOutcomeParagraph(false);
+  }
+  if (token === "settlementActionNote") {
+    return adminSplitSettlementUnpaidLeadParagraph(false);
+  }
+  if (token === "ownBookingNote") {
+    return splitGuestPortionOwnBookingLine(true);
+  }
   // #2267: mirror what sendBookingConfirmedEmail composes — each row carries
   // its own trailing newline so the default body's
   // "{{promoSummary}}Total Paid: …" previews as a contiguous block.
@@ -858,6 +1002,32 @@ function sampleValue(token: string): string {
   return token.replace(/[|]/g, " ");
 }
 
+// #2320 review (LOW-4): per-template overrides of the global sampleValue()
+// fallthrough, for the few tokens whose sample must differ by template because
+// their SENDERS compose different text for the same token name. The editor
+// preview is the admin's only picture of what a member reads, so a preview
+// that contradicts its own template (the UNPAID lead paragraph under a
+// cancelled heading) or shows a label the sender never writes ("Notes:" where
+// the send composes "Note from admin:") teaches an admin to distrust it.
+const TEMPLATE_SAMPLE_VALUE_OVERRIDES: Partial<
+  Record<EmailAuditTemplateName, Record<string, string>>
+> = {
+  // The terminal cancellation alert previews the CANCELLED lead paragraph —
+  // the recurring unpaid alert keeps the global sample (the unpaid paragraph).
+  "admin-split-settlement-cancelled": {
+    settlementActionNote: adminSplitSettlementCancelledLeadParagraph(false),
+  },
+  // These two senders compose their own labels around the shared
+  // {{adminNotesLine}} token (src/lib/email/booking.ts), so the preview mirrors
+  // each real send instead of the refund-appeal templates' "Notes:" label.
+  "booking-review-approved": {
+    adminNotesLine: "Note from admin: Reviewed by the committee.\n\n",
+  },
+  "booking-review-rejected": {
+    adminNotesLine: "Reason from admin: No adult guest is listed.\n\n",
+  },
+};
+
 export const EMAIL_TEMPLATE_DEFINITIONS: EmailTemplateDefinition[] = (
   Object.entries(EMAIL_AUDIT_DEFAULTS) as Array<
     [
@@ -888,7 +1058,10 @@ export const EMAIL_TEMPLATE_DEFINITIONS: EmailTemplateDefinition[] = (
     requiredTokens: REQUIRED_TEMPLATE_TOKENS[key] ?? [],
     requiredTokenAlternatives: REQUIRED_TOKEN_ALTERNATIVES[key] ?? {},
     sampleData: Object.fromEntries(
-      allowedTokens.map((token) => [token, sampleValue(token)]),
+      allowedTokens.map((token) => [
+        token,
+        TEMPLATE_SAMPLE_VALUE_OVERRIDES[key]?.[token] ?? sampleValue(token),
+      ]),
     ),
     triggerSummary: metadata.triggerSummary,
     frequency: metadata.frequency,
@@ -928,7 +1101,14 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "adminEnteredBody",
   "adminEnteredSubject",
   "adminNote",
+  // #2268: pre-composed optional lines. The senders build the whole line
+  // (or nothing at all) because the render path has no conditional syntax;
+  // the raw values stay approved so overrides written before #2268 keep
+  // rendering and keep re-saving.
+  "adminNoteLine",
   "adminNotes",
+  "adminNotesLine",
+  "amountRecordedNote",
   "amount",
   // #2307: the delegate-answered notice's three composed blocks — the heading
   // names who answered and who they answered for, the sentence says what they
@@ -950,6 +1130,7 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "bookerName",
   "bookingId",
   "bookingReference",
+  "bookingReferenceNote",
   "bumpedMemberName",
   "changeFee",
   // #2267: pre-composed block of the booking-modification rows that actually
@@ -961,7 +1142,10 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "confirmationUrl",
   "choreDescription",
   "choreLink",
+  "choreLinkNote",
+  "choreListNote",
   "choreName",
+  "committeeNote",
   // #2307: when a pending member-guest consent request lapses (the answer-by
   // date the member is given, and the date the sweep works to).
   "consentExpiresAt",
@@ -992,6 +1176,7 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "entityType",
   "errorMessage",
   "errorType",
+  "expectedArrivalNote",
   "expectedArrivalTime",
   "expiresAt",
   "expiryLabel",
@@ -1020,9 +1205,15 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "issueTotalCount",
   "joinerCount",
   "latestErrorMessage",
+  "latestErrorNote",
   "localId",
+  "localRecordNote",
   "localModel",
   "loginUrl",
+  // #2268: supplied by sendAdminCapacityWarningAlert and allowed for that
+  // template, but never approved — so the editor rejected it as an unknown
+  // token and no admin could use it. Same shape as {{promoAdjustment}}.
+  "lodgeName",
   "lookbackHours",
   "memberEmail",
   "memberName",
@@ -1038,6 +1229,7 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "noticeTitle",
   "noticeUrl",
   "occupiedBeds",
+  "ownBookingNote",
   "oldCheckIn",
   "oldCheckOut",
   "oldGuestCount",
@@ -1089,8 +1281,10 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "provisionalGuestsNote",
   "quoteOptions",
   "reason",
+  "reasonNote",
   "recipientLabel",
   "refundAmount",
+  "refundOutcomeNote",
   "refundMessage",
   "refundedAmount",
   "remainingAmount",
@@ -1105,11 +1299,18 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "requestType",
   "requestedSummary",
   "requestedAmount",
+  // #2268: the booking-request quote response link, supplied and allowed but
+  // never approved (see lodgeName). Stays subject-sensitive.
+  "respondUrl",
+  "requestedAmountNote",
   "requesterName",
+  "rejoinProcessNote",
   "rejoinProcessText",
   "resetUrl",
   "reviewNote",
+  "reviewNoteLine",
   "reviewReason",
+  "reviewReasonNote",
   "reviewUrl",
   "localUrl",
   "s",
@@ -1117,6 +1318,7 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   // #2260: the membership season a manual subscription payment was recorded
   // against (the club's Apr–Mar season year).
   "seasonYear",
+  "settlementActionNote",
   "severityLabel",
   "signerName",
   "signerRoleLabel",
@@ -1143,6 +1345,7 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "triggeringMemberName",
   "verifyUrl",
   "windowHours",
+  "xeroLinksNote",
   "xeroObjectUrl",
   "xeroInvoiceNumber",
   "y|ies",
@@ -1158,6 +1361,10 @@ export const APPROVED_EMAIL_TEMPLATE_TOKEN_SET = new Set<string>(
 // in clear mail headers, so secret values are restricted to message bodies.
 const SENSITIVE_EMAIL_SUBJECT_TOKENS = [
   "choreLink",
+  // #2268: the composed chore-roster line carries the 48-hour bearer link
+  // itself, so it is subject-forbidden exactly like the bare {{choreLink}}
+  // value (the {{doorCodeNote}}/{{doorCode}} treatment).
+  "choreLinkNote",
   "claimUrl",
   "confirmUrl",
   "confirmationUrl",

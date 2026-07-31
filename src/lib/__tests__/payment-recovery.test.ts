@@ -166,8 +166,10 @@ import {
   enqueueBookingModificationRefundRecovery,
   enqueueCapacityClaimFailedRefundRecovery,
   enqueueGroupSettlementRefundRecovery,
+  enqueuePaymentIntentCancellationRecovery,
   enqueueRefundRequestRefundRecovery,
   processPaymentRecoveryOperations,
+  queueSupersededPaymentIntentRefundRecovery,
 } from "@/lib/payment-recovery";
 
 function makeOperation(overrides: Record<string, unknown> = {}) {
@@ -287,8 +289,13 @@ describe("payment recovery worker", () => {
         reason: "zero_dollar_batch_modification_superseded",
       },
     });
-    expect(mockPaymentRecoveryUpdate).toHaveBeenCalledWith({
-      where: { id: "recovery-1" },
+    // #2262 H2: the terminal close is a STATUS-FENCED updateMany, so a row a
+    // manual mark-paid reversal deleted can never be resurrected (P2025-free).
+    expect(mockPaymentRecoveryUpdateMany).toHaveBeenCalledWith({
+      where: {
+        id: "recovery-1",
+        status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
+      },
       data: expect.objectContaining({
         status: PaymentRecoveryOperationStatus.SUCCEEDED,
         nextRetryAt: null,
@@ -306,8 +313,11 @@ describe("payment recovery worker", () => {
 
     expect(result.succeeded).toBe(1);
     expect(mockPaymentTransactionUpdateMany).toHaveBeenCalled();
-    expect(mockPaymentRecoveryUpdate).toHaveBeenCalledWith({
-      where: { id: "recovery-1" },
+    expect(mockPaymentRecoveryUpdateMany).toHaveBeenCalledWith({
+      where: {
+        id: "recovery-1",
+        status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
+      },
       data: expect.objectContaining({
         status: PaymentRecoveryOperationStatus.SUCCEEDED,
       }),
@@ -667,9 +677,12 @@ describe("payment recovery worker", () => {
         },
       }),
     );
-    expect(mockPaymentRecoveryUpdate).toHaveBeenCalledWith(
+    expect(mockPaymentRecoveryUpdateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: "recovery-mod-refund" },
+        where: {
+          id: "recovery-mod-refund",
+          status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
+        },
         data: expect.objectContaining({
           status: PaymentRecoveryOperationStatus.SUCCEEDED,
         }),
@@ -1227,9 +1240,12 @@ describe("payment recovery worker", () => {
       }),
     );
     // Replayed to completion.
-    expect(mockPaymentRecoveryUpdate).toHaveBeenCalledWith(
+    expect(mockPaymentRecoveryUpdateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: "recovery-cancel-crash" },
+        where: {
+          id: "recovery-cancel-crash",
+          status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
+        },
         data: expect.objectContaining({
           status: PaymentRecoveryOperationStatus.SUCCEEDED,
         }),
@@ -1338,9 +1354,12 @@ describe("payment recovery worker", () => {
       metadata: { bookingId: "booking-1", reason: "capacity_claim_failed" },
       idempotencyKeyPrefix: "capacity_claim_failed_booking-1_pi_original",
     });
-    expect(mockPaymentRecoveryUpdate).toHaveBeenCalledWith(
+    expect(mockPaymentRecoveryUpdateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: "recovery-capacity" },
+        where: {
+          id: "recovery-capacity",
+          status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
+        },
         data: expect.objectContaining({
           status: PaymentRecoveryOperationStatus.SUCCEEDED,
         }),
@@ -1375,9 +1394,12 @@ describe("payment recovery worker", () => {
     );
     // The anchor payment is never read and no refund is derived from it.
     expect(mockRefundPaymentTransactions).not.toHaveBeenCalled();
-    expect(mockPaymentRecoveryUpdate).toHaveBeenCalledWith(
+    expect(mockPaymentRecoveryUpdateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: "recovery-group-settlement" },
+        where: {
+          id: "recovery-group-settlement",
+          status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
+        },
         data: expect.objectContaining({
           status: PaymentRecoveryOperationStatus.SUCCEEDED,
         }),
@@ -1896,6 +1918,187 @@ describe("payment recovery worker", () => {
 
       expect(result.succeeded).toBe(1);
       expect(mockRecordDuplicateCaptureRefundEvent).not.toHaveBeenCalled();
+    });
+  });
+});
+
+/**
+ * #2262 H1/H2 — the manual mark-paid reversal DELETES the settle's hygiene
+ * operations, and every write that could act on a stale in-memory copy of one
+ * is status-fenced so a deleted operation is inert everywhere:
+ *  - the webhook-side handoff finder simply finds nothing (the capture settles
+ *    the booking normally);
+ *  - the succeeded-intent handoff re-claims before flipping money state and
+ *    ABANDONS when the claim matches nothing;
+ *  - the terminal completion is a fenced updateMany that cannot P2025-throw or
+ *    resurrect a deleted row;
+ *  - a re-mark re-arms cancel hygiene through the enqueue upsert's CREATE arm.
+ */
+describe("#2262 — deleted-operation coherence (H1/H2)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockPaymentRecoveryUpdateMany.mockImplementation(
+      ({ where }: { where?: { id?: string } }) =>
+        Promise.resolve({ count: where?.id ? 1 : 0 }),
+    );
+    mockPaymentRecoveryUpdate.mockResolvedValue({});
+    mockPaymentRecoveryUpsert.mockResolvedValue({});
+    mockPaymentTransactionUpdate.mockResolvedValue({});
+    mockReconcilePaymentAggregates.mockResolvedValue(undefined);
+  });
+
+  it("H1 — after the reversal's delete, a post-reversal capture is NOT handed to the superseded-refund machinery (webhook side settles normally)", async () => {
+    // The reversal deleted the CANCEL_PAYMENT_INTENT row, so the liveness
+    // finder (status != SUCCEEDED) finds nothing and the webhook handler falls
+    // through to the ordinary settlement path.
+    mockPaymentRecoveryFindFirst.mockResolvedValue(null);
+
+    await expect(
+      queueSupersededPaymentIntentRefundRecovery({
+        paymentIntentId: "pi_stale_pay_tab",
+        amountCents: 10000,
+        paymentMethodId: "pm_1",
+      }),
+    ).resolves.toBe(false);
+
+    // No transaction flip, no refund enqueued — the capture is the caller's to
+    // settle as ordinary money.
+    expect(mockPaymentTransactionUpdate).not.toHaveBeenCalled();
+    expect(mockPaymentRecoveryUpsert).not.toHaveBeenCalled();
+  });
+
+  it("H2 — the succeeded-intent handoff re-claims before moving money and ABANDONS when the reversal deleted the operation mid-PROCESSING", async () => {
+    const op = makeOperation({ status: PaymentRecoveryOperationStatus.PENDING });
+    mockPaymentRecoveryFindFirst.mockResolvedValue(op);
+    // The handoff's own claim (data -> PROCESSING) matches nothing: the row
+    // was deleted between the worker's Stripe call and this write.
+    mockPaymentRecoveryUpdateMany.mockImplementation(
+      (args: { data?: { status?: unknown }; where?: { id?: string } }) => {
+        if (args.data?.status === PaymentRecoveryOperationStatus.PROCESSING) {
+          return Promise.resolve({ count: 0 });
+        }
+        return Promise.resolve({ count: args.where?.id ? 1 : 0 });
+      },
+    );
+
+    await expect(
+      queueSupersededPaymentIntentRefundRecovery({
+        paymentIntentId: "pi_superseded",
+        amountCents: 6000,
+        paymentMethodId: "pm_1",
+      }),
+    ).resolves.toBe(true);
+
+    // Abandoned loudly: no SUCCEEDED flip on the transaction, no fresh
+    // REFUND_SUPERSEDED_PAYMENT the reversal's disarm never covered.
+    expect(mockPaymentTransactionUpdate).not.toHaveBeenCalled();
+    expect(mockPaymentRecoveryUpsert).not.toHaveBeenCalled();
+  });
+
+  it("H2 — the fenced completion cannot resurrect a deleted operation (count 0 is handled, never a P2025 throw)", async () => {
+    const op = makeOperation({ status: PaymentRecoveryOperationStatus.PENDING });
+    mockPaymentRecoveryFindMany.mockImplementation(
+      (args?: { where?: { attempts?: { gte?: number } } }) => {
+        if (args?.where?.attempts && "gte" in args.where.attempts) {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([op]);
+      },
+    );
+    mockPaymentRecoveryFindUnique.mockResolvedValue(makeOperation());
+    mockPaymentTransactionUpdateMany.mockResolvedValue({ count: 0 });
+    mockCancelPaymentIntentIfCancellableWithResult.mockResolvedValue({
+      canceled: true,
+      paymentIntent: { id: "pi_superseded", status: "canceled", amount: 6000 },
+    });
+    // Every fenced write (including the terminal completion) matches nothing —
+    // the reversal deleted the row under the worker.
+    mockPaymentRecoveryUpdateMany.mockImplementation(
+      (args: {
+        where?: { id?: string; status?: unknown; nextRetryAt?: unknown };
+      }) =>
+        // Only the initial cron claim (which carries nextRetryAt) still wins.
+        Promise.resolve({ count: args.where?.nextRetryAt ? 1 : 0 }),
+    );
+
+    const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+    // No throw, no update-by-id resurrection: the worker records success for
+    // its own run and the deleted row stays deleted.
+    expect(result.processed).toBe(1);
+    expect(result.succeeded).toBe(1);
+    expect(mockPaymentRecoveryUpdate).not.toHaveBeenCalled();
+  });
+
+  it("M2 — enqueuePaymentIntentCancellationRecovery's CREATE arm re-arms a deleted operation fresh (PENDING, immediate retry)", async () => {
+    await enqueuePaymentIntentCancellationRecovery({
+      bookingId: "booking-1",
+      paymentId: "payment-1",
+      paymentTransactionId: "txn-1",
+      paymentIntentId: "pi_live",
+      amountCents: 10000,
+    });
+
+    // The reversal DELETED the old row, so the upsert cannot land in its
+    // update arm: the create arm mints a fresh PENDING op with nextRetryAt now
+    // — mark -> reverse -> re-mark keeps its durable cancel hygiene.
+    expect(mockPaymentRecoveryUpsert).toHaveBeenCalledWith({
+      where: { idempotencyKey: "payment_recovery_cancel_txn-1_pi_live" },
+      create: expect.objectContaining({
+        type: PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT,
+        status: PaymentRecoveryOperationStatus.PENDING,
+        nextRetryAt: expect.any(Date),
+      }),
+      update: expect.objectContaining({
+        paymentIntentId: "pi_live",
+      }),
+    });
+  });
+});
+
+describe("#2262 L3 — the recovery dispatcher is exhaustive", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockPaymentRecoveryUpdate.mockResolvedValue({});
+    mockPaymentRecoveryUpdateMany.mockImplementation(
+      ({ where }: { where?: { id?: string } }) =>
+        Promise.resolve({ count: where?.id ? 1 : 0 }),
+    );
+  });
+
+  it("FAILS an operation of an unhandled type loudly instead of executing it as a superseded-payment refund", async () => {
+    const rogue = makeOperation({
+      id: "recovery-rogue",
+      type: "SOME_FUTURE_TYPE" as PaymentRecoveryOperationType,
+      status: PaymentRecoveryOperationStatus.PENDING,
+    });
+    mockPaymentRecoveryFindMany.mockImplementation(
+      (args?: { where?: { attempts?: { gte?: number } } }) => {
+        if (args?.where?.attempts && "gte" in args.where.attempts) {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([rogue]);
+      },
+    );
+    mockPaymentRecoveryFindUnique.mockResolvedValue(rogue);
+
+    const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+    expect(result.processed).toBe(1);
+    expect(result.succeeded).toBe(0);
+    expect(result.retried).toBe(1);
+    // Never dispatched to the superseded-refund executor: no transaction read,
+    // no Stripe refund.
+    expect(mockPaymentTransactionFindUnique).not.toHaveBeenCalled();
+    expect(mockProcessRefund).not.toHaveBeenCalled();
+    expect(mockPaymentRecoveryUpdate).toHaveBeenCalledWith({
+      where: { id: "recovery-rogue" },
+      data: expect.objectContaining({
+        status: PaymentRecoveryOperationStatus.FAILED,
+        lastError: expect.stringContaining(
+          "Unhandled payment recovery operation type",
+        ),
+      }),
     });
   });
 });

@@ -26,6 +26,15 @@ import { emailPalette } from "./email-theme";
 // cycle. A type import is erased at compile time, and the four member-guest
 // templates only ever receive the composed strings — they never compose.
 import type { MemberGuestPartyList } from "@/lib/member-guest-email-notes";
+// #2268: the optional/outcome-dependent line composers live in a leaf module
+// so the senders and the template registry can build the same copy without
+// pulling in this whole file.
+import {
+  adminSplitSettlementCancelledLeadParagraph,
+  adminSplitSettlementUnpaidLeadParagraph,
+  duplicateCaptureRefundOutcomeParagraph,
+  splitGuestPortionOwnBookingLine,
+} from "./email-message-notes";
 
 const BASE_URL = getAppBaseUrl();
 
@@ -512,11 +521,22 @@ export function bookingCancelledTemplate(
   checkIn: Date,
   checkOut: Date,
   refundCents: number,
-  refundMethod: "card" | "credit" = "card",
+  // B5 (#2262): "manual" is a cash / off-Xero settlement being handed back by a
+  // person. It must NEVER read as "on its way to your card" (no card was
+  // charged) nor as account credit (none was minted — a hand-back task was
+  // raised instead), so it gets its own honest copy.
+  refundMethod: "card" | "credit" | "manual" = "card",
   creditRestoredCents: number = 0
 ): string {
   let refundInfo: string;
-  if (refundCents > 0 && refundMethod === "credit") {
+  if (refundCents > 0 && refundMethod === "manual") {
+    refundInfo = alertBox(
+      "You paid for this booking in cash or by bank transfer, so there is no card payment to reverse. The club will arrange your refund of " +
+        formatCents(refundCents) +
+        " directly and will be in touch.",
+      "info"
+    );
+  } else if (refundCents > 0 && refundMethod === "credit") {
     refundInfo = alertBox(
       "A credit of " + formatCents(refundCents) + " has been added to your account for future bookings.",
       "success"
@@ -993,6 +1013,16 @@ export function adminPaymentFailureTemplate(data: {
   checkOut: Date;
   amountCents: number;
   errorMessage: string;
+  /**
+   * The searchable identifier for whatever raised this alert. USUALLY a Stripe
+   * payment intent id — but this template is the club's general payment-anomaly
+   * alert and its senders also pass a Xero invoice id, or (on the cash /
+   * off-Xero mark-paid, which has neither by definition) the booking id. The
+   * row is therefore labelled "Reference", not "Stripe PI": a label that names
+   * the wrong system sends an officer hunting in Stripe for something that was
+   * never there. The parameter keeps its historical name because every caller
+   * uses it.
+   */
   paymentIntentId: string;
 }): string {
   return layout(`
@@ -1004,7 +1034,7 @@ export function adminPaymentFailureTemplate(data: {
       { label: "Check-out", value: formatNZDate(data.checkOut) },
       { label: "Amount", value: formatCents(data.amountCents) },
       { label: "Error", value: escapeHtml(data.errorMessage) },
-      { label: "Stripe PI", value: escapeHtml(data.paymentIntentId) },
+      { label: "Reference", value: escapeHtml(data.paymentIntentId) },
     ])}
     ${button("View Payments", BASE_URL + "/admin/payments")}
   `);
@@ -1023,6 +1053,7 @@ export function adminPaymentFailureTemplate(data: {
  *   queued and the recovery cron will retry it — watch the recovery queue.
  * No bearer token, so this is not sensitive-log material.
  */
+
 export function adminDuplicateCaptureRefundTemplate(data: {
   memberName: string;
   checkIn: Date;
@@ -1055,11 +1086,11 @@ export function adminDuplicateCaptureRefundTemplate(data: {
             "success"
           )
     }
-    ${paragraph(
-      data.refundFailed
-        ? "A second, distinct card capture arrived on a booking that was already paid and settled by another capture. The system tried to refund the duplicate charge automatically, but the refund could not complete inline. A durable recovery operation is queued and the payment recovery cron will retry it with backoff — watch the recovery queue and confirm the refund lands. The booking's own settlement is untouched."
-        : "A second, distinct card capture arrived on a booking that was already paid and settled by another capture. The duplicate charge was automatically refunded in full, so the member has not been double-charged and no action is needed unless the member reports otherwise. The booking's own settlement is untouched."
-    )}
+    ${
+      // Static developer-authored copy (no member data), so it is emitted raw
+      // exactly as before — the shared helper only removes the duplication.
+      paragraph(duplicateCaptureRefundOutcomeParagraph(data.refundFailed))
+    }
     ${infoTable([
       { label: "Member", value: escapeHtml(data.memberName) },
       { label: "Check-in", value: formatNZDate(data.checkIn) },
@@ -1077,6 +1108,96 @@ export function adminDuplicateCaptureRefundTemplate(data: {
       ...(data.refundFailed && data.errorMessage
         ? [{ label: "Failure detail", value: escapeHtml(data.errorMessage) }]
         : []),
+    ])}
+    ${button("View Payments", data.reviewUrl, { sameOrigin: true })}
+  `);
+}
+
+// ---- B5 (#2262): Admin Alert — manual settlement vs inbound Xero PAID ----
+//
+// The reciprocal fence. The club appears to hold BOTH a cash settlement this
+// system recorded and a bank transfer Xero reports against the same booking.
+// This is money that must be reconciled by a human — the pipeline deliberately
+// writes nothing further, so the alert is the whole remediation path.
+export function adminManualSettlementConflictTemplate(data: {
+  memberName: string;
+  checkIn: Date;
+  checkOut: Date;
+  amountCents: number;
+  bookingId: string;
+  bookingStatus: string;
+  xeroInvoiceNumber: string | null;
+  xeroInvoiceUrl: string | null;
+  reviewUrl: string;
+}): string {
+  return layout(`
+    ${heading("Cash Settlement vs Xero Payment — Reconcile By Hand")}
+    ${alertBox(
+      "This booking looks paid TWICE: once as a cash / off-Xero settlement recorded here, and again by a payment Xero now reports against its invoice. Nothing further has been written — please reconcile.",
+      "warning"
+    )}
+    ${paragraph(
+      "An admin recorded this booking's payment manually (cash, or a bank transfer that never reached Xero). Xero has since reported the booking's invoice as PAID. The system stopped rather than settling it a second time or minting member credit, so the two records now disagree and only a person can decide which money is real."
+    )}
+    ${paragraph(
+      "Check whether the Xero payment is genuinely separate funds — a second payment that needs refunding — or the same money reaching Xero late. Reverse the manual settlement, or refund the duplicate, whichever is true."
+    )}
+    ${infoTable([
+      { label: "Member", value: escapeHtml(data.memberName) },
+      { label: "Check-in", value: formatNZDate(data.checkIn) },
+      { label: "Check-out", value: formatNZDate(data.checkOut) },
+      { label: "Booking", value: escapeHtml(data.bookingId) },
+      { label: "Booking status", value: escapeHtml(data.bookingStatus) },
+      { label: "Amount recorded as cash", value: formatCents(data.amountCents) },
+      {
+        label: "Xero invoice",
+        value: data.xeroInvoiceNumber
+          ? escapeHtml(data.xeroInvoiceNumber)
+          : "unknown",
+      },
+    ])}
+    ${
+      data.xeroInvoiceUrl
+        ? button("Open the invoice in Xero", data.xeroInvoiceUrl)
+        : ""
+    }
+    ${button("View Payments", data.reviewUrl, { sameOrigin: true })}
+  `);
+}
+
+// ---- B5 (#2262): Admin Alert — manual refund task raised ----
+//
+// A cash-settled booking was cancelled. There is no card to refund and no Xero
+// credit note to raise, so the money has to be handed back by a person. The
+// task is durable; this alert is the nudge, not the record.
+export function adminManualRefundTaskTemplate(data: {
+  memberName: string;
+  checkIn: Date;
+  checkOut: Date;
+  refundAmountCents: number;
+  bookingId: string;
+  reason: string;
+  reviewUrl: string;
+}): string {
+  return layout(`
+    ${heading("Manual Refund Needed — Cash Booking Cancelled")}
+    ${alertBox(
+      "A booking settled in cash (or by an off-Xero bank transfer) has been cancelled. The refund has to be paid back by hand — nothing was refunded automatically.",
+      "warning"
+    )}
+    ${paragraph(
+      "The member's cancellation refund has been worked out under the club's normal policy, but there is no card charge to reverse and no Xero invoice to credit, so the system has raised a hand-back task instead of pretending money moved. The member has been told the club will arrange the refund."
+    )}
+    ${paragraph(
+      "Pay the member back, then mark the task complete on the payments board so the ledger records the refund. If the member declines it, or it was settled another way, dismiss the task with a note."
+    )}
+    ${infoTable([
+      { label: "Member", value: escapeHtml(data.memberName) },
+      { label: "Check-in", value: formatNZDate(data.checkIn) },
+      { label: "Check-out", value: formatNZDate(data.checkOut) },
+      { label: "Booking", value: escapeHtml(data.bookingId) },
+      { label: "Amount to refund", value: formatCents(data.refundAmountCents) },
+      { label: "Reason", value: escapeHtml(data.reason) },
     ])}
     ${button("View Payments", data.reviewUrl, { sameOrigin: true })}
   `);
@@ -2789,31 +2910,66 @@ export function adminIssueReportTemplate(data: {
   `);
 }
 
-export function refundRequestResolvedTemplate(data: {
+/**
+ * #2321 — the refund-appeal outcome emails, ONE FUNCTION PER OUTCOME.
+ *
+ * These were a single template switching on a `status` boolean, alongside a
+ * single registered `refund-request-resolved` body whose default wording said
+ * "approved". The HTML path always branched correctly, but the flat editable
+ * body could not — so a club that had saved an override sent approval wording,
+ * and a sentence with an empty amount, to members whose appeal was declined.
+ * Splitting both the registered template and this function means no surface
+ * exists on which one outcome's wording can reach the other's recipient.
+ */
+function refundRequestOutcomeLayout(data: {
   firstName: string;
-  status: "APPROVED" | "REJECTED";
+  headingText: string;
+  outcomeSentence: string;
+  outcomeTone: "success" | "warning";
+  adminNotes: string | null;
+}): string {
+  return layout(`
+    ${heading(data.headingText)}
+    ${paragraph("Hi " + escapeHtml(data.firstName) + ",")}
+    ${alertBox(data.outcomeSentence, data.outcomeTone)}
+    ${data.adminNotes ? multilineBlock("<strong>Notes:</strong>\n" + escapeHtml(data.adminNotes)) : ""}
+    ${supportContactSentence("If you have questions, contact the club at ")}
+  `);
+}
+
+export function refundRequestApprovedTemplate(data: {
+  firstName: string;
   amountCents: number | null;
   adminNotes: string | null;
   checkIn: Date;
   checkOut: Date;
 }): string {
-  const isApproved = data.status === "APPROVED";
-  return layout(`
-    ${heading("Refund Appeal " + (isApproved ? "Approved" : "Update"))}
-    ${paragraph("Hi " + escapeHtml(data.firstName) + ",")}
-    ${isApproved
-      ? alertBox(
-          "Your refund appeal for your booking (" + formatNZDate(data.checkIn) + " - " + formatNZDate(data.checkOut) + ") has been approved. A refund of " + formatCents(data.amountCents ?? 0) + " will be processed to your original payment method.",
-          "success"
-        )
-      : alertBox(
-          "Your refund appeal for your booking (" + formatNZDate(data.checkIn) + " - " + formatNZDate(data.checkOut) + ") was not approved at this time.",
-          "warning"
-        )
-    }
-    ${data.adminNotes ? multilineBlock("<strong>Notes:</strong>\n" + escapeHtml(data.adminNotes)) : ""}
-    ${supportContactSentence("If you have questions, contact the club at ")}
-  `);
+  return refundRequestOutcomeLayout({
+    firstName: data.firstName,
+    headingText: "Refund Appeal Approved",
+    outcomeSentence:
+      "Your refund appeal for your booking (" + formatNZDate(data.checkIn) + " - " + formatNZDate(data.checkOut) + ") has been approved. A refund of " + formatCents(data.amountCents ?? 0) + " will be processed to your original payment method.",
+    outcomeTone: "success",
+    adminNotes: data.adminNotes,
+  });
+}
+
+export function refundRequestDeclinedTemplate(data: {
+  firstName: string;
+  adminNotes: string | null;
+  checkIn: Date;
+  checkOut: Date;
+}): string {
+  // Deliberately takes no amount at all: there is no refund to state, and the
+  // parameter's absence is what stops one being printed.
+  return refundRequestOutcomeLayout({
+    firstName: data.firstName,
+    headingText: "Refund Appeal Update",
+    outcomeSentence:
+      "Your refund appeal for your booking (" + formatNZDate(data.checkIn) + " - " + formatNZDate(data.checkOut) + ") was not approved at this time.",
+    outcomeTone: "warning",
+    adminNotes: data.adminNotes,
+  });
 }
 
 // ---- Public booking request flow (issue #707) ----
@@ -3223,7 +3379,6 @@ export function adminBookingRequestHoldCancelledTemplate(data: {
   `);
 }
 
-
 /**
  * Split-booking guest portion unpaid at hold expiry, no card on file (#1967).
  * Admin alert fired while a split non-member child remains unsettled with no
@@ -3237,6 +3392,7 @@ export function adminBookingRequestHoldCancelledTemplate(data: {
  *   guest portion must not settle ahead of the member's own place, so a human
  *   needs to chase the whole booking.
  */
+
 export function adminSplitSettlementUnpaidTemplate(data: {
   memberName: string;
   checkIn: Date;
@@ -3249,11 +3405,7 @@ export function adminSplitSettlementUnpaidTemplate(data: {
 }): string {
   return layout(`
     ${heading("Split Booking Guest Portion Unpaid — No Card on File")}
-    ${paragraph(
-      data.parentUnpaid
-        ? "A split booking reached its hold deadline for the non-member guest portion, but there is no saved card to charge and the member's own linked booking has not been paid either. No payment link has been sent — the guest portion should not be paid ahead of the member's own place. The hold has been extended; follow up with the member about paying for the whole booking."
-        : "A split booking reached its hold deadline for the non-member guest portion, but there is no saved card to charge — the member paid their own place by internet banking. A secure payment link has been emailed to the member so they can pay for their guests, and the hold has been extended."
-    )}
+    ${paragraph(adminSplitSettlementUnpaidLeadParagraph(data.parentUnpaid))}
     ${infoTable([
       { label: "Member", value: escapeHtml(data.memberName) },
       { label: "Check-in", value: formatNZDate(data.checkIn) },
@@ -3279,6 +3431,7 @@ export function adminSplitSettlementUnpaidTemplate(data: {
  * already-cancelled parent that a human should review), never a false "also
  * unpaid" for a parent that is in fact cancelled or bumped.
  */
+
 export function adminSplitSettlementCancelledTemplate(data: {
   memberName: string;
   checkIn: Date;
@@ -3290,11 +3443,7 @@ export function adminSplitSettlementCancelledTemplate(data: {
 }): string {
   return layout(`
     ${heading("Split Booking Guest Portion Auto-Cancelled — Unpaid Past Check-in")}
-    ${paragraph(
-      data.parentUnpaid
-        ? "A split booking's non-member guest portion was still unpaid at the end of its check-in day, with no saved card to charge, and the member's own linked booking is not settled either (it may be unpaid or already cancelled). The provisional guest booking has now been automatically cancelled. No payment was taken and no beds were held. The member has been notified. Review the whole booking to confirm the state of the member's own place."
-        : "A split booking's non-member guest portion was still unpaid at the end of its check-in day, with no saved card to charge (the member had paid their own place by internet banking). The provisional guest booking has now been automatically cancelled. No payment was taken and no beds were held. The member has been notified; the member's own linked booking is settled and is unaffected."
-    )}
+    ${paragraph(adminSplitSettlementCancelledLeadParagraph(data.parentUnpaid))}
     ${infoTable([
       { label: "Member", value: escapeHtml(data.memberName) },
       { label: "Check-in", value: formatNZDate(data.checkIn) },
@@ -3318,6 +3467,7 @@ export function adminSplitSettlementCancelledTemplate(data: {
  * changed by this cancellation, never a false "confirmed". No bearer token, so
  * this is not sensitive-log material.
  */
+
 export function splitGuestPortionCancelledTemplate(data: {
   firstName: string;
   checkIn: Date;
@@ -3325,9 +3475,7 @@ export function splitGuestPortionCancelledTemplate(data: {
   parentConfirmed: boolean;
   parentBookingReference?: string | null;
 }): string {
-  const ownBookingLine = data.parentConfirmed
-    ? "This only affects your guests' provisional place — your own booking is unaffected and remains confirmed."
-    : "This only affects your guests' provisional place — your own linked booking has not been changed by this cancellation.";
+  const ownBookingLine = splitGuestPortionOwnBookingLine(data.parentConfirmed);
   return layout(`
     ${heading("Your Guests' Provisional Place Was Cancelled")}
     ${paragraph("Hi " + escapeHtml(data.firstName) + ", the provisional place we were holding for your non-member guests stayed unpaid up to the check-in day, so it has now been automatically cancelled. Nothing was ever charged for it, and no beds were held.")}
