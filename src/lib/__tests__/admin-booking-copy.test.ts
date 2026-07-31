@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   bookingFindUnique: vi.fn(),
@@ -56,6 +56,26 @@ vi.mock("@/lib/audit", () => ({
 
 import { copyBookingToDraft } from "@/lib/admin-booking-copy";
 
+/**
+ * `copyBookingToDraft` refuses a target check-in that is already in the past,
+ * comparing it against `getTodayDateOnly()` — the NZ calendar date, read from
+ * the real clock. Every case below copies onto 2026-09-10, so left on the real
+ * clock the whole suite would have started failing on 11 September 2026 (#2401):
+ * the refusal is correct production behaviour, it is the FIXTURE that goes stale,
+ * and the failure would have looked like a copy regression rather than a test
+ * that outlived its dates.
+ *
+ * Pin the clock well before the target so the scenario under test — copying a
+ * booking FORWARD onto a future date — stays the intended one for good. The
+ * past-target guard keeps its own coverage in the last case below, so pinning
+ * hides nothing.
+ *
+ * Only `Date` is faked, so real timers still run and awaited promises resolve
+ * normally. 2026-07-01T00:00:00Z reads as 1 July in NZ (12:00 NZST) and in UTC
+ * alike, so the pinned "today" does not depend on the runner's own zone.
+ */
+const FIXED_NOW = new Date("2026-07-01T00:00:00.000Z"); // NZ 2026-07-01 12:00
+
 function makeSourceBooking(overrides: Record<string, unknown> = {}) {
   return {
     id: "source-booking",
@@ -95,6 +115,8 @@ function makeSourceBooking(overrides: Record<string, unknown> = {}) {
 describe("copyBookingToDraft", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIXED_NOW);
     mocks.resolveLinkedBookingMembers.mockResolvedValue(
       new Map([
         [
@@ -138,6 +160,10 @@ describe("copyBookingToDraft", () => {
       id: "draft-copy",
       status: "DRAFT",
     });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("creates a draft copy with shifted guest ranges and recalculated creation input", async () => {
@@ -217,5 +243,33 @@ describe("copyBookingToDraft", () => {
       status: 400,
     });
     expect(mocks.createDraftBooking).not.toHaveBeenCalled();
+  });
+
+  // The guard the clock pin above exists to keep out of the way. Stated against
+  // the pinned "today" (2026-07-01 NZ) rather than a date that merely happens to
+  // be behind the wall clock, so it asserts the boundary itself: yesterday is
+  // refused, today is not.
+  it("refuses a target check-in before today but allows today itself", async () => {
+    mocks.bookingFindUnique.mockResolvedValue(makeSourceBooking());
+
+    await expect(
+      copyBookingToDraft({
+        sourceBookingId: "source-booking",
+        targetCheckIn: "2026-06-30",
+        adminMemberId: "admin-1",
+      }),
+    ).rejects.toMatchObject({
+      message: "Target check-in date cannot be in the past",
+      status: 400,
+    });
+    expect(mocks.createDraftBooking).not.toHaveBeenCalled();
+
+    await expect(
+      copyBookingToDraft({
+        sourceBookingId: "source-booking",
+        targetCheckIn: "2026-07-01",
+        adminMemberId: "admin-1",
+      }),
+    ).resolves.toMatchObject({ checkIn: "2026-07-01", checkOut: "2026-07-04" });
   });
 });

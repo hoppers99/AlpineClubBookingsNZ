@@ -3,7 +3,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AdminBookingCalendar } from "@/components/admin-booking-calendar";
-import { getTodayDateOnly } from "@/lib/date-only";
+import { normalizeDateOnlyForTimeZone } from "@/lib/date-only";
 
 // The component reads router/search params from next/navigation; provide
 // minimal stand-ins so it renders outside the App Router.
@@ -17,15 +17,32 @@ vi.mock("next/navigation", () => ({
 // The calendar initially shows the current month, so build booking dates
 // inside it (days 5-20 exist in every month).
 //
-// The month must be resolved the way the COMPONENT resolves it — from the club
-// timezone via getTodayDateOnly (which returns UTC midnight of the NZ calendar
-// date), not from the runner's local clock. A raw `new Date()` here disagreed
-// with the component for the last hours of every month whenever the runner's
-// zone trails NZ — exactly the UTC CI runner — and every fixture booking then
-// landed outside the rendered grid, so nothing painted at all.
-const now = getTodayDateOnly();
+// These fixtures — and the two describes that use them — run on a PINNED clock
+// rather than the runner's (the two describes further down pin their own instant
+// for a deterministic June grid). The instant is chosen, not arbitrary:
+// 2026-06-30T22:00Z is 30 June in UTC and 1 July in NZ (10:00 NZST). The
+// component seeds its month from the club
+// timezone (`getTodayDateOnly`), so it must render JULY here — a component that
+// regressed to the runner's local date would render June on a UTC runner and
+// paint none of the fixtures below. That disagreement used to exist only during
+// the last hours of a month, which is exactly why it reached CI unnoticed
+// (#2426); pinning it makes the same regression fail every run, everywhere.
+//
+// The month is then resolved the way the COMPONENT resolves it — the club
+// timezone's calendar date for that instant, as UTC midnight. This is
+// `getTodayDateOnly()`'s own computation with the pinned instant substituted for
+// `new Date()`, which is what the module scope needs: fixtures are built at
+// import time, before any `beforeEach` can install the fake clock.
+const PINNED_NOW = new Date("2026-06-30T22:00:00.000Z"); // NZ 2026-07-01 10:00
+const now = normalizeDateOnlyForTimeZone(PINNED_NOW); // 2026-07-01
 const isoDay = (day: number) =>
   `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+
+// Fake only Date so React Testing Library's real timers still drive waitFor.
+function pinClock() {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(PINNED_NOW);
+}
 
 const calendarResponse = {
   bookings: [
@@ -52,6 +69,7 @@ const calendarResponse = {
 describe("AdminBookingCalendar", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    pinClock();
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({
@@ -62,6 +80,7 @@ describe("AdminBookingCalendar", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     window.localStorage.clear();
   });
@@ -192,7 +211,12 @@ function assertBarsWithinBands(container: HTMLElement) {
 }
 
 describe("AdminBookingCalendar overflow layout (#2088)", () => {
+  beforeEach(() => {
+    pinClock();
+  });
+
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     window.localStorage.clear();
   });
