@@ -106,6 +106,7 @@ const MOVE_BLOCKER_BOOKING_ID = "race-2366-blocker-booking";
 const MOVE_ROOM_ID = "race-2366-room";
 const MOVE_OLD_BED_ID = "race-2366-old-double";
 const MOVE_DESTINATION_BED_ID = "race-2366-destination";
+const MOVE_BED_IDS = [MOVE_OLD_BED_ID, MOVE_DESTINATION_BED_ID];
 const MOVE_GUEST_ID = "race-2366-mover";
 const MOVE_PARTNER_GUEST_ID = "race-2366-partner";
 const MOVE_BLOCKER_GUEST_ID = "race-2366-blocker";
@@ -527,6 +528,9 @@ describe("concurrency race DB safety guard (#1881)", () => {
       await prisma.booking.deleteMany({
         where: { id: { in: [MOVE_BOOKING_ID, MOVE_BLOCKER_BOOKING_ID] } },
       });
+      await prisma.lodgeBed.deleteMany({
+        where: { id: { in: MOVE_BED_IDS } },
+      });
       await prisma.lodgeRoom.deleteMany({ where: { id: MOVE_ROOM_ID } });
       await prisma.booking.deleteMany({ where: { id: APP_BOOKING_ID } });
       await prisma.lodge.deleteMany({ where: { id: APP_LODGE_ID } });
@@ -690,6 +694,11 @@ describe("concurrency race DB safety guard (#1881)", () => {
         await attemptCleanup(() =>
           prisma.booking.deleteMany({
             where: { id: { in: [MOVE_BOOKING_ID, MOVE_BLOCKER_BOOKING_ID] } },
+          })
+        );
+        await attemptCleanup(() =>
+          prisma.lodgeBed.deleteMany({
+            where: { id: { in: MOVE_BED_IDS } },
           })
         );
         await attemptCleanup(() =>
