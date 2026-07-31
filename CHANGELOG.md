@@ -4,6 +4,38 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **The browser test suite stopped crying wolf (#2302).** Over three days five
+  different browser tests went red on code that was perfectly fine, each costing
+  someone an investigation and one of them turning the main branch red for the
+  best part of an hour. None of it was a real defect, and none of it was
+  "slowness" either. Two causes were behind all five.
+
+  The first: when a browser test fails, it is automatically run again — but it
+  was run again against the *leftovers* of the attempt that just failed. A test
+  that books a bed on its way to the thing it actually checks left that booking
+  behind, so the second and third attempts failed on the booking clash rather
+  than on the original problem, and the error finally reported was the clean-up
+  mess rather than the cause. Tests that permanently change something now put it
+  back before each attempt, and each attempt books different nights, so a repeat
+  run starts from where the first one did. Groups of tests that used to be
+  chained together end to end have also been unchained down to the pairs that
+  genuinely depend on each other, so one test's bad luck can no longer drag its
+  neighbours down with it.
+
+  The second: the pages that stream in progressively briefly contain each piece
+  of text twice — once in the version being delivered and once in the version
+  being shown — and a test that looked for text by wording alone could catch the
+  invisible copy and give up. Those checks now look for the copy that is actually
+  on screen.
+
+  Also fixed: the stand-in Xero server used by the tests calls the app back
+  through its own network loopback, which on a busy build machine occasionally
+  refuses the connection; a single refused connection used to leave the Xero
+  setup wizard stuck on "Confirming the organisation name…" for the rest of the
+  test. That call now retries. The testing guide gains a "Flake invariants"
+  section so a future test cannot quietly reintroduce any of this. No part of
+  this touches the running club site.
+
 - **Self-hosted sites now use whatever processing power the server has free,
   instead of being rationed to a fraction of one core (#2351).** The standard
   deployment recipe used to cap each app container at eight-tenths of a

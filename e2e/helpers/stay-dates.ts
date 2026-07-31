@@ -128,6 +128,34 @@ export function stayWindow(index: number): StayWindow {
   );
 }
 
+// Index offset between one attempt of a test and the next (#2302).
+//
+// Chosen to exceed every base index in use (the highest is 12), so
+// `stayWindowForAttempt` maps attempt 0/1/2 of every spec onto three mutually
+// disjoint bands of Mondays that can never overlap another spec's band either.
+// The seeded seasons cover roughly 75 usable Mondays from the first window
+// (winter runs to +239 days, summer from +270 to +599 — see SEEDED_SEASONS), so
+// the highest index this can produce (12 + 2×16 = 44) stays comfortably inside
+// them; stayWindow still throws loudly if a run date ever changes that.
+const RETRY_WINDOW_STRIDE = 16;
+
+// The stay window for a given ATTEMPT of a test.
+//
+// A booking spec that reaches its assertion by creating a booking leaves that
+// booking behind, and `playwright.config.ts` retries in CI against the same
+// database (the suite seeds once per run, never between attempts). Re-running on
+// the SAME window therefore hits the member-night guard and fails deterministically
+// — `stripe-payment.spec.ts:40` did exactly this in run 30586027310, where both
+// retries died at the review step instead of re-running the payment. Giving each
+// attempt its own window removes the collision at its source, rather than
+// papering over it with more retries or a looser assertion.
+//
+// Attempt 0 returns `stayWindow(index)` unchanged, so the happy path is
+// byte-identical to before.
+export function stayWindowForAttempt(index: number, retry: number): StayWindow {
+  return stayWindow(index + retry * RETRY_WINDOW_STRIDE);
+}
+
 // How the app renders a lodge night in prose, e.g. "17 Aug 2026" — the member-
 // night conflict copy (#2250) formats every night with
 // `formatNZDate(parseDateOnly(night))`, which is `Intl.DateTimeFormat` at
