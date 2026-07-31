@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { AdminViewOnlyNotice } from "@/components/admin/view-only-action";
+import { CopyField } from "@/components/admin/integration-wizard";
 import { BookingApprovalsPanel } from "@/components/admin/booking-requests/booking-approvals-panel";
 import { BookingChangeRequestsPanel } from "@/components/admin/booking-requests/booking-change-requests-panel";
 import { PublicBookingRequestsPanel } from "@/components/admin/booking-requests/public-booking-requests-panel";
@@ -45,6 +46,17 @@ export default function BookingRequestsPage() {
   // verified non-member requests are waiting on the Public Requests tab
   // (issue #779 — they previously looked under Approvals/Bookings/Waitlist).
   const [publicQueueCount, setPublicQueueCount] = useState(0);
+
+  // The public request form is deliberately unlisted (#2421) — no page a
+  // visitor can browse to links to it — so admins need a way to hand the direct
+  // URL to a guest the club has agreed to host. `window.location.origin` is
+  // client-only, so it is resolved after mount (same shape as
+  // /admin/display/devices) and the field shows its emptyHint until then.
+  const [publicRequestUrl, setPublicRequestUrl] = useState("");
+
+  useEffect(() => {
+    setPublicRequestUrl(`${window.location.origin}/booking-requests`);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -145,6 +157,14 @@ export default function BookingRequestsPage() {
         <TabsContent value="public" className="mt-6">
           {activeTab === "public" ? (
             <div className="space-y-4">
+              {/* Read-only affordance: sharing the link is not a booking write,
+                  so it stays available to view-only admins (no edit gate). */}
+              <CopyField
+                label="Guest request form link (unlisted)"
+                value={publicRequestUrl}
+                emptyHint="Loading the site address…"
+                description="Share this link directly with guests the club is willing to host. No page a visitor can browse to links to the form — the only other way in is the rebook button on a payment link the club emails a past requester — and this is the only place in the app that shows the URL."
+              />
               <p className="rounded-md border border-border bg-muted p-3 text-sm text-muted-foreground">
                 How a non-member request flows: the requester submits it and
                 confirms their email, then it appears here under{" "}
