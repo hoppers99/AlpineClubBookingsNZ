@@ -132,6 +132,105 @@ export function findBracketAnnotations(
 }
 
 /**
+ * #2269 (F3) — the annotation families this project ever SHIPPED inside a
+ * default body, expressed as a regex alternation.
+ *
+ * Guard 1 above treats ANY square-bracketed span as an authoring note, which is
+ * the right rule for a save-time refusal and for a "your row still carries
+ * junk" banner: the admin is told, and the admin decides. It is the WRONG rule
+ * for a migration that rewrites club-authored content without asking. A club
+ * that typed "[see the noticeboard]" into its own wording wrote that on
+ * purpose; deleting it silently is the "forced reset destroys legitimate
+ * customisation" failure mode #2269 exists to avoid.
+ *
+ * So the migration strips only text WE wrote and shipped. These four prefixes
+ * are the complete set found by replaying every historical revision of
+ * `email-message-registry.ts`, `email-message-audit-defaults.ts` and
+ * `email-message-notes.ts` and extracting every bracketed span:
+ *
+ *   [only when …]          the bulk of them (conditional-line notes)
+ *   [when …]               the "and when it did not" siblings
+ *   [heading becomes …]    school attendee-confirmation subject note
+ *   [falls back to …]      school attendee-confirmation body note
+ *
+ * Anything else bracketed survives the migration and keeps showing up in guard
+ * 1's banner, where an admin resolves it deliberately.
+ */
+const SHIPPED_ANNOTATION_PREFIXES =
+  "(?:only when|when|heading becomes|falls back to)";
+
+/**
+ * One shipped authoring annotation, e.g. "[only when a door code is set]".
+ * Case-sensitive on purpose: this matches the text this project shipped, not
+ * an approximation of it.
+ */
+export const SHIPPED_ANNOTATION_PATTERN = `\\[${SHIPPED_ANNOTATION_PREFIXES}[^\\]]*\\]`;
+
+/**
+ * The strip, as an ORDERED list of regex sources, each applied globally with an
+ * EMPTY replacement.
+ *
+ * This exact list is what the #2269 migration runs: every pattern below appears
+ * verbatim as a `regexp_replace(..., '<pattern>', '', 'g')` in
+ * `prisma/migrations/20260801150000_strip_email_override_bracket_annotations/migration.sql`,
+ * and `email-message-annotation-strip.test.ts` reads the SQL file back and
+ * proves the two lists are identical, then runs the fixture corpus through the
+ * patterns lifted OUT OF THE SQL. Every construct used here means the same
+ * thing in PostgreSQL's ARE engine and in JavaScript's — verified against
+ * postgres:16 before the patterns were fixed:
+ *
+ *   `[^\]]`          an escape inside a bracket expression (ARE, not POSIX)
+ *   `(?=\n|$)`       lookahead; `$` is end-of-STRING in both (no n/m flag)
+ *   `(?<=[^ \t\r\n])` fixed-width lookbehind
+ *   `^`              start-of-STRING in both (no n/m flag)
+ *
+ * Why four passes rather than one:
+ *
+ *   1. an annotation that occupies a whole line takes the line with it, so a
+ *      stripped body does not grow a blank line where a note used to sit;
+ *   2. the same, for an annotation on the very first line;
+ *   3. an annotation with content before it on the line takes the whitespace
+ *      that separated it — the defaults padded them into a column
+ *      ("Subtotal: {{subtotal}}          [only when discountCents > 0]"), and
+ *      leaving that padding behind would be its own trailing-whitespace defect;
+ *   4. whatever is left is an annotation at the start of a line with content
+ *      after it, which takes the whitespace that follows instead.
+ *
+ * Order matters: 3 must run before 4, or a padded end-of-line annotation would
+ * be removed by 4 and leave its padding as trailing whitespace.
+ */
+export const SHIPPED_ANNOTATION_STRIP_PATTERNS: readonly string[] = [
+  `\\n[ \\t]*${SHIPPED_ANNOTATION_PATTERN}[ \\t\\r]*(?=\\n|$)`,
+  `^[ \\t]*${SHIPPED_ANNOTATION_PATTERN}[ \\t\\r]*\\n`,
+  `(?<=[^ \\t\\r\\n])[ \\t]*${SHIPPED_ANNOTATION_PATTERN}`,
+  `${SHIPPED_ANNOTATION_PATTERN}[ \\t]*`,
+];
+
+/** Every shipped annotation present in a value, in the order they appear. */
+export function findShippedAnnotations(value: string): string[] {
+  return Array.from(
+    value.matchAll(new RegExp(SHIPPED_ANNOTATION_PATTERN, "g")),
+    (match) => match[0],
+  );
+}
+
+/**
+ * Remove every shipped authoring annotation from a stored template value.
+ *
+ * Idempotent by construction: the output contains no span matching
+ * SHIPPED_ANNOTATION_PATTERN, so a second run matches nothing and returns its
+ * input unchanged. A value with no shipped annotation is returned as-is
+ * (identity), which is what lets the migration write an audit row only for rows
+ * it genuinely changed.
+ */
+export function stripShippedAnnotations(value: string): string {
+  return SHIPPED_ANNOTATION_STRIP_PATTERNS.reduce(
+    (current, pattern) => current.replace(new RegExp(pattern, "g"), ""),
+    value,
+  );
+}
+
+/**
  * GUARD 2 — every token in a shipped default must be in the APPROVED registry.
  *
  * Not circular: the approved set is a hand-maintained list in
