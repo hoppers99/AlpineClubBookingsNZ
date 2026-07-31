@@ -4,6 +4,31 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **A club's website now says "not ready yet" until its setup is finished,
+  instead of quietly answering as though everything were fine (#2420).** Before
+  a club saves its site style for the first time, every public web address shows
+  a "Site setup in progress" holding screen. That screen was being handed over
+  with the hidden status line that means "here is your page" — so a search
+  engine could start listing a club's half-built site, and an uptime check would
+  report a site that has never opened as healthy. Every public address now
+  carries the status that means "temporarily unavailable, come back shortly",
+  along with a stated wait, which is what search engines and monitoring tools are
+  built to act on.
+
+  Every public address is treated the same way while setup is unfinished — the
+  home page, a page the club has already written, and a mistyped address all get
+  the same holding screen. Until the club has chosen how its site looks, none of
+  it is ready to be seen or listed, and answering differently for pages that
+  exist would tell anyone probing a half-built site exactly which pages are
+  there.
+
+  Nothing an administrator needs in order to finish setup is affected: the admin
+  area, the site style wizard itself, the login and password pages, the member
+  and lodge areas, the lobby display, and the data addresses the app talks to all
+  behave exactly as before. Once setup is complete, so does the public website —
+  this changes nothing at all for a club already running. The site opens within
+  about fifteen seconds of the setup being saved.
+
 - **A web address that does not exist is now told "not found" honestly, so
   search engines and monitoring are no longer assured a dead address is fine
   (#2405).** Every reply carries a hidden status line that people never see but

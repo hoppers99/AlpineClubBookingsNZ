@@ -80,7 +80,7 @@ the row, not open work. Open findings now live in labelled GitHub issues
 
 | Route or surface | Auth mechanism | Actor | Data touched | External calls | Rate, signature, or boundary controls | Logging and audit | Residual risk or follow-up |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `src/proxy.ts` global proxy and module gates | No session auth. Applies CSP/security headers to page requests and selected API matcher paths; returns 404 for disabled module routes. | Anonymous and authenticated browser traffic. | Module settings via `loadEffectiveModuleFlags()`. | None. | CSP nonce, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, module route blocking. | No per-request audit. | API matcher is selective, not global for every API path. Keep route-level auth as the enforcement boundary. |
+| `src/proxy.ts` global proxy, pre-setup gate, and module gates | No session auth. Applies CSP/security headers to page requests and selected API matcher paths; returns 404 for disabled module routes; returns 503 + the "Site setup in progress" screen for every public-website path until `ClubTheme.completedAt` is set (#2420, "The Pre-Setup Gate" below). | Anonymous and authenticated browser traffic. | Module settings via `loadEffectiveModuleFlags()`; setup state, club name and contact address via `setup-gate.ts` (memoised 15s, read only while setup is incomplete). | None. | CSP nonce, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, module route blocking, pre-setup 503 gate (fails closed, `no-store`, `Retry-After`). | No per-request audit. | API matcher is selective, not global for every API path. Keep route-level auth as the enforcement boundary. The setup gate never covers `/api/*`, the admin area, or the login flows — an operator must be able to finish setup. |
 | `/api/health`, `/api/health/ready` | Public. | Load balancers, operators, anonymous callers. | DB reachability, runtime version/uptime, config readiness. Public responses omit provider error detail. | DB query only. | No rate limit. No secrets in response. | Logger debug/error only. | Anonymous callers can observe availability. #615 can decide whether to add light rate limiting or cache headers. |
 | `/api/age-tier-settings`, `/api/committee` | Public read endpoints. | Anonymous website users. | Public age-tier/rate settings and published committee assignment presentation fields; and, **only when `PublicContentSettings.committeePhotoDisplay != NONE`**, per-published-member photo metadata (member id + `photoUpdatedAt` version) so the roster can build the scoped `/api/members/[id]/photo` URL. | None. | No rate limit. Committee query selects active, published assignment fields only; member email is not selected or returned, phone is returned only when show-phone is enabled, and contact keys are returned only for contactable assignments. Photo metadata (incl. member id) is emitted **only** when the club has opted the roster into photos — with `committeePhotoDisplay = NONE` (the default), no member id or photo pointer is returned. | None beyond DB errors if thrown. | Public committee names and optional phone numbers are intentional once an admin publishes the assignment; email remains server-only. Committee-photo bytes are still served (and gated) by the scoped `/api/members/[id]/photo` endpoint — `committeePhotoDisplay` governs roster rendering/metadata only, not the serving rule. |
 | `/api/address-autocomplete/search`, `/api/address-autocomplete/details/[id]` | Public server-side proxy to Addy, gated by the `addressAutocomplete` Admin Module. | Anonymous website users. | Search terms, address suggestion ids, Addy result payloads. | Addy API via `src/lib/addy-api.ts`. | Module-route/proxy gate returns 404 while disabled, Zod query validation, `rateLimiters.addressAutocomplete` at 90/min/IP. Secrets stay server-side. | Minimal error responses, no audit. | Upstream-cost and enumeration surface remains public only when the module is enabled; manual address entry remains the fallback. |
@@ -1027,10 +1027,12 @@ by the proxy matcher's `missing:` clause; they are listed so the check stays
 correct if that matcher changes.)
 
 **Accepted residual: non-steady-state renders of `/`.** The home page is
-allow-listed unconditionally, so the two transient screens it can serve — the
-"site setup in progress" screen before the style is first saved, and the 404 that
-renders while the home page content is unpublished — are browser-cacheable for up
-to 60 seconds after the admin transitions out of that state. Tag invalidation
+allow-listed unconditionally, so a transient screen it serves is
+browser-cacheable for up to 60 seconds after the admin transitions out of that
+state. As of #2420 that is one screen, not two: the pre-setup holding screen is
+now returned by the setup gate with `Cache-Control: no-store` before this
+allow-list is consulted, so only the 404 that renders while the home page
+content is unpublished is still affected. Tag invalidation
 (`revalidateTag`) reaches Next's own data cache but cannot reach an HTTP cache
 already holding the response, so the stale screen simply expires. Self-healing,
 bounded by the 60-second lifetime, and affecting only anonymous visitors during
@@ -1125,11 +1127,12 @@ lobby TV display (fork #54) and the global 404 (#2356).
       staging build. `/api/*` misses were the genuine defect and were served the
       HTML page; they now terminate at `api/[...unmatched]/route.ts` with JSON,
       in either configuration.
-    - The remaining pre-setup soft 404 for PAGE URLs is unfixed here: the
-      layout cannot set a status, and deciding what an unconfigured site should
-      answer (404 for unknown paths, 503 for the holding screen) needs an owner
-      decision. Tracked separately. Do not read the bullet above as saying every
-      404 URL returns 404 in every configuration.
+    - The remaining pre-setup soft 404 for PAGE URLs was tracked as #2420 and
+      is now CLOSED — see "The Pre-Setup Gate" below. An unconfigured site
+      answers 503 for every public-website address, so the "every URL answers
+      200" state described above no longer exists in any configuration. The
+      bullet above still should not be read as "every 404 URL returns 404 in
+      every configuration": pre-setup they return 503, by design.
 - **The cost is small, and was checked rather than assumed.** #2351 measured a
   cold dynamic render at ~3.5-5 CPU-seconds, so "every 404 now costs a render"
   deserved scrutiny — bot traffic on nonexistent URLs is real load. It turns out
@@ -1231,6 +1234,93 @@ lobby TV display (fork #54) and the global 404 (#2356).
   one and can be revisited on its own merits; the CI guard above stays useful
   either way, since it asserts the outcome (no unnonced inline script ships)
   rather than the mechanism.
+
+## The Pre-Setup Gate - 2026-08-01
+
+Issue #2420, closing the residual #2405 left open. **Until a club completes
+site-style setup, every public-website address answers `503 Service Unavailable`
+with the "Site setup in progress" holding screen.** Before this, that same
+holding screen was served with `200 OK` from `(website)/layout.tsx` for *every*
+address — real page, typo, and bot probe alike — which is the configuration the
+#2356 measurements above were actually taken on.
+
+- **Where the decision lives, and why it could not stay in the layout.**
+  `src/lib/setup-gate.ts`, called from `src/proxy.ts` before anything else. A
+  layout cannot set a status code: `notFound()` is the only status a React
+  render can raise and it means something else. The proxy is the only place that
+  runs before every request and can write a status, and a middleware response
+  body is the only middleware outcome whose status Next actually propagates —
+  `NextResponse.rewrite(url, { status })` does **not** (verified in the vendored
+  `next@16.2.11`: `server/lib/router-utils/resolve-routes.js` propagates
+  `middlewareRes.status` on the direct-response and `location` branches only,
+  never on the rewrite branch). Do not "simplify" this into a rewrite.
+- **Two choices made explicitly rather than by default**, both stated in the code
+  and both owner-visible:
+  - **A real published page is 503 during setup too**, not 200. Serving 200 for
+    `/about` and 503 for `/nope` would publish the club's page inventory from a
+    half-built install and let a crawler index pages before the club has chosen
+    how they look.
+  - **`Retry-After: 120` is sent** on every gated 503. A bare long-running 503
+    is a signal to start dropping a site's URLs from an index; 503 plus
+    `Retry-After` is read as a temporary outage. The value is short because
+    completion is one human save away and the gate re-reads its state within 15
+    seconds of it. `Cache-Control: no-store` rides along, because `/` is
+    otherwise allow-listed as browser-cacheable for 60 seconds
+    (`getAnonymousPageCacheControl`) and the holding screen must not outlive
+    setup in anyone's cache.
+- **What is deliberately NOT gated**, so an operator part-way through setup can
+  finish it: the admin area (including `/admin/site-style` itself), the login and
+  password-recovery flows, the member/lodge/finance areas, the lobby display,
+  `robots.txt`/`sitemap.xml`/`favicon.ico`, and everything under `/_next`.
+  `/api/*` is excluded twice over — by the proxy matcher and by the gate's own
+  path test — which is what keeps `api/[...unmatched]/route.ts` (#2405) answering
+  JSON 404 in both setup states. The exclusion list is a **deny** list because
+  `(website)/[...slug]` claims every URL no other route group claims;
+  `setup-gate.test.ts` walks `src/app/**` and fails if a top-level route is added
+  outside `(website)` without being listed, so the list cannot quietly go stale.
+- **The holding screen needs no static asset to render.** The proxy cannot
+  reference the app's compiled stylesheet (its URL carries a build hash the proxy
+  has no way to know), so the 503 body is a complete self-contained document:
+  the club's own theme CSS inlined exactly as the layout inlines it, plus a short
+  inline stylesheet, no images and no scripts. That is why the "don't 503 the
+  assets the screen needs" constraint is satisfied trivially — there are none.
+  The two admin-editable values interpolated into it (club name, contact address)
+  are HTML-escaped.
+- **It adds no per-request database read.** The setup state — and, while
+  incomplete, the fully rendered document — is memoised for 15 seconds behind a
+  single-flight promise, matching the TTL of the tagged cache the layout reads
+  the same `ClubTheme` row through. Once setup is complete the cached answer is a
+  bare boolean and the club identity and contact address are never read at all.
+  The proxy is bundled separately from route handlers, so the `revalidateTag`
+  the site-style save issues cannot reach this memo; the TTL is the propagation
+  bound, and it is why the site opens within 15 seconds of the save rather than
+  instantly.
+- **Fails CLOSED.** `getWebsiteThemeRenderState()` already swallows a failed
+  `ClubTheme` read and reports `isComplete: false`, so a database outage is
+  answered with the holding screen and a 503 — which is what the layout already
+  did, and what 503 literally means. Failing open would restore the
+  200-for-every-address defect under exactly the conditions that make it hardest
+  to notice.
+- **The layout keeps its own pre-setup branch, as a fallback.** The proxy matcher
+  deliberately skips RSC prefetches (`missing:` clause), and those reach the
+  layout directly; without the branch a prefetch issued from an admin page could
+  warm a client with the real site. Those responses are still 200 — a layout
+  cannot set a status — which is precisely why the authoritative decision is in
+  the proxy and not there. Only the copy is shared
+  (`SETUP_IN_PROGRESS_COPY`), and a test pins that both surfaces use it.
+- **Interaction with #2352 (static/ISR for public routes).** The gate is
+  deliberately not a render-time check, so making `(website)` routes static
+  cannot bypass it — the proxy still runs on the request even when the body would
+  be served from a prerender. The direction #2352 must handle is the reverse: a
+  page prerendered while setup was incomplete has to be revalidated on
+  completion, or the first post-setup visitor is served a cache entry built under
+  the holding screen. The note is repeated in `setup-gate.ts` where the decision
+  lives.
+- **Measurement trap, unchanged and still worth stating.** `prisma/seed.ts`
+  leaves `ClubTheme.completedAt` NULL unless `SEED_THEME_COMPLETE=1`. A local
+  stack without that flag now answers **503** for every public address rather
+  than 200 — a different wrong reading of the same misconfiguration. Check
+  `ClubTheme.completedAt` before trusting any locally measured status.
 
 ## Follow-Up Mapping
 
