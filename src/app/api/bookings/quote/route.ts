@@ -48,8 +48,9 @@ import {
   getBookingMemberNightConflictResponse,
 } from "@/lib/booking-member-night-conflicts";
 import {
-  applyMemberGuestAddThrottle,
   handleMemberGuestAddRefusal,
+  memberGuestAddThrottleHook,
+  MemberGuestAddThrottledError,
   startMemberGuestRefusalClock,
 } from "@/lib/member-guest-probe-guard";
 
@@ -165,20 +166,21 @@ export async function POST(request: NextRequest) {
         {
           skipAuthorization: isAuthorizedOnBehalf,
           memberGuestWideningEnabled: memberGuestPolicy.wideningEnabled,
+          // #2388, owner decision 31 Jul: per-ACTING-MEMBER throttling on the
+          // add paths. Applied only when the attempt actually names a
+          // beyond-family member, so an ordinary family booking is never
+          // rate-limited by it — and applied the moment the family boundary is
+          // known, BEFORE any member record is read (H1) and before the checks
+          // whose pattern of answers is the channel. Spending it any later made
+          // a real member answer 429 while an id with nobody behind it answered
+          // 403, which is an existence oracle made out of the mitigation.
+          onBoundaryResolved: memberGuestAddThrottleHook({
+            request,
+            actorMemberId: session.user.id,
+            skipAuthorization: isAuthorizedOnBehalf,
+          }),
         }
       );
-    // #2388, owner decision 31 Jul: per-ACTING-MEMBER throttling on the add
-    // paths. Applied only when the attempt actually names a beyond-family
-    // member, so an ordinary family booking is never rate-limited by it — and
-    // applied HERE, before the checks whose pattern of answers is the channel,
-    // so a run of probes across dates is slowed before it yields a calendar.
-    const probeThrottled = await applyMemberGuestAddThrottle({
-      request,
-      actorMemberId: session.user.id,
-      beyondFamilyMemberIds: boundary.beyondFamilyMemberIds,
-      skipAuthorization: isAuthorizedOnBehalf,
-    });
-    if (probeThrottled) return probeThrottled;
 
     await assertLinkedBookingMembersCanBeBooked(
       prisma,
@@ -201,6 +203,7 @@ export async function POST(request: NextRequest) {
       boundary,
     );
   } catch (error) {
+    if (error instanceof MemberGuestAddThrottledError) return error.response;
     if (error instanceof BookingGuestValidationError) {
       await handleMemberGuestAddRefusal({
         request,
@@ -208,6 +211,7 @@ export async function POST(request: NextRequest) {
         error,
         route: "bookings/quote",
         startedAt,
+        throttle: "ALREADY_CHARGED",
         skipAuthorization: isAuthorizedOnBehalf,
       });
       return NextResponse.json(
@@ -276,6 +280,7 @@ export async function POST(request: NextRequest) {
         error,
         route: "bookings/quote",
         startedAt,
+        throttle: "ALREADY_CHARGED",
         skipAuthorization: isAuthorizedOnBehalf,
       });
       return NextResponse.json(

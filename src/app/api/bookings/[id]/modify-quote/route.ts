@@ -46,12 +46,14 @@ import {
 } from "@/lib/booking-guests";
 import {
   loadMemberGuestAddPolicy,
+  markCrossFamilyGuestsOnBooking,
   markCrossFamilyMemberGuests,
   type MemberGuestConsentGuestFields,
 } from "@/lib/member-guest-add-policy";
 import {
-  applyMemberGuestAddThrottle,
   handleMemberGuestAddRefusal,
+  memberGuestAddThrottleHook,
+  MemberGuestAddThrottledError,
   startMemberGuestRefusalClock,
 } from "@/lib/member-guest-probe-guard";
 import { findUnpaidMemberGuestNames } from "@/lib/booking-member-guest-subscriptions";
@@ -573,19 +575,19 @@ export async function POST(
         {
           skipAuthorization: isAdmin,
           memberGuestWideningEnabled: memberGuestPolicy.wideningEnabled,
+          // #2388: per-acting-member throttling, counted only when the attempt
+          // names a beyond-family member. This route is a side-effect-free
+          // PREVIEW, which puts it in the same class as `/api/bookings/quote` —
+          // the cheap surface a probe run would actually use. Spent BEFORE the
+          // member records are read (H1) so a real member and an id with nobody
+          // behind it get the same answer once the budget is gone.
+          onBoundaryResolved: memberGuestAddThrottleHook({
+            request,
+            actorMemberId: session.user.id,
+            skipAuthorization: isAdmin,
+          }),
         }
       );
-    // #2388: per-acting-member throttling, counted only when the attempt names a
-    // beyond-family member. This route is a side-effect-free PREVIEW, which puts
-    // it in the same class as `/api/bookings/quote` — the cheap surface a probe
-    // run would actually use.
-    const probeThrottled = await applyMemberGuestAddThrottle({
-      request,
-      actorMemberId: session.user.id,
-      beyondFamilyMemberIds: boundary.beyondFamilyMemberIds,
-      skipAuthorization: isAdmin,
-    });
-    if (probeThrottled) return probeThrottled;
 
     await assertLinkedBookingMembersCanBeBooked(
       prisma,
@@ -610,6 +612,7 @@ export async function POST(
         )
       : undefined;
   } catch (error) {
+    if (error instanceof MemberGuestAddThrottledError) return error.response;
     if (error instanceof BookingGuestValidationError) {
       await handleMemberGuestAddRefusal({
         request,
@@ -617,6 +620,7 @@ export async function POST(
         error,
         route: "bookings/modify-quote",
         startedAt,
+        throttle: "ALREADY_CHARGED",
         skipAuthorization: isAdmin,
       });
       return NextResponse.json(
@@ -817,7 +821,7 @@ export async function POST(
     throw error;
   }
 
-  const guestsForPricing = [
+  const proposedGuestRows = [
     ...proposedRemainingGuests.map((entry) => ({
       bookingGuestId: entry.guest.id,
       ageTier: entry.guest.ageTier as AgeTier,
@@ -845,6 +849,20 @@ export async function POST(
     })),
   ];
 
+  // C1 (privacy review of MG3 #2308). Re-derive the marker over EVERY
+  // member-linked guest on the proposed booking, not just the ones being added.
+  // Without this, a cross-family member guest added on an earlier request is
+  // unmarked forever, and this route — a side-effect-free preview reachable with
+  // an EMPTY `addGuests`, so no throttle, no audit row and no timing floor — hands
+  // back their name and their exact booked nights on every date change. See
+  // `markCrossFamilyGuestsOnBooking`.
+  const guestsForPricing = await markCrossFamilyGuestsOnBooking(
+    prisma,
+    booking.memberId,
+    proposedGuestRows,
+    { skipAuthorization: isAdmin },
+  );
+
   const totalGuestCount = guestsForPricing.length;
   const seasonYear = getSeasonYear(newCheckIn);
 
@@ -857,10 +875,13 @@ export async function POST(
     );
   }
 
-  // D-8: a clash on a cross-family guest being ADDED refuses neutrally rather
-  // than returning that member's already-booked nights. Guests already ON the
-  // booking are not marked — they are not being added, and the booker can already
-  // see who is on their own booking.
+  // D-8: a clash on ANY cross-family member guest in the proposed party refuses
+  // neutrally rather than returning that member's already-booked nights —
+  // whether this request is adding them or they were added weeks ago. The booker
+  // can of course see who is on their own booking; what they may not see is where
+  // ELSE that person is booked, which is exactly what `conflictingNights` is.
+  // The refusal path below spends the throttle, writes the audit row and holds
+  // the timing floor, so a repeat run over dates is capped and recorded.
   let memberNightConflicts;
   try {
     memberNightConflicts = await findBookingMemberNightConflicts(prisma, {
@@ -879,6 +900,7 @@ export async function POST(
         error,
         route: "bookings/modify-quote",
         startedAt,
+        throttle: "ALREADY_CHARGED",
         skipAuthorization: isAdmin,
       });
       return NextResponse.json(
@@ -923,6 +945,22 @@ export async function POST(
       });
     } catch (error) {
       if (error instanceof BookingGuestValidationError) {
+        // H3 (privacy review of MG3 #2308). This catch used to answer the
+        // collapsed refusal directly, skipping the handler — so an
+        // unpaid-subscription refusal wrote no audit row, raised no
+        // repeated-refusal warning, and reported its own uncapped duration.
+        // It fires much later in the request than its two siblings, so on a
+        // stopwatch "subscription unpaid" separated cleanly from "booked those
+        // nights" — the precise distinction D-8 exists to remove.
+        await handleMemberGuestAddRefusal({
+          request,
+          actorMemberId: session.user.id,
+          error,
+          route: "bookings/modify-quote",
+          startedAt,
+          throttle: "ALREADY_CHARGED",
+          skipAuthorization: isAdmin,
+        });
         return NextResponse.json(
           getBookingGuestValidationErrorResponse(error),
           { status: error.status },

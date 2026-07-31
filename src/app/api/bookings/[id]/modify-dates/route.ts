@@ -9,6 +9,14 @@ import {
 } from "@/lib/booking-date-modification-service";
 import { OverCapacityConfirmationRequiredError } from "@/lib/over-capacity-confirmation";
 import {
+  BookingGuestValidationError,
+  getBookingGuestValidationErrorResponse,
+} from "@/lib/booking-guests";
+import {
+  handleMemberGuestAddRefusal,
+  startMemberGuestRefusalClock,
+} from "@/lib/member-guest-probe-guard";
+import {
   BookingMemberNightConflictError,
   getBookingMemberNightConflictResponse,
 } from "@/lib/booking-member-night-conflicts";
@@ -42,6 +50,12 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  // MG3 (#2308) C1: a date change on a booking that already carries a
+  // cross-family member guest can now produce D-8's neutral refusal, so this
+  // route needs the refusal clock the timing floor is measured from. Monotonic,
+  // never `Date.now()` — see `startMemberGuestRefusalClock`.
+  const startedAt = startMemberGuestRefusalClock();
+
   const session = await auth();
   if (!session) {
     return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
@@ -165,6 +179,27 @@ export async function PUT(
         getMembershipTypeBookingPolicyErrorBody(err),
         { status: err.status },
       );
+    }
+    if (err instanceof BookingGuestValidationError) {
+      // MG3 (#2308) C1 + #2388. Re-dating a booking that already carries a
+      // cross-family member guest now refuses NEUTRALLY rather than returning
+      // that member's booked nights, so this route became a refusal surface and
+      // owes the same three mitigations as every other add path: the throttle is
+      // spent, the refusal is audited against the actor and the target, and the
+      // response is held to the timing floor. Without this branch the neutral
+      // refusal would have fallen through to the generic 500.
+      await handleMemberGuestAddRefusal({
+        request,
+        actorMemberId: session.user.id,
+        error: err,
+        route: "bookings/modify-dates",
+        startedAt,
+        throttle: "CHARGE_NOW",
+        skipAuthorization: actorRole === "ADMIN",
+      });
+      return NextResponse.json(getBookingGuestValidationErrorResponse(err), {
+        status: err.status,
+      });
     }
     if (err instanceof BookingMemberNightConflictError) {
       return NextResponse.json(

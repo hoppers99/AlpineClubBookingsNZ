@@ -46,6 +46,7 @@ import {
   type LoadedBookingForModify,
 } from "@/lib/booking-modify";
 import { assertNoBookingMemberNightConflicts } from "@/lib/booking-member-night-conflicts";
+import { markCrossFamilyGuestsOnBooking } from "@/lib/member-guest-add-policy";
 import {
   clampAppliedCreditToBookingPrice,
   createBookingModificationCredit,
@@ -518,17 +519,28 @@ export async function modifyBookingDates({
     // under the per-lodge acquireLodgeCapacityLock taken above and before any
     // BookingGuest/BookingGuestNight/Booking writes, so a conflict rolls back
     // with nothing written.
+    //
+    // C1 (privacy review of MG3 #2308): every guest here is an EXISTING one, so
+    // none of them carries the add-time cross-family marker and the guard would
+    // otherwise answer a stranger's occupancy in full on every date change. Mark
+    // the party from the live family boundary first — see
+    // `markCrossFamilyGuestsOnBooking`.
     await assertNoBookingMemberNightConflicts(tx, {
       actorMemberId: actor.id,
       actorRole: actor.role,
       checkIn: newCheckIn,
       checkOut: newCheckOut,
-      guests: booking.guests.map((g, index) => ({
-        memberId: g.memberId ?? null,
-        stayStart: newCheckIn,
-        stayEnd: newCheckOut,
-        nights: priceBreakdown.guests[index].nightDates ?? [],
-      })),
+      guests: await markCrossFamilyGuestsOnBooking(
+        tx,
+        booking.memberId,
+        booking.guests.map((g, index) => ({
+          memberId: g.memberId ?? null,
+          stayStart: newCheckIn,
+          stayEnd: newCheckOut,
+          nights: priceBreakdown.guests[index].nightDates ?? [],
+        })),
+        { skipAuthorization: actor.role === "ADMIN" },
+      ),
       excludeBookingId: bookingId,
     });
 

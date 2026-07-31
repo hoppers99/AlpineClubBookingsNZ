@@ -1,5 +1,9 @@
 import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
 import {
+  computeMemberGuestBoundary,
+  type BookingGuestLookupDb,
+} from "@/lib/booking-guests";
+import {
   buildMemberGuestConsentWrite,
   computeMemberGuestConsentExpiry,
   MEMBER_GUEST_MODULE_KEY,
@@ -297,4 +301,82 @@ export function markCrossFamilyMemberGuests<Guest extends GuestWithMemberId>(
       ? { ...guest, crossFamilyMemberGuest: true }
       : (guest as Guest & MemberGuestConsentGuestFields),
   );
+}
+
+/**
+ * Mark EVERY member-linked guest on a booking who sits outside the booking
+ * owner's family — not only the ones this request is ADDING.
+ *
+ * WHY THIS EXISTS AT ALL, because the difference is a whole class of leak
+ * (privacy review of MG3 #2308, finding C1). `markCrossFamilyMemberGuests` and
+ * `planMemberGuestConsentWrites` mark guests from the boundary computed over the
+ * ids in `addGuests`, so the marker only ever landed on somebody being added in
+ * THIS request. A cross-family member guest who is ALREADY on the booking —
+ * added successfully last week — was therefore unmarked forever, and the
+ * person-night guard, which derives its entire D-8 set from the marker, answered
+ * for them in full: name, and the exact nights they are booked elsewhere.
+ *
+ * That turned every later date change into a free read-out. Add the member once
+ * on dates where they are free, then call `POST /api/bookings/[id]/modify-quote`
+ * — a side-effect-free preview — repeatedly with different ranges and NO
+ * `addGuests`. With no added guests the boundary is empty, so the #2388 throttle
+ * never fires, no refusal is audited and no timing floor applies; and the answer
+ * is not the neutral refusal at all but a 409 carrying `memberName` and
+ * `conflictingNights`. One request per range, unthrottled and unlogged. That is
+ * not the documented residual (correlating a PATTERN of refusals) — it is a
+ * direct read.
+ *
+ * WHY THE BOUNDARY AND NOT THE PERSISTED CONSENT COLUMNS. The other candidate
+ * fix was to treat `consentStatus != null` as "beyond family", since MG2 writes
+ * those columns on exactly the cross-family adds. It was rejected:
+ *
+ *   * the columns record HOW A ROW WAS CREATED, not the relationship that holds
+ *     now. They are null on every row written before MG2, and null on every
+ *     cross-family row an ADMIN adds while the module is off (see the module-off
+ *     early return in `planMemberGuestConsentWrites`) — so a stranger placed on
+ *     the booking by an officer would still have been described in full;
+ *   * they never change when a family group does, so a guest who has since
+ *     joined the booker's household would stay collapsed, and one who has left
+ *     it would stay disclosed.
+ *
+ * The boundary is the live truth, and it is the SAME `getAllowedGuestMemberIds`
+ * set MG1's authorization check and MG2's consent planner already use, so this
+ * adds no second, drifting definition of "family". It costs two indexed reads on
+ * the modify paths.
+ *
+ * NOT GATED ON THE MODULE FLAG, deliberately. The marker describes a fact about
+ * the booking, not a feature a club has opted into; gating it would mean a club
+ * that turned the module OFF after using it re-opened the read-out on every
+ * booking it had already created. The visible consequence for a club that never
+ * turned it on is confined to bookings that already contain a beyond-family
+ * member-linked guest — which only an admin could have created — where a
+ * person-night clash on that guest now refuses neutrally instead of naming them.
+ *
+ * ADMIN AND ON-BEHALF PATHS ARE EXEMPT, exactly as `collapseForMemberIds` is: an
+ * officer is entitled to the detail, and withholding it from them would buy
+ * nothing and cost support tickets.
+ */
+export async function markCrossFamilyGuestsOnBooking<Guest extends GuestWithMemberId>(
+  db: BookingGuestLookupDb,
+  bookingMemberId: string,
+  guests: readonly Guest[],
+  options?: { skipAuthorization?: boolean },
+): Promise<Array<Guest & MemberGuestConsentGuestFields>> {
+  if (options?.skipAuthorization) {
+    return guests as Array<Guest & MemberGuestConsentGuestFields>;
+  }
+
+  const memberIds = [
+    ...new Set(
+      guests
+        .map((guest) => guest.memberId?.trim())
+        .filter((memberId): memberId is string => Boolean(memberId)),
+    ),
+  ];
+  if (memberIds.length === 0) {
+    return guests as Array<Guest & MemberGuestConsentGuestFields>;
+  }
+
+  const boundary = await computeMemberGuestBoundary(db, bookingMemberId, memberIds);
+  return markCrossFamilyMemberGuests(guests, boundary);
 }

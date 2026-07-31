@@ -34,7 +34,7 @@ type BookingGuestAgeTierSource = {
   member?: { ageTier: AgeTier } | null;
 };
 
-type BookingGuestLookupDb =
+export type BookingGuestLookupDb =
   | Pick<PrismaClient, "familyGroupMember" | "member">
   | Pick<Prisma.TransactionClient, "familyGroupMember" | "member">;
 
@@ -295,7 +295,29 @@ export async function resolveLinkedBookingMembersWithBoundary(
   db: BookingGuestLookupDb,
   bookingMemberId: string,
   memberIds: Array<string | null | undefined>,
-  options?: { skipAuthorization?: boolean; memberGuestWideningEnabled?: boolean }
+  options?: {
+    skipAuthorization?: boolean;
+    memberGuestWideningEnabled?: boolean;
+    /**
+     * Runs the moment the family boundary is known and BEFORE any member record
+     * is read. Throw from it to abort the resolve.
+     *
+     * WHY THIS HOOK EXISTS (privacy review of MG3 #2308, finding H1). The #2388
+     * throttle used to be applied by the routes AFTER this function returned,
+     * and that ordering turned the mitigation into the very existence oracle its
+     * docblock says it avoids. `resolveLinkedMemberRecords` throws first for an
+     * id with no active member behind it, and on that path the route's refusal
+     * handler spends the throttle budget but DISCARDS the 429 and answers with
+     * D-8's neutral 403. So once the burst budget was gone, a real bookable
+     * member answered 429 and a non-existent, inactive or age-exempt one
+     * answered 403 — one bit per request, for free.
+     *
+     * Spending the budget here makes both branches answer identically, because
+     * nothing has yet been read about the member: the boundary is computed
+     * purely from the BOOKER's family groups.
+     */
+    onBoundaryResolved?: (boundary: MemberGuestBoundaryState) => Promise<void>;
+  }
 ): Promise<ResolvedLinkedBookingMembers> {
   const normalizedMemberIds = normalizeMemberIds(memberIds);
 
@@ -313,6 +335,12 @@ export async function resolveLinkedBookingMembersWithBoundary(
     bookingMemberId,
     normalizedMemberIds,
   );
+
+  // Before the widening refusal and before any member row is read — see the
+  // note on the option.
+  if (options?.onBoundaryResolved) {
+    await options.onBoundaryResolved(boundary);
+  }
 
   if (!options?.skipAuthorization) {
     // MG2 (#2307) turns the feature on: with the memberGuests module enabled a

@@ -101,6 +101,52 @@ export async function applyMemberGuestAddThrottle(params: {
   );
 }
 
+/**
+ * The throttle's 429, thrown so it can be raised from inside member resolution.
+ *
+ * The routes cannot simply call `applyMemberGuestAddThrottle` before resolving,
+ * because the boundary it needs is computed INSIDE
+ * `resolveLinkedBookingMembersWithBoundary`. Passing the check in as a hook and
+ * throwing the response out is what lets the budget be spent before anything at
+ * all has been read about the member — see `memberGuestAddThrottleHook`.
+ */
+export class MemberGuestAddThrottledError extends Error {
+  constructor(public readonly response: Response) {
+    super("Member-guest add attempt throttled");
+    this.name = "MemberGuestAddThrottledError";
+  }
+}
+
+/**
+ * The `onBoundaryResolved` hook every member-facing add path passes to
+ * `resolveLinkedBookingMembersWithBoundary`.
+ *
+ * ORDERING IS THE WHOLE POINT (privacy review of MG3 #2308, finding H1). Applied
+ * AFTER resolution — where it used to live — the throttle answered 429 for a
+ * real bookable member and 403 for a non-existent, inactive or age-exempt one,
+ * because resolution throws first for the latter and the refusal handler
+ * deliberately discards its 429. That is an existence oracle built out of the
+ * mitigation, and `member-guest-probe-guard`'s own docblock claimed the opposite.
+ * Applied here, before a single member row is read, both answer 429.
+ */
+export function memberGuestAddThrottleHook(params: {
+  request: Request;
+  actorMemberId: string;
+  skipAuthorization?: boolean;
+}): (boundary: { beyondFamilyMemberIds: readonly string[] }) => Promise<void> {
+  return async (boundary) => {
+    const throttled = await applyMemberGuestAddThrottle({
+      request: params.request,
+      actorMemberId: params.actorMemberId,
+      beyondFamilyMemberIds: boundary.beyondFamilyMemberIds,
+      skipAuthorization: params.skipAuthorization,
+    });
+    if (throttled) {
+      throw new MemberGuestAddThrottledError(throttled);
+    }
+  };
+}
+
 // ---------------------------------------------------------------------------
 // 2. Response-timing equalisation on the neutral refusal
 // ---------------------------------------------------------------------------
@@ -325,14 +371,36 @@ export async function recordMemberGuestAddRefusal(params: {
  * The discriminator is `crossFamilyMemberIds` being present on the error, which
  * only the collapse sites set.
  *
- * WHY THE THROTTLE IS SPENT HERE AND ITS ANSWER IGNORED. A refusal thrown during
- * member RESOLUTION happens before the route knows the attempt was cross-family,
- * so there was no earlier point at which the throttle could have been applied and
- * returned a 429. Spending the budget on the way out means the probe is still
- * counted, and the NEXT one in the run is the one that gets throttled. Returning
- * a 429 here instead of the refusal would also be its own oracle — "you get a 429
- * only when you guessed a real member" — which is precisely the distinction the
- * whole exercise removes.
+ * EXACTLY ONE UNIT PER ATTEMPT — `throttle` says which side spent it, and the
+ * field is REQUIRED so a new add path has to answer the question (correctness
+ * review of MG3 #2308, MEDIUM-1).
+ *
+ * It used to be spent unconditionally here as well as by the routes' own
+ * pre-check, so every refusal past that pre-check was charged TWICE and the real
+ * budget on the refused path was ~7 per quarter-hour and ~25 per day rather than
+ * the 15/50 the limiter, this file and the changelog all advertised. The refused
+ * path is both #2388's probe channel AND the owner's explicitly protected honest
+ * case — somebody trying five weekends for a friend — so halving it silently was
+ * the wrong error to make.
+ *
+ *   * `"ALREADY_CHARGED"` — the route passed `memberGuestAddThrottleHook` to
+ *     `resolveLinkedBookingMembersWithBoundary`, so every cross-family attempt on
+ *     it, refused or not, was charged once before a single member row was read.
+ *     Nothing more is owed.
+ *   * `"CHARGE_NOW"` — the route resolves its members INSIDE a transaction while
+ *     holding the per-lodge capacity lock (`bookings/[id]/guests`,
+ *     `bookings/[id]/modify`, `bookings/[id]/modify-dates`), where a rate-limit
+ *     counter write would take a second connection under that lock. The budget is
+ *     spent on the way out instead: the probe is still counted, and the NEXT one
+ *     in the run is the one that gets throttled.
+ *
+ * THE 429 IS NEVER RETURNED FROM HERE. On a `"CHARGE_NOW"` route every refusal
+ * answers with the same neutral 403 whether or not the budget just ran out, so
+ * the two cannot be told apart. Returning the 429 instead would say "you get a
+ * 429 only when you guessed a real member", which is the distinction the whole
+ * exercise removes. On a `"ALREADY_CHARGED"` route the 429 is raised earlier, by
+ * the hook, before anything has been read about the member — so it says nothing
+ * either.
  */
 export async function handleMemberGuestAddRefusal(params: {
   request: Request;
@@ -343,16 +411,20 @@ export async function handleMemberGuestAddRefusal(params: {
   /** `startMemberGuestRefusalClock()` from the top of the handler. */
   startedAt: number;
   skipAuthorization?: boolean;
+  /** Who charged this attempt's throttle unit — see above. Required on purpose. */
+  throttle: "ALREADY_CHARGED" | "CHARGE_NOW";
 }): Promise<void> {
   const targetMemberIds = params.error.crossFamilyMemberIds ?? [];
   if (targetMemberIds.length === 0) return;
 
-  await applyMemberGuestAddThrottle({
-    request: params.request,
-    actorMemberId: params.actorMemberId,
-    beyondFamilyMemberIds: targetMemberIds,
-    skipAuthorization: params.skipAuthorization,
-  });
+  if (params.throttle === "CHARGE_NOW") {
+    await applyMemberGuestAddThrottle({
+      request: params.request,
+      actorMemberId: params.actorMemberId,
+      beyondFamilyMemberIds: targetMemberIds,
+      skipAuthorization: params.skipAuthorization,
+    });
+  }
 
   await recordMemberGuestAddRefusal({
     request: params.request,

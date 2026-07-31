@@ -286,8 +286,28 @@ export async function applyRateLimit(
 }
 
 /**
- * Rate limit an AUTHENTICATED surface by client IP **and** by acting member,
- * first failure winning. Returns a `Response` when either budget is spent.
+ * How much bigger the shared-IP budget is than one member's, on a member-scoped
+ * limiter.
+ *
+ * THE MEMBER KEY IS THE CONTROL; THE IP KEY IS A BACKSTOP, and that asymmetry has
+ * to be in the numbers or the function does the opposite of what its own docblock
+ * claims (privacy review of MG3 #2308, finding M1). Checking `ip:` with the SAME
+ * limit as `member:` leaves the shared-network budget exactly where per-IP-only
+ * limiting left it: ten members on the lodge wifi making five cross-family quote
+ * attempts each exhaust a fifty-a-day cap for the whole building, and the 429
+ * they get names nothing they can act on.
+ *
+ * Ten is chosen as "a plausibly large household or club night, and nothing like a
+ * script": it lets a real shared network work while still cutting off a single
+ * address issuing an order of magnitude more traffic than the member budget can
+ * explain (which is the only thing the IP key can honestly detect once every
+ * caller is authenticated).
+ */
+export const MEMBER_SCOPED_IP_LIMIT_MULTIPLIER = 10;
+
+/**
+ * Rate limit an AUTHENTICATED surface by acting member, with a much larger
+ * shared-IP backstop. Returns a `Response` when either budget is spent.
  *
  * WHY `applyRateLimit` IS THE WRONG TOOL FOR THESE SURFACES. It keys on the
  * client IP alone, which is right for a public door and wrong for an
@@ -300,10 +320,16 @@ export async function applyRateLimit(
  *    a fresh budget each time, which is precisely what somebody probing the
  *    membership list would do.
  *
- * Keying on both closes each hole with the other. The IP key is checked FIRST so
- * an unauthenticated flood is rejected before it can cost a member-keyed write,
- * and both keys are namespaced (`ip:` / `member:`) so a member id that happens
- * to look like an address cannot collide with one.
+ * The member key closes the second hole outright. The first is closed by SIZING
+ * rather than by dropping the IP check: the shared key carries
+ * `MEMBER_SCOPED_IP_LIMIT_MULTIPLIER` times the per-member budget, so a NAT full
+ * of honest members never reaches it and a single address behaving like ten
+ * members still does. Both keys are namespaced (`ip:` / `member:`) so a member id
+ * that happens to look like an address cannot collide with one, and both counters
+ * live under the same limiter id.
+ *
+ * The IP key is checked FIRST so an unauthenticated flood is rejected before it
+ * can cost a member-keyed write.
  *
  * The pattern was already written by hand in the whole-lodge request routes
  * (#2263); this is that pattern lifted into one function so MG3's find routes
@@ -315,7 +341,12 @@ export async function applyMemberScopedRateLimit(
   request: Request,
   memberId: string
 ): Promise<Response | null> {
-  const ipResult = await checkRateLimit(config, `ip:${getClientIp(request)}`);
+  const ipResult = await checkRateLimit(
+    // Same limiter id, so the counter row is the same one it always was — only
+    // the threshold this key is judged against changes.
+    { ...config, limit: config.limit * MEMBER_SCOPED_IP_LIMIT_MULTIPLIER },
+    `ip:${getClientIp(request)}`,
+  );
   if (!ipResult.success) {
     return rateLimitedResponse(ipResult);
   }
@@ -430,6 +461,22 @@ export const rateLimiters = {
    */
   memberGuestResolve: { id: "member-guest-resolve", limit: 20, windowSeconds: 15 * 60 } as RateLimitConfig,
   /**
+   * Member-guest EMAIL resolve, DAILY (#2308): 400 per 24 hours per member.
+   *
+   * ADDED BY THE PRIVACY REVIEW (finding M3), and the reason is the arithmetic
+   * the burst window hides: 20 per 15 minutes with no daily backstop is 1,920
+   * lookups per member per day. The open name search — the mode the owner
+   * explicitly accepted as browsable and which ships OFF — is capped at 400 a
+   * day, so the DEFAULT-ON mode carried a budget nearly five times larger than
+   * the opt-in one. This mirrors the search cap so neither mode is the cheap way
+   * in.
+   *
+   * It is a backstop, not the control: guessing addresses is uneconomic because
+   * an address has to be guessed at all, and because every attempt is audited
+   * with the address on it.
+   */
+  memberGuestResolveDaily: { id: "member-guest-resolve-daily", limit: 400, windowSeconds: 24 * 60 * 60 } as RateLimitConfig,
+  /**
    * Member-guest NAME type-ahead (#2308): 60 per 5 minutes, per IP and per member.
    *
    * Sized for the interaction rather than for an attacker: a 300 ms debounce and
@@ -441,10 +488,19 @@ export const rateLimiters = {
   /**
    * Member-guest name type-ahead, DAILY (#2308): 400 per 24 hours per member.
    *
-   * This is the actual anti-harvest cap, and it is honest about what it buys:
-   * with open search ON the membership list is browsable BY DESIGN, so this does
-   * not make harvesting impossible — it makes it take weeks and leave 400 audit
-   * rows a day with the member's name on them.
+   * This is the actual anti-harvest cap, and it is honest about what it buys —
+   * corrected by the privacy review (finding M2), because the number it used to
+   * claim was wrong by a factor of several. With open search ON the membership
+   * list is browsable BY DESIGN, and 400 queries a day is NOT weeks of work: the
+   * 676 two-letter prefixes alone are covered in under two days, and for a club
+   * of a few hundred members most prefixes fall under the ten-row cap, so the
+   * roll is essentially complete at that point.
+   *
+   * What the cap therefore buys is not infeasibility. It buys TIME AND
+   * VISIBILITY: a harvest takes days rather than minutes, and it leaves up to 400
+   * audit rows a day carrying the member's name and the exact fragments they
+   * typed. That is the trade the owner accepted when they turned this setting on
+   * (MG3-D-b), and the admin toggle says so in those words.
    */
   memberGuestSearchDaily: { id: "member-guest-search-daily", limit: 400, windowSeconds: 24 * 60 * 60 } as RateLimitConfig,
   /**
@@ -460,9 +516,20 @@ export const rateLimiters = {
    * forever — is not rate-limited by it at all, however many times the booker
    * changes their dates.
    *
-   * The sizing is what makes the mitigation real rather than decorative. Fifty
-   * probes a day is three weeks to map a season, against an honest booker who
-   * would struggle to exceed fifteen cross-family quote attempts in a sitting.
+   * THE SIZING, STATED HONESTLY — corrected by the privacy review (finding M2),
+   * which caught this docblock overstating what it buys by a factor of about
+   * seven. Fifty cross-family attempts a day is NOT "three weeks to map a
+   * season": a lodge season is roughly 150 nights, so at 50 a day a single
+   * member's season is mapped in about three days, and a whole year in about
+   * seven and a half. What the cap actually does is turn an afternoon's scripted
+   * run into days of patient work that leaves up to 50 audit rows a day naming
+   * the prober and their target — while an honest booker, who would struggle to
+   * exceed fifteen cross-family quote attempts in a sitting, never notices it.
+   *
+   * Closing the residual entirely would need an automatic block on repeated
+   * refusals, which the owner explicitly rejected on #2388: the innocent case
+   * (hunting for a date that suits a friend) is indistinguishable from the
+   * probing one, and only a person can tell them apart.
    *
    * It is a THROTTLE, not the "cap or block on repeated refusals" the owner
    * explicitly rejected: it counts attempts (successful and refused alike), it

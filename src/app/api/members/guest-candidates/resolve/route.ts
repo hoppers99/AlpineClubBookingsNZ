@@ -54,32 +54,64 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  const rateLimited = await applyMemberScopedRateLimit(
-    rateLimiters.memberGuestResolve,
-    request,
-    actorMemberId,
-  );
+  // L1 (privacy review): the body is read and the address extracted BEFORE the
+  // rate-limit check, so a blocked resolve records what was being looked up.
+  // Recording `email: ""` on the most suspicious rows in the table — the ones
+  // where somebody burned a whole budget — was the opposite of what the audit
+  // trail is for, and it contradicted this service's own docblock. The search
+  // route already reads `q` first; this makes the two symmetric.
+  const json = await parseJsonRequestBody(request);
+  if (!json.ok) return json.response;
+
+  const parsed = resolveSchema.safeParse(json.body);
+  const attemptedEmail =
+    typeof (json.body as { email?: unknown } | null)?.email === "string"
+      ? ((json.body as { email: string }).email.trim().slice(0, 320))
+      : "";
+
+  const rateLimited =
+    (await applyMemberScopedRateLimit(
+      rateLimiters.memberGuestResolve,
+      request,
+      actorMemberId,
+    )) ??
+    // M3 (privacy review): a daily backstop. Without one, 20 per 15 minutes is
+    // 1,920 lookups per member per day on the DEFAULT-ON mode — nearly five
+    // times the budget of the opt-in browsable one.
+    (await applyMemberScopedRateLimit(
+      rateLimiters.memberGuestResolveDaily,
+      request,
+      actorMemberId,
+    ));
   if (rateLimited) {
     // A member who hits the cap is exactly the signal the audit trail exists
     // for, so the rejection is recorded rather than dropped.
     auditMemberGuestResolve({
       request,
       actorMemberId,
-      email: "",
+      email: attemptedEmail,
       candidates: [],
       outcome: "blocked",
     });
     return rateLimited;
   }
 
-  const json = await parseJsonRequestBody(request);
-  if (!json.ok) return json.response;
-
-  const parsed = resolveSchema.safeParse(json.body);
   if (!parsed.success) {
     // A malformed address is a client mistake, not a fact about any member, so
     // it may answer honestly — and it must not be an oracle either, which is
     // why it carries no candidate array at all.
+    //
+    // L2 (privacy review): still audited, with `outcome: "failure"`, as plan
+    // §3.5 specifies. A run of malformed probes is a pattern an admin should be
+    // able to find, and it was previously the one resolve outcome that left no
+    // trace at all.
+    auditMemberGuestResolve({
+      request,
+      actorMemberId,
+      email: attemptedEmail,
+      candidates: [],
+      outcome: "failure",
+    });
     return NextResponse.json({ error: "Enter a valid email address" }, { status: 400 });
   }
 

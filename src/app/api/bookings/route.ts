@@ -37,8 +37,9 @@ import {
   type MemberGuestConsentWritePlanEntry,
 } from "@/lib/member-guest-add-policy";
 import {
-  applyMemberGuestAddThrottle,
   handleMemberGuestAddRefusal,
+  memberGuestAddThrottleHook,
+  MemberGuestAddThrottledError,
   startMemberGuestRefusalClock,
 } from "@/lib/member-guest-probe-guard";
 import type { MemberGuestAddActor } from "@/lib/member-guest-consent";
@@ -368,17 +369,18 @@ export async function POST(request: NextRequest) {
         {
           skipAuthorization: isAuthorizedOnBehalf,
           memberGuestWideningEnabled: memberGuestPolicy.wideningEnabled,
+          // #2388: the per-acting-member throttle, counted only on an attempt
+          // that actually names a beyond-family member, and spent the moment the
+          // family boundary is known — before any member row is read (H1), so a
+          // real member and an id with nobody behind it answer identically once
+          // the budget is gone.
+          onBoundaryResolved: memberGuestAddThrottleHook({
+            request,
+            actorMemberId: session.user.id,
+            skipAuthorization: isAuthorizedOnBehalf,
+          }),
         }
       );
-    // #2388: the per-acting-member throttle, counted only on an attempt that
-    // actually names a beyond-family member.
-    const probeThrottled = await applyMemberGuestAddThrottle({
-      request,
-      actorMemberId: session.user.id,
-      beyondFamilyMemberIds: boundary.beyondFamilyMemberIds,
-      skipAuthorization: isAuthorizedOnBehalf,
-    });
-    if (probeThrottled) return probeThrottled;
 
     await assertLinkedBookingMembersCanBeBooked(
       prisma,
@@ -405,6 +407,7 @@ export async function POST(request: NextRequest) {
     guestInputs = consentPlan.guests;
     memberGuestEntries = consentPlan.entriesByMemberId;
   } catch (error) {
+    if (error instanceof MemberGuestAddThrottledError) return error.response;
     if (error instanceof BookingGuestValidationError) {
       await handleMemberGuestAddRefusal({
         request,
@@ -412,6 +415,7 @@ export async function POST(request: NextRequest) {
         error: error,
         route: "bookings/create",
         startedAt,
+        throttle: "ALREADY_CHARGED",
         skipAuthorization: isAuthorizedOnBehalf,
       });
       return NextResponse.json(
@@ -495,6 +499,7 @@ export async function POST(request: NextRequest) {
         error: error,
         route: "bookings/create",
         startedAt,
+        throttle: "ALREADY_CHARGED",
         skipAuthorization: isAuthorizedOnBehalf,
       });
       return NextResponse.json(
@@ -652,6 +657,7 @@ export async function POST(request: NextRequest) {
           error: error,
           route: "bookings/create",
           startedAt,
+          throttle: "ALREADY_CHARGED",
           skipAuthorization: isAuthorizedOnBehalf,
         });
         return NextResponse.json(
@@ -746,6 +752,7 @@ export async function POST(request: NextRequest) {
           error: err,
           route: "bookings/create",
           startedAt,
+          throttle: "ALREADY_CHARGED",
           skipAuthorization: isAuthorizedOnBehalf,
         });
         return NextResponse.json(
@@ -929,6 +936,7 @@ export async function POST(request: NextRequest) {
           error: waitlistErr,
           route: "bookings/create",
           startedAt,
+          throttle: "ALREADY_CHARGED",
           skipAuthorization: isAuthorizedOnBehalf,
         });
         return NextResponse.json(
@@ -979,6 +987,7 @@ export async function POST(request: NextRequest) {
         error: err,
         route: "bookings/create",
         startedAt,
+        throttle: "ALREADY_CHARGED",
         skipAuthorization: isAuthorizedOnBehalf,
       });
       return NextResponse.json(

@@ -68,6 +68,7 @@ import {
   type BookingGuestInput,
 } from "@/lib/booking-guests";
 import {
+  markCrossFamilyGuestsOnBooking,
   planMemberGuestConsentWrites,
   type MemberGuestAddPolicy,
   type MemberGuestConsentGuestFields,
@@ -452,7 +453,7 @@ export async function prepareGuestPlan(
       })
     : undefined;
 
-  const guestsForPricing = [
+  const proposedGuestRows = [
     ...proposedRemainingGuests.map((entry) => ({
       bookingGuestId: entry.guest.id,
       ageTier: entry.guest.ageTier as AgeTier,
@@ -479,6 +480,19 @@ export async function prepareGuestPlan(
       crossFamilyMemberGuest: g.crossFamilyMemberGuest,
     })),
   ];
+
+  // C1 (privacy review of MG3 #2308). The marker above only ever lands on guests
+  // this request is ADDING; a cross-family member guest already on the booking
+  // was never marked, so the person-night guard described them in full on every
+  // later date change. Re-derive it over the whole proposed party — see
+  // `markCrossFamilyGuestsOnBooking` for why this uses the live family boundary
+  // rather than the persisted consent columns.
+  const guestsForPricing = await markCrossFamilyGuestsOnBooking(
+    tx,
+    booking.memberId,
+    proposedGuestRows,
+    { skipAuthorization: role === "ADMIN" },
+  );
 
   const totalGuestCount = guestsForPricing.length;
   const bookingLodgeId = booking.lodgeId ?? (await getDefaultLodgeId(tx));

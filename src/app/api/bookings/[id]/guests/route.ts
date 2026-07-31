@@ -931,6 +931,7 @@ export async function POST(
         error: err,
         route: "bookings/guests-add",
         startedAt,
+        throttle: "CHARGE_NOW",
         skipAuthorization: isAdmin,
       });
       return NextResponse.json(
