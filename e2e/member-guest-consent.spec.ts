@@ -9,7 +9,7 @@ import { loginPersona } from "./helpers/auth";
 import { E2E_ADMIN, NOMINATOR_TWO, WAITLISTER } from "./helpers/fixtures";
 import { stayWindow } from "./helpers/stay-dates";
 import { overrideModules, type ModuleSettings } from "./helpers/modules";
-import { waitForEmail } from "./helpers/mailpit";
+import { clearMailbox, waitForEmail } from "./helpers/mailpit";
 
 /*
   #2307 (epic #2305) — the member-guest consent journey, browser end to end.
@@ -187,6 +187,13 @@ test.afterAll(async () => {
 let approvedGuestId: string | null = null;
 
 test("the target approves on the booking page's consent card and the badge flips to Consented", async ({}, testInfo) => {
+  // CLEAR BEFORE THE SEND, not just before the wait. The subject and the
+  // recipient below are constants, this file is retried up to twice, and the
+  // mailbox is not emptied between attempts — so without this, a regression to
+  // ZERO sends would still "pass" on attempt 2 by matching attempt 1's leftover
+  // message. The helper's own docblock asks for exactly this, and the two other
+  // specs that read mail do it the same way.
+  await clearMailbox();
   const booking = await createBookingWithMemberGuest(approveWindow(testInfo.retry));
   approvedGuestId = pendingGuestOf(booking).id;
 
@@ -290,18 +297,27 @@ test("the delegate page tells a non-delegate — even the booker — nothing, in
   // checked before status, so settled-vs-pending must not change the answer),
   // probed by the booker: entitled to the booking page, NOT to the delegate
   // panel, because she is no adult in the target's family group.
-  if (approvedGuestId) {
-    await wandaPage.goto(`/bookings/consent/${approvedGuestId}`);
-    const panel = wandaPage.locator("#main-content");
-    await expect(
-      panel.getByText("There is nothing here for you to answer", {
-        exact: true,
-      }),
-    ).toBeVisible();
-    // No booking fact leaks onto the neutral page.
-    await expect(panel.getByText(/has added/)).toHaveCount(0);
-    await expect(panel.getByText("Booked by")).toHaveCount(0);
-  }
+  //
+  // ASSERTED, NOT `if`-GUARDED. This file runs serially, so the approve test has
+  // already captured the id; if it somehow has not, the probe below would never
+  // run and the suite would report a pass having proved nothing about the
+  // privacy property. A security assertion that can silently not happen is worse
+  // than one that fails, so a missing id is a failure here.
+  expect(
+    approvedGuestId,
+    "the approve test must have captured a real guest row id for this probe",
+  ).toBeTruthy();
+
+  await wandaPage.goto(`/bookings/consent/${approvedGuestId}`);
+  const panel = wandaPage.locator("#main-content");
+  await expect(
+    panel.getByText("There is nothing here for you to answer", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  // No booking fact leaks onto the neutral page.
+  await expect(panel.getByText(/has added/)).toHaveCount(0);
+  await expect(panel.getByText("Booked by")).toHaveCount(0);
 
   // A fabricated id renders the SAME neutral page — the route is no oracle.
   await wandaPage.goto("/bookings/consent/does-not-exist");
