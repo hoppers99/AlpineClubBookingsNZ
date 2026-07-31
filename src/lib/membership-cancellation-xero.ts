@@ -1,5 +1,7 @@
 import { Contact, CreditNote, LineAmountTypes, type Contacts, type LineItem } from "xero-node";
 import { getManagedGroupUniverse } from "@/lib/xero-member-grouping";
+import { buildMembershipCancellationApprovalBlockedMessage } from "@/lib/membership-cancellation-blocker-messages";
+import { loadMembershipCancellationInvoiceBlockersByMemberId } from "@/lib/membership-cancellation-invoice-blockers";
 import {
   loadMembershipCancellationSettings,
   type MembershipCancellationXeroContactGroupSetting,
@@ -780,6 +782,14 @@ export async function syncXeroMembershipCancellationContact(params: {
   const groupsToAdd = cancelledGroups.filter(
     (group) => !groupsAfterRemoval.has(group.id) || removedGroupIds.includes(group.id),
   );
+  // Decided once, from the settings read above, and re-used by the unpaid-
+  // invoice re-check and the archive call below. An admin who switches archiving
+  // OFF in the sub-second window between that read and those two steps does not
+  // stop this run: it proceeds under the setting that was in force when it was
+  // read. Accepted deliberately — the operation is idempotent, the same click a
+  // moment earlier would have archived anyway, and un-archiving a contact in
+  // Xero is a one-click undo — but stated rather than left to be rediscovered
+  // (#2392 review).
   const shouldArchive =
     settings.xeroArchiveContactsOnCancellation &&
     contact.contactStatus !== Contact.ContactStatusEnum.ARCHIVED;
@@ -836,6 +846,37 @@ export async function syncXeroMembershipCancellationContact(params: {
       throw new Error(
         `Deferring Xero contact archive for cancellation participant ${params.participantId}: the membership cancellation credit note has not been pushed to Xero yet. Archiving the contact first would block the credit note.`,
       );
+    }
+
+    // #2392 (review NEW-1): the approval-time unpaid-invoice gate is not the
+    // last word, because THIS operation runs later — off the outbox, possibly
+    // days later, and possibly under settings that have changed since. A
+    // cancellation approved while archiving was off (no check ran) archives
+    // here the moment an admin switches archiving on. So the same question is
+    // asked again, live, immediately before the archive call: an archive that
+    // takes a contact the accounts still need out of Xero's pickers is the
+    // harm this whole feature exists to prevent, and the check is worth one
+    // more Xero read at the only moment that actually matters.
+    //
+    // Deferring rather than skipping is deliberate, and mirrors the credit-note
+    // guard above: the operation fails and is retried, so the archive happens
+    // by itself once the money is settled or voided, and until then it is
+    // visible as a stuck operation rather than silently abandoned.
+    if (shouldArchive) {
+      const invoiceBlockers =
+        (
+          await loadMembershipCancellationInvoiceBlockersByMemberId(
+            [params.memberId],
+            { fresh: true },
+          )
+        ).get(params.memberId) ?? [];
+      if (invoiceBlockers.length > 0) {
+        throw new Error(
+          `Deferring Xero contact archive for cancellation participant ${params.participantId}: ${buildMembershipCancellationApprovalBlockedMessage(
+            invoiceBlockers,
+          )}`,
+        );
+      }
     }
 
     for (const groupId of removedGroupIds) {

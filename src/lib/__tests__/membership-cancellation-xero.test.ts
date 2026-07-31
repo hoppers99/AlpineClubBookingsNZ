@@ -26,6 +26,9 @@ const mocks = vi.hoisted(() => ({
   createContactGroupContacts: vi.fn(),
   updateContact: vi.fn(),
   sendAdminXeroSyncErrorAlert: vi.fn().mockResolvedValue(undefined),
+  // #2392 (review NEW-1): the archive re-asks the unpaid-invoice question live,
+  // immediately before it archives. Default: nothing owing.
+  loadInvoiceBlockers: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -69,6 +72,10 @@ vi.mock("@/lib/xero-sync", () => ({
 
 vi.mock("@/lib/membership-cancellation-settings", () => ({
   loadMembershipCancellationSettings: mocks.loadMembershipCancellationSettings,
+}));
+
+vi.mock("@/lib/membership-cancellation-invoice-blockers", () => ({
+  loadMembershipCancellationInvoiceBlockersByMemberId: mocks.loadInvoiceBlockers,
 }));
 
 vi.mock("@/lib/xero-member-grouping", () => ({
@@ -127,6 +134,10 @@ describe("membership cancellation Xero operations", () => {
     mocks.xeroSyncOperationFindFirst.mockResolvedValue({ status: "SUCCEEDED" });
     mocks.failXeroSyncOperation.mockResolvedValue({});
     mocks.refreshXeroContactCachesFromContact.mockResolvedValue(undefined);
+    mocks.loadInvoiceBlockers.mockImplementation(
+      async (memberIds: readonly string[]) =>
+        new Map(memberIds.map((memberId) => [memberId, []])),
+    );
   });
 
   it("creates and allocates a subscription cancellation credit note using the membership cancellation mapping", async () => {
@@ -406,6 +417,142 @@ describe("membership cancellation Xero operations", () => {
       "op_1",
       expect.any(Error),
     );
+  });
+
+  // #2392 (review NEW-1): the approval-time gate cannot be the last word,
+  // because this operation runs off the outbox later — a cancellation approved
+  // while archiving was OFF (so no check ever ran) archives here the moment an
+  // admin switches archiving on.
+  describe("the archive re-checks the money before it runs", () => {
+    function readyToArchive() {
+      mocks.memberFindUnique.mockResolvedValue({
+        id: "member_1",
+        firstName: "Alice",
+        lastName: "Smith",
+        ageTier: "ADULT",
+        xeroContactId: "contact_1",
+      });
+      mocks.loadMembershipCancellationSettings.mockResolvedValue({
+        warningText: "",
+        rejoinProcessText: "",
+        xeroArchiveContactsOnCancellation: true,
+        xeroContactGroups: [],
+      });
+      mocks.getManagedGroupUniverse.mockResolvedValue([]);
+      mocks.getContact.mockResolvedValue({
+        body: {
+          contacts: [
+            {
+              contactID: "contact_1",
+              contactStatus: Contact.ContactStatusEnum.ACTIVE,
+              contactGroups: [],
+            },
+          ],
+        },
+      });
+      mocks.updateContact.mockResolvedValue({ body: { contacts: [] } });
+    }
+
+    it("asks live, not from the review queue's memo", async () => {
+      readyToArchive();
+
+      await syncXeroMembershipCancellationContact({
+        memberId: "member_1",
+        requestId: "request_1",
+        participantId: "participant_1",
+        syncOperationId: "op_1",
+      });
+
+      expect(mocks.loadInvoiceBlockers).toHaveBeenCalledWith(["member_1"], {
+        fresh: true,
+      });
+      expect(mocks.updateContact).toHaveBeenCalled();
+    });
+
+    it("defers the archive while the contact still has money owing", async () => {
+      readyToArchive();
+      mocks.loadInvoiceBlockers.mockResolvedValue(
+        new Map([
+          [
+            "member_1",
+            [
+              {
+                type: "unpaid_invoice",
+                invoiceId: "inv-1",
+                invoiceNumber: "INV-0042",
+                invoiceStatus: "AUTHORISED",
+                direction: "receivable",
+                amountDueCents: 12050,
+                currency: "NZD",
+                dueDate: "2026-06-30",
+                xeroUrl: null,
+                xeroContactUrl: null,
+              },
+            ],
+          ],
+        ]),
+      );
+
+      await expect(
+        syncXeroMembershipCancellationContact({
+          memberId: "member_1",
+          requestId: "request_1",
+          participantId: "participant_1",
+          syncOperationId: "op_1",
+        }),
+      ).rejects.toThrow(/INV-0042/);
+
+      // Nothing is archived, and the operation is failed so it retries once the
+      // invoice is paid, credited or voided — rather than being abandoned.
+      expect(mocks.updateContact).not.toHaveBeenCalled();
+      expect(mocks.failXeroSyncOperation).toHaveBeenCalledWith(
+        "op_1",
+        expect.any(Error),
+      );
+    });
+
+    it("defers the archive when the check itself could not run", async () => {
+      readyToArchive();
+      mocks.loadInvoiceBlockers.mockResolvedValue(
+        new Map([
+          [
+            "member_1",
+            [{ type: "invoice_check_unavailable", reason: "disconnected" }],
+          ],
+        ]),
+      );
+
+      await expect(
+        syncXeroMembershipCancellationContact({
+          memberId: "member_1",
+          requestId: "request_1",
+          participantId: "participant_1",
+          syncOperationId: "op_1",
+        }),
+      ).rejects.toThrow(/Xero is not connected/);
+
+      expect(mocks.updateContact).not.toHaveBeenCalled();
+    });
+
+    it("does not ask when this operation is not archiving anything", async () => {
+      readyToArchive();
+      mocks.loadMembershipCancellationSettings.mockResolvedValue({
+        warningText: "",
+        rejoinProcessText: "",
+        xeroArchiveContactsOnCancellation: false,
+        xeroContactGroups: [],
+      });
+
+      await syncXeroMembershipCancellationContact({
+        memberId: "member_1",
+        requestId: "request_1",
+        participantId: "participant_1",
+        syncOperationId: "op_1",
+      });
+
+      expect(mocks.loadInvoiceBlockers).not.toHaveBeenCalled();
+      expect(mocks.updateContact).not.toHaveBeenCalled();
+    });
   });
 
   it("is idempotent when cancellation contact groups and archive status are already applied", async () => {

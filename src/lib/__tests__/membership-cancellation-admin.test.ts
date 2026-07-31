@@ -40,6 +40,9 @@ const mocks = vi.hoisted(() => {
     sendRejectedEmail: vi.fn(),
     loadSettings: vi.fn(),
     queueCancellationXeroOperations: vi.fn(),
+    // #2392: the unpaid-Xero-invoice half of the blocker set. Stubbed to
+    // "nothing owing" by default; the tests that care drive it directly.
+    loadInvoiceBlockers: vi.fn(),
   };
 });
 
@@ -79,6 +82,10 @@ vi.mock("@/lib/membership-cancellation-settings", () => ({
 vi.mock("@/lib/xero-operation-outbox", () => ({
   queueApprovedMembershipCancellationXeroOperations:
     mocks.queueCancellationXeroOperations,
+}));
+
+vi.mock("@/lib/membership-cancellation-invoice-blockers", () => ({
+  loadMembershipCancellationInvoiceBlockersByMemberId: mocks.loadInvoiceBlockers,
 }));
 
 vi.mock("@/lib/logger", () => ({
@@ -178,6 +185,10 @@ describe("membership cancellation admin review", () => {
     mocks.participantFindUnique.mockResolvedValue(participant());
     mocks.bookingFindMany.mockResolvedValue([]);
     mocks.bookingGuestFindMany.mockResolvedValue([]);
+    mocks.loadInvoiceBlockers.mockImplementation(
+      async (memberIds: readonly string[]) =>
+        new Map(memberIds.map((memberId) => [memberId, []])),
+    );
     // Admin-account guard defaults (#1604/#1622): a plain, non-privileged
     // target with no admins to strand, so neither guard trips.
     mocks.tx.member.findUnique.mockResolvedValue({
@@ -424,14 +435,14 @@ describe("membership cancellation admin review", () => {
       expect.objectContaining({
         action: "membership_cancellation.approval_blocked",
         outcome: "blocked",
-        metadata: {
+        metadata: expect.objectContaining({
           blockers: [
             expect.objectContaining({
               type: "owned_booking",
               bookingId: "booking-1",
             }),
           ],
-        },
+        }),
       }),
     );
   });
@@ -468,7 +479,7 @@ describe("membership cancellation admin review", () => {
       expect.objectContaining({
         action: "membership_cancellation.approval_blocked",
         outcome: "blocked",
-        metadata: {
+        metadata: expect.objectContaining({
           blockers: [
             expect.objectContaining({
               type: "guest_appearance",
@@ -476,8 +487,157 @@ describe("membership cancellation admin review", () => {
               guestAppearanceId: "guest-1",
             }),
           ],
-        },
+        }),
       }),
+    );
+  });
+
+  // #2392: approving queues a Xero contact archive, so a contact the accounts
+  // still need must not be archived out from under them.
+  it("blocks approval while the member's Xero contact has an unpaid invoice, and names it", async () => {
+    mocks.loadInvoiceBlockers.mockResolvedValue(
+      new Map([
+        [
+          "member-1",
+          [
+            {
+              type: "unpaid_invoice",
+              invoiceId: "inv-1",
+              invoiceNumber: "INV-0042",
+              invoiceStatus: "AUTHORISED",
+              direction: "receivable",
+              amountDueCents: 12050,
+              currency: "NZD",
+              dueDate: "2026-06-30",
+              xeroUrl: "https://go.xero.com/x",
+            },
+          ],
+        ],
+      ]),
+    );
+
+    await expect(
+      reviewMembershipCancellationParticipant({
+        requestId: "request-1",
+        participantId: "participant-1",
+        action: "approve",
+        adminMemberId: "admin-1",
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      // The refusal must be actionable: which invoice, how much, and what to do.
+      message: expect.stringContaining("INV-0042 (NZD 120.50)"),
+    } satisfies Partial<MembershipCancellationAdminError>);
+
+    expect(mocks.transaction).not.toHaveBeenCalled();
+    expect(mocks.queueCancellationXeroOperations).not.toHaveBeenCalled();
+    expect(mocks.createAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "membership_cancellation.approval_blocked",
+        outcome: "blocked",
+        details: expect.stringContaining(
+          "paid, credited with an allocated credit note, or voided in Xero",
+        ),
+        metadata: expect.objectContaining({
+          blockerTypes: ["unpaid_invoice"],
+          blockers: [expect.objectContaining({ invoiceNumber: "INV-0042" })],
+        }),
+      }),
+    );
+  });
+
+  it("blocks approval when Xero could not be checked at all", async () => {
+    mocks.loadInvoiceBlockers.mockResolvedValue(
+      new Map([
+        ["member-1", [{ type: "invoice_check_unavailable", reason: "disconnected" }]],
+      ]),
+    );
+
+    await expect(
+      reviewMembershipCancellationParticipant({
+        requestId: "request-1",
+        participantId: "participant-1",
+        action: "approve",
+        adminMemberId: "admin-1",
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      message: expect.stringContaining("Xero is not connected"),
+    } satisfies Partial<MembershipCancellationAdminError>);
+
+    expect(mocks.transaction).not.toHaveBeenCalled();
+  });
+
+  it("decides the approval on a live invoice answer, never the review queue's memo", async () => {
+    await reviewMembershipCancellationParticipant({
+      requestId: "request-1",
+      participantId: "participant-1",
+      action: "approve",
+      adminMemberId: "admin-1",
+    });
+
+    expect(mocks.loadInvoiceBlockers).toHaveBeenCalledWith(["member-1"], {
+      fresh: true,
+    });
+  });
+
+  // The old assertion here was near-vacuous: the reject path DOES reach the
+  // invoice loader, through the post-review reload that rebuilds the queue. What
+  // matters is that rejecting never takes a LIVE Xero answer, and — more to the
+  // point — that money owing cannot stop a rejection. Nothing is archived by a
+  // rejection, so there is nothing to protect (#2392 review, L12).
+  it("rejects a participant whose Xero contact owes money, without a live Xero check", async () => {
+    mocks.tx.membershipCancellationRequestParticipant.findMany.mockResolvedValue([
+      { status: "REJECTED" },
+    ]);
+    // The reload rebuilds the queue for whoever is still awaiting review, which
+    // is the path that reaches the invoice loader at all.
+    mocks.requestFindUnique.mockResolvedValue(
+      adminRequest({ status: "REQUESTED" }),
+    );
+    mocks.loadInvoiceBlockers.mockResolvedValue(
+      new Map([
+        [
+          "member-1",
+          [
+            {
+              type: "unpaid_invoice",
+              invoiceId: "inv-1",
+              invoiceNumber: "INV-0042",
+              invoiceStatus: "AUTHORISED",
+              direction: "receivable",
+              amountDueCents: 12050,
+              currency: "NZD",
+              dueDate: "2026-06-30",
+              xeroUrl: null,
+              xeroContactUrl: null,
+            },
+          ],
+        ],
+      ]),
+    );
+
+    await reviewMembershipCancellationParticipant({
+      requestId: "request-1",
+      participantId: "participant-1",
+      action: "reject",
+      adminMemberId: "admin-1",
+    });
+
+    // It went through: no 409, and no approval-blocked audit record.
+    expect(mocks.transaction).toHaveBeenCalled();
+    expect(mocks.createAuditLog).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "membership_cancellation.approval_blocked",
+      }),
+    );
+    // The loader is still reached — the post-review reload rebuilds the queue's
+    // advisory panels — but never with `fresh`, so a rejection spends no Xero
+    // quota it does not have to.
+    expect(mocks.loadInvoiceBlockers).toHaveBeenCalled();
+    expect(mocks.loadInvoiceBlockers).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ fresh: true }),
     );
   });
 

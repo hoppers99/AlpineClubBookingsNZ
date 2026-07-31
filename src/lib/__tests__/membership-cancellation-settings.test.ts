@@ -39,6 +39,8 @@ vi.mock("@/lib/prisma", () => ({
 import {
   DEFAULT_MEMBERSHIP_CANCELLATION_WARNING_TEXT,
   DEFAULT_MEMBERSHIP_REJOIN_PROCESS_TEXT,
+  loadMembershipCancellationSettings,
+  loadMembershipCancellationSettingsStrict,
   normalizeMembershipCancellationSettings,
   normalizeMembershipCancellationXeroGroups,
 } from "@/lib/membership-cancellation-settings";
@@ -103,6 +105,46 @@ describe("membership cancellation settings", () => {
       rejoinProcessText: DEFAULT_MEMBERSHIP_REJOIN_PROCESS_TEXT,
       xeroArchiveContactsOnCancellation: false,
       xeroContactGroups: [],
+    });
+  });
+
+  // #2392 review (NEW-1): the defaults have archiving OFF, and the unpaid-
+  // invoice gate skips itself when archiving is off. A read that quietly
+  // degrades to the defaults therefore turns a database blip into "no check
+  // needed", while the archive — an outbox operation drained minutes later —
+  // reads the setting again and archives. The gate needs the difference.
+  describe("a failed read", () => {
+    it("degrades to the defaults for ordinary callers", async () => {
+      mocks.membershipCancellationSettingFindUnique.mockRejectedValue(
+        new Error("database unavailable"),
+      );
+
+      await expect(loadMembershipCancellationSettings()).resolves.toMatchObject(
+        { xeroArchiveContactsOnCancellation: false },
+      );
+    });
+
+    it("throws for the caller that must not mistake it for 'archiving is off'", async () => {
+      mocks.membershipCancellationSettingFindUnique.mockRejectedValue(
+        new Error("database unavailable"),
+      );
+
+      await expect(
+        loadMembershipCancellationSettingsStrict(),
+      ).rejects.toThrow("database unavailable");
+    });
+
+    it("agrees with the ordinary loader when the read works", async () => {
+      mocks.membershipCancellationSettingFindUnique.mockResolvedValue({
+        warningText: "Saved warning",
+        rejoinProcessText: "Saved rejoin",
+        xeroArchiveContactsOnCancellation: true,
+        xeroContactGroups: [],
+      });
+
+      await expect(
+        loadMembershipCancellationSettingsStrict(),
+      ).resolves.toEqual(await loadMembershipCancellationSettings());
     });
   });
 
