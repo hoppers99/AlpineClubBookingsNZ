@@ -78,63 +78,386 @@ end the final-run attempt, resolve it, then start a new freeze and generate a
 fresh final dry run. Do not review one plan while those writers continue and
 later apply it as though the population and configuration were unchanged.
 
-## 1. Run and retain the dry-run report
+### Prepare literal-safe values
 
-On a supported Compose deployment, run the command from the pinned migrate
-image for the deployed commit. This uses the Compose-internal `postgres`
-hostname and does not publish a new database port or require Node/npm on the
-host:
+Treat every club name and provenance note as data, never as shell syntax. A
+value can contain spaces, quotes, dollar signs, backticks, semicolons, or other
+shell metacharacters without becoming executable when it is read from a file
+and passed as one quoted argument. Do not paste a database-backed value inside
+quotes in a command.
 
-```bash
-docker compose run --rm migrate \
-  ./node_modules/.bin/tsx scripts/induction-baseline.ts \
-  --actor-member-id <full-admin-member-id> \
-  --baseline-date <YYYY-MM-DD> \
-  --provenance-note "<legacy register and committee-authorisation reference>" \
-  --json
-```
-
-Confirm `MIGRATE_IMAGE` names the same reviewed commit as the deployed app
-before a live run. Do not substitute an unreviewed local image. Compose supplies
-`DATABASE_URL` inside the container; do not override it on the command line or
-enable shell tracing.
-
-For a local rehearsal with the repository's supported Node version and a
-sanitised non-production database, use:
+Create a private input directory and use a trusted text editor to put each
+value in its own file. Every file must contain exactly one non-empty line,
+ending with one newline. Embedded newlines are forbidden for this operation.
 
 ```bash
-npm run induction:baseline -- \
-  --actor-member-id <full-admin-member-id> \
-  --baseline-date <YYYY-MM-DD> \
-  --provenance-note "<legacy register and committee-authorisation reference>"
+set -euo pipefail
+umask 077
+INDUCTION_INPUT_DIR="$(mktemp -d)"
+
+vi -- "$INDUCTION_INPUT_DIR/actor-member-id"
+vi -- "$INDUCTION_INPUT_DIR/baseline-date"
+vi -- "$INDUCTION_INPUT_DIR/provenance-note"
 ```
 
-To rehearse entirely in containers, create a separate staging Compose project,
-start its new database, and build the migrate image:
+Validate the file shape before reading the values. `IFS= read -r` preserves the
+literal text; the variables remain unexported and are passed only to the one
+command that needs them.
+
+```bash
+for INPUT_FILE in \
+  "$INDUCTION_INPUT_DIR/actor-member-id" \
+  "$INDUCTION_INPUT_DIR/baseline-date" \
+  "$INDUCTION_INPUT_DIR/provenance-note"
+do
+  if [ ! -f "$INPUT_FILE" ] || [ "$(wc -l < "$INPUT_FILE")" -ne 1 ]; then
+    printf 'Expected exactly one newline-terminated line in %s\n' "$INPUT_FILE" >&2
+    exit 1
+  fi
+done
+
+IFS= read -r ACTOR_MEMBER_ID < "$INDUCTION_INPUT_DIR/actor-member-id"
+IFS= read -r BASELINE_DATE < "$INDUCTION_INPUT_DIR/baseline-date"
+IFS= read -r PROVENANCE_NOTE < "$INDUCTION_INPUT_DIR/provenance-note"
+
+if [ -z "$ACTOR_MEMBER_ID" ] || [ -z "$BASELINE_DATE" ] || [ -z "$PROVENANCE_NOTE" ]; then
+  printf 'Induction baseline input files must not be empty.\n' >&2
+  exit 1
+fi
+
+BASELINE_ARGS=(
+  --actor-member-id "$ACTOR_MEMBER_ID"
+  --baseline-date "$BASELINE_DATE"
+  --provenance-note "$PROVENANCE_NOTE"
+)
+```
+
+Use a separate protected directory and synthetic values for rehearsal. Never
+copy a production database URL, credential, actor ID, or club text into the
+rehearsal shell.
+
+### Pin and verify the live Compose context
+
+The production deploy wrapper does not promise to leave `MIGRATE_IMAGE` or
+`COMPOSE_PROJECT_NAME` exported in a later operator shell. Load them explicitly
+for this maintenance window. In the same protected directory, create four more
+one-line files using a trusted editor:
+
+- `compose-project-name`: the exact live Compose project name from the
+  deployment record;
+- `compose-env-file`: the absolute path to that deployment's production
+  `.env`;
+- `compose-file`: the absolute path to the reviewed `docker-compose.yml` in
+  the deployed workspace, not whichever checkout happens to be current; and
+- `migrate-image`: the owner-approved migration image as
+  `repository@sha256:<64 hexadecimal characters>`, for the same reviewed commit
+  as the deployed app. A mutable tag is not sufficient.
+
+Read and validate them without exporting them:
+
+```bash
+for INPUT_FILE in \
+  "$INDUCTION_INPUT_DIR/compose-project-name" \
+  "$INDUCTION_INPUT_DIR/compose-env-file" \
+  "$INDUCTION_INPUT_DIR/compose-file" \
+  "$INDUCTION_INPUT_DIR/migrate-image"
+do
+  if [ ! -f "$INPUT_FILE" ] || [ "$(wc -l < "$INPUT_FILE")" -ne 1 ]; then
+    printf 'Expected exactly one newline-terminated line in %s\n' "$INPUT_FILE" >&2
+    exit 1
+  fi
+done
+
+IFS= read -r PRODUCTION_COMPOSE_PROJECT_NAME < "$INDUCTION_INPUT_DIR/compose-project-name"
+IFS= read -r PRODUCTION_ENV_FILE < "$INDUCTION_INPUT_DIR/compose-env-file"
+IFS= read -r PRODUCTION_COMPOSE_FILE < "$INDUCTION_INPUT_DIR/compose-file"
+IFS= read -r APPROVED_MIGRATE_IMAGE < "$INDUCTION_INPUT_DIR/migrate-image"
+
+if [[ ! "$PRODUCTION_COMPOSE_PROJECT_NAME" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+  printf 'The production Compose project name is missing or invalid.\n' >&2
+  exit 1
+fi
+if [ ! -f "$PRODUCTION_ENV_FILE" ] || [ ! -f "$PRODUCTION_COMPOSE_FILE" ]; then
+  printf 'The exact production env file and Compose file must both exist.\n' >&2
+  exit 1
+fi
+case "$PRODUCTION_ENV_FILE" in
+  /*) ;;
+  *)
+    printf 'The production env-file path must be absolute.\n' >&2
+    exit 1
+    ;;
+esac
+case "$PRODUCTION_COMPOSE_FILE" in
+  /*) ;;
+  *)
+    printf 'The production Compose-file path must be absolute.\n' >&2
+    exit 1
+    ;;
+esac
+if [[ ! "$APPROVED_MIGRATE_IMAGE" =~ ^[^[:space:]]+@sha256:[[:xdigit:]]{64}$ ]]; then
+  printf 'MIGRATE_IMAGE must be an approved digest-pinned reference.\n' >&2
+  exit 1
+fi
+
+PRODUCTION_COMPOSE=(
+  env
+  "COMPOSE_PROJECT_NAME=$PRODUCTION_COMPOSE_PROJECT_NAME"
+  "MIGRATE_IMAGE=$APPROVED_MIGRATE_IMAGE"
+  docker compose
+  --project-name "$PRODUCTION_COMPOSE_PROJECT_NAME"
+  --env-file "$PRODUCTION_ENV_FILE"
+  -f "$PRODUCTION_COMPOSE_FILE"
+  --profile migrate
+)
+```
+
+`PRODUCTION_COMPOSE` is a Bash array, not a string to evaluate. Every invocation
+below expands it as literal arguments and explicitly supplies the approved
+digest, project name, environment file, and Compose file; no ambient export or
+shell re-parsing is involved.
+
+Pull and inspect that immutable image, then ask Compose to resolve the exact
+production context. Fail unless `config --images` contains the approved digest
+exactly once and never resolves the local fallback:
+
+```bash
+docker pull "$APPROVED_MIGRATE_IMAGE"
+docker image inspect "$APPROVED_MIGRATE_IMAGE" \
+  --format '{{range .RepoDigests}}{{println .}}{{end}}' |
+  grep -Fqx -- "$APPROVED_MIGRATE_IMAGE"
+
+COMPOSE_IMAGES="$("${PRODUCTION_COMPOSE[@]}" config --images)"
+
+MIGRATE_MATCHES=0
+LOCAL_FALLBACK_FOUND=false
+while IFS= read -r CONFIGURED_IMAGE; do
+  if [ "$CONFIGURED_IMAGE" = "$APPROVED_MIGRATE_IMAGE" ]; then
+    MIGRATE_MATCHES=$((MIGRATE_MATCHES + 1))
+  fi
+  if [ "$CONFIGURED_IMAGE" = "${PRODUCTION_COMPOSE_PROJECT_NAME}-migrate:local" ]; then
+    LOCAL_FALLBACK_FOUND=true
+  fi
+done <<< "$COMPOSE_IMAGES"
+
+if [ "$MIGRATE_MATCHES" -ne 1 ] || [ "$LOCAL_FALLBACK_FOUND" = true ]; then
+  printf 'Compose did not resolve the one approved migration image; stop.\n' >&2
+  exit 1
+fi
+```
+
+Run this verification again if the shell, deploy workspace, project name,
+Compose file, environment file, or approved digest changes. Never continue by
+building or accepting `${project}-migrate:local`.
+
+### Complete a disposable non-production rehearsal
+
+Rehearse the whole sequence against a synthetic or already-sanitised
+non-production dump. Never restore unsanitised production data into this
+project. First validate that the dump really restores by following the
+[Quarterly Backup Restore Drill](MAINTENANCE.md#quarterly-backup-restore-drill),
+then record the completed rehearsal using the
+[staging rehearsal record](PRODUCTION_UPGRADE_RUNBOOK.md#7-staging-rehearsal-record).
+
+Create a dedicated staging environment from `.env.staging.example`. Give it a
+unique database password and loopback port, keep every provider disabled or
+pointed at the repository's non-production captures, and set a strong
+rehearsal-only auth secret. From the repository root:
 
 ```bash
 cp .env.staging.example .env.induction-rehearsal
-# Set a unique DB_PASSWORD and STAGING_POSTGRES_PORT in this local-only file.
-docker compose --env-file .env.induction-rehearsal \
-  -p induction-baseline-rehearsal \
-  -f docker-compose.yml -f docker-compose.staging.yml up -d postgres
-docker compose --env-file .env.induction-rehearsal \
-  -p induction-baseline-rehearsal \
-  -f docker-compose.yml -f docker-compose.staging.yml build migrate
+vi -- .env.induction-rehearsal
+
+REHEARSAL_PROJECT_NAME="induction-baseline-rehearsal"
+REHEARSAL_ENV_FILE="$PWD/.env.induction-rehearsal"
+REHEARSAL_BASE_COMPOSE="$PWD/docker-compose.yml"
+REHEARSAL_OVERRIDE_COMPOSE="$PWD/docker-compose.staging.yml"
+REHEARSAL_INPUT_DIR="$(mktemp -d)"
+REHEARSAL_COMPOSE=(
+  env
+  "COMPOSE_PROJECT_NAME=$REHEARSAL_PROJECT_NAME"
+  "MIGRATE_IMAGE=$APPROVED_MIGRATE_IMAGE"
+  docker compose
+  --project-name "$REHEARSAL_PROJECT_NAME"
+  --env-file "$REHEARSAL_ENV_FILE"
+  -f "$REHEARSAL_BASE_COMPOSE"
+  -f "$REHEARSAL_OVERRIDE_COMPOSE"
+  --profile migrate
+)
+
+vi -- "$REHEARSAL_INPUT_DIR/rehearsal-dump-path"
+if [ "$(wc -l < "$REHEARSAL_INPUT_DIR/rehearsal-dump-path")" -ne 1 ]; then
+  printf 'The rehearsal dump path file must contain exactly one line.\n' >&2
+  exit 1
+fi
+IFS= read -r REHEARSAL_DUMP < "$REHEARSAL_INPUT_DIR/rehearsal-dump-path"
+if [ ! -f "$REHEARSAL_DUMP" ]; then
+  printf 'The synthetic or sanitised rehearsal dump does not exist.\n' >&2
+  exit 1
+fi
+
+bash scripts/backup-restore-drill.sh --from-dump "$REHEARSAL_DUMP"
+
+# This fixed project name is rehearsal-only. Remove any interrupted old copy
+# before restoring so no stale row or audit can satisfy the checks below.
+"${REHEARSAL_COMPOSE[@]}" down -v --remove-orphans
+"${REHEARSAL_COMPOSE[@]}" up -d --wait postgres
+
+gzip -dc -- "$REHEARSAL_DUMP" |
+  "${REHEARSAL_COMPOSE[@]}" exec -T postgres \
+    psql -v ON_ERROR_STOP=1 -U tac -d tacbookings
+
+"${REHEARSAL_COMPOSE[@]}" run --rm migrate
 ```
 
-Restore only a sanitised non-production copy into that separate project, then
-bring it to the current schema:
+Prepare separate protected one-line files for the rehearsal actor, baseline
+date, and provenance note. The restored data must include at least one eligible
+synthetic member with no completed induction, so the dry run has a nonzero
+`CREATE` count and exercises the write path. Create a protected evidence
+directory and run the complete sequence:
 
 ```bash
-docker compose --env-file .env.induction-rehearsal \
-  -p induction-baseline-rehearsal \
-  -f docker-compose.yml -f docker-compose.staging.yml run --rm migrate
+vi -- "$REHEARSAL_INPUT_DIR/actor-member-id"
+vi -- "$REHEARSAL_INPUT_DIR/baseline-date"
+vi -- "$REHEARSAL_INPUT_DIR/provenance-note"
+
+for INPUT_FILE in \
+  "$REHEARSAL_INPUT_DIR/actor-member-id" \
+  "$REHEARSAL_INPUT_DIR/baseline-date" \
+  "$REHEARSAL_INPUT_DIR/provenance-note"
+do
+  if [ ! -f "$INPUT_FILE" ] || [ "$(wc -l < "$INPUT_FILE")" -ne 1 ]; then
+    printf 'Expected exactly one newline-terminated line in %s\n' "$INPUT_FILE" >&2
+    exit 1
+  fi
+done
+
+IFS= read -r REHEARSAL_ACTOR_MEMBER_ID < "$REHEARSAL_INPUT_DIR/actor-member-id"
+IFS= read -r REHEARSAL_BASELINE_DATE < "$REHEARSAL_INPUT_DIR/baseline-date"
+IFS= read -r REHEARSAL_PROVENANCE_NOTE < "$REHEARSAL_INPUT_DIR/provenance-note"
+if [ -z "$REHEARSAL_ACTOR_MEMBER_ID" ] ||
+   [ -z "$REHEARSAL_BASELINE_DATE" ] ||
+   [ -z "$REHEARSAL_PROVENANCE_NOTE" ]; then
+  printf 'Rehearsal baseline input files must not be empty.\n' >&2
+  exit 1
+fi
+
+REHEARSAL_BASELINE_ARGS=(
+  --actor-member-id "$REHEARSAL_ACTOR_MEMBER_ID"
+  --baseline-date "$REHEARSAL_BASELINE_DATE"
+  --provenance-note "$REHEARSAL_PROVENANCE_NOTE"
+)
+REHEARSAL_EVIDENCE_DIR="$(mktemp -d)"
+
+"${REHEARSAL_COMPOSE[@]}" run --rm migrate \
+  ./node_modules/.bin/tsx scripts/induction-baseline.ts \
+  "${REHEARSAL_BASELINE_ARGS[@]}" \
+  --json | tee "$REHEARSAL_EVIDENCE_DIR/dry-run.txt"
+
+grep -Eq '^  CREATE: [1-9][0-9]*$' "$REHEARSAL_EVIDENCE_DIR/dry-run.txt"
 ```
 
-Replace `docker compose` in the deployed dry-run command with the full
-`docker compose --env-file ... -p ... -f ... -f ...` prefix above. The staging
-override binds PostgreSQL to `127.0.0.1` only, never to an external interface.
+Copy the exact club name, parsed database host, and database name from that
+report into three new protected one-line files; do not paste their contents
+into the shell. Confirm the rehearsal starts with no prior baseline audit,
+apply, then rerun the dry run:
+
+```bash
+vi -- "$REHEARSAL_INPUT_DIR/confirm-club-name"
+vi -- "$REHEARSAL_INPUT_DIR/confirm-db-host"
+vi -- "$REHEARSAL_INPUT_DIR/confirm-db-name"
+
+for INPUT_FILE in \
+  "$REHEARSAL_INPUT_DIR/confirm-club-name" \
+  "$REHEARSAL_INPUT_DIR/confirm-db-host" \
+  "$REHEARSAL_INPUT_DIR/confirm-db-name"
+do
+  if [ ! -f "$INPUT_FILE" ] || [ "$(wc -l < "$INPUT_FILE")" -ne 1 ]; then
+    printf 'Expected exactly one newline-terminated line in %s\n' "$INPUT_FILE" >&2
+    exit 1
+  fi
+done
+
+IFS= read -r REHEARSAL_CLUB_NAME < "$REHEARSAL_INPUT_DIR/confirm-club-name"
+IFS= read -r REHEARSAL_DB_HOST < "$REHEARSAL_INPUT_DIR/confirm-db-host"
+IFS= read -r REHEARSAL_DB_NAME < "$REHEARSAL_INPUT_DIR/confirm-db-name"
+if [ -z "$REHEARSAL_CLUB_NAME" ] ||
+   [ -z "$REHEARSAL_DB_HOST" ] ||
+   [ -z "$REHEARSAL_DB_NAME" ]; then
+  printf 'Rehearsal confirmation files must not be empty.\n' >&2
+  exit 1
+fi
+
+REHEARSAL_AUDITS_BEFORE="$(
+  "${REHEARSAL_COMPOSE[@]}" exec -T postgres \
+    psql -U tac -d tacbookings -Atqc \
+    "SELECT count(*) FROM \"AuditLog\" WHERE action = 'MEMBER_INDUCTION_LEGACY_BASELINE_APPLIED';"
+)"
+[ "$REHEARSAL_AUDITS_BEFORE" = "0" ]
+
+"${REHEARSAL_COMPOSE[@]}" run --rm migrate \
+  ./node_modules/.bin/tsx scripts/induction-baseline.ts \
+  --apply \
+  "${REHEARSAL_BASELINE_ARGS[@]}" \
+  --confirm-club-name "$REHEARSAL_CLUB_NAME" \
+  --confirm-db-host "$REHEARSAL_DB_HOST" \
+  --confirm-db-name "$REHEARSAL_DB_NAME" \
+  --json | tee "$REHEARSAL_EVIDENCE_DIR/apply.txt"
+
+grep -Eq '^Applied [1-9][0-9]* completed baseline row\(s\)\.$' \
+  "$REHEARSAL_EVIDENCE_DIR/apply.txt"
+
+"${REHEARSAL_COMPOSE[@]}" run --rm migrate \
+  ./node_modules/.bin/tsx scripts/induction-baseline.ts \
+  "${REHEARSAL_BASELINE_ARGS[@]}" \
+  --json | tee "$REHEARSAL_EVIDENCE_DIR/verify-rerun.txt"
+
+grep -Fqx '  CREATE: 0' "$REHEARSAL_EVIDENCE_DIR/verify-rerun.txt"
+```
+
+Query the audit again and require exactly one event. Retain the three safe
+reports plus this count with the rehearsal record:
+
+```bash
+REHEARSAL_AUDITS_AFTER="$(
+  "${REHEARSAL_COMPOSE[@]}" exec -T postgres \
+    psql -U tac -d tacbookings -Atqc \
+    "SELECT count(*) FROM \"AuditLog\" WHERE action = 'MEMBER_INDUCTION_LEGACY_BASELINE_APPLIED';"
+)"
+[ "$REHEARSAL_AUDITS_AFTER" = "1" ]
+printf 'Trusted-baseline audit count after rehearsal: %s\n' "$REHEARSAL_AUDITS_AFTER" \
+  > "$REHEARSAL_EVIDENCE_DIR/audit-count.txt"
+```
+
+After copying the evidence to the rehearsal record, discard the restored
+database and its volume. This exact project name is dedicated to the rehearsal:
+
+```bash
+"${REHEARSAL_COMPOSE[@]}" down -v --remove-orphans
+```
+
+Securely delete the local rehearsal dump, rehearsal `.env`, and rehearsal input
+files when the evidence has been retained. A rehearsal is incomplete unless
+dry run, nonzero apply, `CREATE: 0` rerun, one audit, evidence retention, and
+teardown all succeeded.
+
+## 1. Run and retain the dry-run report
+
+On a supported Compose deployment, use the verified variables above and repeat
+the exact project, environment file, Compose file, and digest on the live
+command. This uses the Compose-internal `postgres` hostname and does not publish
+a new database port or require Node/npm on the host:
+
+```bash
+"${PRODUCTION_COMPOSE[@]}" run --rm migrate \
+  ./node_modules/.bin/tsx scripts/induction-baseline.ts \
+  "${BASELINE_ARGS[@]}" \
+  --json
+```
+
+Do not substitute an unreviewed local image. Compose supplies `DATABASE_URL`
+inside the container; do not override it on the command line or enable shell
+tracing.
 
 The date is a New Zealand date-only lodge date and cannot be later than the
 current New Zealand date. The note is stored with the stable prefix
@@ -175,23 +498,49 @@ generate a fresh dry run. Do not edit a saved report and treat it as current.
 ## 2. Apply with exact confirmations
 
 Use the exact effective club name, parsed host, and database name printed by
-the reviewed dry run. On the supported deployment path:
+the reviewed dry run. Put each value into a new protected one-line file with
+the trusted editor; do not paste report content into executable shell text.
 
 ```bash
-docker compose run --rm migrate \
-  ./node_modules/.bin/tsx scripts/induction-baseline.ts \
-  --apply \
-  --actor-member-id <full-admin-member-id> \
-  --baseline-date <YYYY-MM-DD> \
-  --provenance-note "<same legacy register and committee-authorisation reference>" \
-  --confirm-club-name "<exact club name from the dry run>" \
-  --confirm-db-host "<exact host[:port] from the dry run>" \
-  --confirm-db-name "<exact database name from the dry run>" \
-  --json
+vi -- "$INDUCTION_INPUT_DIR/confirm-club-name"
+vi -- "$INDUCTION_INPUT_DIR/confirm-db-host"
+vi -- "$INDUCTION_INPUT_DIR/confirm-db-name"
+
+for INPUT_FILE in \
+  "$INDUCTION_INPUT_DIR/confirm-club-name" \
+  "$INDUCTION_INPUT_DIR/confirm-db-host" \
+  "$INDUCTION_INPUT_DIR/confirm-db-name"
+do
+  if [ ! -f "$INPUT_FILE" ] || [ "$(wc -l < "$INPUT_FILE")" -ne 1 ]; then
+    printf 'Expected exactly one newline-terminated line in %s\n' "$INPUT_FILE" >&2
+    exit 1
+  fi
+done
+
+IFS= read -r CONFIRM_CLUB_NAME < "$INDUCTION_INPUT_DIR/confirm-club-name"
+IFS= read -r CONFIRM_DB_HOST < "$INDUCTION_INPUT_DIR/confirm-db-host"
+IFS= read -r CONFIRM_DB_NAME < "$INDUCTION_INPUT_DIR/confirm-db-name"
+if [ -z "$CONFIRM_CLUB_NAME" ] ||
+   [ -z "$CONFIRM_DB_HOST" ] ||
+   [ -z "$CONFIRM_DB_NAME" ]; then
+  printf 'Apply confirmation files must not be empty.\n' >&2
+  exit 1
+fi
 ```
 
-For the local Node rehearsal path, use the same arguments after
-`npm run induction:baseline --`.
+On the supported live deployment path, repeat the same verified digest and
+exact Compose context on the apply itself:
+
+```bash
+"${PRODUCTION_COMPOSE[@]}" run --rm migrate \
+  ./node_modules/.bin/tsx scripts/induction-baseline.ts \
+  --apply \
+  "${BASELINE_ARGS[@]}" \
+  --confirm-club-name "$CONFIRM_CLUB_NAME" \
+  --confirm-db-host "$CONFIRM_DB_HOST" \
+  --confirm-db-name "$CONFIRM_DB_NAME" \
+  --json
+```
 
 All confirmations are case-sensitive and exact. Apply validates the actor,
 configuration, template, and population again. It then locks the
@@ -228,8 +577,17 @@ An audit entry and all baseline rows commit together.
    configured age tier.
 3. Confirm the rows show New Member, Completed, the baseline date, and no
    signers or sign-offs.
-4. Re-run the dry-run command with the same actor, date, and note. It should
-   report `CREATE: 0`; the applied members should now be
+4. Re-run the dry run with the same protected actor, date, and note. Repeat the
+   verified digest and exact live Compose context:
+
+   ```bash
+   "${PRODUCTION_COMPOSE[@]}" run --rm migrate \
+     ./node_modules/.bin/tsx scripts/induction-baseline.ts \
+     "${BASELINE_ARGS[@]}" \
+     --json
+   ```
+
+   It should report `CREATE: 0`; the applied members should now be
    `ALREADY_COMPLETED`.
 
 Rerunning apply after a successful run is a no-op: no induction rows and no

@@ -18,19 +18,27 @@ import {
 
 function printUsage() {
   console.log(`Usage:
+  IFS= read -r ACTOR_MEMBER_ID < /protected/path/actor-member-id
+  IFS= read -r BASELINE_DATE < /protected/path/baseline-date
+  IFS= read -r PROVENANCE_NOTE < /protected/path/provenance-note
+
   npm run induction:baseline -- \\
-    --actor-member-id <member-id> \\
-    --baseline-date <YYYY-MM-DD> \\
-    --provenance-note "<committee minute / legacy register source>"
+    --actor-member-id "$ACTOR_MEMBER_ID" \\
+    --baseline-date "$BASELINE_DATE" \\
+    --provenance-note "$PROVENANCE_NOTE"
+
+  IFS= read -r CONFIRM_CLUB_NAME < /protected/path/confirm-club-name
+  IFS= read -r CONFIRM_DB_HOST < /protected/path/confirm-db-host
+  IFS= read -r CONFIRM_DB_NAME < /protected/path/confirm-db-name
 
   npm run induction:baseline -- \\
     --apply \\
-    --actor-member-id <member-id> \\
-    --baseline-date <YYYY-MM-DD> \\
-    --provenance-note "<committee minute / legacy register source>" \\
-    --confirm-club-name "<exact effective club name>" \\
-    --confirm-db-host "<exact parsed host[:port] from the dry run>" \\
-    --confirm-db-name "<exact parsed database name from the dry run>"
+    --actor-member-id "$ACTOR_MEMBER_ID" \\
+    --baseline-date "$BASELINE_DATE" \\
+    --provenance-note "$PROVENANCE_NOTE" \\
+    --confirm-club-name "$CONFIRM_CLUB_NAME" \\
+    --confirm-db-host "$CONFIRM_DB_HOST" \\
+    --confirm-db-name "$CONFIRM_DB_NAME"
 
 Options:
   --dry-run                 Explicit dry run (the default). Never writes.
@@ -47,6 +55,13 @@ Options:
 
 DATABASE_URL is read but is never printed. The report exposes only its parsed
 host[:port] and database name for the apply confirmation.
+
+Each protected input file must contain exactly one non-empty,
+newline-terminated line; embedded newlines are forbidden. Read values with
+IFS= read -r into unexported variables and pass them only as quoted arguments.
+Club and provenance text is data: never paste database-backed text into
+executable shell syntax. See docs/INDUCTION_BASELINE_RUNBOOK.md for the
+fail-closed file-shape and live Compose-image checks.
 `);
 }
 

@@ -189,12 +189,19 @@ login-enabled Full Admin actor member ID, one New Zealand date-only baseline
 date, and a stable provenance note:
 
 ```bash
+IFS= read -r ACTOR_MEMBER_ID < /protected/path/actor-member-id
+IFS= read -r BASELINE_DATE < /protected/path/baseline-date
+IFS= read -r PROVENANCE_NOTE < /protected/path/provenance-note
+
 npm run induction:baseline -- \
-  --actor-member-id <full-admin-member-id> \
-  --baseline-date <YYYY-MM-DD> \
-  --provenance-note "<authorised historical source>"
+  --actor-member-id "$ACTOR_MEMBER_ID" \
+  --baseline-date "$BASELINE_DATE" \
+  --provenance-note "$PROVENANCE_NOTE"
 ```
 
+The protected files must pass the runbook's exact one-line validation; embedded
+newlines are forbidden. Keep the variables unexported and quoted so club and
+provenance text remains literal data rather than executable shell syntax.
 Apply additionally requires `--apply` plus exact club-name, parsed database
 host, and parsed database-name confirmations from the reviewed report. It
 preserves all existing induction rows, blocks on every eligible Draft or In

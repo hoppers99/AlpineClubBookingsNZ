@@ -114,6 +114,30 @@ describe("induction baseline CLI", () => {
     });
   });
 
+  it("preserves literal shell metacharacters in quoted argument values", () => {
+    const provenance =
+      'Minute "$HOME" `not-a-command` $(also-data); & | < >';
+    const clubName = 'Example "$CLUB" $(literal); Alpine Club';
+    const parsed = parseInductionBaselineArgs([
+      "--apply",
+      "--actor-member-id",
+      "admin-1",
+      "--baseline-date",
+      "2024-06-30",
+      "--provenance-note",
+      provenance,
+      "--confirm-club-name",
+      clubName,
+      "--confirm-db-host",
+      "postgres:5432",
+      "--confirm-db-name",
+      "tacbookings",
+    ]);
+
+    expect(parsed.provenanceNote).toBe(provenance);
+    expect(parsed.confirmClubName).toBe(clubName);
+  });
+
   it.each([
     ["--apply", "--apply"],
     ["--dry-run", "--dry-run"],
