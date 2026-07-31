@@ -67,6 +67,16 @@ All notable public reference-release changes should be recorded here.
   and leap-year February boundaries. Changing the quick range keeps the current
   Lodge and Deleted filters, and the shared Quick Range select now has an
   accessible programmatic label.
+- **Admin datasets now share one predictable Reset action (#2358).** Across 21
+  member, booking, finance, support, Xero, induction, promo, and locker lists,
+  **Reset** stays visible and is disabled only when search, filters, explicit
+  sort, and page are already at that dataset's defaults. It resets the whole
+  dataset rather than only the last control, uses replace-style URL updates so
+  filter changes do not fill browser history, and preserves work context such
+  as lodge, season, tab, cohort, focused record, sibling Xero panel state, and
+  unknown future URL keys. Payments returns to the rolling NZ three-month
+  Updated range through today (not all history), while Reports returns to its
+  rolling default through current month-end and keeps the selected lodge.
 - **Bed moves now stay on the guest's original lodge nights (#2366).** Dragging
   an existing allocation chip across date columns now chooses only the
   destination bed: the preview and keyboard announcement show the original NZ

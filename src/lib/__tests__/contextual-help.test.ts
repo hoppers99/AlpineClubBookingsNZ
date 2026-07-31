@@ -5,6 +5,20 @@ import {
 } from "@/lib/contextual-help";
 
 describe("contextual help registry", () => {
+  it.each([
+    ["/admin/members", "search, filters, sort, and page"],
+    ["/admin/bookings", "without changing the selected lodge"],
+    ["/admin/payments", "rolling three-month Updated range"],
+    ["/admin/subscriptions", "without changing the selected season"],
+    ["/admin/reports", "without changing the selected lodge"],
+  ])("documents dataset Reset behavior for %s", (pathname, expected) => {
+    const help = getContextualHelp(pathname, "admin");
+
+    expect(
+      help.actions.find((action) => action.startsWith("Use Reset")),
+    ).toContain(expected);
+  });
+
   it("returns route-specific admin help", () => {
     const help = getContextualHelp("/admin/members", "admin");
 

@@ -36,8 +36,8 @@ edit or delete an entry. Retention and optional archival are governed by the
    set a **date range**, or filter by **Outcome**, **Severity**, or **Entity**.
    The free-text **Search** matches the action, summary, request ID, or entity.
 3. Click a row to expand it for the **Details**, **Metadata**, request ID, IP,
-   user agent, retention class, and every drill-down target. Use **Clear** to
-   reset all filters.
+   user agent, retention class, and every drill-down target. Use **Reset** to
+   restore search, filters, and page while keeping unrelated URL context.
 
 ## Settings reference
 
@@ -92,7 +92,7 @@ not of the write routes — a script or integration calling the API directly wit
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
-| No entries found | The active filters exclude everything | Click **Clear**, then re-apply one filter at a time |
+| No entries found | The active filters exclude everything | Click **Reset**, then re-apply one filter at a time |
 | An old event is missing | It aged out under the retention policy (or was archived) | See the [audit retention & archive runbook](../AUDIT_RETENTION_ARCHIVE_RUNBOOK.md) |
 | A row won't expand | It has no extra detail (no metadata, request, or IP) | Nothing to show — the summary row is the whole record |
 | Actor shows as "System" | The event was performed by a job or deploy, not a person | Expected for cron/webhook/bootstrap activity |
