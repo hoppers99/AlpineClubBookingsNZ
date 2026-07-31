@@ -644,9 +644,9 @@ export function EmailMessageSettingsPanel() {
           An upgrade removed our own square-bracketed notes (like &ldquo;[only
           when the booking is already paid]&rdquo;) from{" "}
           {strippedAnnotationTemplates.length === 1
-            ? "a saved template override"
-            : `${strippedAnnotationTemplates.length} saved template overrides`}
-          , because they were being emailed to recipients word for word. Your
+            ? "a saved template override, "
+            : `${strippedAnnotationTemplates.length} saved template overrides, `}
+          because they were being emailed to recipients word for word. Your
           own wording was left exactly as you wrote it, and the whole previous
           copy is in the audit log. Those notes were also the only thing marking
           some lines as conditional, so please open each message, check the
