@@ -1,3 +1,4 @@
+import { additionalPaymentEpisodeStartedAt } from "@/lib/additional-payment-chase";
 import { hasCapturedPayment } from "@/lib/booking-payment-state";
 import { formatCents } from "@/lib/utils";
 
@@ -16,6 +17,16 @@ interface BookingHistoryPayment {
   refundedAmountCents: number;
   additionalAmountCents: number;
   additionalPaymentStatus: string | null;
+  /**
+   * When the CURRENT additional-payment obligation was raised — the latest
+   * ADDITIONAL PaymentTransaction's creation (#2350). The timeline dates the
+   * "still awaiting payment" entry from this rather than from the payment row's
+   * `updatedAt`, which moves every time anything touches the row (a reminder
+   * stamp, a Xero link, a refund) and would slide the entry back to the top of
+   * the timeline each time. Optional: callers that do not load the transactions
+   * fall back to the payment's own creation, which is stable.
+   */
+  latestAdditionalTransactionCreatedAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -114,6 +125,23 @@ function isRemovedGuest(
   value: unknown
 ): value is { firstName?: string; lastName?: string } {
   return Boolean(value) && typeof value === "object";
+}
+
+/**
+ * The plain-English promo-coverage sentence a reprice stored on its own
+ * modification record (#2390), or null when the promotion covered everybody.
+ * Read defensively: `newData` is free-form JSON, and every modification written
+ * before this existed simply has no such key.
+ */
+function promoCoverageNoteOf(
+  modification: BookingHistoryModification
+): string | null {
+  const next =
+    modification.newData && typeof modification.newData === "object"
+      ? (modification.newData as Record<string, unknown>)
+      : {};
+  const note = next.promoCoverageNote;
+  return typeof note === "string" && note.trim().length > 0 ? note : null;
 }
 
 function describeModification(modification: BookingHistoryModification): string | null {
@@ -252,6 +280,31 @@ export function buildBookingHistoryItems({
         });
         break;
       }
+      // #2397. An admin recorded a cash / off-Xero payment on a booking that
+      // still carried an uncollected price increase, and confirmed the money
+      // covered that increase too. It is the SAME fact as the card case above —
+      // the extra was collected — so it sets the same flag and suppresses the
+      // generic fallback below; only the wording differs, because how the money
+      // arrived is what the reader needs to know.
+      case "booking-payment.manual-payment.additional-settled": {
+        hasAdditionalPaymentSuccess = true;
+        const amountCents =
+          typeof parsedDetails?.additionalAmountCents === "number"
+            ? parsedDetails.additionalAmountCents
+            : null;
+
+        items.push({
+          id: `audit-${auditLog.id}`,
+          occurredAt: auditLog.createdAt,
+          category: "Payment",
+          title: "Additional payment recorded manually",
+          detail:
+            "An admin recorded that the payment received for this booking also covered the extra owing from a later change.",
+          amountDisplay: amountCents != null ? formatCents(amountCents) : null,
+          tone: "success",
+        });
+        break;
+      }
       case "booking.modification.payment.failed": {
         hasAdditionalPaymentFailure = true;
         const amountCents =
@@ -349,6 +402,14 @@ export function buildBookingHistoryItems({
     const detailParts = [describeModification(modification)];
     if (modification.changeFeeCents > 0) {
       detailParts.push(`Change fee applied: ${formatCents(modification.changeFeeCents)}.`);
+    }
+    // #2390: when a promotion's usage cap stopped it reaching somebody this
+    // edit added, the reprice recorded the exact sentence the member was shown
+    // at the time. Replayed verbatim so the booking's own summary, the edit
+    // preview and the modification email all tell the one story.
+    const promoCoverageNote = promoCoverageNoteOf(modification);
+    if (promoCoverageNote) {
+      detailParts.push(promoCoverageNote);
     }
 
     items.push({
@@ -449,6 +510,47 @@ export function buildBookingHistoryItems({
       detail: "A booking change increased the total and the extra payment succeeded.",
       amountDisplay: formatCents(payment.additionalAmountCents),
       tone: "success",
+    });
+  }
+
+  // #2350: the timeline had a fallback for a SUCCEEDED and a FAILED additional
+  // payment but none for one that is simply still awaiting the member, which is
+  // the state an outstanding delta spends nearly all of its life in. Without
+  // this entry the moment the price went up left no mark on the timeline at all.
+  //
+  // Dated from the obligation itself, not `payment.updatedAt`: the reminder cron
+  // writes its stamps to this row every time it chases the member, and dating
+  // the entry from the row's last touch would march it up the timeline on every
+  // nudge, claiming the price changed when nothing about the booking did.
+  //
+  // The status test matches the owed predicate's uncollected half rather than
+  // the literal string "PENDING": a legacy row written before the column was
+  // populated carries a null status, and the owed test — every admin queue, the
+  // finance panel, the reports figure and the chase cron — counts it. Testing
+  // for "PENDING" alone left exactly those bookings with no timeline entry for
+  // the moment their price went up. FAILED is excluded only because it has its
+  // own, more specific entry immediately below. Note this is deliberately NOT
+  // gated on the booking's lifecycle: the timeline is a record of what happened,
+  // and the price DID go up even if the booking was later cancelled.
+  if (
+    payment &&
+    payment.additionalAmountCents > 0 &&
+    payment.additionalPaymentStatus !== "SUCCEEDED" &&
+    payment.additionalPaymentStatus !== "FAILED"
+  ) {
+    items.push({
+      id: "payment-additional-pending",
+      occurredAt: additionalPaymentEpisodeStartedAt({
+        paymentCreatedAt: payment.createdAt,
+        latestAdditionalTransactionCreatedAt:
+          payment.latestAdditionalTransactionCreatedAt ?? null,
+      }),
+      category: "Payment",
+      title: "Additional payment requested",
+      detail:
+        "A booking change increased the total. This extra amount has not been paid yet.",
+      amountDisplay: formatCents(payment.additionalAmountCents),
+      tone: "warning",
     });
   }
 

@@ -233,11 +233,16 @@ describe("#2268 — the swept defaults still validate and still re-save", () => 
     // "Door code: {{doorCode}}" before the sweep must not have their template
     // become unsaveable — including the required-token rule, which now names
     // {{doorCodeNote}} for pre-arrival-reminder.
+    //
+    // {{outstandingAdditionalNote}} rides along because #2350 pinned it on the
+    // same template (it is the only place a pre-arrival reminder says money is
+    // still owed). This case is about the door-code SWAP, so the fixture
+    // carries the unrelated pin rather than letting it mask the swap.
     const validation = validateEmailTemplateContent({
       templateName: "pre-arrival-reminder",
       subject: "Pre-arrival Information",
       bodyText:
-        "Hi {{firstName}}.\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\nDoor code: {{doorCode}}",
+        "Hi {{firstName}}.\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\n{{outstandingAdditionalNote}}\n\nDoor code: {{doorCode}}",
     });
 
     expect(validation.valid).toBe(true);
@@ -249,7 +254,7 @@ describe("#2268 — the swept defaults still validate and still re-save", () => 
       templateName: "pre-arrival-reminder",
       subject: "Pre-arrival Information",
       bodyText:
-        "Hi {{firstName}}.\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\n{{doorCodeNote}}",
+        "Hi {{firstName}}.\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\n{{outstandingAdditionalNote}}\n\n{{doorCodeNote}}",
     });
 
     expect(validation.valid).toBe(true);

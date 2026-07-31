@@ -22,6 +22,7 @@ import {
   PaymentStatus,
 } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { isAdditionalAmountUncollected } from "@/lib/unpaid-finished-stays";
 
 export interface IbHoldClearingRow {
   paymentId: string;
@@ -286,6 +287,13 @@ export interface IbAppliedCreditStrandRow {
   /** |Σ BOOKING_APPLIED(appliedToBookingId=booking)| — the ledger truth, stored
    * negative and negated here to a positive applied total. */
   ledgerAppliedCents: number;
+  /**
+   * #2397: the payment's upward-modification delta and whether it was ever
+   * collected — the third term of the generalised mirror, so a negative
+   * `mirrorInvariantDeltaCents` can be told apart from real drift.
+   */
+  additionalAmountCents: number;
+  additionalPaymentStatus: string | null;
 }
 
 export interface IbAppliedCreditStrandFinding {
@@ -304,9 +312,35 @@ export interface IbAppliedCreditStrandFinding {
   /** ledgerAppliedCents − creditAppliedCents; non-zero ⇒ the payment mirror is
    * stale (e.g. a switched booking whose creditAppliedCents stayed 0). */
   mirrorLedgerMismatchCents: number;
-  /** amountCents + creditAppliedCents − finalPriceCents; the §4 payment-mirror
-   * invariant residual (0 when the mirror is internally consistent). */
+  /**
+   * amountCents + creditAppliedCents − finalPriceCents; the §4 payment-mirror
+   * invariant residual.
+   *
+   * NEGATIVE is not automatically drift. The generalised mirror is
+   * `amountCents + creditAppliedCents + (uncollected addition) = finalPriceCents`,
+   * so a booking carrying an uncollected upward-modification delta shows a
+   * residual of exactly −(that delta) and is CORRECT. Two shapes produce it,
+   * both internet-banking (this audit scans INTERNET_BANKING payments only, so
+   * a card-settled booking never appears here at all):
+   *
+   *  * a Xero-invoiced pay-on-account booking whose later addition was invoiced
+   *    but never paid; and
+   *  * (#2397) a cash / off-Xero settlement where the admin said the money did
+   *    NOT cover an outstanding addition, so the club deliberately recorded
+   *    less than the booking's price and goes on asking for the difference.
+   *
+   * Check the payment's `additionalAmountCents` / `additionalPaymentStatus`
+   * before treating a residual as a fault: equal-and-opposite means the books
+   * are right, anything else means the mirror really is stale.
+   */
   mirrorInvariantDeltaCents: number;
+  /**
+   * #2397: the uncollected upward-modification delta on this payment — the
+   * third term above, reported alongside the residual so an operator does not
+   * have to go and look it up. 0 when the payment carries no addition, or when
+   * the addition was collected.
+   */
+  uncollectedAdditionalCents: number;
   /** Credit the member stands to lose (pending) or has lost (realized). */
   strandExposureCents: number;
 }
@@ -355,6 +389,12 @@ export function deriveIbAppliedCreditStrandFinding(
     mirrorLedgerMismatchCents: row.ledgerAppliedCents - row.creditAppliedCents,
     mirrorInvariantDeltaCents:
       row.amountCents + row.creditAppliedCents - row.finalPriceCents,
+    // #2397: the SHARED money-half predicate, so this report and the settle
+    // that produces the residual can never disagree about what "uncollected"
+    // means.
+    uncollectedAdditionalCents: isAdditionalAmountUncollected(row)
+      ? row.additionalAmountCents
+      : 0,
     strandExposureCents: row.ledgerAppliedCents,
   };
 }
@@ -380,6 +420,9 @@ export async function auditIbAppliedCreditStrands(options?: {
       amountCents: true,
       creditAppliedCents: true,
       status: true,
+      // #2397: the generalised mirror's third term.
+      additionalAmountCents: true,
+      additionalPaymentStatus: true,
       booking: { select: { finalPriceCents: true, status: true } },
     },
     orderBy: { createdAt: "asc" },
@@ -417,6 +460,8 @@ export async function auditIbAppliedCreditStrands(options?: {
       creditAppliedCents: payment.creditAppliedCents,
       finalPriceCents: payment.booking.finalPriceCents,
       ledgerAppliedCents,
+      additionalAmountCents: payment.additionalAmountCents,
+      additionalPaymentStatus: payment.additionalPaymentStatus,
     });
 
     if (!finding) {
@@ -447,6 +492,20 @@ function formatIbAppliedCreditStrandRow(
   lines.push(`    applied (ledger):  ${formatCents(finding.ledgerAppliedCents)}`);
   lines.push(`    mirror vs ledger:  ${formatCents(finding.mirrorLedgerMismatchCents)}`);
   lines.push(`    mirror invariant delta: ${formatCents(finding.mirrorInvariantDeltaCents)}`);
+  // #2397: name the legitimate cause of a negative residual on the same row,
+  // so an operator never has to guess whether it is drift. When the two are
+  // equal and opposite the generalised mirror holds and there is nothing to
+  // repair here.
+  if (finding.uncollectedAdditionalCents > 0) {
+    lines.push(
+      `    uncollected addition: ${formatCents(finding.uncollectedAdditionalCents)}` +
+        (finding.mirrorInvariantDeltaCents +
+          finding.uncollectedAdditionalCents ===
+        0
+          ? "  (accounts for the delta above — mirror OK)"
+          : "  (does NOT fully account for the delta above)"),
+    );
+  }
   lines.push(`    STRAND EXPOSURE:   ${formatCents(finding.strandExposureCents)}`);
   return lines;
 }

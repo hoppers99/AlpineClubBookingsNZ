@@ -3,7 +3,7 @@
 Audience: Member, Guest
 
 Plain-English, step-by-step guides for the people who **use** the club — members
-signing in to book a stay, and guests staying without a login. These pages
+signing in to book a stay, and guests the club has invited to stay. These pages
 live in the repository under `docs/user-guide/` — the source of truth — and
 are automatically mirrored to the
 [project wiki](https://github.com/thatskiff33/AlpineClubBookingsNZ/wiki) for

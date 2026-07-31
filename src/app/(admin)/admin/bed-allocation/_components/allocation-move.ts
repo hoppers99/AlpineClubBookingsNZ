@@ -10,18 +10,13 @@ export type AllocationMovePlan =
   | {
       type: "single";
       allocationId: string;
-      stayDate: string;
+      stayDates: [string];
     }
   | {
       type: "bulk";
       allocationIds: string[];
       bookingGuestId: string;
       stayDates: string[];
-    }
-  | {
-      type: "blocked-date-shift";
-      firstStayDate: string;
-      targetStayDate: string;
     };
 
 export function planAllocationMove(input: {
@@ -36,13 +31,6 @@ export function planAllocationMove(input: {
     return { type: "noop" };
   }
 
-  if (
-    target.bedId === allocation.bedId &&
-    target.stayDate === allocation.stayDate
-  ) {
-    return { type: "noop" };
-  }
-
   const guestAllocations = visibleAllocations
     .filter((item) => item.bookingGuestId === allocation.bookingGuestId)
     .sort(
@@ -52,36 +40,41 @@ export function planAllocationMove(input: {
 
   const firstAllocation = guestAllocations[0];
   const isFirstVisibleAllocation = firstAllocation?.id === allocation.id;
+  const selectedAllocations = isFirstVisibleAllocation
+    ? guestAllocations
+    : [allocation];
+
+  // Existing allocation drags choose a BED only. The hovered column is
+  // deliberately ignored and every selected row stays on its persisted lodge
+  // night (#2366). A first-visible chip is a proxy for ALL visible rows, which
+  // may currently span several beds: dropping it on the dragged row's own bed
+  // is still a real move when any later selected row uses another bed. It is a
+  // no-op only when every selected row already uses the destination.
+  if (selectedAllocations.every((item) => item.bedId === target.bedId)) {
+    return { type: "noop" };
+  }
 
   if (!isFirstVisibleAllocation) {
     return {
       type: "single",
       allocationId: allocation.id,
-      stayDate: target.stayDate,
+      stayDates: [allocation.stayDate],
     };
   }
 
-  if (target.stayDate !== allocation.stayDate) {
-    return {
-      type: "blocked-date-shift",
-      firstStayDate: allocation.stayDate,
-      targetStayDate: target.stayDate,
-    };
-  }
-
-  if (guestAllocations.length <= 1) {
+  if (selectedAllocations.length <= 1) {
     return {
       type: "single",
       allocationId: allocation.id,
-      stayDate: target.stayDate,
+      stayDates: [allocation.stayDate],
     };
   }
 
   return {
     type: "bulk",
-    allocationIds: guestAllocations.map((item) => item.id),
+    allocationIds: selectedAllocations.map((item) => item.id),
     bookingGuestId: allocation.bookingGuestId,
-    stayDates: guestAllocations.map((item) => item.stayDate),
+    stayDates: selectedAllocations.map((item) => item.stayDate),
   };
 }
 

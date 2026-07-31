@@ -68,9 +68,33 @@ year in one go).
 1. In the awaiting-allocation pool, use a guest's **Select bed** dropdown and
    click **Allocate**, or drag the guest chip onto a bed cell on the
    **Allocation Board**.
-2. To move a placed guest, drag their chip to another bed/night, or use the
-   chip's menu → **Move to bed**. To free a bed, drag the chip back to the pool
-   or use **Remove allocation**.
+2. To move a placed guest, drag their chip horizontally or vertically to
+   another bed, or use the chip's menu → **Move to bed**. A placed chip always
+   keeps its original NZ lodge night: the date column you hover over does not
+   move the stay. The drag preview and keyboard announcement name the
+   destination bed and the original night that will be kept. When you drop,
+   the live announcement says the request is saving; the success or refusal is
+   announced only after the server responds.
+3. The first visible chip for a guest represents all of that guest's allocated
+   nights currently visible on the board. Moving it moves those same original
+   nights together. Moving a later chip changes only that chip's own original
+   night. If any destination bed-night in a grouped move is unavailable,
+   **nothing moves**; refresh the board or choose another bed. A drop is a
+   no-op, with explicit **No change** feedback and no audit entry, only when
+   every row represented by that chip already uses the destination bed. If the
+   first visible chip itself is on that bed but a later visible night is on a
+   different bed, the later night still moves.
+
+   ![Bed Allocation board while Dave Davis is dragged across date columns: the preview says the destination is Bunk Room A bed A4 and that the original lodge nights will be kept](../images/admin/admin-bed-allocation-snap-preview.png)
+
+4. To free a bed, drag the chip back to the pool or use **Remove allocation**.
+   This removes only the chip you dragged, even when it is the first visible
+   chip; its preview therefore names that one original night, not every proxy
+   night. Pressing **Escape** during a pointer or keyboard drag cancels it
+   without sending a request.
+5. In **Single-night drag mode**, hovering an unbooked date says that no
+   allocation will be made. Dropping there is refused locally and sends no
+   request.
 
 ### Assign a guest to one bed for a long stay
 
@@ -199,6 +223,7 @@ that booking, so the booking's own **Audit log** link finds it.
 | Assign range… | Place one guest in one bed across a stay of any length | — | Up to 366 nights; all-or-nothing, then an explicit free-nights option; auto-approves the beds |
 | Auto allocation enabled | Let the system propose bed placements | as saved | Persisted setting; enables Run Auto Allocation |
 | Single-night drag mode | Drag allocates one night vs the whole stay | off | Client-side only, not saved |
+| Move an existing chip | Change its bed while preserving its original night | — | First visible chip moves all visible original nights atomically; later chips move one night; the hovered date column is ignored; no-op only when every represented row already uses the destination |
 | Save Mode | Persist the auto-allocation setting | — | — |
 | Run Auto Allocation | Apply suggested placements | — | Needs auto-allocation on and suggestions available |
 | Approve Visible | Approve the visible draft allocations | — | Disabled when nothing is unapproved |

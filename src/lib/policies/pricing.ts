@@ -424,20 +424,49 @@ export interface PromoDiscountAllocation {
   freeNightsUsed: number;
 }
 
+/**
+ * Which guests a promotion applies to, in the order it applies to them.
+ *
+ * The order is **most expensive stay first**, so a `maxGuestsPerBooking` cap
+ * spends its slots where they are worth the most. It is deterministic — it
+ * depends only on the guests' own rates, never on a query plan or a hash order.
+ *
+ * `protectedMemberIds` (#2390) is the one thing that outranks cost: a member who
+ * is ALREADY benefiting from this promotion on the booking being repriced keeps
+ * their slot even when a newly-added guest has a more expensive stay. Without
+ * that, adding an expensive guest would evict somebody who already held the
+ * discount — the club would bill them back for a promise it already made, which
+ * is precisely what the owner decision of 31 Jul 2026 rules out. It is empty on
+ * every path except a reprice, so booking creation is untouched.
+ */
 export function selectPromoDiscountGuests(
   promo: PromoCodeInput,
   guests: PromoDiscountGuest[],
+  protectedMemberIds?: ReadonlySet<string> | null,
 ) {
   const eligibleAll = promo.memberGuestsOnly
     ? guests.filter((g) => g.isMember)
     : guests;
+
+  const isProtected = (guest: PromoDiscountGuest) =>
+    Boolean(
+      protectedMemberIds &&
+        protectedMemberIds.size > 0 &&
+        guest.memberId &&
+        protectedMemberIds.has(guest.memberId)
+    );
 
   const withTotals = eligibleAll.map((g, idx) => ({
     guest: g,
     idx,
     total: g.perNightRates.reduce((sum, r) => sum + r, 0),
   }));
-  withTotals.sort((a, b) => b.total - a.total);
+  withTotals.sort((a, b) => {
+    const aProtected = isProtected(a.guest);
+    const bProtected = isProtected(b.guest);
+    if (aProtected !== bProtected) return aProtected ? -1 : 1;
+    return b.total - a.total;
+  });
   const guestCap = promo.maxGuestsPerBooking ?? withTotals.length;
   return withTotals.slice(0, Math.max(0, guestCap));
 }
@@ -510,7 +539,8 @@ function capPromoDiscountAcrossAllocations(
  * Apply a promo code discount to a booking. All promo types are applied
  * per eligible guest.
  *
- * Eligibility:
+ * Eligibility (see `selectPromoDiscountGuests` for the full ordering rule,
+ * including the #2390 protection that outranks cost on a reprice):
  *   - If promo.memberGuestsOnly is true, only guests with isMember=true count.
  *   - Eligible guests are then sorted by total stay cost descending.
  *   - If promo.maxGuestsPerBooking is set, only the top N count.
@@ -687,6 +717,14 @@ export function calculatePromoDiscount(
             ? guest.perNightRates.length > 0
             : cappedNightCount > 0;
         if (!countsAsBeneficiary) continue;
+
+        // `includeWhenZero` below keeps a SET_PRICE guest in the in-memory
+        // allocation list even when their nights net to no change, so
+        // eligibleGuestCount and this list agree about who was re-priced. It no
+        // longer decides whether a usage cap is consumed: since #2299 an entry
+        // that moved no money is dropped at WRITE time by normalizeAllocations,
+        // because the member's total is identical with and without the code.
+        // See docs/DOMAIN_INVARIANTS.md → Money.
 
         totalAdjustment += guestAdjustment;
         effectiveGuestCount += 1;

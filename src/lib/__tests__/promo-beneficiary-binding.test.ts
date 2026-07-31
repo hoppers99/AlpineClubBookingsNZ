@@ -15,6 +15,9 @@ const promoMocks = vi.hoisted(() => ({
   deletePromoRedemptionAndAdjustCount: vi.fn(),
   replacePromoRedemptionAllocations: vi.fn(),
   shouldPersistPromoRedemption: vi.fn().mockReturnValue(false),
+  // #2299: applyPromoCodeChanges now row-locks every promo code it may charge
+  // or refund before reading any cap, so the mock must export it too.
+  lockPromoCodeRowsForUpdate: vi.fn(),
 }));
 
 vi.mock("@/lib/promo", () => ({
@@ -25,6 +28,7 @@ vi.mock("@/lib/promo", () => ({
   replacePromoRedemptionAllocations:
     promoMocks.replacePromoRedemptionAllocations,
   shouldPersistPromoRedemption: promoMocks.shouldPersistPromoRedemption,
+  lockPromoCodeRowsForUpdate: promoMocks.lockPromoCodeRowsForUpdate,
 }));
 
 import {

@@ -11,6 +11,10 @@ import {
 } from "@/lib/admin-account-guards";
 import { createAuditLog } from "@/lib/audit";
 import { getEffectiveEmail } from "@/lib/member-utils";
+import {
+  isLoginEmailUniqueConflict,
+  MEMBER_LOGIN_EMAIL_TAKEN_MESSAGE,
+} from "@/lib/member-email";
 import { validateInheritEmailSource } from "@/lib/member-email-inheritance";
 import { hasMemberCompletedAccountSetup } from "@/lib/password-reset";
 import { prisma } from "@/lib/prisma";
@@ -31,7 +35,7 @@ function normalizeEmail(email: string) {
 
 class LoginHolderRequestError extends Error {
   constructor(
-    public status: 404 | 422,
+    public status: 404 | 409 | 422,
     message: string
   ) {
     super(message);
@@ -204,6 +208,27 @@ export async function POST(
         throw new AdminAccountGuardError(PRIVILEGED_TARGET_GUARD_MESSAGE, 403);
       }
 
+      // Login-email uniqueness (#2385). Inside the cluster this is safe on its
+      // own — the outgoing holder's `canLogin: false` write frees the partial
+      // index slot before the incoming holder claims it — but a member OUTSIDE
+      // this family group may already log in with the address, and nothing here
+      // was checking for that. The writes below would then be rejected by
+      // `Member_email_login_unique` and reported as a generic 500 with nothing
+      // for the admin to act on. Cluster members are excluded because this
+      // transaction rewrites their canLogin/email itself.
+      const clusterIds = cluster.map((member) => member.id);
+      const outsideLoginHolder = await tx.member.findFirst({
+        where: {
+          email: requestedEmail,
+          canLogin: true,
+          id: { notIn: clusterIds },
+        },
+        select: { id: true },
+      });
+      if (outsideLoginHolder) {
+        throw new LoginHolderRequestError(409, MEMBER_LOGIN_EMAIL_TAKEN_MESSAGE);
+      }
+
       if (currentHolder) {
         await tx.member.update({
           where: { id: currentHolder.id },
@@ -305,6 +330,18 @@ export async function POST(
       return NextResponse.json(
         { error: error.message },
         { status: error.statusCode },
+      );
+    }
+
+    // Backstop for the race the pre-check above cannot close (#2385): a
+    // concurrent write can claim the address between the check and the writes.
+    // The partial unique index is what actually enforces one login per address;
+    // this only gives the loser of the race the same explanation the pre-check
+    // returns instead of a generic 500.
+    if (isLoginEmailUniqueConflict(error)) {
+      return NextResponse.json(
+        { error: MEMBER_LOGIN_EMAIL_TAKEN_MESSAGE },
+        { status: 409 },
       );
     }
 

@@ -90,9 +90,9 @@ export function normalizeMembershipCancellationSettings(
   };
 }
 
-async function loadPersistedMembershipCancellationSettings(): Promise<
-  PersistedMembershipCancellationSettings | null
-> {
+async function loadPersistedMembershipCancellationSettings(options?: {
+  rethrow?: boolean;
+}): Promise<PersistedMembershipCancellationSettings | null> {
   // Some unit tests stub @/lib/prisma with a partial client that omits
   // this delegate. Keep an existence check so those tests still run, but
   // do not use it as a catch-all for generic database errors.
@@ -113,6 +113,7 @@ async function loadPersistedMembershipCancellationSettings(): Promise<
       { err },
       "membership cancellation settings load failed",
     );
+    if (options?.rethrow) throw err;
     return null;
   }
 }
@@ -120,5 +121,25 @@ async function loadPersistedMembershipCancellationSettings(): Promise<
 export async function loadMembershipCancellationSettings(): Promise<MembershipCancellationSettings> {
   return normalizeMembershipCancellationSettings(
     await loadPersistedMembershipCancellationSettings(),
+  );
+}
+
+/**
+ * The same settings, but a failed read THROWS instead of quietly degrading to
+ * the defaults.
+ *
+ * Degrading is right almost everywhere — a page that cannot read its copy shows
+ * the standard copy. It is wrong in exactly one place: the unpaid-invoice
+ * approval gate (#2392), whose whole doctrine is that an unknown answer blocks.
+ * The defaults have `xeroArchiveContactsOnCancellation: false`, so a database
+ * blip during the read would tell that gate "nothing will be archived, skip the
+ * check" — while the archive itself is an outbox operation drained minutes
+ * later, off a read that succeeds. "Archiving is off" and "we could not find out
+ * whether archiving is on" are opposite answers and only one of them is safe to
+ * skip the check on.
+ */
+export async function loadMembershipCancellationSettingsStrict(): Promise<MembershipCancellationSettings> {
+  return normalizeMembershipCancellationSettings(
+    await loadPersistedMembershipCancellationSettings({ rethrow: true }),
   );
 }

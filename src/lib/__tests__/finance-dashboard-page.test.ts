@@ -153,6 +153,8 @@ function bookingMetrics() {
       },
       capturedPrimaryCents: 24_000,
       capturedAdditionalCents: 0,
+      outstandingAdditionalCents: 0,
+      outstandingAdditionalBookings: 0,
       refundedCents: 0,
       netCollectedCents: 24_000,
       creditAppliedCents: 0,
@@ -596,6 +598,63 @@ describe("finance dashboard page model", () => {
     expect(mockGetFinanceBookingMetrics).toHaveBeenCalledWith(
       expect.objectContaining({ lodgeId: null })
     );
+  });
+
+  /*
+    #2350: the additional-payment breakdown had been computed for a long time
+    and rendered nowhere, so an upward booking change whose extra was never
+    collected was invisible on every finance surface.
+  */
+  it("renders the outstanding additional payments card and panel on the bookings view", async () => {
+    const metrics = bookingMetrics();
+    metrics.paymentSummary.outstandingAdditionalCents = 25_000;
+    metrics.paymentSummary.outstandingAdditionalBookings = 2;
+    metrics.paymentSummary.additionalPaymentStatusBreakdown = {
+      PENDING: 1,
+      SUCCEEDED: 0,
+      FAILED: 1,
+      NONE: 0,
+    };
+    mockGetFinanceBookingMetrics.mockResolvedValue(metrics);
+
+    const model = await buildFinanceDashboardPageModel({
+      member: financeManager(),
+      searchParams: { view: "bookings" },
+    });
+
+    const card = model.cards.find(
+      (entry) => entry.title === "Outstanding additional payments",
+    );
+    expect(card?.value).toBe("$250");
+    expect(card?.footnote).toContain("2 bookings");
+
+    const panel = model.statusPanels.find(
+      (entry) => entry.title === "Outstanding additional payments",
+    );
+    expect(panel?.items.map((item) => [item.label, item.value])).toEqual([
+      ["Awaiting payment", "1"],
+      ["Payment failed", "1"],
+      ["Total outstanding", "$250"],
+    ]);
+  });
+
+  it("keeps the outstanding-payments panel off the dashboard when nothing is owing", async () => {
+    const model = await buildFinanceDashboardPageModel({
+      member: financeManager(),
+      searchParams: { view: "bookings" },
+    });
+
+    expect(
+      model.statusPanels.some(
+        (entry) => entry.title === "Outstanding additional payments",
+      ),
+    ).toBe(false);
+    // The KPI card still reports the all-clear rather than disappearing.
+    expect(
+      model.cards.find(
+        (entry) => entry.title === "Outstanding additional payments",
+      )?.value,
+    ).toBe("$0");
   });
 
   it("scopes the booking metrics to the selected lodge and exposes the selector when a second lodge exists (#17)", async () => {

@@ -56,6 +56,7 @@ import {
   CreditElectionNotAllowedError,
   resolveCreditElectionUpdate,
 } from "@/lib/booking-credit-election";
+import type { PromoCoverageNotice } from "@/lib/promo-cap-coverage";
 import { hasCapturedPayment } from "@/lib/booking-payment-state";
 import { prisma } from "@/lib/prisma";
 import { queueXeroBookingEditSettlement } from "@/lib/xero-booking-edit-settlement";
@@ -85,6 +86,9 @@ type BatchModificationTransactionResult =
     accountCreditAmountCents: number;
     promoRemoved: boolean;
     promoChanged: boolean;
+    // #2390: set only when a usage cap stopped the promotion reaching somebody
+    // on the repriced booking; null means everyone it applies to is covered.
+    promoCoverage: PromoCoverageNotice | null;
     choreWarnings: string[];
     datesChanged: boolean;
     adminOverride: boolean;
@@ -133,6 +137,7 @@ export type BatchModificationResponse = {
   stripeRefundId: string | null;
   promoRemoved: boolean;
   promoChanged: boolean;
+  promoCoverage: PromoCoverageNotice | null;
   choreWarnings: string[];
   // #2266: the stored credit election (#2265) after this edit, so the panel
   // can confirm what was remembered without a second fetch.
@@ -436,6 +441,9 @@ export async function modifyBookingBatch({
           newPromoAdjustmentCents: booking.promoAdjustmentCents,
           promoRemoved: false,
           promoChanged: false,
+          // A price-preserving modification re-runs no cap, so it cannot change
+          // who the promotion covers.
+          promoCoverage: null,
         }
       : await applyPromoCodeChanges(tx, {
           booking,
@@ -635,6 +643,11 @@ export async function modifyBookingBatch({
           finalPriceCents: newFinalPriceCents,
           promoRemoved: promo.promoRemoved,
           promoChanged: promo.promoChanged,
+          // #2390: the same sentence the member was shown at the edit, kept on
+          // the booking's own history so the split has an answer later.
+          ...(promo.promoCoverage
+            ? { promoCoverageNote: promo.promoCoverage.message }
+            : {}),
           settlementMethod: payments.settlementMethod,
           accountCreditAmountCents: payments.accountCreditAmountCents,
           policyRetainedAmountCents: payments.policyRetainedAmountCents,
@@ -689,6 +702,7 @@ export async function modifyBookingBatch({
       pendingRefundAmountCents: payments.pendingRefundAmountCents,
       promoRemoved: promo.promoRemoved,
       promoChanged: promo.promoChanged,
+      promoCoverage: promo.promoCoverage,
       choreWarnings,
       datesChanged: dates.datesChanged,
       adminOverride,
@@ -825,6 +839,7 @@ export async function modifyBookingBatch({
     stripeRefundId: stripeRefundId ?? null,
     promoRemoved: result.promoRemoved,
     promoChanged: result.promoChanged,
+    promoCoverage: result.promoCoverage,
     choreWarnings: result.choreWarnings,
     creditElectionCents: result.creditElectionCents,
   };
@@ -855,6 +870,7 @@ async function dispatchBatchPostTransactionSideEffects({
     accountCreditAmountCents: result.accountCreditAmountCents,
     promoRemoved: result.promoRemoved,
     promoChanged: result.promoChanged,
+    promoCoverageNote: result.promoCoverage?.message ?? null,
     updatedGuestCount: result.guestNameUpdates.length,
     guestIdentityChanged: result.guestIdentityChanged,
     // #2266: the stored credit election (#2265) after this edit — audited
@@ -995,6 +1011,9 @@ async function dispatchBatchPostTransactionSideEffects({
           : undefined,
     paymentReference: result.paymentReference,
     xeroInvoiceNumber: result.xeroInvoiceNumber,
+    // #2390: if a usage cap stopped the promotion reaching somebody this edit
+    // added, the email says so in the same words the member saw on screen.
+    promoCoverageNote: result.promoCoverage?.message ?? null,
     lodgeId: result.booking.lodgeId,
   }).catch((err) =>
     logger.error(
