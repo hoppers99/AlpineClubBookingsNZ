@@ -1333,7 +1333,12 @@ Future reviews and issues should cite this file when proposing changes.
   with nothing to explain the difference. Every confirmation now carries the
   applied-credit pair beneath the total — `Account credit applied: -$120.00`
   then `Paid by <method>: $180.00` — so `total − credit = settled` is checkable
-  on the page. "Total Paid" deliberately remains the FULL price: the credit
+  on the page. The method is named only where money really changed hands: a stay
+  fully covered by credit reads `Nothing more to pay: $0.00`, because the $0
+  settlement writes a Payment row with no source (it takes the schema default)
+  and the branch is payment-method agnostic, so any method word there would be a
+  claim the records cannot support. The LINE still renders — completing the
+  arithmetic is what the pair is for. "Total Paid" deliberately remains the FULL price: the credit
   really did pay for part of the stay, and reporting only the cash would read as
   though the club were still owed the credit the member had already spent (the
   same convention the #2397 rows follow). The figure is READ, never re-derived:

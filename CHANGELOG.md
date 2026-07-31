@@ -13,13 +13,15 @@ All notable public reference-release changes should be recorded here.
   reconciling lines beneath the total — `Account credit applied: -$120.00` and
   `Paid by card: $180.00` — so the three figures add up against the member's own
   card statement. `Total Paid` deliberately stays the booking's full price: the
-  credit really did pay for part of the stay. The second line names how the club
-  was actually paid (`Paid by card`, `Paid by bank transfer`, or `Paid by cash or
-  bank transfer` for a settlement an admin recorded by hand), read from the
-  booking's own payment record. A booking that used no credit is unchanged, down
-  to the byte — no blank line, no empty label. A stay fully covered by credit now
-  says `Paid by card: $0.00` instead of claiming the card was charged the whole
-  price, a partly-paid settlement breaks down the slice that was settled, and a
+  credit really did pay for part of the stay. Where money really did change
+  hands, the second line names how the club was actually paid (`Paid by card`,
+  `Paid by bank transfer`, or `Paid by cash or bank transfer` for a settlement an
+  admin recorded by hand), read from the booking's own payment record. A booking
+  that used no credit is unchanged, down to the byte — no blank line, no empty
+  label. A stay fully covered by credit says `Nothing more to pay: $0.00`: the
+  club took nothing by any method, and the payment record cannot say which method
+  the member would have used, so none is named. A partly-paid settlement breaks
+  down the slice that was settled, and a
   booking confirmed with money still owing states no payment at all. The built-in
   HTML email and the admin-editable body are built from one shared helper, so
   they cannot drift; clubs that write their own money lines in an override get a

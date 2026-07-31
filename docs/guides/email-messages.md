@@ -238,8 +238,10 @@ Two consequences worth knowing before you edit one:
   `{{creditNote}}` produces the two reconciling lines a member needs when they
   paid part of a stay from their account credit — `Account credit applied:
   -$120.00` and `Paid by card: $180.00` (or `Paid by bank transfer` / `Paid by
-  cash or bank transfer`, matching how the club was actually paid) — and
-  **nothing at all** for the great majority of bookings, which use no credit.
+  cash or bank transfer`, matching how the club was actually paid; or
+  `Nothing more to pay: $0.00` when the credit covered the whole stay and no
+  money changed hands at all) — and **nothing at all** for the great majority of
+  bookings, which use no credit.
   `Total Paid` stays the booking's full price above it, so the three figures add
   up. The built-in wording already carries this inside `{{paymentOutcome}}`; you
   only need `{{creditNote}}` if you write your own money lines out of

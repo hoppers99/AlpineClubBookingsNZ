@@ -405,6 +405,30 @@ const SETTLED_LINE_LABELS: Record<ConfirmationSettlementMethod, string> = {
 };
 
 /**
+ * #2328 (review): the label used when the settled figure is EXACTLY $0.00 —
+ * account credit covered the whole stay and no money changed hands by any
+ * method.
+ *
+ * Method-NEUTRAL on purpose, because at $0.00 there is no evidence for a
+ * method claim. A fully-credit-covered booking is settled by writing a Payment
+ * row with `amountCents: 0` and NO `source`
+ * (`src/lib/booking-create.ts`, the `isZeroDollarConfirmed` branch; and the
+ * `paid_zero` upsert in
+ * `src/app/api/admin/bookings/[id]/confirm-pending-guests/route.ts`), so the
+ * row takes the schema default `PaymentSource.STRIPE` whatever the member
+ * actually elected — and the branch itself is payment-method agnostic. A
+ * method-bearing label therefore tells an Internet-Banking member with no card
+ * on file "Paid by card: $0.00", which is a claim the records do not support.
+ *
+ * The line is NOT dropped: `total − credit = $0.00` is exactly the arithmetic
+ * the pair exists to complete, and it is the case where "Total Paid: $300.00"
+ * alone was at its most misleading. Only the method word goes. Non-zero
+ * settlements keep the method-aware labels above, which ARE evidence-backed —
+ * a real card charge or bank transfer writes its own source.
+ */
+const NOTHING_SETTLED_LABEL = "Nothing more to pay";
+
+/**
  * #2328: the single source of truth for how APPLIED ACCOUNT CREDIT shows on a
  * booking confirmation — shared by the hand-built HTML confirmation
  * (`bookingConfirmedTemplate`) and the flat `{{creditNote}}` token the
@@ -421,11 +445,18 @@ const SETTLED_LINE_LABELS: Record<ConfirmationSettlementMethod, string> = {
  * `settledCents` is what the club took by card/bank/cash for this booking,
  * i.e. the settled amount MINUS the applied credit. Empty (no rows at all,
  * never a ragged label) when no credit was applied — the byte-for-byte
- * unchanged case — and also when `settledCents` is negative, which can only
- * happen on a send that reports money as NOT yet taken; such a send has no
- * "paid by" story to tell and must not invent one. Money is integer cents
- * throughout; values are unescaped plain text, and the HTML path escapes at
- * its own edge.
+ * unchanged case — and also when `settledCents` is negative, which happens on
+ * a send that reports money as NOT yet taken (no "paid by" story to tell, and
+ * it must not invent one) or when more credit was consumed than the booking is
+ * now worth. Both of those suppressions are logged by the SENDER rather than
+ * here, where the booking id is in hand and the warning fires exactly once per
+ * send — see `sendBookingConfirmedEmail` in `src/lib/email/booking.ts`, which
+ * is the only caller of this module's confirmation template.
+ *
+ * At EXACTLY $0.00 settled the second line loses its method word (see
+ * `NOTHING_SETTLED_LABEL`) but stays, because the arithmetic is the point.
+ * Money is integer cents throughout; values are unescaped plain text, and the
+ * HTML path escapes at its own edge.
  */
 export function appliedCreditSummaryRows(
   appliedCreditCents: number,
@@ -439,7 +470,12 @@ export function appliedCreditSummaryRows(
       value: `-${formatMoneyCents(appliedCreditCents)}`,
     },
     {
-      label: SETTLED_LINE_LABELS[settlementMethod],
+      // #2328 (review): a $0.00 settlement has no method to name — the Payment
+      // row behind it is written without a source and takes the schema default.
+      label:
+        settledCents === 0
+          ? NOTHING_SETTLED_LABEL
+          : SETTLED_LINE_LABELS[settlementMethod],
       value: formatMoneyCents(settledCents),
     },
   ];
@@ -454,19 +490,37 @@ export function appliedCreditSummaryRows(
  * the same booking:
  *  - unpaid (`paymentDue`): nothing has been settled at all, so there is no
  *    "paid by" figure — returns a negative sentinel that suppresses the rows.
- *    The only send that reaches this branch is the member whole-lodge request
- *    conversion, which mints a brand-new booking from an approved request and
- *    never applies account credit to it (no election is stored or consumed on
- *    that path), so the branch's applied credit is zero in practice. It is
- *    written to suppress rather than to net the `Total Due` line down because
- *    the amount owing is also the figure the club's Xero invoice and payment
- *    reference were raised for: an email that quietly netted credit off it
- *    would disagree with the invoice the member is paying against, which is a
- *    worse failure than the one #2328 fixes;
+ *
+ *    WHY THAT IS SAFE, precisely (#2328 review). It is safe because this branch
+ *    never carries applied credit, NOT because suppressing a credit line here
+ *    would be the right answer if it did. There is exactly ONE send site that
+ *    passes `paymentDue`: the member whole-lodge request conversion in
+ *    `src/lib/school-booking-request.ts` (the `sendBookingConfirmedEmail` call
+ *    at ~:2101). That path mints a brand-new booking from an approved request
+ *    and never applies account credit to it — no `BOOKING_APPLIED` ledger row
+ *    is written anywhere on it — so `loadBookingAppliedCredit` returns zero and
+ *    there is nothing to suppress. `sendBookingConfirmedEmail` logs a warning
+ *    if that precondition ever stops holding, because the suppression would
+ *    then be hiding a real figure from a member.
+ *
+ *    An EARLIER version of this comment justified the suppression by saying the
+ *    amount owing is the figure the club's Xero invoice was raised for, so
+ *    netting credit off it would disagree with the invoice. That reasoning is
+ *    WRONG and is retracted: under #1620 "allocate-existing" the booking
+ *    invoice is raised for the FULL amount and the member's floating credit
+ *    notes are ALLOCATED against it (this very send site enqueues that
+ *    allocation a few lines above the send), so the invoice total is not the
+ *    net-of-credit figure the argument assumed;
  *  - partly paid (`outstandingBalance`, #2397): the settled slice is the
  *    booking's price minus what is still owing, and the credit comes out of
  *    THAT, not out of the full price;
  *  - paid in full: the whole price, minus the credit.
+ *
+ * Can return a NEGATIVE for a settled booking when more credit was consumed
+ * than the booking is now worth. Unreachable today — the #1887 reprice clamp
+ * refunds the over-consumed slice as a positive `BOOKING_APPLIED` offset on
+ * every repriceable path, so the derived sum never exceeds the price — and the
+ * rows are suppressed if it ever happens, which is why the sender logs it.
  */
 export function settledByPaymentCents({
   totalCents,

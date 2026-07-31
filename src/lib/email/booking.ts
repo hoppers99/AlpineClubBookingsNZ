@@ -1,4 +1,6 @@
 import { loadBookingAppliedCredit } from "@/lib/booking-confirmation-credit";
+import logger from "@/lib/logger";
+import type { AppliedCreditSummary } from "@/lib/email-templates";
 import {
   appliedCreditSummaryRows,
   settledByPaymentCents,
@@ -34,6 +36,17 @@ import {
 import { formatCents as formatMoneyCents } from "@/lib/utils";
 import { loadEmailMessageSettingsForLodge } from "@/lib/email-message-settings";
 import { sendEmail } from "./core";
+
+/**
+ * #2328 (review): what the confirmation renders when the applied-credit read
+ * itself fails — no credit pair, i.e. exactly the pre-#2328 message. The
+ * settlement method is inert at zero credit (no rows are built at all), so it
+ * carries no claim about how anyone paid.
+ */
+const NO_APPLIED_CREDIT: AppliedCreditSummary = {
+  amountCents: 0,
+  settlementMethod: "card",
+};
 
 export async function sendBookingConfirmedEmail(
   // Booking this message belongs to (#2258). Required, and an object rather
@@ -89,14 +102,42 @@ export async function sendBookingConfirmedEmail(
     };
   },
 ) {
-  const settings = await loadEmailMessageSettingsForLodge(options?.lodgeId);
   // #2328: account credit spent on this booking, read from the booking's own
   // persisted ledger rows (and its Payment row, for how the rest was settled)
   // rather than threaded in by the caller — see
   // `loadBookingAppliedCredit` for why the sender owns this read. Every send
   // site calls this function after its settlement transaction has committed,
   // so what is read here is the settled truth for THIS booking at THIS moment.
-  const appliedCredit = await loadBookingAppliedCredit(bookingContext.bookingId);
+  //
+  // Run ALONGSIDE the settings load (#2328 review): the two reads share no
+  // input and no ordering, and `loadEmailMessageSettingsForLodge` says in its
+  // own docblock not to serialise per-send lookups behind one another.
+  //
+  // FAILS OPEN, deliberately (#2328 review). A thrown read here would abort the
+  // send BEFORE `sendEmail`, so there would be no EmailLog row and no
+  // fail-closed admin alert — the "member is silently owed an email" state that
+  // machinery exists to prevent, caused by a decoration on the message rather
+  // than by anything wrong with the message itself. So a failure degrades to
+  // pre-#2328 rendering (no credit pair) and the send, its logging and its
+  // alerting all still happen. The settings load beside it keeps its existing
+  // throw-on-failure behaviour; that pre-existing hole is not #2328's to widen
+  // or to close.
+  const [settings, appliedCredit] = await Promise.all([
+    loadEmailMessageSettingsForLodge(options?.lodgeId),
+    loadBookingAppliedCredit(
+      bookingContext.bookingId,
+      undefined,
+      // Lets the loader flag a price that moved between this caller's snapshot
+      // and its own read; it never changes which figure renders.
+      totalCents,
+    ).catch((err) => {
+      logger.error(
+        { err, bookingId: bookingContext.bookingId },
+        "Failed to read applied account credit for a booking confirmation; sending without the credit lines (#2328)",
+      );
+      return NO_APPLIED_CREDIT;
+    }),
+  ]);
   // #2267: derived by the same shared helper the HTML template uses, so the
   // two paths can never disagree about what the promo did to the price.
   const promoAdjustmentCents = resolvePromoAdjustmentCents(options);
@@ -178,6 +219,48 @@ export async function sendBookingConfirmedEmail(
         ? " You can pay it from your booking page."
         : " The club will be in touch to arrange it.")
     : "";
+  const appliedCreditCents = Math.max(0, appliedCredit.amountCents);
+  const settledCents = settledByPaymentCents({
+    totalCents,
+    appliedCreditCents,
+    unpaid: Boolean(paymentDue),
+    outstandingCents: outstandingBalance?.amountCents ?? 0,
+  });
+  // #2328 (review): the two states in which the pair is SUPPRESSED on a booking
+  // that really did spend credit. Both are believed unreachable, and both would
+  // be invisible if they were not logged — a suppressed pair looks exactly like
+  // a booking that used no credit, which is the very failure #2328 exists to
+  // fix. Logged here rather than inside the row builder because this is the one
+  // place per send that holds the booking id, and the HTML template is composed
+  // from these same figures a few lines below.
+  if (paymentDue && appliedCreditCents > 0) {
+    // The suppression on an unpaid confirmation is only safe because this send
+    // path applies no credit (see `settledByPaymentCents`). If that stops being
+    // true, the member is being shown a "Total Due" with a credit spend hidden
+    // behind it.
+    logger.warn(
+      {
+        bookingId: bookingContext.bookingId,
+        appliedCreditCents,
+        totalCents,
+      },
+      "Confirmed-but-unpaid booking confirmation carries applied account credit; the credit lines were suppressed (#2328)",
+    );
+  } else if (!paymentDue && settledCents < 0) {
+    // More credit consumed than the booking is now worth. The #1887 reprice
+    // clamp refunds the over-consumed slice on every repriceable path, so this
+    // should not be reachable.
+    logger.warn(
+      {
+        bookingId: bookingContext.bookingId,
+        appliedCreditCents,
+        totalCents,
+        outstandingCents: outstandingBalance?.amountCents ?? 0,
+        settledCents,
+      },
+      "Booking confirmation applied more account credit than the booking is worth; the credit lines were suppressed (#2328)",
+    );
+  }
   // #2328: the pre-composed {{creditNote}} block — the two reconciling lines
   // that say where the money came from when part of it came from the member's
   // account credit, or NOTHING AT ALL when it did not. Built from the SAME
@@ -189,13 +272,8 @@ export async function sendBookingConfirmedEmail(
   // The credit value carries its own minus sign, so a body must never prefix
   // one of its own (the editor rejects that at save time).
   const creditNote = appliedCreditSummaryRows(
-    appliedCredit.amountCents,
-    settledByPaymentCents({
-      totalCents,
-      appliedCreditCents: Math.max(0, appliedCredit.amountCents),
-      unpaid: Boolean(paymentDue),
-      outstandingCents: outstandingBalance?.amountCents ?? 0,
-    }),
+    appliedCreditCents,
+    settledCents,
     appliedCredit.settlementMethod,
   )
     .map((row) => `${row.label}: ${row.value}\n`)

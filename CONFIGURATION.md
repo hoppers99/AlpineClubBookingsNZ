@@ -212,13 +212,18 @@ great majority of bookings) it renders **nothing at all**, so those
 confirmations are byte-for-byte what they were before the token existed.
 `Total Paid` above it stays the booking's **full price**, because the credit
 really did pay for part of the stay, so the three figures reconcile:
-`300.00 − 120.00 = 180.00`. The second line names how the club was actually
-paid — `Paid by card`, `Paid by bank transfer`, or `Paid by cash or bank
-transfer` for a manually-recorded settlement — read from the booking's own
-payment record, so a member who bank-transferred is never told their card was
-charged. On a partly-paid settle the pair sits between `Paid:` and
-`Still Owing:` and breaks down the settled slice; on a confirmed-but-unpaid send
-nothing has been paid yet, so no pair is rendered at all.
+`300.00 − 120.00 = 180.00`. Whenever money really did change hands, the second
+line names how the club was actually paid — `Paid by card`, `Paid by bank
+transfer`, or `Paid by cash or bank transfer` for a manually-recorded
+settlement — read from the booking's own payment record, so a member who
+bank-transferred is never told their card was charged. When the credit covered
+the **whole** stay no money changed hands by any method, and the booking's
+payment record cannot say which method the member would have used, so the line
+drops the method word and reads `Nothing more to pay: $0.00` — the line stays,
+because completing the arithmetic is the point of it. On a partly-paid settle
+the pair sits between `Paid:` and `Still Owing:` and breaks down the settled
+slice; on a confirmed-but-unpaid send nothing has been paid yet, so no pair is
+rendered at all.
 
 The figure itself comes from the member credit **ledger** for that booking, read
 at send time from the persisted rows — never re-computed from the credit policy,

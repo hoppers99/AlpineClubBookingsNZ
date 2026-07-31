@@ -1,5 +1,6 @@
 import { PaymentSource, type Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import logger from "@/lib/logger";
 import { deriveBookingAppliedCreditCents } from "@/lib/member-credit";
 import type {
   AppliedCreditSummary,
@@ -46,32 +47,86 @@ import type {
  *
  * Call this AFTER the settlement transaction has committed (every confirmation
  * send site does), so the ledger rows and the Payment row it reads are the
- * settled ones. A booking with no Payment row yet, or none of this booking's
- * credit spent, degrades to "no credit, card", which renders nothing.
+ * settled ones.
+ *
+ * The two degraded shapes are INDEPENDENT, and only one of them renders nothing
+ * (#2328 review — an earlier version of this sentence ran them together):
+ *  - **No credit spent on this booking** (`amountCents === 0`, the overwhelming
+ *    majority). The pair renders NOTHING AT ALL, whatever the Payment row says,
+ *    so the confirmation is byte-for-byte what it was before #2328.
+ *  - **No Payment row for this booking yet.** That says nothing about credit —
+ *    the ledger is read separately and may well report a spend. It degrades the
+ *    SETTLEMENT METHOD only, to "card"
+ *    (`resolveConfirmationSettlementMethod`), so a booking with credit applied
+ *    but no Payment row DOES render the pair, with a "Paid by card" label
+ *    resting on a fallback rather than on evidence. The combination is not
+ *    expected: every send site settles before it sends. Where it would matter
+ *    most — a stay fully covered by credit, whose Payment row carries no source
+ *    at all — the label is method-neutral anyway ("Nothing more to pay"), by
+ *    the same reasoning; see `NOTHING_SETTLED_LABEL` in `email-templates.ts`.
+ *
+ * `expectedTotalCents` is the total the CALLER is about to print. Passing it
+ * costs nothing and makes a two-instant read observable: this function reads
+ * the booking fresh, while the caller's total is a snapshot taken earlier, so a
+ * reprice landing in between would produce a pair that reconciles against
+ * neither figure. Nothing is corrected — the caller's figure is still what
+ * renders — the mismatch is only logged.
  */
 export async function loadBookingAppliedCredit(
   bookingId: string,
   db: Prisma.TransactionClient | typeof prisma = prisma,
+  expectedTotalCents?: number,
 ): Promise<AppliedCreditSummary> {
-  const [amountCents, payment] = await Promise.all([
+  const [amountCents, booking] = await Promise.all([
     deriveBookingAppliedCreditCents(bookingId, db),
-    db.payment.findUnique({
-      where: { bookingId },
-      select: { source: true, manuallyMarkedPaidAt: true },
+    // One read for both facts: how the rest was settled, and the price the
+    // booking carries RIGHT NOW (for the staleness check below).
+    db.booking.findUnique({
+      where: { id: bookingId },
+      select: {
+        finalPriceCents: true,
+        payment: { select: { source: true, manuallyMarkedPaidAt: true } },
+      },
     }),
   ]);
 
+  if (
+    expectedTotalCents !== undefined &&
+    booking &&
+    booking.finalPriceCents !== expectedTotalCents
+  ) {
+    // #2328 (review): the credit figure is read HERE, at send time, while the
+    // total was snapshotted by the caller before its settlement transaction —
+    // and most confirmation sends are fire-and-forget, so the gap is real
+    // wall-clock time. A reprice inside that gap yields a pair whose
+    // "total − credit = settled" arithmetic reconciles with neither the price
+    // the member is reading nor the price now stored. No known path does this
+    // (a reprice re-sends its own confirmation), so this is a watchpoint, not a
+    // fix: the caller's total is still what renders, because that is the figure
+    // the rest of the message was composed from.
+    logger.warn(
+      {
+        bookingId,
+        emailTotalCents: expectedTotalCents,
+        bookingFinalPriceCents: booking.finalPriceCents,
+        appliedCreditCents: amountCents,
+      },
+      "Booking price moved between the confirmation's total and its applied-credit read (#2328)",
+    );
+  }
+
   return {
     amountCents,
-    settlementMethod: resolveConfirmationSettlementMethod(payment),
+    settlementMethod: resolveConfirmationSettlementMethod(booking?.payment ?? null),
   };
 }
 
 /**
  * Pure half of the above, so the three-way mapping is unit-testable away from
  * the database. `null` (no Payment row) falls back to "card": it is the shape
- * every Stripe booking has before its row is written, and the only send that
- * can reach it has taken no bank transfer to describe.
+ * every Stripe booking has before its row is written. The fallback describes
+ * the METHOD only and never suppresses the credit lines — see the caller's
+ * docblock for why those two are independent.
  */
 export function resolveConfirmationSettlementMethod(
   payment: { source: PaymentSource; manuallyMarkedPaidAt: Date | null } | null,

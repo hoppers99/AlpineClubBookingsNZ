@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import path from "node:path";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // #2328 — a member who put account credit towards a booking read
@@ -12,15 +14,21 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // admin-editable body renders, with an empty-case contract so a booking that
 // used no credit is byte-for-byte unchanged.
 
-const { sendEmailMock, loadLodgeSettingsMock, loadAppliedCreditMock } =
+const { sendEmailMock, loadLodgeSettingsMock, loadAppliedCreditMock, warnMock, errorMock } =
   vi.hoisted(() => ({
     sendEmailMock: vi.fn().mockResolvedValue({ status: "sent" }),
     loadLodgeSettingsMock: vi.fn(),
     loadAppliedCreditMock: vi.fn(),
+    warnMock: vi.fn(),
+    errorMock: vi.fn(),
   }));
 
 vi.mock("@/lib/email/core", () => ({
   sendEmail: sendEmailMock,
+}));
+
+vi.mock("@/lib/logger", () => ({
+  default: { warn: warnMock, error: errorMock, info: vi.fn(), debug: vi.fn() },
 }));
 
 // The sender reads this itself (that is the whole design — twelve send sites
@@ -52,6 +60,11 @@ import {
   validateEmailTemplateContent,
   type EmailTemplateData,
 } from "@/lib/email-message-renderer";
+import {
+  EMPTYABLE_OVERRIDE_TOKENS,
+  OPTIONAL_TEMPLATE_TOKENS,
+  findDanglingDefaultLines,
+} from "@/lib/email-message-token-contract";
 
 const GLOBAL_DATA: EmailTemplateData = {
   BASE_URL: "https://bookings.example.org",
@@ -190,21 +203,47 @@ describe("#2328 booking-confirmed applied-credit note", () => {
     expect(html).not.toContain("Paid by card");
   });
 
-  it("says the card took nothing when credit covered the whole stay", async () => {
+  it("names no payment method at all when credit covered the whole stay", async () => {
     // booking-create's fully-credit-covered branch and the $0 settlement in
     // create-payment-intent both send this shape. "Total Paid: $300.00" alone
-    // was at its most misleading here: the card was never touched.
+    // was at its most misleading here: no money moved.
+    //
+    // What this test pins is the ARITHMETIC — three numbers that reconcile —
+    // and, since the #2328 review, that the second line does NOT name a method.
+    // It cannot: a fully-credit-covered booking writes its Payment row with no
+    // `source` (booking-create's isZeroDollarConfirmed branch, and the
+    // paid_zero upsert in confirm-pending-guests), so the row takes the schema
+    // default STRIPE whatever the member elected — "Paid by card: $0.00" would
+    // be a card claim made about a member who may have no card on file.
     const { templateData, html } = await send(30000, {
       amountCents: 30000,
       settlementMethod: "card",
     });
 
     expect(templateData.creditNote).toBe(
-      "Account credit applied: -$300.00\nPaid by card: $0.00\n",
+      "Account credit applied: -$300.00\nNothing more to pay: $0.00\n",
     );
+    expect(templateData.creditNote).not.toContain("Paid by");
     expect(html).toContain(">-$300.00</td>");
+    expect(html).toContain(">Nothing more to pay</td>");
     expect(html).toContain(">$0.00</td>");
+    expect(html).not.toContain(">Paid by card</td>");
     expectCleanBody(renderDefaultBody(templateData));
+  });
+
+  it("makes the same method-neutral claim for a member who never elected a card", async () => {
+    // The same booking settled by a member who pays by internet banking. The
+    // stored settlement method is irrelevant at $0.00 and the rendered line is
+    // identical — which is the point: the label states the arithmetic, not a
+    // payment channel nobody can evidence.
+    const { templateData } = await send(30000, {
+      amountCents: 30000,
+      settlementMethod: "bank_transfer",
+    });
+
+    expect(templateData.creditNote).toBe(
+      "Account credit applied: -$300.00\nNothing more to pay: $0.00\n",
+    );
   });
 
   it.each([
@@ -261,12 +300,12 @@ describe("#2328 booking-confirmed applied-credit note", () => {
   });
 
   it("claims no payment at all on a confirmed-but-unpaid send (#2263)", async () => {
-    // Nothing has been settled, so there is no "paid by" figure to state. The
-    // pair is suppressed rather than inventing one — a "Paid by card: $0.00"
-    // line under "Total Due" would read as a failed payment.
+    // Nothing has been settled, so there is no "paid by" figure to state, and
+    // this send path applies no credit either (see the precondition test
+    // below), so the real shape of an unpaid confirmation is zero credit.
     const { templateData, html } = await send(
       30000,
-      { amountCents: 12000, settlementMethod: "bank_transfer" },
+      NO_CREDIT,
       { paymentDue: { reference: "BOOKING-ABC123", invoiceEmailed: false } },
     );
 
@@ -278,6 +317,73 @@ describe("#2328 booking-confirmed applied-credit note", () => {
     );
     expect(html).not.toContain("Account credit applied");
     expectCleanBody(renderDefaultBody(templateData));
+  });
+
+  it("shouts rather than hides if an unpaid send ever carries credit", async () => {
+    // The unpaid branch SUPPRESSES the pair, which is safe only while the
+    // precondition below holds. Deliberately NOT pinned as correct behaviour
+    // (an earlier version of this test asserted creditNote === "" for a send
+    // carrying $120.00 of credit, which would have hidden a real defect): what
+    // is pinned is that the impossible state is loud.
+    await send(
+      30000,
+      { amountCents: 12000, settlementMethod: "bank_transfer" },
+      { paymentDue: { reference: "BOOKING-ABC123", invoiceEmailed: false } },
+    );
+
+    expect(warnMock).toHaveBeenCalledTimes(1);
+    expect(warnMock.mock.calls[0][0]).toMatchObject({
+      bookingId: "bk_2328",
+      appliedCreditCents: 12000,
+    });
+    expect(warnMock.mock.calls[0][1]).toContain("suppressed");
+  });
+
+  it("shouts rather than hides if more credit was applied than the booking is worth", async () => {
+    // settledCents < 0 also drops both rows, so an over-consumed-credit booking
+    // would render as a no-credit email. The #1887 reprice clamp makes this
+    // unreachable; the warning is what makes it visible if that ever changes.
+    const { templateData } = await send(30000, {
+      amountCents: 45000,
+      settlementMethod: "card",
+    });
+
+    expect(templateData.creditNote).toBe("");
+    expect(warnMock).toHaveBeenCalledTimes(1);
+    expect(warnMock.mock.calls[0][0]).toMatchObject({
+      bookingId: "bk_2328",
+      appliedCreditCents: 45000,
+      settledCents: -15000,
+    });
+  });
+
+  it("still sends — without the credit lines — when the credit read fails", async () => {
+    // #2328 review: the read is a DECORATION on the message. Letting it throw
+    // would abort the send before sendEmail, so there would be no EmailLog row
+    // and no fail-closed admin alert — the "member is silently owed an email"
+    // state that machinery exists to prevent. It degrades to the pre-#2328
+    // rendering instead.
+    loadAppliedCreditMock.mockRejectedValue(new Error("db down"));
+    const { sendBookingConfirmedEmail } = await import("@/lib/email/booking");
+    await sendBookingConfirmedEmail(
+      { bookingId: "bk_2328" },
+      "member@example.org",
+      "Sam",
+      new Date("2026-08-15"),
+      new Date("2026-08-17"),
+      2,
+      30000,
+    );
+
+    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    const call = sendEmailMock.mock.calls[0][0];
+    expect(call.templateData.creditNote).toBe("");
+    expect(call.templateData.paymentOutcome).toBe(
+      "Total Paid: $300.00\n\nPayment has been processed successfully.",
+    );
+    expect(call.html).not.toContain("Account credit applied");
+    expect(errorMock).toHaveBeenCalledTimes(1);
+    expect(errorMock.mock.calls[0][0]).toMatchObject({ bookingId: "bk_2328" });
   });
 
   it("keeps the promo explanation and the credit explanation side by side", async () => {
@@ -370,6 +476,42 @@ describe("#2328 the {{creditNote}} token contract", () => {
     expect(validation.signPrefixedTokens).toContain("creditNote");
   });
 
+  it("is declared EMPTYABLE, so the editor warns about a label typed in front of it", () => {
+    // #2328 review — mutation pin. Deleting "creditNote" from
+    // EMPTYABLE_OVERRIDE_TOKENS broke no test: guard 4 would then render the
+    // token with its non-empty preview sample, see a full line, and stay quiet
+    // about an override that sends a bare "Credit:" to the great majority of
+    // bookings (which use no account credit). This drives guard 4 exactly as
+    // `GET /api/admin/email-templates` does — both declaration tables composed
+    // together, samples from the definition — over an override with the token
+    // behind a hand-typed label.
+    const definition = getEmailTemplateDefinition("booking-confirmed");
+    if (!definition) throw new Error("missing booking-confirmed definition");
+    const findings = findDanglingDefaultLines(
+      {
+        "booking-confirmed": {
+          defaultSubject: "Booking Confirmed",
+          defaultBody: "Hi {{firstName}}.\n\nCredit: {{creditNote}}\n\nThanks.",
+        },
+      },
+      {
+        "booking-confirmed": [
+          ...(OPTIONAL_TEMPLATE_TOKENS["booking-confirmed"] ?? []),
+          ...(EMPTYABLE_OVERRIDE_TOKENS["booking-confirmed"] ?? []),
+        ],
+      },
+      (token) => definition.sampleData[token] ?? token,
+    );
+
+    expect(findings).toEqual([
+      {
+        key: "booking-confirmed",
+        field: "defaultBody",
+        detail: '"Credit:"',
+      },
+    ]);
+  });
+
   it("leaves an override saved before #2328 valid and re-savable", () => {
     // The token is NOT required: a club that hand-built its money lines before
     // this existed must keep rendering and keep saving.
@@ -381,5 +523,53 @@ describe("#2328 the {{creditNote}} token contract", () => {
     });
     expect(validation.valid).toBe(true);
     expect(validation.missingRequiredTokens).toEqual([]);
+  });
+});
+
+describe("#2328 the unpaid branch's suppression precondition", () => {
+  // The confirmed-but-unpaid branch renders NO credit pair. That is only
+  // defensible because the one send path that reaches it applies no account
+  // credit — not because suppressing a real credit spend would be right. These
+  // two assertions are the precondition itself, so a second `paymentDue` send
+  // site, or credit application appearing on the existing one, fails here
+  // rather than quietly shipping a member a "Total Due" with a hidden spend.
+
+  const SRC_ROOT = path.join(process.cwd(), "src");
+
+  function sourceFiles(directory: string): string[] {
+    return readdirSync(directory).flatMap((entry) => {
+      const absolute = path.join(directory, entry);
+      if (statSync(absolute).isDirectory()) {
+        return entry === "__tests__" ? [] : sourceFiles(absolute);
+      }
+      return /\.tsx?$/.test(entry) && !/\.test\.tsx?$/.test(entry)
+        ? [absolute]
+        : [];
+    });
+  }
+
+  it("has exactly one send site passing paymentDue, and it is the whole-lodge conversion", () => {
+    // `paymentDue?:` (the option declarations) does not match; only a
+    // `paymentDue: {` argument does.
+    const passers = sourceFiles(SRC_ROOT)
+      .filter((file) => /\bpaymentDue\s*:/.test(readFileSync(file, "utf8")))
+      .map((file) => path.relative(process.cwd(), file).replaceAll("\\", "/"))
+      .sort();
+
+    expect(passers).toEqual(["src/lib/school-booking-request.ts"]);
+  });
+
+  it("never applies account credit on that path", () => {
+    // No BOOKING_APPLIED row is written anywhere in the module, so
+    // deriveBookingAppliedCreditCents returns zero for every booking it mints.
+    // (It DOES allocate the member's existing Xero credit notes against the
+    // invoice — #1620 allocate-existing — which is a Xero-side allocation, not
+    // a ledger spend, and leaves the booking's applied credit at zero.)
+    const source = readFileSync(
+      path.join(SRC_ROOT, "lib/school-booking-request.ts"),
+      "utf8",
+    );
+
+    expect(source).not.toContain("BOOKING_APPLIED");
   });
 });
