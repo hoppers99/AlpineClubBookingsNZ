@@ -73,9 +73,11 @@ change settings and templates.
 ### Record a trusted legacy baseline
 
 Do not start and override one register row at a time for a club-wide historical
-baseline. The dedicated maintenance command classifies the complete active
-population first, includes every configured Infant / Child / Youth / Adult age
-tier, and reports `N/A` separately. It preserves every existing induction,
+baseline. The dedicated maintenance command classifies the active,
+non-archived, non-cancelled `USER`/`ADMIN` member population first, including
+non-login dependants but excluding lodge devices, non-member contacts, and
+school contacts. It includes every configured Infant / Child / Youth / Adult
+age tier and reports `N/A` separately. It preserves every existing induction,
 skips anyone with any completed induction kind, and refuses to apply while an
 eligible member has a Draft or In Progress workflow.
 

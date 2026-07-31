@@ -28,8 +28,8 @@ Arrange a maintenance window and confirm all of the following:
   non-production copy before an authorised live run.
 - The deployed application and generated Prisma client match the database
   schema.
-- The actor member ID belongs to an active, non-archived, non-cancelled Full
-  Admin.
+- The actor member ID belongs to an active, login-enabled, non-archived,
+  non-cancelled Full Admin.
 - Age-tier settings form a complete, non-overlapping Infant / Child / Youth /
   Adult partition. The command does not use fallback tiers when this config is
   missing or invalid.
@@ -38,11 +38,16 @@ Arrange a maintenance window and confirm all of the following:
 - Every open Draft or In Progress induction reported by the dry run has been
   resolved through the normal Induction Register workflow.
 
-The eligible population is every active, non-archived, non-cancelled member in
-a configured person age tier, including Infant, Child, Youth, and Adult. `N/A`
-records are reported separately and are not changed. A member with any
-completed induction kind is preserved and classified as `ALREADY_COMPLETED`;
-the command does not add another completion.
+The population is limited at the database query to active, non-archived,
+non-cancelled real-member records whose member role is `USER` or `ADMIN`.
+Login is deliberately not required for this population, so non-login
+dependants remain included. Lodge-device (`LODGE`), non-member contact
+(`NON_MEMBER`), and school contact (`SCHOOL`) rows are excluded. Within the
+real-member population, every configured person age tier participates,
+including Infant, Child, Youth, and Adult; `N/A` records are reported
+separately and are not changed. A member with any completed induction kind is
+preserved and classified as `ALREADY_COMPLETED`; the command does not add
+another completion.
 
 ## 1. Run and retain the dry-run report
 
@@ -72,7 +77,7 @@ Review all four deterministic categories and the per-age-tier counts:
 | `CREATE` | Eligible member has no completed or open induction | Create one completed New Member baseline row |
 | `ALREADY_COMPLETED` | Member has at least one completed induction of any kind | Preserve and skip |
 | `OPEN_WORKFLOW` | Eligible member has a Draft or In Progress induction | Block the entire apply |
-| `NOT_APPLICABLE` | Active member has the `N/A` age tier | Report only |
+| `NOT_APPLICABLE` | In-scope `USER`/`ADMIN` member has the `N/A` age tier | Report only |
 
 A member with both a completed row and an open row is reported as
 `OPEN_WORKFLOW`; the open workflow must be resolved before apply. Voided rows

@@ -8,6 +8,7 @@ import { clubConfig, clubConfigSource, type ClubConfigSource } from "@/config/cl
 import { DEFAULT_MEMBERSHIP_NOMINATION_SETTINGS } from "@/config/club-settings-defaults";
 import { buildStructuredAuditLogCreateArgs } from "@/lib/audit";
 import { isDateOnlyString, parseDateOnly } from "@/lib/date-only";
+import { MEMBER_IMPORT_ROLE_VALUES } from "@/lib/member-roles";
 import { prisma } from "@/lib/prisma";
 import {
   validateAgeTierPartition,
@@ -36,6 +37,7 @@ const PERSON_AGE_TIERS: AgeTier[] = [
 type BaselineActor = {
   id: string;
   active: boolean;
+  canLogin: boolean;
   archivedAt: Date | null;
   cancelledAt: Date | null;
   accessRoles: Array<{ role: string | null }>;
@@ -244,6 +246,9 @@ function assertValidActor(actor: BaselineActor | null): asserts actor is Baselin
   }
   if (!actor.active) {
     throw new InductionBaselineError("The actor member is inactive.");
+  }
+  if (!actor.canLogin) {
+    throw new InductionBaselineError("The actor member has login disabled.");
   }
   if (actor.archivedAt) {
     throw new InductionBaselineError("The actor member is archived.");
@@ -456,6 +461,7 @@ export async function runInductionBaseline(
         select: {
           id: true,
           active: true,
+          canLogin: true,
           archivedAt: true,
           cancelledAt: true,
           accessRoles: {
@@ -520,6 +526,7 @@ export async function runInductionBaseline(
           active: true,
           archivedAt: null,
           cancelledAt: null,
+          role: { in: [...MEMBER_IMPORT_ROLE_VALUES] },
         },
         select: { id: true, ageTier: true },
         orderBy: { id: "asc" },

@@ -6,11 +6,13 @@ All notable public reference-release changes should be recorded here.
 
 - **Clubs can safely record a trusted induction history when moving an
   established membership onto the digital register (#2361).** A new
-  dry-run-first operator command classifies every active member across the
-  configured Infant, Child, Youth, and Adult tiers, reports `N/A` separately,
-  and preserves anyone who already has a completed induction of any kind.
-  Apply needs a Full Admin actor, one New Zealand baseline date, stable source
-  provenance, and exact club and database confirmations. It refuses to run
+  dry-run-first operator command classifies every active real-member
+  (`USER`/`ADMIN`) record across the configured Infant, Child, Youth, and Adult
+  tiers, includes non-login dependants, excludes operational and non-member
+  contacts, reports an in-scope `N/A` separately, and preserves anyone who
+  already has a completed induction of any kind. Apply needs a login-enabled
+  Full Admin actor, one New Zealand baseline date, stable source provenance,
+  and exact club and database confirmations. It refuses to run
   over an open induction, locks out concurrent induction writes, and commits
   all completed New Member baseline rows with one audit event or none at all.
   The records are explicit Admin Overrides with no invented signers, sign-offs,

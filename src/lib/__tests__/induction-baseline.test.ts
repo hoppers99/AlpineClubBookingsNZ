@@ -4,6 +4,7 @@ import {
   InductionBaselineBlockedError,
   InductionBaselineError,
   runInductionBaseline,
+  type InductionBaselineReport,
 } from "@/lib/induction-baseline";
 
 type PersonAgeTier = "INFANT" | "CHILD" | "YOUTH" | "ADULT";
@@ -17,40 +18,37 @@ type FakeAgeTierSetting = {
 type FakeActor = {
   id: string;
   active: boolean;
+  canLogin: boolean;
   archivedAt: Date | null;
   cancelledAt: Date | null;
   accessRoles: Array<{ role: string | null }>;
 };
+type FakeMemberRole = "USER" | "ADMIN" | "LODGE" | "NON_MEMBER" | "SCHOOL";
+type FakeMember = {
+  id: string;
+  ageTier: "INFANT" | "CHILD" | "YOUTH" | "ADULT" | "NOT_APPLICABLE";
+  role: FakeMemberRole;
+  active: boolean;
+  canLogin: boolean;
+  archivedAt: Date | null;
+  cancelledAt: Date | null;
+};
+
+function fakeAgeTier(
+  tier: PersonAgeTier,
+  minAge: number,
+  maxAge: number | null,
+  label: string,
+  sortOrder: number,
+): FakeAgeTierSetting {
+  return { tier, minAge, maxAge, label, sortOrder };
+}
 
 const DEFAULT_AGE_TIERS: FakeAgeTierSetting[] = [
-  {
-    tier: "INFANT",
-    minAge: 0,
-    maxAge: 4,
-    label: "Infant",
-    sortOrder: 0,
-  },
-  {
-    tier: "CHILD",
-    minAge: 5,
-    maxAge: 9,
-    label: "Child",
-    sortOrder: 1,
-  },
-  {
-    tier: "YOUTH",
-    minAge: 10,
-    maxAge: 17,
-    label: "Youth",
-    sortOrder: 2,
-  },
-  {
-    tier: "ADULT",
-    minAge: 18,
-    maxAge: null,
-    label: "Adult",
-    sortOrder: 3,
-  },
+  fakeAgeTier("INFANT", 0, 4, "Infant", 0),
+  fakeAgeTier("CHILD", 5, 9, "Child", 1),
+  fakeAgeTier("YOUTH", 10, 17, "Youth", 2),
+  fakeAgeTier("ADULT", 18, null, "Adult", 3),
 ];
 
 const DEFAULT_TEMPLATE = {
@@ -69,10 +67,28 @@ const DEFAULT_TEMPLATE = {
 const DEFAULT_ACTOR: FakeActor = {
   id: "admin-1",
   active: true,
+  canLogin: true,
   archivedAt: null,
   cancelledAt: null,
   accessRoles: [{ role: "ADMIN" }],
 };
+
+function fakeMember(
+  id: string,
+  role: FakeMemberRole,
+  overrides: Partial<Omit<FakeMember, "id" | "role">> = {},
+): FakeMember {
+  return {
+    id,
+    role,
+    ageTier: "ADULT",
+    active: true,
+    canLogin: true,
+    archivedAt: null,
+    cancelledAt: null,
+    ...overrides,
+  };
+}
 
 type ExistingRow = {
   id: string;
@@ -81,17 +97,29 @@ type ExistingRow = {
   status: "DRAFT" | "IN_PROGRESS" | "COMPLETED" | "VOIDED";
 };
 
+function existingRow(
+  id: string,
+  memberId: string,
+  kind: ExistingRow["kind"],
+  status: ExistingRow["status"],
+): ExistingRow {
+  return { id, memberId, kind, status };
+}
+
 function createFakeStore({
   actor = DEFAULT_ACTOR,
   ageTiers = DEFAULT_AGE_TIERS,
   templates = [DEFAULT_TEMPLATE],
   members = [
-    { id: "infant-1", ageTier: "INFANT" },
-    { id: "child-1", ageTier: "CHILD" },
-    { id: "youth-1", ageTier: "YOUTH" },
-    { id: "adult-1", ageTier: "ADULT" },
-    { id: "org-1", ageTier: "NOT_APPLICABLE" },
-  ],
+    fakeMember("infant-1", "USER", { ageTier: "INFANT", canLogin: false }),
+    fakeMember("child-1", "USER", { ageTier: "CHILD", canLogin: false }),
+    fakeMember("youth-1", "USER", { ageTier: "YOUTH" }),
+    fakeMember("adult-1", "ADMIN"),
+    fakeMember("na-member-1", "USER", {
+      ageTier: "NOT_APPLICABLE",
+      canLogin: false,
+    }),
+  ] satisfies FakeMember[],
   existing = [],
   requiredSignOffs = 2,
   auditFailure,
@@ -99,10 +127,7 @@ function createFakeStore({
   actor?: FakeActor | null;
   ageTiers?: ReadonlyArray<FakeAgeTierSetting>;
   templates?: typeof DEFAULT_TEMPLATE[];
-  members?: Array<{
-    id: string;
-    ageTier: "INFANT" | "CHILD" | "YOUTH" | "ADULT" | "NOT_APPLICABLE";
-  }>;
+  members?: FakeMember[];
   existing?: ExistingRow[];
   requiredSignOffs?: number;
   auditFailure?: Error;
@@ -131,9 +156,33 @@ function createFakeStore({
         sequence.push("actor");
         return actor;
       }),
-      findMany: vi.fn(async () => {
+      findMany: vi.fn(async (args: unknown) => {
         sequence.push("members");
-        return members;
+        const where = (
+          args as {
+            where: {
+              active?: boolean;
+              archivedAt?: Date | null;
+              cancelledAt?: Date | null;
+              canLogin?: boolean;
+              role?: { in?: FakeMemberRole[] };
+            };
+          }
+        ).where;
+        return members
+          .filter(
+            (member) =>
+              (where.active === undefined ||
+                member.active === where.active) &&
+              (where.archivedAt === undefined ||
+                member.archivedAt === where.archivedAt) &&
+              (where.cancelledAt === undefined ||
+                member.cancelledAt === where.cancelledAt) &&
+              (where.canLogin === undefined ||
+                member.canLogin === where.canLogin) &&
+              (!where.role?.in || where.role.in.includes(member.role)),
+          )
+          .map(({ id, ageTier }) => ({ id, ageTier }));
       }),
     },
     ageTierSetting: {
@@ -234,6 +283,28 @@ const BASE_OPTIONS = {
   fallbackClubNameSource: "primary" as const,
 };
 
+const ACTIVE_REAL_MEMBER_QUERY = {
+  where: {
+    active: true,
+    archivedAt: null,
+    cancelledAt: null,
+    role: { in: ["USER", "ADMIN"] },
+  },
+  select: { id: true, ageTier: true },
+  orderBy: { id: "asc" },
+};
+
+function classification(report: InductionBaselineReport) {
+  return {
+    counts: report.counts,
+    tierCounts: report.tierCounts,
+    toCreate: report.toCreate,
+    alreadyCompleted: report.alreadyCompleted,
+    openWorkflows: report.openWorkflows,
+    notApplicable: report.notApplicable,
+  };
+}
+
 describe("runInductionBaseline", () => {
   it("dry-runs every configured person tier and reports NOT_APPLICABLE separately without writing", async () => {
     const fake = createFakeStore({
@@ -278,11 +349,47 @@ describe("runInductionBaseline", () => {
       "youth-1",
     ]);
     expect(report.notApplicable).toEqual([
-      { memberId: "org-1", ageTier: "NOT_APPLICABLE" },
+      { memberId: "na-member-1", ageTier: "NOT_APPLICABLE" },
     ]);
     expect(fake.tx.$executeRawUnsafe).not.toHaveBeenCalled();
     expect(fake.tx.memberInduction.createMany).not.toHaveBeenCalled();
     expect(fake.tx.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it("queries only active USER/ADMIN members while retaining non-login dependants", async () => {
+    const fake = createFakeStore({
+      members: [
+        fakeMember("login-user", "USER"),
+        fakeMember("non-login-dependant", "USER", { canLogin: false }),
+        fakeMember("legacy-admin", "ADMIN"),
+        fakeMember("lodge-device", "LODGE"),
+        fakeMember("non-member-contact", "NON_MEMBER"),
+        fakeMember("school-contact", "SCHOOL"),
+        fakeMember("inactive-user", "USER", { active: false }),
+        fakeMember("archived-user", "USER", {
+          archivedAt: new Date("2024-01-01"),
+        }),
+        fakeMember("cancelled-user", "USER", {
+          cancelledAt: new Date("2024-01-01"),
+        }),
+      ],
+    });
+
+    const report = await runInductionBaseline({
+      ...BASE_OPTIONS,
+      store: fake.store as never,
+    });
+
+    expect(fake.tx.member.findMany).toHaveBeenCalledWith(
+      ACTIVE_REAL_MEMBER_QUERY,
+    );
+    expect(report.toCreate.map((member) => member.memberId)).toEqual([
+      "login-user",
+      "non-login-dependant",
+      "legacy-admin",
+    ]);
+    expect(report.counts.eligiblePopulation).toBe(3);
+    expect(report.notApplicable).toEqual([]);
   });
 
   it("locks first, re-reads under the lock, and creates completed override rows with stable provenance", async () => {
@@ -296,6 +403,20 @@ describe("runInductionBaseline", () => {
     });
 
     expect(fake.sequence[0]).toBe("lock");
+    expect(fake.tx.member.findUnique).toHaveBeenCalledWith({
+      where: { id: "admin-1" },
+      select: {
+        id: true,
+        active: true,
+        canLogin: true,
+        archivedAt: true,
+        cancelledAt: true,
+        accessRoles: {
+          where: { role: "ADMIN" },
+          select: { role: true },
+        },
+      },
+    });
     expect(fake.sequence).toEqual([
       "lock",
       "club",
@@ -366,6 +487,26 @@ describe("runInductionBaseline", () => {
     expect(createdMemberIds).not.toContain("child-1");
   });
 
+  it("lets an open workflow take precedence when the member also has a completed induction", async () => {
+    const fake = createFakeStore({
+      existing: [
+        existingRow("completed-child", "child-1", "RE_INDUCTION", "COMPLETED"),
+        existingRow("open-child", "child-1", "NEW_MEMBER", "DRAFT"),
+      ],
+    });
+
+    const report = await runInductionBaseline({
+      ...BASE_OPTIONS,
+      store: fake.store as never,
+    });
+    expect(report.openWorkflows.map((member) => member.memberId)).toContain(
+      "child-1",
+    );
+    expect(
+      report.alreadyCompleted.map((member) => member.memberId),
+    ).not.toContain("child-1");
+  });
+
   it("reports open workflows in dry-run and aborts the entire apply", async () => {
     const fake = createFakeStore({
       existing: [
@@ -400,6 +541,27 @@ describe("runInductionBaseline", () => {
     });
     expect(fake.tx.memberInduction.createMany).not.toHaveBeenCalled();
     expect(fake.tx.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it("uses identical deterministic classifications for dry-run and apply", async () => {
+    const fake = createFakeStore({
+      existing: [
+        existingRow("completed-adult", "adult-1", "HUT_LEADER", "COMPLETED"),
+        existingRow("voided-child", "child-1", "NEW_MEMBER", "VOIDED"),
+      ],
+    });
+    const dryRun = await runInductionBaseline({
+      ...BASE_OPTIONS,
+      store: fake.store as never,
+    });
+    const apply = await runInductionBaseline({
+      ...BASE_OPTIONS,
+      apply: true,
+      confirmClubName: "Example Alpine Club",
+      store: fake.store as never,
+    });
+
+    expect(classification(apply)).toEqual(classification(dryRun));
   });
 
   it("rejects duplicate active templates and invalid age-tier configuration", async () => {
@@ -449,6 +611,11 @@ describe("runInductionBaseline", () => {
       label: "inactive",
       actor: { ...DEFAULT_ACTOR, active: false },
       message: "The actor member is inactive.",
+    },
+    {
+      label: "login-disabled",
+      actor: { ...DEFAULT_ACTOR, canLogin: false },
+      message: "The actor member has login disabled.",
     },
     {
       label: "archived",

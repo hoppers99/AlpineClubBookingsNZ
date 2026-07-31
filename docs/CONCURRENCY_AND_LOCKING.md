@@ -233,11 +233,11 @@ do not use unnamespaced `hashtext(<id>)` for new lock families.
   with the `ROW EXCLUSIVE` lock PostgreSQL takes for every insert, update, or
   delete on `MemberInduction`, including cascade deletes, so the command first
   waits for existing induction DML and then makes every new induction writer
-  wait until apply commits. It re-reads the complete active-member population
-  and all of their induction rows only after that lock, refuses the entire
-  apply if any eligible member has a `DRAFT` or `IN_PROGRESS` row, and performs
-  its `createMany` plus audit write in the same transaction. Dry run never
-  takes the lock and never writes.
+  wait until apply commits. It re-reads the complete active `USER`/`ADMIN`
+  real-member population and all of their induction rows only after that lock,
+  refuses the entire apply if any eligible member has a `DRAFT` or
+  `IN_PROGRESS` row, and performs its `createMany` plus audit write in the same
+  transaction. Dry run never takes the lock and never writes.
 
   This is deliberately a table lock rather than a new advisory-lock family:
   existing writers in `src/lib/induction.ts`, application approval, member

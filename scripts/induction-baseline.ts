@@ -35,7 +35,7 @@ function printUsage() {
 Options:
   --dry-run                 Explicit dry run (the default). Never writes.
   --apply                   Apply the reported baseline atomically.
-  --actor-member-id <id>    Active, non-archived, non-cancelled Full Admin actor.
+  --actor-member-id <id>    Active, login-enabled Full Admin actor.
   --baseline-date <date>    Trusted historical NZ date-only value (YYYY-MM-DD).
   --provenance-note <note>  Stable source note stored on every created row.
   --confirm-club-name <name>

@@ -184,9 +184,9 @@ extraction over expanding this table casually.
 
 `npm run induction:baseline` is a one-off, dry-run-first maintenance command
 for a committee-authorised legacy New Member induction baseline. It never
-belongs in normal setup or deployment flows. A dry run requires the Full Admin
-actor member ID, one New Zealand date-only baseline date, and a stable
-provenance note:
+belongs in normal setup or deployment flows. A dry run requires an active,
+login-enabled Full Admin actor member ID, one New Zealand date-only baseline
+date, and a stable provenance note:
 
 ```bash
 npm run induction:baseline -- \
