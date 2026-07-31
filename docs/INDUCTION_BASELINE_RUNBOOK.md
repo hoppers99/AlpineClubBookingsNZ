@@ -55,17 +55,23 @@ another completion.
 The table lock covers direct insert, update, and delete statements against
 `MemberInduction`; it does not freeze the member population or every earlier
 step of a larger workflow. Arrange an operator freeze from the start of the
-**final** dry run until apply finishes. This is a freeze on every route, import,
-and background job that can change who is eligible, which tier they occupy, the
-required sign-off count, or the template the baseline will use. Pause:
+**final** dry run until the post-apply verification dry run finishes. This is a
+freeze on every route, import, and background job that can change who is
+eligible, whether the chosen actor remains an authorised Full Admin, which tier
+members occupy, the required sign-off count, or the template the baseline will
+use. Pause:
 
 - individual member edits and bulk member updates that can change `role`,
   `active`, date of birth, or `ageTier`;
 - membership-application approvals, admin-created members, and members created
   through family requests;
+- group-booking join acceptance and token-claim flows, which can create an
+  active `USER` without creating a `MemberInduction`;
 - CSV and other member imports, including Xero member imports;
 - membership-assignment saves and roll-forward jobs that can update
   `ageTier`;
+- changes to the chosen actor's `canLogin`, access-role assignments,
+  active/archive/cancel state, account deletion, or merge;
 - archive, cancel, reactivate, delete, merge, and every other member lifecycle
   operation;
 - induction creation, signer assignment or reassignment, sign-off, admin
@@ -74,10 +80,11 @@ required sign-off count, or the template the baseline will use. Pause:
   induction-template content and activation.
 
 Do not assume the `MemberInduction` table lock covers any of the member,
-eligibility, or configuration writers above. If the dry run finds a blocker,
-end the final-run attempt, resolve it, then start a new freeze and generate a
-fresh final dry run. Do not review one plan while those writers continue and
-later apply it as though the population and configuration were unchanged.
+actor, eligibility, or configuration writers above. They are paused by the
+operator procedure, not by a database lock. If the dry run finds a blocker, end
+the final-run attempt, resolve it, then start a new freeze and generate a fresh
+final dry run. Do not review one plan while those writers continue and later
+apply it as though the actor, population, and configuration were unchanged.
 
 ### Prepare literal-safe values
 
@@ -606,6 +613,8 @@ commit together.
 
 ## 3. Verify
 
+Keep the writer freeze in place through this verification:
+
 1. Retain the successful apply report with the committee authorisation record.
 2. Open **Admin → Members → Induction** and spot-check members from every
    configured age tier.
@@ -624,6 +633,9 @@ commit together.
    It should report `CREATE: 0`; the applied members should now be
    `ALREADY_COMPLETED`. Its plan digest must differ from the pre-apply digest
    because the member categories changed.
+
+Only after the verification dry run succeeds may the paused actor, member,
+group-booking join, induction, and configuration writers resume.
 
 The pre-apply digest is now stale and deliberately fails if reused. If an
 authorised operator deliberately needs to prove the idempotent apply path, use

@@ -18,8 +18,9 @@ All notable public reference-release changes should be recorded here.
   over an open induction, locks direct induction-table writes during apply, and
   commits all completed New Member baseline rows with one audit event or none
   at all. The runbook requires a short member-population, induction, and
-  configuration-write freeze around the final dry run and apply because the
-  table lock does not freeze those inputs.
+  configuration, group-join member-creation, and actor-access freeze from the
+  final dry run through post-apply verification because the table lock does not
+  freeze those inputs.
   The records are explicit Admin Overrides with no invented signers, sign-offs,
   emails, or hut-leader eligibility; a fresh post-apply dry-run digest permits
   an identical no-op rerun while the stale pre-apply digest fails closed. The new

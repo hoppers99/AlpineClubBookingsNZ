@@ -250,16 +250,19 @@ do not use unnamespaced `hashtext(<id>)` for new lock families.
   paths, and admin induction routes contend **when that DML reaches this
   table**. This does not serialize those workflows' earlier reads, member
   creation/import, other lifecycle writes, configuration changes, or any side
-  effect outside this table. From the final dry run through apply, operators
-  must therefore pause all of the following; the runbook makes this freeze
-  mandatory:
+  effect outside this table. From the final dry run through the post-apply
+  verification dry run, operators must therefore pause all of the following;
+  the runbook makes this freeze mandatory:
 
   - individual and bulk member updates to `role`, `active`, date of birth, or
     `ageTier`;
   - membership-application approvals, admin and family-request member creation,
-    CSV/member imports, and Xero member imports;
+    group-booking join acceptance/token claims that can create an active
+    `USER`, CSV/member imports, and Xero member imports;
   - membership-assignment saves and roll-forward jobs that can update
     `ageTier`;
+  - changes to the chosen actor's `canLogin`, access-role assignments,
+    active/archive/cancel state, account deletion, or merge;
   - archive, cancel, reactivate, delete, merge, and other member lifecycle
     operations;
   - induction create, signer assignment/reassignment, sign-off, admin
@@ -267,9 +270,10 @@ do not use unnamespaced `hashtext(<id>)` for new lock families.
   - changes to club identity, age-tier settings, nomination settings, or
     induction-template content and activation.
 
-  None of those `Member` or configuration writers is covered by the
-  `MemberInduction` table lock merely because the baseline later reads its
-  result.
+  None of those actor, `Member`, group-booking join, or configuration writers
+  is covered by the `MemberInduction` table lock merely because the baseline
+  later reads its result. Their pause is an operational freeze, not a database
+  lock.
 
   The baseline transaction takes no application advisory lock and mutates no
   `Member` or template row, so it cannot invert the global -> lodge -> member

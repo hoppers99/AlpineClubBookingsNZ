@@ -211,9 +211,13 @@ nothing, and requires a fresh dry run. Apply preserves all existing induction
 rows, blocks on every eligible Draft or In Progress workflow, and commits the
 new rows plus a digest-bearing audit event atomically under a PostgreSQL lock
 against direct `MemberInduction` DML. The lock does not freeze the wider member
-population: pause membership approvals, member
-creation/import, induction writes, and lifecycle writes from the final dry run
-through apply. See the full
+population or the actor: from the final dry run through the post-apply
+verification dry run, pause membership approvals, member creation/import,
+group-booking join acceptance/token claims that can create an active `USER`,
+changes to the chosen actor's `canLogin`, access roles, or account lifecycle,
+induction writes, and member lifecycle writes. These writers are operationally
+frozen; the database lock still covers direct `MemberInduction` DML only. See
+the full
 [trusted legacy induction baseline runbook](INDUCTION_BASELINE_RUNBOOK.md)
 before using it. Do not expose `DATABASE_URL` or credentials in an operator
 report.
