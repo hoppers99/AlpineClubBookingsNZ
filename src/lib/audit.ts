@@ -148,9 +148,12 @@ function metadataStringLimit(options?: AuditMetadataOptions): number {
 
 function metadataJsonLimit(options?: AuditMetadataOptions): number {
   const archived = options?.archiveText?.maxStringLength;
-  // Two bytes per character is the worst case JSON escaping can reach for text
-  // (a value that is entirely newlines, quotes or backslashes), so this is
-  // headroom for one archived value on top of the ordinary envelope.
+  // Headroom for one archived value on top of the ordinary envelope. Two bytes
+  // per character is what JSON escaping costs at worst for ORDINARY text — a
+  // value that is entirely newlines, quotes or backslashes. A value stuffed
+  // with C0 control characters escapes to six bytes each and could still
+  // overflow; that falls back to the {_truncated, preview} stub, which is
+  // degraded but never wrong, and no email template body reaches this shape.
   return archived === undefined
     ? MAX_METADATA_JSON_LENGTH
     : MAX_METADATA_JSON_LENGTH + archived * 2;
