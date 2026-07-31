@@ -280,6 +280,85 @@ describe("review finding source/schema contracts", () => {
   // which is precisely how the original defect survived. This contract makes that
   // impossible to do accidentally: every caller must be classified here, with a
   // reason, or the build fails.
+  // MG3 (#2308) / #2388, privacy findings H2 and H3. Every member-facing add
+  // path owes a collapsed cross-family refusal three things — the throttle
+  // charged exactly once, an audit row naming actor and target, and the response
+  // held to the timing floor — and `handleMemberGuestAddRefusal` is the one call
+  // that does all three in the right order.
+  //
+  // Two of the routes did not make it. `bookings/[id]/modify` carried NONE of the
+  // mitigations at all (its docblock listed four routes; there are six), and
+  // `modify-quote`'s unpaid-subscription catch answered directly, so that refusal
+  // wrote no audit row and reported its own longer, uncapped duration — which put
+  // "subscription unpaid" back on a stopwatch, the exact distinction D-8 removes.
+  // Both are the kind of omission that is invisible in behaviour tests, because
+  // the BODY is identical either way. Hence a source contract.
+  it("routes every collapsed cross-family refusal through the one handler (#2308 H2/H3)", () => {
+    const addPaths = [
+      "src/app/api/bookings/quote/route.ts",
+      "src/app/api/bookings/route.ts",
+      "src/app/api/bookings/[id]/modify-quote/route.ts",
+      "src/app/api/bookings/[id]/guests/route.ts",
+      "src/app/api/bookings/[id]/modify/route.ts",
+      "src/app/api/bookings/[id]/modify-dates/route.ts",
+    ];
+    // Which side charges the throttle unit. The three that resolve members inside
+    // their own transaction cannot spend it on the way in (a counter write is a
+    // second connection under the per-lodge capacity lock), so they spend it on
+    // the way out; the rest spend it at the boundary hook, before a single member
+    // row is read. Charging on BOTH sides quietly halved the advertised budget.
+    const chargesAtTheHook = new Set([
+      "src/app/api/bookings/quote/route.ts",
+      "src/app/api/bookings/route.ts",
+      "src/app/api/bookings/[id]/modify-quote/route.ts",
+    ]);
+
+    for (const file of addPaths) {
+      const source = readRepoFile(file);
+      const marker = "instanceof BookingGuestValidationError";
+      let from = 0;
+      let blocks = 0;
+      for (;;) {
+        const at = source.indexOf(marker, from);
+        if (at === -1) break;
+        from = at + marker.length;
+        blocks += 1;
+        const block = source.slice(at, at + 1200);
+        // A block that only re-throws is not answering the caller, so it owes
+        // nothing — the route's outer catch is where the refusal is handled.
+        const body = block.slice(marker.length);
+        const firstStatement = body
+          .split("\n")
+          .map((line) => line.trim())
+          .filter((line) => line && !line.startsWith("//") && line !== ") {" && line !== "{")
+          .at(0);
+        if (firstStatement === "throw error;" || firstStatement === "throw err;") {
+          continue;
+        }
+        expect(
+          block,
+          `${file}: a collapsed refusal answered here without going through handleMemberGuestAddRefusal`,
+        ).toContain("handleMemberGuestAddRefusal");
+      }
+      expect(blocks, `${file}: still catches the refusal`).toBeGreaterThan(0);
+
+      if (chargesAtTheHook.has(file)) {
+        expect(source, `${file}: charges the throttle at the boundary hook`).toContain(
+          "memberGuestAddThrottleHook",
+        );
+        expect(
+          source,
+          `${file}: must not charge the throttle a second time on the way out`,
+        ).not.toContain('throttle: "CHARGE_NOW"');
+      } else {
+        expect(
+          source,
+          `${file}: resolves inside a transaction, so it charges on the way out`,
+        ).toContain('throttle: "CHARGE_NOW"');
+      }
+    }
+  });
+
   it("classifies every person-night guard caller as marking or entitled (#2308 C1)", () => {
     // Callers that must mark the party against the LIVE family boundary before
     // they ask the guard anything, because a member reads their answer.
