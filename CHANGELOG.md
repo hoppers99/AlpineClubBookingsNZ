@@ -13,21 +13,38 @@ All notable public reference-release changes should be recorded here.
   no way forward. The only escape was guessing that a reload might help.
 
   The step now tells you what actually happened, in the terms that decide what
-  you should do about it. If Xero needs re-authorising, it says so and points at
-  Disconnect and Connect, because retrying would never have worked. If Xero's
-  daily limit has been reached it says when that clears — midnight UTC, about
-  midday in New Zealand — so you can judge whether to wait or come back
-  tomorrow. If it was Xero's short per-minute limit, or a passing outage, it
-  offers a **Try again** button that genuinely re-checks. And if your admin role
-  simply isn't allowed to read the organisation, it says that instead of
-  pretending a retry might fix it.
+  you should do about it, and offers a **Try again** button wherever pressing it
+  could genuinely help — including when Xero's daily limit has been reached,
+  since that limit can clear while you are still on the page. If Xero needs
+  re-authorising, it says so and points at Disconnect and Connect, and offers no
+  button, because retrying would never have worked. If the daily limit was hit
+  it says when that clears — midnight UTC, about midday in New Zealand — so you
+  can judge whether to wait or come back tomorrow. If your sign-in has simply
+  expired it tells you to sign in again rather than blaming your permissions,
+  and if your admin role really isn't allowed to read the organisation it says
+  that instead of pretending a retry might fix it. Each attempt is stamped
+  ("Checked 3 times, most recently at 2:32 pm") so a repeat failure is visible
+  rather than a silent flicker.
 
   Nothing retries on its own, deliberately. Each Xero connection has a limited
   number of calls per day, and hammering a limit that has already been hit only
-  makes it last longer — so a fresh check happens when you press the button, and
-  never otherwise. A related gap closed at the same time: if Xero refused the
-  authorisation itself, the wizard used to show only "Not Connected" and kept
-  Xero's reason to itself. It now shows what Xero said.
+  makes it last longer — so apart from one fresh check when you come back from
+  authorising Xero (where the organisation may have just changed), a live check
+  happens only when you press the button. That check can also no longer put the
+  rest of the Xero integration on hold: it used to be able to trip the app-wide
+  "Xero looks unwell, pause everything" guard that stops invoicing and syncing
+  for a couple of minutes, and a button inviting you to press it during an
+  outage should never be able to do that.
+
+  Two related gaps closed at the same time. If Xero refused the authorisation
+  itself, the wizard used to show only "Not Connected" with no hint that
+  anything had gone wrong; it now says the connection attempt failed and what to
+  do about it. (It deliberately does not quote Xero's own wording back at you —
+  that text arrives through the browser and cannot be trusted to be Xero's.) And
+  a connected organisation whose name we could not re-check no longer shows a
+  green "all set" tick: it now says plainly that the name is the last one we
+  saw, not a confirmation — which is what you would see if the club revoked the
+  app inside Xero.
 
 - **Clubs can safely record a trusted induction history when moving an
   established membership onto the digital register (#2361).** A new

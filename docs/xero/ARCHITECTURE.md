@@ -574,21 +574,77 @@ Stripe (C4) and Google (C5) reuse the same shell with their own steps:
 
    Since **#2394** a failed organisation read is **shown, not swallowed**. The
    route's `readFailure` classifies it as `disconnected` / `rate_limited`
-   (with the Xero limit and any `Retry-After`) / `unavailable`, and the step
-   renders wording per class plus a **Try again** control; a 401/403 from this
-   site's own route is a fourth, client-only "your role has no finance access"
-   case that offers no retry, because none would help. The retry is
-   **manual by design** (owner decision on #2394): it re-runs the context load,
-   which asks with `?refresh=1` — the only way past the 60-second negative
-   cache the failure just wrote — so it costs one live `getOrganisations` call
-   per press and none at all unless somebody presses it. Nothing auto-retries,
-   which also means a rate limit is never made worse by the wizard. Before
-   this, the wizard context's bare `catch {}`, the one-shot post-OAuth
-   `refresh()` mount effect, and a null-name degradation that no caller could
-   distinguish from "Xero has no name" combined to pin the step on
+   (with the Xero limit and any `Retry-After`) / `unavailable`. Those three are
+   the only kinds that reflect an answer FROM Xero; the wizard context adds
+   three client-only kinds for the cases where nothing was asked of Xero at
+   all, and the distinction is load-bearing, because copy on those branches may
+   not vouch for the Xero connection:
+
+   | kind | raised by | retry offered |
+   | --- | --- | --- |
+   | `forbidden` | our route returns **403** — the role has no finance access | no |
+   | `signed_out` | our route returns **401** — the session expired | yes (sign in, then press) |
+   | `check_failed` | the status read failed, the browser is offline, or the response would not parse | yes |
+
+   `signed_out` is split from `forbidden` deliberately: the status and
+   organisation routes resolve to the same `finance:view` requirement, so a
+   plain permission denial 403s the status read first and never reaches here —
+   which makes an expired session the likelier trigger, and "ask for finance
+   access" the wrong advice for it.
+
+   The retry is **manual by design** (owner decision on #2394): it re-runs the
+   context load, which asks with `?refresh=1` — the only way past the
+   60-second negative cache the failure just wrote. Its cost is **at most one**
+   live `getOrganisations` call per press: the read takes no transient retry,
+   and while a process-global cooldown armed elsewhere is active `withXeroRetry`
+   refuses before any HTTP, so the press costs nothing and returns the
+   remaining wait. Nothing auto-retries, so a rate limit is never made worse by
+   the wizard.
+
+   **The `?connected=true` marker is consumed once**, by `useXeroWizardContext`,
+   which reads it and strips it from the address bar with `history.replaceState`
+   before folding the forced read into its own first load. Both halves matter
+   (#2394 review, F1). The shell mounts only the ACTIVE step and `goTo` is pure
+   client state — no navigation — so the earlier step-level mount effect re-fired
+   a forced live read every time an operator walked back to Connect, with nobody
+   pressing anything; and because the shell blocks the step until the context has
+   loaded, that step-level force always landed *after* the hook's own mount read
+   had already gone to Xero, making every connect return cost two live calls
+   instead of one. So: an ordinary page load costs no live call, the return from
+   Xero costs exactly one, and every later visit costs none.
+
+   Before all this, the wizard context's bare `catch {}`, that one-shot
+   post-OAuth `refresh()` mount effect, and a null-name degradation that no
+   caller could distinguish from "Xero has no name" combined to pin the step on
    "Confirming the organisation name…" indefinitely after a single blip.
-   The step also renders `useXeroConnection`'s `error` now, so an OAuth
-   callback that redirects back with `?error=` no longer lands silently.
+
+   Three smaller invariants the step now holds, each from the #2394 review:
+
+   - **A cached name never suppresses a failure** (F4). A failed read still
+     serves the last known summary, so `name` can arrive beside `readFailure` —
+     and the failure class that most often does this is a revoked-in-Xero
+     authorisation, which leaves our token row (and `/api/admin/xero/status`)
+     looking healthy. The step keeps the name but drops the success styling and
+     labels it "the last organisation we saw", so the one failure this feature
+     exists to surface cannot render as a green tick.
+   - **A repeat failure changes the DOM** (F5). Identical text means React
+     mutates nothing and the `role="alert"` region announces nothing at all —
+     worst on the daily limit, whose wording cannot change for hours. The
+     context carries `orgErrorAt` / `orgErrorAttempts` and the step renders
+     "Checked N times, most recently at …".
+   - **The busy state is `aria-busy`, never `disabled`** (F3, the
+     `restore-built-ins.tsx` house rule). Re-entrancy is dropped by an in-flight
+     ref inside the hook, so the control keeps focus while it works and N
+     presses still cost one call.
+
+   The step also renders `useXeroConnection`'s `error` now, so an OAuth callback
+   that redirects back with `?error=` no longer lands silently. That value is
+   **allow-listed on read** against `xero-oauth-callback-messages.ts` — the same
+   three strings the callback route may write — because it is now rendered in a
+   danger-styled box on two admin pages, and an unfiltered query parameter there
+   is a phishing surface (React escapes it, so it was never XSS). Anything
+   unrecognised becomes the generic "Xero connection failed" rather than being
+   dropped.
 
 Each step gates on **live server truth** (`isVerified(context)`); a small
 `IntegrationWizardProgress` row persists only a resume cursor (advisory), so a
@@ -723,19 +779,28 @@ year-end month, the lockout panel) ignore the field and are unchanged.
 `forceRefresh` skips the negative entry **and** the in-flight join, which is
 what makes the setup wizard's **Try again** meaningful: within the 60-second
 window an ordinary read would hand back the cached failure, and a retry that
-re-serves the failure it was pressed to clear is worse than no button. The cost
-is bounded to a human press — there is no automatic retry anywhere on this
-path.
+re-serves the failure it was pressed to clear is worse than no button. Nothing
+on this path auto-retries; a live read happens on a press, and once on the
+return from Xero, where the organisation may have just changed.
 
-It passes `maxTransientRetries: 1` alongside that, and the pairing is
-load-bearing: `withXeroRetry` defaults the transient budget to
-`min(maxRetries, 1)`, so `maxRetries: 0` on its own would also zero it — and
-exhausting the transient budget arms `rememberXeroTransientOutage`, the
-**process-global** breaker that fails every subsequent Xero call fast for two
-minutes, invoicing and sync included. A read that exists only to decorate a
-button must not be one 5xx away from that, so the transient budget is left at
-its default and it still takes two consecutive transient failures to trip the
-breaker.
+It passes **`maxTransientRetries: 0, armTransientBreaker: false`** alongside
+that, and the pair is one decision (#2394 review, F2). Exhausting the transient
+budget arms `rememberXeroTransientOutage`, the **process-global** breaker that
+fails every subsequent Xero call fast for two minutes — invoicing, sync and
+webhook replay included. #2261 chose `maxTransientRetries: 1` so a single 5xx
+could not trip it; #2394 then put an operator-facing button in front of this
+read, rendered precisely when Xero is 5xx-ing and with copy inviting a press,
+which turned that budget into "two Xero calls per press, and a press that can
+stop invoicing". Zeroing the budget alone is *worse* (the first 5xx would arm
+the breaker), so `withXeroRetry` gained an explicit `armTransientBreaker`
+opt-out. The read still **respects** a cooldown armed by a call that matters —
+it refuses before any HTTP and reports the remaining wait — it just may not
+start one. A page decoration must never be able to stop invoicing, however
+often a human presses.
+
+Note the year-end read below keeps `maxTransientRetries: 1` and the default
+breaker behaviour: it has no button in front of it, and its storm control is the
+short post-failure throttle instead.
 
 `getXeroFinancialYearEndMonth` (same module, feeding membership
 financial-year resolution) is **single-flight but deliberately not
@@ -745,11 +810,14 @@ of N, at the cost only that a joiner shares the leader's outcome rather than
 making its own attempt. Negative caching is the half that is not free here —
 this is a money-adjacent value, so a connection an admin has just fixed must be
 picked up by the very next call, not up to a minute later. What it **does**
-share with the summary read (#2283) is the retry posture: the same
-`maxRetries: 0, maxTransientRetries: 1` pair, for the same reasons — a read
-that degrades immediately and re-attempts shortly gains nothing by waiting out
-a 429 inside the call, and it must never be one 5xx away from arming the
-process-global breaker.
+share with the summary read (#2283) is `maxRetries: 0` and the transient posture
+the summary read had *before* #2394 — `maxTransientRetries: 1`, so two
+consecutive transient failures are needed to arm the process-global breaker. A
+read that degrades immediately and re-attempts shortly gains nothing by waiting
+out a 429 inside the call. It does **not** take the summary read's
+`armTransientBreaker: false`: that opt-out exists because a human-pressed button
+sits in front of the summary read, and this one is ordinary member-facing
+traffic bounded by the throttle below.
 
 Capping the retries removed something the waiting did as a side effect, so
 #2283's review restored both halves explicitly:
