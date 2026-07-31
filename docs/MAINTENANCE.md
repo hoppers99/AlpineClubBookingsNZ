@@ -180,6 +180,50 @@ extraction over expanding this table casually.
 
 ## Operational Repair Tools
 
+### Record a trusted legacy induction baseline (#2361)
+
+`npm run induction:baseline` is a one-off, dry-run-first maintenance command
+for a committee-authorised legacy New Member induction baseline. It never
+belongs in normal setup or deployment flows. A dry run requires an active,
+login-enabled Full Admin actor member ID, one New Zealand date-only baseline
+date, and a stable provenance note:
+
+```bash
+IFS= read -r ACTOR_MEMBER_ID < /protected/path/actor-member-id
+IFS= read -r BASELINE_DATE < /protected/path/baseline-date
+IFS= read -r PROVENANCE_NOTE < /protected/path/provenance-note
+
+npm run induction:baseline -- \
+  --actor-member-id "$ACTOR_MEMBER_ID" \
+  --baseline-date "$BASELINE_DATE" \
+  --provenance-note "$PROVENANCE_NOTE"
+```
+
+The protected files must pass the runbook's exact one-line validation; embedded
+newlines are forbidden. Keep the variables unexported and quoted so club and
+provenance text remains literal data rather than executable shell syntax.
+Apply additionally requires `--apply` plus the exact `PLAN DIGEST`, club name,
+parsed database host, and parsed database name from the reviewed dry-run
+report. The digest binds the complete safe plan and is compared after apply
+takes the induction table lock and rebuilds that plan, but before the blocker,
+no-op, or write branches. A mismatch prints the refreshed safe report, writes
+nothing, and requires a fresh dry run. Apply preserves all existing induction
+rows, blocks on every eligible Draft or In Progress workflow, and commits the
+new rows plus a digest-bearing audit event atomically under a PostgreSQL lock
+against direct `MemberInduction` DML. The lock does not freeze the wider member
+population or the actor: from the final dry run through the post-apply
+verification dry run, pause membership approvals, member creation/import,
+group-booking join acceptance/token claims that can create an active `USER`,
+changes to the chosen actor's `canLogin`, access roles, or account lifecycle,
+induction writes, and member lifecycle writes. These writers are operationally
+frozen; the database lock still covers direct `MemberInduction` DML only. See
+the full
+[trusted legacy induction baseline runbook](INDUCTION_BASELINE_RUNBOOK.md)
+before using it. Do not expose `DATABASE_URL` or credentials in an operator
+report.
+
+### Reconcile booking and Xero records
+
 `scripts/xero-booking-repair.ts` is a targeted booking/Xero reconciliation
 helper. Keep it out of normal setup and deployment flows. Use it only when an
 operator needs to inspect or repair known booking-payment/Xero mismatches after
