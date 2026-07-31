@@ -36,8 +36,12 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { MembershipCancellationBlockerNotice } from "@/components/admin/membership-cancellation-blocker-notice";
+import { MembershipCancellationSharedInvoiceNotice } from "@/components/admin/membership-cancellation-shared-invoice-notice";
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
-import type { MembershipCancellationBlocker } from "@/lib/membership-cancellation-blocker-messages";
+import type {
+  MembershipCancellationBlocker,
+  MembershipCancellationSharedInvoiceNotice as SharedInvoiceNotice,
+} from "@/lib/membership-cancellation-blocker-messages";
 import { formatNZDateTime } from "@/lib/nzst-date";
 import { cn } from "@/lib/utils";
 
@@ -94,6 +98,9 @@ type CancellationParticipant = {
   cancelledAtParticipant: string | null;
   reviewedBy: { id: string; name: string; email: string } | null;
   blockers: Blocker[];
+  // #2400: present when this member's subscription invoice also covers members
+  // who are staying, so approving raises no credit note against it.
+  sharedInvoiceNotice: SharedInvoiceNotice | null;
   // #2383: serialized by membership-cancellation-admin.ts so the queue can say
   // what kind of account is being cancelled. `holdsPrivilegedAccess` is the
   // approval-time Full-Admin guard's own predicate.
@@ -933,6 +940,10 @@ export default function MembershipCancellationsPage() {
                             returnTo={currentPath}
                           />
 
+                          <MembershipCancellationSharedInvoiceNotice
+                            notice={participant.sharedInvoiceNotice ?? null}
+                          />
+
                           {(canApprove(participant) || canReject(participant)) && (
                             <div className="mt-4 space-y-3">
                               <div className="space-y-1.5">
@@ -956,7 +967,10 @@ export default function MembershipCancellationsPage() {
                               <div className="rounded-md border border-info-6 bg-info-3 p-3 text-sm text-info-11">
                                 Paid membership subscriptions are not refunded.
                                 Unpaid or overdue subscription invoices are
-                                cleared with an allocated Xero credit note.
+                                cleared with an allocated Xero credit note —
+                                unless the invoice also covers other members who
+                                are staying, in which case nothing is credited
+                                automatically and it is said above.
                               </div>
                               <div className="flex flex-wrap gap-2">
                                 <ViewOnlyActionButton

@@ -1675,9 +1675,20 @@ unknown (the check runs) rather than a silent "off" (the check is skipped) —
 the ordinary loader degrades to defaults whose archive flag is false. "Unpaid" means
 AUTHORISED or SUBMITTED with `AmountDue > 0` (the finance dashboard's own open-
 invoice definition), across ACCREC and ACCPAY, minus the member's current-season
-subscription invoice when the approval is itself about to credit it — mirroring
-`queueApprovedMembershipCancellationXeroOperations`, which would otherwise
-deadlock the ordinary unpaid-subscription cancellation. If Xero cannot be
+subscription invoice when the approval is itself STILL about to credit it IN
+FULL — mirroring `queueApprovedMembershipCancellationXeroOperations`, which would
+otherwise deadlock the ordinary unpaid-subscription cancellation. That predicate
+is `excusesUnpaidInvoiceBlocker` from
+`loadMembershipCancellationSubscriptionCreditPlansByMemberId` (#2400), the same
+module the credit note consults, so the exclusion set is exactly the set the
+approval clears: an invoice that will NOT be credited — because it still covers
+other members who have not been cancelled, or because its credit-note operation
+has already had its single run and skipped — blocks like any other, or the
+archive would take a Xero contact with a live balance out of circulation. The
+recorded-outcome half is what makes the archive re-check safe: by the time it
+runs the credit note has settled, so recomputing "would this credit in full?"
+would answer yes for a whole cancelled family and excuse an invoice nobody is
+going to credit (#2400 review). If Xero cannot be
 reached the check FAILS CLOSED: the participant gets an
 `invoice_check_unavailable` blocker (`disconnected` / `rate_limited` /
 `unavailable` / `invalid_request` / `too_many_invoices`) and the approval is
@@ -1696,6 +1707,37 @@ later, `syncXeroMembershipCancellationContact` re-runs the same check `fresh`
 immediately before archiving and DEFERS (fails for retry, like the credit-note
 guard) if anything is owing. See
 [`CANCELLATIONS.md`](CANCELLATIONS.md#unpaid-invoices-block-approval).
+
+Shared subscription invoices (#2400): one Xero invoice covers every member of a
+family or billing group, and `xero-subscription-invoices.ts` stamps its id on
+each covered `MemberSubscription`. `createXeroMembershipCancellationCreditNote`
+credits `amountDue` — the WHOLE remaining balance — so it now raises the note
+only when the leaver is the last covered member still with the club. "Covered"
+is the union of the subscription invoice link and the charge's ACTIVE
+(`releasedAt IS NULL`) coverage claims, because those two records can disagree
+and an uncertain covered set must not authorise wiping a balance; a covered
+member drops out of it once `Member.cancelledAt` is set, so approving a whole
+family one participant at a time leaves the LAST approval to credit the invoice
+in full. Otherwise the operation completes SUCCEEDED with
+`skipped: shared_invoice_covers_remaining_members` and no Xero call is made at
+all — the check runs before the client is authenticated, and after the
+existing-credit-note lookup, so a partially-completed run still finishes its
+allocation. The determination is made afresh at each moment it is acted on
+(approval gate, then the credit note itself), never snapshotted at request time.
+
+Once that gate passes, the run takes a durable per-INVOICE claim before its first
+Xero call (`XeroObjectLink`, role
+`MEMBERSHIP_CANCELLATION_CREDIT_INVOICE_CLAIM`, inserted with `skipDuplicates`),
+because several siblings' cancellations can reach the same "nobody else is
+covered" state and the outbox claims per operation, not per invoice. A run that
+loses the claim performs no Xero call and completes SUCCEEDED with
+`skipped: invoice_credit_claimed_by_other_cancellation`; the holder's own retries
+proceed. Where a cancellation credits nothing AND no member the invoice covers is
+left with the club — the whole-family case whose last leaver has a PAID
+subscription — the operation records `sharedInvoiceLeftUncredited` and an admin
+alert names the invoice, so a balance nobody will ever credit is not left silent.
+See [`CANCELLATIONS.md`](CANCELLATIONS.md#shared-family-invoices) and
+[`CONCURRENCY_AND_LOCKING.md`](CONCURRENCY_AND_LOCKING.md).
 
 To verify: financial blockers, future booking blockers, family cleanup, Xero
 group/archive behavior, and email visibility.
