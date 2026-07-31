@@ -99,9 +99,6 @@ All notable public reference-release changes should be recorded here.
   seeing which addresses answered differently. It is settled by the #2420 entry
   above, which turns the whole unfinished-setup site into a plain "not ready
   yet".
-  finished. That behaviour is deliberately untouched here — changing it halfway
-  would have let a stranger map an unlaunched club's page list by seeing which
-  addresses answered differently — and is being decided separately (#2420).
 - **A member can now find and add another club member as a guest, and is told
   plainly what that commits the other person to (#2308).** The booking wizard's
   Guests step gains a **+ Add Member Guest** button beside the existing
