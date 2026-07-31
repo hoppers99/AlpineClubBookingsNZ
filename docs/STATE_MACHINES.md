@@ -891,11 +891,73 @@ PaymentTransaction: an INTERNET_BANKING PRIMARY row with NO Stripe intent id,
   reason "manual_mark_paid", -> SUCCEEDED
 ```
 
+#2397 — an OUTSTANDING upward-modification delta on the same booking. The admin
+is asked whether the cash covers it (no default, and the answer is part of the
+settle's contract). The delta is a SLICE of the amount owing — an upward
+modification raised `finalPriceCents` by the same amount it recorded as the
+extra — so the PRIMARY transaction is the booking's worth BEFORE the change
+under **both** answers, and the answer decides what sits beside it:
+
+```text
+covered:
+  Payment: amountCents = finalPriceCents - credit
+           additionalPaymentStatus PENDING|FAILED|null -> "SUCCEEDED"
+           (re-asserted in the fenced write on the exact additionalAmountCents)
+  PaymentTransaction: PRIMARY = (finalPriceCents - credit - delta), plus an
+    INTERNET_BANKING ADDITIONAL row with NO Stripe intent id, reason
+    "manual_mark_paid_additional", -> SUCCEEDED. The two sum to amountCents:
+    the cash is SPLIT, never doubled.
+  AuditLog: a second row, "booking-payment.manual-payment.additional-settled",
+    which is what puts the extra on the booking-history timeline
+
+NOT covered (owner decision, 31 Jul 2026 — record what was handed over):
+  Payment: amountCents = finalPriceCents - credit - delta
+           additional* columns UNTOUCHED, so the delta is still owed and still
+           chased
+  PaymentTransaction: PRIMARY = (finalPriceCents - credit - delta). No
+    ADDITIONAL row.
+```
+
+The generalised ledger mirror, which holds for both answers (and already held
+for a card-settled booking carrying an uncollected addition):
+
+```text
+amountCents + creditAppliedCents + (uncollected addition) = finalPriceCents
+```
+
+It is not asserted at runtime inside the settle — the settled figure is defined
+as the left-hand side, so any in-transaction check is a tautology. It is upheld
+by construction (the two rows are a split of one figure), by the fenced write's
+WHERE clauses, and after the fact by `auditIbAppliedCreditStrands`; see
+`docs/DOMAIN_INVARIANTS.md` for the full statement.
+
+Stripe-intent hygiene differs by answer. Both answers enqueue a durable
+CANCEL_PAYMENT_INTENT for every live Stripe intent on the payment, EXCEPT that
+a NOT-covered answer spares the payment's current `additionalPaymentIntentId`:
+that extra is still owed, and that intent is the member's only self-service way
+to pay it. Superseded addition intents are still cancelled, and the covered
+answer cancels the addition's intent like any other.
+
+On the reversal, the reversed amount is the figure that was written. A covered
+extra goes back to owing: the ADDITIONAL row SUCCEEDED -> FAILED (reason
+"manual_mark_paid_additional_reversed") and `additionalPaymentStatus` is restored
+by a guarded claim matching exactly the amount and status the settle recorded. A
+not-covered settle left the extra owing throughout, so there is nothing to
+restore.
+
 Refused (409, nothing written) when the booking is already PAID, is not in a
 payable status, participates in a group settlement, has ANY Xero invoice
 evidence including a queued mint, carries any refund history
-(`refundedAmountCents > 0`), owes nothing, no longer fits the lodge, or when
-the amount owing moved since the admin's dialog rendered.
+(`refundedAmountCents > 0`), is in a payment status OUTSIDE
+PENDING/PROCESSING/FAILED — i.e. has already taken money, refused at read time
+since #2397 with a message that says so rather than at the fence with
+"changed while you were recording it" — owes nothing, no longer fits the lodge, when
+the amount owing moved since the admin's dialog rendered, or (#2397) when the
+outstanding extra moved, appeared, or vanished since it did — including when an
+answer arrives for an extra that no longer exists, when an extra exists and no
+answer was given, when the extra is larger than the whole amount owing (either
+answer), and when a "not covered" answer would leave nothing to record because
+the extra IS the whole amount owing.
 
 Reversal (`direction: "unpaid"`), permitted only while nothing has happened
 that it could not undo:
@@ -1220,9 +1282,27 @@ to those overlapping the original range (no cascade).
 
 On the admin allocation board, dragging or menu-moving the first visible
 allocated night for a guest reassigns that guest's visible allocated nights to
-the target bed while preserving each date-only lodge night. Later-night moves
-remain single-night adjustments. The board's "Run Auto Allocation" uses the
-same whole-stay planner without displacement, and the board raises a
+the target bed while preserving each date-only lodge night. The hovered date
+column never changes an existing allocation's night: pointer preview and
+keyboard announcement name the destination bed plus the snapped original
+night(s). Later-night moves remain single-night adjustments, same-bed drops are
+no-ops with no request or audit, and cancel sends no request.
+
+The existing-allocation move endpoint accepts allocation ids plus a destination
+bed, never a target date. It resolves only the destination's immutable lodge key
+before the transaction, then takes global booking `lock(1)` followed by that
+lodge's capacity lock and re-reads the source rows, original dates,
+guest/booking state, active destination room/bed, custodian holds and sharing
+state under both. Cancellation prunes allocations under the same global key, so
+either the move finishes first or the post-cancel move sees no source row and
+cannot resurrect it. A first-chip multi-night move is all-or-nothing: one
+conflict rolls back every row, partner promotion and audit entry. Successful
+row changes, shared-double promotions and their causally attributed audit
+records commit in that same transaction. Bucket-to-board bulk placement keeps
+its older per-night conflict semantics.
+
+The board's "Run Auto Allocation" uses the same whole-stay planner without
+displacement, and the board raises a
 stay-level `ROOM_SWITCH` warning when a booking's rooms change between nights,
 plus a `MINOR_ADULT_MIX` warning on any persisted room-night that mixes one
 booking's minors with another booking's adults (#1768).
@@ -1580,6 +1660,40 @@ allowed but cannot be self-approved — including one raised from the profile
 panel, where the requester is recorded as the member themselves. See
 [`DOMAIN_INVARIANTS.md`](DOMAIN_INVARIANTS.md#membership-lifecycle) and
 [`CANCELLATIONS.md`](CANCELLATIONS.md#who-can-be-cancelled).
+
+Approval blockers (#2392): `loadMembershipCancellationBlockersByMemberId` is the
+single entry point for "why can this not be approved yet", and it now answers in
+two parts — future owned bookings / guest appearances (local), and unpaid Xero
+invoices on the member's contact. The invoice half runs only when
+`xeroArchiveContactsOnCancellation` is on AND the member has a linked
+`xeroContactId`, because those are exactly the conditions under which approval
+archives a Xero contact; otherwise no Xero call is made. That setting is read
+through `loadMembershipCancellationSettingsStrict`, so a failed read is an
+unknown (the check runs) rather than a silent "off" (the check is skipped) —
+the ordinary loader degrades to defaults whose archive flag is false. "Unpaid" means
+AUTHORISED or SUBMITTED with `AmountDue > 0` (the finance dashboard's own open-
+invoice definition), across ACCREC and ACCPAY, minus the member's current-season
+subscription invoice when the approval is itself about to credit it — mirroring
+`queueApprovedMembershipCancellationXeroOperations`, which would otherwise
+deadlock the ordinary unpaid-subscription cancellation. If Xero cannot be
+reached the check FAILS CLOSED: the participant gets an
+`invoice_check_unavailable` blocker (`disconnected` / `rate_limited` /
+`unavailable` / `invalid_request` / `too_many_invoices`) and the approval is
+refused, because an unknown answer is not "nothing owing". `invalid_request`
+(Xero 400/404 — usually a contact merged or deleted there) and
+`too_many_invoices` are the NON-transient ones and are worded as such; every
+failure message names the archive-setting escape hatch. Contact ids are chunked
+40 to a `getInvoices` call, and hitting the `MAX_INVOICE_PAGES` cap raises
+`too_many_invoices` for the batch rather than returning a truncated list — Xero
+orders a batched read `DueDate ASC` across all its contacts, so a truncated
+result could otherwise leave a quiet contact looking clear. The review queue
+reads through a 60s in-process memo; the approval guard always passes
+`freshInvoiceCheck` so a decision is never taken on a cached answer, and
+failures are never memoised. Because the archive is an outbox operation drained
+later, `syncXeroMembershipCancellationContact` re-runs the same check `fresh`
+immediately before archiving and DEFERS (fails for retry, like the credit-note
+guard) if anything is owing. See
+[`CANCELLATIONS.md`](CANCELLATIONS.md#unpaid-invoices-block-approval).
 
 To verify: financial blockers, future booking blockers, family cleanup, Xero
 group/archive behavior, and email visibility.

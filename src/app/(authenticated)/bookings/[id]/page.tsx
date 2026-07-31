@@ -496,6 +496,9 @@ export default async function BookingDetailPage({
           "booking.payment.failed",
           "booking.modification.payment.confirmed",
           "booking.modification.payment.failed",
+          // #2397: the cash / off-Xero settlement of an outstanding price
+          // increase, so the extra is never absorbed silently.
+          "booking-payment.manual-payment.additional-settled",
           // #2265 (#2319 door 2): the settle-time note telling the member their
           // saved credit choice was not applied and is still on their account.
           "booking.credit_election.unapplied",

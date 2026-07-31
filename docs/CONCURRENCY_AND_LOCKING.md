@@ -425,6 +425,23 @@ concurrent date move cannot make the hold apply to one range while reporting
 conflicts for an older range. Its status-guarded SET remains necessary because
 cancel writers use the disjoint global lock and may still race the row update.
 
+Existing bed-allocation moves (`moveBedAllocationsSameDate`, #2366) compose the
+global and per-lodge tiers. They do not change booking status or money, but
+cancellation prunes a cancelled booking's allocation rows under global
+`lock(1)`: a lodge-only move could otherwise read a row, let cancellation
+delete it, and then re-upsert it onto the cancelled booking. The
+pre-transaction read resolves only the destination bed's immutable lodge key.
+The transaction takes **global `lock(1)` first, then that lodge lock**, and
+re-reads the source allocation rows and their persisted lodge nights under
+both before funnelling every selected row through `manuallyAllocateBed`. If
+cancellation won, the post-lock source read returns no row and the move writes
+nothing. The row changes, shared-double partner promotions (with each causal
+moved-allocation id) and audit rows all remain in that transaction; one
+conflict rolls the group back. This writer takes no member lock because it
+preserves every member-night footprint. Its custodian-hold counterpart takes
+the same lodge key, cancellation takes the same global key, and the fixed
+global -> lodge order introduces no inverse.
+
 ### Global-cohort money / status transition → global `lock(1)`
 
 Cancel (`booking-cancel.ts`), Stripe capture, the manual cash / off-Xero

@@ -1261,7 +1261,9 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   // #2263 × #2267: the booking-confirmed money story as ONE pre-composed block
   // (the {{promoSummary}} convention) — "Total Paid + processed" for a paid
   // booking, "Total Due + the owing sentence" for a confirmed-but-unpaid one,
-  // so the default body can never claim money moved when it did not.
+  // and (#2397) "Booking Total / Paid / Still Owing + the balance sentence"
+  // for one settled in cash for less than it is worth — so the default body
+  // can never claim money moved when it did not.
   "paymentOutcome",
   "price",
   "percent",
@@ -1336,9 +1338,16 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "total",
   "totalAlerts",
   // #2263: the two halves of an UNPAID confirmation. `totalDue` replaces
-  // `totalPaid` (exactly one of the pair ever carries a figure), and
+  // `totalPaid` (exactly one of the pair carries a figure), and
   // `paymentDueNote` is the pre-composed sentence naming the amount owing and
   // the internet-banking reference.
+  //
+  // #2397 adds a third, PARTLY paid state — a cash settlement the admin said
+  // did not cover an uncollected price increase — in which BOTH carry a
+  // figure, because both are true: `totalPaid` is what the club actually has
+  // and `totalDue` is only the balance, never the whole price. `paymentDueNote`
+  // stays empty there (there is no internet-banking reference to quote); the
+  // whole story is in `paymentOutcome`.
   "totalDue",
   "paymentDueNote",
   "totalPaid",

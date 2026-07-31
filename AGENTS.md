@@ -201,8 +201,8 @@ before changing Next.js APIs or conventions.
   itself a load, it unmounts the very `PolicyScopeSelect` the admin just used,
   dropping keyboard focus to `<body>` mid-interaction. Started in the five
   Booking Policies sections (#2142) and rolled across most of the admin tree
-  (#2160, extended by #2168 and #2324): 250 of 297 `ViewOnlyActionButton` call
-  sites now opt out — 224 covered by a banner in the SAME file, 26 by a verified
+  (#2160, extended by #2168 and #2324): 252 of 299 `ViewOnlyActionButton` call
+  sites now opt out — 226 covered by a banner in the SAME file, 26 by a verified
   vouching parent (21 at a JSX render site, 5 through the guided-setup shell) —
   and 47 keep the per-button reason: dialog/popover contents, leaf toolbars,
   `member-credit-card.tsx`, whose finance scope differs from the member detail
@@ -285,10 +285,19 @@ an orchestrator with subagents, not a single agent doing everything inline:
   drift/consistency/UX). The orchestrator triages findings and dispatches
   fixes. This complements — it does not replace — the owner-approval gate for
   Critical/High-risk areas.
+- **Delegate deliberately.** Every subagent re-establishes context, re-explores,
+  and reports back, and the orchestrator then re-reads that report — the payoff
+  has to exceed that overhead. Do not spawn one for work the orchestrator could
+  finish in a handful of tool calls, do not split one modest job across several,
+  and keep routine verification in the orchestrator loop. Reserve subagents for
+  genuinely independent, sizeable tracks: per-issue implementation lanes, wide
+  multi-file investigations, and the adversarial review lenses.
 - **Capability scaling:** the orchestrator chooses subagent model/effort by
   task complexity. Work in gated areas (money movement, booking capacity,
   membership/family lifecycle, schema, auth/security, live providers) keeps
-  the strongest available model at high reasoning effort, per the rule above.
+  the strongest available model at high reasoning effort, per the rule above —
+  and auth/security work goes to `max`, since an uncertain security blocker
+  escalates in effort, never in model tier (see "Model selection").
 - **Parallel lanes:** multiple issues may run concurrently, each in its own
   worktree/branch/PR, only when their code surfaces do not clash. Shared
   documentation files (for example `docs/DOMAIN_INVARIANTS.md`) are acceptable
@@ -437,19 +446,31 @@ handed an epic-with-children or asked to run several related issues at once.
     real code before reporting, and report only confirmed/plausible findings with
     `file:line` + a concrete failure scenario. They never modify code.
 - **Fix subagents** resolve every confirmed finding; the orchestrator triages
-  (rejecting false positives with reasoning recorded in the PR body) and **re-runs
-  the relevant reviewer lens to verify the fix** — especially for security
-  blockers, where the fix can reopen a symmetric hole.
+  (rejecting false positives with reasoning recorded in the PR body) and, **for
+  security blockers, re-runs the relevant reviewer lens to verify the fix** —
+  there the fix itself can reopen a symmetric hole, so a fresh lens is earning
+  its cost. **Outside security, stop after the fix.** A third pass over ground
+  two adversarial reviewers already covered costs a full review cycle and rarely
+  catches what the fix subagent missed; current models also self-verify their own
+  work, so instructing them to re-verify mostly buys redundancy.
 
 ### 4. Model selection
 
 - **Default subagents to the strongest generally-capable model (Opus).**
   Reserve the top Mythos-class tier (Fable) for tasks genuinely at the reasoning
   frontier — deep Xero-idempotency/frozen-reference contracts, immutable-charge
-  backfill correctness, irreversible member-merge + DMMF-completeness reasoning,
-  or a security blocker whose analysis the default model left uncertain. Scale
-  model *and* reasoning effort to the task; do not use the top tier blanket for
-  everything labelled "Critical".
+  backfill correctness, or irreversible member-merge + DMMF-completeness
+  reasoning. Scale model *and* reasoning effort to the task; do not use the top
+  tier blanket for everything labelled "Critical".
+- **Never route security work to the top tier — keep it on Opus at `max`
+  reasoning effort.** Fable's safety classifiers target cyber content, so a
+  security review or exploit analysis can come back *refused* rather than
+  answered. The refusal arrives as `stop_reason: "refusal"` on an HTTP 200, not
+  as an error — an unwary orchestrator reads the empty or truncated result as a
+  clean pass. Fable's bug-finding gains also explicitly exclude security-focused
+  analysis, so the escalation buys nothing here even when it does answer. Opus
+  refuses far less on this material and falls back rather than stopping outright,
+  which is why an uncertain security blocker escalates in *effort*, not in tier.
 
 ### 5. Per-issue pipeline
 

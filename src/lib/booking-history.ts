@@ -252,6 +252,31 @@ export function buildBookingHistoryItems({
         });
         break;
       }
+      // #2397. An admin recorded a cash / off-Xero payment on a booking that
+      // still carried an uncollected price increase, and confirmed the money
+      // covered that increase too. It is the SAME fact as the card case above —
+      // the extra was collected — so it sets the same flag and suppresses the
+      // generic fallback below; only the wording differs, because how the money
+      // arrived is what the reader needs to know.
+      case "booking-payment.manual-payment.additional-settled": {
+        hasAdditionalPaymentSuccess = true;
+        const amountCents =
+          typeof parsedDetails?.additionalAmountCents === "number"
+            ? parsedDetails.additionalAmountCents
+            : null;
+
+        items.push({
+          id: `audit-${auditLog.id}`,
+          occurredAt: auditLog.createdAt,
+          category: "Payment",
+          title: "Additional payment recorded manually",
+          detail:
+            "An admin recorded that the payment received for this booking also covered the extra owing from a later change.",
+          amountDisplay: amountCents != null ? formatCents(amountCents) : null,
+          tone: "success",
+        });
+        break;
+      }
       case "booking.modification.payment.failed": {
         hasAdditionalPaymentFailure = true;
         const amountCents =
