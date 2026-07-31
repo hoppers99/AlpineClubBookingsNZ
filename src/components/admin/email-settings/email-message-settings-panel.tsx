@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Eye, RotateCcw, Save } from "lucide-react";
+import { Eye, GitCompareArrows, RotateCcw, Save } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { diffLines } from "@/lib/text-diff";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import {
   AdminForbiddenSaveNotice,
@@ -41,6 +42,22 @@ interface TemplateOverride {
   updatedByMemberId: string | null;
 }
 
+// #2269 (F3): how the saved override stands against the CURRENT built-in
+// wording. `differsFromDefault` is a plain fact, not a warning — differing is
+// what an override is for — and drives the diff affordance. `reasons` is the
+// short list of things that are objectively wrong, each one a rule the save
+// path already enforces, so an admin is never told "you have drifted" for
+// wording they chose on purpose.
+interface TemplateStaleContent {
+  differsFromDefault: boolean;
+  subjectDiffersFromDefault: boolean;
+  bodyDiffersFromDefault: boolean;
+  reasons: string[];
+  missingRequiredTokens: string[];
+  retiredTokens: string[];
+  bracketAnnotations: string[];
+}
+
 interface TemplateDefinition {
   key: string;
   label: string;
@@ -55,6 +72,9 @@ interface TemplateDefinition {
   triggerSummary: string;
   frequency: string;
   override: TemplateOverride | null;
+  // Optional because older fixtures/responses omit it, and null whenever the
+  // template has no saved override at all.
+  staleContent?: TemplateStaleContent | null;
 }
 
 const settingFields: Array<{
@@ -116,6 +136,74 @@ export function requiredTokenSentence(
   return `Keep these in the body: ${parts.join(", ")}.`;
 }
 
+// #2269 (F3): the reasons, in plain English, for the admin looking at the
+// template they have open. Each one is a rule the save path enforces, so the
+// wording here and the wording of a rejected save describe the same thing.
+function staleContentSentences(
+  staleContent: TemplateStaleContent | null | undefined,
+): string[] {
+  if (!staleContent) return [];
+  const sentences: string[] = [];
+  if (staleContent.missingRequiredTokens.length > 0) {
+    sentences.push(
+      `Your saved copy no longer shows something this email is required to tell the recipient. Add back ${staleContent.missingRequiredTokens
+        .map((token) => `{{${token}}}`)
+        .join(", ")} — or wording of your own that says the same thing — or restore the default below.`,
+    );
+  }
+  if (staleContent.retiredTokens.length > 0) {
+    sentences.push(
+      `Your saved copy uses ${staleContent.retiredTokens
+        .map((token) => `{{${token}}}`)
+        .join(", ")}, which this template no longer supplies. An unsupplied token renders as nothing at all, so the line it sits on can go out empty.`,
+    );
+  }
+  if (staleContent.bracketAnnotations.length > 0) {
+    sentences.push(
+      `Your saved copy still contains square-bracketed notes (${staleContent.bracketAnnotations.join(
+        ", ",
+      )}). Emails render tokens and nothing else, so these are sent to the recipient word for word.`,
+    );
+  }
+  return sentences;
+}
+
+function TemplateDiffBlock({
+  label,
+  saved,
+  current,
+}: {
+  label: string;
+  saved: string;
+  current: string;
+}) {
+  const lines = diffLines(saved, current);
+  return (
+    <div className="space-y-1">
+      <p className="text-xs font-medium text-foreground">{label}</p>
+      <div className="overflow-x-auto rounded-md border border-border">
+        <pre className="min-w-fit font-mono text-xs leading-relaxed">
+          {lines.map((line, index) => (
+            <div
+              key={`${index}-${line.type}`}
+              className={
+                line.type === "removed"
+                  ? "bg-danger-3 px-2 text-danger-11"
+                  : line.type === "added"
+                    ? "bg-success-3 px-2 text-success-11"
+                    : "px-2 text-muted-foreground"
+              }
+            >
+              {line.type === "removed" ? "- " : line.type === "added" ? "+ " : "  "}
+              {line.value === "" ? " " : line.value}
+            </div>
+          ))}
+        </pre>
+      </div>
+    </div>
+  );
+}
+
 export function EmailMessageSettingsPanel() {
   const [settings, setSettings] = useState<EmailSettings | null>(null);
   const [templates, setTemplates] = useState<TemplateDefinition[]>([]);
@@ -141,6 +229,13 @@ export function EmailMessageSettingsPanel() {
   const [retiredTokenTemplates, setRetiredTokenTemplates] = useState<
     { templateName: string; tokens: string[] }[]
   >([]);
+  // #2269 (F3): saved overrides that no longer show something the email is
+  // required to tell the recipient — the drift #2267 created when the promo
+  // explanation and the door-code line moved to pre-composed tokens, and the
+  // one form of staleness that had no signal anywhere until now.
+  const [missingRequiredTokenTemplates, setMissingRequiredTokenTemplates] =
+    useState<{ templateName: string; tokens: string[] }[]>([]);
+  const [showDiff, setShowDiff] = useState(false);
   const [loading, setLoading] = useState(true);
   const [savingSettings, setSavingSettings] = useState(false);
   const [savingTemplate, setSavingTemplate] = useState(false);
@@ -203,6 +298,21 @@ export function EmailMessageSettingsPanel() {
               }))
           : [],
       );
+      setMissingRequiredTokenTemplates(
+        Array.isArray(templatesBody.missingRequiredTokenOverrides)
+          ? (
+              templatesBody.missingRequiredTokenOverrides as Array<{
+                templateName?: string;
+                tokens?: string[];
+              }>
+            )
+              .filter((entry) => Boolean(entry?.templateName))
+              .map((entry) => ({
+                templateName: entry.templateName as string,
+                tokens: Array.isArray(entry.tokens) ? entry.tokens : [],
+              }))
+          : [],
+      );
       const firstTemplate = selectedTemplate || nextTemplates[0]?.key || "";
       setSelectedTemplate(firstTemplate);
       const selected = nextTemplates.find((template) => template.key === firstTemplate);
@@ -229,6 +339,7 @@ export function EmailMessageSettingsPanel() {
     setBodyText(template?.override?.bodyText ?? template?.defaultBody ?? "");
     setPreviewHtml("");
     setPreviewSubject("");
+    setShowDiff(false);
   }
 
   async function saveSettings() {
@@ -416,6 +527,29 @@ export function EmailMessageSettingsPanel() {
           .
         </div>
       ) : null}
+      {missingRequiredTokenTemplates.length > 0 ? (
+        <div className="rounded-md border border-warning-6 bg-warning-3 p-3 text-sm text-warning-11">
+          {missingRequiredTokenTemplates.length === 1
+            ? "A saved template override no longer shows"
+            : `${missingRequiredTokenTemplates.length} saved template overrides no longer show`}{" "}
+          something the email is required to tell the recipient — usually
+          because the built-in wording moved that information into a new token
+          after the copy was saved. Open each one and add the token back (or
+          write your own wording that says the same thing), or restore the
+          default:{" "}
+          <span className="font-medium">
+            {missingRequiredTokenTemplates
+              .map(
+                (entry) =>
+                  `${entry.templateName} (${entry.tokens
+                    .map((token) => `{{${token}}}`)
+                    .join(", ")})`,
+              )
+              .join("; ")}
+          </span>
+          .
+        </div>
+      ) : null}
       <section className="space-y-4">
         <div className="grid gap-4 md:grid-cols-2">
           {settingFields.map((field) => (
@@ -528,6 +662,64 @@ export function EmailMessageSettingsPanel() {
               <p className="text-xs text-muted-foreground">
                 {requirementSentence}
               </p>
+            ) : null}
+          </div>
+        ) : null}
+
+        {/* #2269 (F3): the saved-copy indicator. The fact that a saved copy
+            differs is stated flatly and paired with the diff, because that is
+            what an override IS; only the objectively-wrong reasons are dressed
+            as a warning. */}
+        {currentTemplate?.override && currentTemplate.staleContent?.differsFromDefault ? (
+          <div className="space-y-3 rounded-md border border-border bg-muted/40 p-3 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-muted-foreground">
+                Your saved copy of this message differs from the built-in
+                wording.
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowDiff((current) => !current)}
+              >
+                <GitCompareArrows className="h-4 w-4" />
+                {showDiff ? "Hide differences" : "Show differences"}
+              </Button>
+            </div>
+            {staleContentSentences(currentTemplate.staleContent).map(
+              (sentence) => (
+                <p
+                  key={sentence}
+                  className="rounded-md border border-warning-6 bg-warning-3 p-2 text-warning-11"
+                >
+                  {sentence}
+                </p>
+              ),
+            )}
+            {showDiff ? (
+              <div className="space-y-3">
+                <p className="text-xs text-muted-foreground">
+                  <span className="font-medium text-danger-11">- red</span> is
+                  your saved copy,{" "}
+                  <span className="font-medium text-success-11">+ green</span>{" "}
+                  is the current built-in wording. Restore Default replaces your
+                  copy with the green side; saving keeps yours.
+                </p>
+                {currentTemplate.staleContent.subjectDiffersFromDefault ? (
+                  <TemplateDiffBlock
+                    label="Subject"
+                    saved={currentTemplate.override.subject ?? ""}
+                    current={currentTemplate.defaultSubject}
+                  />
+                ) : null}
+                {currentTemplate.staleContent.bodyDiffersFromDefault ? (
+                  <TemplateDiffBlock
+                    label="Body"
+                    saved={currentTemplate.override.bodyText ?? ""}
+                    current={currentTemplate.defaultBody}
+                  />
+                ) : null}
+              </div>
             ) : null}
           </div>
         ) : null}

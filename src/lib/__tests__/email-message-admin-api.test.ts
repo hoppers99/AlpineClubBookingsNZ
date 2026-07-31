@@ -532,6 +532,174 @@ describe("admin email message APIs", () => {
     expect(body.retiredTokenOverrides).toEqual([]);
   });
 
+  // #2269 (F3): the advisory half. `staleContent` reports the plain FACT that a
+  // saved copy differs from the built-in wording (which drives the diff view),
+  // and separately the short list of things that are objectively wrong with it.
+  // The whole design brief was "must not produce false 'you have drifted'
+  // noise", so most of what follows is about the cases that must NOT flag.
+  describe("staleContent", () => {
+    const bookingConfirmedDefault = getEmailTemplateDefinition(
+      "booking-confirmed",
+    )!;
+
+    function overrideRow(
+      templateName: string,
+      subject: string | null,
+      bodyText: string | null,
+    ) {
+      return {
+        templateName,
+        subject,
+        bodyText,
+        updatedAt: new Date("2026-05-23T00:00:00.000Z"),
+        updatedByMemberId: "admin-1",
+      };
+    }
+
+    async function staleContentFor(templateName: string) {
+      const response = await getEmailTemplates();
+      const body = await response.json();
+      return body.templates.find(
+        (template: { key: string }) => template.key === templateName,
+      ).staleContent;
+    }
+
+    it("is null for a template with no saved override", async () => {
+      mocks.emailTemplateOverrideFindMany.mockResolvedValue([]);
+      expect(await staleContentFor("booking-confirmed")).toBeNull();
+    });
+
+    it("reports no difference when the saved copy IS the current default", async () => {
+      mocks.emailTemplateOverrideFindMany.mockResolvedValue([
+        overrideRow(
+          "booking-confirmed",
+          bookingConfirmedDefault.defaultSubject,
+          bookingConfirmedDefault.defaultBody,
+        ),
+      ]);
+
+      expect(await staleContentFor("booking-confirmed")).toEqual(
+        expect.objectContaining({
+          differsFromDefault: false,
+          subjectDiffersFromDefault: false,
+          bodyDiffersFromDefault: false,
+          reasons: [],
+        }),
+      );
+    });
+
+    it("reports a difference WITHOUT a reason when a club rewrote the wording deliberately", async () => {
+      // The central no-false-noise case. This club rewrote every sentence and
+      // kept every piece of required information. That is what an override is
+      // for, so it gets the diff affordance and nothing that reads as a
+      // problem.
+      mocks.emailTemplateOverrideFindMany.mockResolvedValue([
+        overrideRow(
+          "booking-confirmed",
+          "Kia ora — your hut is booked",
+          "Kia ora {{firstName}}, your bunk is locked in.\n\n{{promoSummary}}Total Paid: {{totalPaid}}\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\n{{doorCodeNote}}\n\nRemember to sign the hut book.",
+        ),
+      ]);
+
+      expect(await staleContentFor("booking-confirmed")).toEqual(
+        expect.objectContaining({
+          differsFromDefault: true,
+          subjectDiffersFromDefault: true,
+          bodyDiffersFromDefault: true,
+          reasons: [],
+          missingRequiredTokens: [],
+        }),
+      );
+    });
+
+    it("does not flag a legacy override that carries the required information its own way", async () => {
+      // The pre-#2267 shipped shape: a hand-written "Discount
+      // ({{promoCode}}): -{{discount}}" row and a hand-written "Door code:
+      // {{doorCode}}" line. Both satisfy their requirement through
+      // requiredTokenAlternatives, and a staleness check that ignored
+      // alternatives would nag every club still on that wording — the exact
+      // false positive the issue warns about.
+      mocks.emailTemplateOverrideFindMany.mockResolvedValue([
+        overrideRow(
+          "booking-confirmed",
+          "See you soon",
+          "Hi {{firstName}}.\n\nSubtotal: {{subtotal}}\nDiscount ({{promoCode}}): -{{discount}}\nTotal Paid: {{totalPaid}}\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\nDoor code: {{doorCode}}",
+        ),
+      ]);
+
+      const staleContent = await staleContentFor("booking-confirmed");
+      expect(staleContent.differsFromDefault).toBe(true);
+      expect(staleContent.reasons).toEqual([]);
+      expect(staleContent.missingRequiredTokens).toEqual([]);
+
+      const response = await getEmailTemplates();
+      expect((await response.json()).missingRequiredTokenOverrides).toEqual([]);
+    });
+
+    it("flags a saved copy that no longer shows something the email must say", async () => {
+      // This is the drift #2267 created and nothing surfaced: the override
+      // shows a subtotal and a total with no explanation of the difference.
+      // Such a row cannot even be re-saved today, and until now nothing told
+      // the admin so.
+      mocks.emailTemplateOverrideFindMany.mockResolvedValue([
+        overrideRow(
+          "booking-confirmed",
+          "See you soon",
+          "Hi {{firstName}}.\n\nSubtotal: {{subtotal}}\nTotal Paid: {{totalPaid}}\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\n{{doorCodeNote}}",
+        ),
+      ]);
+
+      const staleContent = await staleContentFor("booking-confirmed");
+      expect(staleContent.reasons).toEqual(["missing_required_token"]);
+      expect(staleContent.missingRequiredTokens).toEqual(["promoSummary"]);
+
+      const response = await getEmailTemplates();
+      expect((await response.json()).missingRequiredTokenOverrides).toEqual([
+        { templateName: "booking-confirmed", tokens: ["promoSummary"] },
+      ]);
+    });
+
+    it("gathers the reasons #2320 already banners onto the template they belong to", async () => {
+      // Same detectors, same verdicts — repeated per template so the editor can
+      // say everything about the message you have open in one place, instead of
+      // making you match names out of a list at the top of the page.
+      mocks.emailTemplateOverrideFindMany.mockResolvedValue([
+        overrideRow(
+          "checkin-reminder",
+          "Check-in Reminder",
+          "Hi {{firstName}}.\n\nGuest list:\n\n{{guestFirstName}} {{guestLastName}} [only when chores exist]",
+        ),
+      ]);
+
+      const staleContent = await staleContentFor("checkin-reminder");
+      expect(staleContent.reasons).toEqual([
+        "retired_token",
+        "bracket_annotation",
+      ]);
+      expect(staleContent.retiredTokens).toEqual([
+        "guestFirstName",
+        "guestLastName",
+      ]);
+      expect(staleContent.bracketAnnotations).toEqual([
+        "[only when chores exist]",
+      ]);
+    });
+
+    it("treats a null field as 'use the built-in wording', not as a difference", async () => {
+      mocks.emailTemplateOverrideFindMany.mockResolvedValue([
+        overrideRow("booking-confirmed", null, bookingConfirmedDefault.defaultBody),
+      ]);
+
+      expect(await staleContentFor("booking-confirmed")).toEqual(
+        expect.objectContaining({
+          subjectDiffersFromDefault: false,
+          bodyDiffersFromDefault: false,
+          differsFromDefault: false,
+        }),
+      );
+    });
+  });
+
   it("refuses to save an override that still carries a bracket authoring note", async () => {
     const response = await putEmailTemplate(
       request("/api/admin/email-templates", {

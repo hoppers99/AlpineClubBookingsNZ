@@ -99,6 +99,105 @@ export async function GET() {
         entry !== null,
     );
 
+  // #2269 (F3): the advisory half. Everything above answers "is this override
+  // still VALID?"; this answers the question an admin actually asks — "my saved
+  // copy is not the built-in wording any more; does that matter?"
+  //
+  // WHY THIS IS NOT A HASH COMPARISON. The tempting design is to stamp each
+  // override with a hash of the default it was authored against and flag any
+  // row whose stamp no longer matches. It was rejected twice over. First, a
+  // stamp can only describe saves made AFTER it ships: every row that exists
+  // today — the entire population this issue exists for — would carry no stamp
+  // and the feature would be dark on exactly the clubs it is for, and there is
+  // no honest way to backfill it because nobody knows which historical default
+  // a given club copied. Second, and worse, it fires on every release that
+  // touches a default at all, including a comma in a paragraph the club deleted
+  // years ago; its only remedy is Restore Default, which destroys the
+  // customisation. That is precisely the false "you have drifted" noise #2269
+  // says not to produce.
+  //
+  // So the WARNING is reserved for things that are objectively wrong with the
+  // saved copy, each one already defined by a rule the save path enforces, and
+  // the plain fact "your copy differs from the built-in wording" is reported
+  // WITHOUT alarm alongside a diff, because differing is what an override is
+  // FOR. The reasons are:
+  //
+  //   missing_required_token — the registry says this email must show the
+  //     member something (the promo explanation, the way into the lodge) and
+  //     the saved body no longer does. Honours requiredTokenAlternatives
+  //     (#2267), so a club that writes its own "Door code: {{doorCode}}" line
+  //     instead of {{doorCodeNote}} is NOT nagged. This is the drift #2267
+  //     created and nothing surfaced: such a row cannot even be re-saved today.
+  //   retired_token / bracket_annotation — the two #2320 already banners. They
+  //     are repeated per template so the editor can show one consolidated
+  //     indicator on the template you have open, instead of making you read a
+  //     list of names at the top of the page and match them up yourself.
+  const staleContentByTemplate = new Map<
+    string,
+    {
+      differsFromDefault: boolean;
+      subjectDiffersFromDefault: boolean;
+      bodyDiffersFromDefault: boolean;
+      reasons: string[];
+      missingRequiredTokens: string[];
+      retiredTokens: string[];
+      bracketAnnotations: string[];
+    }
+  >();
+  for (const definition of EMAIL_TEMPLATE_DEFINITIONS) {
+    const override = overrideByTemplate.get(definition.key);
+    if (!override) continue;
+
+    const validation = validateEmailTemplateContent({
+      templateName: definition.key,
+      subject: override.subject ?? "",
+      bodyText: override.bodyText ?? "",
+    });
+    const retiredTokens = Array.from(
+      new Set(
+        validation.issues
+          .filter(
+            (issue) =>
+              issue.code === "disallowed_token" || issue.code === "unknown_token",
+          )
+          .flatMap((issue) => issue.tokens ?? []),
+      ),
+    );
+    // A null field means "fall back to the built-in wording", which is not a
+    // difference — only a stored value that is not the default is.
+    const subjectDiffersFromDefault =
+      override.subject !== null && override.subject !== definition.defaultSubject;
+    const bodyDiffersFromDefault =
+      override.bodyText !== null && override.bodyText !== definition.defaultBody;
+    const reasons = [
+      validation.missingRequiredTokens.length > 0
+        ? "missing_required_token"
+        : null,
+      retiredTokens.length > 0 ? "retired_token" : null,
+      validation.bracketAnnotations.length > 0 ? "bracket_annotation" : null,
+    ].filter((reason): reason is string => reason !== null);
+
+    staleContentByTemplate.set(definition.key, {
+      differsFromDefault: subjectDiffersFromDefault || bodyDiffersFromDefault,
+      subjectDiffersFromDefault,
+      bodyDiffersFromDefault,
+      reasons,
+      missingRequiredTokens: validation.missingRequiredTokens,
+      retiredTokens,
+      bracketAnnotations: validation.bracketAnnotations,
+    });
+  }
+
+  // The one reason with no banner of its own yet. Deliberately NOT a fourth
+  // banner repeating what the two above already say — an admin who is told the
+  // same thing three times stops reading all three.
+  const missingRequiredTokenOverrides = [...staleContentByTemplate.entries()]
+    .filter(([, staleContent]) => staleContent.missingRequiredTokens.length > 0)
+    .map(([templateName, staleContent]) => ({
+      templateName,
+      tokens: staleContent.missingRequiredTokens,
+    }));
+
   // #2307 review (M2): the same failure one level up. A token a template no
   // longer supplies renders as NOTHING — there is no conditional syntax and no
   // error — so an override written against an older default keeps sending, with
@@ -133,12 +232,14 @@ export async function GET() {
       return {
         ...definition,
         override: override ? serializeOverride(override) : null,
+        staleContent: staleContentByTemplate.get(definition.key) ?? null,
       };
     }),
     staleOverrideCount: staleOverrides.length,
     staleOverrides,
     bracketAnnotationOverrides,
     retiredTokenOverrides,
+    missingRequiredTokenOverrides,
   });
 }
 
