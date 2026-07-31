@@ -9,12 +9,15 @@
  * transaction without dragging the Prisma client in; if this constant lived
  * alongside the settings loader or the notification dispatcher, importing it
  * there would pull `@/lib/prisma` into the transaction-safe module and create an
- * import cycle back through `member-guest-add-policy.ts`. A leaf with a single
- * string cannot do either.
+ * import cycle back through `member-guest-add-policy.ts`. A leaf of bare
+ * constants cannot do either. `membership-type-policy.ts` joined the readers with
+ * the privacy re-review's finding 2, and two CLIENT components read the code
+ * constant below — which is why that one moved here from `booking-guests.ts`.
+ * NOTHING in this file may ever gain an import.
  *
  * WHAT D-8 ACTUALLY ASKS FOR, because it is easy to implement the wrong half.
  * MG2 is the release in which a cross-family `memberId` first gets past
- * authorization, so from here on three refusals become reachable by anybody who
+ * authorization, so from here on FOUR refusals become reachable by anybody who
  * can call the booking API, against a member the caller may have no relationship
  * with whatsoever:
  *
@@ -24,10 +27,16 @@
  *   2. the person-night conflict, which returned the member's already-booked
  *      nights;
  *   3. the profile-completeness gate, which returned their name, which fields
- *      of their profile are blank, and whether they hold a login.
+ *      of their profile are blank, and whether they hold a login;
+ *   4. the membership-type booking policy refusal, which named the member — or
+ *      their EMAIL ADDRESS where their name was blank — and carried their member
+ *      id and membership category as structured fields. This one was missed
+ *      until the MG3 privacy RE-REVIEW (finding 2); it is the most explicit of
+ *      the four and the only one that does not even depend on the dates asked
+ *      about, so a single request answered it.
  *
  * The refusal ITSELF cannot be removed — each one enforces a real invariant — so
- * what D-8 removes is the ability to tell the three APART. All three collapse to
+ * what D-8 removes is the ability to tell the four APART. All four collapse to
  * this one message with ONE status (403). A 409 for a collapsed night conflict
  * would have defeated even that much: the status alone would have said "that
  * member is already booked those nights".
@@ -38,8 +47,9 @@
  * WHAT IT DELIVERS: one refusal is byte-identical whatever the REASON. A caller
  * holding a single refused response cannot tell "there is no such member" from
  * "that member's subscription is unpaid" from "that member is already booked
- * those nights" from "that member's profile is incomplete" — same words, same
- * 403, so a single probe answers only "not right now".
+ * those nights" from "that member's profile is incomplete" from "that member's
+ * membership type does not allow bookings" — same words, same 403, so a single
+ * probe answers only "not right now".
  *
  * WHAT IT DOES NOT DELIVER: the refusal is DATE-DEPENDENT, and a caller who
  * repeats it is not limited to a single probe. Adding the same member across a
@@ -68,10 +78,16 @@
  *     come back in one query's time, every time. It does NOT close the channel:
  *     a refusal slower than the floor still reports its own duration.
  *   * **The probing is now throttled**, per ACTING MEMBER rather than per IP,
- *     and only on attempts that name a beyond-family member — so an ordinary
+ *     and only on attempts that INVOLVE a beyond-family member — so an ordinary
  *     family booking is not rate-limited at all, and a run of probes across
  *     dates is capped at 15 per quarter-hour and 50 per day, charged exactly
- *     once per attempt.
+ *     once per attempt. "Involve" rather than "name" because of the re-review's
+ *     finding HIGH-1: `modify-quote` can be refused about a member the request
+ *     never mentions — they are already on the booking and only the dates moved
+ *     — and that preview was free until `applyMemberGuestPartyProbeThrottle`
+ *     started charging over the whole marked party. The route's two charge
+ *     points share a per-request ledger, so an attempt that trips both still
+ *     costs one unit.
  *   * **Every collapsed refusal is now audited**, naming the actor and the
  *     target, and a run of them against the same target raises a distinct
  *     admin-visible row. By the owner's explicit sub-decision this LOGS and
@@ -79,7 +95,7 @@
  *     friend is the normal case, and refusing them would produce a vague answer
  *     they could not act on.
  *
- * THREE CORRECTIONS THE PRIVACY AND CORRECTNESS REVIEWS FORCED ON THIS FILE, kept
+ * FIVE CORRECTIONS THE PRIVACY AND CORRECTNESS REVIEWS FORCED ON THIS FILE, kept
  * here rather than quietly folded in, because the mistakes are instructive and an
  * overclaiming docblock is worse than no docblock at all.
  *
@@ -103,6 +119,16 @@
  *      audited set is now every refusal on `bookings/quote`, `bookings/create`,
  *      `bookings/guests-add`, `bookings/modify-quote`, `bookings/modify` and
  *      `bookings/modify-dates`.
+ *   4. **"All three collapse" was counting the wrong number.** The membership-type
+ *      booking policy refusal is a FOURTH, and nothing collapsed it: it named the
+ *      member in its sentence and shipped their id and membership category in a
+ *      structured body. It is now item 4 in the list above, and it collapses on
+ *      the same boundary as the other three (privacy re-review, finding 2).
+ *   5. **"Throttled ... charged exactly once per attempt" was true and
+ *      insufficient.** It counted attempts that NAMED a beyond-family member, and
+ *      `modify-quote`'s cheapest surface names nobody — see the throttle bullet
+ *      above. The sentence needed the word "involve", and the code needed a
+ *      second charge point to make the word true.
  *
  * AND ONE LEAK THAT WAS NOT A RESIDUAL AT ALL. The collapse used to be driven by
  * a marker set only on guests a request was ADDING, so a cross-family member
@@ -111,7 +137,16 @@
  * through a side-effect-free preview that spent no throttle and wrote no audit
  * row. That was a direct read-out rather than a pattern to be inferred, and it
  * defeated all of the above at once. `markCrossFamilyGuestsOnBooking` now derives
- * the set from the live family boundary over the WHOLE proposed party.
+ * the set from the live family boundary over the WHOLE proposed party — subject
+ * to the owner's gate of 1 Aug 2026 (re-review finding 4): the recomputation
+ * runs only when the club's member-guest module is enabled OR the booking
+ * already carries a member-guest consent row, so a club that never adopted the
+ * feature does not pay for it on every booking change. When the gate skips there
+ * is no marker, and everything keyed off the marker — this collapse and the
+ * whole-party throttle charge alike — goes quiet together. That case is a
+ * booking an admin put a beyond-family member on at a club with the module off
+ * and no consent row ever written, which is the same narrow case the marking
+ * function's own note always called out.
  *
  * SO THE HONEST STATEMENT AFTER MG3 IS THIS: a single refusal still tells a
  * caller nothing, and a run of them is now slow, capped, and recorded against

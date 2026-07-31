@@ -238,17 +238,43 @@ answered) and built to it:
   names included, before they decide** (D-11 as ticked); and that **their
   approval covers the booking however it later changes**, with removal subject to
   the usual limits once it is priced or paid (D-13/D-14 as ticked).
-- **#2388's mitigations ride the add paths, not just the finder.** Per-acting-member
-  throttling on `/api/bookings/quote`, create, guest-add and modify-quote —
-  counted only when the attempt names somebody beyond the booker's family, so an
-  ordinary family booking is never slowed. A response floor on every collapsed
-  refusal, paired with the more important fix: "Linked member is inactive or not
-  found" and the age-exempt refusal used to answer a cross-family probe in their
-  own words with their own status, and now collapse to the neutral one too.
-  Every collapsed refusal is audited naming actor and target, and a run of them
-  against the same target raises a flagged row an admin can find — **logged,
-  never blocked**, by the owner's explicit sub-decision, because a member trying
-  several dates for a friend is the normal case.
+- **#2388's mitigations ride the add paths, not just the finder.**
+  Per-acting-member throttling on all SIX member-facing add paths —
+  `/api/bookings/quote`, create, guest-add, modify-quote, modify and
+  modify-dates. It is counted when the attempt INVOLVES somebody beyond the
+  booker's family, which is not quite the same as naming them: `modify-quote`
+  has a second charge point that fires when the booking merely CARRIES a
+  cross-family member guest and the request only moves the dates, because that
+  preview asks the same question about the same person and used to cost nothing
+  at all. The two share one ledger, so one attempt is one unit however many
+  charge points fire. An ordinary family booking is still never slowed, and
+  neither is a booking with no cross-family member guest on it.
+- **A response floor on every collapsed refusal**, paired with the more
+  important fix: "Linked member is inactive or not found" and the age-exempt
+  refusal used to answer a cross-family probe in their own words with their own
+  status, and now collapse to the neutral one too — as does the membership-type
+  refusal, which used to name the blocked member and their membership category
+  outright. The floor is a MINIMUM, not a budget: refusals raised late in a
+  request (the person-night guard, the unpaid-subscription check) still report
+  whatever the pricing path cost, and this map does not claim otherwise.
+- **Every collapsed refusal is audited** naming actor and target, and a run of
+  them against the same target raises a flagged row an admin can find — ONCE per
+  actor/target per 24 hours, on the crossing rather than on every refusal past
+  it, so an afternoon of ordinary re-dating does not bury the signal in
+  duplicates. **Logged, never blocked**, by the owner's explicit sub-decision,
+  because a member trying several dates for a friend is the normal case.
+- **The edit panel does not claim an add that did not happen.** A date change on
+  a booking that already carries a cross-family member guest can be refused, and
+  the shared sentence — "this member can't be added" — would be describing an
+  act the booker did not perform. On a request that adds nobody the panel says
+  "This change can't be made to this booking right now" instead. The server's
+  answer is unchanged; the client is describing its own request.
+- **The family-boundary recomputation is gated** (owner decision, 1 Aug 2026).
+  It runs on a booking-change request only when the club's member-guest module
+  is enabled, or the booking already carries a member-guest consent row — so a
+  club that never adopted the feature does not pay for it on every edit, while a
+  legacy or in-flight booking keeps its protection if the module is later
+  switched off.
 
 ## Feedback Conventions
 

@@ -46,16 +46,30 @@ All notable public reference-release changes should be recorded here.
   (#2388).** A single refusal already said nothing — "This member can't be added
   to this booking right now", whatever the real reason — but somebody patient
   could try date after date and read the answer out of the pattern. Three things
-  now sit behind that sentence. Adding a member from outside your own family
-  group is speed-limited per person, so a run of attempts across many dates is
-  slowed to something useless while an ordinary family booking is not slowed at
-  all. The "no such member" answer has stopped being the fast one, and two
-  refusals that used to escape the neutral wording altogether — "linked member is
-  inactive or not found" and the age-exempt-account refusal — now read exactly
-  like every other one for a member outside your family, while a member adding
-  their own child still gets the detailed, actionable message. And repeated
-  refusals against the same person are recorded where an admin can find them,
-  flagged, naming both members.
+  now sit behind that sentence. Anything involving a member from outside your own
+  family group is speed-limited per person, so a run of attempts across many
+  dates is slowed to something useless while an ordinary family booking is not
+  slowed at all. "Involving" rather than "adding" is the point: the cheapest way
+  to ask the question was to add the person once, then keep re-quoting new dates
+  on that booking without naming them again — which cost nothing until this
+  release. Every such preview now spends the same allowance an add does, once per
+  request however many places in it could have charged.
+
+  The "no such member" answer has stopped being the fast one, and three refusals
+  that used to escape the neutral wording altogether now read exactly like every
+  other one for a member outside your family: "linked member is inactive or not
+  found", the age-exempt-account refusal, and — found in a second review of the
+  same code — the membership-type refusal, which used to answer with the blocked
+  member's NAME (or their email address, where their name was blank) and their
+  membership category in as many words. A member adding their own child, and an
+  admin acting on somebody's behalf, still get the detailed, actionable message.
+
+  And repeated refusals against the same person are recorded where an admin can
+  find them, flagged, naming both members — **once per pair per day**, raised when
+  the line is first crossed rather than on every attempt after it. The earlier
+  behaviour turned one afternoon of ordinary re-dating into a run of flagged
+  entries about an innocent booker, which is how a club officer learns to scroll
+  past the thing they were meant to notice.
 
   That last one is deliberately a record and **never a block**. Somebody trying
   five weekends to find one that suits a friend produces exactly the same pattern
@@ -78,11 +92,23 @@ All notable public reference-release changes should be recorded here.
   answer applies to everybody it was always meant to cover. Three further gaps
   found in the same review are closed with it: changing a booking through the
   edit panel now carries the same speed limit, record and equal timing as every
-  other way of adding somebody; the "subscription unpaid" refusal no longer
-  answers noticeably later than its siblings; and the speed limit itself no
-  longer answered "too many requests" for a real member while answering the
-  ordinary refusal for a made-up one, which had quietly turned the protection
-  into the very thing it was there to prevent.
+  other way of adding somebody; the "subscription unpaid" refusal is recorded and
+  speed-limited like its siblings, though it is honestly still answered later
+  than they are, because the limit is a minimum wait rather than a fixed one; and
+  the speed limit itself no longer answered "too many requests" for a real member
+  while answering the ordinary refusal for a made-up one, which had quietly
+  turned the protection into the very thing it was there to prevent.
+
+  Two more came out of a follow-up review. When you change only the dates on a
+  booking that already has a member guest on it and the club refuses, the edit
+  panel used to say "this member can't be added" — naming something you had not
+  done, about somebody not mentioned anywhere on the screen. It now says the
+  change can't be made, which is what actually happened. And the club-side work
+  that decides who counts as "outside the family" no longer runs on every booking
+  change at every club: it runs where the member-guest feature is switched on, or
+  on a booking that has ever carried a member-guest request, so a club that never
+  turned the feature on does not pay for it — and a club that turns it off does
+  not lose the protection on the bookings it already has.
 
 - **Smaller fixes in the same area (#2308).** A shared network — a family on the
   lodge wifi, or a club night — no longer runs out of lookups because everyone

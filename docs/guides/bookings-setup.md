@@ -114,7 +114,12 @@ Guest** button beside the existing "+ Add Non-Member Guest". It opens a find box
   inventing a distinguishing detail they never had.
 - **When somebody cannot be added**, the member gets one sentence — "This member
   can't be added to this booking right now." — and the same sentence whatever the
-  real reason. See below.
+  real reason. See below. One place words it differently, and it is not an
+  exception to the rule: if a member is only CHANGING THE DATES on a booking that
+  already has a member guest on it, the edit panel says "This change can't be
+  made to this booking right now" instead, because nobody was being added and
+  telling them otherwise sends them hunting for a bug that is not there. The club
+  gives the same answer either way; only the browser's wording differs.
 
 ### Why refusals are deliberately unhelpful, and what backs that up
 
@@ -125,14 +130,27 @@ movements and finances by trying date after date.
 
 From #2388, three things back that wording up:
 
-- **A per-person speed limit on adding**, counted only when the person being
-  added is outside the booker's own family. An ordinary family booking is never
-  slowed by it, however many times the dates change.
+- **A per-person speed limit on adding**, counted only when somebody outside the
+  booker's own family is involved. An ordinary family booking is never slowed by
+  it, however many times the dates change. One thing to know if a member ever
+  asks: re-dating a booking that ALREADY has a member guest on it does count,
+  because previewing those new dates asks the club the same question about that
+  person as adding them would. It is a generous limit — fifteen in a quarter of
+  an hour — so an ordinary edit will not reach it, but a very long session of
+  date-fiddling on such a booking can.
 - **Equal timing.** The "no such member" answer used to come back noticeably
-  faster than the others; it no longer does.
+  faster than the others; it no longer does. This narrows the gap rather than
+  closing it — a refusal that happens to take longer than the floor still takes
+  as long as it takes — and this guide will not claim more than that.
+- **Neutral wording everywhere**, including the refusal that used to name the
+  blocked member and their membership category outright. A member outside the
+  booker's family is never named; the booker's own family, and any admin acting
+  on somebody's behalf, still get the detailed message they need to act on.
 - **A record an admin can read.** Repeated refusals against the same person raise
-  a flagged entry in the audit log naming both members. **Nothing is ever blocked
-  automatically** — a member trying several dates to find one that suits a friend
+  a flagged entry in the audit log naming both members — **one entry per pair
+  per day**, raised when the line is first crossed rather than on every attempt
+  after it, so an afternoon of ordinary re-dating cannot bury the signal in
+  duplicates. **Nothing is ever blocked automatically** — a member trying several dates to find one that suits a friend
   is the normal case, and that is indistinguishable from probing without a human
   looking. If you see one of these entries, treat it as a conversation to have,
   not a rule that fired.
