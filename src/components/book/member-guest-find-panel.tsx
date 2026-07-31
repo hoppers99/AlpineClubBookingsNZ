@@ -101,9 +101,6 @@ export function MemberGuestFindPanel({
   const [state, setState] = useState<PanelState>({ kind: "IDLE" });
   const [selected, setSelected] = useState<MemberGuestCandidate | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
-  // Bumped by the Find button so the debounced effect fires immediately for a
-  // query the member has explicitly asked for.
-  const [findNow, setFindNow] = useState(0);
 
   const inputId = useId();
   const listboxId = useId();
@@ -116,7 +113,6 @@ export function MemberGuestFindPanel({
   const abortRef = useRef<AbortController | null>(null);
 
   const intent = classifyMemberGuestFindInput(text);
-  const isEmailIntent = intent.kind === "EMAIL";
   const nameQuery = intent.kind === "NAME" ? intent.q.trim() : "";
   const nameTooShort =
     intent.kind === "NAME" && nameQuery.length < MEMBER_GUEST_SEARCH_MIN_CHARS;
@@ -165,6 +161,40 @@ export function MemberGuestFindPanel({
     }
   }
 
+  async function runNameSearch(q: string) {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setState((current) => ({
+      kind: "LOADING",
+      mode: "NAME",
+      previous: current.kind === "RESULTS" ? current.response : undefined,
+    }));
+    try {
+      const res = await fetch(
+        `/api/members/guest-candidates/search?q=${encodeURIComponent(q)}`,
+        { signal: controller.signal },
+      );
+      if (res.status === 429) {
+        setState({ kind: "RATE_LIMITED" });
+        return;
+      }
+      if (!res.ok) {
+        setState({ kind: "ERROR" });
+        return;
+      }
+      const response = (await res.json()) as MemberGuestCandidateResponse;
+      setState({ kind: "RESULTS", response, mode: "NAME" });
+      setActiveIndex(0);
+      if (shouldAutoResolveMemberGuestCandidate(response)) {
+        chooseCandidate(response.candidates[0]!);
+      }
+    } catch (err) {
+      if ((err as Error).name === "AbortError") return;
+      setState({ kind: "ERROR" });
+    }
+  }
+
   // The name type-ahead. Debounced, aborted per keystroke, and only ever
   // mounted when the club turned open search on.
   //
@@ -184,44 +214,13 @@ export function MemberGuestFindPanel({
 
     const q = nameQuery;
     const timer = setTimeout(() => {
-      abortRef.current?.abort();
-      const controller = new AbortController();
-      abortRef.current = controller;
-      setState((current) => ({
-        kind: "LOADING",
-        mode: "NAME",
-        previous: current.kind === "RESULTS" ? current.response : undefined,
-      }));
-      fetch(`/api/members/guest-candidates/search?q=${encodeURIComponent(q)}`, {
-        signal: controller.signal,
-      })
-        .then(async (res) => {
-          if (res.status === 429) {
-            setState({ kind: "RATE_LIMITED" });
-            return;
-          }
-          if (!res.ok) {
-            setState({ kind: "ERROR" });
-            return;
-          }
-          const response = (await res.json()) as MemberGuestCandidateResponse;
-          setState({ kind: "RESULTS", response, mode: "NAME" });
-          setActiveIndex(0);
-          if (shouldAutoResolveMemberGuestCandidate(response)) {
-            chooseCandidate(response.candidates[0]!);
-          }
-        })
-        .catch((err: Error) => {
-          if (err.name === "AbortError") return;
-          setState({ kind: "ERROR" });
-        });
+      void runNameSearch(q);
     }, SEARCH_DEBOUNCE_MS);
 
     return () => clearTimeout(timer);
     // `intent` is derived from `text`; depending on the raw string keeps the
     // effect from re-running on every render for an unchanged query.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [text, openSearchEnabled, selected, intent.kind, nameQuery, nameTooShort, findNow]);
+  }, [text, openSearchEnabled, selected, intent.kind, nameQuery, nameTooShort]);
 
   const candidates =
     state.kind === "RESULTS"
@@ -276,8 +275,8 @@ export function MemberGuestFindPanel({
       setState({ kind: "MESSAGE", text: MEMBER_GUEST_FIND_COPY.minChars });
       return;
     }
-    // Skip the debounce for an explicit request.
-    setFindNow((n) => n + 1);
+    // An explicit press runs the query now rather than restarting the debounce.
+    void runNameSearch(nameQuery);
   }
 
   /**

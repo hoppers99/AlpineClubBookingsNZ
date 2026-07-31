@@ -167,10 +167,27 @@ describe("2. response-timing equalisation", () => {
 
   it("does not wait at all when the answer already took longer than the floor", async () => {
     __setMemberGuestRefusalFloorMs(20);
-    const clock = startMemberGuestRefusalClock() - 5_000;
+    // Five seconds of elapsed time, expressed the only way the branded type
+    // allows: a real reading, moved back. The cast is the test acknowledging
+    // that it is faking a clock, which is exactly what the brand is for.
+    const clock = (startMemberGuestRefusalClock() - 5_000) as ReturnType<
+      typeof startMemberGuestRefusalClock
+    >;
     const wallBefore = Date.now();
     await equaliseMemberGuestRefusalTiming(clock);
     expect(Date.now() - wallBefore).toBeLessThan(20);
+  });
+
+  it("applies the WHOLE floor rather than skipping it when the elapsed time is impossible", () => {
+    // L4's second half. A caller who measured against the wall clock produces a
+    // vast negative delta; the arithmetic's natural answer is "wait zero", i.e.
+    // silently drop the control. Failing closed costs a quarter-second and
+    // cannot leak anything.
+    __setMemberGuestRefusalFloorMs(250);
+    expect(memberGuestRefusalDelayMs(-1_700_000_000_000)).toBe(250);
+    expect(memberGuestRefusalDelayMs(Number.NaN)).toBe(250);
+    expect(memberGuestRefusalDelayMs(60 * 60 * 1000)).toBe(250);
+    expect(memberGuestRefusalDelayMs(100)).toBe(150);
   });
 
   it("uses a MONOTONIC clock, so an NTP jump cannot skip or hang the floor", () => {
