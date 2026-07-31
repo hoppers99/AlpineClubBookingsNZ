@@ -86,6 +86,26 @@ export async function GET(req: NextRequest) {
     orderBy: { createdAt: "desc" },
   });
 
+  // Applications that gave NOBODY a benefit, counted directly (#2299). It
+  // cannot be derived by subtracting `currentRedemptions` from the application
+  // count: those are different units. `currentRedemptions` counts BENEFICIARY
+  // rows, so one application benefiting two members contributes 2 — on a
+  // multi-beneficiary code the subtraction can under-report, or go negative and
+  // hide the line exactly when there is something to report.
+  const benefitFreeGroups = promoCodes.length
+    ? await prisma.promoRedemption.groupBy({
+        by: ["promoCodeId"],
+        where: {
+          promoCodeId: { in: promoCodes.map((promoCode) => promoCode.id) },
+          allocations: { none: BENEFICIAL_PROMO_ALLOCATION_FILTER },
+        },
+        _count: { _all: true },
+      })
+    : [];
+  const benefitFreeByPromoCodeId = new Map(
+    benefitFreeGroups.map((group) => [group.promoCodeId, group._count._all])
+  );
+
   return NextResponse.json(
     promoCodes.map(({ allocations, lodges, _count, ...promoCode }) => ({
       ...promoCode,
@@ -93,6 +113,8 @@ export async function GET(req: NextRequest) {
       // Every recorded application of the code, including the ones that
       // delivered no benefit and so consume no cap (#2299).
       totalRedemptionCount: _count.redemptions,
+      // How many of those applications gave nobody anything.
+      benefitFreeRedemptionCount: benefitFreeByPromoCodeId.get(promoCode.id) ?? 0,
       lodgeIds: lodges.map((row) => row.lodgeId),
     }))
   );

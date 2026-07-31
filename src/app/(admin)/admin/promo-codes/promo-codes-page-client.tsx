@@ -108,6 +108,10 @@ interface PromoCode {
   // Every application of the code, benefit or not. Used for the archive-or-
   // delete decision and shown as the operator-facing "applied" figure.
   totalRedemptionCount: number;
+  // How many of those applications gave NOBODY a benefit (#2299). Counted on
+  // the server; it is not `totalRedemptionCount - currentRedemptions`, because
+  // those two are in different units (applications vs beneficiaries).
+  benefitFreeRedemptionCount: number;
   assignments: PromoAssignment[];
   lodgeIds: string[];
 }
@@ -742,26 +746,34 @@ export function PromoCodesPageClient({
               <span className="font-medium">{formatPromoValue(promo)}</span>
             </div>
             <div>
-              <span className="text-muted-foreground">Redemptions that gave a benefit:</span>{" "}
+              {/* The number the total-uses cap is enforced against: one per
+                  member per booking, counting only members whose price actually
+                  changed (#2299). Named for what it counts, not "redemptions" —
+                  a single application that benefits three members moves this by
+                  three. */}
+              <span className="text-muted-foreground">Benefits given:</span>{" "}
               <span className="font-medium">
                 {promo.currentRedemptions}
                 {promo.maxRedemptionsTotal != null
                   ? ` / ${promo.maxRedemptionsTotal}`
                   : " (unlimited)"}
               </span>
-              {/* Only applications that actually changed someone's price count
-                  toward the caps (#2299). Surfacing the gap tells the operator
-                  a code is being applied fruitlessly — usually a sign it is
-                  misconfigured for the bookings people are making. */}
-              {promo.totalRedemptionCount > promo.currentRedemptions && (
-                <p className="text-xs text-muted-foreground">
-                  Applied to {promo.totalRedemptionCount} booking(s);{" "}
-                  {promo.totalRedemptionCount - promo.currentRedemptions} gave no benefit
-                  and used up no allowance
-                </p>
-              )}
+              {/* Always shown, so the operator can reconcile the cap figure
+                  against the number of bookings the code was actually used on;
+                  the benefit-free count comes from the server, because these
+                  two figures are in different units and cannot be subtracted. */}
+              <p className="text-xs text-muted-foreground">
+                One per member, per booking. Applied to{" "}
+                {promo.totalRedemptionCount} booking
+                {promo.totalRedemptionCount === 1 ? "" : "s"}
+                {promo.benefitFreeRedemptionCount > 0
+                  ? `, of which ${promo.benefitFreeRedemptionCount} gave no benefit and used up no allowance`
+                  : ""}
+              </p>
             </div>
             <div>
+              {/* Distinct members who benefited — the unique-members cap's own
+                  unit, so value and cap match. */}
               <span className="text-muted-foreground">Members who benefited:</span>{" "}
               <span className="font-medium">
                 {uniqueMembers}

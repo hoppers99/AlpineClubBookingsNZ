@@ -10,7 +10,10 @@ import {
 } from "@/lib/date-only";
 import type { Prisma } from "@prisma/client";
 import { createAuditLog } from "@/lib/audit";
-import { BENEFICIAL_PROMO_ALLOCATION_FILTER } from "@/lib/promo";
+import {
+  BENEFICIAL_PROMO_ALLOCATION_FILTER,
+  isBeneficialPromoAllocation,
+} from "@/lib/promo";
 
 const dateOnlyString = z.string().refine(isDateOnlyString, {
   message: "Date must be YYYY-MM-DD",
@@ -127,6 +130,8 @@ export async function GET(
     beneficialUniqueMembers,
     filteredAggregate,
     filteredUniqueMembers,
+    allBenefitFreeCount,
+    filteredBenefitFreeCount,
     // Lightweight full-history scan (asc) to rank each redemption as the nth
     // use by its member — independent of the date/lodge filter so the "2nd+
     // use" badge stays truthful even inside a narrow window. Ties broken by id
@@ -159,6 +164,16 @@ export async function GET(
     prisma.promoRedemption.groupBy({
       by: ["memberId"],
       where: filteredWhere,
+    }),
+    // Applications that gave NOBODY a benefit (#2299), counted directly for
+    // both populations. Deliberately not derived by subtracting the beneficiary
+    // counter: applications and beneficiaries are different units, so on a
+    // multi-beneficiary code the subtraction under-reports or goes negative.
+    prisma.promoRedemption.count({
+      where: { ...allWhere, allocations: { none: BENEFICIAL_PROMO_ALLOCATION_FILTER } },
+    }),
+    prisma.promoRedemption.count({
+      where: { ...filteredWhere, allocations: { none: BENEFICIAL_PROMO_ALLOCATION_FILTER } },
     }),
     prisma.promoRedemption.findMany({
       where: allWhere,
@@ -221,7 +236,14 @@ export async function GET(
     },
     eligibleGuestCount: r.eligibleGuestCount,
     discountCents: r.discountCents,
+    // Exposed so a price-RAISING fixed-nightly application is legible: it has
+    // discountCents = 0 yet is a real use, so "$0.00 discount" alone can never
+    // be read as "gave no benefit" (#2299).
+    priceAdjustmentCents: r.priceAdjustmentCents,
     freeNightsUsed: r.freeNightsUsed ?? 0,
+    // Whether this application consumed any usage allowance at all. Derived
+    // from the rows already loaded below, so it costs no extra query.
+    gaveBenefit: r.allocations.some(isBeneficialPromoAllocation),
     memberUseIndex: useIndexById.get(r.id) ?? 1,
     // The per-member split is only meaningful on a multi-member booking; a
     // single-allocation redemption just mirrors the row, so it is omitted.
@@ -272,6 +294,9 @@ export async function GET(
       // What the usage caps are actually measured against (#2299): only
       // applications that gave someone a benefit. Every tile below still counts
       // every application; these two are what the cap progress uses.
+      // `redemptions` here is the BENEFICIARY count the total-uses cap is
+      // enforced against (one per member per booking), NOT a count of
+      // PromoRedemption rows — the tiles label it accordingly.
       capUsage: {
         redemptions: promoCode.currentRedemptions,
         uniqueMembers: beneficialUniqueMembers.length,
@@ -289,12 +314,14 @@ export async function GET(
         uniqueMembers: allUniqueMembers.length,
         discountCents: allAggregate._sum.discountCents ?? 0,
         freeNightsUsed: allAggregate._sum.freeNightsUsed ?? 0,
+        benefitFreeRedemptions: allBenefitFreeCount,
       },
       filtered: {
         redemptions: filteredAggregate._count._all,
         uniqueMembers: filteredUniqueMembers.length,
         discountCents: filteredAggregate._sum.discountCents ?? 0,
         freeNightsUsed: filteredAggregate._sum.freeNightsUsed ?? 0,
+        benefitFreeRedemptions: filteredBenefitFreeCount,
       },
     },
     pagination: {

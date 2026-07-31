@@ -28,6 +28,17 @@
 -- stay in place on purpose (they are what keeps an old blue/green colour's
 -- redemptions visible as allocations); the application neutralises them by
 -- deleting a redemption's allocation rows immediately after each create/update.
+--
+-- OPERATOR STEP (blue/green only). During the migrate -> cutover drain an old
+-- colour can still write a fresh all-zero allocation row (directly, or via those
+-- triggers) and increment "currentRedemptions" for it. The new colour filters
+-- such a row out of every cap count immediately, but the counter is left one too
+-- high for that code until the booking is next repriced or removed — which may
+-- be never. It does NOT self-heal on its own, so AFTER THE OLD COLOUR HAS FULLY
+-- DRAINED, RE-RUN BOTH STATEMENTS BELOW ONCE by hand. Both are idempotent
+-- (statement 2 is a correlated recount, not a decrement), so a re-run on a clean
+-- install changes nothing. The drift direction is conservative meanwhile: it
+-- blocks a use slightly early, never allows an extra one.
 
 -- 1. Remove the historical all-zero allocation rows: no money off, no price
 --    change in either direction, and no subsidised night. Matches the benefit
