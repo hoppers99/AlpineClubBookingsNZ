@@ -4,6 +4,42 @@ const CAPTURED_PAYMENT_STATUSES = new Set([
   "REFUNDED",
 ]);
 
+/**
+ * M6 (#2262): the `Payment.status` values a manual cash / off-Xero settlement
+ * may settle FROM. PENDING/PROCESSING are the ordinary unsettled shapes; FAILED
+ * is a legitimate settle-from too — a declined or expired card attempt is
+ * exactly what an admin remedies with cash at the lodge. SUCCEEDED and the
+ * refunded variants can never be flipped: money has already moved through this
+ * payment, and recording cash over the top of it would misstate the ledger.
+ *
+ * Lives in this leaf module (#2397) because THREE places must agree: the
+ * read-time refusal and the fenced write in `payment-reconciliation.ts`, and
+ * the admin page's advisory state in `manual-booking-payment-state.ts`. Keeping
+ * it here lets the last of those share it without dragging the whole
+ * reconciliation module (and Stripe with it) into a page's import graph.
+ */
+export const MANUAL_SETTLE_FROM_PAYMENT_STATUS_LIST = [
+  "PENDING",
+  "PROCESSING",
+  "FAILED",
+] as const;
+
+const MANUAL_SETTLE_FROM_PAYMENT_STATUSES = new Set<string>(
+  MANUAL_SETTLE_FROM_PAYMENT_STATUS_LIST
+);
+
+/**
+ * #2397: the refusal an already-captured payment gets, shared so the admin page
+ * shows the SAME sentence before the click that the server returns after it.
+ */
+export const MANUAL_CAPTURED_PAYMENT_REFUSAL =
+  "This booking's payment has already taken money — it cannot also be recorded as a cash settlement. Check the payment (and any refund owing) before recording anything.";
+
+/** Whether a manual cash / off-Xero settlement may settle from this status. */
+export function isManualSettleFromPaymentStatus(status: string): boolean {
+  return MANUAL_SETTLE_FROM_PAYMENT_STATUSES.has(status);
+}
+
 // Booking statuses whose payment lifecycle has been entered (an invoice can
 // exist / money can have moved). Moved here from booking-modify-settlement
 // (#1729) so the Xero period lock-date guard can share the derivation below

@@ -34,6 +34,69 @@ All notable public reference-release changes should be recorded here.
   your own words or restore the default knowing exactly what you would be giving
   up. Wording that simply *reads* differently is reported as a plain difference
   and never as a problem — that is what saving your own copy is for.
+- **Recording a cash payment now asks about any extra still owing (#2397).**
+  When a booking is priced up after it was made — someone adds a guest, say —
+  the increase is tracked separately as an "additional payment" the member is
+  normally asked to pay by card. Until now, recording the booking as paid in
+  cash or by an off-Xero bank transfer said nothing about that extra and left it
+  recorded as still owing: the bookings list kept showing a "$X due" chip
+  against a fully settled booking, the reports counted the money as uncollected,
+  and the reminder emails would have gone on asking the member for money the
+  club already had. **Record manual payment** now shows the split — the booking
+  amount before the change, the extra, and what the booking owes in total — and
+  asks whether the money you received covers the addition as well. Say **yes**
+  and the full amount is recorded and the addition marked settled, so nothing
+  chases the member again and the booking's history says the payment covered it.
+  Say **no** and only the amount owed *before* the change is recorded: the
+  booking is still marked paid, but the books say the club received that smaller
+  amount and is still owed the addition, so the figures add up and the member is
+  rightly still asked for the rest. Neither answer is a default, you cannot
+  record the payment until you have chosen, and the dialog does not name a total
+  until you have — because your answer changes it. Bookings with no such extra —
+  nearly all of them — see the dialog completely unchanged. Reversing a manual
+  payment gives back exactly what it recorded, putting a covered addition back
+  to owing.
+
+  If you answer **no**, the member is left a way to pay. Recording a cash
+  payment normally closes any card payment the member still had open, so they
+  cannot pay twice for money the club already holds; the card payment for the
+  addition itself is now the one exception, because that money is still being
+  asked for. The member can settle it from their own booking page exactly as
+  before, and the confirmation on screen tells you whether they can — or whether
+  someone will need to contact them instead. Their confirmation email says the
+  same thing: rather than claiming the booking was paid in full, it shows the
+  booking total, what has been paid and what is still owing, and how to pay the
+  rest. Separately, a booking whose card payment has already taken money can no
+  longer be offered the cash-payment button at all: it now says why, instead of
+  refusing every attempt with a message about the booking having changed. Where
+  more than one reason applies, the most specific one is shown — a payment that
+  has already had money refunded says so, and says to resolve the refund first —
+  and it is the same sentence before you click as after.
+
+- **The Whakapapa conditions widget survives the source page changing, and now
+  shows the trails.** The public widget is scraped from an external report page
+  whose style names carry a build hash that changes every time that site
+  redeploys — and each time it did, a section quietly went blank (road status was
+  broken this way when this work started). The scraper now matches on the stable
+  parts of the page rather than those rotating hashes, so a routine upstream
+  rebuild no longer breaks it. A new **Trails** section joins road status, lifts,
+  facilities, food & drink and conditions: trails are grouped by sub-area (small
+  neighbouring areas share a line to save space) and each shows its run
+  difficulty as the standard ski symbol — green circle, blue square, black
+  diamond, red diamond — with a matching key, plus whether it is groomed and its
+  size. The status badges gained **On Hold** (yellow) alongside Open, Closed and
+  Coming Soon, and an **Unknown** state renders grey. Operators get a new
+  **Source & selectors** panel on *Admin → Mountain Conditions*: set the report
+  URL (locked to whakapapa.com / snow.nz so it can never be pointed at an
+  internal address), and, only if a deeper page change defeats the defaults,
+  override the per-section element selectors — with a **Preview** that fetches
+  and parses without saving, and a save that refuses a malformed selector up
+  front (naming the field) instead of storing one that would throw on every
+  later scrape. The built-in selector set is seeded into the database, and the
+  whole configuration can be **exported and imported as a JSON file** so one
+  site's known-good settings can be handed to another rather than re-entered by
+  hand.
+
 - **Clubs can safely record a trusted induction history when moving an
   established membership onto the digital register (#2361).** A new
   dry-run-first operator command classifies every active real-member
@@ -138,7 +201,7 @@ All notable public reference-release changes should be recorded here.
   is stuck and what actually fixes it (cancel the booking, add another guest,
   re-quote the request), never a dead-end "ask the club".
   The published banner-coverage figures were re-measured with the new settings
-  card: **297** gated admin controls, **250** of them covered by a banner (224
+  card: **299** gated admin controls, **252** of them covered by a banner (226
   in their own file, 26 by a verified vouching parent — 5 of those through the
   wizard frame), and **47** across 25 files deliberately keeping their own
   reason.
@@ -639,8 +702,8 @@ All notable public reference-release changes should be recorded here.
   added its three, once more when #2286's Release/Change bed controls landed,
   again when the cash / off-Xero payment feature, #2262, landed its four
   per-button-reason controls, and again with #2307's Member guests settings
-  card): **297**
-  gated admin controls, **250** of them covered by a banner (224 in their own
+  card): **299**
+  gated admin controls, **252** of them covered by a banner (226 in their own
   file, 26 by a verified vouching parent — 5 of those through the wizard frame),
   and **47** across 25 files deliberately keeping their own reason.
 - **Choosing to use your account credit and then saving the booking as a draft
