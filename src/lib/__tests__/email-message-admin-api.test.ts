@@ -1248,6 +1248,38 @@ describe("admin email message APIs", () => {
     expect(metadata.deletedOverride.bodyText).toBe("[REDACTED]");
   });
 
+  it("masks a token= fragment even in the wording it archives, and says so", async () => {
+    // The one honest caveat on "in full", pinned so it cannot surprise anybody:
+    // the key-value redaction still fires on template text shaped like a
+    // secret, and the SHIPPED password-reset body is exactly that shape. The
+    // confirmation dialog and docs/guides/email-messages.md both state it.
+    const passwordResetDefault = getEmailTemplateDefinition("password-reset")!;
+    expect(passwordResetDefault.defaultBody).toContain("token={{token}}");
+
+    mocks.emailTemplateOverrideFindUnique.mockResolvedValue({
+      id: "override-1",
+      templateName: "password-reset",
+      subject: "Reset your password",
+      bodyText: passwordResetDefault.defaultBody,
+      updatedByMemberId: "admin-9",
+      createdAt: new Date("2025-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-05-23T00:00:00.000Z"),
+    });
+
+    await resetEmailTemplate(
+      postRequest("/api/admin/email-templates/reset", {
+        templateName: "password-reset",
+      }),
+    );
+
+    const metadata = mocks.auditLogCreate.mock.calls.at(-1)?.[0].data.metadata;
+    expect(metadata.deletedOverride.bodyText).toContain("token=[REDACTED]");
+    // Everything around it is kept, so the archive is still worth having.
+    expect(metadata.deletedOverride.bodyText).toContain(
+      "You requested a password reset",
+    );
+  });
+
   it("renders membership cancellation refund policy defaults through preview", async () => {
     const templatesResponse = await getEmailTemplates();
     const templatesBody = await templatesResponse.json();

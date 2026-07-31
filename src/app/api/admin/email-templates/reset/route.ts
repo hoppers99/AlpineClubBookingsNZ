@@ -63,6 +63,13 @@ export async function POST(request: NextRequest) {
   // dialog and a docs page that both promise the audit log is the copy. Archive
   // mode keeps it whole and still redacts secrets, card numbers and sensitive
   // keys.
+  //
+  // "In full" therefore has ONE honest caveat, and the editor and the guide
+  // both state it rather than leaving it as a surprise: the key-value redaction
+  // still fires on template text shaped like a secret, so the shipped
+  // password-reset body's "?token={{token}}" is archived as "token=[REDACTED]".
+  // That is the redaction earning its keep, not a defect — but it means a club
+  // restoring such a line retypes that fragment.
   const before = await prisma.emailTemplateOverride.findUnique({
     where: { templateName: parsed.data.templateName },
   });

@@ -86,7 +86,11 @@ Two consequences worth knowing:
   merely looks like one, so your own bracketed wording survives even when it
   reads like ours (`[when you are 30 minutes away]` is yours, and it stays),
   and every message changed is recorded in the audit log with the whole before
-  and after so you can see what happened and put anything back. Square-bracketed
+  and after so you can see what happened. **Every message that was changed is
+  also named on this page**, with the notes removed and the lines they sat
+  beside, because one of our notes was sometimes the only thing marking a line
+  as conditional — read those lines and press Save when you are happy, which
+  clears the notice. Square-bracketed
   text your own admins wrote is deliberately **not** deleted for you: a warning
   at the top of this page names each template still carrying some, so open it,
   delete the bracketed text and save, or reset it to the corrected default.
@@ -156,7 +160,10 @@ unsaved edits — save first if you want to compare what you have just typed. An
 **Restore Default deletes your wording outright**: it asks you to confirm, and
 after that the only copy is the one written to the audit log — your subject and
 body in full, not an extract — which needs someone with database access to read
-back. If you are unsure, copy your wording somewhere safe first.
+back. One caveat on "in full": the audit log masks anything shaped like a
+secret, so a line such as `?token={{token}}` is stored as `token=[REDACTED]` and
+would have to be retyped. If you are unsure, copy your wording somewhere safe
+first.
 
 For the same reason, **each template covers exactly one outcome.** Where a
 message could go two ways there are two templates to edit, not one with a

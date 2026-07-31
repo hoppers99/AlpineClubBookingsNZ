@@ -24,6 +24,17 @@ All notable public reference-release changes should be recorded here.
   admin screen keeps flagging it. Every message the repair changes is recorded
   in the audit log with the whole before and after, so a club can see exactly
   what we changed and, with an administrator's help, restore any of it.
+  **Every message the repair touched is named on screen afterwards.** Some of
+  those notes were the only thing marking a line as conditional — `Payment has
+  been processed successfully.` was our wording, with `[only when the booking is
+  already paid]` beside it — so once the note goes, that line sends every time,
+  including on a booking that still owes money. **Admin → Email messages** lists
+  each repaired message, the notes removed and the lines they were attached to,
+  so an admin can read them and fix anything that no longer makes sense. Saving
+  the message clears the notice. **And Restore Default now keeps a full copy.**
+  It still deletes your wording and still cannot be undone from that screen, but
+  the subject and body it deletes are written to the audit log in full — not an
+  extract — so an administrator can read them back.
   **And the editor now tells you when your saved wording has fallen behind.**
   **Admin → Email messages** names any message whose saved copy no longer shows
   something that message is required to tell the recipient — most often a

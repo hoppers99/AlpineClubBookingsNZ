@@ -467,6 +467,11 @@ describe("email template saved-copy staleness surface (#2269)", () => {
     expect(dialogText).toHaveTextContent(
       "written to the audit log in full first",
     );
+    // …and it says exactly what "in full" does not cover, rather than leaving
+    // the exception to be discovered on the day someone needs the copy.
+    expect(dialogText).toHaveTextContent(
+      "only text that looks like a password, token or card number is masked",
+    );
 
     // Backing out leaves the saved wording alone.
     fireEvent.click(screen.getByRole("button", { name: /^Cancel$/ }));

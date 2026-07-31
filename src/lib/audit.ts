@@ -259,6 +259,11 @@ function sanitizeMetadataString(
   return redacted;
 }
 
+/**
+ * Sanitize a free-text audit value at the ORDINARY limits (the 1000-character
+ * clip included). "Archive" here is about the `details` column rather than
+ * about AuditMetadataOptions.archiveText, which is what keeps a value whole.
+ */
 export function sanitizeAuditArchiveText(
   value?: string | null
 ): string | null {

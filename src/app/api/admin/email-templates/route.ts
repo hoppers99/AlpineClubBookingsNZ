@@ -247,11 +247,17 @@ export async function GET() {
   //     the signal. Without this, stripping that line's annotation would take a
   //     row from "bracket_annotation, with a banner" to nothing at all, and a
   //     member who still owes $240 would read that their payment succeeded.
-  //   invalid_content — the catch-all. `reasons` above names six of the
-  //     validator's nine issue codes; a row that trips one of the other three
-  //     (a sensitive token in a subject is the reachable one) cannot be
-  //     re-saved and would otherwise be told nothing at all.
-  const strippedAnnotationsByTemplate = await loadAnnotationStripAudit();
+  //   invalid_content — the catch-all. `reasons` above names five of the
+  //     validator's nine issue codes (stripped_annotation and dangling_line are
+  //     this change's own, not the validator's); a row that trips one of the
+  //     other four (a sensitive token in a subject is the reachable one) cannot
+  //     be re-saved and would otherwise be told nothing at all.
+  // Only a SAVED override can have been rewritten by the migration, so a club
+  // that has never customised a message pays nothing for this.
+  const strippedAnnotationsByTemplate =
+    overrideByTemplate.size > 0
+      ? await loadAnnotationStripAudit()
+      : new Map<string, AnnotationStripRecord>();
   const staleContentByTemplate = new Map<
     string,
     {
