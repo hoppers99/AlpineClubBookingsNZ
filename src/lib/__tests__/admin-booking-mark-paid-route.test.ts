@@ -274,3 +274,205 @@ describe("POST /api/admin/bookings/[id]/mark-paid", () => {
     );
   });
 });
+
+/**
+ * #2397 — the extra-owing half of the same contract.
+ *
+ * `additionalCoverage` is sent ONLY when the dialog showed an outstanding
+ * extra; omitting it is the claim that it did not, which the settlement core
+ * re-checks under its locks. A reversal never carries it, because a reversal
+ * always puts an extra it settled back to owing.
+ */
+describe("POST /api/admin/bookings/[id]/mark-paid — the outstanding extra (#2397)", () => {
+  it("passes the admin's answer, and its stale-figure guard, straight through", async () => {
+    await POST(
+      makeRequest({
+        direction: "paid",
+        confirmed: true,
+        notifyMember: false,
+        expectedAmountCents: 12100,
+        additionalCoverage: {
+          covered: true,
+          expectedAdditionalAmountCents: 2100,
+        },
+      }),
+      { params },
+    );
+
+    expect(mocks.applyManualBookingPayment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        direction: "paid",
+        expectedAmountCents: 12100,
+        additionalCoverage: {
+          covered: true,
+          expectedAdditionalAmountCents: 2100,
+        },
+      }),
+    );
+  });
+
+  it("sends null — never an invented default — when the dialog showed no extra", async () => {
+    await POST(
+      makeRequest({
+        direction: "paid",
+        confirmed: true,
+        notifyMember: false,
+        expectedAmountCents: 10000,
+      }),
+      { params },
+    );
+
+    expect(mocks.applyManualBookingPayment).toHaveBeenCalledWith(
+      expect.objectContaining({ additionalCoverage: null }),
+    );
+  });
+
+  it("422s when a reversal carries an answer about an extra", async () => {
+    const response = await POST(
+      makeRequest({
+        direction: "unpaid",
+        confirmed: true,
+        additionalCoverage: {
+          covered: true,
+          expectedAdditionalAmountCents: 2100,
+        },
+      }),
+      { params },
+    );
+
+    expect(response.status).toBe(422);
+    expect((await response.json()).error).toMatch(/additionalCoverage cannot be sent/);
+    expect(mocks.applyManualBookingPayment).not.toHaveBeenCalled();
+  });
+
+  it("400s on a malformed answer rather than coercing it", async () => {
+    const response = await POST(
+      makeRequest({
+        direction: "paid",
+        confirmed: true,
+        notifyMember: false,
+        expectedAmountCents: 12100,
+        additionalCoverage: { covered: true, expectedAdditionalAmountCents: 0 },
+      }),
+      { params },
+    );
+
+    expect(response.status).toBe(400);
+    expect(mocks.applyManualBookingPayment).not.toHaveBeenCalled();
+  });
+
+  it("tells the admin what became of the extra, both ways", async () => {
+    mocks.applyManualBookingPayment.mockResolvedValue({
+      bookingId: "booking-1",
+      paymentId: "payment-1",
+      direction: "paid",
+      memberNotified: false,
+      receipt: "not_requested",
+      amountCents: 12100,
+      bookingStatus: "PAID",
+      creditElectionCents: null,
+      additional: {
+        outstandingCents: 2100,
+        settled: true,
+        recordedAmountCents: 12100,
+        payableOnline: false,
+      },
+    });
+    const settled = await POST(
+      makeRequest({
+        direction: "paid",
+        confirmed: true,
+        notifyMember: false,
+        expectedAmountCents: 12100,
+        additionalCoverage: {
+          covered: true,
+          expectedAdditionalAmountCents: 2100,
+        },
+      }),
+      { params },
+    );
+    expect((await settled.json()).message).toMatch(
+      /\$21\.00 extra owing on this booking was recorded as settled too/,
+    );
+
+    mocks.applyManualBookingPayment.mockResolvedValue({
+      bookingId: "booking-1",
+      paymentId: "payment-1",
+      direction: "paid",
+      memberNotified: false,
+      receipt: "not_requested",
+      // The not-covered branch records only what was handed over.
+      amountCents: 10000,
+      bookingStatus: "PAID",
+      creditElectionCents: null,
+      additional: {
+        outstandingCents: 2100,
+        settled: false,
+        recordedAmountCents: 10000,
+        payableOnline: true,
+      },
+    });
+    const unsettled = await POST(
+      makeRequest({
+        direction: "paid",
+        confirmed: true,
+        notifyMember: false,
+        expectedAmountCents: 12100,
+        additionalCoverage: {
+          covered: false,
+          expectedAdditionalAmountCents: 2100,
+        },
+      }),
+      { params },
+    );
+    const unsettledMessage = (await unsettled.json()).message as string;
+    expect(unsettledMessage).toMatch(/still be asked for it/);
+    // Owner decision, 31 Jul 2026: the RECORDED figure is named, because this is
+    // the branch where the club deliberately books less than the booking's worth.
+    expect(unsettledMessage).toMatch(
+      /Only \$100\.00 was recorded as received/,
+    );
+    // #2397 F4: chasing a member for money they cannot send is the worst
+    // available outcome, so the toast says which of the two situations applies.
+    expect(unsettledMessage).toMatch(
+      /They can pay it themselves from their booking page/,
+    );
+  });
+
+  it("tells the admin to make contact when no card door survives for the extra", async () => {
+    mocks.applyManualBookingPayment.mockResolvedValue({
+      bookingId: "booking-1",
+      paymentId: "payment-1",
+      direction: "paid",
+      memberNotified: false,
+      receipt: "not_requested",
+      amountCents: 10000,
+      bookingStatus: "PAID",
+      creditElectionCents: null,
+      additional: {
+        outstandingCents: 2100,
+        settled: false,
+        recordedAmountCents: 10000,
+        payableOnline: false,
+      },
+    });
+
+    const response = await POST(
+      makeRequest({
+        direction: "paid",
+        confirmed: true,
+        notifyMember: false,
+        expectedAmountCents: 12100,
+        additionalCoverage: {
+          covered: false,
+          expectedAdditionalAmountCents: 2100,
+        },
+      }),
+      { params },
+    );
+
+    const message = (await response.json()).message as string;
+    expect(message).toMatch(/someone will need to contact them to collect it/);
+    expect(message).not.toMatch(/pay it themselves/);
+  });
+});
