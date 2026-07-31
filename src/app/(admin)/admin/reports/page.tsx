@@ -24,6 +24,7 @@ import { getRevenueGranularityLabel } from "@/lib/admin-reports";
 import { formatDollarsDisplay } from "@/lib/finance-format";
 import { bookingStatusLabel } from "@/lib/status-colors";
 import { DateRangeControls } from "@/components/admin/date-range-controls";
+import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
 import { reportsDateRangePresets } from "@/lib/date-range-presets";
 import { todayDateOnlyForTimeZone } from "@/lib/date-only";
 import { escapeCsvCell } from "@/lib/csv";
@@ -378,6 +379,16 @@ export default function ReportsPage() {
               <option value="only">Deleted only</option>
             </select>
           </div>
+          <DatasetResetButton
+            disabled={
+              from === defaultFrom && to === defaultTo && deleted === "hide"
+            }
+            onReset={() => {
+              setFrom(defaultFrom);
+              setTo(defaultTo);
+              setDeleted("hide");
+            }}
+          />
           <Button onClick={fetchReports} disabled={loading}>
             {loading ? "Loading..." : "Update"}
           </Button>
