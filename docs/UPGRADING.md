@@ -86,7 +86,121 @@ as a red flag and check the release notes before deploying.
 
 ## Unreleased
 
-_No schema or migration changes are staged for the next release yet._
+### One-off repair of saved email template wording (#2269)
+
+`20260801150000_strip_email_override_bracket_annotations` is a **data-only
+repair**. It adds and removes no schema, touches no hot table, and is safe to
+run in the ordinary deploy window with the previous app colour still serving.
+
+**What it fixes.** Older releases shipped square-bracketed authoring notes
+inside the built-in email wording — for example `Door code: {{doorCode}} [only
+when a door code is set]`. Emails substitute `{{tokens}}` and copy everything
+else through untouched, so those notes were being emailed to recipients word
+for word. Releases carrying #2267 and #2268 removed them from the built-in
+wording, which fixes every club that has not customised that message, because
+the built-in wording is compiled into the code and not stored in your database.
+A club that had **saved its own copy** of a message under **Admin → Email
+messages** keeps its saved copy for ever, so it also keeps the notes. This
+migration removes them from those saved copies.
+
+**What it changes, exactly.** Only the 38 exact note strings this project ever
+shipped — `[only when a door code is set]`, `[when dates did not change]`,
+`[heading becomes "Reminder: Confirm Your Attendee List" on reminders]` and so
+on. The full list is `SHIPPED_ANNOTATIONS` in
+`src/lib/email-message-token-contract.ts`.
+
+It matches those strings **exactly**, and nothing that merely resembles one.
+That is a deliberate choice with a cost on both sides, so it is worth being
+plain about:
+
+- **What it protects.** Club wording like `Ring the lodge [when you are 30
+  minutes away].` or `the hut sits on [whenua administered by the rūnanga]` is
+  never touched. An earlier draft matched anything opening `[when`, and that
+  draft deleted all three of those examples in testing. Because the editor
+  refuses to save square brackets (see below), a club whose wording we deleted
+  could not simply paste it back — only someone with database access could
+  recover it from the audit row. A rule that can be wrong should not be the one
+  that writes.
+- **What it costs.** If one of our notes was ever retyped or re-spaced inside a
+  club's saved copy — `[only  when a door code is set]` with two spaces, say —
+  this repair leaves it in place. That row is not abandoned: it keeps appearing
+  in the **Admin → Email messages** bracket banner, where an admin removes it
+  deliberately.
+
+Everything else in your wording is left byte for byte as it was. A saved copy
+with none of those exact notes is not touched at all.
+
+**How to see what was changed.** Every altered row writes one
+`EMAIL_TEMPLATE_OVERRIDE_UPDATED` entry to the audit log with no actor (no
+member did this), recording the whole previous saved copy, the whole new one,
+and the exact notes removed. Find them under **Admin → Audit log** filtered to
+`EMAIL_TEMPLATE_OVERRIDE_UPDATED` around your upgrade time, or:
+
+```sql
+SELECT "entityId", "metadata" -> 'removedAnnotations'
+FROM "AuditLog"
+WHERE "action" = 'EMAIL_TEMPLATE_OVERRIDE_UPDATED'
+  AND "metadata" ->> 'source' LIKE 'migration:20260801150000%';
+```
+
+If a club decides one of those notes was actually theirs, the previous text is
+in `metadata -> 'previousOverride'`. Be aware that it **cannot be restored from
+the editor**: the editor refuses to save square brackets, because bracketed text
+is always emailed verbatim. Recovering such text means an administrator writing
+it back into the database directly. This is the main reason the repair matches
+exact strings and errs towards leaving things alone.
+
+**Privacy note — this metadata is stored verbatim.** The audit rows written by
+this migration are built in SQL and therefore do **not** pass through the
+application's audit sanitiser, which normally truncates long strings, caps the
+total size, and redacts things that look like secrets or card numbers. Storing
+the wording in full is the point — a truncated copy could not be used to restore
+anything — but it means that if a club typed a **literal** door code into its
+template body instead of using `{{doorCode}}`, that literal is now in an
+unredacted audit row kept for seven years. If that applies to you, search the
+rows above before the retention window matters to you. Template subjects and
+bodies are capped at 500 and 10,000 characters by the editor, so no single row
+can be large.
+
+**Re-running is safe.** The repair selects only rows that still contain a
+shipped note, so a second run changes nothing and writes no second audit entry.
+
+**Running it while the previous app colour still serves is safe.** The repair
+writes a row only if that row still holds exactly the wording it read, so an
+admin who presses **Save** or **Restore Default** during the deploy window wins:
+their change stands, the repair skips that template, and no audit row claims we
+changed something we did not.
+
+**Every repaired message is named on screen afterwards, and here is why that
+matters.** The notes this repair removes were, for some lines, the only thing
+saying that the line was conditional — `Payment has been processed
+successfully. [only when the booking is already paid]` is wording this project
+shipped, and once the note is gone that sentence goes out on a booking that
+still owes money, with nothing left to hint at it. So **Admin → Email messages**
+names every message this repair touched, lists the notes it removed and quotes
+the lines that now send every time. That notice is built from the migration's
+own audit rows above — not by looking for a marker the migration deleted — so it
+covers **every** repaired message, including lines with no `{{token}}` in them
+that no other check on that screen can see. It clears when an admin opens the
+message and presses **Save Template**, which is the acknowledgement.
+
+Ask an admin to walk that list after the upgrade. It is not an emergency, but it
+is not cosmetic either: a line that used to apply sometimes now applies always,
+and only a person can say whether the remaining wording still reads correctly.
+
+### Post-upgrade action: check the email templates screen
+
+**Admin → Email messages** now tells an admin when a saved copy no longer shows
+something the message is required to tell the recipient — the commonest case is
+a booking confirmation saved before the promo explanation moved into
+`{{promoSummary}}`, which now shows a subtotal and a total with nothing in
+between to explain the difference. Each affected template is named in a banner
+at the top of the screen, and the template you have open offers **Show
+differences**, a line-by-line comparison of your saved copy against the current
+built-in wording, so you can decide whether to patch your wording or press
+**Restore Default**. Nothing is changed for you: this is advisory only, and a
+saved copy that merely reads differently — which is the whole point of saving
+one — is reported as a plain difference and never as a problem.
 
 ---
 

@@ -8,6 +8,7 @@ const { mockPrisma, mockTx, mockRequireActiveSessionUser } = vi.hoisted(() => {
     },
     member: {
       findUnique: vi.fn(),
+      findFirst: vi.fn(),
       update: vi.fn(),
       updateMany: vi.fn(),
       count: vi.fn(),
@@ -105,6 +106,9 @@ describe("POST /api/admin/family-groups/[id]/login-holder", () => {
     // Last-admin end-state (#1604/#1622) counts active Full Admins AFTER the
     // transfer's writes; default to one surviving so the guard is a no-op.
     mockTx.member.count.mockResolvedValue(1);
+    // #2385 login-email pre-check: nobody outside this family group logs in
+    // with the requested address unless a test says so.
+    mockTx.member.findFirst.mockResolvedValue(null);
   });
 
   it("swaps login holder in a shared 2-adult cluster", async () => {
@@ -396,6 +400,92 @@ describe("POST /api/admin/family-groups/[id]/login-holder", () => {
       expect(mockTx.member.update).toHaveBeenCalledWith({
         where: { id: "new-holder" },
         data: expect.objectContaining({ canLogin: true }),
+      });
+    });
+  });
+
+  describe("login-email uniqueness (#2385)", () => {
+    const cluster = () =>
+      makeGroup([
+        makeMember({
+          id: "old-holder",
+          canLogin: true,
+          inheritEmailFromId: null,
+          inheritEmailFrom: null,
+        }),
+        makeMember({ id: "new-holder" }),
+      ]);
+
+    it("refuses when a member outside the family group already logs in with the address", async () => {
+      mockTx.familyGroup.findUnique.mockResolvedValue(cluster());
+      mockTx.member.findFirst.mockResolvedValue({ id: "stranger" });
+
+      const res = await POST(makeReq({
+        email: "shared@example.com",
+        newHolderId: "new-holder",
+      }), {
+        params: Promise.resolve({ id: "group-1" }),
+      });
+
+      expect(res.status).toBe(409);
+      await expect(res.json()).resolves.toEqual({
+        error: "A member with this email already exists",
+      });
+      // Checked before anything is written, and the cluster this transfer
+      // rewrites itself is excluded (the outgoing holder frees the index slot).
+      expect(mockTx.member.findFirst).toHaveBeenCalledWith({
+        where: {
+          email: "shared@example.com",
+          canLogin: true,
+          id: { notIn: ["old-holder", "new-holder"] },
+        },
+        select: { id: true },
+      });
+      expect(mockTx.member.update).not.toHaveBeenCalled();
+    });
+
+    it("gives the loser of a concurrent claim the same message, not a 500", async () => {
+      mockTx.familyGroup.findUnique.mockResolvedValue(cluster());
+      // Pre-check passes; another write claims the address before this one.
+      mockTx.member.update.mockRejectedValueOnce(
+        Object.assign(
+          new Error("Unique constraint failed on the fields: (`email`)"),
+          { code: "P2002" },
+        ),
+      );
+
+      const res = await POST(makeReq({
+        email: "shared@example.com",
+        newHolderId: "new-holder",
+      }), {
+        params: Promise.resolve({ id: "group-1" }),
+      });
+
+      expect(res.status).toBe(409);
+      await expect(res.json()).resolves.toEqual({
+        error: "A member with this email already exists",
+      });
+    });
+
+    it("does not blame the email for a collision on another unique column", async () => {
+      mockTx.familyGroup.findUnique.mockResolvedValue(cluster());
+      mockTx.member.update.mockRejectedValueOnce(
+        Object.assign(
+          new Error("Unique constraint failed on the fields: (`googleSub`)"),
+          { code: "P2002" },
+        ),
+      );
+
+      const res = await POST(makeReq({
+        email: "shared@example.com",
+        newHolderId: "new-holder",
+      }), {
+        params: Promise.resolve({ id: "group-1" }),
+      });
+
+      expect(res.status).toBe(500);
+      await expect(res.json()).resolves.toEqual({
+        error: "Failed to swap family group login holder",
       });
     });
   });

@@ -17,6 +17,10 @@ import {
   replacePromoRedemptionAllocations,
   validateAndCalculatePromoDiscount,
 } from "@/lib/promo";
+import {
+  describePromoCapCoverage,
+  type PromoCoverageNotice,
+} from "@/lib/promo-cap-coverage";
 import { toGroupDiscountConfig } from "@/lib/policies/booking-route-decisions";
 import {
   ADULT_SUPERVISION_REVIEW_REASON,
@@ -81,6 +85,9 @@ export type RemoveBookingGuestResult = {
   memberName: string;
   memberId: string;
   promoRemoved: boolean;
+  // #2390: set only when a usage cap stopped the promotion reaching somebody
+  // this edit added; null means everybody the code applies to is covered.
+  promoCoverage: PromoCoverageNotice | null;
   choreWarnings: string[];
   oldGuestCount: number;
   bookingModificationId: string;
@@ -647,6 +654,12 @@ export async function removeBookingGuestInTransaction({
         settlementMethod: paymentImpact.settlementMethod,
         accountCreditAmountCents: paymentImpact.accountCreditAmountCents,
         policyRetainedAmountCents: paymentImpact.policyRetainedAmountCents,
+        // #2390: the same sentence the member saw when they made the edit,
+        // kept on the booking's own history so "why was I charged that?" has
+        // an answer months later. Absent unless a cap left somebody out.
+        ...(promoResult.promoCoverage
+          ? { promoCoverageNote: promoResult.promoCoverage.message }
+          : {}),
       },
       priceDiffCents,
       changeFeeCents: 0,
@@ -686,6 +699,7 @@ export async function removeBookingGuestInTransaction({
     memberName: `${booking.member.firstName} ${booking.member.lastName}`,
     memberId: booking.memberId,
     promoRemoved: promoResult.promoRemoved,
+    promoCoverage: promoResult.promoCoverage,
     choreWarnings,
     oldGuestCount: booking.guests.length,
     bookingModificationId: bookingModification.id,
@@ -780,6 +794,7 @@ export async function recalculateBookingPromo({
   let newDiscountCents = 0;
   let newPromoAdjustmentCents = 0;
   let promoRemoved = false;
+  let promoCoverage: PromoCoverageNotice | null = null;
 
   if (booking.promoRedemption?.promoCode) {
     // Row-lock the promo code and re-read its usage counter before the caps are
@@ -807,7 +822,15 @@ export async function recalculateBookingPromo({
       promo.assignments.length > 0
         ? promo.assignments.map((assignment) => assignment.memberId)
         : null,
-      { excludeBookingId: bookingId, db: tx, selectedGuestIndexes, lodgeId: bookingLodgeId },
+      {
+        excludeBookingId: bookingId,
+        db: tx,
+        selectedGuestIndexes,
+        lodgeId: bookingLodgeId,
+        // #2390: never refuse the edit over somebody else's cap consumption —
+        // keep whoever is already benefiting and leave out only new people.
+        capOverflow: "coverExisting",
+      },
     );
 
     if (application.error || !application.discount) {
@@ -817,6 +840,10 @@ export async function recalculateBookingPromo({
       const discount = application.discount;
       newDiscountCents = discount.discountCents;
       newPromoAdjustmentCents = discount.priceAdjustmentCents;
+      promoCoverage = await describePromoCapCoverage(tx, {
+        promoCode: promo.code,
+        capCoverage: application.capCoverage,
+      });
 
       await replacePromoRedemptionAllocations(
         tx,
@@ -834,5 +861,5 @@ export async function recalculateBookingPromo({
     }
   }
 
-  return { newDiscountCents, newPromoAdjustmentCents, promoRemoved };
+  return { newDiscountCents, newPromoAdjustmentCents, promoRemoved, promoCoverage };
 }
