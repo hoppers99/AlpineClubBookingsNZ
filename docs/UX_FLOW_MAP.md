@@ -188,6 +188,30 @@ answered) and built to it:
   inventing a distinguisher. The name search caps at ten, matches prefixes only
   (never mid-string), and reports overflow as a boolean — never "showing 10 of
   47", which would be a free membership-size oracle.
+- **The panel's keyboard contract is one sentence, and it is the same in both
+  modes:** if there are candidates on screen, Enter chooses the highlighted one;
+  otherwise Enter runs the find. Arrows move the highlight and Escape backs out
+  (from anywhere in the panel, including once a person has been chosen and the
+  input has been replaced by their chip), returning focus to the button that
+  opened it. The combobox ARIA is likewise unconditional — the household
+  pick-list renders in the DEFAULT email mode too, so gating those attributes on
+  the open-search toggle left the list an unannounced orphan for every club. Every
+  outcome is announced, zero results included, and the results list scrolls inside
+  its own box rather than pushing the guest form down a phone screen.
+- **A name typed into the email-only box is answered, not ignored.** With open
+  search off the panel says "This club doesn't list members by name. Enter their
+  email address to find them." rather than doing nothing — the inverse of the
+  trap owner sign-off answer 2 was chosen to avoid, and it lands in the mode
+  every club gets on day one. A query under two characters is refused locally
+  with "Type at least two letters." and never reaches the server, so it spends no
+  budget and cannot be mistaken for "nobody matches".
+- **The neutral refusal renders where the booker was working.** On the Guests
+  step it appears in the find panel beneath a chip naming the person, with the
+  one honest next step the mockup drew — "If you think that's wrong, ask them
+  directly, or contact the club." From the Review step, where the panel is not
+  mounted, the same sentence goes to the page banner instead: an unpaid member
+  guest quotes cleanly and is refused only at Confirm, so routing it to a panel
+  that is not on screen made the button silently stop working.
 - **Under-18s are excluded from the name search** unless a club opts them in
   (D-20). That sub-setting gates the type-ahead only: a minor stays directly
   resolvable by their household email address, which is the consequence D-9
