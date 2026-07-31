@@ -797,7 +797,7 @@ tree** (#2160, extended by #2168 and #2324) — not a claim that nothing is left
 Measured
 on the current tree by `view-only-banner-contract.test.ts`, which asserts these
 figures rather than trusting a hand count: **79 components render a banner, and
-248 of the 291 `ViewOnlyActionButton` call sites opt out** of the per-button
+248 of the 295 `ViewOnlyActionButton` call sites opt out** of the per-button
 reason. (Earlier revisions of this page published 76/232/264/211 — those were
 upstream-historical and had drifted; the numbers here are the ones the contract
 test currently pins, which is the only authority.) Those 248 split by WHICH rule
@@ -807,7 +807,7 @@ pass `describeReason={!ancestorRendersViewOnlyBanner}` and are covered by a
 verified vouching parent — 21 by a parent's own JSX render site (#2168), 5 by the
 guided-setup shell (#2324); see *Vouching for a child's coverage* and *Vouching
 through the wizard shell* below. The
-remaining **43 controls across 23 files deliberately keep the per-button
+remaining **47 controls across 25 files deliberately keep the per-button
 default** (`describeReason` left at `true`), in three shapes:
 
 - **Controls inside a dialog, sheet, popover, or dropdown menu.** These live in
@@ -821,7 +821,7 @@ default** (`describeReason` left at `true`), in three shapes:
   the booking capacity/exclusive hold controls, the family-group login-holder
   and request-review sub-sections, and the non-member contact form). Nothing
   local proves an ancestor renders a banner above them, so the reason stays on
-  the control. (30 controls across 18 files.) Nine of those 30 sit inside a
+  the control. (34 controls across 20 files.) Nine of those 34 sit inside a
   setup wizard and are **scope** exceptions rather than indirection ones: each is
   gated on a permission NARROWER than the banner its shell renders, so an admin
   who has the wizard's area but not that narrower one meets no banner at all.
@@ -833,11 +833,15 @@ default** (`describeReason` left at `true`), in three shapes:
   an exception since #2249 and stays one for the same reason; #2324 moved its
   three lodge-gated siblings out of this bucket and into the vouched one. Before
   those, the per-booking "No emails" switch (#2259), dropped into the Admin tools
-  card's layout beside the capacity and exclusive holds. Read that
+  card's layout beside the capacity and exclusive holds. Newest are the
+  cash / off-Xero payment feature's four controls (#2262): Record and Reverse
+  manual payment, a leaf dropped into that same Admin tools card, and the
+  manual-refund-task queue's Mark-paid-back and Dismiss pair, a card on the
+  Payments page with no banner of its own. Read that
   bucket as the
   REMAINDER — everything that is neither a member detail card nor one of the
-  four dialog-only files — rather than as a claim that all 30 are leaves. Ten of
-  the eighteen files are (18 controls); six are the wizard step files just
+  four dialog-only files — rather than as a claim that all 34 are leaves. Twelve
+  of the twenty files are (22 controls); six are the wizard step files just
   described (9 controls); and the last two, `page-content-panel.tsx`
   and `site-banners-panel.tsx`, are full banner-bearing panels whose last 3
   controls sit inside their own edit/create `Dialog`, so those 3 are really the

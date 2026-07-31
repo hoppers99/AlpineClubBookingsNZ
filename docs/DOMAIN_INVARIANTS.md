@@ -679,6 +679,105 @@ Future reviews and issues should cite this file when proposing changes.
 
 ## Payment And Settlement
 
+- **Manual mark-paid provenance for BOOKING payments (cash / off-Xero bank
+  transfer), B5 #2262.** A booking's payment can be settled outside both Stripe
+  and Xero by an audited finance:edit action, recorded on the existing `Payment`
+  row by `manuallyMarkedPaidAt` / `manuallyMarkedPaidByMemberId` /
+  `manualPaymentNote` / `manuallyMarkedPaidPreviousStatus`. Deliberately NO new
+  `PaymentSource` member: the row settles as an ordinary `INTERNET_BANKING`
+  payment, so every two-way branch in the codebase (refund-method coercion,
+  refund planning, the reconciler) lands correctly, and the provenance columns
+  carry the manual-ness. The provenance predicate everywhere is
+  `manuallyMarkedPaidAt IS NOT NULL` **alone** — never conjoined with "carries
+  no Xero id", because two stampers outside the cash-settle loop
+  (`syncLinkedPaymentInvoiceMetadata` and the zero-cash arm of
+  `invoice-paid-effects`) can legitimately stamp a Xero id onto a manual row and
+  that must not launder its provenance.
+  - It is a SIBLING ENTRY POINT into the one settlement body in
+    `payment-reconciliation.ts`, not a second settlement path: it executes the
+    same lock ordering, the same post-lock re-read, the same
+    `checkCapacityForGuestRanges` with its #1771 persisted-override carve-out,
+    the same status-fenced PAID claim, the same bed reconciliation and the same
+    durable `MEMBER_PAID` / `NON_MEMBER_CONFIRMED` event. It composes a THIRD
+    lock tier (global → per-lodge → MEMBER-CREDIT) and derives the settlement
+    amount itself: no client-supplied amount is ever accepted, and the mirror
+    `amountCents + creditAppliedCents = finalPriceCents` is asserted explicitly.
+  - It NEVER calls Xero and NEVER creates or voids an invoice. Marking paid is
+    refused (409) when the payment carries a Xero invoice id, a refund credit
+    note, a Xero id on any of its transactions, an active `PRIMARY_INVOICE`
+    object link, a completed CREATE-INVOICE outbox operation, **or one still in
+    flight**, and when the booking participates in a group settlement
+    (`organiserSettled`). Every condition that can be expressed as a WHERE is
+    re-asserted inside the fenced `payment.updateMany`, so an invoice minted
+    between read and write yields count 0 → 409, never a double-apply.
+  - A capacity failure REFUSES and records nothing (owner decision, 28 Jul).
+    The Stripe path's cancel-and-refund is not mirrored: no in-system money fact
+    exists yet, so refusal leaves zero debt, and the invariant holds identically
+    because the same check runs at the same point under the same locks.
+  - Every outbound invoice-mint surface is fenced on THREE levels: at the
+    `enqueueXeroBookingInvoiceOperation` choke point (which every enqueuer funnels
+    through), at settle time (mark-paid refuses while a CREATE-INVOICE operation
+    is PENDING/RUNNING/WAITING_PAYMENT), and in the handler
+    `createXeroInvoiceForBooking`, which re-reads provenance at execution time and
+    abandons an operation queued microseconds before the settle committed. Without
+    all three a manual settlement would have a real awaiting-payment invoice raised
+    AND EMAILED to the member for money already collected in cash. The
+    missing-invoices sweep, the force-sync affordance and the repair classifier
+    additionally treat a manual settlement as "no Xero objects expected".
+  - RECIPROCAL fence: an inbound Xero PAID landing on a manually settled booking
+    raises a counter in the inbound result, an error log, a durable admin-only
+    `BookingEvent` (once per payment+invoice) and a cooldown-throttled admin
+    alert — never a quiet `alreadyPaid`. It fires across PAID, CANCELLED (or the
+    inbound path would mint member credit for cash an OPEN hand-back task
+    already owes back) and COMPLETED, and it runs BEFORE the settle loop's
+    transaction update so a Xero invoice id is never stamped onto the manual
+    settlement's rows.
+  - Duplicate-capture visibility: the #1992 distinctness predicate matches ANY
+    settled PRIMARY transaction, not only a Stripe one, so a stray capture on a
+    cash-settled (or Xero-inbound-settled) booking is auto-refunded instead of
+    silently kept.
+  - CANCELLATION yields a durable `ManualRefundTask`, created atomically with the
+    CANCELLED claim — never a Stripe refund plan, never a Xero credit note, never
+    minted member credit, and never a "your refund is on its way to your card"
+    email. The refund allocation is written only when the task is COMPLETED, so
+    the ledger never claims money was returned before it was; the refund-appeal
+    queue refuses to approve a manual-provenance payment. The policy math uses
+    the bank-transfer/credit tier (owner decision, 28 Jul), so preview and
+    execution agree.
+  - REVERSAL (finance:edit) is permitted only while nothing has happened that it
+    could not undo: booking PAID, provenance present, no refund, no
+    `PaymentRefund` rows, no settled Stripe transaction, no OPEN
+    `ManualRefundTask`, and no Xero link or queued mint acquired since. It
+    restores `manuallyMarkedPaidPreviousStatus` (a stored `DRAFT` deliberately
+    restores as `PAYMENT_PENDING`, because the PAID claim cleared
+    `draftExpiresAt` and a restored DRAFT would be an expiry-less draft
+    forever), clears the provenance, marks the manual transaction FAILED rather
+    than deleting it, clears a restored CONFIRMED internet-banking hold deadline
+    (or the expiry cron would auto-cancel the booking minutes later), and
+    DELETES every still-PENDING/PROCESSING `CANCEL_PAYMENT_INTENT` /
+    `REFUND_SUPERSEDED_PAYMENT` operation on the payment — those operations
+    must not outlive the settlement they were minted to protect, or a later
+    legitimate capture would be refunded as if superseded. Deletion, not a
+    terminal status flip: the webhook-side liveness predicates key on
+    `status != SUCCEEDED`, so only a deleted row is invisible to all of them.
+    The scope is safe because that set IS the settle's own hygiene: the
+    settle's enqueue upserts on the shared cancel idempotency key (adopting any
+    pre-existing cancel op), and a member-owed superseded refund can never be
+    reached — the handoff that creates one marks its transaction SUCCEEDED
+    first, and the reversal refuses on any settled Stripe transaction before
+    the disarm. The deleted rows' full content is preserved in the reversal's
+    `AuditLog` metadata.
+  - A stored, unconsumed credit election (#2265) on the booking is never
+    silently stranded or ignored (door 3 of the #2319 invariant below): the
+    settle clears it with the shared guarded claim, records the cleared cents
+    on the mark-paid audit row, and reports it post-commit through
+    `reportUnappliedCreditElection` (source `manual-mark-paid`) — the member's
+    booking history says their credit was not used and is still available, and
+    an operator is alerted to decide whether to refund the difference. The
+    reversal does not resurrect a cleared election, so reversal-then-re-mark
+    clears and reports exactly once.
+  - Both directions are audited with the acting admin and the previous status;
+    marking paid also records the #2260 email decision BOTH ways.
 - Account credit is consumed only by a booking that is actually reaching
   `PAYMENT_PENDING`, never by one that is still provisional. A booking saved as
   a draft therefore stores the member's ELECTION on
@@ -695,6 +794,32 @@ Future reviews and issues should cite this file when proposing changes.
   `PAYMENT_PENDING` — a saved draft that landed in `AWAITING_REVIEW` and a
   booking the confirmed-create path parked there via `blockForReview` alike.
   Holding for review suppresses the SPEND, never the member's request.
+- The EDIT path may write the election too (#2266), and only onto the statuses
+  whose election a consumer will later honour: `DRAFT`, `AWAITING_REVIEW`, and
+  `PAYMENT_PENDING` (`resolveCreditElectionUpdate`, evaluated against the
+  POST-lifecycle status of the edit). `PENDING` is deliberately refused even
+  though members can edit PENDING bookings — `charge-saved-method` requires
+  `PENDING` and consumes no election, so "no election-bearing booking is ever
+  in PENDING" must stay true; the hold release lands the booking in
+  `PAYMENT_PENDING`, where the member can elect. A positive election is also
+  refused once money is captured or when the booking is organiser-settled; an
+  explicit `0` clears; an edit that settles the booking at $0 drops the
+  now-moot request silently (the confirm-draft posture). The edit stores the
+  RAW requested cents exactly as draft-create does — clamping stays at the
+  consumer. A modification that carries ONLY a credit election is
+  price-preserving by construction: it takes the identity-only echo (no pricing
+  engine, no capacity check) so a season-rate change can never reprice an
+  untouched booking, and it sends no change-notification email.
+- Members may edit their OWN drafts (#2266) — that is what the dashboard's
+  Resume button has always implied. A draft edit moves no money and claims no
+  capacity: no change fee (`calculateModificationChangeFee` returns 0 for
+  `DRAFT`), no `nonMemberHoldUntil` stamp (`applyLifecycleTransitions` skips
+  the hold rail for `DRAFT`), no settlement — the pay step / $0 confirm-draft
+  enforce capacity and holds when the draft becomes real. `DRAFT` therefore
+  joins `MEMBER_FUTURE_EDIT_STATUSES` but stays OUT of the (now frozen)
+  active-edit-lifecycle set, so admin draft edits keep skipping lifecycle
+  rules byte-for-byte as before. A member draft edit still gets the wizard's
+  over-capacity CHECK (#1767 parity) at quote and apply.
 - The election is consumed by a guarded CLAIM, not a read-then-write (#2265):
   the column is moved from the exact amount that was read to NULL with an
   `updateMany` matching the booking id, `PAYMENT_PENDING` and that amount, in
@@ -749,6 +874,27 @@ Future reviews and issues should cite this file when proposing changes.
     late-capacity-failure `CANCELLED` flip in the same writer.
   - The repriced-to-$0 auto-pay arms of both modification services clear, as
     `confirm-draft`'s $0 confirm and group settlement already did.
+  - The manual mark-paid settlement (#2262, door 3 of this invariant) clears on
+    its `PAID` claim inside the one settlement body, for the same reason in cash
+    form: the admin collected the full amount owing OUTSIDE the app, so the
+    member's credit was NOT spent and "applying" the election would invent a
+    charge. The cleared cents are recorded on the mark-paid audit row
+    (`clearedCreditElectionCents`) and reported post-commit through the shared
+    reporter with source `manual-mark-paid`, referencing the booking id (this
+    door has no Stripe intent and no Xero invoice by definition). The reversal
+    RESTORES exactly what that settle cleared: it reads
+    `clearedCreditElectionCents` back off the mark-paid audit row and writes it
+    to `Booking.creditElectionCents` under a guard matching `null`, so a
+    legitimate writer that has since set an election is never clobbered and a
+    settle that cleared nothing restores nothing. Restoration is required, not
+    optional: nothing outside booking-create can set that column, so a reversal
+    that left it null would strand a member holding credit they had elected on a
+    booking that is payable again, with no way to re-elect it. A re-mark after a
+    reversal therefore finds the restored election, clears it and reports it
+    again — once per settlement that took cash while the election stood. Both
+    figures are recorded on the mark-unpaid audit row
+    (`restoredCreditElectionCents`, `settleClearedCreditElectionCents`), and the
+    admin's own response reports the move synchronously either way.
   Clearing is the answer ONLY once the money is taken. While a booking is still
   payable the election remains honourable and must be consumed or left alone —
   never discarded to make a charge simpler, which is the original #2265 bug in
@@ -760,11 +906,24 @@ Future reviews and issues should cite this file when proposing changes.
   rather than unhonoured. A clear on a settlement that took real money is
   reported through `reportUnappliedCreditElection` — an audit row under
   `booking.credit_election.unapplied`, which the member's own booking history
-  renders as a plain-English note ("your credit was not used and is still
-  available"), plus an operator alert so someone can decide whether to refund the
-  difference. A cleared column is invisible, and without the note a member who
-  chose to spend credit and then paid full price could not tell whether their
-  balance had been debited. It never is: a clear moves no money.
+  renders as a plain-English note ("your credit was not used for this booking and
+  your balance was not reduced"), plus an operator alert so someone can decide
+  whether to refund anything. A cleared column is invisible, and without the note
+  a member who chose to spend credit and then paid full price could not tell
+  whether their balance had been debited. It never is: a clear moves no money.
+- Neither report may quote the ELECTED figure as if it were still available. The
+  election records a choice made when the booking was created, which can be
+  months and several bookings ago, so a member who elected $450 and has since
+  spent down to $50 still carries a $450 election. The shared reporter therefore
+  reads the member's LIVE balance once (`getMemberCreditBalance`) and records it
+  on the audit row as `availableCreditCents`, with
+  `refundableCents = min(election, balance)`. The member's history note quotes the
+  live balance; the operator alert's headline Amount is the refundable figure, it
+  says plainly when the balance has moved since, and it says "there is nothing to
+  refund" rather than "refund at most $0.00" when the balance is gone. If the
+  balance read fails the copy omits every availability figure rather than falling
+  back to the overstating one. This binds all three doors — Stripe capture, Xero
+  invoice-paid and the manual mark-paid — because it lives in the one reporter.
 - The public payment link never spends, and never ignores, a member's credit
   election (#2319). `createPaymentIntentForPaymentLink` refuses (409) a booking
   carrying one instead of minting an intent at the pre-credit price. The reason
@@ -1969,10 +2128,19 @@ edit path — including single-guest self-removal, which is never blocked for a
 written justification — flags the booking (`adminReviewStatus: PENDING`, with
 an automatic note on the removal path) so it lands in the admin review queue.
 Review parking moves a booking to AWAITING_REVIEW only from the pre-payment
-statuses (PENDING/PAYMENT_PENDING); a paid or confirmed booking is flagged in
-place, and approving it clears the review without re-opening the payment
-lifecycle. Rejection cancels through the shared cancellation flow, which
-refunds captured payments per the policy.
+statuses (DRAFT/PENDING/PAYMENT_PENDING — DRAFT parks in create parity, #2266,
+with `draftExpiresAt` nulled so the 72-hour expiry cannot sweep a booking out
+from under its reviewer); a paid or confirmed booking is flagged in place, and
+approving it clears the review without re-opening the payment lifecycle.
+Rejection cancels through the shared cancellation flow, which refunds captured
+payments per the policy (a legacy DRAFT-status queue entry — pre-#2266 rows
+only — is cancelled directly by the review route with a guarded
+DRAFT → CANCELLED flip, since a draft holds no capacity and has no payment).
+The invariant is also **enforced at the doors, not only at the writers**
+(#2266): `confirm-draft` and `create-payment-intent`'s DRAFT arm both refuse
+(409) any booking with `requiresAdminReview` and a non-APPROVED
+`adminReviewStatus`, so even a writer bug that leaves a review-flagged DRAFT
+behind cannot let a minors-only booking reach PAID with its review pending.
 
 Because a paid minors-only booking is deliberately **not** parked to
 AWAITING_REVIEW (Option A / F27, issue #1372 — parking a paid booking would
@@ -2389,6 +2557,97 @@ login), or passes `canLogin` only as a read/token filter
 strand an existing admin. The one remaining path that can clear `canLogin` on an existing
 admin and is NOT guarded is indirect — the age-down cron, where editing a date
 of birth to a minor tier can indirectly clear `canLogin` (informational).
+
+Membership-cancellation eligibility is an account-holder question, never a
+permissions one (#2383). `isMembershipHolderRecord` (`src/lib/member-roles.ts`)
+is the single rule, shared by `createAdminMembershipCancellationRequest` and the
+admin member page's gate, and pinned to that call site by the #2354 AST contract
+test. It refuses exactly two record classes, both of which are not account
+holders: the lodge kiosk device login, and booking-request contact records
+(`NON_MEMBER`, plus non-login `SCHOOL` — the school flow's owner contact and
+teacher records).
+
+The kiosk test is a record-CLASS test, never a "holds lodge access" test.
+`LODGE` is a freely tickable checkbox in the member editor ("Can use lodge kiosk
+and lodge operations tools") with no exclusivity guard, so a Booking Officer who
+also runs the lodge screen carries a `LODGE` row while being an ordinary
+fee-paying person. Refusing on the presence of the token would hide the
+cancellation action from such a person silently — the #2354 failure mode this
+rule exists to eliminate. The rule is therefore `deriveUserType(...) === "lodge"`
+over the record's login-blind stored tokens: refused only when `LODGE` is the
+record's ENTIRE classification, which is exactly when the admin UI labels its
+User Type "Lodge (kiosk account)". A record whose only tokens are `USER` and
+`LODGE` is still refused, and is correct to be: it is indistinguishable from a
+kiosk, and the refusal agrees with the User Type the operator is shown.
+
+The `canLogin` term applies to `SCHOOL` alone and must not be generalised:
+`SCHOOL` is the legacy role of BOTH a real organisation account (User Type
+"Organisation", which stores an `ORG` row; the admin UI only ever sets it on a
+login-capable account, though `createMemberSchema` does not enforce that on
+write — an API caller could store `role: "SCHOOL"` with `canLogin: false`) and
+every school booking-request contact (always created `canLogin: false`);
+non-login is the line `MAPPABLE_CONTACT_SCOPE`
+(`src/lib/non-member-contact.ts`) already draws between them. Every other
+account is cancellable, including admins of every class — the rule this replaced
+was legacy `role === "USER"`, which refused only the Full Admin bundle while
+accepting all four scoped admin classes, and swept up organisations that hold
+real fee-paying memberships. The privileged-target and last-Full-Admin guards
+above are what make widening this safe: they run inside the approval
+transaction, so a cancellation can never strand the club with no active,
+login-enabled Full Admin, and only a Full Admin may approve one against a
+privileged account. Separation of duties holds on the self-cancellation case a
+widened rule newly reaches — `assertCancellationApprovalIsIndependent` refuses
+an approval by the member who raised the request — so a club's sole Full Admin
+must appoint a successor before their own cancellation can be approved. That
+guard fails CLOSED on a null `requestedByMemberId` (the FK is
+`onDelete: SetNull`, so hard-deleting the raiser nulls it): "we cannot tell who
+raised this" means "not you", never "anyone". Rejection is unaffected, so such
+a request is never stuck. The approval queue also surfaces, per participant,
+whether the target holds privileged access (the guard's own predicate) and
+whether it is an organisation account, so an approval that is permitted but
+mistaken has a human check in front of it.
+
+Both callers of the rule must feed it the same shape. The admin member page is
+served `resolveAccessRoleTokens` output, which is EMPTY whenever
+`canLogin === false`; the server reads the stored `MemberAccessRole` rows, which
+are NOT cleared when login is disabled (the family login-holder transfer
+de-logins cluster members and leaves their rows). `isMembershipHolderRecord`
+therefore accepts raw rows and resolved tokens interchangeably and applies the
+same login-clearing to both — the rows are consulted only for a login-capable
+record — so the page can never offer an action the server answers with a 422.
+The legacy `role` column is exempt from that clearing and still identifies a
+de-logined kiosk. The AST contract test pins the call site, not the shape, so
+this property is pinned by unit tests over the helper instead
+(`src/lib/__tests__/member-roles.test.ts`).
+
+Cancellation approval does NOT clear `MemberAccessRole` rows,
+`financeAccessLevel`, or the legacy `role` column (#2383, confirming existing
+behaviour). Archive approval, deletion anonymisation, and bulk deactivate all
+leave them too. **`active: false` is the load-bearing flag**, not
+`canLogin: false`: `requireAdmin` (`src/lib/session-guards.ts`) rejects an
+inactive member, and it does not select `canLogin` at all, while
+`getAdminPermissionMatrix` zeroes the matrix only on an explicit
+`canLogin === false` — pass it a row set without that field and the full bundle
+resolves. De-logined accounts that still hold live rows therefore exist today
+(the login-holder transfer again), so nothing may be built on "no login means no
+permissions". The dormant rows are what keep the account inside the
+canLogin-blind `memberHoldsPrivilegedRole` guard for any later archive, and
+deleting them on cancellation would be novel and would weaken that later guard.
+The corollary is a hard constraint on any future work: **a path that reactivates
+a cancelled member would silently restore every privileged role it left in
+place.** No such path exists today — the member edit service and bulk update
+both refuse to reactivate a cancelled member, and nothing writes
+`cancelledAt: null` — and any that is added must clear or re-grant the roles
+deliberately.
+
+The same fact constrains session-authenticated routes: cancellation neither
+clears the rows nor invalidates the JWT (`auth()` invalidates only on
+`passwordChangedAt`, and re-stamps `token.accessRoles` from the retained rows on
+every request), so any route that resolves admin access from a member row must
+re-read `active` rather than trusting the rows. `requireAdmin` does; the display
+preview branch of `GET /api/display/state` did not, and now does (#2383) — it
+was unreachable before, because a cancelled member could not previously hold an
+`ADMIN` row.
 
 Application-approval mapping (link + overwrite of an existing member at approval
 time) preserves the login-uniqueness and auth invariants: it never creates a

@@ -1,0 +1,387 @@
+import "server-only";
+
+import { BookingEventType, ManualRefundTaskStatus } from "@prisma/client";
+import { createAuditLog } from "@/lib/audit";
+import { recordBookingEvent } from "@/lib/booking-events";
+import { sendBookingConfirmedEmail } from "@/lib/email";
+import logger from "@/lib/logger";
+import { MANUAL_PAYMENT_NOTE_MAX } from "@/lib/manual-subscription-payment";
+import {
+  ManualBookingPaymentError,
+  markBookingPaymentManuallySettled,
+  reverseManualBookingPayment,
+} from "@/lib/payment-reconciliation";
+import { applyLocalRefundAllocation } from "@/lib/payment-transactions";
+import { getProvisionalNonMemberChildSummary } from "@/lib/booking-split-summary";
+import { prisma } from "@/lib/prisma";
+
+/**
+ * B5 (#2262): admin-recorded settlement of a booking payment made in cash, or
+ * by a bank transfer that never reached Xero.
+ *
+ * This module is the ORCHESTRATION around the settlement core: it normalises the
+ * admin's note, calls the sibling entry point in `payment-reconciliation.ts`
+ * (which is where every lock, capacity check, fence and durable fact lives), and
+ * then — AFTER the transaction commits — dispatches the member's confirmation
+ * email and reports honestly what became of it.
+ *
+ * Semantics, mirroring the #1944 subscription precedent verbatim:
+ *  * manual mark-paid exists ONLY where NO Xero invoice exists. It is refused
+ *    when the payment carries a Xero invoice link, a credit note, a Xero id on
+ *    any of its transactions, an active PRIMARY_INVOICE object link, a completed
+ *    CREATE-INVOICE outbox operation, or one still in flight. It NEVER calls
+ *    Xero and NEVER creates or voids an invoice.
+ *  * both directions are status-fenced (conditional updateMany, 409 when no row
+ *    matches), so two admins clicking at once — or a Xero sync landing between
+ *    read and write — can never double-apply or clobber.
+ *  * #2260: marking paid REQUIRES the club's "email the member or not" choice
+ *    (a discriminated union, so omitting it is a compile error) and records it
+ *    in the audit entry either way. A reversal emails nobody, so the union
+ *    forbids passing the flag at all on that path.
+ *  * #2258: the per-booking "No emails" switch is enforced by the MAILER, not
+ *    by a per-action bypass here. If it is on, the send is withheld and the
+ *    receipt honestly reports not-delivered.
+ */
+export { ManualBookingPaymentError };
+export { MANUAL_PAYMENT_NOTE_MAX };
+
+export type ManualBookingPaymentDirection = "paid" | "unpaid";
+
+/**
+ * What actually became of the member's receipt, so no caller can turn a
+ * decision into a claim that the member was emailed:
+ *   not_requested — the admin declined it, or this was a reversal
+ *   queued        — handed to the mailer for delivery (not proof of arrival)
+ *   not_delivered — the mailer suppressed it (including the #2258 switch), the
+ *                   address was a club-internal placeholder, or the send failed
+ */
+export type ManualBookingPaymentReceipt =
+  | "not_requested"
+  | "queued"
+  | "not_delivered";
+
+export type ApplyManualBookingPaymentInput =
+  | {
+      bookingId: string;
+      direction: "paid";
+      note?: string | null;
+      actingMemberId: string;
+      notifyMember: boolean;
+      /** The amount owing the admin saw in the dialog; stale-price protection. */
+      expectedAmountCents: number;
+    }
+  | {
+      bookingId: string;
+      direction: "unpaid";
+      note?: string | null;
+      actingMemberId: string;
+      notifyMember?: never;
+      expectedAmountCents?: never;
+    };
+
+export type ApplyManualBookingPaymentResult = {
+  bookingId: string;
+  paymentId: string;
+  direction: ManualBookingPaymentDirection;
+  /** The admin's email decision as recorded in the audit log. */
+  memberNotified: boolean;
+  receipt: ManualBookingPaymentReceipt;
+  /** Settlement amount (paid) or the amount un-recorded (unpaid), in cents. */
+  amountCents: number;
+  /** Booking status after the action. */
+  bookingStatus: string;
+  /**
+   * #2265 (#2262 door 3): the stored credit election this action moved, in
+   * integer cents, or null when there was none.
+   *
+   * On "paid" it is what the settle CLEARED — the member had asked to spend
+   * this much credit and the cash settlement could not honour it. On "unpaid"
+   * it is what the reversal RESTORED. Returned synchronously so the admin
+   * standing at the till is told at once, rather than only through the
+   * post-commit operator alert, which a club that has muted the
+   * `adminPaymentFailure` preference will never receive.
+   */
+  creditElectionCents: number | null;
+};
+
+function normaliseNote(note: string | null | undefined): string | null {
+  const trimmed = note?.trim();
+  if (!trimmed) return null;
+  return trimmed.slice(0, MANUAL_PAYMENT_NOTE_MAX);
+}
+
+export async function applyManualBookingPayment(
+  input: ApplyManualBookingPaymentInput
+): Promise<ApplyManualBookingPaymentResult> {
+  const note = normaliseNote(input.note);
+
+  if (input.direction === "unpaid") {
+    const reversal = await reverseManualBookingPayment({
+      bookingId: input.bookingId,
+      actingAdminMemberId: input.actingMemberId,
+      note,
+    });
+    return {
+      bookingId: reversal.bookingId,
+      paymentId: reversal.paymentId,
+      direction: "unpaid",
+      memberNotified: false,
+      receipt: "not_requested",
+      amountCents: reversal.reversedAmountCents,
+      bookingStatus: reversal.restoredStatus,
+      creditElectionCents: reversal.restoredCreditElectionCents,
+    };
+  }
+
+  const settlement = await markBookingPaymentManuallySettled({
+    bookingId: input.bookingId,
+    actingAdminMemberId: input.actingMemberId,
+    note,
+    expectedAmountCents: input.expectedAmountCents,
+    notifyMember: input.notifyMember,
+  });
+
+  // Dispatched AFTER commit, never inside the transaction. A send failure must
+  // never undo or 500 the committed money state — but it must never be
+  // swallowed either, or the admin is told a confirmation went out when nothing
+  // did. Every branch that ends without a queued send says so, in the log and
+  // in the returned receipt.
+  let receipt: ManualBookingPaymentReceipt = "not_requested";
+  if (input.notifyMember) {
+    const recipient = await prisma.booking
+      .findUnique({
+        where: { id: input.bookingId },
+        select: {
+          lodgeId: true,
+          memberId: true,
+          checkIn: true,
+          checkOut: true,
+          finalPriceCents: true,
+          discountCents: true,
+          promoAdjustmentCents: true,
+          member: { select: { email: true, firstName: true } },
+          promoRedemption: { select: { promoCode: { select: { code: true } } } },
+          _count: { select: { guests: true } },
+        },
+      })
+      .catch((err) => {
+        logger.error(
+          { err, bookingId: input.bookingId },
+          "Manual booking mark-paid: could not read the booking to send the member's confirmation"
+        );
+        return null;
+      });
+
+    if (!recipient?.member?.email) {
+      logger.warn(
+        { bookingId: input.bookingId },
+        "Manual booking mark-paid: a confirmation was requested but the member has no address to send it to"
+      );
+      receipt = "not_delivered";
+    } else {
+      try {
+        // Split-booking parent (#738/#1942), parity with every comparable
+        // settle-time send (invoice-paid-effects et al.): describe the
+        // provisional non-member child so the confirmation explains the
+        // separate later charge. Read-only; null on non-split bookings.
+        const provisionalGuests = await getProvisionalNonMemberChildSummary({
+          id: input.bookingId,
+          memberId: recipient.memberId,
+        });
+        // The SAME message the Xero-inbound settle sends, so a cash-settled
+        // member reads exactly what a bank-transfer-settled member reads.
+        const outcome = await sendBookingConfirmedEmail(
+          { bookingId: input.bookingId },
+          recipient.member.email,
+          recipient.member.firstName,
+          recipient.checkIn,
+          recipient.checkOut,
+          recipient._count.guests,
+          recipient.finalPriceCents,
+          {
+            lodgeId: recipient.lodgeId,
+            ...(provisionalGuests ? { provisionalGuests } : {}),
+            ...(recipient.promoRedemption?.promoCode
+              ? {
+                  discountCents: recipient.discountCents,
+                  promoAdjustmentCents: recipient.promoAdjustmentCents,
+                  promoCode: recipient.promoRedemption.promoCode.code,
+                }
+              : {}),
+          }
+        );
+        // "sent" means the mailer accepted and dispatched it. Anything else —
+        // the #2258 No-emails switch, a suppression, a club-internal
+        // placeholder address, an outright failure — means the member will not
+        // read this, and the admin has to hear that.
+        receipt = outcome?.status === "sent" ? "queued" : "not_delivered";
+        if (receipt === "not_delivered") {
+          logger.warn(
+            { bookingId: input.bookingId, outcome: outcome?.status ?? "unknown" },
+            "Manual booking payment recorded, but the member confirmation was not sent"
+          );
+        }
+      } catch (error) {
+        logger.error(
+          { err: error, bookingId: input.bookingId },
+          "Manual booking payment recorded, but the member confirmation failed to send"
+        );
+        receipt = "not_delivered";
+      }
+    }
+  }
+
+  return {
+    bookingId: settlement.bookingId,
+    paymentId: settlement.paymentId,
+    direction: "paid",
+    memberNotified: input.notifyMember,
+    receipt,
+    amountCents: settlement.effectiveAmountCents,
+    bookingStatus: "PAID",
+    creditElectionCents: settlement.staleCreditElectionCents,
+  };
+}
+
+/**
+ * B5 (#2262): close a hand-back task raised when a cash-settled booking was
+ * cancelled.
+ *
+ * COMPLETED means the money genuinely went back to the member, so — and only
+ * then — the local refund allocation is written (the ledger mirror stays
+ * honest) and a REFUNDED booking event is recorded. DISMISSED exists for
+ * "the member declined it" / "settled another way" and requires a note; it
+ * moves no money and writes no allocation.
+ *
+ * The OPEN -> terminal transition is a status-fenced conditional update, so a
+ * double click or two admins closing at once can never double-apply the
+ * allocation.
+ */
+export async function resolveManualRefundTask({
+  taskId,
+  resolution,
+  note,
+  actingMemberId,
+}: {
+  taskId: string;
+  resolution: "completed" | "dismissed";
+  note: string | null;
+  actingMemberId: string;
+}) {
+  const trimmedNote = normaliseNote(note);
+  if (resolution === "dismissed" && !trimmedNote) {
+    throw new ManualBookingPaymentError(
+      "Say why this refund is being dismissed — a note is required.",
+      400
+    );
+  }
+
+  const result = await prisma.$transaction(async (tx) => {
+    const task = await tx.manualRefundTask.findUnique({
+      where: { id: taskId },
+      select: {
+        id: true,
+        bookingId: true,
+        paymentId: true,
+        amountCents: true,
+        status: true,
+        booking: { select: { memberId: true } },
+      },
+    });
+    if (!task) {
+      throw new ManualBookingPaymentError("Refund task not found.", 404);
+    }
+    if (task.status !== ManualRefundTaskStatus.OPEN) {
+      throw new ManualBookingPaymentError(
+        "This refund task has already been closed.",
+        409
+      );
+    }
+
+    const now = new Date();
+    const claimed = await tx.manualRefundTask.updateMany({
+      where: { id: task.id, status: ManualRefundTaskStatus.OPEN },
+      data: {
+        status:
+          resolution === "completed"
+            ? ManualRefundTaskStatus.COMPLETED
+            : ManualRefundTaskStatus.DISMISSED,
+        completedByMemberId: actingMemberId,
+        completedAt: now,
+        note: trimmedNote,
+      },
+    });
+    if (claimed.count === 0) {
+      throw new ManualBookingPaymentError(
+        "This refund task changed while you were closing it — refresh and try again.",
+        409
+      );
+    }
+
+    if (resolution === "completed") {
+      // Only NOW does the ledger record that money was returned. Doing this at
+      // task-creation time would have the mirror claiming a refund before the
+      // club had actually handed anything back.
+      await applyLocalRefundAllocation({
+        paymentId: task.paymentId,
+        amountCents: task.amountCents,
+        store: tx,
+      });
+    }
+
+    await createAuditLog(
+      {
+        action:
+          resolution === "completed"
+            ? "booking-payment.manual-refund-task.complete"
+            : "booking-payment.manual-refund-task.dismiss",
+        memberId: actingMemberId,
+        actorMemberId: actingMemberId,
+        subjectMemberId: task.booking.memberId,
+        targetId: task.bookingId,
+        entityType: "ManualRefundTask",
+        entityId: task.id,
+        category: "payment",
+        severity: "important",
+        outcome: "success",
+        summary:
+          resolution === "completed"
+            ? "Manual booking refund paid back by hand"
+            : "Manual booking refund task dismissed",
+        details: trimmedNote,
+        metadata: {
+          taskId: task.id,
+          bookingId: task.bookingId,
+          paymentId: task.paymentId,
+          amountCents: task.amountCents,
+          resolution,
+        },
+      },
+      tx
+    );
+
+    return {
+      taskId: task.id,
+      bookingId: task.bookingId,
+      paymentId: task.paymentId,
+      amountCents: task.amountCents,
+      memberId: task.booking.memberId,
+      status:
+        resolution === "completed"
+          ? ManualRefundTaskStatus.COMPLETED
+          : ManualRefundTaskStatus.DISMISSED,
+    };
+  });
+
+  if (resolution === "completed") {
+    await recordBookingEvent({
+      bookingId: result.bookingId,
+      type: BookingEventType.REFUNDED,
+      actorMemberId: actingMemberId,
+      amountCents: result.amountCents,
+      reason: "manual_refund_completed",
+    });
+  }
+
+  return result;
+}

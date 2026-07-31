@@ -232,6 +232,145 @@ export async function consumeStoredCreditElection(
 }
 
 /**
+ * Statuses a stored credit election may be WRITTEN onto (#2266, the edit-path
+ * counterpart of #2265's create-path election). The set is exactly the set of
+ * statuses whose election a consumer will later honour:
+ *
+ *  - `DRAFT` / `AWAITING_REVIEW` — the same statuses booking-create stores an
+ *    election on; consumed when the booking pays at `PAYMENT_PENDING`.
+ *  - `PAYMENT_PENDING` — the pay step's consumption door explicitly handles a
+ *    `PAYMENT_PENDING` booking carrying an election (create-payment-intent's
+ *    released-from-review arm, and the Internet Banking switch), so an election
+ *    stored here is consumed on the very next pay attempt.
+ *
+ * `PENDING` is deliberately ABSENT even though members can edit PENDING
+ * bookings: `charge-saved-method` requires `PENDING` and does not consume
+ * elections — `booking-credit-election.ts`'s settle-door notes (#2319) rely on
+ * "no election-bearing booking is ever in PENDING", and the create flow
+ * likewise never stores an election for a hold-rail booking. Keeping PENDING
+ * out preserves that invariant; the hold release lands the booking in
+ * `PAYMENT_PENDING`, where the member can elect their credit.
+ *
+ * Known accepted noise (#2266, LOW-8): because `PAYMENT_PENDING` is writable,
+ * a member whose election was already CONSUMED by a pay attempt (intent
+ * minted, credit applied, booking still `PAYMENT_PENDING` until capture) can
+ * edit and RE-ARM a fresh election. If the earlier intent then captures, the
+ * settle doors (#2319) clear the re-armed election and fire the "unapplied
+ * election" operator alert even though the earlier sibling consumption
+ * already applied credit — a redundant alert for that case. This is accepted
+ * rather than suppressed: money conservation always holds (the clear debits
+ * nothing — pinned in issue-2265-credit-election-service.test.ts), and a
+ * ledger-based suppression ("credit was already applied to this booking")
+ * would also silence the genuinely informative case where the member
+ * re-elected MORE credit that the already-minted intent amount cannot honour
+ * — the member then paid full freight on the intent while holding an
+ * unhonoured request, which is exactly what the alert exists to surface. A
+ * sometimes-redundant alert is honest; a sometimes-wrongly-silent one is not.
+ */
+const CREDIT_ELECTION_WRITABLE_STATUSES = new Set<string>([
+  BookingStatus.DRAFT,
+  BookingStatus.AWAITING_REVIEW,
+  BookingStatus.PAYMENT_PENDING,
+]);
+
+export class CreditElectionNotAllowedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CreditElectionNotAllowedError";
+  }
+}
+
+/**
+ * Decide what a modification writes to `Booking.creditElectionCents` (#2266).
+ *
+ * Pure policy, so the rules are unit-testable away from the modify machinery:
+ *
+ *  - request absent          -> `undefined` (leave the stored election alone)
+ *  - request 0               -> `null` (clear; always safe — clearing takes
+ *                               nothing from anybody)
+ *  - edit settled at $0      -> `null` (the election is moot: nothing is left
+ *                               for credit to pay, the same silence as
+ *                               confirm-draft's $0 arm; #2319's lifecycle arm
+ *                               already cleared the old value)
+ *  - request > 0             -> the requested cents, stored RAW exactly as the
+ *                               draft-create branch stores it — the pay step
+ *                               clamps to the live balance and outstanding
+ *                               price and reports any shortfall (#2265) —
+ *                               provided the booking can still consume it:
+ *                               a writable status, no captured payment, and
+ *                               not organiser-settled (the member owes nothing
+ *                               on an organiser-settled booking). Anything
+ *                               else throws rather than storing a request no
+ *                               consumer would ever honour.
+ *
+ * `status` must be the POST-lifecycle status of this edit, so an edit that
+ * parks the booking for review stores the election on `AWAITING_REVIEW` (the
+ * create flow's exact behaviour) and an edit of a settled booking refuses.
+ */
+export function resolveCreditElectionUpdate({
+  requestedCents,
+  status,
+  organiserSettled,
+  hasCapturedPayment,
+  settledAtZeroDollars,
+}: {
+  requestedCents: number | undefined;
+  status: string;
+  organiserSettled: boolean;
+  hasCapturedPayment: boolean;
+  settledAtZeroDollars: boolean;
+}): number | null | undefined {
+  if (requestedCents === undefined) return undefined;
+  if (!Number.isInteger(requestedCents) || requestedCents < 0) {
+    throw new CreditElectionNotAllowedError(
+      "Credit amount must be a whole number of cents",
+    );
+  }
+  if (settledAtZeroDollars || requestedCents === 0) return null;
+
+  if (organiserSettled) {
+    throw new CreditElectionNotAllowedError(
+      "Account credit cannot be applied to a booking your organiser settles",
+    );
+  }
+  if (hasCapturedPayment || !CREDIT_ELECTION_WRITABLE_STATUSES.has(status)) {
+    throw new CreditElectionNotAllowedError(
+      "Account credit can only be applied to a booking that has not been paid yet",
+    );
+  }
+
+  return requestedCents;
+}
+
+/**
+ * Who the booking page's saved-election notice may address (#2266 MED-2).
+ *
+ * The stored election is the OWNER's money: the amount and the second-person
+ * promise ("your credit choice…") belong to the booking owner alone, and the
+ * admin viewer gets the established third-person phrasing. A linked-guest
+ * viewer (a member listed on somebody else's booking) gets NOTHING — not even
+ * a neutral third-person line — matching how every other money surface on the
+ * booking page is gated (`showCreditApplied` on canManageBooking, the payment
+ * cards owner-positive per #1303/#1289): linked guests keep second-person
+ * framing for stay copy, but the owner's financial affairs are never
+ * disclosed to them, and a notice without the amount would still disclose
+ * that the owner elected credit while offering the guest nothing actionable.
+ *
+ * Pure so the three viewer classes are unit-testable away from the page.
+ */
+export function resolveCreditElectionNoticeAudience({
+  isBookingOwner,
+  isNonOwnerAdminViewer,
+}: {
+  isBookingOwner: boolean;
+  isNonOwnerAdminViewer: boolean;
+}): "owner" | "admin" | null {
+  if (isBookingOwner) return "owner";
+  if (isNonOwnerAdminViewer) return "admin";
+  return null;
+}
+
+/**
  * The audit action a settlement writes when it CLEARS a stored credit election
  * it could not honour (#2265, #2319 doors 1 and 2).
  *

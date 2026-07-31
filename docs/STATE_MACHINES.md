@@ -38,6 +38,17 @@ member actually owes; when credit covers the whole price there is nothing to
 invoice, so the switch is refused and the booking is settled at $0 on the pay
 step instead.
 
+The election is WRITTEN by two producers: booking-create (draft save and
+review-parked creates, #2265) and the edit path (#2266) — a member editing a
+`DRAFT`, an actor editing an `AWAITING_REVIEW` or `PAYMENT_PENDING` booking.
+The edit refuses to write a positive election onto any other status (notably
+`PENDING`: `charge-saved-method` requires PENDING and consumes no election, so
+no election-bearing booking may ever sit there) and clears it when the edit
+itself settles the booking at $0. Members may edit their own `DRAFT` bookings
+(#2266): a draft edit changes stored numbers only — no capacity claim, no hold
+stamp, no change fee — and the `DRAFT -> PAYMENT_PENDING` / `confirm-draft`
+doors keep enforcing capacity and holds exactly as above.
+
 Every transition INTO a settled status clears the election if one is somehow
 still on the row (#2319), because nothing reads the column after settlement and a
 non-NULL value there would advertise an outstanding request forever:
@@ -861,6 +872,80 @@ surface show nothing new. The rest of the audit trail (recovery-operation row,
 `PaymentRefund` ledger entries, error log, and the dedicated #2007 admin alert)
 is unchanged.
 
+### Manual mark-paid (cash / off-Xero bank transfer), B5 #2262
+
+A finance:edit admin action that settles a booking's payment for money the app
+never saw. It is a SIBLING ENTRY POINT into the one settlement body, so the
+booking-side transition is the ordinary settlement one:
+
+```text
+Booking: PAYMENT_PENDING | CONFIRMED | PENDING | DRAFT -> PAID
+Payment: PENDING/PROCESSING/FAILED -> SUCCEEDED, source coerced to
+  INTERNET_BANKING, provenance columns written (manuallyMarkedPaidAt / By /
+  note / manuallyMarkedPaidPreviousStatus). FAILED is a legitimate settle-from
+  status — a declined/expired card attempt is exactly the case an admin
+  remedies with cash — and the fenced write carries this status set as a WHERE
+  condition, so an already-SUCCEEDED or refund-bearing payment can never be
+  clobbered to a manual settlement.
+PaymentTransaction: an INTERNET_BANKING PRIMARY row with NO Stripe intent id,
+  reason "manual_mark_paid", -> SUCCEEDED
+```
+
+Refused (409, nothing written) when the booking is already PAID, is not in a
+payable status, participates in a group settlement, has ANY Xero invoice
+evidence including a queued mint, carries any refund history
+(`refundedAmountCents > 0`), owes nothing, no longer fits the lodge, or when
+the amount owing moved since the admin's dialog rendered.
+
+Reversal (`direction: "unpaid"`), permitted only while nothing has happened
+that it could not undo:
+
+```text
+Booking: PAID -> manuallyMarkedPaidPreviousStatus
+  …except a stored DRAFT, which restores as PAYMENT_PENDING (the PAID claim
+  cleared draftExpiresAt, so a restored DRAFT would never expire)
+Payment: SUCCEEDED -> PENDING, provenance cleared, source left as-is; a
+  restored CONFIRMED internet-banking hold deadline is CLEARED
+PaymentTransaction (the manual PRIMARY row): SUCCEEDED -> FAILED,
+  reason "manual_mark_paid_reversed" — history, never deleted, and never
+  resurrected by a later re-mark (the mint predicate skips FAILED rows)
+PaymentRecoveryOperation (every CANCEL_PAYMENT_INTENT /
+  REFUND_SUPERSEDED_PAYMENT on this payment still PENDING|PROCESSING):
+  DELETED, inside the reversal's transaction — not flipped to a terminal
+  status, because every webhook-side liveness predicate keys on
+  `status != SUCCEEDED` and a FAILED "closed" row would still hand a
+  post-reversal capture to the superseded-refund machinery. The deleted rows'
+  full content is preserved on the reversal's AuditLog entry, and a member-owed
+  superseded refund can never be reached: its settled transaction 409s the
+  reversal first.
+```
+
+Both directions record an `AuditLog` naming the acting admin, and the reversal
+records a durable `BookingEvent` — a `CANCELLED` event carrying the
+`manual_mark_paid_reversed` discriminator
+(`src/lib/manual-settlement-reversal-event.ts`), which the shared narrative
+EXCLUDES so a later genuine cancellation is not misdated by it. The reciprocal
+inbound fence records its conflict the same way, under the
+`manual_settlement_xero_conflict` discriminator.
+
+### Manual refund task lifecycle (#2262)
+
+```text
+OPEN -> COMPLETED   (finance:edit; writes the local refund allocation and a
+                     REFUNDED BookingEvent — the ONLY moment the ledger says
+                     the money went back)
+OPEN -> DISMISSED   (finance:edit; requires a note; moves no money)
+```
+
+Created atomically with the CANCELLED claim when a cash-settled booking is
+cancelled with a non-zero policy refund. A zero-refund outcome creates no task.
+The transition is a status-fenced conditional update, so a double click can
+never double-apply the allocation, and the row is never processed by any cron —
+it deliberately is not a `PaymentRecoveryOperation`. (That dispatcher's final
+arm used to execute ANY unknown enum member as a superseded-payment Stripe
+refund; since #2262 it rejects an unhandled type with an explicit throw, but a
+task a cron must never execute still does not belong in a cron-executed table.)
+
 To verify: whether Internet Banking uses the same `PaymentStatus` transitions
 or Xero invoice state as the effective settlement state.
 
@@ -1388,6 +1473,20 @@ self-review); the queue disables the requester's own buttons to make the rule
 visible. The list API (`/api/admin/member-lifecycle-action-requests`) takes an
 `action` of `ARCHIVE` (default) or `DELETE` and maps the page-filter status
 `PENDING` onto the lifecycle `REQUESTED` state.
+
+Entry eligibility (#2383): an admin-raised cancellation request is accepted for
+any account holder — every member whatever admin access they hold, and
+organisation/school accounts — and refused only for the lodge kiosk device login
+and booking-request contact records, which hold no membership. The kiosk is
+recognised by the record's whole classification, so a person who merely also
+holds the lodge tools stays cancellable. One rule,
+`isMembershipHolderRecord`, shared by server and admin page. Approval is where
+the admin-account guards bite: a privileged target needs a Full Admin approver,
+and the last active login-enabled Full Admin can never be cancelled, both
+evaluated inside the approval transaction. A self-raised cancellation is
+allowed but cannot be self-approved. See
+[`DOMAIN_INVARIANTS.md`](DOMAIN_INVARIANTS.md#membership-lifecycle) and
+[`CANCELLATIONS.md`](CANCELLATIONS.md#who-can-be-cancelled).
 
 To verify: financial blockers, future booking blockers, family cleanup, Xero
 group/archive behavior, and email visibility.

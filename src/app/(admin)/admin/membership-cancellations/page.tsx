@@ -96,6 +96,11 @@ type CancellationParticipant = {
   cancelledAtParticipant: string | null;
   reviewedBy: { id: string; name: string; email: string } | null;
   blockers: Blocker[];
+  // #2383: serialized by membership-cancellation-admin.ts so the queue can say
+  // what kind of account is being cancelled. `holdsPrivilegedAccess` is the
+  // approval-time Full-Admin guard's own predicate.
+  holdsPrivilegedAccess: boolean;
+  accountType: "user" | "organisation" | "admin" | "lodge";
 };
 
 type CancellationRequest = {
@@ -844,6 +849,21 @@ export default function MembershipCancellationsPage() {
                                   <Badge variant="outline">Login enabled</Badge>
                                 ) : (
                                   <Badge variant="outline">No login</Badge>
+                                )}
+                                {/*
+                                  #2383: any account holder is now cancellable,
+                                  so the queue has to say what this one IS.
+                                  Approving a privileged account needs a Full
+                                  Admin and is refused otherwise — the badge is
+                                  the same predicate as that guard.
+                                */}
+                                {participant.holdsPrivilegedAccess && (
+                                  <Badge variant="warning">
+                                    Holds admin access
+                                  </Badge>
+                                )}
+                                {participant.accountType === "organisation" && (
+                                  <Badge variant="outline">Organisation</Badge>
                                 )}
                               </div>
                               <p className="text-sm text-muted-foreground">
