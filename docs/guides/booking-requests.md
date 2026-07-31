@@ -80,6 +80,9 @@ are listed on the booking for you to relay.
 
    ![Booking Requests, Public Requests tab: the status filter row and the flow explainer for non-member requests](../images/admin/admin-booking-requests-public.png)
 
+   (The screenshot predates the **Guest request form link** field described
+   next, so that field is not in it; recapture is tracked in #2429.)
+
    At the top of the tab is **Guest request form link (unlisted)** with a
    **Copy** button. That is the URL of the guest request form
    (`/booking-requests`), and this is the only place in the app that shows it:
