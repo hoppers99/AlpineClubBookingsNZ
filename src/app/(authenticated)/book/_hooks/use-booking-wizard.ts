@@ -21,6 +21,7 @@ import { MEMBER_ONBOARDING_CONFIRMED_EVENT } from "@/lib/member-onboarding-event
 import { MEMBER_GUEST_NOT_ADDABLE_CODE } from "@/lib/booking-guests";
 import { MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE } from "@/lib/member-guest-refusal";
 import type { MemberGuestCandidate } from "@/lib/member-guest-find";
+import { predictMemberGuestConsent } from "../_components/member-guest-preview";
 import {
   type AvailablePromoCode,
   type BookingPaymentMethod,
@@ -664,10 +665,15 @@ export function useBookingWizard() {
         isMember: true,
         memberId: candidate.memberId,
         // Display only — a prediction of what confirming will do, never a
-        // consent record. See `GuestData.memberGuestConsentPreview`.
-        memberGuestConsentPreview: memberGuestConfig.approvalRequired
-          ? "PENDING"
-          : "NOTIFY_ONLY",
+        // consent record. Undefined for a family-scope add, which the finder
+        // can perfectly well produce (D-9 resolves any active member by email,
+        // the booker's own household included) and which needs no consent at
+        // all. See `predictMemberGuestConsent`.
+        memberGuestConsentPreview: predictMemberGuestConsent({
+          candidateMemberId: candidate.memberId,
+          familyMemberIds: familyMembers.map((fm) => fm.id),
+          approvalRequired: memberGuestConfig.approvalRequired,
+        }),
         ...(perGuestDatesEnabled && dateStrings
           ? { stayStart: dateStrings.checkIn, stayEnd: dateStrings.checkOut }
           : {}),

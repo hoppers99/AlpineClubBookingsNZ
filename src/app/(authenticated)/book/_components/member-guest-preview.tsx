@@ -54,6 +54,41 @@ export function memberGuestConsentPreviewColumns(
   return null;
 }
 
+/**
+ * What adding THIS person will actually do — the wizard's consent prediction.
+ *
+ * THE BUG THIS EXISTS TO PREVENT, because it is easy to write the version
+ * without it and it looks right. D-9 makes ANY active member resolvable by
+ * email, which includes the booker's own family: a parent can perfectly well
+ * type their child's household address into the finder rather than using the
+ * quick-add row above it. But a family-scope add is consent-FREE (D-6) — the
+ * server writes `FAMILY_OR_LEGACY`, nobody is asked and nobody is told — so
+ * predicting "Waiting for Mia to approve" over it would promise the booker an
+ * email that is never sent and a hold that does not exist.
+ *
+ * The boundary is computed from the SAME family list the quick-add row is built
+ * from (`/api/members/family`, which carries the booker's own row as
+ * `relationship: "self"`), so the client's idea of "my family" cannot disagree
+ * with the row it already renders. It is still only a prediction: the server
+ * recomputes the boundary from `getAllowedGuestMemberIds` and is the only thing
+ * that decides what is persisted.
+ *
+ * Returns `undefined` for a family-scope add, which is what leaves the guest row
+ * badge-free and byte-identical to a quick-add.
+ */
+export function predictMemberGuestConsent(params: {
+  candidateMemberId: string;
+  /** The booker's own family list, including their own row. */
+  familyMemberIds: readonly string[];
+  /** `MemberGuestSettings.approvalRequired` — D-3, true is the shipped default. */
+  approvalRequired: boolean;
+}): GuestData["memberGuestConsentPreview"] {
+  if (params.familyMemberIds.includes(params.candidateMemberId)) {
+    return undefined;
+  }
+  return params.approvalRequired ? "PENDING" : "NOTIFY_ONLY";
+}
+
 /** The first names of everyone in the party whose answer is still awaited. */
 export function pendingMemberGuestFirstNames(
   guests: readonly GuestData[],
