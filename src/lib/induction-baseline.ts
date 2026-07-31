@@ -398,6 +398,111 @@ function inductionRefs(
     .map(({ id, kind, status }) => ({ id, kind, status }));
 }
 
+type InductionBaselinePlanDigestInput = {
+  databaseTarget: InductionBaselineSafeDatabaseTarget;
+  clubName: string;
+  actorMemberId: string;
+  baselineDate: string;
+  provenance: string;
+  template: BaselineTemplate;
+  ageTierSettings: BaselineAgeTierSetting[];
+  requiredSignOffs: number;
+  memberPlans: {
+    toCreate: InductionBaselineMemberPlan[];
+    alreadyCompleted: InductionBaselineMemberPlan[];
+    openWorkflows: InductionBaselineMemberPlan[];
+    notApplicable: Array<{
+      memberId: string;
+      ageTier: "NOT_APPLICABLE";
+    }>;
+  };
+};
+
+/**
+ * Build the versioned digest from already-validated and classified plan inputs.
+ *
+ * The service remains responsible for validation and classification. This
+ * pure seam owns the one canonical field mapping used by both dry-run and
+ * apply, including explicit remapping that excludes accidental extra fields.
+ */
+export function buildInductionBaselinePlanDigest(
+  input: InductionBaselinePlanDigestInput,
+): string {
+  const mapMemberPlans = (plans: InductionBaselineMemberPlan[]) =>
+    plans.map((member) => ({
+      memberId: member.memberId,
+      ageTier: member.ageTier,
+      existingInductions: member.existingInductions.map((induction) => ({
+        id: induction.id,
+        kind: induction.kind,
+        status: induction.status,
+      })),
+    }));
+  const canonicalPlan = {
+    domain: INDUCTION_BASELINE_PLAN_DIGEST_DOMAIN,
+    version: INDUCTION_BASELINE_PLAN_DIGEST_VERSION,
+    databaseTarget: {
+      host: input.databaseTarget.host,
+      databaseName: input.databaseTarget.databaseName,
+    },
+    club: { name: input.clubName },
+    actor: { memberId: input.actorMemberId },
+    baseline: {
+      date: input.baselineDate,
+      provenance: input.provenance,
+    },
+    template: {
+      id: input.template.id,
+      name: input.template.name,
+      version: input.template.version,
+      kind: input.template.kind,
+      sourceLabel: input.template.sourceLabel,
+      sections: input.template.sections.map((section) => ({
+        id: section.id,
+        title: section.title,
+        description: section.description,
+        priority: section.priority,
+        sortOrder: section.sortOrder,
+        items: section.items.map((item) => ({
+          id: item.id,
+          label: item.label,
+          competencyPrompt: item.competencyPrompt,
+          notesPrompt: item.notesPrompt,
+          isMandatory: item.isMandatory,
+          requiresDemonstration: item.requiresDemonstration,
+          sortOrder: item.sortOrder,
+          legacySourceText: item.legacySourceText,
+        })),
+      })),
+    },
+    ageTierSettings: input.ageTierSettings.map((setting) => ({
+      tier: setting.tier,
+      minAge: setting.minAge,
+      maxAge: setting.maxAge,
+      label: setting.label,
+      sortOrder: setting.sortOrder,
+    })),
+    requiredSignOffs: input.requiredSignOffs,
+    memberPlans: {
+      toCreate: mapMemberPlans(input.memberPlans.toCreate),
+      alreadyCompleted: mapMemberPlans(input.memberPlans.alreadyCompleted),
+      openWorkflows: mapMemberPlans(input.memberPlans.openWorkflows),
+      notApplicable: input.memberPlans.notApplicable.map((member) => ({
+        memberId: member.memberId,
+        ageTier: member.ageTier,
+      })),
+    },
+  };
+  const digestInput = [
+    INDUCTION_BASELINE_PLAN_DIGEST_DOMAIN,
+    `v${INDUCTION_BASELINE_PLAN_DIGEST_VERSION}`,
+    JSON.stringify(canonicalPlan),
+  ].join("\0");
+  return `sha256:${createHash("sha256")
+    .update(digestInput, "utf8")
+    .digest("hex")}`;
+}
+
 function buildReport(params: {
   mode: "dry-run" | "apply";
   databaseTarget: InductionBaselineSafeDatabaseTarget;
@@ -501,50 +606,14 @@ function buildReport(params: {
     appliedCount: 0,
   };
 
-  const canonicalPlan = {
-    domain: INDUCTION_BASELINE_PLAN_DIGEST_DOMAIN,
-    version: INDUCTION_BASELINE_PLAN_DIGEST_VERSION,
-    databaseTarget: {
-      host: params.databaseTarget.host,
-      databaseName: params.databaseTarget.databaseName,
-    },
-    club: { name: params.clubName },
-    actor: { memberId: params.actorMemberId },
-    baseline: {
-      date: params.baselineDate,
-      provenance: params.provenance,
-    },
-    template: {
-      id: params.template.id,
-      name: params.template.name,
-      version: params.template.version,
-      kind: params.template.kind,
-      sourceLabel: params.template.sourceLabel,
-      sections: params.template.sections.map((section) => ({
-        id: section.id,
-        title: section.title,
-        description: section.description,
-        priority: section.priority,
-        sortOrder: section.sortOrder,
-        items: section.items.map((item) => ({
-          id: item.id,
-          label: item.label,
-          competencyPrompt: item.competencyPrompt,
-          notesPrompt: item.notesPrompt,
-          isMandatory: item.isMandatory,
-          requiresDemonstration: item.requiresDemonstration,
-          sortOrder: item.sortOrder,
-          legacySourceText: item.legacySourceText,
-        })),
-      })),
-    },
-    ageTierSettings: params.settings.map((setting) => ({
-      tier: setting.tier,
-      minAge: setting.minAge,
-      maxAge: setting.maxAge,
-      label: setting.label,
-      sortOrder: setting.sortOrder,
-    })),
+  const planDigest = buildInductionBaselinePlanDigest({
+    databaseTarget: params.databaseTarget,
+    clubName: params.clubName,
+    actorMemberId: params.actorMemberId,
+    baselineDate: params.baselineDate,
+    provenance: params.provenance,
+    template: params.template,
+    ageTierSettings: params.settings,
     requiredSignOffs: params.requiredSignOffs,
     memberPlans: {
       toCreate,
@@ -552,15 +621,7 @@ function buildReport(params: {
       openWorkflows,
       notApplicable,
     },
-  };
-  const digestInput = [
-    INDUCTION_BASELINE_PLAN_DIGEST_DOMAIN,
-    `v${INDUCTION_BASELINE_PLAN_DIGEST_VERSION}`,
-    JSON.stringify(canonicalPlan),
-  ].join("\0");
-  const planDigest = `sha256:${createHash("sha256")
-    .update(digestInput, "utf8")
-    .digest("hex")}`;
+  });
 
   return { ...reportWithoutDigest, planDigest };
 }

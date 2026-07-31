@@ -4,6 +4,7 @@ import {
   InductionBaselineBlockedError,
   InductionBaselineError,
   InductionBaselinePlanMismatchError,
+  buildInductionBaselinePlanDigest,
   runInductionBaseline,
   type InductionBaselineReport,
 } from "@/lib/induction-baseline";
@@ -597,6 +598,20 @@ async function digestForScenario(scenario: DigestScenario): Promise<string> {
   ).planDigest;
 }
 
+function digestForClassifiedScenario(scenario: DigestScenario): string {
+  return buildInductionBaselinePlanDigest({
+    databaseTarget: scenario.databaseTarget,
+    clubName: scenario.club.name,
+    actorMemberId: scenario.actor.memberId,
+    baselineDate: scenario.baseline.date,
+    provenance: scenario.baseline.provenance,
+    template: scenario.template,
+    ageTierSettings: scenario.ageTierSettings,
+    requiredSignOffs: scenario.requiredSignOffs,
+    memberPlans: scenario.memberPlans,
+  });
+}
+
 describe("runInductionBaseline", () => {
   it("dry-runs every configured person tier and reports NOT_APPLICABLE separately without writing", async () => {
     const fake = createFakeStore({
@@ -1122,26 +1137,6 @@ describe("runInductionBaseline", () => {
         },
       },
       {
-        name: "age-tier identity (paired swap required by exact-set invariant)",
-        changedPaths: ["ageTierSettings[0].tier", "ageTierSettings[1].tier"],
-        mutate: (scenario) => {
-          const firstTier = scenario.ageTierSettings[0].tier;
-          scenario.ageTierSettings[0].tier = scenario.ageTierSettings[1].tier;
-          scenario.ageTierSettings[1].tier = firstTier;
-        },
-      },
-      {
-        name: "age boundary (paired max/min required by partition invariant)",
-        changedPaths: [
-          "ageTierSettings[0].maxAge",
-          "ageTierSettings[1].minAge",
-        ],
-        mutate: (scenario) => {
-          scenario.ageTierSettings[0].maxAge = 3;
-          scenario.ageTierSettings[1].minAge = 4;
-        },
-      },
-      {
         name: "age-tier label",
         changedPaths: ["ageTierSettings[0].label"],
         mutate: (scenario) => {
@@ -1209,7 +1204,7 @@ describe("runInductionBaseline", () => {
           const prefix =
             `memberPlans.${category}[0].existingInductions` +
             `[${inductionIndex}]`;
-          return [
+          const fieldCases: SensitivityCase[] = [
             {
               name: `${category} existing induction ID`,
               changedPaths: [`${prefix}.id`],
@@ -1228,19 +1223,19 @@ describe("runInductionBaseline", () => {
                 ].kind = changedKind;
               },
             },
-            {
-              name:
-                category === "toCreate"
-                  ? "toCreate existing induction status (category transition required by classification invariant)"
-                  : `${category} existing induction status`,
+          ];
+          if (category !== "toCreate") {
+            fieldCases.push({
+              name: `${category} existing induction status`,
               changedPaths: [`${prefix}.status`],
               mutate: (scenario) => {
                 scenario.memberPlans[category][0].existingInductions[
                   inductionIndex
                 ].status = changedStatus;
               },
-            },
-          ];
+            });
+          }
+          return fieldCases;
         },
       ),
       {
@@ -1253,7 +1248,7 @@ describe("runInductionBaseline", () => {
       },
     ];
 
-    expect(cases).toHaveLength(45);
+    expect(cases).toHaveLength(42);
     const baselineScenario = baselineDigestScenario();
     const baselineDigest = await digestForScenario(baselineScenario);
     const identicalScenario = structuredClone(baselineScenario);
@@ -1273,6 +1268,61 @@ describe("runInductionBaseline", () => {
         await digestForScenario(changedScenario),
         sensitivityCase.name,
       ).not.toBe(baselineDigest);
+    }
+  });
+
+  it("isolates invariant-coupled digest scalars with already-classified inputs", async () => {
+    const baselineScenario = baselineDigestScenario();
+    const directDigest = digestForClassifiedScenario(baselineScenario);
+    expect(await digestForScenario(baselineScenario)).toBe(directDigest);
+
+    const cases: Array<{
+      name: string;
+      changedPath: string;
+      mutate: (scenario: DigestScenario) => void;
+    }> = [
+      {
+        name: "age-tier identity without a valid-set permutation",
+        changedPath: "ageTierSettings[0].tier",
+        mutate: (scenario) => {
+          scenario.ageTierSettings[0].tier = "CHILD";
+        },
+      },
+      {
+        name: "age-tier minAge without moving the adjacent boundary",
+        changedPath: "ageTierSettings[1].minAge",
+        mutate: (scenario) => {
+          scenario.ageTierSettings[1].minAge = 4;
+        },
+      },
+      {
+        name: "age-tier maxAge without moving the adjacent boundary",
+        changedPath: "ageTierSettings[0].maxAge",
+        mutate: (scenario) => {
+          scenario.ageTierSettings[0].maxAge = 3;
+        },
+      },
+      {
+        name: "existing-ref status while remaining in fixed toCreate category",
+        changedPath: "memberPlans.toCreate[0].existingInductions[0].status",
+        mutate: (scenario) => {
+          scenario.memberPlans.toCreate[0].existingInductions[0].status =
+            "COMPLETED";
+        },
+      },
+    ];
+
+    for (const sensitivityCase of cases) {
+      const changedScenario = structuredClone(baselineScenario);
+      sensitivityCase.mutate(changedScenario);
+      expect(
+        scenarioScalarDiffPaths(baselineScenario, changedScenario),
+        sensitivityCase.name,
+      ).toEqual([sensitivityCase.changedPath]);
+      expect(
+        digestForClassifiedScenario(changedScenario),
+        sensitivityCase.name,
+      ).not.toBe(directDigest);
     }
   });
 
