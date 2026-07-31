@@ -51,14 +51,26 @@ export default async function WebsiteLayout({
     />
   );
 
-  if (!theme.isComplete) {
-    // FALLBACK, not the main path (#2420). `src/proxy.ts` now answers every
+  if (!theme.isComplete && !theme.readFailed) {
+    // FALLBACK, not the main path (#2420). `src/proxy.ts` answers every
     // public-website address with 503 and this same screen while setup is
     // incomplete, so an ordinary request never gets here. What still does are
-    // the request shapes the proxy matcher deliberately skips — RSC prefetches
-    // above all — and this branch stops those seeing the real site. Those
+    // the request shapes the proxy matcher deliberately skips — anything
+    // carrying `purpose: prefetch` or `next-router-prefetch`, which are plain
+    // request headers and so are craftable by anyone, not just by our own
+    // client. This branch is what stops those seeing the real site. Those
     // responses are still 200, because a layout cannot set a status; that is the
     // whole reason the authoritative decision moved to the proxy.
+    //
+    // `!readFailed` is the other half, and the asymmetry with the proxy gate is
+    // deliberate (#2420 review F4). The gate answers an unreadable database with
+    // 503, which is exactly what 503 means. This layout's only available answer
+    // is a 200, and a 200 saying "site setup in progress" is a claim about the
+    // CLUB, not about the request — one that `/`'s anonymous cache entry would
+    // then repeat for 60 seconds (300 stale) after a two-second blip on a club
+    // that launched years ago. So the holding screen is painted only when the
+    // database positively reports an unfinished setup. A failed read falls
+    // through to the real site, whose own queries then fail honestly.
     //
     // DB-first contact address (C6 #1985): resolved only when the pre-setup
     // fallback screen actually renders, so the hot website layout adds no extra
