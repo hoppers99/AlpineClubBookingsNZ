@@ -215,18 +215,13 @@ export async function GET() {
   // learns to move off them.) Reuses the SAVE-TIME validator rather than a
   // second rule, so "your save was refused for this" and "your saved override
   // has this" can never disagree.
-  const retiredTokenOverrides = [...overrideByTemplate.entries()]
-    .map(([templateName, override]) => {
-      const validation = validateEmailTemplateContent({
-        templateName,
-        subject: override.subject ?? "",
-        bodyText: override.bodyText ?? "",
-      });
-      const tokens = validation.issues
-        .filter(
-          (issue) => issue.code === "disallowed_token" || issue.code === "unknown_token",
-        )
-        .flatMap((issue) => issue.tokens ?? []);
+  //
+  // #2269 reads the SAME computation off staleContentByTemplate rather than
+  // validating a second time, so this banner and the per-template indicator can
+  // never disagree about which tokens are retired.
+  const retiredTokenOverrides = [...overrideByTemplate.keys()]
+    .map((templateName) => {
+      const tokens = staleContentByTemplate.get(templateName)?.retiredTokens ?? [];
       if (tokens.length === 0) return null;
       return { templateName, tokens: Array.from(new Set(tokens)) };
     })
