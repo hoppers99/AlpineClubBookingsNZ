@@ -998,6 +998,11 @@ model MemberSubscription {
   @@index([seasonYear])
   @@index([seasonYear, status])
   @@index([manuallyMarkedPaidByMemberId])
+  // #2400: "who else does this Xero invoice cover?" is asked with
+  // `where: { xeroInvoiceId: { in: [...] } }` on every admin cancellation-queue
+  // page load and again at every approval, and the column had no index at all,
+  // so each of those was a sequential scan of the whole table.
+  @@index([xeroInvoiceId])
 }
 
 // Immutable financial snapshot for one membership subscription invoice decision.
