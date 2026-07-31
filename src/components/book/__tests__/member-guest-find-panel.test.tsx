@@ -164,7 +164,9 @@ describe("every outcome is announced (F4)", () => {
     await type("nobody@example.com");
     fireEvent.click(screen.getByRole("button", { name: "Find" }));
 
-    await screen.findByText(MEMBER_GUEST_FIND_COPY.noEmailMatch);
+    expect(await screen.findByTestId("member-guest-find-message")).toHaveTextContent(
+      MEMBER_GUEST_FIND_COPY.noEmailMatch,
+    );
     const live = document.querySelector('[aria-live="polite"]');
     expect(live).toHaveTextContent(MEMBER_GUEST_FIND_COPY.noEmailMatch);
   });
@@ -228,7 +230,9 @@ describe("a name typed into the email-only box says so (F7)", () => {
     await type("Sam Whittaker");
     fireEvent.keyDown(input(), { key: "Enter" });
 
-    await screen.findByText(MEMBER_GUEST_FIND_COPY.nameSearchOff);
+    expect(await screen.findByTestId("member-guest-find-message")).toHaveTextContent(
+      MEMBER_GUEST_FIND_COPY.nameSearchOff,
+    );
     // And it never asks the server a question the server cannot answer.
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -254,7 +258,9 @@ describe("the two-character floor is enforced before the request (F6)", () => {
     });
 
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(screen.getByText(MEMBER_GUEST_FIND_COPY.minChars)).toBeInTheDocument();
+    expect(screen.getByTestId("member-guest-find-message")).toHaveTextContent(
+      MEMBER_GUEST_FIND_COPY.minChars,
+    );
     expect(
       screen.queryByText(MEMBER_GUEST_FIND_COPY.noNameMatch),
     ).not.toBeInTheDocument();
@@ -407,9 +413,9 @@ describe("the rate-limited and error states still render", () => {
     renderPanel();
     await type("sam@exampl");
     fireEvent.click(screen.getByRole("button", { name: "Find" }));
-    expect(
-      await screen.findByText(MEMBER_GUEST_FIND_COPY.noEmailMatch),
-    ).toBeInTheDocument();
+    expect(await screen.findByTestId("member-guest-find-message")).toHaveTextContent(
+      MEMBER_GUEST_FIND_COPY.noEmailMatch,
+    );
     // No request at all: a typing mistake is not a question about any member.
     expect(fetchMock).not.toHaveBeenCalled();
   });

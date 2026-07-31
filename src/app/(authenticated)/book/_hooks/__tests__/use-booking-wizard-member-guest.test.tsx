@@ -152,12 +152,16 @@ async function mountedWizard(options: Parameters<typeof stubFetch>[0] = {}) {
   const { result } = renderHook(() => useBookingWizard());
   await waitFor(() => expect(result.current.guests).toHaveLength(1));
   await waitFor(() => expect(result.current.memberGuestConfig.enabled).toBe(true));
-  act(() => {
-    result.current.handleDateSelect(
+  // AWAITED, and the step asserted: `handleDateSelect` only reaches
+  // `setStep("guests")` after two fetches, and the refusal branch under test
+  // consults the current step to decide where the message renders.
+  await act(async () => {
+    await result.current.handleDateSelect(
       new Date("2026-06-11T00:00:00.000Z"),
       new Date("2026-06-12T00:00:00.000Z"),
     );
   });
+  await waitFor(() => expect(result.current.step).toBe("guests"));
   return result;
 }
 

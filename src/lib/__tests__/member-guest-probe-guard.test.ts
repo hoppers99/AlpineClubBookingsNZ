@@ -470,11 +470,17 @@ describe("#2388 acceptance — a run of probes across dates is throttled before 
   it("cuts the run off at the burst cap, long before a season is mapped", async () => {
     // The owner's first acceptance criterion, which had no test at any level.
     // A real counter is used, not a stub: the limiter's own budget decides.
-    let spent = 0;
-    h.applyMemberScopedRateLimit.mockImplementation(async (config: { limit: number }) => {
-      spent += 1;
-      return spent > config.limit ? DENIED() : ALLOWED;
-    });
+    // One counter PER LIMITER: `applyMemberGuestAddThrottle` consults the burst
+    // window and the daily backstop, so a single shared counter would spend both
+    // budgets on every attempt.
+    const spent = new Map<string, number>();
+    h.applyMemberScopedRateLimit.mockImplementation(
+      async (config: { id: string; limit: number }) => {
+        const next = (spent.get(config.id) ?? 0) + 1;
+        spent.set(config.id, next);
+        return next > config.limit ? DENIED() : ALLOWED;
+      },
+    );
 
     const hook = memberGuestAddThrottleHook({
       request: request(),

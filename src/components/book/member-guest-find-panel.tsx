@@ -460,7 +460,10 @@ export function MemberGuestFindPanel({
 
       {!selected && messageText && (
         <div className="space-y-1.5">
-          <div className="rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground">
+          <div
+            data-testid="member-guest-find-message"
+            className="rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground"
+          >
             {messageText}
           </div>
           {messageText === MEMBER_GUEST_FIND_COPY.noEmailMatch && (
