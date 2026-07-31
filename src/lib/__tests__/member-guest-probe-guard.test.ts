@@ -64,6 +64,24 @@ const ALLOWED = null;
 const DENIED = () =>
   new Response(JSON.stringify({ error: "Too many requests." }), { status: 429 });
 
+/**
+ * Count refusals and warnings SEPARATELY (privacy re-review of MG3 #2308,
+ * MEDIUM-1).
+ *
+ * `recordMemberGuestAddRefusal` now asks two different questions of
+ * `auditLog.count` — "how many refusals in the window" and "has a warning
+ * already been raised in the window" — and a single `mockResolvedValue` answers
+ * both with the same number, which is not a state the database can be in. The
+ * helper answers each by the action the query filters on, so a test can put the
+ * counter anywhere it likes on either axis.
+ */
+function countByAction(refusals: number, warnings: number) {
+  return async (args: { where?: { action?: string } }) =>
+    args?.where?.action === MEMBER_GUEST_REPEATED_REFUSAL_AUDIT_ACTION
+      ? warnings
+      : refusals;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   h.createStructuredAuditLog.mockResolvedValue(undefined);
@@ -226,7 +244,9 @@ describe("3. logging repeated refusals — for an admin, NEVER a block", () => {
   });
 
   it("raises a distinct, findable row once the same target is refused repeatedly", async () => {
-    h.auditLogCount.mockResolvedValue(MEMBER_GUEST_REPEATED_REFUSAL_THRESHOLD);
+    h.auditLogCount.mockImplementation(
+      countByAction(MEMBER_GUEST_REPEATED_REFUSAL_THRESHOLD, 0),
+    );
     await recordMemberGuestAddRefusal({
       request: request(),
       actorMemberId: "m-booker",
@@ -296,6 +316,73 @@ describe("3. logging repeated refusals — for an admin, NEVER a block", () => {
       (call) => (call[0] as { action: string }).action === MEMBER_GUEST_REFUSAL_AUDIT_ACTION,
     );
     expect(refusals).toHaveLength(attempts);
+  });
+
+  it("warns ONCE per actor/target per window, not on every refusal past the threshold", async () => {
+    // MEDIUM-1 of the MG3 (#2308) privacy re-review, and the case that made it a
+    // finding rather than a nicety: a booker re-dating a booking that happens to
+    // carry a member guest produces one refusal per debounced quote. Eight date
+    // tweaks in an afternoon used to raise FOUR severity-`important` rows naming
+    // an innocent member. The signal the owner asked for is "somebody crossed
+    // the line"; a flood of duplicates is how an admin learns to scroll past it.
+    //
+    // Simulated exactly as the database would behave: the refusal count climbs
+    // with every attempt, and the warning count is 0 until the first warning is
+    // written and 1 afterwards.
+    let warningsInWindow = 0;
+    h.auditLogCount.mockImplementation(async (args: { where?: { action?: string } }) =>
+      args?.where?.action === MEMBER_GUEST_REPEATED_REFUSAL_AUDIT_ACTION
+        ? warningsInWindow
+        : MEMBER_GUEST_REPEATED_REFUSAL_THRESHOLD + 3,
+    );
+    h.createStructuredAuditLog.mockImplementation(async (event: { action: string }) => {
+      if (event.action === MEMBER_GUEST_REPEATED_REFUSAL_AUDIT_ACTION) {
+        warningsInWindow += 1;
+      }
+    });
+
+    for (let i = 0; i < 8; i += 1) {
+      await recordMemberGuestAddRefusal({
+        request: request(),
+        actorMemberId: "m-booker",
+        targetMemberIds: ["m-friend"],
+        route: "bookings/modify-quote",
+      });
+    }
+
+    const events = h.createStructuredAuditLog.mock.calls.map(
+      (call) => call[0] as { action: string },
+    );
+    // Every refusal is still recorded individually — the dedup is on the WARNING
+    // only, and losing the per-refusal rows would take the audit trail with it.
+    expect(
+      events.filter((e) => e.action === MEMBER_GUEST_REFUSAL_AUDIT_ACTION),
+    ).toHaveLength(8);
+    expect(
+      events.filter((e) => e.action === MEMBER_GUEST_REPEATED_REFUSAL_AUDIT_ACTION),
+    ).toHaveLength(1);
+  });
+
+  it("fires on a count that JUMPS the threshold, not only on landing exactly on it", async () => {
+    // Concurrent refusals can take the count from four straight to six, so an
+    // equality test against the threshold would never fire at all. The check is
+    // `>=` plus "has a warning already been written", which is why this passes.
+    h.auditLogCount.mockImplementation(
+      countByAction(MEMBER_GUEST_REPEATED_REFUSAL_THRESHOLD + 1, 0),
+    );
+    await recordMemberGuestAddRefusal({
+      request: request(),
+      actorMemberId: "m-booker",
+      targetMemberIds: ["m-friend"],
+      route: "bookings/quote",
+    });
+    expect(
+      h.createStructuredAuditLog.mock.calls.filter(
+        (call) =>
+          (call[0] as { action: string }).action ===
+          MEMBER_GUEST_REPEATED_REFUSAL_AUDIT_ACTION,
+      ),
+    ).toHaveLength(1);
   });
 
   it("fails open — an audit outage cannot break a booking", async () => {

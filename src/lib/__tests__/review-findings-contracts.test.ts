@@ -312,6 +312,19 @@ describe("review finding source/schema contracts", () => {
       "src/app/api/bookings/route.ts",
       "src/app/api/bookings/[id]/modify-quote/route.ts",
     ]);
+    // HIGH-1 (privacy re-review of MG3 #2308). The boundary hook counts an
+    // attempt that NAMES a beyond-family member, and `modify-quote`'s cheapest
+    // attack path names nobody: the member guest is already on the booking and
+    // the request only moves the dates. With an empty `addGuests`,
+    // `resolveLinkedBookingMembersWithBoundary` returns before the boundary is
+    // computed, so the hook never runs, and the refusal that follows — raised far
+    // later by the person-night guard off the C1 marker — was asserting
+    // `throttle: "ALREADY_CHARGED"` having charged nothing at all. ~150 previews
+    // sweep a season for free. So this route owes a SECOND charge point over the
+    // whole marked party, before the guard reads anything.
+    const chargesOverTheWholeParty = new Set([
+      "src/app/api/bookings/[id]/modify-quote/route.ts",
+    ]);
 
     for (const file of addPaths) {
       const source = readRepoFile(file);
@@ -355,6 +368,39 @@ describe("review finding source/schema contracts", () => {
           source,
           `${file}: resolves inside a transaction, so it charges on the way out`,
         ).toContain('throttle: "CHARGE_NOW"');
+      }
+
+      if (chargesOverTheWholeParty.has(file)) {
+        const stripped = stripComments(source);
+        const partyChargeAt = stripped.search(
+          /\bawait applyMemberGuestPartyProbeThrottle\(/,
+        );
+        expect(
+          partyChargeAt,
+          `${file}: must spend a throttle unit over the WHOLE marked party, not only when the request names a beyond-family member`,
+        ).toBeGreaterThanOrEqual(0);
+        const guardAt = stripped.search(
+          /\b(assertNoBookingMemberNightConflicts|findBookingMemberNightConflicts)\(/,
+        );
+        expect(
+          partyChargeAt,
+          `${file}: charges over the party BEFORE the person-night guard is asked anything`,
+        ).toBeLessThan(guardAt);
+        // Two charge points, both conditional, so no refusal on this route can
+        // truthfully claim either "already charged" or "charge now". The ledger
+        // is what keeps the pair to one unit per request.
+        expect(
+          stripped,
+          `${file}: shares one ledger between its charge points`,
+        ).toContain("createMemberGuestAddThrottleLedger(");
+        expect(
+          stripped,
+          `${file}: a conditional charge point cannot assert ALREADY_CHARGED`,
+        ).not.toContain('throttle: "ALREADY_CHARGED"');
+        expect(
+          stripped,
+          `${file}: refusals fall back to the ledger-checked charge`,
+        ).toContain('throttle: "CHARGE_IF_UNCHARGED"');
       }
     }
   });
@@ -422,6 +468,23 @@ describe("review finding source/schema contracts", () => {
         "before calling the guard, or it is exempt for a reason written down here.",
     ).toEqual([]);
 
+    // EVERY occurrence, not the first (privacy re-review of MG3 #2308, LOW-3).
+    // This block used to compare `source.search(...)` against `source.search(...)`
+    // — first marking call against FIRST guard call — which proved nothing about
+    // a file's second guard call. Both `booking-date-modification-service.ts` and
+    // `modify-quote/route.ts` have one, and neither was marked. Both happen to be
+    // admin-only today, so nothing leaked; the contract simply would not have
+    // caught a member-facing second caller added to either file. Pair them up in
+    // order instead: the Nth guard call must be preceded by an Nth marking call.
+    const offsetsOf = (source: string, pattern: RegExp): number[] => {
+      const scan = new RegExp(pattern.source, `${pattern.flags}g`);
+      const offsets: number[] = [];
+      for (let match = scan.exec(source); match; match = scan.exec(source)) {
+        offsets.push(match.index);
+      }
+      return offsets;
+    };
+
     for (const file of mustMark) {
       expect(callers, `${file} still calls the guard`).toContain(file);
       const source = stripComments(readRepoFile(file));
@@ -430,23 +493,25 @@ describe("review finding source/schema contracts", () => {
       // walked straight through it: deleting the call left the import behind,
       // and renaming it to `SKIPPED_markCrossFamilyGuestsOnBooking` still
       // contained the string.
-      const callAt = source.search(/\bawait markCrossFamilyGuestsOnBooking\(/);
-      expect(
-        callAt,
-        `${file}: must AWAIT markCrossFamilyGuestsOnBooking over the whole proposed party`,
-      ).toBeGreaterThanOrEqual(0);
-      // And before the guard reads, or the guard sees the unmarked list.
-      const guardAt = source.search(
+      const markAt = offsetsOf(source, /\bawait markCrossFamilyGuestsOnBooking\(/);
+      const guardAt = offsetsOf(
+        source,
         /\b(assertNoBookingMemberNightConflicts|findBookingMemberNightConflicts)\(/,
       );
       expect(
-        guardAt,
+        guardAt.length,
         `${file}: still calls the person-night guard after stripping comments`,
-      ).toBeGreaterThanOrEqual(0);
+      ).toBeGreaterThan(0);
       expect(
-        callAt,
-        `${file}: marks the party BEFORE the person-night guard reads it`,
-      ).toBeLessThan(guardAt);
+        markAt.length,
+        `${file}: must AWAIT markCrossFamilyGuestsOnBooking once per person-night guard call — ${guardAt.length} guard call(s) found`,
+      ).toBeGreaterThanOrEqual(guardAt.length);
+      guardAt.forEach((guardOffset, index) => {
+        expect(
+          markAt[index],
+          `${file}: person-night guard call #${index + 1} is not preceded by its own markCrossFamilyGuestsOnBooking — the guard would read an unmarked party`,
+        ).toBeLessThan(guardOffset);
+      });
     }
   });
 
