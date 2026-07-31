@@ -9,6 +9,7 @@ import {
 } from "@/lib/member-guest-find-service";
 import {
   equaliseMemberGuestRefusalTiming,
+  startMemberGuestRefusalClock,
 } from "@/lib/member-guest-probe-guard";
 import { applyMemberScopedRateLimit, rateLimiters } from "@/lib/rate-limit";
 import { requireActiveSession } from "@/lib/session-guards";
@@ -42,7 +43,7 @@ const resolveSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  const startedAt = Date.now();
+  const startedAt = startMemberGuestRefusalClock();
 
   const guard = await requireActiveSession();
   if (!guard.ok) return guard.response;

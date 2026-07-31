@@ -39,6 +39,7 @@ import {
 import {
   applyMemberGuestAddThrottle,
   handleMemberGuestAddRefusal,
+  startMemberGuestRefusalClock,
 } from "@/lib/member-guest-probe-guard";
 import type { MemberGuestAddActor } from "@/lib/member-guest-consent";
 import { nameField } from "@/lib/zod-helpers";
@@ -156,7 +157,7 @@ const createBookingSchema = z.object({
 export async function POST(request: NextRequest) {
   // #2388: taken at the top so the collapsed-refusal timing floor covers the
   // whole request, not only the part after the refusal was detected.
-  const startedAt = Date.now();
+  const startedAt = startMemberGuestRefusalClock();
   const rateLimited = await applyRateLimit(rateLimiters.bookingCreate, request);
   if (rateLimited) return rateLimited;
 

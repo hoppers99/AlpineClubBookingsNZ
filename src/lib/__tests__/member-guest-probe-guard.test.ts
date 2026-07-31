@@ -47,6 +47,7 @@ import {
   handleMemberGuestAddRefusal,
   memberGuestRefusalDelayMs,
   recordMemberGuestAddRefusal,
+  startMemberGuestRefusalClock,
 } from "@/lib/member-guest-probe-guard";
 import { rateLimiters } from "@/lib/rate-limit";
 
@@ -152,17 +153,32 @@ describe("2. response-timing equalisation", () => {
 
   it("actually waits when the answer came back faster than the floor", async () => {
     __setMemberGuestRefusalFloorMs(60);
-    const started = Date.now();
-    await equaliseMemberGuestRefusalTiming(started);
-    expect(Date.now() - started).toBeGreaterThanOrEqual(50);
+    // Two clocks on purpose: the helper is driven by the monotonic one it
+    // actually uses, while the ASSERTION measures real elapsed time, so this
+    // cannot pass by both sides sharing a broken clock.
+    const clock = startMemberGuestRefusalClock();
+    const wallBefore = Date.now();
+    await equaliseMemberGuestRefusalTiming(clock);
+    expect(Date.now() - wallBefore).toBeGreaterThanOrEqual(50);
   });
 
   it("does not wait at all when the answer already took longer than the floor", async () => {
     __setMemberGuestRefusalFloorMs(20);
-    const started = Date.now() - 5_000;
-    const before = Date.now();
-    await equaliseMemberGuestRefusalTiming(started);
-    expect(Date.now() - before).toBeLessThan(20);
+    const clock = startMemberGuestRefusalClock() - 5_000;
+    const wallBefore = Date.now();
+    await equaliseMemberGuestRefusalTiming(clock);
+    expect(Date.now() - wallBefore).toBeLessThan(20);
+  });
+
+  it("uses a MONOTONIC clock, so an NTP jump cannot skip or hang the floor", () => {
+    // `Date.now()` is not a duration clock: a correction mid-request can make a
+    // wall-clock delta negative (floor skipped) or enormous (response hangs).
+    const a = startMemberGuestRefusalClock();
+    const b = startMemberGuestRefusalClock();
+    expect(b).toBeGreaterThanOrEqual(a);
+    // And it is NOT epoch milliseconds — which is what stops anybody mistaking
+    // it for a timestamp worth putting in an idempotency key.
+    expect(a).toBeLessThan(Date.now() / 2);
   });
 });
 
@@ -287,7 +303,7 @@ describe("handleMemberGuestAddRefusal — the one call every add path makes", ()
         crossFamilyMemberIds?: readonly string[];
       },
       route: "bookings/quote",
-      startedAt: Date.now(),
+      startedAt: startMemberGuestRefusalClock(),
     });
     // The floor must NOT be applied to ordinary errors: a quarter-second (here
     // five seconds) on "check-out must be after check-in" would slow the whole
@@ -299,7 +315,8 @@ describe("handleMemberGuestAddRefusal — the one call every add path makes", ()
 
   it("spends the throttle budget, audits, and equalises for a collapsed refusal", async () => {
     __setMemberGuestRefusalFloorMs(40);
-    const startedAt = Date.now();
+    const startedAt = startMemberGuestRefusalClock();
+    const wallBefore = Date.now();
     await handleMemberGuestAddRefusal({
       request: request(),
       actorMemberId: "m-booker",
@@ -309,7 +326,7 @@ describe("handleMemberGuestAddRefusal — the one call every add path makes", ()
     });
     expect(h.applyMemberScopedRateLimit).toHaveBeenCalled();
     expect(h.createStructuredAuditLog).toHaveBeenCalled();
-    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(30);
+    expect(Date.now() - wallBefore).toBeGreaterThanOrEqual(30);
   });
 
   it("never converts a refusal into a 429, even when the budget is spent", async () => {
@@ -322,7 +339,7 @@ describe("handleMemberGuestAddRefusal — the one call every add path makes", ()
         actorMemberId: "m-booker",
         error: { crossFamilyMemberIds: ["m-stranger"] },
         route: "bookings/quote",
-        startedAt: Date.now(),
+        startedAt: startMemberGuestRefusalClock(),
       }),
     ).resolves.toBeUndefined();
   });

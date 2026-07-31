@@ -50,6 +50,7 @@ import {
 import {
   applyMemberGuestAddThrottle,
   handleMemberGuestAddRefusal,
+  startMemberGuestRefusalClock,
 } from "@/lib/member-guest-probe-guard";
 
 const dateOnlyString = z.string().refine(isDateOnlyString, {
@@ -78,7 +79,7 @@ export async function POST(request: NextRequest) {
   // #2388: read once, at the very top, so the response-timing floor on a
   // collapsed cross-family refusal covers the WHOLE request rather than only the
   // part after the refusal was detected.
-  const startedAt = Date.now();
+  const startedAt = startMemberGuestRefusalClock();
   const rateLimited = await applyRateLimit(rateLimiters.bookingQuery, request);
   if (rateLimited) return rateLimited;
 

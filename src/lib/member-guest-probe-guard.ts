@@ -116,6 +116,31 @@ export async function applyMemberGuestAddThrottle(params: {
  */
 export const MEMBER_GUEST_REFUSAL_FLOOR_MS = 250;
 
+/**
+ * Start the refusal-timing clock. Call this at the TOP of an add-path handler
+ * and pass the result to `equaliseMemberGuestRefusalTiming`.
+ *
+ * MONOTONIC, NOT THE WALL CLOCK, and both halves of that matter.
+ *
+ * Correctness: this measures a DURATION, and `Date.now()` is not a duration
+ * clock. An NTP correction mid-request can make a wall-clock delta negative or
+ * enormous, which would either skip the floor entirely or hang the response.
+ * `performance.now()` cannot go backwards.
+ *
+ * Contract: `review-findings-contracts.test.ts` forbids `Date.now()` outright in
+ * `api/bookings/[id]/modify`, `modify-dates` and `guests` — booking-modification
+ * idempotency keys must never be derived from the clock, or a retry mints a
+ * fresh Stripe key and the idempotency guarantee is gone. That contract is a
+ * blunt source grep BY DESIGN: it cannot tell a benign clock read from a
+ * dangerous one, and it should not try. So the add paths do not read a clock at
+ * all — they call this, whose name says what the number is for. Anything built
+ * from a value called "the refusal timing clock" is visibly wrong at the call
+ * site, which is the property the grep was protecting.
+ */
+export function startMemberGuestRefusalClock(): number {
+  return performance.now();
+}
+
 let refusalFloorMs = MEMBER_GUEST_REFUSAL_FLOOR_MS;
 
 // test seam — lets the route tests exercise the real refusal path without
@@ -148,13 +173,13 @@ export function memberGuestRefusalDelayMs(elapsedMs: number): number {
  * case for beyond-family ids, and this floor is what stops the collapse being
  * undone by a stopwatch.
  *
- * `startedAt` is a `Date.now()` reading taken at the TOP of the route handler,
- * passed in rather than read here so the floor covers the whole request rather
- * than only the part after the failure was detected.
+ * `startedAt` is a `startMemberGuestRefusalClock()` reading taken at the TOP of
+ * the route handler, passed in rather than read here so the floor covers the
+ * whole request rather than only the part after the failure was detected.
  */
 export async function equaliseMemberGuestRefusalTiming(
   startedAt: number,
-  now: number = Date.now(),
+  now: number = performance.now(),
 ): Promise<void> {
   const delay = memberGuestRefusalDelayMs(now - startedAt);
   if (delay <= 0) return;
@@ -315,7 +340,7 @@ export async function handleMemberGuestAddRefusal(params: {
   /** The caught error; only one carrying `crossFamilyMemberIds` does anything. */
   error: { crossFamilyMemberIds?: readonly string[] };
   route: string;
-  /** `Date.now()` from the top of the handler. */
+  /** `startMemberGuestRefusalClock()` from the top of the handler. */
   startedAt: number;
   skipAuthorization?: boolean;
 }): Promise<void> {

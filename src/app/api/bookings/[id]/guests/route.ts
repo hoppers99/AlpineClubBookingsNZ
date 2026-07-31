@@ -58,7 +58,10 @@ import {
   type MemberGuestConsentGuestFields,
   type MemberGuestConsentWritePlanEntry,
 } from "@/lib/member-guest-add-policy";
-import { handleMemberGuestAddRefusal } from "@/lib/member-guest-probe-guard";
+import {
+  handleMemberGuestAddRefusal,
+  startMemberGuestRefusalClock,
+} from "@/lib/member-guest-probe-guard";
 import type { MemberGuestAddActor } from "@/lib/member-guest-consent";
 import { findUnpaidMemberGuestNames } from "@/lib/booking-member-guest-subscriptions";
 import {
@@ -153,7 +156,7 @@ export async function POST(
 ) {
   // #2388: taken at the top so the collapsed-refusal timing floor covers the
   // whole request.
-  const startedAt = Date.now();
+  const startedAt = startMemberGuestRefusalClock();
   const session = await auth();
   if (!session) {
     return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
