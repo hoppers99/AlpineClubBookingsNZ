@@ -18,6 +18,7 @@ import { shouldShowInviteFamilyGroupMembersLink } from "@/lib/family-booking";
 import { hasAccessRole, hasAdminAccess } from "@/lib/access-roles";
 import { isPaymentOwedBookingStatus } from "@/lib/booking-status";
 import { MEMBER_ONBOARDING_CONFIRMED_EVENT } from "@/lib/member-onboarding-events";
+import { MEMBER_GUEST_NOT_ADDABLE_CODE } from "@/lib/booking-guests";
 import { MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE } from "@/lib/member-guest-refusal";
 import type { MemberGuestCandidate } from "@/lib/member-guest-find";
 import {
@@ -718,11 +719,23 @@ export function useBookingWizard() {
     // decides which code a request gets, from MG1's family-boundary computation;
     // the client renders whatever it is given and never re-derives the choice.
     // Family-scope adds keep both detailed branches unchanged.
-    if (data.error === MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE) {
-      setMemberGuestAddError(MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE);
-    } else {
-      setMemberGuestAddError(null);
+    if (data.code === MEMBER_GUEST_NOT_ADDABLE_CODE) {
+      // Shown in the find panel, beside the person the booker was adding
+      // (mockup panel 13), rather than only in the page banner — so the page
+      // banner is deliberately cleared. The panel re-opens itself on this
+      // state, so the message can never be set with nowhere to render.
+      setMemberGuestAddError(
+        typeof data.error === "string"
+          ? data.error
+          : MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE,
+      );
+      setError("");
+      setGuestProfileBlocks([]);
+      setMemberNightConflicts([]);
+      setErrorPaymentTargets([]);
+      return;
     }
+    setMemberGuestAddError(null);
     if (data.code === "GUEST_PROFILE_REQUIRED") {
       handleGuestProfileRequired(data as {
         error?: string;

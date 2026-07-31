@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { MemberGuestFindPanel } from "@/components/book/member-guest-find-panel";
 import { GuestForm, type GuestData } from "@/components/guest-form";
@@ -83,6 +83,14 @@ export function GuestsStep({
   // The find panel opens INLINE, underneath the Guests heading (owner sign-off
   // answer 3) — never a dialog.
   const [findPanelOpen, setFindPanelOpen] = useState(false);
+  // A D-8 refusal comes back AFTER the panel has closed (the add is optimistic;
+  // the server answers on the quote that follows). Re-opening puts the one
+  // neutral sentence beside the person the booker was adding, which is where the
+  // signed-off mockup draws it — and is why the wizard clears its page-level
+  // banner for this one code instead of saying the same thing twice.
+  useEffect(() => {
+    if (memberGuestAddError) setFindPanelOpen(true);
+  }, [memberGuestAddError]);
   // Tri-state for the "add as a non-member guest" fallback warning (#1942). The
   // live quote only computes nonMemberHoldDecision once a non-member is already
   // in the party, so the FIRST non-member add has no decision yet — warn

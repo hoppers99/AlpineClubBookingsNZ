@@ -174,11 +174,34 @@ function skipsMemberProfileGateForAdminOnBehalf(
   return context?.actorRole === "ADMIN" && Boolean(context.onBehalfOfMemberId);
 }
 
+/**
+ * D-8's collapsed cross-family refusal, as a machine code (MG3 #2308, plan §5.4).
+ *
+ * The wizard needs to tell this refusal apart from every other booking error so
+ * it can show it where the booker was working — in the find panel, beside the
+ * person they were trying to add — rather than only in the page-level banner.
+ * Matching on the message text would work today and break the first time the
+ * sentence is reworded.
+ *
+ * It discloses nothing new: EVERY collapsed refusal carries the same code, for
+ * the same reason they all carry the same sentence and the same 403. It says
+ * "this is the neutral member-guest refusal", which the body already said
+ * verbatim.
+ */
+export const MEMBER_GUEST_NOT_ADDABLE_CODE = "MEMBER_GUEST_NOT_ADDABLE";
+
 export function getBookingGuestValidationErrorResponse(
   error: BookingGuestValidationError
 ) {
   if (error instanceof BookingGuestProfileRequiredError) {
     return error.toResponseBody();
+  }
+
+  if (error.crossFamilyMemberIds && error.crossFamilyMemberIds.length > 0) {
+    // The ids themselves are NEVER sent — they are the audit trail's business,
+    // not the caller's, and echoing them back would confirm which of several
+    // requested members the club refused to discuss.
+    return { code: MEMBER_GUEST_NOT_ADDABLE_CODE, error: error.message };
   }
 
   return { error: error.message };

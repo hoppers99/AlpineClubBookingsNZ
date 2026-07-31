@@ -46,6 +46,8 @@ import {
   assertLinkedBookingMembersCanBeBooked,
   BookingGuestProfileRequiredError,
   BookingGuestValidationError,
+  MEMBER_GUEST_NOT_ADDABLE_CODE,
+  getBookingGuestValidationErrorResponse,
   resolveLinkedBookingMembersWithBoundary,
   type LinkedBookingMember,
 } from "@/lib/booking-guests";
@@ -539,5 +541,45 @@ describe("D-8 leak 4 — resolution refusals no longer escape the collapse", () 
     );
     expect(members.has(OUTSIDER)).toBe(true);
     expect(boundary.beyondFamilyMemberIds).toEqual([OUTSIDER]);
+  });
+});
+
+describe("the response body a collapsed refusal produces (#2308 plan §5.4)", () => {
+  it("carries the neutral code so the wizard can place it, and never the target ids", async () => {
+    const refusal = (await assertLinkedBookingMembersCanBeBooked(
+      profileGateDb(),
+      new Map([[OUTSIDER, incompleteMember(OUTSIDER)]]),
+      BOOKER,
+      { crossFamilyMemberIds: [OUTSIDER] },
+    ).catch((err: unknown) => err)) as BookingGuestValidationError;
+
+    const body = getBookingGuestValidationErrorResponse(refusal);
+    expect(body).toEqual({
+      code: MEMBER_GUEST_NOT_ADDABLE_CODE,
+      error: MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE,
+    });
+    // Echoing the ids back would confirm WHICH of several requested members the
+    // club refused to discuss — the leak-by-omission the collapse exists to stop.
+    expect(JSON.stringify(body)).not.toContain(OUTSIDER);
+  });
+
+  it("gives an ordinary validation error no code at all", () => {
+    const body = getBookingGuestValidationErrorResponse(
+      new BookingGuestValidationError("Linked member is inactive or not found", 400),
+    );
+    expect(body).toEqual({ error: "Linked member is inactive or not found" });
+  });
+
+  it("never marks the DETAILED family-scope refusal with the neutral code", async () => {
+    const detailed = (await assertLinkedBookingMembersCanBeBooked(
+      profileGateDb(),
+      new Map([[CHILD, incompleteMember(CHILD)]]),
+      BOOKER,
+      { crossFamilyMemberIds: [] },
+    ).catch((err: unknown) => err)) as BookingGuestValidationError;
+    const body = getBookingGuestValidationErrorResponse(detailed) as {
+      code?: string;
+    };
+    expect(body.code).toBe("GUEST_PROFILE_REQUIRED");
   });
 });
