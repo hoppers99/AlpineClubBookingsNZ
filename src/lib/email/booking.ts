@@ -16,6 +16,11 @@ import {
   bookingModificationTypeLabel,
   bookingModificationSummaryRows,
 } from "../email-templates";
+import {
+  composeChoreLine,
+  composeOptionalEmailLine,
+  splitGuestPortionOwnBookingLine,
+} from "../email-message-notes";
 import { CLUB_NAME } from "@/config/club-identity";
 import { EMAIL_DEFAULT_LODGE_NAME } from "@/lib/email-message-settings";
 import {
@@ -96,9 +101,15 @@ export async function sendBookingConfirmedEmail(
   // hardcode the "Door code: " label around the bare {{doorCode}} value, which
   // left a dangling "Door code:" line in every confirmation a club without a
   // door code sent.
-  const doorCodeNote = settings.doorCode?.trim()
-    ? `Door code: ${settings.doorCode.trim()}`
-    : "";
+  // #2268: built by the one shared composer, so this line and the identical
+  // one on the pre-arrival reminder cannot drift. `trailing: ""` keeps the
+  // #2267 shape — a bare line that the body surrounds with its own blank
+  // lines — rather than a block that carries its own.
+  const doorCodeNote = composeOptionalEmailLine(
+    "Door code",
+    settings.doorCode,
+    { trailing: "" },
+  );
   const provisionalGuests = options?.provisionalGuests;
   // Composed sentence for the {{provisionalGuestsNote}} token — the same story
   // the FILE template renders, so an operator override keeps parity. Empty when
@@ -376,6 +387,19 @@ export async function sendSplitGuestPortionCancelledEmail(params: {
       checkIn: formatNZDate(params.checkIn),
       checkOut: formatNZDate(params.checkOut),
       bookingReference: params.parentBookingReference ?? "",
+      // #2268: pre-composed optional line — a member whose own booking
+      // reference is not cheaply available must not read a dangling
+      // "Your booking reference:".
+      bookingReferenceNote: composeOptionalEmailLine(
+        "Your booking reference",
+        params.parentBookingReference,
+        { trailing: "\n" },
+      ),
+      // #2268: the reassurance sentence about the member's OWN booking, built
+      // from the same helper as the hand-built HTML. The flat body used to
+      // promise "unaffected and remains confirmed" unconditionally, which is
+      // false when the parent booking is not settled.
+      ownBookingNote: splitGuestPortionOwnBookingLine(params.parentConfirmed),
     },
     lodgeId: params.lodgeId,
   });
@@ -410,6 +434,12 @@ export async function sendBookingReviewApprovedEmail(params: {
       checkIn: formatNZDate(params.checkIn),
       checkOut: formatNZDate(params.checkOut),
       adminNotes: params.adminNotes,
+      // #2268: pre-composed optional line — an approval with no admin note
+      // must not print a bare "Note from admin:".
+      adminNotesLine: composeOptionalEmailLine(
+        "Note from admin",
+        params.adminNotes,
+      ),
       bookingId: params.bookingId,
     },
   });
@@ -444,6 +474,11 @@ export async function sendBookingReviewRejectedEmail(params: {
       checkIn: formatNZDate(params.checkIn),
       checkOut: formatNZDate(params.checkOut),
       adminNotes: params.adminNotes,
+      // #2268: pre-composed optional line — see sendBookingReviewApprovedEmail.
+      adminNotesLine: composeOptionalEmailLine(
+        "Reason from admin",
+        params.adminNotes,
+      ),
     },
   });
 }
@@ -479,6 +514,17 @@ export async function sendCheckinReminderEmail(
         .map((chore) => chore.description ?? "")
         .filter(Boolean)
         .join(", "),
+      // #2268: the whole arrival-day chore block, pre-composed — heading and
+      // all — or nothing at all. The flat body has no conditional syntax, so
+      // a stay with no arrival-day chores must not print a bare
+      // "Your arrival day chores:" heading over an empty list.
+      choreListNote: chores.length
+        ? "Your arrival day chores:\n\n" +
+          chores
+            .map((chore) => composeChoreLine(chore.name, chore.description))
+            .join("") +
+          "\n"
+        : "",
     },
     lodgeId,
   });
@@ -517,6 +563,20 @@ export async function sendPreArrivalReminderEmail(params: {
       guestCount: params.guestCount,
       expectedArrivalTime: params.expectedArrivalTime ?? "",
       doorCode: settings.doorCode ?? "",
+      // #2268: pre-composed optional lines. Both values are nullable, so the
+      // flat body carries only these tokens — a stay with no expected arrival
+      // time, or a lodge with no door code, prints neither a dangling
+      // "Expected arrival:" nor a dangling "Door code:".
+      expectedArrivalNote: composeOptionalEmailLine(
+        "Expected arrival",
+        params.expectedArrivalTime,
+        { trailing: "\n" },
+      ),
+      // #2268: identical shape to the booking-confirmed line above — a bare
+      // "Door code: 1234", or nothing at all for a lodge with no code.
+      doorCodeNote: composeOptionalEmailLine("Door code", settings.doorCode, {
+        trailing: "",
+      }),
     },
     lodgeId: params.lodgeId,
   });

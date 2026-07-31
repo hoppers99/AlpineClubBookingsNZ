@@ -38,6 +38,17 @@ member actually owes; when credit covers the whole price there is nothing to
 invoice, so the switch is refused and the booking is settled at $0 on the pay
 step instead.
 
+The election is WRITTEN by two producers: booking-create (draft save and
+review-parked creates, #2265) and the edit path (#2266) — a member editing a
+`DRAFT`, an actor editing an `AWAITING_REVIEW` or `PAYMENT_PENDING` booking.
+The edit refuses to write a positive election onto any other status (notably
+`PENDING`: `charge-saved-method` requires PENDING and consumes no election, so
+no election-bearing booking may ever sit there) and clears it when the edit
+itself settles the booking at $0. Members may edit their own `DRAFT` bookings
+(#2266): a draft edit changes stored numbers only — no capacity claim, no hold
+stamp, no change fee — and the `DRAFT -> PAYMENT_PENDING` / `confirm-draft`
+doors keep enforcing capacity and holds exactly as above.
+
 Every transition INTO a settled status clears the election if one is somehow
 still on the row (#2319), because nothing reads the column after settlement and a
 non-NULL value there would advertise an outstanding request forever:

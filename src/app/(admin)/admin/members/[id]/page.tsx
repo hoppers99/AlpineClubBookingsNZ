@@ -23,7 +23,8 @@ import {
   parseInviteAuditDetails as parseInviteAuditDetailsHelper,
 } from "@/lib/admin-member-detail-helpers";
 import { resolveInternalReturnPath } from "@/lib/internal-return-path";
-import { hasAccessRole, isFullAdmin } from "@/lib/access-roles";
+import { isFullAdmin } from "@/lib/access-roles";
+import { canAdminRequestMembershipCancellation } from "@/lib/member-roles";
 import { toast } from "sonner";
 import { useScrollToFeedback } from "@/hooks/use-scroll-to-feedback";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
@@ -529,12 +530,12 @@ export default function MemberDetailPage({
     member.cancelledAt && !member.archivedAt && !pendingArchiveRequest,
   );
   const openCancellationRequest = member.openCancellationRequest;
+  // Member-level role, not access roles: dependants and non-login adults
+  // resolve to zero access roles (canLogin clearing), but their memberships
+  // are cancellable — the helper mirrors the API-side validation in
+  // createAdminMembershipCancellationRequest (#2354).
   const canRequestCancellation = Boolean(
-    hasAccessRole(member, "USER") &&
-    member.active &&
-    !member.cancelledAt &&
-    !member.archivedAt &&
-    !openCancellationRequest,
+    canAdminRequestMembershipCancellation(member) && !openCancellationRequest,
   );
 
   const currentSeasonAssignment =

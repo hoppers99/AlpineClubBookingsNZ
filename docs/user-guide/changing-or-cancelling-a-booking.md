@@ -30,13 +30,33 @@ at the end.
 1. Open the booking from **My Bookings** (`/bookings`) and choose to edit it.
 2. Change the **dates**, **guests**, or **promo code** as allowed. Some nights
    are **locked** close to check-in and may need club review before a change
-   takes effect.
-3. Review the **delta** — the difference in price. If the change costs more, you
+   takes effect. When you can enter a promo code, any codes assigned to you are
+   offered as **clickable chips** — the same ones the booking wizard shows —
+   and codes that need you to pick which guests they cover walk you through
+   that selection here too.
+3. If the booking has not been paid yet, an **Account credit** card shows your
+   current balance and lets you tick **Apply credit to this booking** (or untick
+   it). Your choice is saved with the booking and applied when you confirm and
+   pay — nothing is taken from your balance at edit time. See
+   [Paying for your stay](paying-for-your-stay.md#use-account-credit).
+4. Review the **delta** — the difference in price. If the change costs more, you
    settle the extra (see [Paying for your stay](paying-for-your-stay.md)); if it
    costs less, you may be due a refund or credit.
 
 A member editing their own booking always triggers the standard change-notice
-email, so you have a record of what changed.
+email, so you have a record of what changed. (Edits that only fix a guest's
+name or only change your saved credit choice don't email — nothing about the
+stay changed.)
+
+### Resume and edit a draft
+
+A booking you saved as a **draft** can be re-opened from the dashboard's
+**Resume** button and edited like any other booking of yours: dates, guests,
+promo codes (with your eligible-code chips), and your account-credit choice are
+all editable. A draft commits you to nothing — editing one never charges a
+change fee, and beds are only claimed when you confirm and pay. If you saved a
+credit choice, the booking page reminds you: *"Your $X credit choice is saved
+and will be applied when you confirm."*
 
 ### Cancel a booking — and check the refund first
 

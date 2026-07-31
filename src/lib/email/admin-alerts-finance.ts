@@ -9,6 +9,10 @@ import {
   adminRefundRequestTemplate,
   type XeroReconciliationReportEmail,
 } from "../email-templates";
+import {
+  composeOptionalEmailLine,
+  duplicateCaptureRefundOutcomeParagraph,
+} from "../email-message-notes";
 import { CLUB_BOOKINGS_NAME } from "@/config/club-identity";
 import { formatNZDate } from "../nzst-date";
 import { formatCents as formatMoneyCents } from "@/lib/utils";
@@ -85,6 +89,17 @@ export async function sendAdminDuplicateCaptureRefundAlert(data: {
       paymentIntentId: data.paymentIntentId,
       operation: data.operationReference,
       errorMessage: data.errorMessage ?? "",
+      // #2268: the outcome-dependent lead paragraph, built from the same
+      // helper as the hand-built HTML, with the failure detail appended when
+      // there is one. The flat body used to state the success wording
+      // unconditionally and park the failure wording in an authoring note, so
+      // an admin who saved that default was told a duplicate charge had been
+      // refunded even when the refund had failed.
+      refundOutcomeNote:
+        duplicateCaptureRefundOutcomeParagraph(data.refundFailed) +
+        (data.refundFailed && data.errorMessage
+          ? " Failure detail: " + data.errorMessage
+          : ""),
       reviewUrl,
       refundFailed: data.refundFailed,
     },
@@ -210,6 +225,29 @@ export async function sendAdminXeroRepeatedFailureAlert(data: {
       localModel: data.localModel ?? "",
       localId: data.localId ?? "",
       latestErrorMessage: data.latestErrorMessage ?? "",
+      // #2268: pre-composed optional lines. Every one of these five values is
+      // nullable, and the flat body has no conditional syntax, so each whole
+      // line is built here or omitted entirely — the body used to carry
+      // "OR Unavailable" and bare unclickable "Open local record" labels.
+      localRecordNote: composeOptionalEmailLine(
+        "Local Record",
+        [data.localModel, data.localId].filter(Boolean).join(" "),
+        { trailing: "\n" },
+      ),
+      latestErrorNote: composeOptionalEmailLine(
+        "Latest Error",
+        data.latestErrorMessage,
+        { trailing: "\n" },
+      ),
+      xeroLinksNote: composeOptionalEmailLine(
+        null,
+        composeOptionalEmailLine("Open local record", data.localUrl, {
+          trailing: "\n",
+        }) +
+          composeOptionalEmailLine("Open Xero object", data.xeroObjectUrl, {
+            trailing: "\n",
+          }),
+      ),
       timestamp: data.timestamp.toISOString(),
     },
     preferenceKey: "adminXeroSyncError",
@@ -267,6 +305,15 @@ export async function sendAdminRefundRequestAlert(data: {
         data.requestedAmountCents === null
           ? ""
           : formatMoneyCents(data.requestedAmountCents),
+      // #2268: pre-composed optional line — an appeal that names no amount
+      // must not print a dangling "Requested:".
+      requestedAmountNote: composeOptionalEmailLine(
+        "Requested",
+        data.requestedAmountCents === null
+          ? null
+          : formatMoneyCents(data.requestedAmountCents),
+        { trailing: "\n" },
+      ),
     },
     preferenceKey: "adminRefundRequest",
   });

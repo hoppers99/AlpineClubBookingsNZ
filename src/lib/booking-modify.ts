@@ -33,6 +33,7 @@ export {
   prepareGuestPlan,
   resolveGuestNameUpdates,
   resolvePartnerSharedCapacity,
+  resolvePromoBeneficiarySelection,
   type GuestPlan,
   type PricingResult,
   type PromoChangeResult,

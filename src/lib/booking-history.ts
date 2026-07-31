@@ -85,6 +85,8 @@ const MODIFICATION_LABELS: Record<string, string> = {
   GUEST_REMOVE: "Guest Removed",
   EXTEND_STAY: "Stay Extended",
   BATCH_MODIFY: "Booking Modified",
+  // #2266: an edit that changed ONLY the stored credit election (#2265).
+  CREDIT_ELECTION: "Credit Choice Updated",
 };
 
 function formatSignedCents(cents: number): string {
@@ -149,6 +151,14 @@ function describeModification(modification: BookingHistoryModification): string 
         parts.push(`${String(previous.guestCount)} to ${String(next.guestCount)} guests`);
       }
       return parts.length > 0 ? `${parts.join(" and ")}.` : "Booking details were updated.";
+    }
+    // #2266: a credit-election-only edit. The new/previous election cents ride
+    // the modification data (see booking-batch-modification-service).
+    case "CREDIT_ELECTION": {
+      const electionCents = next.creditElectionCents;
+      return typeof electionCents === "number" && electionCents > 0
+        ? `${formatCents(electionCents)} of account credit will be applied at payment.`
+        : "The saved account-credit choice was removed.";
     }
     default:
       return "Booking details were updated.";

@@ -61,6 +61,7 @@ export async function POST(request: NextRequest) {
         signPrefixedTokens: validation.signPrefixedTokens,
         sensitiveSubjectTokens: validation.sensitiveSubjectTokens,
         unsafeLinks: validation.unsafeLinks,
+        bracketAnnotations: validation.bracketAnnotations,
       },
       { status: 400 },
     );
