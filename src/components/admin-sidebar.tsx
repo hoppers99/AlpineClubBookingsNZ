@@ -627,6 +627,7 @@ const ZERO_PENDING_COUNTS: AdminPendingCounts = {
   familyRequests: 0,
   memberApplications: 0,
   refundAppeals: 0,
+  manualRefundTasks: 0,
   creditApprovals: 0,
   bookingReviews: 0,
   bookingChangeRequests: 0,
@@ -749,6 +750,11 @@ function SidebarLinks({
   if (counts.refundAppeals + counts.creditApprovals > 0) {
     badges["/admin/refund-requests"] =
       counts.refundAppeals + counts.creditApprovals;
+  }
+  // B5 (#2262): open cash hand-back tasks live on the payments board, which is
+  // where an admin closes them once the money has actually been paid back.
+  if (counts.manualRefundTasks > 0) {
+    badges["/admin/payments"] = counts.manualRefundTasks;
   }
   if (counts.membershipCancellations + counts.archiveRequests > 0) {
     badges["/admin/membership-cancellations"] =

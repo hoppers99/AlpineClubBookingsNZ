@@ -99,7 +99,22 @@ export const ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES: ReadonlySet<string> =
     "group-settlement-expired",
     "group-join-released",
     "group-join-cancelled",
-    // Admin refund-appeal outcome, sent to the member about their booking
+    // Admin refund-appeal outcome, sent to the member about their booking.
+    // #2321 split one combined template into one per outcome; BOTH stay
+    // booking-scoped, so the per-booking "No emails" switch still withholds
+    // them and the retry cron still refuses to replay a NULL-bookingId row.
+    "refund-request-approved",
+    "refund-request-declined",
+    // Retired by #2321 but RETAINED here on purpose. This set's one job (see
+    // above) is the NULL-bookingId legacy window: a fork that jumps several
+    // releases in one deploy can still hold pre-#2258 FAILED rows queued under
+    // the old combined name, with no bookingId to check the "No emails" switch
+    // against. The retry cron's set membership check (cron-email-retry.ts:128)
+    // is what refuses to replay those rows blind — the fail-closed audience
+    // gate in isBookingSuppressibleTemplate does not cover them, because an
+    // unregistered name only reaches that gate when a caller supplies a REAL
+    // bookingId, and these rows by definition have none. No live sender uses
+    // this name, so the entry can never withhold current mail.
     "refund-request-resolved",
   ]);
 

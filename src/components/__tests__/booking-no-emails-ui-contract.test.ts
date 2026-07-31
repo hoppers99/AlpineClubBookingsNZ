@@ -60,6 +60,10 @@ const ADMIN_GATES = [
  * about the switch instead of silently escaping the rule.
  */
 const BOOKING_NOTIFY_PROMPTS = [
+  // #2262: recording a booking's cash / off-Xero payment offers the club's
+  // standard "email the member?" choice, and the confirmation it would send is
+  // booking-scoped, so the switch must take the choice away.
+  "components/admin/booking-manual-payment-controls.tsx",
   "components/admin/confirm-pending-guests-button.tsx",
   "components/cancel-booking-button.tsx",
   "components/edit-booking-panel.tsx",

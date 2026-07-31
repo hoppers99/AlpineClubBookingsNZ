@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   familyGroupJoinRequestCount: vi.fn(),
   memberApplicationCount: vi.fn(),
   refundRequestCount: vi.fn(),
+  manualRefundTaskCount: vi.fn(),
   adminCreditAdjustmentRequestCount: vi.fn(),
   bookingCount: vi.fn(),
   bookingChangeRequestCount: vi.fn(),
@@ -22,6 +23,7 @@ vi.mock("@/lib/prisma", () => ({
     familyGroupJoinRequest: { count: mocks.familyGroupJoinRequestCount },
     memberApplication: { count: mocks.memberApplicationCount },
     refundRequest: { count: mocks.refundRequestCount },
+    manualRefundTask: { count: mocks.manualRefundTaskCount },
     adminCreditAdjustmentRequest: {
       count: mocks.adminCreditAdjustmentRequestCount,
     },
@@ -56,6 +58,7 @@ describe("getAdminPendingCounts", () => {
     mocks.familyGroupJoinRequestCount.mockResolvedValue(1);
     mocks.memberApplicationCount.mockResolvedValue(2);
     mocks.refundRequestCount.mockResolvedValue(3);
+    mocks.manualRefundTaskCount.mockResolvedValue(15);
     mocks.adminCreditAdjustmentRequestCount.mockResolvedValue(4);
     // prisma.booking.count backs four queues: pending admin booking reviews,
     // unpaid finished stays (#1731), and the two halves of the unsettled stay
@@ -90,6 +93,7 @@ describe("getAdminPendingCounts", () => {
       familyRequests: 1,
       memberApplications: 2,
       refundAppeals: 3,
+      manualRefundTasks: 15,
       creditApprovals: 4,
       bookingReviews: 5,
       bookingChangeRequests: 6,

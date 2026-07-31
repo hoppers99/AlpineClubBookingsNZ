@@ -263,6 +263,21 @@ export async function POST(
     );
   }
 
+  // #2266 (LOW-7): DRAFT joined the member-editable statuses, which would
+  // otherwise let a change request be filed against a member's own draft. A
+  // draft is directly editable by its member — every change an admin could
+  // "approve" here the member can simply make themselves — so a queue entry
+  // for one is pure noise for the admins. Refuse it outright.
+  if (booking.status === "DRAFT") {
+    return NextResponse.json(
+      {
+        error:
+          "Draft bookings can be edited directly — change requests are only for bookings you can no longer edit yourself",
+      },
+      { status: 400 }
+    );
+  }
+
   const editPolicy = getBookingEditPolicy({
     status: booking.status,
     role: actorRole,

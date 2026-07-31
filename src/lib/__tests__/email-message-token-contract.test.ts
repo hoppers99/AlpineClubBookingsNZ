@@ -1,0 +1,419 @@
+import { describe, expect, it } from "vitest";
+import { EMAIL_AUDIT_DEFAULTS } from "@/lib/email-message-audit-defaults";
+import {
+  APPROVED_EMAIL_TEMPLATE_TOKEN_SET,
+  EXTRA_TEMPLATE_TOKENS,
+  EMAIL_TEMPLATE_DEFINITIONS,
+  getEmailTemplateDefinition,
+  sampleValue,
+} from "@/lib/email-message-registry";
+import {
+  OPTIONAL_TEMPLATE_TOKENS,
+  findBracketAnnotations,
+  findDanglingDefaultLines,
+  findStaleOptionalTokens,
+  findUnapprovedDefaultTokens,
+  findUnapprovedSuppliedTokens,
+  type EmailTemplateDefaults,
+} from "@/lib/email-message-token-contract";
+import {
+  renderTemplateString,
+  validateEmailTemplateContent,
+} from "@/lib/email-message-renderer";
+import {
+  ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES,
+  isBookingSuppressibleTemplate,
+} from "@/lib/booking-email-suppression";
+
+// #2268 — the guard these replace was circular. The old check ran
+// validateEmailTemplateContent over every default body, but the per-template
+// `allowedTokens` it validated against is built by scraping tokens out of that
+// same default body, so a token was allowed *because* an author had put it
+// there. It could not fail on a default, which is how 33 templates shipped
+// carrying "[only when ...]" authoring notes as literal member-facing text.
+//
+// Every guard below takes its registry as an ARGUMENT, and every one is
+// exercised twice: once against the real shipped registry, and once against a
+// deliberately broken fixture that proves it actually bites.
+
+const DEFAULTS = EMAIL_AUDIT_DEFAULTS as unknown as Record<
+  string,
+  EmailTemplateDefaults
+>;
+
+describe("#2268 guard 1 — no authoring annotations in a shipped default", () => {
+  it("finds none in the shipped defaults", () => {
+    expect(findBracketAnnotations(DEFAULTS)).toEqual([]);
+  });
+
+  it("fails on a deliberately broken fixture", () => {
+    const findings = findBracketAnnotations({
+      "broken-body": {
+        defaultSubject: "All good",
+        defaultBody: "Door code: {{doorCode}} [only when a door code is set]",
+      },
+      "broken-subject": {
+        defaultSubject: "Refund [only when approved]",
+        defaultBody: "All good",
+      },
+    });
+
+    expect(findings).toEqual([
+      {
+        key: "broken-body",
+        field: "defaultBody",
+        detail: "[only when a door code is set]",
+      },
+      {
+        key: "broken-subject",
+        field: "defaultSubject",
+        detail: "[only when approved]",
+      },
+    ]);
+  });
+});
+
+describe("#2268 guard 2 — shipped defaults only use approved tokens", () => {
+  it("finds none in the shipped defaults", () => {
+    expect(
+      findUnapprovedDefaultTokens(DEFAULTS, APPROVED_EMAIL_TEMPLATE_TOKEN_SET),
+    ).toEqual([]);
+  });
+
+  it("is not circular: it fails on a token the defaults themselves introduce", () => {
+    // The old guard passed this exact input, because the token was allowed by
+    // virtue of appearing in the body being checked.
+    const findings = findUnapprovedDefaultTokens(
+      {
+        "booking-confirmed": {
+          defaultSubject: "Booking Confirmed",
+          defaultBody: "Hi {{firstName}}, your total is {{madeUpToken}}.",
+        },
+      },
+      APPROVED_EMAIL_TEMPLATE_TOKEN_SET,
+    );
+
+    expect(findings).toEqual([
+      {
+        key: "booking-confirmed",
+        field: "defaultBody",
+        detail: "madeUpToken",
+      },
+    ]);
+  });
+});
+
+describe("#2268 guard 3 — every supplied override token is approved", () => {
+  it("finds none in the shipped registry", () => {
+    expect(
+      findUnapprovedSuppliedTokens(
+        EXTRA_TEMPLATE_TOKENS,
+        APPROVED_EMAIL_TEMPLATE_TOKEN_SET,
+      ),
+    ).toEqual([]);
+  });
+
+  it("fails on the {{promoAdjustment}} shape: supplied and allowed, but unusable", () => {
+    // Correctly computed, passed to the renderer, allowed for the template —
+    // and still rejected by the editor's own validator as an unknown token, so
+    // no admin could ever put it in a body. That was the #2267 bug.
+    const findings = findUnapprovedSuppliedTokens(
+      { "booking-confirmed": ["subtotal", "neverApprovedToken"] },
+      APPROVED_EMAIL_TEMPLATE_TOKEN_SET,
+    );
+
+    expect(findings).toEqual([
+      {
+        key: "booking-confirmed",
+        field: "defaultBody",
+        detail: "neverApprovedToken",
+      },
+    ]);
+  });
+});
+
+describe("#2268 guard 4 — no dangling line when an optional value is empty", () => {
+  it("finds none in the shipped defaults", () => {
+    expect(
+      findDanglingDefaultLines(
+        DEFAULTS,
+        OPTIONAL_TEMPLATE_TOKENS,
+        sampleValue,
+      ),
+    ).toEqual([]);
+  });
+
+  it("fails on the door-code shape a bare annotation strip would have left", () => {
+    const findings = findDanglingDefaultLines(
+      {
+        "pre-arrival-reminder": {
+          defaultSubject: "Pre-arrival Information",
+          defaultBody: "Check-in: {{checkIn}}\nDoor code: {{doorCode}}\n\nSee you soon.",
+        },
+      },
+      { "pre-arrival-reminder": ["doorCode"] },
+      sampleValue,
+    );
+
+    expect(findings).toEqual([
+      {
+        key: "pre-arrival-reminder",
+        field: "defaultBody",
+        detail: '"Door code:"',
+      },
+    ]);
+  });
+
+  it("fails on an orphaned possessive when an optional name is empty", () => {
+    const findings = findDanglingDefaultLines(
+      {
+        "school-attendee-confirmation": {
+          defaultSubject: "Confirm your attendee list",
+          defaultBody: "Hi {{firstName}}, {{schoolName}}'s stay is coming up.",
+        },
+      },
+      { "school-attendee-confirmation": ["schoolName"] },
+      sampleValue,
+    );
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0].detail).toContain("'s stay");
+  });
+});
+
+describe("#2268 guard 5 — the optional-token contract cannot rot", () => {
+  it("names only tokens that are really in the default it describes", () => {
+    expect(
+      findStaleOptionalTokens(DEFAULTS, OPTIONAL_TEMPLATE_TOKENS),
+    ).toEqual([]);
+  });
+
+  it("fails on a declaration for a token that is no longer in the body", () => {
+    const findings = findStaleOptionalTokens(
+      {
+        "booking-confirmed": {
+          defaultSubject: "Booking Confirmed",
+          defaultBody: "Hi {{firstName}}.",
+        },
+      },
+      { "booking-confirmed": ["promoSummary"], "gone-away": ["reasonNote"] },
+    );
+
+    expect(findings).toEqual([
+      {
+        key: "booking-confirmed",
+        field: "defaultBody",
+        detail: "promoSummary",
+      },
+      {
+        key: "gone-away",
+        field: "defaultBody",
+        detail: "no such registered template",
+      },
+    ]);
+  });
+});
+
+describe("#2268 — the swept defaults still validate and still re-save", () => {
+  it("keeps every shipped default acceptable to the admin editor's validator", () => {
+    const invalid = EMAIL_TEMPLATE_DEFINITIONS.filter(
+      (definition) =>
+        !validateEmailTemplateContent({
+          templateName: definition.key,
+          subject: definition.defaultSubject,
+          bodyText: definition.defaultBody,
+        }).valid,
+    ).map((definition) => definition.key);
+
+    expect(invalid).toEqual([]);
+  });
+
+  it("keeps a pre-#2268 override that uses the raw optional token valid", () => {
+    // The whole point of leaving the raw values supplied: an admin who saved
+    // "Door code: {{doorCode}}" before the sweep must not have their template
+    // become unsaveable — including the required-token rule, which now names
+    // {{doorCodeNote}} for pre-arrival-reminder.
+    //
+    // {{outstandingAdditionalNote}} rides along because #2350 pinned it on the
+    // same template (it is the only place a pre-arrival reminder says money is
+    // still owed). This case is about the door-code SWAP, so the fixture
+    // carries the unrelated pin rather than letting it mask the swap.
+    const validation = validateEmailTemplateContent({
+      templateName: "pre-arrival-reminder",
+      subject: "Pre-arrival Information",
+      bodyText:
+        "Hi {{firstName}}.\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\n{{outstandingAdditionalNote}}\n\nDoor code: {{doorCode}}",
+    });
+
+    expect(validation.valid).toBe(true);
+    expect(validation.missingRequiredTokens).toEqual([]);
+  });
+
+  it("accepts the new pre-composed token for the same required rule", () => {
+    const validation = validateEmailTemplateContent({
+      templateName: "pre-arrival-reminder",
+      subject: "Pre-arrival Information",
+      bodyText:
+        "Hi {{firstName}}.\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\n{{outstandingAdditionalNote}}\n\n{{doorCodeNote}}",
+    });
+
+    expect(validation.valid).toBe(true);
+    expect(validation.missingRequiredTokens).toEqual([]);
+  });
+
+  it.each([
+    ["membership-cancellation-approved", "adminNote"],
+    ["booking-review-rejected", "adminNotes"],
+    ["admin-new-booking", "reviewReason"],
+    ["admin-refund-request", "requestedAmount"],
+    ["split-guest-portion-cancelled", "bookingReference"],
+    ["membership-payment-recorded", "amount"],
+    ["admin-duplicate-capture-refund", "errorMessage"],
+  ])("keeps %s's raw {{%s}} usable in an override", (key, token) => {
+    const definition = getEmailTemplateDefinition(key);
+    if (!definition) throw new Error(`missing definition for ${key}`);
+    expect(definition.allowedTokens).toContain(token);
+    expect(APPROVED_EMAIL_TEMPLATE_TOKEN_SET.has(token)).toBe(true);
+  });
+
+  it("no longer registers the dead credit-applied-to-booking template", () => {
+    // Registered and admin-editable, but with no send site anywhere in src/ —
+    // an admin could carefully word an email that was never sent (#2268).
+    expect(getEmailTemplateDefinition("credit-applied-to-booking")).toBeUndefined();
+  });
+});
+
+// #2321 — refund-request-resolved was ONE registered template serving BOTH
+// outcomes, with a default body that said "approved" and a sentence reading
+// "A refund of {{amount}} will be processed" that the declined send fed an
+// empty string. The HTML path always branched correctly, so only a club that
+// had saved an override was affected — but that club told declined members
+// their appeal had been approved. It is now one template per outcome, and the
+// declined template has no {{amount}} on its surface at all.
+describe("#2321 refund-appeal outcome templates", () => {
+  // Affirmative approval wording only — "was not approved at this time" is the
+  // declined template's own correct copy, so a bare "approved" would be a
+  // false positive.
+  const APPROVAL_WORDING = [
+    "has been approved",
+    "Appeal Approved",
+    "A refund of",
+    "will be processed",
+    "original payment method",
+  ];
+
+  it("registers one template per outcome and retires the combined one", () => {
+    expect(getEmailTemplateDefinition("refund-request-approved")).toBeDefined();
+    expect(getEmailTemplateDefinition("refund-request-declined")).toBeDefined();
+    expect(getEmailTemplateDefinition("refund-request-resolved")).toBeUndefined();
+  });
+
+  it("never lets approval wording reach a declined member", () => {
+    const declined = getEmailTemplateDefinition("refund-request-declined");
+    if (!declined) throw new Error("missing refund-request-declined");
+
+    // Rendered end to end, both with an admin note and without one.
+    for (const adminNotesLine of ["Notes: Outside the refund window.\n\n", ""]) {
+      const rendered = renderTemplateString(declined.defaultBody, {
+        ...declined.sampleData,
+        adminNotesLine,
+      });
+      const subject = renderTemplateString(
+        declined.defaultSubject,
+        declined.sampleData,
+      );
+
+      for (const phrase of APPROVAL_WORDING) {
+        expect(rendered, `declined body contains "${phrase}"`).not.toContain(
+          phrase,
+        );
+        expect(subject, `declined subject contains "${phrase}"`).not.toContain(
+          phrase,
+        );
+      }
+      expect(rendered).toContain("was not approved at this time");
+      // The empty-amount sentence that started this: no money figure, and no
+      // line that trails off, on either shape.
+      expect(rendered).not.toMatch(/\$/);
+      for (const line of rendered.split("\n")) {
+        expect(line.trimEnd()).not.toMatch(/[-:–—]$/);
+      }
+    }
+  });
+
+  it("gives the declined template no {{amount}} surface to reach for", () => {
+    const declined = getEmailTemplateDefinition("refund-request-declined");
+    if (!declined) throw new Error("missing refund-request-declined");
+
+    // Not allowed, so an override that writes {{amount}} is refused at SAVE
+    // time rather than rendering "A refund of  will be processed".
+    expect(declined.allowedTokens).not.toContain("amount");
+    const validation = validateEmailTemplateContent({
+      templateName: "refund-request-declined",
+      subject: "Refund Appeal Update",
+      bodyText: "Hi {{firstName}}, a refund of {{amount}} is on its way.",
+    });
+    expect(validation.valid).toBe(false);
+    expect(validation.disallowedTokens).toContain("amount");
+  });
+
+  it("still renders the approved outcome with its money figure", () => {
+    const approved = getEmailTemplateDefinition("refund-request-approved");
+    if (!approved) throw new Error("missing refund-request-approved");
+
+    expect(approved.allowedTokens).toContain("amount");
+    const rendered = renderTemplateString(
+      approved.defaultBody,
+      approved.sampleData,
+    );
+    expect(rendered).toContain("has been approved");
+    expect(rendered).toContain("A refund of $123.45");
+    for (const line of rendered.split("\n")) {
+      expect(line.trimEnd()).not.toMatch(/[-:–—]$/);
+    }
+  });
+
+  it("keeps both outcomes member-audience and withholdable by the booking switch", () => {
+    // Fail-closed: both are member-facing mail about a booking, so the
+    // per-booking "No emails" switch must still be able to withhold them and
+    // the retry cron must still refuse to replay a NULL-bookingId row.
+    for (const key of [
+      "refund-request-approved",
+      "refund-request-declined",
+    ] as const) {
+      const definition = getEmailTemplateDefinition(key);
+      if (!definition) throw new Error(`missing ${key}`);
+      expect(definition.audience).toBe("member");
+      expect(isBookingSuppressibleTemplate(key)).toBe(true);
+      expect(ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES.has(key)).toBe(true);
+    }
+    // The RETIRED combined name stays in the set on purpose: the set's whole
+    // job is the NULL-bookingId legacy window, and a fork jumping several
+    // releases in one deploy can still hold pre-#2258 FAILED rows queued under
+    // the old name with no bookingId at all. Membership here is what makes the
+    // retry cron (cron-email-retry.ts) refuse to replay those rows blind — the
+    // fail-closed audience gate in isBookingSuppressibleTemplate never sees
+    // them, because it only runs when a caller supplies a real bookingId. No
+    // live sender uses the name, so the entry can never withhold current mail.
+    expect(
+      ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES.has("refund-request-resolved"),
+    ).toBe(true);
+  });
+});
+
+// #2320 review (LOW-6): guard 4 only exercises tokens DECLARED in
+// OPTIONAL_TEMPLATE_TOKENS — an optional a sender supplies but nobody declares
+// renders with its non-empty preview sample and is invisible to the guard. Pin
+// the two declarations that were live-but-undeclared when the review found
+// them, so removing either turns guard 4 back off for a token whose sender
+// really does supply "".
+describe("#2320 review — live optional tokens are declared", () => {
+  it.each([
+    // sendBookingCancelledEmail composes "" when no applied credit was restored.
+    ["booking-cancelled", "creditRestoredMessage"],
+    // sendBookingConfirmedEmail composes "" for a lodge with no door code.
+    ["booking-confirmed", "doorCodeNote"],
+  ])("declares %s's optional {{%s}}", (key, token) => {
+    expect(OPTIONAL_TEMPLATE_TOKENS[key]).toContain(token);
+  });
+});

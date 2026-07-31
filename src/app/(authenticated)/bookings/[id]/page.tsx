@@ -24,6 +24,7 @@ import {
 } from "@/lib/additional-payment-chase";
 import { ConfirmDraftButton } from "@/components/confirm-draft-button";
 import { AdminBookingToolsCard } from "@/components/admin/admin-booking-tools-card";
+import { getBookingManualPaymentState } from "@/lib/manual-booking-payment-state";
 import { BookingBedAllocationPanel } from "@/components/admin/booking-bed-allocation-panel";
 import { BookingWithheldEmailsBanner } from "@/components/admin/booking-withheld-emails-banner";
 import { getWithheldBookingEmailSummary } from "@/lib/booking-email-suppression";
@@ -67,7 +68,12 @@ import {
   getRemainingRefundableCents,
   hasCapturedPayment,
 } from "@/lib/booking-payment-state";
+import {
+  deriveBookingAppliedCreditCents,
+  getMemberCreditBalance,
+} from "@/lib/member-credit";
 import { isBookingFullyPaidForGuestNameEdits } from "@/lib/booking-modify";
+import { resolveCreditElectionNoticeAudience } from "@/lib/booking-credit-election";
 import {
   bookingHoldsCapacity,
   isPaymentOwedBookingStatus,
@@ -170,7 +176,13 @@ export default async function BookingDetailPage({
   const booking = await prisma.booking.findUnique({
     where: { id },
     include: {
-      guests: { include: { nights: { select: { stayDate: true } } } },
+      // Deterministic order (#2266 MED-4): the edit panel derives promo
+      // beneficiary bindings and pricing rows from this list, so it must be
+      // the same order the modify/modify-quote fetches use.
+      guests: {
+        include: { nights: { select: { stayDate: true } } },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      },
       payment: {
         // #2350: every Payment scalar as before, plus the most recent ADDITIONAL
         // transaction so the admin panel can say when the outstanding extra was
@@ -649,6 +661,27 @@ export default async function BookingDetailPage({
     duplicateCaptureRefunds,
   });
 
+  // #2266: the edit panel's account-credit card (its own card above the
+  // Return-method radio — owner-decided placement). Only statuses whose stored
+  // election (#2265) a pay-time consumer will honour are eligible; PENDING is
+  // deliberately out (see CREDIT_ELECTION_WRITABLE_STATUSES in
+  // booking-credit-election.ts), as are organiser-settled bookings and anything
+  // with captured money. The balance shown is the BOOKING OWNER's, so an admin
+  // editing on behalf offers the member's credit, not their own.
+  const creditElectionEligible =
+    canModify &&
+    !isDeleted &&
+    ["DRAFT", "AWAITING_REVIEW", "PAYMENT_PENDING"].includes(booking.status) &&
+    !booking.organiserSettled &&
+    !hasCapturedPayment(booking.payment);
+  const editorCredit = creditElectionEligible
+    ? {
+        availableCents: await getMemberCreditBalance(booking.memberId),
+        electionCents: booking.creditElectionCents,
+        appliedCents: await deriveBookingAppliedCreditCents(booking.id),
+      }
+    : null;
+
   const editorData: BookingEditorData = {
     id: booking.id,
     checkIn: new Date(booking.checkIn).toISOString().split("T")[0],
@@ -716,6 +749,15 @@ export default async function BookingDetailPage({
       checkInEditable: editPolicy.checkInEditable,
       adminOverrideAvailable: canAdminOverride,
     },
+    // #2266: null (rather than omitted) when ineligible, so the panel renders
+    // no credit card at all for a booking whose election nothing would honour.
+    credit: editorCredit,
+    // #2266: the booking OWNER's member id — the shared PromoCodeInput
+    // validates on-behalf promo entry against the member's assignments, not
+    // the acting admin's.
+    memberId: booking.memberId,
+    // #2266: promo lodge restrictions validate against THIS booking's lodge.
+    lodgeId: booking.lodgeId,
   };
   const backHref = resolveInternalReturnPath(
     query.returnTo,
@@ -1004,6 +1046,15 @@ export default async function BookingDetailPage({
       }
     : null;
 
+  // B5 (#2262): cash / off-Xero payment controls. Advisory only — the settle
+  // path re-derives every condition under lock(1) + the per-lodge lock — so a
+  // stale page can cause a 409 and never a wrong write. Skipped for a deleted
+  // booking, which settles nothing.
+  const manualPaymentState =
+    canSeeAdminTools && !isDeleted
+      ? await getBookingManualPaymentState(booking.id)
+      : null;
+
   // Admin conflict surfacing (ADR-001 decision 1, issue #119): when this
   // booking exclusively holds the whole lodge, list the existing
   // capacity-holding bookings overlapping its nights so the officer can resolve
@@ -1138,6 +1189,7 @@ export default async function BookingDetailPage({
             conflicts: exclusiveHoldConflicts,
           }}
           noEmails={isDeleted ? undefined : (noEmailsState ?? undefined)}
+          manualPayment={manualPaymentState ?? undefined}
         />
       )}
 
@@ -1260,6 +1312,45 @@ export default async function BookingDetailPage({
           )}
         </div>
       ) : null}
+
+      {/* #2266 (absorbing #2265's notice surface): a stored credit election is
+          a promise the pay step keeps, and the member must see that promise on
+          every re-entry — draft save lands here, Resume lands here. Wording is
+          the owner-decided sentence from the signed-off mockup. Only shown
+          while a consumer will still honour the election (the same statuses
+          the edit path may write one onto), and never on a deleted booking.
+
+          Audience (MED-2): the OWNER hears the second-person promise, an
+          admin-type viewer the third-person one; a linked-guest viewer sees
+          nothing at all — the election is the owner's money, and every other
+          money surface on this page is likewise withheld from linked guests
+          (see resolveCreditElectionNoticeAudience). */}
+      {(() => {
+        const creditNoticeAudience = resolveCreditElectionNoticeAudience({
+          isBookingOwner,
+          isNonOwnerAdminViewer: nonOwnerAdminViewer,
+        });
+        return !isDeleted &&
+          creditNoticeAudience !== null &&
+          booking.creditElectionCents != null &&
+          booking.creditElectionCents > 0 &&
+          ["DRAFT", "AWAITING_REVIEW", "PAYMENT_PENDING"].includes(
+            booking.status,
+          ) ? (
+          <div className="space-y-1 rounded-md border border-success-6 bg-success-3 px-4 py-3 text-sm text-success-11">
+            <p className="font-medium">
+              {creditNoticeAudience === "admin"
+                ? `The member's ${formatCents(booking.creditElectionCents)} credit choice is saved and will be applied when they confirm.`
+                : `Your ${formatCents(booking.creditElectionCents)} credit choice is saved and will be applied when you confirm.`}
+            </p>
+            <p className="opacity-80">
+              {creditNoticeAudience === "admin"
+                ? "No credit has been taken from their balance yet — it is applied at payment, against the balance and price at that moment."
+                : "Nothing has been taken from your balance yet — your credit is applied when you pay, against your balance and the price at that moment."}
+            </p>
+          </div>
+        ) : null;
+      })()}
 
       <section id="details" className="scroll-mt-20">
         <BookingEditor
