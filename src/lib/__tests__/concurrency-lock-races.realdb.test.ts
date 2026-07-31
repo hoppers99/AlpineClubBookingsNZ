@@ -37,6 +37,7 @@ import {
 
 let prisma: typeof import("@/lib/prisma")["prisma"];
 let markGroupSettlementIntentFailed: typeof import("@/lib/group-settlement")["markGroupSettlementIntentFailed"];
+let moveBedAllocationsSameDate: typeof import("@/lib/admin-bed-allocation")["moveBedAllocationsSameDate"];
 let runInductionBaseline: typeof import("@/lib/induction-baseline")["runInductionBaseline"];
 let InductionBaselinePlanMismatchError: typeof import("@/lib/induction-baseline")["InductionBaselinePlanMismatchError"];
 let inductionBaselineLockSql: string;
@@ -100,6 +101,20 @@ const BASELINE_CLUB_NAME = "Race 2361 Alpine Club";
 const BASELINE_AUDIT_ACTION = "MEMBER_INDUCTION_LEGACY_BASELINE_APPLIED";
 const BASELINE_PROVENANCE_PREFIX = "Trusted legacy induction baseline:";
 const BASELINE_DATE = "2024-06-30";
+const MOVE_BOOKING_ID = "race-2366-move-booking";
+const MOVE_BLOCKER_BOOKING_ID = "race-2366-blocker-booking";
+const MOVE_ROOM_ID = "race-2366-room";
+const MOVE_OLD_BED_ID = "race-2366-old-double";
+const MOVE_DESTINATION_BED_ID = "race-2366-destination";
+const MOVE_GUEST_ID = "race-2366-mover";
+const MOVE_PARTNER_GUEST_ID = "race-2366-partner";
+const MOVE_BLOCKER_GUEST_ID = "race-2366-blocker";
+const MOVE_FIRST_ALLOCATION_ID = "race-2366-source-1";
+const MOVE_SECOND_ALLOCATION_ID = "race-2366-source-2";
+const MOVE_PARTNER_ALLOCATION_ID = "race-2366-partner-allocation";
+const MOVE_BLOCKER_ALLOCATION_ID = "race-2366-blocker-allocation";
+const MOVE_FIRST_NIGHT = new Date("2099-02-01");
+const MOVE_SECOND_NIGHT = new Date("2099-02-02");
 const BASELINE_MEMBER_IDS = [
   APP_MEMBER_ID,
   BASELINE_ACTOR_ID,
@@ -144,6 +159,25 @@ async function waitForTableLock(params: {
   }
   throw new Error(
     `Timed out waiting for ${params.granted ? "granted" : "pending"} ${params.mode} on MemberInduction`,
+  );
+}
+
+async function waitForPendingGlobalAdvisoryLock(): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const rows = await prisma.$queryRaw<Array<{ count: number }>>`
+      SELECT COUNT(*)::int AS "count"
+      FROM pg_locks
+      WHERE locktype = 'advisory'
+        AND classid = 0
+        AND objid = 1
+        AND granted = false
+    `;
+    if ((rows[0]?.count ?? 0) > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(
+    "Timed out waiting for the bed move to queue on global advisory lock(1)",
   );
 }
 
@@ -457,6 +491,7 @@ describe("concurrency race DB safety guard (#1881)", () => {
       process.env.DATABASE_URL = RACE_DB_URL;
       ({ prisma } = await import("@/lib/prisma"));
       ({ markGroupSettlementIntentFailed } = await import("@/lib/group-settlement"));
+      ({ moveBedAllocationsSameDate } = await import("@/lib/admin-bed-allocation"));
       const baseline = await import("@/lib/induction-baseline");
       runInductionBaseline = baseline.runInductionBaseline;
       InductionBaselinePlanMismatchError =
@@ -489,6 +524,10 @@ describe("concurrency race DB safety guard (#1881)", () => {
       );
       // Idempotent recovery from an interrupted earlier opt-in run.
       await prisma.groupBooking.deleteMany({ where: { id: APP_GROUP_ID } });
+      await prisma.booking.deleteMany({
+        where: { id: { in: [MOVE_BOOKING_ID, MOVE_BLOCKER_BOOKING_ID] } },
+      });
+      await prisma.lodgeRoom.deleteMany({ where: { id: MOVE_ROOM_ID } });
       await prisma.booking.deleteMany({ where: { id: APP_BOOKING_ID } });
       await prisma.lodge.deleteMany({ where: { id: APP_LODGE_ID } });
       await clearBaselineFixtures();
@@ -516,6 +555,87 @@ describe("concurrency race DB safety guard (#1881)", () => {
           totalPriceCents: 100,
           finalPriceCents: 100,
         },
+      });
+      await prisma.lodgeRoom.create({
+        data: {
+          id: MOVE_ROOM_ID,
+          lodgeId: APP_LODGE_ID,
+          name: "Race 2366 Room",
+        },
+      });
+      await prisma.lodgeBed.createMany({
+        data: [
+          {
+            id: MOVE_OLD_BED_ID,
+            roomId: MOVE_ROOM_ID,
+            name: "Old double",
+            bedType: "DOUBLE",
+          },
+          {
+            id: MOVE_DESTINATION_BED_ID,
+            roomId: MOVE_ROOM_ID,
+            name: "Destination",
+            bedType: "SINGLE",
+          },
+        ],
+      });
+      await prisma.booking.createMany({
+        data: [
+          {
+            id: MOVE_BOOKING_ID,
+            memberId: APP_MEMBER_ID,
+            lodgeId: APP_LODGE_ID,
+            checkIn: MOVE_FIRST_NIGHT,
+            checkOut: new Date("2099-02-03"),
+            status: "CONFIRMED",
+            totalPriceCents: 200,
+            finalPriceCents: 200,
+          },
+          {
+            id: MOVE_BLOCKER_BOOKING_ID,
+            memberId: APP_MEMBER_ID,
+            lodgeId: APP_LODGE_ID,
+            checkIn: MOVE_FIRST_NIGHT,
+            checkOut: new Date("2099-02-03"),
+            status: "CONFIRMED",
+            totalPriceCents: 200,
+            finalPriceCents: 200,
+          },
+        ],
+      });
+      await prisma.bookingGuest.createMany({
+        data: [
+          {
+            id: MOVE_GUEST_ID,
+            bookingId: MOVE_BOOKING_ID,
+            firstName: "Move",
+            lastName: "Guest",
+            ageTier: "ADULT",
+            stayStart: MOVE_FIRST_NIGHT,
+            stayEnd: new Date("2099-02-03"),
+            priceCents: 200,
+          },
+          {
+            id: MOVE_PARTNER_GUEST_ID,
+            bookingId: MOVE_BLOCKER_BOOKING_ID,
+            firstName: "Partner",
+            lastName: "Guest",
+            ageTier: "ADULT",
+            stayStart: MOVE_FIRST_NIGHT,
+            stayEnd: MOVE_SECOND_NIGHT,
+            priceCents: 100,
+          },
+          {
+            id: MOVE_BLOCKER_GUEST_ID,
+            bookingId: MOVE_BLOCKER_BOOKING_ID,
+            firstName: "Blocker",
+            lastName: "Guest",
+            ageTier: "ADULT",
+            stayStart: MOVE_SECOND_NIGHT,
+            stayEnd: new Date("2099-02-03"),
+            priceCents: 100,
+          },
+        ],
       });
       await prisma.groupBooking.create({
         data: {
@@ -552,6 +672,28 @@ describe("concurrency race DB safety guard (#1881)", () => {
         await attemptCleanup(() => clearBaselineFixtures());
         await attemptCleanup(() =>
           prisma.groupBooking.deleteMany({ where: { id: APP_GROUP_ID } })
+        );
+        await attemptCleanup(() =>
+          prisma.auditLog.deleteMany({
+            where: {
+              action: {
+                in: [
+                  "BED_ALLOCATION_BULK_SET",
+                  "BED_ALLOCATION_MANUAL_SET",
+                  "BED_ALLOCATION_PARTNER_PROMOTED",
+                ],
+              },
+              memberId: APP_MEMBER_ID,
+            },
+          })
+        );
+        await attemptCleanup(() =>
+          prisma.booking.deleteMany({
+            where: { id: { in: [MOVE_BOOKING_ID, MOVE_BLOCKER_BOOKING_ID] } },
+          })
+        );
+        await attemptCleanup(() =>
+          prisma.lodgeRoom.deleteMany({ where: { id: MOVE_ROOM_ID } })
         );
         await attemptCleanup(() =>
           prisma.booking.deleteMany({ where: { id: APP_BOOKING_ID } })
@@ -630,6 +772,179 @@ describe("concurrency race DB safety guard (#1881)", () => {
     }
 
     const GLOBAL_LOCK = "SELECT pg_advisory_xact_lock(1)";
+
+    async function resetBedMoveFixture() {
+      await prisma.auditLog.deleteMany({
+        where: {
+          action: {
+            in: [
+              "BED_ALLOCATION_BULK_SET",
+              "BED_ALLOCATION_MANUAL_SET",
+              "BED_ALLOCATION_PARTNER_PROMOTED",
+            ],
+          },
+          memberId: APP_MEMBER_ID,
+        },
+      });
+      await prisma.bedAllocation.deleteMany({
+        where: {
+          id: {
+            in: [
+              MOVE_FIRST_ALLOCATION_ID,
+              MOVE_SECOND_ALLOCATION_ID,
+              MOVE_PARTNER_ALLOCATION_ID,
+              MOVE_BLOCKER_ALLOCATION_ID,
+            ],
+          },
+        },
+      });
+      await prisma.booking.update({
+        where: { id: MOVE_BOOKING_ID },
+        data: { status: "CONFIRMED" },
+      });
+      await prisma.bedAllocation.createMany({
+        data: [
+          {
+            id: MOVE_FIRST_ALLOCATION_ID,
+            bookingId: MOVE_BOOKING_ID,
+            bookingGuestId: MOVE_GUEST_ID,
+            roomId: MOVE_ROOM_ID,
+            bedId: MOVE_OLD_BED_ID,
+            bedType: "DOUBLE",
+            stayDate: MOVE_FIRST_NIGHT,
+          },
+          {
+            id: MOVE_SECOND_ALLOCATION_ID,
+            bookingId: MOVE_BOOKING_ID,
+            bookingGuestId: MOVE_GUEST_ID,
+            roomId: MOVE_ROOM_ID,
+            bedId: MOVE_OLD_BED_ID,
+            bedType: "DOUBLE",
+            stayDate: MOVE_SECOND_NIGHT,
+          },
+          {
+            id: MOVE_PARTNER_ALLOCATION_ID,
+            bookingId: MOVE_BLOCKER_BOOKING_ID,
+            bookingGuestId: MOVE_PARTNER_GUEST_ID,
+            roomId: MOVE_ROOM_ID,
+            bedId: MOVE_OLD_BED_ID,
+            bedType: "DOUBLE",
+            stayDate: MOVE_FIRST_NIGHT,
+            isSecondOccupant: true,
+          },
+          {
+            id: MOVE_BLOCKER_ALLOCATION_ID,
+            bookingId: MOVE_BLOCKER_BOOKING_ID,
+            bookingGuestId: MOVE_BLOCKER_GUEST_ID,
+            roomId: MOVE_ROOM_ID,
+            bedId: MOVE_DESTINATION_BED_ID,
+            bedType: "SINGLE",
+            stayDate: MOVE_SECOND_NIGHT,
+          },
+        ],
+      });
+    }
+
+    describe("bed-allocation move global/lodge transaction (#2366)", () => {
+      beforeEach(resetBedMoveFixture);
+
+      it("waits for cancellation's prune and cannot resurrect the deleted allocation", async () => {
+        const cancelPruned = deferred();
+        const releaseCancel = deferred();
+        const cancellation = ordinaryWriterClient.$transaction(async (tx) => {
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+          await tx.booking.update({
+            where: { id: MOVE_BOOKING_ID },
+            data: { status: "CANCELLED" },
+          });
+          await tx.bedAllocation.deleteMany({
+            where: { bookingId: MOVE_BOOKING_ID },
+          });
+          cancelPruned.resolve();
+          await releaseCancel.promise;
+        });
+        await cancelPruned.promise;
+
+        const move = moveBedAllocationsSameDate({
+          allocationIds: [MOVE_FIRST_ALLOCATION_ID],
+          bedId: MOVE_DESTINATION_BED_ID,
+          actorMemberId: APP_MEMBER_ID,
+        });
+        await waitForPendingGlobalAdvisoryLock();
+        releaseCancel.resolve();
+        await cancellation;
+
+        await expect(move).rejects.toMatchObject({
+          status: 404,
+          message: "Allocation not found",
+        });
+        expect(
+          await prisma.bedAllocation.count({
+            where: { bookingId: MOVE_BOOKING_ID },
+          }),
+        ).toBe(0);
+        expect(
+          await prisma.auditLog.count({
+            where: {
+              memberId: APP_MEMBER_ID,
+              action: {
+                in: [
+                  "BED_ALLOCATION_BULK_SET",
+                  "BED_ALLOCATION_MANUAL_SET",
+                  "BED_ALLOCATION_PARTNER_PROMOTED",
+                ],
+              },
+            },
+          }),
+        ).toBe(0);
+      });
+
+      it("rolls back the earlier row move and partner promotion when a later night conflicts", async () => {
+        await expect(
+          moveBedAllocationsSameDate({
+            allocationIds: [
+              MOVE_FIRST_ALLOCATION_ID,
+              MOVE_SECOND_ALLOCATION_ID,
+            ],
+            bedId: MOVE_DESTINATION_BED_ID,
+            actorMemberId: APP_MEMBER_ID,
+          }),
+        ).rejects.toMatchObject({
+          status: 409,
+          message: expect.stringContaining("No allocations were moved"),
+        });
+
+        const [first, second, partner, audits] = await Promise.all([
+          prisma.bedAllocation.findUniqueOrThrow({
+            where: { id: MOVE_FIRST_ALLOCATION_ID },
+            select: { bedId: true },
+          }),
+          prisma.bedAllocation.findUniqueOrThrow({
+            where: { id: MOVE_SECOND_ALLOCATION_ID },
+            select: { bedId: true },
+          }),
+          prisma.bedAllocation.findUniqueOrThrow({
+            where: { id: MOVE_PARTNER_ALLOCATION_ID },
+            select: { isSecondOccupant: true },
+          }),
+          prisma.auditLog.count({
+            where: {
+              memberId: APP_MEMBER_ID,
+              action: {
+                in: [
+                  "BED_ALLOCATION_BULK_SET",
+                  "BED_ALLOCATION_PARTNER_PROMOTED",
+                ],
+              },
+            },
+          }),
+        ]);
+        expect(first.bedId).toBe(MOVE_OLD_BED_ID);
+        expect(second.bedId).toBe(MOVE_OLD_BED_ID);
+        expect(partner.isSecondOccupant).toBe(true);
+        expect(audits).toBe(0);
+      });
+    });
 
     it("global lock(1) + status guard: exactly one of two concurrent claimers wins (cancel-vs-capture shape)", async () => {
       // Reproduces F1/F3/F2: two money/status writers race to flip the SAME row

@@ -1174,7 +1174,7 @@ describe("same-date allocation moves (#2366)", () => {
     }
   }
 
-  it("locks the destination lodge before re-reading and keeps the persisted original night", async () => {
+  it("takes global then destination-lodge locks before re-reading and keeps the persisted original night", async () => {
     const tx = buildMoveTx({ sources: [sourceRow()] });
 
     const result = await withMoveTransaction(tx, () =>
@@ -1186,7 +1186,8 @@ describe("same-date allocation moves (#2366)", () => {
     );
 
     expect(result.noop).toBe(false);
-    expect(tx.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(2);
+    expect(tx.$executeRaw.mock.invocationCallOrder[1]).toBeLessThan(
       tx.bedAllocation.findMany.mock.invocationCallOrder[0],
     );
     expect(tx.bedAllocation.upsert).toHaveBeenCalledWith(
@@ -1301,6 +1302,13 @@ describe("same-date allocation moves (#2366)", () => {
       data: expect.objectContaining({
         action: "BED_ALLOCATION_PARTNER_PROMOTED",
         targetId: "booking-2",
+        metadata: expect.objectContaining({
+          allocationId: "allocation-partner",
+          bookingGuestId: "guest-2",
+          movedAllocationId: "allocation-1",
+          movedBookingId: "booking-1",
+          movedBookingGuestId: "guest-1",
+        }),
       }),
     });
   });

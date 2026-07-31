@@ -1488,12 +1488,14 @@ sequenceDiagram
    move or approve allocations.
    Existing-chip moves are bed-only operations: `PATCH
    /api/admin/bed-allocation/allocations` carries allocation ids and the
-   destination bed, never a target date. The service takes the destination
-   lodge capacity lock, re-reads each source row and its original NZ lodge night
-   under that lock, then commits all selected row moves, shared-double partner
-   promotions and audit rows in one transaction. A conflict rolls a grouped
-   move back wholesale; bucket-to-board bulk placement retains its separate
-   per-night partial-conflict contract.
+   destination bed, never a target date. The service takes global booking
+   `lock(1)` first and the destination-lodge capacity lock second, re-reads each
+   source row and its original NZ lodge night under both, then commits all
+   selected row moves, shared-double partner promotions and audit rows in one
+   transaction. Sharing cancellation's global key prevents a move from
+   resurrecting an allocation after cancellation pruned it. A conflict rolls a
+   grouped move back wholesale; bucket-to-board bulk placement retains its
+   separate per-night partial-conflict contract.
 
 In-progress member self-service edits are limited to future unused nights from
 NZ tomorrow onward. NZ today and earlier are locked for admin review through

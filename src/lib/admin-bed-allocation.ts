@@ -2708,9 +2708,14 @@ export interface SameDateAllocationMoveResult {
  * lodge night (#2366).
  *
  * The browser supplies allocation ids, never dates. We resolve the destination
- * lodge only far enough to derive the lock key, take that lodge's capacity lock
- * as the first statement in the transaction, and then re-read every source row
- * under the lock. Each write is keyed to that row's persisted `stayDate`.
+ * lodge only far enough to derive the lock key, take the global booking lock
+ * before that lodge's capacity lock, and then re-read every source row under
+ * both locks. Each write is keyed to that row's persisted `stayDate`.
+ *
+ * The global lock is required even though the move does not change booking
+ * status: cancellation prunes the booking's allocation rows while holding that
+ * lock. Without the shared lock, a move can re-upsert a row after cancellation
+ * deleted it and resurrect an allocation on a cancelled booking.
  *
  * A multi-night proxy move is all-or-nothing: one conflict rolls the whole
  * transaction back, including partner promotions and audit rows. This differs
@@ -2776,6 +2781,12 @@ export async function moveBedAllocationsSameDate(input: {
 
     const allocations: BedAllocation[] = [];
     const promotedPartners: BedAllocation[] = [];
+    const promotionCauses: Array<{
+      promotedPartner: BedAllocation;
+      movedAllocationId: string;
+      movedBookingId: string;
+      movedBookingGuestId: string;
+    }> = [];
     for (const source of rowsToMove) {
       const result = await manuallyAllocateBed({
         bookingGuestId: source.bookingGuestId,
@@ -2786,6 +2797,12 @@ export async function moveBedAllocationsSameDate(input: {
       allocations.push(result.allocation);
       if (result.promotedPartner) {
         promotedPartners.push(result.promotedPartner);
+        promotionCauses.push({
+          promotedPartner: result.promotedPartner,
+          movedAllocationId: source.id,
+          movedBookingId: source.bookingId,
+          movedBookingGuestId: source.bookingGuestId,
+        });
       }
     }
 
@@ -2824,7 +2841,12 @@ export async function moveBedAllocationsSameDate(input: {
       db,
     );
 
-    for (const promotedPartner of promotedPartners) {
+    for (const {
+      promotedPartner,
+      movedAllocationId,
+      movedBookingId,
+      movedBookingGuestId,
+    } of promotionCauses) {
       await createAuditLog(
         {
           action: "BED_ALLOCATION_PARTNER_PROMOTED",
@@ -2839,8 +2861,11 @@ export async function moveBedAllocationsSameDate(input: {
           metadata: {
             allocationId: promotedPartner.id,
             bedId: promotedPartner.bedId,
-            bookingGuestId: firstAllocation.bookingGuestId,
+            bookingGuestId: promotedPartner.bookingGuestId,
             stayDate: formatDateOnly(promotedPartner.stayDate),
+            movedAllocationId,
+            movedBookingId,
+            movedBookingGuestId,
           },
         },
         db,
@@ -2856,10 +2881,13 @@ export async function moveBedAllocationsSameDate(input: {
 
   // Only the destination bed is read before the transaction, and only for its
   // immutable lodge key. Source rows, dates, guest state and bed state are all
-  // re-read after the destination-lodge lock is held.
+  // re-read after BOTH locks are held. Global must precede lodge everywhere:
+  // cancellation owns the global key and prunes allocations, while custodian
+  // holds and other capacity writers own the lodge key.
   const lockLodgeId = await resolveBedLodgeIdForLock(input.bedId, prisma);
   try {
     return await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
       if (lockLodgeId) await acquireLodgeCapacityLock(tx, lockLodgeId);
       return moveUnderLock(tx);
     });

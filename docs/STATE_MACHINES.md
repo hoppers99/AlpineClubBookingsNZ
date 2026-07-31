@@ -1228,11 +1228,14 @@ no-ops with no request or audit, and cancel sends no request.
 
 The existing-allocation move endpoint accepts allocation ids plus a destination
 bed, never a target date. It resolves only the destination's immutable lodge key
-before the transaction, then takes that lodge's capacity lock and re-reads the
-source rows, original dates, guest/booking state, active destination room/bed,
-custodian holds and sharing state under the lock. A first-chip multi-night move
-is all-or-nothing: one conflict rolls back every row, partner promotion and
-audit entry. Successful row changes, shared-double promotions and their audit
+before the transaction, then takes global booking `lock(1)` followed by that
+lodge's capacity lock and re-reads the source rows, original dates,
+guest/booking state, active destination room/bed, custodian holds and sharing
+state under both. Cancellation prunes allocations under the same global key, so
+either the move finishes first or the post-cancel move sees no source row and
+cannot resurrect it. A first-chip multi-night move is all-or-nothing: one
+conflict rolls back every row, partner promotion and audit entry. Successful
+row changes, shared-double promotions and their causally attributed audit
 records commit in that same transaction. Bucket-to-board bulk placement keeps
 its older per-night conflict semantics.
 

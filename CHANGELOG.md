@@ -11,9 +11,11 @@ All notable public reference-release changes should be recorded here.
   guest's visible allocated nights together, while later chips move one night.
   Same-bed drops and cancelled drags do nothing and create no audit entry.
   Grouped moves are all-or-nothing, and the bed changes, shared-double partner
-  promotions and audit records now commit in one destination-lodge-locked
-  transaction instead of the browser creating a target night and then trying
-  to delete the original.
+  promotions and audit records now commit in one global-then-destination-lodge
+  locked transaction instead of the browser creating a target night and then
+  trying to delete the original. The shared global lock also prevents a
+  concurrent cancellation from pruning and then having the move resurrect an
+  allocation.
 - **Clubs can safely record a trusted induction history when moving an
   established membership onto the digital register (#2361).** A new
   dry-run-first operator command classifies every active real-member
