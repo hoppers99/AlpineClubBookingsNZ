@@ -8,6 +8,7 @@ import {
   applyManualBookingPayment,
   ManualBookingPaymentError,
   MANUAL_PAYMENT_NOTE_MAX,
+  type ManualBookingAdditionalOutcome,
 } from "@/lib/manual-booking-payment";
 
 const bodySchema = z
@@ -25,6 +26,20 @@ const bodySchema = z
     // applied credit moved, so the settle is refused rather than recorded at a
     // figure the admin never agreed to.
     expectedAmountCents: z.number().int().optional(),
+    // #2397: the admin's answer to "does this cash cover the outstanding
+    // extra?", sent ONLY when the dialog showed one. Absent means "the dialog
+    // showed no extra" — a claim the settle re-checks under its locks, not a
+    // default — so the common no-extra screen keeps its exact request shape.
+    additionalCoverage: z
+      .object({
+        covered: z.boolean(),
+        // The figure the dialog showed. Not the settled amount — that is
+        // re-derived under the locks — but a mismatch means the extra moved
+        // since the dialog rendered, so the settle is refused.
+        expectedAdditionalAmountCents: z.number().int().positive(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -42,6 +57,27 @@ function creditElectionNote(
   return direction === "paid"
     ? ` This member had asked to put ${amount} of account credit towards the booking; cash cannot use it, so that credit is untouched and still on their account. They have been told.`
     : ` Their ${amount} account-credit request has been put back on the booking, so it can be used when the booking is paid again.`;
+}
+
+/**
+ * #2397: the extra-owing receipt appended to the admin's toast. Empty for the
+ * overwhelming majority of bookings, which carry no outstanding extra at all.
+ * Both outcomes are stated plainly, because "recorded and the chase stops" and
+ * "recorded and the member will still be asked for the rest" are different
+ * facts and the person who just took the cash has to know which one happened.
+ */
+function additionalNote(
+  direction: "paid" | "unpaid",
+  additional: ManualBookingAdditionalOutcome | null | undefined,
+): string {
+  if (!additional) return "";
+  const amount = formatCents(additional.outstandingCents);
+  if (direction === "unpaid") {
+    return ` The ${amount} extra that settlement covered is owing again.`;
+  }
+  return additional.settled
+    ? ` The ${amount} extra owing on this booking was recorded as settled too, so the member will not be asked for it again.`
+    : ` The ${amount} extra owing on this booking was left unpaid, so the member will still be asked for it.`;
 }
 
 /**
@@ -89,7 +125,8 @@ export async function POST(
     );
   }
 
-  const { direction, notifyMember, expectedAmountCents } = parsed.data;
+  const { direction, notifyMember, expectedAmountCents, additionalCoverage } =
+    parsed.data;
   if (direction === "paid" && notifyMember === undefined) {
     return NextResponse.json(
       {
@@ -126,6 +163,15 @@ export async function POST(
       { status: 422 },
     );
   }
+  if (direction === "unpaid" && additionalCoverage !== undefined) {
+    return NextResponse.json(
+      {
+        error:
+          "Reversing a manual payment always puts an extra it settled back to owing, so additionalCoverage cannot be sent with direction \"unpaid\".",
+      },
+      { status: 422 },
+    );
+  }
 
   try {
     const result = await applyManualBookingPayment(
@@ -137,6 +183,7 @@ export async function POST(
             actingMemberId: guard.session.user.id,
             notifyMember: notifyMember === true,
             expectedAmountCents: expectedAmountCents as number,
+            additionalCoverage: additionalCoverage ?? null,
           }
         : {
             bookingId: id,
@@ -168,7 +215,10 @@ export async function POST(
         // SYNCHRONOUSLY. The operator alert that also reports it is gated on the
         // club's `adminPaymentFailure` preference, which a club may have muted,
         // so the person who just took the cash must hear it here regardless.
-        creditElectionNote(result.direction, result.creditElectionCents),
+        creditElectionNote(result.direction, result.creditElectionCents) +
+        // #2397: what became of the booking's outstanding extra — reported the
+        // same way and for the same reason as the credit election above.
+        additionalNote(result.direction, result.additional),
     });
   } catch (error) {
     if (error instanceof ManualBookingPaymentError) {

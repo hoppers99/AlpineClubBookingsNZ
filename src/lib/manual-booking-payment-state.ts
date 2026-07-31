@@ -2,6 +2,7 @@ import "server-only";
 
 import { BookingStatus, PaymentSource, PaymentStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { isAdditionalAmountUncollected } from "@/lib/unpaid-finished-stays";
 import type { BookingManualPaymentState } from "@/components/admin/booking-manual-payment-controls";
 
 /**
@@ -39,6 +40,12 @@ export async function getBookingManualPaymentState(
       payment: {
         select: {
           id: true,
+          // #2397: the upward-modification delta and whether it was ever
+          // collected. Advisory, like everything else here — the settle
+          // re-derives it under the locks and 409s on a mismatch — but the
+          // dialog cannot ask about an extra it does not know exists.
+          additionalAmountCents: true,
+          additionalPaymentStatus: true,
           xeroInvoiceId: true,
           xeroRefundCreditNoteId: true,
           refundedAmountCents: true,
@@ -162,6 +169,12 @@ export async function getBookingManualPaymentState(
 
   return {
     amountOwingCents,
+    // #2397. The same MONEY-half predicate the settle uses; the booking-status
+    // half is constant-true here because recording this payment always lands the
+    // booking on PAID (see isAdditionalAmountUncollected).
+    outstandingAdditionalCents: isAdditionalAmountUncollected(payment)
+      ? payment.additionalAmountCents
+      : 0,
     storedCreditElectionCents: booking.creditElectionCents,
     canMarkPaid: markPaidBlockedReason === null,
     markPaidBlockedReason,

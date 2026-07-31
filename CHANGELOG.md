@@ -4,6 +4,24 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Recording a cash payment now asks about any extra still owing (#2397).**
+  When a booking is priced up after it was made — someone adds a guest, say —
+  the increase is tracked separately as an "additional payment" the member is
+  normally asked to pay by card. Until now, recording the booking as paid in
+  cash or by an off-Xero bank transfer said nothing about that extra and left it
+  recorded as still owing: the bookings list kept showing a "$X due" chip
+  against a fully settled booking, the reports counted the money as uncollected,
+  and the reminder emails would have gone on asking the member for money the
+  club already had. **Record manual payment** now shows the split — the booking
+  amount before the change, the extra, and the total you are recording as paid —
+  and asks whether the money you received covers the addition as well. Say yes
+  and the addition is recorded as settled with it, so nothing chases the member
+  again and the booking's history says the payment covered it; say no and it is
+  left exactly as before, so the club rightly keeps asking. Neither answer is a
+  default, and you cannot record the payment until you have chosen. Bookings
+  with no such extra — nearly all of them — see the dialog completely unchanged.
+  Reversing a manual payment puts a covered extra back to owing too.
+
 - **Adding another club member as a guest (#2306, #2307).** Until now a member
   could only put people from their own family group on a booking. There is now a
   new **Add another member as a guest** switch on **Admin → Modules**, off by

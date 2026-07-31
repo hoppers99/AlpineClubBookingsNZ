@@ -69,6 +69,30 @@ bank transfer for a club that does not use Xero invoicing.
    payment would. Nothing is sent to Xero: no invoice is created, and none is
    emailed.
 
+**When the booking still has an extra owing from a later change.** If the
+booking was priced up after it was first made — someone added a guest, say — the
+increase is recorded separately as an "additional payment" that the member is
+normally asked to pay by card. If that extra has never been collected, the
+dialog says so before you record anything. It shows the booking amount before
+the change, the extra, and the total you are recording as paid — the extra is
+*part of* that total, not on top of it — and asks one question: **does the money
+you have received cover that addition as well?** You must answer before the
+recording buttons work; neither answer is a default, because guessing either way
+is a guess about money.
+
+- **Yes** records the addition as settled too. Nothing will chase the member for
+  it again: the "$X due" chip disappears from the bookings list, the reminder
+  emails stop, and the booking's history gains an entry saying the payment you
+  recorded also covered the extra.
+- **No** leaves the addition exactly as it was — still recorded as owing — so
+  the club goes on asking the member for it, which is the right outcome if they
+  only handed over the original amount.
+
+Either way the confirmation on screen repeats which it was. If the extra changes
+while your screen is open, or one appears that was not on your screen when you
+opened the dialog, the recording is refused rather than guessed and you are
+asked to refresh.
+
 **When the member had asked to use their account credit.** If they ticked "use
 my credit" and saved the booking as a draft, and that credit was never applied,
 the dialog warns you before you record anything: it names the amount they asked
@@ -101,7 +125,9 @@ against the Xero invoice in Xero is the right move in the first case.
 manual payment** on the same card. The booking goes back to unpaid — it is *not*
 cancelled — and the member is not emailed. Any account-credit choice the
 original recording cleared is put back on the booking, so the member can spend
-that credit when the booking is paid for real. A booking restored to
+that credit when the booking is paid for real. An extra you confirmed the cash
+covered goes back to owing as well, so the booking is not left unpaid while its
+later addition still reads as collected. A booking restored to
 awaiting-payment stops holding its beds, so other bookings can take them, and
 recording the payment again later can be refused if the lodge has filled in the
 meantime. This is only possible while nothing has happened since that a

@@ -10,6 +10,7 @@ import {
   ManualBookingPaymentError,
   markBookingPaymentManuallySettled,
   reverseManualBookingPayment,
+  type ManualAdditionalCoverage,
 } from "@/lib/payment-reconciliation";
 import { applyLocalRefundAllocation } from "@/lib/payment-transactions";
 import { getProvisionalNonMemberChildSummary } from "@/lib/booking-split-summary";
@@ -41,6 +42,12 @@ import { prisma } from "@/lib/prisma";
  *  * #2258: the per-booking "No emails" switch is enforced by the MAILER, not
  *    by a per-action bypass here. If it is on, the send is withheld and the
  *    receipt honestly reports not-delivered.
+ *  * #2397: when the booking carries an OUTSTANDING upward-modification delta,
+ *    the admin is asked whether the cash covers it and the answer travels with
+ *    the settle. Said covered, the extra is settled through the same columns
+ *    every surface reads (so nothing chases it); said not covered, it is left
+ *    exactly as before. A booking with no extra sends nothing and behaves
+ *    identically to before this feature existed.
  */
 export { ManualBookingPaymentError };
 export { MANUAL_PAYMENT_NOTE_MAX };
@@ -69,6 +76,15 @@ export type ApplyManualBookingPaymentInput =
       notifyMember: boolean;
       /** The amount owing the admin saw in the dialog; stale-price protection. */
       expectedAmountCents: number;
+      /**
+       * #2397: the admin's answer to "does this cash cover the outstanding
+       * extra?", or null/absent to claim the dialog showed no extra. Absence is
+       * a CLAIM, not a shrug — the settle re-derives the outstanding extra under
+       * its locks and 409s when the claim is wrong — so the common no-extra
+       * screen stays exactly as it was while a stale client can never settle
+       * only the primary on a booking that has since grown one.
+       */
+      additionalCoverage?: ManualAdditionalCoverage | null;
     }
   | {
       bookingId: string;
@@ -77,7 +93,23 @@ export type ApplyManualBookingPaymentInput =
       actingMemberId: string;
       notifyMember?: never;
       expectedAmountCents?: never;
+      additionalCoverage?: never;
     };
+
+/**
+ * #2397: what became of a booking's outstanding upward-modification delta.
+ * Null when the booking carried none — the overwhelmingly common case, and the
+ * one where the dialog asks nothing.
+ */
+export type ManualBookingAdditionalOutcome = {
+  /** What was outstanding when the settle ran, in integer cents. */
+  outstandingCents: number;
+  /**
+   * On "paid": the admin said this cash covered it, so it is settled and no
+   * surface will chase it. On "unpaid": this reversal put it back to owing.
+   */
+  settled: boolean;
+};
 
 export type ApplyManualBookingPaymentResult = {
   bookingId: string;
@@ -102,6 +134,13 @@ export type ApplyManualBookingPaymentResult = {
    * `adminPaymentFailure` preference will never receive.
    */
   creditElectionCents: number | null;
+  /**
+   * #2397: the outstanding extra this action moved, and which way. Null when
+   * the booking carried none. Returned synchronously so the admin standing at
+   * the till is told what happened to the extra at the same moment they are
+   * told the payment was recorded.
+   */
+  additional: ManualBookingAdditionalOutcome | null;
 };
 
 function normaliseNote(note: string | null | undefined): string | null {
@@ -130,6 +169,13 @@ export async function applyManualBookingPayment(
       amountCents: reversal.reversedAmountCents,
       bookingStatus: reversal.restoredStatus,
       creditElectionCents: reversal.restoredCreditElectionCents,
+      additional:
+        reversal.restoredAdditionalAmountCents != null
+          ? {
+              outstandingCents: reversal.restoredAdditionalAmountCents,
+              settled: false,
+            }
+          : null,
     };
   }
 
@@ -139,6 +185,7 @@ export async function applyManualBookingPayment(
     note,
     expectedAmountCents: input.expectedAmountCents,
     notifyMember: input.notifyMember,
+    additionalCoverage: input.additionalCoverage ?? null,
   });
 
   // Dispatched AFTER commit, never inside the transaction. A send failure must
@@ -240,6 +287,13 @@ export async function applyManualBookingPayment(
     amountCents: settlement.effectiveAmountCents,
     bookingStatus: "PAID",
     creditElectionCents: settlement.staleCreditElectionCents,
+    additional:
+      settlement.outstandingAdditionalCents > 0
+        ? {
+            outstandingCents: settlement.outstandingAdditionalCents,
+            settled: settlement.settledAdditionalAmountCents > 0,
+          }
+        : null,
   };
 }
 

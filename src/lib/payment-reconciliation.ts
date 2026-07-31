@@ -57,6 +57,7 @@ import { clearStaleCreditElection } from "@/lib/booking-credit-election";
 import { reportUnappliedCreditElection } from "@/lib/booking-credit-election-report";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import { getDefaultLodgeId } from "@/lib/lodges";
+import { isAdditionalAmountUncollected } from "@/lib/unpaid-finished-stays";
 import {
   bookingHasCapacityOverride,
   RELEASE_ADMIN_CAPACITY_HOLD_UPDATE,
@@ -209,6 +210,22 @@ type StripeSettlementSource = {
   paymentMethodId: string | null;
 };
 
+/**
+ * #2397 — the admin's answer to "does this cash also cover the outstanding
+ * extra?", asked ONLY when the booking carries one.
+ *
+ * `expectedAdditionalAmountCents` is the figure the dialog showed, and follows
+ * the same law as `expectedAmountCents`: the settle never takes an amount from
+ * the client, it re-derives the outstanding extra under the locks and refuses
+ * when the two disagree, so an extra that moved since the dialog rendered is
+ * never settled at a figure the admin never saw.
+ */
+export type ManualAdditionalCoverage = {
+  /** True = the cash covers the extra too; false = leave it outstanding. */
+  covered: boolean;
+  expectedAdditionalAmountCents: number;
+};
+
 type ManualSettlementSource = {
   kind: "manual";
   actingAdminMemberId: string;
@@ -222,6 +239,15 @@ type ManualSettlementSource = {
    */
   expectedAmountCents: number;
   notifyMember: boolean;
+  /**
+   * #2397. `null` is not "no opinion": it is the caller's positive claim that
+   * the dialog showed NO outstanding extra, and the settle checks that claim
+   * under the locks — an extra that exists with `null` here is a 409, exactly
+   * as a moved price is. That keeps the common screen unchanged (no extra, no
+   * question, no field) without letting a stale client silently settle only the
+   * primary on a booking that has since grown an extra.
+   */
+  additionalCoverage: ManualAdditionalCoverage | null;
 };
 
 type BookingSettlementSource = StripeSettlementSource | ManualSettlementSource;
@@ -396,6 +422,10 @@ async function prepareManualSettlement(
       xeroRefundCreditNoteId: true,
       manuallyMarkedPaidAt: true,
       refundedAmountCents: true,
+      // #2397: the upward-modification delta and its collection state, read
+      // under the same locks as the amount law below.
+      additionalAmountCents: true,
+      additionalPaymentStatus: true,
     },
   });
 
@@ -459,7 +489,70 @@ async function prepareManualSettlement(
     );
   }
 
-  return { effectiveAmountCents, creditAppliedCents, paymentId: payment?.id ?? null };
+  // #2397 — the outstanding upward-modification delta, and the admin's answer
+  // about it.
+  //
+  // The MONEY half of the shared owed test is enough here: this settle always
+  // lands the booking on PAID, which is inside the owed status list, so the
+  // status half is constant-true by construction (see the merge-point note on
+  // `isAdditionalAmountUncollected`). Whatever the answer, the chase that #2386
+  // adds and every admin surface read the same two columns, so agreeing with
+  // them is a matter of writing those columns, not of inventing a parallel
+  // "manually settled extra" state.
+  const outstandingAdditionalCents = isAdditionalAmountUncollected(payment)
+    ? payment.additionalAmountCents
+    : 0;
+  const coverage = settlement.additionalCoverage;
+
+  if (outstandingAdditionalCents === 0 && coverage !== null) {
+    throw new ManualBookingPaymentError(
+      "The extra owing on this booking was settled or removed while you were recording this payment — refresh and check the figures before recording it.",
+      409
+    );
+  }
+  if (outstandingAdditionalCents > 0 && coverage === null) {
+    throw new ManualBookingPaymentError(
+      "This booking has an extra owing that was not on your screen — refresh and say whether the cash covers it before recording this payment.",
+      409
+    );
+  }
+  if (
+    coverage !== null &&
+    coverage.expectedAdditionalAmountCents !== outstandingAdditionalCents
+  ) {
+    throw new ManualBookingPaymentError(
+      "The extra owing changed while you were recording this payment — refresh and check the figure before recording it.",
+      409
+    );
+  }
+
+  const additionalSettlementCents =
+    coverage !== null && coverage.covered ? outstandingAdditionalCents : 0;
+
+  // The extra is recorded as a SLICE of the amount owing, never on top of it:
+  // an upward modification raises `Booking.finalPriceCents` by the same delta it
+  // records on the payment, and this settle collects `finalPriceCents - credit`
+  // in one go. Splitting the cash into a primary and an additional transaction
+  // is what makes the ledger read like the card equivalent; adding the delta a
+  // second time would record cash the club never took. An extra LARGER than the
+  // whole amount owing therefore cannot be a slice of it (a modification change
+  // fee lives outside `finalPriceCents`, so this is reachable) — refuse rather
+  // than guess which part of it the cash covered.
+  if (additionalSettlementCents > effectiveAmountCents) {
+    throw new ManualBookingPaymentError(
+      "The extra recorded on this booking is larger than the amount owing, so this payment cannot settle it — check the booking's price and settle the extra separately.",
+      409
+    );
+  }
+
+  return {
+    effectiveAmountCents,
+    creditAppliedCents,
+    paymentId: payment?.id ?? null,
+    outstandingAdditionalCents,
+    additionalSettlementCents,
+    previousAdditionalPaymentStatus: payment?.additionalPaymentStatus ?? null,
+  };
 }
 
 /**
@@ -592,6 +685,24 @@ async function settleBookingPaymentInTransaction(
         ? manual.creditAppliedCents
         : Math.max(0, booking.finalPriceCents - settlementAmountCents);
 
+    // #2397 — the slice of this settlement that pays off the outstanding
+    // upward-modification delta, when the admin said the cash covers it. Zero
+    // on every other settlement, which is every settlement today.
+    const manualAdditionalSettlementCents = manual?.additionalSettlementCents ?? 0;
+    const manualOutstandingAdditionalCents =
+      manual?.outstandingAdditionalCents ?? 0;
+    const manualPreviousAdditionalPaymentStatus =
+      manual?.previousAdditionalPaymentStatus ?? null;
+    // The cash is SPLIT, not increased: the primary transaction drops by the
+    // delta and the additional transaction carries it, so the two rows still sum
+    // to `settlementAmountCents` and `Payment.amountCents` — and therefore the
+    // mirror `amountCents + creditAppliedCents = finalPriceCents` — is unchanged.
+    // This is exactly the shape a card-paid booking with a later addition has,
+    // so `reconcilePaymentAggregates` re-deriving the payment from its ledger
+    // reproduces these figures instead of inflating them.
+    const manualPrimaryTransactionAmountCents =
+      settlementAmountCents - manualAdditionalSettlementCents;
+
     const payment = await tx.payment.upsert({
       where: { bookingId },
       create: {
@@ -668,7 +779,7 @@ async function settleBookingPaymentInTransaction(
         },
         data: {
           status: PaymentStatus.SUCCEEDED,
-          amountCents: settlementAmountCents,
+          amountCents: manualPrimaryTransactionAmountCents,
           reason: "manual_mark_paid",
         },
       });
@@ -680,11 +791,63 @@ async function settleBookingPaymentInTransaction(
             kind: PaymentTransactionKind.PRIMARY,
             source: PaymentSource.INTERNET_BANKING,
             stripePaymentIntentId: null,
-            amountCents: settlementAmountCents,
+            amountCents: manualPrimaryTransactionAmountCents,
             status: PaymentStatus.SUCCEEDED,
             reason: "manual_mark_paid",
           },
         });
+      }
+
+      // #2397 — the ADDITIONAL half, minted the same way and only when the
+      // admin said this cash covers the outstanding extra. Same two deliberate
+      // divergences as the PRIMARY mint above, for the same reasons: FAILED
+      // rows are excluded from the update predicate (a reversal marks this
+      // feature's own row FAILED at the old amount, and resurrecting it would
+      // settle the extra at a stale figure), and count 0 CREATES
+      // unconditionally rather than falling back to "any existing ADDITIONAL
+      // row" — a fallback would adopt the member's stale, still-PENDING STRIPE
+      // additional intent row and claim a card capture that never happened.
+      //
+      // A durable row rather than only the summary column, because
+      // `reconcilePaymentAggregates` re-derives `additionalAmountCents` /
+      // `additionalPaymentStatus` from the LATEST ADDITIONAL transaction: a
+      // column-only write would be silently undone by the next ledger
+      // reconcile and the member would start being chased again for cash the
+      // club already holds.
+      if (manualAdditionalSettlementCents > 0) {
+        const mintedAdditional = await tx.paymentTransaction.updateMany({
+          where: {
+            paymentId: payment.id,
+            source: PaymentSource.INTERNET_BANKING,
+            kind: PaymentTransactionKind.ADDITIONAL,
+            status: {
+              notIn: [
+                PaymentStatus.REFUNDED,
+                PaymentStatus.PARTIALLY_REFUNDED,
+                PaymentStatus.FAILED,
+              ],
+            },
+          },
+          data: {
+            status: PaymentStatus.SUCCEEDED,
+            amountCents: manualAdditionalSettlementCents,
+            reason: MANUAL_MARK_PAID_ADDITIONAL_REASON,
+          },
+        });
+
+        if (mintedAdditional.count === 0) {
+          await tx.paymentTransaction.create({
+            data: {
+              paymentId: payment.id,
+              kind: PaymentTransactionKind.ADDITIONAL,
+              source: PaymentSource.INTERNET_BANKING,
+              stripePaymentIntentId: null,
+              amountCents: manualAdditionalSettlementCents,
+              status: PaymentStatus.SUCCEEDED,
+              reason: MANUAL_MARK_PAID_ADDITIONAL_REASON,
+            },
+          });
+        }
       }
     }
 
@@ -1066,6 +1229,20 @@ async function settleBookingPaymentInTransaction(
           refundedAmountCents: 0,
           transactions: { none: { xeroInvoiceId: { not: null } } },
           booking: { organiserSettled: false },
+          // #2397: re-assert the extra the admin agreed to settle, exactly as
+          // every other expressible refusal is re-asserted here. A card
+          // additional that captured — or another delta recorded — between the
+          // read above and this write yields count 0 -> 409, so the settle can
+          // never stamp SUCCEEDED over a figure that has moved.
+          ...(manualAdditionalSettlementCents > 0
+            ? {
+                additionalAmountCents: manualAdditionalSettlementCents,
+                OR: [
+                  { additionalPaymentStatus: null },
+                  { additionalPaymentStatus: { not: "SUCCEEDED" } },
+                ],
+              }
+            : {}),
         },
         data: {
           status: PaymentStatus.SUCCEEDED,
@@ -1080,6 +1257,13 @@ async function settleBookingPaymentInTransaction(
           manuallyMarkedPaidByMemberId: settlement.actingAdminMemberId,
           manualPaymentNote: settlement.note,
           manuallyMarkedPaidPreviousStatus: booking.status,
+          // #2397: the one state every consumer already treats as settled —
+          // the admin list chip, the booking panel, the reports figure, the
+          // finance breakdown, the member's own pay door and the reminder cron
+          // all key on this column being "SUCCEEDED".
+          ...(manualAdditionalSettlementCents > 0
+            ? { additionalPaymentStatus: "SUCCEEDED" }
+            : {}),
         },
       });
       if (fenced.count === 0) {
@@ -1197,10 +1381,66 @@ async function settleBookingPaymentInTransaction(
             // #2260 honesty rule: record the email decision BOTH ways, so a
             // reader can tell "chose not to email" from "no choice was offered".
             notifyMember: settlement.notifyMember,
+            // #2397, the same honesty rule for the extra: record what was
+            // outstanding, whether the admin was asked at all, and what they
+            // answered — so a reader can tell "said the cash did not cover it"
+            // from "there was no extra to ask about". The settled figure and the
+            // status it replaced are ALSO what the reversal reads back, which is
+            // why they must be exactly what this settle wrote.
+            outstandingAdditionalCents: manualOutstandingAdditionalCents,
+            additionalCoverageAnswer:
+              settlement.additionalCoverage === null
+                ? null
+                : settlement.additionalCoverage.covered,
+            settledAdditionalAmountCents:
+              manualAdditionalSettlementCents > 0
+                ? manualAdditionalSettlementCents
+                : null,
+            previousAdditionalPaymentStatus:
+              manualAdditionalSettlementCents > 0
+                ? manualPreviousAdditionalPaymentStatus
+                : null,
           },
         },
         tx
       );
+
+      // #2397 — the member-readable timeline entry. A second, dedicated audit
+      // row rather than a field on the one above, because the booking history is
+      // built from whitelisted audit ACTIONS: without its own action the extra
+      // would be absorbed into the mark-paid row the timeline never renders, and
+      // the money would move with nothing on the booking to say so.
+      if (manualAdditionalSettlementCents > 0) {
+        await createAuditLog(
+          {
+            action: MANUAL_MARK_PAID_ADDITIONAL_AUDIT_ACTION,
+            memberId: settlement.actingAdminMemberId,
+            actorMemberId: settlement.actingAdminMemberId,
+            subjectMemberId: booking.memberId,
+            targetId: booking.id,
+            entityType: "Payment",
+            entityId: payment.id,
+            category: "payment",
+            severity: "important",
+            outcome: "success",
+            summary:
+              "Extra owing on a booking recorded as settled manually (cash / off-Xero)",
+            // JSON, because the booking-history builder parses this field.
+            details: JSON.stringify({
+              additionalAmountCents: manualAdditionalSettlementCents,
+            }),
+            metadata: {
+              bookingId: booking.id,
+              paymentId: payment.id,
+              additionalAmountCents: manualAdditionalSettlementCents,
+              previousAdditionalPaymentStatus:
+                manualPreviousAdditionalPaymentStatus,
+              settlementAmountCents,
+            },
+          },
+          tx
+        );
+      }
 
       return {
         outcome: "manual_paid" as const,
@@ -1213,6 +1453,8 @@ async function settleBookingPaymentInTransaction(
         settledAt: manualSettledAt,
         outstandingIntentIds,
         staleCreditElectionCents,
+        outstandingAdditionalCents: manualOutstandingAdditionalCents,
+        settledAdditionalAmountCents: manualAdditionalSettlementCents,
       };
     }
 
@@ -1603,6 +1845,24 @@ const MANUAL_MARK_PAID_AUDIT_ACTION =
   "booking-payment.manual-payment.mark-paid";
 
 /**
+ * #2397 — the audit action for the SECOND fact a covered settle records: the
+ * outstanding upward-modification delta was settled by the same cash.
+ *
+ * It exists as its own action because the booking-history timeline is built
+ * from a whitelist of audit actions (`src/lib/booking-history.ts`, fed by the
+ * booking page), so this is what stops the extra being absorbed silently.
+ */
+const MANUAL_MARK_PAID_ADDITIONAL_AUDIT_ACTION =
+  "booking-payment.manual-payment.additional-settled";
+
+/**
+ * The `reason` stamped on the manual ADDITIONAL PaymentTransaction, and the
+ * marker the reversal looks for. A constant rather than a literal per call site
+ * for the same reason as the audit action above: two writers and one reader.
+ */
+const MANUAL_MARK_PAID_ADDITIONAL_REASON = "manual_mark_paid_additional";
+
+/**
  * Read `clearedCreditElectionCents` back off a mark-paid audit row's metadata.
  *
  * Defensive on purpose: `metadata` is free-form JSON, and rows written before
@@ -1623,6 +1883,39 @@ function readClearedCreditElectionCents(
     : null;
 }
 
+/**
+ * #2397 — read back what a mark-paid audit row says it settled of the booking's
+ * outstanding extra, so the REVERSAL can put it back exactly as it was.
+ *
+ * Defensive for the same reason as the credit-election reader above: `metadata`
+ * is free-form JSON, and every row written before this key existed must read as
+ * "this settle covered no extra" rather than throw. Returns null in that case;
+ * `previousStatus` is deliberately allowed to BE null, because a legacy delta
+ * with no recorded status is a real state the reversal has to restore
+ * faithfully.
+ */
+function readSettledAdditionalPayment(
+  metadata: Prisma.JsonValue | null | undefined
+): { amountCents: number; previousStatus: string | null } | null {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    return null;
+  }
+  const object = metadata as Prisma.JsonObject;
+  const amountCents = object.settledAdditionalAmountCents;
+  if (
+    typeof amountCents !== "number" ||
+    !Number.isInteger(amountCents) ||
+    amountCents <= 0
+  ) {
+    return null;
+  }
+  const previousStatus = object.previousAdditionalPaymentStatus;
+  return {
+    amountCents,
+    previousStatus: typeof previousStatus === "string" ? previousStatus : null,
+  };
+}
+
 export type ManualBookingSettlementResult = {
   bookingId: string;
   paymentId: string;
@@ -1641,6 +1934,13 @@ export type ManualBookingSettlementResult = {
   staleCreditElectionCents: number | null;
   memberFirstName: string;
   memberEmail: string | null;
+  /**
+   * #2397: the outstanding upward-modification delta this settle found, in
+   * integer cents (0 when the booking carried none), and how much of it this
+   * settle recorded as covered by the cash — 0 when the admin said it was not.
+   */
+  outstandingAdditionalCents: number;
+  settledAdditionalAmountCents: number;
 };
 
 /**
@@ -1661,12 +1961,14 @@ export async function markBookingPaymentManuallySettled({
   note,
   expectedAmountCents,
   notifyMember,
+  additionalCoverage = null,
 }: {
   bookingId: string;
   actingAdminMemberId: string;
   note: string | null;
   expectedAmountCents: number;
   notifyMember: boolean;
+  additionalCoverage?: ManualAdditionalCoverage | null;
 }): Promise<ManualBookingSettlementResult> {
   const reconciliation = await prisma.$transaction((tx) =>
     settleBookingPaymentInTransaction(tx, bookingId, {
@@ -1675,6 +1977,7 @@ export async function markBookingPaymentManuallySettled({
       note,
       expectedAmountCents,
       notifyMember,
+      additionalCoverage,
     })
   );
 
@@ -1741,6 +2044,11 @@ export async function markBookingPaymentManuallySettled({
       actingAdminMemberId,
       note,
       effectiveAmountCents: reconciliation.effectiveAmountCents,
+      // #2397. Not an extra amount — a slice of `effectiveAmountCents` that the
+      // admin confirmed the cash covered, recorded here so the durable event
+      // says how the one figure was split.
+      settledAdditionalAmountCents:
+        reconciliation.settledAdditionalAmountCents || null,
     },
   });
 
@@ -1767,6 +2075,8 @@ export async function markBookingPaymentManuallySettled({
     staleCreditElectionCents: reconciliation.staleCreditElectionCents,
     memberFirstName: reconciliation.booking.member.firstName,
     memberEmail: reconciliation.booking.member.email ?? null,
+    outstandingAdditionalCents: reconciliation.outstandingAdditionalCents,
+    settledAdditionalAmountCents: reconciliation.settledAdditionalAmountCents,
   };
 }
 
@@ -1785,6 +2095,13 @@ export type ManualBookingReversalResult = {
    * declined because a legitimate writer had already set an election since.
    */
   restoredCreditElectionCents: number | null;
+  /**
+   * #2397: the outstanding extra the matching mark-paid recorded as covered by
+   * the cash, and which this reversal has put back to owing — in integer cents,
+   * or null when that settle covered no extra (or the guarded restore declined
+   * because the extra had legitimately been settled since).
+   */
+  restoredAdditionalAmountCents: number | null;
 };
 
 const MANUAL_REVERSAL_REFUSAL =
@@ -2011,6 +2328,10 @@ export async function reverseManualBookingPayment({
     const clearedCreditElectionCents = readClearedCreditElectionCents(
       lastManualSettleAudit?.metadata
     );
+    // #2397: what that same settle recorded of the booking's outstanding extra.
+    const settledAdditional = readSettledAdditionalPayment(
+      lastManualSettleAudit?.metadata
+    );
     let restoredCreditElectionCents: number | null = null;
     if (clearedCreditElectionCents != null) {
       const restored = await tx.booking.updateMany({
@@ -2096,6 +2417,45 @@ export async function reverseManualBookingPayment({
       },
     });
 
+    // #2397 — the extra goes back to owing, or the reversal would leave a
+    // booking that is unpaid again while its later addition still reads as
+    // collected, and no surface would ever ask for it. Both halves, in the
+    // order that keeps them consistent if either declines:
+    //  * the durable ADDITIONAL row is marked FAILED (never deleted), same
+    //    treatment and same reason-stamp shape as the PRIMARY row above, so a
+    //    later re-mark mints a fresh row rather than resurrecting a stale one;
+    //  * the summary column is restored with a GUARDED claim matching the exact
+    //    figure and status this settle wrote. If a legitimate writer has settled
+    //    the extra since (a card capture landing on the restored booking, say),
+    //    the guard matches nothing and their value stands untouched.
+    let restoredAdditionalAmountCents: number | null = null;
+    if (settledAdditional) {
+      await tx.paymentTransaction.updateMany({
+        where: {
+          paymentId: payment.id,
+          kind: PaymentTransactionKind.ADDITIONAL,
+          source: PaymentSource.INTERNET_BANKING,
+          status: PaymentStatus.SUCCEEDED,
+          reason: MANUAL_MARK_PAID_ADDITIONAL_REASON,
+        },
+        data: {
+          status: PaymentStatus.FAILED,
+          reason: "manual_mark_paid_additional_reversed",
+        },
+      });
+
+      const restoredAdditional = await tx.payment.updateMany({
+        where: {
+          id: payment.id,
+          additionalAmountCents: settledAdditional.amountCents,
+          additionalPaymentStatus: "SUCCEEDED",
+        },
+        data: { additionalPaymentStatus: settledAdditional.previousStatus },
+      });
+      restoredAdditionalAmountCents =
+        restoredAdditional.count === 1 ? settledAdditional.amountCents : null;
+    }
+
     // Releases the claimed beds only when the restore lands on
     // PAYMENT_PENDING; a restored CONFIRMED booking deliberately keeps holding
     // capacity, because that is what CONFIRMED means.
@@ -2155,6 +2515,14 @@ export async function reverseManualBookingPayment({
           // and the null says plainly that this reversal did not write it back.
           restoredCreditElectionCents,
           settleClearedCreditElectionCents: clearedCreditElectionCents,
+          // #2397, recorded BOTH ways for the same reason: what this reversal
+          // actually put back to owing, and what the matching settle had said
+          // the cash covered. A null restored figure against a non-null settled
+          // one says the guard declined because the extra was legitimately
+          // settled again in the meantime.
+          restoredAdditionalAmountCents,
+          settleSettledAdditionalAmountCents:
+            settledAdditional?.amountCents ?? null,
           // #2260: a reversal never emails the member. Recorded under its own
           // key so a raw metadata render cannot be misread as an admin having
           // declined a choice they were never offered.
@@ -2173,6 +2541,7 @@ export async function reverseManualBookingPayment({
       closedRecoveryOperationIds,
       clearedInternetBankingHold: clearInternetBankingHold,
       restoredCreditElectionCents,
+      restoredAdditionalAmountCents,
     };
   });
 
@@ -2206,6 +2575,7 @@ export async function reverseManualBookingPayment({
     closedRecoveryOperationIds: reversal.closedRecoveryOperationIds,
     clearedInternetBankingHold: reversal.clearedInternetBankingHold,
     restoredCreditElectionCents: reversal.restoredCreditElectionCents,
+    restoredAdditionalAmountCents: reversal.restoredAdditionalAmountCents,
   };
 }
 

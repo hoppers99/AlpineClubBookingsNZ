@@ -36,6 +36,18 @@ export interface BookingManualPaymentState {
    * before they click rather than after.
    */
   storedCreditElectionCents: number | null;
+  /**
+   * #2397: an upward price change was recorded on this booking after it was
+   * priced, and that extra has never been collected — in integer cents, or 0
+   * (the overwhelmingly common case) when there is none.
+   *
+   * When it is 0 the dialog is EXACTLY as it was: no extra question, no extra
+   * figures, no extra field on the request. When it is not, the admin holding
+   * the money is shown how the one amount splits and must say whether the cash
+   * covers the extra as well, because that answer decides whether the club goes
+   * on asking the member for it.
+   */
+  outstandingAdditionalCents: number;
   /** Whether this booking can be recorded as settled at all. */
   canMarkPaid: boolean;
   /** Why not, when it cannot — shown instead of the action. */
@@ -82,11 +94,28 @@ export function BookingManualPaymentControls({
   const [dialog, setDialog] = useState<null | "paid" | "unpaid">(null);
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  /**
+   * #2397: the admin's answer about the outstanding extra. Starts UNANSWERED
+   * and has no default — recording the payment is blocked until they choose,
+   * because guessing either way is a guess about money.
+   */
+  const [additionalCovered, setAdditionalCovered] = useState<boolean | null>(
+    null
+  );
 
   const isSettled = state.manuallyMarkedPaidAt !== null;
+  const outstandingAdditionalCents = state.outstandingAdditionalCents;
+  const hasOutstandingAdditional = outstandingAdditionalCents > 0;
+  // What the primary and the extra are, as this settlement will record them.
+  // The extra is a SLICE of the amount owing, not a sum on top of it: an upward
+  // change raised the booking's price by the same amount it recorded as the
+  // extra, and this action collects the whole price in one go.
+  const baseAmountCents = state.amountOwingCents - outstandingAdditionalCents;
+  const additionalAnswered = !hasOutstandingAdditional || additionalCovered !== null;
 
   function openDialog(direction: "paid" | "unpaid") {
     setNote("");
+    setAdditionalCovered(null);
     setDialog(direction);
   }
 
@@ -127,6 +156,18 @@ export function BookingManualPaymentControls({
                 // longer matches, so a price that moved is never recorded at
                 // the figure on a stale screen.
                 expectedAmountCents: state.amountOwingCents,
+                // #2397: sent ONLY when this screen showed an outstanding
+                // extra. Omitting it is the claim that it did not, which the
+                // server re-checks under its locks.
+                ...(hasOutstandingAdditional
+                  ? {
+                      additionalCoverage: {
+                        covered: additionalCovered === true,
+                        expectedAdditionalAmountCents:
+                          outstandingAdditionalCents,
+                      },
+                    }
+                  : {}),
               }
             : {}),
         }),
@@ -244,6 +285,75 @@ export function BookingManualPaymentControls({
                   have actually handed over.
                 </p>
               ) : null}
+              {hasOutstandingAdditional ? (
+                <div
+                  className="space-y-3 rounded-md border border-warning-6 bg-warning-3 px-3 py-2 text-sm text-warning-11"
+                  data-testid="manual-payment-additional-coverage"
+                >
+                  <p>
+                    A later change to this booking added{" "}
+                    <strong>{formatCents(outstandingAdditionalCents)}</strong>,
+                    which is recorded separately and is still marked as unpaid.
+                    That amount is part of the total shown above, not on top of
+                    it:
+                  </p>
+                  <dl className="space-y-1">
+                    <div className="flex justify-between gap-4">
+                      <dt>Booking before the change</dt>
+                      <dd data-testid="manual-payment-additional-base">
+                        {formatCents(baseAmountCents)}
+                      </dd>
+                    </div>
+                    <div className="flex justify-between gap-4">
+                      <dt>Later addition, still marked unpaid</dt>
+                      <dd data-testid="manual-payment-additional-extra">
+                        {formatCents(outstandingAdditionalCents)}
+                      </dd>
+                    </div>
+                    <div className="flex justify-between gap-4 border-t border-warning-6 pt-1 font-medium">
+                      <dt>Total being recorded as paid</dt>
+                      <dd data-testid="manual-payment-additional-total">
+                        {formatCents(state.amountOwingCents)}
+                      </dd>
+                    </div>
+                  </dl>
+                  <fieldset className="space-y-2">
+                    <legend className="font-medium">
+                      Does the money you have received cover that{" "}
+                      {formatCents(outstandingAdditionalCents)} addition as
+                      well?
+                    </legend>
+                    <label className="flex items-start gap-2">
+                      <input
+                        type="radio"
+                        name="manual-payment-additional-covered"
+                        className="mt-1"
+                        checked={additionalCovered === true}
+                        onChange={() => setAdditionalCovered(true)}
+                      />
+                      <span>
+                        Yes — record the {formatCents(outstandingAdditionalCents)}{" "}
+                        addition as settled too. The member will not be asked for
+                        it again.
+                      </span>
+                    </label>
+                    <label className="flex items-start gap-2">
+                      <input
+                        type="radio"
+                        name="manual-payment-additional-covered"
+                        className="mt-1"
+                        checked={additionalCovered === false}
+                        onChange={() => setAdditionalCovered(false)}
+                      />
+                      <span>
+                        No — leave the {formatCents(outstandingAdditionalCents)}{" "}
+                        addition recorded as still owing. The club will keep
+                        asking the member for it.
+                      </span>
+                    </label>
+                  </fieldset>
+                </div>
+              ) : null}
               <div className="space-y-2">
                 <Label htmlFor="manual-booking-payment-note">
                   Note (optional)
@@ -282,19 +392,22 @@ export function BookingManualPaymentControls({
                     <Button
                       variant="outline"
                       onClick={() => submit("paid", false)}
-                      disabled={submitting}
+                      disabled={submitting || !additionalAnswered}
                     >
                       Record without emailing
                     </Button>
                     <Button
                       onClick={() => submit("paid", true)}
-                      disabled={submitting}
+                      disabled={submitting || !additionalAnswered}
                     >
                       Record and email member
                     </Button>
                   </>
                 ) : (
-                  <Button onClick={confirmSilenced} disabled={submitting}>
+                  <Button
+                    onClick={confirmSilenced}
+                    disabled={submitting || !additionalAnswered}
+                  >
                     Record payment
                   </Button>
                 )}

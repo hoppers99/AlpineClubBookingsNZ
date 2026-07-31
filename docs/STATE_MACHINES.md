@@ -891,11 +891,36 @@ PaymentTransaction: an INTERNET_BANKING PRIMARY row with NO Stripe intent id,
   reason "manual_mark_paid", -> SUCCEEDED
 ```
 
+#2397 — an OUTSTANDING upward-modification delta on the same booking. The admin
+is asked whether the cash covers it (no default, and the answer is part of the
+settle's contract). Only when they say it does:
+
+```text
+Payment: additionalPaymentStatus PENDING|FAILED|null -> "SUCCEEDED"
+  (re-asserted in the fenced write on the exact additionalAmountCents)
+PaymentTransaction: an INTERNET_BANKING ADDITIONAL row with NO Stripe intent
+  id, reason "manual_mark_paid_additional", -> SUCCEEDED, AND the PRIMARY row
+  above drops by the same amount — the cash is SPLIT, never doubled, because
+  the delta is already inside finalPriceCents. The two rows sum to
+  `finalPriceCents - credit`, so Payment.amountCents is unchanged.
+AuditLog: a second row, "booking-payment.manual-payment.additional-settled",
+  which is what puts the extra on the booking-history timeline
+```
+
+Said NOT covered, none of the above is written and the delta stays owed. On the
+reversal, a covered extra goes back: the ADDITIONAL row SUCCEEDED -> FAILED
+(reason "manual_mark_paid_additional_reversed") and `additionalPaymentStatus` is
+restored by a guarded claim matching exactly the amount and status the settle
+recorded.
+
 Refused (409, nothing written) when the booking is already PAID, is not in a
 payable status, participates in a group settlement, has ANY Xero invoice
 evidence including a queued mint, carries any refund history
-(`refundedAmountCents > 0`), owes nothing, no longer fits the lodge, or when
-the amount owing moved since the admin's dialog rendered.
+(`refundedAmountCents > 0`), owes nothing, no longer fits the lodge, when
+the amount owing moved since the admin's dialog rendered, or (#2397) when the
+outstanding extra moved, appeared, or vanished since it did — including when an
+answer arrives for an extra that no longer exists, when an extra exists and no
+answer was given, and when the extra is larger than the whole amount owing.
 
 Reversal (`direction: "unpaid"`), permitted only while nothing has happened
 that it could not undo:

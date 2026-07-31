@@ -767,6 +767,41 @@ Future reviews and issues should cite this file when proposing changes.
     first, and the reversal refuses on any settled Stripe transaction before
     the disarm. The deleted rows' full content is preserved in the reversal's
     `AuditLog` metadata.
+  - An OUTSTANDING upward-modification delta on the booking is never silently
+    absorbed or silently left behind (#2397). `additionalAmountCents` /
+    `additionalPaymentStatus` were previously written only by the CARD
+    additional-payment flow, so a price increase settled in cash still read as
+    owing on every surface — including the automatic chase (#2350) — and the
+    member would be emailed for money the club already held. The mark-paid
+    dialog therefore ASKS (owner decision, 31 Jul 2026) whenever the booking
+    carries one, showing the amount before the change, the extra, and the total
+    being recorded; and the answer is a REQUIRED, defaultless part of the
+    settle's contract. Absence of an answer is the caller's positive claim that
+    there was no extra, re-checked under the locks like every other claim: an
+    extra that exists without one is a 409, an answer for an extra that does not
+    is a 409, and a figure that moved since the dialog rendered is a 409 — the
+    same law as `expectedAmountCents`.
+    Said covered, the extra is settled through the columns every consumer
+    already reads (`additionalPaymentStatus = "SUCCEEDED"`, re-asserted in the
+    fenced write) AND as a durable INTERNET_BANKING ADDITIONAL
+    `PaymentTransaction` with reason `manual_mark_paid_additional`, because
+    `reconcilePaymentAggregates` re-derives those columns from the latest
+    ADDITIONAL transaction and a column-only write would be undone by the next
+    ledger reconcile. **No money is created:** an upward modification raises
+    `Booking.finalPriceCents` by the same delta it records as the extra, and
+    this settle collects `finalPriceCents - credit` in one go, so the cash is
+    SPLIT (the PRIMARY row drops by the delta, the ADDITIONAL row carries it)
+    and `Payment.amountCents` — and the mirror
+    `amountCents + creditAppliedCents = finalPriceCents` — is unchanged. An
+    extra LARGER than the whole amount owing cannot be a slice of it (a
+    modification change fee is added to the extra but never to `finalPriceCents`)
+    and is refused rather than guessed. Said NOT covered, nothing about the
+    extra is written and the chase continuing is correct. Either answer is
+    recorded on the mark-paid audit row BOTH ways, a covered extra also writes
+    its own `booking-payment.manual-payment.additional-settled` audit row so the
+    booking history shows it, and the REVERSAL puts a covered extra back to
+    owing (ADDITIONAL row → FAILED, column restored by a guarded claim matching
+    exactly what the settle wrote).
   - A stored, unconsumed credit election (#2265) on the booking is never
     silently stranded or ignored (door 3 of the #2319 invariant below): the
     settle clears it with the shared guarded claim, records the cleared cents
