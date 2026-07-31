@@ -26,7 +26,10 @@ import {
   MEMBER_LOGIN_EMAIL_TAKEN_MESSAGE,
 } from "@/lib/member-email";
 import { validateInheritEmailSource } from "@/lib/member-email-inheritance";
-import { buildParentLinks } from "@/lib/member-parent-links";
+import {
+  buildParentLinks,
+  resolveInheritedEmailSourceId,
+} from "@/lib/member-parent-links";
 import { OPERATIONAL_STAY_BOOKING_STATUSES } from "@/lib/booking-status";
 import { getAssignedPromoCodeSummariesForMember } from "@/lib/promo";
 import { getFamilyBillingMode } from "@/lib/authoritative-fees";
@@ -340,6 +343,26 @@ export async function getAdminMemberDetail(params: {
     assignedPromoCodes,
     archiveLifecycleActionRequests,
     openCancellationParticipant,
+    // #2282: WHICH ADULT a dependant added under this member would actually
+    // reach. Parentage is now recordable at any age, but being the club's
+    // contact of record stays adult-only, so for a young parent the mail routes
+    // PAST them to the nearest usable ancestor. That has to be on screen BEFORE
+    // the admin adds the dependant, not discovered afterwards from a stored
+    // pointer naming someone they never chose. Resolved with the same walk both
+    // write paths use, so the page states exactly what the write will store
+    // rather than a lookalike one-hop guess; a null `sourceId` means no ancestor
+    // in reach can receive mail, which is the 422 those writes return.
+    //
+    // WHAT IT COSTS, stated accurately (#2282 review corrected an earlier
+    // "adds no serial round-trip" here). It joins this `Promise.all` because it
+    // needs only the route param, so it adds no round-trip to the page's own
+    // critical path — but it is a WALK, not a query: one `findMany` per
+    // generation, plus a `findUnique` for any row carrying a stored pointer,
+    // bounded by the four-generation cap. The summary read below is a further
+    // `await` AFTER this block for the uncommon case where the source is
+    // somebody else. Bounded and not an N+1, but every admin member-detail view
+    // now pays a walk that used to run only on writes.
+    dependentEmailSourceResolution,
   ] = await Promise.all([
     prisma.member.findUnique({
       where: { id },
@@ -547,6 +570,7 @@ export async function getAdminMemberDetail(params: {
         },
       },
     }),
+    resolveInheritedEmailSourceId(prisma, id),
   ]);
 
   if (!member) {
@@ -618,8 +642,27 @@ export async function getAdminMemberDetail(params: {
   // editable on the member detail family card (#1932, E6).
   const familyBillingMode = await getFamilyBillingMode();
 
+  // #2282: the summary for the adult resolved above. Only a second read when
+  // the source is somebody else — the ordinary case, an adult who is their own
+  // source, is answered from the row already in hand.
+  const dependentEmailSourceId = dependentEmailSourceResolution.sourceId;
+  const dependentEmailSource = dependentEmailSourceId
+    ? dependentEmailSourceId === member.id
+      ? {
+          id: member.id,
+          firstName: member.firstName,
+          lastName: member.lastName,
+          email: member.email,
+        }
+      : await prisma.member.findUnique({
+          where: { id: dependentEmailSourceId },
+          select: { id: true, firstName: true, lastName: true, email: true },
+        })
+    : null;
+
   return jsonResult({
     ...member,
+    dependentEmailSource,
     familyBillingMode,
     accessRoles: resolveAccessRoleTokens(member),
     parentLinks: buildParentLinks(member),

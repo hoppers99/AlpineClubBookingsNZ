@@ -38,10 +38,16 @@ Open **Profile** and find the **Family Group** section.
   managed by the group's adults.
 - The club can record who a member's parents are — up to two parents each, and
   up to **four generations** in one line (great-grandparent, grandparent,
-  parent, child). Being someone's parent no longer stops you being recorded as
-  someone else's child, so a three-generation family can be recorded as it
-  really is. If a dependent has no email address of their own, club email for
-  them goes to the nearest person above them in the family who does have one.
+  parent, child), **whatever their ages**: a 16 or 17 year old can genuinely be
+  a parent, and the club can now write that down. Being someone's parent no
+  longer stops you being recorded as someone else's child, so a
+  three-generation family can be recorded as it really is. Recording the
+  relationship is all it does — it does not decide who is billed, who can book
+  for whom, or who can change someone's details.
+  If a dependent has no email address of their own, club email for them goes to
+  the nearest **adult** above them in the family who does have one. That is why
+  it says "adult": the club's contact for a member always has to be one, so mail
+  for a child of a young parent goes on up to the nearest adult in the family.
 
 While a create-group request is pending, the Join/Create buttons are replaced by
 "Your family group request is awaiting admin review", showing the requested group

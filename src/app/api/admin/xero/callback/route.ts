@@ -9,22 +9,27 @@ import {
   XERO_OAUTH_RETURN_COOKIE,
   XERO_OAUTH_STATE_COOKIE,
 } from "@/lib/xero-oauth-state";
+import {
+  toSafeXeroOAuthCallbackMessage,
+  XERO_OAUTH_CALLBACK_GENERIC_MESSAGE,
+  XERO_OAUTH_CALLBACK_INVALID_STATE_MESSAGE,
+} from "@/lib/xero-oauth-callback-messages";
 
+/**
+ * The allow-list now lives in `xero-oauth-callback-messages.ts` so the READ side
+ * (`use-xero-connection.ts`, which renders `?error=` in a danger box on two
+ * admin pages) enforces exactly the same set (#2394 review, F9).
+ */
 function getSafeXeroCallbackErrorMessage(error: unknown) {
   const message =
     error instanceof Error
       ? error.message
-      : String(error ?? "Xero connection failed");
+      : String(error ?? XERO_OAUTH_CALLBACK_GENERIC_MESSAGE);
 
-  if (
-    message === "Invalid Xero OAuth state. Please reconnect from the admin page." ||
-    message ===
-      "Xero did not return an organisation to connect. Please reconnect and choose the club organisation in Xero."
-  ) {
-    return message;
-  }
-
-  return "Xero connection failed. Please reconnect from the admin page.";
+  return (
+    toSafeXeroOAuthCallbackMessage(message) ??
+    XERO_OAUTH_CALLBACK_GENERIC_MESSAGE
+  );
 }
 
 /**
@@ -60,7 +65,7 @@ export async function GET(request: NextRequest) {
 
   try {
     if (!isValidXeroOAuthState(cookieState, requestState)) {
-      throw new Error("Invalid Xero OAuth state. Please reconnect from the admin page.");
+      throw new Error(XERO_OAUTH_CALLBACK_INVALID_STATE_MESSAGE);
     }
 
     // Reconstruct the callback URL using the public base URL so the host

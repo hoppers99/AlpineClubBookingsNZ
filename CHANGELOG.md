@@ -47,6 +47,87 @@ All notable public reference-release changes should be recorded here.
   finished. That behaviour is deliberately untouched here — changing it halfway
   would have let a stranger map an unlaunched club's page list by seeing which
   addresses answered differently — and is being decided separately (#2420).
+- **A young member can now be recorded as a parent (#2282).** A 16 or 17 year
+  old can genuinely be a parent, and until now the club simply could not write
+  that down: adding a dependant refused with "Dependants can only be linked
+  under active adult members", and the search never offered a non-adult, so the
+  only options were to leave the child looking parentless or to attach them to a
+  grandparent. Both record the wrong thing. **The family relationship can now be
+  recorded at any age.**
+  **Nothing about responsibility has moved.** Being someone's recorded parent
+  never granted the powers people assume it does — booking on another member's
+  behalf, editing or confirming their details, answering a consent request for
+  them, and billing are all decided by family-group membership plus being an
+  active adult with a login, and none of them looks at the parent link at all.
+  Those rules are untouched. In particular the club's **contact of record** for
+  a child's mail is still an adult: a dependant added under a young parent has
+  their notifications routed on up to the nearest adult in the family, usually
+  the young parent's own parent, and the member's page now says on screen which
+  adult that is *before* you add the dependant. The two "link" dialogs say it
+  too, next to the notification-recipient list — that list names *parents*, and
+  the person the mail actually reaches can be someone further up, which the
+  screen used not to mention. If no adult in the family has a real email
+  address, adding the dependant is refused with that reason rather than quietly
+  leaving the child unreachable.
+  **Organisation and school accounts are not people**, so they cannot be
+  recorded as anyone's parent — they were never offered before, and are not
+  offered now.
+  **The dead ends are gone too.** "Add Dependent" used to disappear entirely on
+  a member who could not have one, teaching an admin nothing; on an inactive or
+  archived member it stayed and then failed on save. It is now always shown, and
+  disabled with the reason — "This member is inactive — reactivate them to add
+  dependents" — on both the *create new* and *link existing* paths, with the
+  reason read out to screen readers alongside the control rather than merely
+  sitting beside it. Where a dependant genuinely cannot be added because no
+  adult in the family can receive club email, the dialog now says so *and*
+  points at the way that does work, instead of letting the save fail. And the
+  copy that claimed only adults can manage dependants is gone, because that is
+  no longer the rule.
+  Two smaller corrections ride along: the age-up job's "your child is becoming
+  an adult" notice now goes to the family's actual contact of record instead of
+  whoever the parent link names, and creating a member under a parent without
+  asking for inherited email no longer records them as inheriting from nobody.
+- **Clubs that had saved their own email wording stop emailing our editing notes
+  (#2269).** Older releases shipped little square-bracketed notes inside the
+  built-in email wording — things like `Door code: {{doorCode}} [only when a door
+  code is set]`. They were written for whoever was reading the template, but
+  emails fill in `{{tokens}}` and copy everything else through exactly as typed,
+  so those notes were being sent to members word for word. Earlier fixes cleaned
+  the built-in wording, which quietly fixed every club that had not customised
+  the message. A club that had **saved its own copy** of a message kept its copy,
+  and so kept the notes, for ever. This release repairs those saved copies on
+  upgrade. It matches the **exact** notes this project shipped — not anything
+  that merely looks like one — and leaves the rest of your wording byte for byte
+  as it was. Your own square-bracketed text is never touched, even when it reads
+  like ours (`[when you are 30 minutes away]` is your wording, and it stays);
+  such text keeps being flagged in the admin screen for a person to decide
+  about, rather than deleted by a script. The trade we chose deliberately: if
+  one of our notes was retyped or re-spaced by an admin at some point, the
+  repair leaves it alone rather than risk deleting something you meant, and the
+  admin screen keeps flagging it. Every message the repair changes is recorded
+  in the audit log with the whole before and after, so a club can see exactly
+  what we changed and, with an administrator's help, restore any of it.
+  **Every message the repair touched is named on screen afterwards.** Some of
+  those notes were the only thing marking a line as conditional — `Payment has
+  been processed successfully.` was our wording, with `[only when the booking is
+  already paid]` beside it — so once the note goes, that line sends every time,
+  including on a booking that still owes money. **Admin → Email messages** lists
+  each repaired message, the notes removed and the lines they were attached to,
+  so an admin can read them and fix anything that no longer makes sense. Saving
+  the message clears the notice. **And Restore Default now keeps a full copy.**
+  It still deletes your wording and still cannot be undone from that screen, but
+  the subject and body it deletes are written to the audit log in full — not an
+  extract — so an administrator can read them back.
+  **And the editor now tells you when your saved wording has fallen behind.**
+  **Admin → Email messages** names any message whose saved copy no longer shows
+  something that message is required to tell the recipient — most often a
+  booking confirmation saved before the promo explanation moved into its own
+  token, which now shows a subtotal and a total with nothing in between to
+  explain the difference. Open that message and **Show differences** lays your
+  saved copy beside the current built-in wording line by line, so you can patch
+  your own words or restore the default knowing exactly what you would be giving
+  up. Wording that simply *reads* differently is reported as a plain difference
+  and never as a problem — that is what saving your own copy is for.
 - **The public site no longer advertises guest bookings (#2421).** The
   signed-out help corpus previously answered "Can I stay without being a
   member?" with "Yes", and the sign-in page carried a *Request a booking
@@ -326,6 +407,47 @@ All notable public reference-release changes should be recorded here.
   dashboard finally renders the additional-payment split it had been quietly
   computing all along.
 
+- **Xero setup no longer gets stuck on "Confirming the organisation name…"
+  (#2394).** After connecting Xero, the setup wizard fetches your organisation's
+  name so you can check you picked the right one. That fetch happened exactly
+  once, and if it failed — because Xero was momentarily busy, briefly
+  unreachable, or the connection needed re-authorising — the page simply sat on
+  "Confirming the organisation name…" with no explanation, no way to retry, and
+  no way forward. The only escape was guessing that a reload might help.
+
+  The step now tells you what actually happened, in the terms that decide what
+  you should do about it, and offers a **Try again** button wherever pressing it
+  could genuinely help — including when Xero's daily limit has been reached,
+  since that limit can clear while you are still on the page. If Xero needs
+  re-authorising, it says so and points at Disconnect and Connect, and offers no
+  button, because retrying would never have worked. If the daily limit was hit
+  it says when that clears — midnight UTC, about midday in New Zealand — so you
+  can judge whether to wait or come back tomorrow. If your sign-in has simply
+  expired it tells you to sign in again rather than blaming your permissions,
+  and if your admin role really isn't allowed to read the organisation it says
+  that instead of pretending a retry might fix it. Each attempt is stamped
+  ("Checked 3 times, most recently at 2:32 pm") so a repeat failure is visible
+  rather than a silent flicker.
+
+  Nothing retries on its own, deliberately. Each Xero connection has a limited
+  number of calls per day, and hammering a limit that has already been hit only
+  makes it last longer — so apart from one fresh check when you come back from
+  authorising Xero (where the organisation may have just changed), a live check
+  happens only when you press the button. That check can also no longer put the
+  rest of the Xero integration on hold: it used to be able to trip the app-wide
+  "Xero looks unwell, pause everything" guard that stops invoicing and syncing
+  for a couple of minutes, and a button inviting you to press it during an
+  outage should never be able to do that.
+
+  Two related gaps closed at the same time. If Xero refused the authorisation
+  itself, the wizard used to show only "Not Connected" with no hint that
+  anything had gone wrong; it now says the connection attempt failed and what to
+  do about it. (It deliberately does not quote Xero's own wording back at you —
+  that text arrives through the browser and cannot be trusted to be Xero's.) And
+  a connected organisation whose name we could not re-check no longer shows a
+  green "all set" tick: it now says plainly that the name is the last one we
+  saw, not a confirmation — which is what you would see if the club revoked the
+  app inside Xero.
 - **A refused save no longer blames the email address when the email address is
   not the problem, and switching a family's login holder now explains an email
   clash (#2385).** Only one member per email address can sign in — that is why a

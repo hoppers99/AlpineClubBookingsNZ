@@ -119,12 +119,41 @@ async function resolveAgeUpParentEmailHandoff(
   }
 
   if (member.inheritParentEmail && member.parentMemberId) {
-    return {
-      reason: "legacyParentEmail",
-      recipientEmail: member.parent?.email ?? member.email,
-      recipientName: sourceFullName(member.parent),
-      sourceMemberId: member.parentMemberId,
-    };
+    // #2282: RESOLVED, not read one hop. This branch used to mail
+    // `member.parent.email` outright. That was safe only while a parent link
+    // implied an active adult — the rule this issue removed — so it could now
+    // hand a youth's age-up notice to a 16-year-old parent, to an archived
+    // member, or to a club-internal placeholder address that `sendEmail` drops
+    // or that hard-bounces. The same walk every WRITE path uses answers who the
+    // family's contact of record actually is, and when it answers "nobody" this
+    // branch declines rather than mailing an address nobody reads: the
+    // shared-login fallback below is then given its chance.
+    const { sourceId } = await resolveInheritedEmailSourceId(
+      prisma,
+      member.parentMemberId,
+    );
+    if (sourceId) {
+      const source =
+        sourceId === member.parentMemberId
+          ? member.parent
+          : await prisma.member.findUnique({
+              where: { id: sourceId },
+              select: {
+                id: true,
+                email: true,
+                firstName: true,
+                lastName: true,
+              },
+            });
+      if (source) {
+        return {
+          reason: "legacyParentEmail",
+          recipientEmail: source.email,
+          recipientName: sourceFullName(source),
+          sourceMemberId: source.id,
+        };
+      }
+    }
   }
 
   const sharedLoginMember = await prisma.member.findFirst({

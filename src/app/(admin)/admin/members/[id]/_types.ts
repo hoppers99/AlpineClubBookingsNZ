@@ -224,6 +224,20 @@ export interface MemberDetail {
     lastName: string;
     email: string;
   } | null;
+  /**
+   * #2282: the adult a dependant added under THIS member would actually inherit
+   * their club email from — this member when they are a usable source, an
+   * ancestor when they are not (a young parent, or anyone with only a
+   * placeholder address), and `null` when nobody in reach can receive mail.
+   * Server-resolved with the same walk the write paths use, so the page can say
+   * where the child's mail will go before the admin commits to it.
+   */
+  dependentEmailSource: {
+    id: string;
+    firstName: string;
+    lastName: string;
+    email: string;
+  } | null;
   familyGroups: { id: string; name: string | null }[];
   // Per-member billing family selection + club billing mode (#1932, E6).
   billingFamilyGroupId: string | null;
