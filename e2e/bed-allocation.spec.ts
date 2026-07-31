@@ -407,6 +407,19 @@ test("existing-chip pointer and keyboard drops preserve dates, while keyboard ca
         ) + 4;
       for (let step = 0; step < maxSteps; step += 1) {
         await page.keyboard.press(direction);
+        // DndContext publishes the keyboard coordinate first and derives its
+        // closest-center collision in the following render/effect cycle. Let
+        // that collision settle before deciding whether to send another arrow;
+        // an immediate getter can see A2 from the prior key while a queued key
+        // is already advancing the drag to A3.
+        await page.evaluate(
+          () =>
+            new Promise<void>((resolve) => {
+              requestAnimationFrame(() =>
+                requestAnimationFrame(() => resolve()),
+              );
+            }),
+        );
         if (await preview().isVisible().catch(() => false)) return;
       }
       throw new Error(
