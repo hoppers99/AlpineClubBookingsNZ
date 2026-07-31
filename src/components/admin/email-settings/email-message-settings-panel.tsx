@@ -670,22 +670,31 @@ export function EmailMessageSettingsPanel() {
             differs is stated flatly and paired with the diff, because that is
             what an override IS; only the objectively-wrong reasons are dressed
             as a warning. */}
-        {currentTemplate?.override && currentTemplate.staleContent?.differsFromDefault ? (
+        {currentTemplate?.override &&
+        currentTemplate.staleContent &&
+        (currentTemplate.staleContent.differsFromDefault ||
+          currentTemplate.staleContent.reasons.length > 0) ? (
           <div className="space-y-3 rounded-md border border-border bg-muted/40 p-3 text-sm">
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="text-muted-foreground">
-                Your saved copy of this message differs from the built-in
-                wording.
-              </p>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setShowDiff((current) => !current)}
-              >
-                <GitCompareArrows className="h-4 w-4" />
-                {showDiff ? "Hide differences" : "Show differences"}
-              </Button>
-            </div>
+            {/* A reason always implies a difference today (the built-in wording
+                cannot itself carry a bracket note or a retired token), but the
+                two are rendered independently so a future rule that does not
+                imply one still shows its reason instead of nothing. */}
+            {currentTemplate.staleContent.differsFromDefault ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-muted-foreground">
+                  Your saved copy of this message differs from the built-in
+                  wording.
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowDiff((current) => !current)}
+                >
+                  <GitCompareArrows className="h-4 w-4" />
+                  {showDiff ? "Hide differences" : "Show differences"}
+                </Button>
+              </div>
+            ) : null}
             {staleContentSentences(currentTemplate.staleContent).map(
               (sentence) => (
                 <p
