@@ -4,6 +4,45 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Admins can now cancel the membership of a member who has no login of
+  their own (#2354).** Opening such a member's admin page used to show no
+  **Request Cancellation** action at all — not greyed out, simply absent —
+  so their membership looked uncancellable. Most family dependants are in
+  exactly this position, as is any adult the club records without giving
+  them a login. The cause was the page borrowing a permissions test to
+  decide who is cancellable: a member without a login holds no permissions
+  by design, so the test always failed for them, while the cancellation
+  machinery behind it has always accepted them — an admin-raised request
+  is confirmed on the member's behalf and goes straight to the review
+  queue, exactly as it does for anyone else. The page now asks the same
+  eligibility question the server enforces — is this an active,
+  not-yet-cancelled, not-archived member — so the action appears for
+  exactly the members it can act on.
+
+
+- **Self-hosted sites now use whatever processing power the server has free,
+  instead of being rationed to a fraction of one core (#2351).** The standard
+  deployment recipe used to cap each app container at eight-tenths of a
+  processor core. That sounded like plenty, but it isn't: the app rebuilds a
+  page's optimised machinery whenever that page hasn't been visited for about
+  ten seconds, and that rebuild wants a few seconds of a whole core — more
+  than one core if available, since it splits the work across them. Under the
+  old cap the rebuild was rationed into small slices, and on a quiet club site
+  — where almost every visit is the first one in a while — that turned into
+  four-to-thirteen-second page loads that looked like a slow server or
+  database but were neither (a live deployment measured exactly this, and
+  dropped from over five seconds to about 1.4 the moment the cap was lifted).
+  The recipe now sets no cap at all, so pages can spread across every core
+  the server has spare — a one-core budget server and an eight-core machine
+  both simply use what they have — while the database and the web proxy
+  still get a fair, equal share of the processor whenever things genuinely
+  compete for it. The deployment guide gains an
+  "App CPU sizing" section explaining the arrangement, the measurements
+  behind it, how to reimpose a hard cap on a shared server, and two
+  mitigations for genuinely starved machines (a keep-warm pinger, and the
+  planned pre-rendered public pages of #2352).
+
+
 - **A custodian can now be given a bed for the season without booking it
   (#2286).** Clubs that keep someone on site all winter had no honest way to
   record it: the custodian had to be given a real booking, usually with a
