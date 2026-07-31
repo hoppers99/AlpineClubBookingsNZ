@@ -190,6 +190,21 @@ vi.mock("@/lib/booking-member-night-conflicts", async (importOriginal) => {
   };
 });
 
+// MG4 (#2309): the pipeline reads the member-guest module and policy before it
+// opens its transaction. Default ON so the consent tests below exercise the
+// planner rather than the module flag; the module-off case sets it false.
+vi.mock("@/lib/admin-modules", () => ({
+  isEffectiveModuleEnabled: vi.fn().mockResolvedValue(true),
+}));
+vi.mock("@/lib/member-guest-settings", () => ({
+  loadMemberGuestSettings: vi.fn().mockResolvedValue({
+    approvalRequired: true,
+    pendingHoldExpiryDays: 7,
+    openMemberSearchEnabled: false,
+    openMemberSearchIncludesMinors: false,
+  }),
+}));
+
 import { prisma } from "@/lib/prisma";
 import {
   createBookingRequestQuote,
@@ -206,7 +221,9 @@ import {
 } from "@/lib/booking-member-night-conflicts";
 import { checkCapacityForGuestRanges } from "@/lib/capacity";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
 
+const mockedModuleEnabled = vi.mocked(isEffectiveModuleEnabled);
 const mockedAssertNoConflicts = vi.mocked(assertNoBookingMemberNightConflicts);
 const mockedCheckCapacity = vi.mocked(checkCapacityForGuestRanges);
 const mockedReconcile = vi.mocked(reconcileBedAllocationsForBooking);
@@ -262,6 +279,7 @@ function baseRequest(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockedModuleEnabled.mockResolvedValue(true);
   mocks.mockGetSettings.mockResolvedValue({
     showPricingToNonMembers: false,
     quoteResponseTtlDays: 14,
@@ -543,7 +561,12 @@ describe("sendBookingRequestQuote", () => {
       archivedAt: null,
       active: true,
     } as never);
-    vi.mocked(prisma.booking.create).mockResolvedValue({ id: "held-1" } as never);
+    vi.mocked(prisma.booking.create).mockResolvedValue({
+      id: "held-1",
+      // MG4 (#2309): the create selects its guest rows back, so the pipeline can
+      // match its notification plan to ids that only exist after the write.
+      guests: [],
+    } as never);
     vi.mocked(prisma.bookingRequest.update).mockResolvedValue({} as never);
     mockSendQuoteEmail.mockResolvedValue(undefined);
 
@@ -1257,7 +1280,12 @@ describe("holdBookingRequestSlots owner role", () => {
   beforeEach(() => {
     vi.mocked(prisma.bookingRequest.updateMany).mockResolvedValue({ count: 1 } as never);
     vi.mocked(prisma.member.create).mockResolvedValue({ id: "owner-1" } as never);
-    vi.mocked(prisma.booking.create).mockResolvedValue({ id: "held-1" } as never);
+    vi.mocked(prisma.booking.create).mockResolvedValue({
+      id: "held-1",
+      // MG4 (#2309): the create selects its guest rows back, so the pipeline can
+      // match its notification plan to ids that only exist after the write.
+      guests: [],
+    } as never);
     vi.mocked(prisma.bookingRequest.update).mockResolvedValue({} as never);
     // Default to no member-night conflict; individual tests override to reject.
     mockedAssertNoConflicts.mockResolvedValue(undefined);
@@ -1733,5 +1761,129 @@ describe("findLinkedGuestMemberNightConflicts (advisory pre-check #1226)", () =>
         links: [{ guestIndex: 0, memberId: "member-42" }],
       })
     ).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+/**
+ * MG4-D-b (#2309): a capacity hold that links real members to a stranger's
+ * booking.
+ *
+ * The pipeline was the last write path that could do this silently. These pin
+ * the two halves of the decision: the row carries a consent record naming the
+ * officer who stood behind it, and the member is actually told.
+ */
+describe("holdBookingRequestSlots — member-guest consent (MG4-D-b)", () => {
+  beforeEach(() => {
+    vi.mocked(prisma.bookingRequest.updateMany).mockResolvedValue({
+      count: 1,
+    } as never);
+    vi.mocked(prisma.member.create).mockResolvedValue({ id: "owner-1" } as never);
+    vi.mocked(prisma.bookingRequest.update).mockResolvedValue({} as never);
+    mockedAssertNoConflicts.mockResolvedValue(undefined);
+  });
+
+  function heldWithGuests() {
+    vi.mocked(prisma.booking.create).mockResolvedValue({
+      id: "held-1",
+      guests: [
+        { id: "bg-1", memberId: null },
+        { id: "bg-2", memberId: "m-sam" },
+      ],
+    } as never);
+  }
+
+  function requestLinking(memberId: string) {
+    vi.mocked(prisma.bookingRequest.findUnique).mockResolvedValue(
+      baseRequest({
+        type: BookingRequestType.GENERAL,
+        priceCents: 12000,
+        quotes: [],
+        // The officer linked the SECOND guest row to a real member account at
+        // quote time — the only way this data ever appears.
+        linkedGuestMembers: [{ guestIndex: 1, memberId }],
+      }) as never,
+    );
+  }
+
+  it("stamps a linked member CONFIRMED against the holding officer, never PENDING", async () => {
+    // MG4-D-b is explicit: the pipeline follows the ADMIN rule. A PENDING row
+    // here would hold a bed on a booking nobody has agreed to and would need an
+    // answer from somebody who never asked for the enquiry in the first place.
+    heldWithGuests();
+    requestLinking("m-sam");
+
+    await holdBookingRequestSlots({ requestId: "req-1", adminMemberId: "admin-1" });
+
+    const bookingArgs = vi.mocked(prisma.booking.create).mock.calls[0][0]
+      .data as { guests: { create: Array<Record<string, unknown>> } };
+    const rows = bookingArgs.guests.create;
+    const linked = rows.find((row) => row.memberId === "m-sam");
+    expect(linked).toMatchObject({
+      consentStatus: "CONFIRMED",
+      consentRequestedAt: null,
+      consentRespondedByMemberId: "admin-1",
+      consentExpiresAt: null,
+    });
+    // The unlinked guest is a free-text name with no member behind it, so it
+    // carries no consent record at all — unchanged from before MG4.
+    const unlinked = rows.find((row) => !row.memberId);
+    expect(unlinked).not.toHaveProperty("consentStatus");
+    // Neither planning field is ever a database column.
+    expect(linked).not.toHaveProperty("memberGuestConsent");
+    expect(linked).not.toHaveProperty("crossFamilyMemberGuest");
+  });
+
+  it("computes the boundary against the HELD BOOKING'S OWNER, not the acting officer", async () => {
+    // The owner is the non-login contact created moments earlier. Computing it
+    // against the officer instead would classify by the officer's household,
+    // which has nothing to do with this booking.
+    heldWithGuests();
+    requestLinking("m-sam");
+
+    await holdBookingRequestSlots({ requestId: "req-1", adminMemberId: "admin-1" });
+
+    expect(vi.mocked(prisma.familyGroupMember.findMany)).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { memberId: "owner-1" } }),
+    );
+  });
+
+  it("writes no consent record while the club has the module off", async () => {
+    // MG1's promise: a club that never opted in sees no change whatsoever. The
+    // linked member still lands on the booking exactly as they always did.
+    mockedModuleEnabled.mockResolvedValue(false);
+    heldWithGuests();
+    requestLinking("m-sam");
+
+    await holdBookingRequestSlots({ requestId: "req-1", adminMemberId: "admin-1" });
+
+    const bookingArgs = vi.mocked(prisma.booking.create).mock.calls[0][0]
+      .data as { guests: { create: Array<Record<string, unknown>> } };
+    for (const row of bookingArgs.guests.create) {
+      expect(row).not.toHaveProperty("consentStatus");
+    }
+  });
+
+  it("owes nobody anything when no guest row names a member", async () => {
+    // The overwhelming majority of booking requests. Nothing is planned, so the
+    // dispatcher is never even imported.
+    vi.mocked(prisma.booking.create).mockResolvedValue({
+      id: "held-1",
+      guests: [{ id: "bg-1", memberId: null }],
+    } as never);
+    vi.mocked(prisma.bookingRequest.findUnique).mockResolvedValue(
+      baseRequest({
+        type: BookingRequestType.GENERAL,
+        priceCents: 12000,
+        quotes: [],
+      }) as never,
+    );
+
+    await holdBookingRequestSlots({ requestId: "req-1", adminMemberId: "admin-1" });
+
+    const bookingArgs = vi.mocked(prisma.booking.create).mock.calls[0][0]
+      .data as { guests: { create: Array<Record<string, unknown>> } };
+    for (const row of bookingArgs.guests.create) {
+      expect(row).not.toHaveProperty("consentStatus");
+    }
   });
 });
