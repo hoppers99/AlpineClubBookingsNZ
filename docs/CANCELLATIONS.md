@@ -30,9 +30,12 @@ booking-request contact records** — the guest contact minted by a public booki
 request, and the school owner contact and teacher records minted by a school
 booking request. Those are refused silently on the admin member page: no
 cancellation action is offered there, and there is nothing to explain, because
-there is no membership being withheld. The self-service route is the one place
-they are told, because the kiosk login can open its own profile and ask — there
-it says plainly that the login holds no membership of its own.
+there is no membership being withheld. The member-raised route answers in
+words instead — it says plainly that the login holds no membership of its own —
+but that answer is reachable only through the member cancellation API, never
+through the profile page: the authenticated layout sends a lodge-only login
+straight to `/lodge/kiosk`, so the kiosk can never render the panel. The wording
+exists so that a direct call gets a truthful reason rather than a bare refusal.
 
 "The lodge kiosk device login" means a record whose *whole* account type is the
 kiosk — the one the member page's User Type shows as **Lodge (kiosk account)**.
