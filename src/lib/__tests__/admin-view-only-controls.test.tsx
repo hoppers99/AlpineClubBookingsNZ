@@ -2857,9 +2857,21 @@ describe("MemberDependentsCard view-only gating (#1997, membership)", () => {
   });
 
   const props = {
-    member: { id: "m1", firstName: "Pat", lastName: "Kea", dependents: [] },
-    isAdultMember: true,
-    memberIsArchived: false,
+    // #2282: `isAdultMember` / `memberIsArchived` are gone as props — the card
+    // derives the rule from the member row itself, because age no longer gates
+    // recording parentage and only "is this record current?" remains. The
+    // fixture therefore has to be a realistic row: an `active` flag absent from
+    // it now reads as an inactive member and disables the control for a reason
+    // that has nothing to do with the permission this suite is testing.
+    member: {
+      id: "m1",
+      firstName: "Pat",
+      lastName: "Kea",
+      active: true,
+      archivedAt: null,
+      dependents: [],
+      dependentEmailSource: null,
+    },
     currentMemberPath: "/admin/members/m1",
     unlinkingDependentId: null,
     onOpenDependentDialog: vi.fn(),

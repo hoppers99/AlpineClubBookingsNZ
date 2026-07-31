@@ -13,6 +13,12 @@ vi.mock("@/lib/prisma", () => ({
       update: vi.fn(),
       updateMany: vi.fn(),
       count: vi.fn(),
+      // #2282: the member detail GET resolves which ADULT a dependant added
+      // under this member would inherit email from, using the same bounded
+      // family walk the write paths use. The walk reads "these ids" with
+      // `findMany`; defaulted to no rows so a fixture that says nothing about
+      // ancestry means exactly that, rather than crashing the walk.
+      findMany: vi.fn().mockResolvedValue([]),
     },
     booking: { count: vi.fn().mockResolvedValue(0), findMany: vi.fn(), aggregate: vi.fn() },
     bookingGuest: {

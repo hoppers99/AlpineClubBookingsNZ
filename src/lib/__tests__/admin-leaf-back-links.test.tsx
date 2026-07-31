@@ -185,11 +185,14 @@ describe("admin drill-down leaf back links", () => {
             lastName: "Lovelace",
             email: "ada@example.test",
             accessRoles: [],
+            // #2282: the header's Add Dependent control now reads the member's
+            // own `active`/`archivedAt` instead of taking `isAdultMember` /
+            // `memberIsArchived` props, so the fixture states them here.
+            active: true,
+            archivedAt: null,
           },
           backHref: "/admin/members",
           backLabel: "Members",
-          isAdultMember: true,
-          memberIsArchived: false,
           pendingDeleteRequest: undefined,
           xeroConnected: null,
           xeroPushing: false,
