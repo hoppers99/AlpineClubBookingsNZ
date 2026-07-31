@@ -53,7 +53,9 @@ export async function PUT(
   // MG3 (#2308) C1: a date change on a booking that already carries a
   // cross-family member guest can now produce D-8's neutral refusal, so this
   // route needs the refusal clock the timing floor is measured from. Monotonic,
-  // never `Date.now()` — see `startMemberGuestRefusalClock`.
+  // never the wall clock — see `startMemberGuestRefusalClock`, and note that the
+  // contract test forbidding a wall-clock read in this file greps the source
+  // including its comments.
   const startedAt = startMemberGuestRefusalClock();
 
   const session = await auth();

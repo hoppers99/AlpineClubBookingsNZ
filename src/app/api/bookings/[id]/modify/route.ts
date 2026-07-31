@@ -121,9 +121,11 @@ export async function PUT(
   // refusal is throttled, audited, and held to the timing floor. It carried none
   // of them until the privacy review found it (H2).
   //
-  // NOT `Date.now()`: `review-findings-contracts.test.ts` forbids a clock read in
-  // this file outright, because a booking-modification idempotency key built from
-  // one would mint a fresh Stripe key on every retry. See the note on
+  // It reads a MONOTONIC clock, never the wall clock:
+  // `review-findings-contracts.test.ts` forbids a wall-clock read in this file
+  // outright — as a blunt source grep, comments included, which is exactly how
+  // this comment first failed it — because a booking-modification idempotency key
+  // built from one would mint a fresh Stripe key on every retry. See the note on
   // `startMemberGuestRefusalClock`.
   const startedAt = startMemberGuestRefusalClock();
 
