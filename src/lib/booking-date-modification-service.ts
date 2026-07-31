@@ -46,6 +46,7 @@ import {
   type LoadedBookingForModify,
 } from "@/lib/booking-modify";
 import { assertNoBookingMemberNightConflicts } from "@/lib/booking-member-night-conflicts";
+import { markCrossFamilyGuestsOnBooking } from "@/lib/member-guest-add-policy";
 import {
   clampAppliedCreditToBookingPrice,
   createBookingModificationCredit,
@@ -490,6 +491,9 @@ export async function modifyBookingDates({
       ownerMemberId: booking.memberId,
       guests: guestsForPricing,
       seasonYear,
+      // Finding 2 (privacy re-review of MG3 #2308) — see
+      // `getMembershipTypeBookingPolicyBlocks`.
+      skipAuthorization: actor.role === "ADMIN",
     });
 
     const groupDiscountSetting = await tx.groupDiscountSetting.findUnique({
@@ -507,6 +511,7 @@ export async function modifyBookingDates({
         // nights kept across the date change stay at their locked prices.
         groupDiscount: toGroupDiscountConfig(groupDiscountSetting),
         seasonYear,
+        skipAuthorization: actor.role === "ADMIN",
       });
     } catch (error) {
       if (error instanceof MembershipTypeBookingPolicyError) {
@@ -527,17 +532,29 @@ export async function modifyBookingDates({
     // under the per-lodge acquireLodgeCapacityLock taken above and before any
     // BookingGuest/BookingGuestNight/Booking writes, so a conflict rolls back
     // with nothing written.
-    await assertNoBookingMemberNightConflicts(tx, {
-      actorMemberId: actor.id,
-      actorRole: actor.role,
-      checkIn: newCheckIn,
-      checkOut: newCheckOut,
-      guests: booking.guests.map((g, index) => ({
+    //
+    // C1 (privacy review of MG3 #2308): every guest here is an EXISTING one, so
+    // none of them carries the add-time cross-family marker and the guard would
+    // otherwise answer a stranger's occupancy in full on every date change. Mark
+    // the party from the live family boundary first — see
+    // `markCrossFamilyGuestsOnBooking`.
+    const guestsForMemberNightGuard = await markCrossFamilyGuestsOnBooking(
+      tx,
+      booking.memberId,
+      booking.guests.map((g, index) => ({
         memberId: g.memberId ?? null,
         stayStart: newCheckIn,
         stayEnd: newCheckOut,
         nights: priceBreakdown.guests[index].nightDates ?? [],
       })),
+      { skipAuthorization: actor.role === "ADMIN", bookingId },
+    );
+    await assertNoBookingMemberNightConflicts(tx, {
+      actorMemberId: actor.id,
+      actorRole: actor.role,
+      checkIn: newCheckIn,
+      checkOut: newCheckOut,
+      guests: guestsForMemberNightGuard,
       excludeBookingId: bookingId,
     });
 
@@ -1379,12 +1396,24 @@ export async function adminShiftBookingDates({
       capacityOverridden = true;
     }
 
+    // C1 (privacy re-review of MG3 #2308, LOW-3). The file's SECOND person-night
+    // guard call, and the source contract now checks every one rather than only
+    // the first. `adminShiftBookingDates` is admin-only — the call below hard-codes
+    // `actorRole: "ADMIN"` — so this marking is a no-op that costs no query, but
+    // "the second caller happens to be admin-only" is a fact about today's
+    // routing, and an unmarked party is exactly the silent read-out C1 closed.
+    const capacityRangesForGuard = await markCrossFamilyGuestsOnBooking(
+      tx,
+      booking.memberId,
+      capacityRanges,
+      { skipAuthorization: true, bookingId },
+    );
     await assertNoBookingMemberNightConflicts(tx, {
       actorMemberId: actor.id,
       actorRole: "ADMIN",
       checkIn: newCheckIn,
       checkOut: newCheckOut,
-      guests: capacityRanges,
+      guests: capacityRangesForGuard,
       excludeBookingId: bookingId,
     });
 

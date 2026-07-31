@@ -11,6 +11,7 @@ import {
 import {
   MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE,
   MEMBER_GUEST_CROSS_FAMILY_REFUSAL_STATUS,
+  MEMBER_GUEST_NOT_ADDABLE_CODE,
 } from "@/lib/member-guest-refusal";
 
 export type BookingGuestPricingInput = {
@@ -34,7 +35,7 @@ type BookingGuestAgeTierSource = {
   member?: { ageTier: AgeTier } | null;
 };
 
-type BookingGuestLookupDb =
+export type BookingGuestLookupDb =
   | Pick<PrismaClient, "familyGroupMember" | "member">
   | Pick<Prisma.TransactionClient, "familyGroupMember" | "member">;
 
@@ -70,12 +71,72 @@ export type LinkedBookingMember = {
 };
 
 export class BookingGuestValidationError extends Error {
+  /**
+   * The beyond-family members this refusal was about, when it is one of D-8's
+   * COLLAPSED cross-family refusals (#2388, MG3 #2308) — otherwise undefined.
+   *
+   * It rides on the error rather than being recomputed by each route because the
+   * refusal is thrown from three different depths (member resolution, the profile
+   * gate, and the callers' own subscription and person-night checks) and only the
+   * thrower knows which target it was about. A route that had to work it out
+   * again would either duplicate the family-boundary computation or guess — and
+   * guessing wrong writes an audit row naming the wrong member.
+   *
+   * Presence of this field is also what tells a route "this was a collapsed
+   * cross-family refusal", which is what triggers the audit row, the throttle
+   * accounting and the response-timing floor. An ordinary validation error
+   * carries none of that machinery.
+   */
+  public crossFamilyMemberIds?: readonly string[];
+
+  /**
+   * A machine code for a refusal whose MESSAGE must not change but whose
+   * member-facing wording has to (MG3 #2308, correctness review MEDIUM-4).
+   *
+   * The widening refusal is the case: MG1/MG2 pin its text byte-for-byte, so a
+   * club that has not opted in sees exactly the refusal it always saw and no
+   * error text anywhere mentions member guests. That text is developer-facing
+   * ("Invalid guest member reference"), and MG3's finder made it reachable by an
+   * ordinary member for the first time. The code lets the client say something
+   * actionable without the server rewording anything.
+   */
+  public code?: string;
+
   constructor(
     message: string,
-    public status: number
+    public status: number,
+    options?: { crossFamilyMemberIds?: readonly string[]; code?: string }
   ) {
     super(message);
+    this.crossFamilyMemberIds = options?.crossFamilyMemberIds;
+    this.code = options?.code;
   }
+}
+
+/**
+ * The refusal a member gets for naming a member id they are not allowed to book
+ * — today, a club that has the member-guest module off.
+ *
+ * Says nothing a caller did not already know: they sent the id, and they are
+ * being told it is not usable. It deliberately does NOT say whether the member
+ * exists, nor that a member-guest feature exists at all.
+ */
+export const GUEST_MEMBER_NOT_ALLOWED_CODE = "GUEST_MEMBER_NOT_ALLOWED";
+
+/**
+ * Build D-8's one collapsed refusal, tagged with the targets it concerned.
+ *
+ * Every collapse site goes through this so the message, the status and the audit
+ * tag can never be assembled three slightly different ways.
+ */
+export function memberGuestCrossFamilyRefusal(
+  crossFamilyMemberIds: readonly string[],
+): BookingGuestValidationError {
+  return new BookingGuestValidationError(
+    MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE,
+    MEMBER_GUEST_CROSS_FAMILY_REFUSAL_STATUS,
+    { crossFamilyMemberIds },
+  );
 }
 
 const GUEST_PROFILE_REQUIRED_ERROR_CODE = "GUEST_PROFILE_REQUIRED";
@@ -138,11 +199,30 @@ function skipsMemberProfileGateForAdminOnBehalf(
   return context?.actorRole === "ADMIN" && Boolean(context.onBehalfOfMemberId);
 }
 
+/**
+ * D-8's collapsed cross-family refusal code — re-exported from the import-free
+ * leaf it now lives in, so the two CLIENT components that recognise it do not
+ * have to pull this server module into their bundle to get a string. See
+ * `member-guest-refusal.ts` for the note.
+ */
+export { MEMBER_GUEST_NOT_ADDABLE_CODE };
+
 export function getBookingGuestValidationErrorResponse(
   error: BookingGuestValidationError
 ) {
   if (error instanceof BookingGuestProfileRequiredError) {
     return error.toResponseBody();
+  }
+
+  if (error.crossFamilyMemberIds && error.crossFamilyMemberIds.length > 0) {
+    // The ids themselves are NEVER sent — they are the audit trail's business,
+    // not the caller's, and echoing them back would confirm which of several
+    // requested members the club refused to discuss.
+    return { code: MEMBER_GUEST_NOT_ADDABLE_CODE, error: error.message };
+  }
+
+  if (error.code) {
+    return { code: error.code, error: error.message };
   }
 
   return { error: error.message };
@@ -236,7 +316,29 @@ export async function resolveLinkedBookingMembersWithBoundary(
   db: BookingGuestLookupDb,
   bookingMemberId: string,
   memberIds: Array<string | null | undefined>,
-  options?: { skipAuthorization?: boolean; memberGuestWideningEnabled?: boolean }
+  options?: {
+    skipAuthorization?: boolean;
+    memberGuestWideningEnabled?: boolean;
+    /**
+     * Runs the moment the family boundary is known and BEFORE any member record
+     * is read. Throw from it to abort the resolve.
+     *
+     * WHY THIS HOOK EXISTS (privacy review of MG3 #2308, finding H1). The #2388
+     * throttle used to be applied by the routes AFTER this function returned,
+     * and that ordering turned the mitigation into the very existence oracle its
+     * docblock says it avoids. `resolveLinkedMemberRecords` throws first for an
+     * id with no active member behind it, and on that path the route's refusal
+     * handler spends the throttle budget but DISCARDS the 429 and answers with
+     * D-8's neutral 403. So once the burst budget was gone, a real bookable
+     * member answered 429 and a non-existent, inactive or age-exempt one
+     * answered 403 — one bit per request, for free.
+     *
+     * Spending the budget here makes both branches answer identically, because
+     * nothing has yet been read about the member: the boundary is computed
+     * purely from the BOOKER's family groups.
+     */
+    onBoundaryResolved?: (boundary: MemberGuestBoundaryState) => Promise<void>;
+  }
 ): Promise<ResolvedLinkedBookingMembers> {
   const normalizedMemberIds = normalizeMemberIds(memberIds);
 
@@ -255,6 +357,12 @@ export async function resolveLinkedBookingMembersWithBoundary(
     normalizedMemberIds,
   );
 
+  // Before the widening refusal and before any member row is read — see the
+  // note on the option.
+  if (options?.onBoundaryResolved) {
+    await options.onBoundaryResolved(boundary);
+  }
+
   if (!options?.skipAuthorization) {
     // MG2 (#2307) turns the feature on: with the memberGuests module enabled a
     // beyond-family ACTIVE member resolves here, and the boundary above is what
@@ -271,11 +379,26 @@ export async function resolveLinkedBookingMembersWithBoundary(
       options?.memberGuestWideningEnabled !== true &&
       boundary.beyondFamilyMemberIds.length > 0
     ) {
-      throw new BookingGuestValidationError("Invalid guest member reference", 403);
+      throw new BookingGuestValidationError("Invalid guest member reference", 403, {
+        // The MESSAGE is unchanged, byte for byte — MG2 pins it. The code is
+        // additive and lets the wizard render member-facing copy instead of
+        // this developer-facing sentence (MEDIUM-4).
+        code: GUEST_MEMBER_NOT_ALLOWED_CODE,
+      });
     }
   }
 
-  const members = await resolveLinkedMemberRecords(db, normalizedMemberIds);
+  const members = await resolveLinkedMemberRecords(db, normalizedMemberIds, {
+    // #2388, response equalisation. On a MEMBER path the two refusals below
+    // must be indistinguishable from D-8's neutral one for a beyond-family
+    // target — see the note on `collapseForMemberIds`. An admin/on-behalf path
+    // (skipAuthorization) keeps the detailed errors: an officer is entitled to
+    // know the id is wrong, and hiding it from them would only produce support
+    // tickets.
+    collapseForMemberIds: options?.skipAuthorization
+      ? undefined
+      : new Set(boundary.beyondFamilyMemberIds),
+  });
   return { members, boundary };
 }
 
@@ -294,10 +417,41 @@ export async function resolveLinkedBookingMembers(
   return members;
 }
 
+/**
+ * Load the member rows behind a set of ids, refusing anything that cannot be a
+ * booking guest.
+ *
+ * `collapseForMemberIds` (#2388, MG3 #2308) is the set of BEYOND-FAMILY ids on a
+ * member-initiated path, and it exists because D-8's collapse had a hole that
+ * needed no stopwatch to find. Both refusals below used to answer a
+ * cross-family probe with their own message and their own status:
+ *
+ *   * "Linked member is inactive or not found" (400) — a straight existence
+ *     oracle. Try an id, and the status alone told you whether an active member
+ *     was behind it.
+ *   * "This account is age-exempt (N/A)…" (400) — told you the target is an
+ *     organisation or school account rather than a person.
+ *
+ * Neither is a leak inside a family, where the booker already knows who they are
+ * adding, so the collapse is applied ONLY to the beyond-family set and only on
+ * paths that enforce authorization. For those ids both become the same neutral
+ * 403 every other cross-family refusal returns, which is what makes the timing
+ * floor in `member-guest-probe-guard.ts` worth having at all: equalising the
+ * clock is pointless while the body still says which refusal it was.
+ */
 async function resolveLinkedMemberRecords(
   db: BookingGuestLookupDb,
   normalizedMemberIds: string[],
+  options?: { collapseForMemberIds?: ReadonlySet<string> },
 ): Promise<Map<string, LinkedBookingMember>> {
+  const collapseFor = options?.collapseForMemberIds;
+  const refuse = (memberId: string, message: string, status: number): never => {
+    if (collapseFor?.has(memberId)) {
+      throw memberGuestCrossFamilyRefusal([memberId]);
+    }
+    throw new BookingGuestValidationError(message, status);
+  };
+
   const linkedMembers = await db.member.findMany({
     where: { id: { in: normalizedMemberIds }, active: true },
     select: {
@@ -335,7 +489,7 @@ async function resolveLinkedMemberRecords(
   const linkedMemberMap = new Map(linkedMembers.map((member) => [member.id, member]));
   for (const memberId of normalizedMemberIds) {
     if (!linkedMemberMap.has(memberId)) {
-      throw new BookingGuestValidationError("Linked member is inactive or not found", 400);
+      refuse(memberId, "Linked member is inactive or not found", 400);
     }
   }
 
@@ -347,7 +501,8 @@ async function resolveLinkedMemberRecords(
   // listed as guests instead.
   for (const member of linkedMemberMap.values()) {
     if (member.ageTier === "NOT_APPLICABLE") {
-      throw new BookingGuestValidationError(
+      refuse(
+        member.id,
         "This account is age-exempt (N/A) and cannot be added as a booking guest. Add the people attending instead.",
         400
       );
@@ -554,11 +709,11 @@ export async function assertLinkedBookingMembersCanBeBooked(
     // club will not discuss, retry, and get the full, helpful detail for their
     // own family exactly as before.
     const crossFamilyIds = new Set(context?.crossFamilyMemberIds ?? []);
-    if (blockedMembers.some((member) => crossFamilyIds.has(member.memberId))) {
-      throw new BookingGuestValidationError(
-        MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE,
-        MEMBER_GUEST_CROSS_FAMILY_REFUSAL_STATUS,
-      );
+    const blockedCrossFamilyIds = blockedMembers
+      .map((member) => member.memberId)
+      .filter((memberId) => crossFamilyIds.has(memberId));
+    if (blockedCrossFamilyIds.length > 0) {
+      throw memberGuestCrossFamilyRefusal(blockedCrossFamilyIds);
     }
     throw new BookingGuestProfileRequiredError(blockedMembers);
   }

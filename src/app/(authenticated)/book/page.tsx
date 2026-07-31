@@ -94,6 +94,9 @@ export default function BookPage() {
     requiresAdminReviewLocal,
     handleGuestsChange,
     addFamilyMemberAsGuest,
+    addMemberGuest,
+    memberGuestConfig,
+    memberGuestAddError,
     handleRemoveConflictGuest,
     handleDateSelect,
     handleGuestsDone,
@@ -490,6 +493,10 @@ export default function BookPage() {
           setStep={setStep}
           handleGuestsDone={handleGuestsDone}
           priceLoading={priceLoading}
+          memberGuestEnabled={memberGuestConfig.enabled}
+          memberGuestOpenSearchEnabled={memberGuestConfig.openSearchEnabled}
+          addMemberGuest={addMemberGuest}
+          memberGuestAddError={memberGuestAddError}
         />
       )}
 
@@ -557,6 +564,7 @@ export default function BookPage() {
           handleSubmit={handleSubmit}
           submitting={submitting}
           savingDraft={savingDraft}
+          memberGuestPendingHoldExpiryDays={memberGuestConfig.pendingHoldExpiryDays}
         />
       )}
 

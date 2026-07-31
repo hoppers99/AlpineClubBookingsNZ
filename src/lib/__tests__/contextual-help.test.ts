@@ -111,6 +111,15 @@ describe("contextual help registry", () => {
     expect(help.fields?.map((field) => field.name)).toContain("View");
   });
 
+  it("documents the Reports Next Month quick range and retained filters", () => {
+    const help = getContextualHelp("/admin/reports", "admin");
+
+    expect(help.actions.join(" ")).toContain("Next Month");
+    expect(
+      help.fields?.find((field) => field.name === "Quick Range")?.description,
+    ).toContain("without changing the Lodge or Deleted filters");
+  });
+
   it("covers the primary admin and finance menu surfaces", () => {
     expect(getContextualHelpPaths("admin")).toEqual(
       expect.arrayContaining([

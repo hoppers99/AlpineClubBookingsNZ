@@ -42,6 +42,190 @@ All notable public reference-release changes should be recorded here.
   still refuses when Xero cannot be asked at all — as does the second check made
   immediately before a Xero contact is archived.
 
+- **The finance dashboard was counting a paid price increase twice, and now
+  counts it once (#2408).** When a booking's price goes up after it was made —
+  someone adds a guest — the difference is tracked as an "additional payment".
+  Once the member paid it, the finance dashboard's **Net collected cash** figure
+  added that money in twice: a booking worth $121 whose $21 increase had been
+  collected was reported as $142 of cash. The money was only ever received once;
+  it was the report that was wrong, and it has read this way for as long as
+  price increases have existed.
+
+  **Net collected cash will therefore go DOWN.** It drops by the value of every
+  collected price increase inside the range you are looking at, and by nothing
+  else — no other figure on any screen changes. If you are comparing against a
+  figure you wrote down last month, the new, smaller number is the correct one:
+  it is the cash the club actually took. In this club's records only two
+  bookings have ever had a collected increase, so the change to the published
+  totals is small. Nothing about how payments are taken, recorded or refunded
+  has changed.
+
+  Two other things go with it. The card now says in so many words that it
+  includes any collected price increase, so it is clear the figure is the whole
+  of the cash rather than a part of it. And should a booking ever record an
+  increase as collected without a matching payment record behind it — which no
+  booking does today, but a data import or a future change could create — the
+  dashboard now says so in an amber banner naming how much cash the figure may
+  be short by and how many bookings are involved, instead of quietly publishing
+  a number that is too low.
+- **A web address that does not exist is now told "not found" honestly, so
+  search engines and monitoring are no longer assured a dead address is fine
+  (#2405).** Every reply carries a hidden status line that people never see but
+  machines act on, and "the page you asked for does not exist" is a different
+  status from "here is your page". When the two disagree, Google treats the dead
+  address as real content worth listing, and a broken-link checker reports a
+  club's site as healthy when it is not.
+
+  The clear defect was in the club's data addresses — the `/api/...` ones that
+  the booking screens, and anything a club plugs in later, talk to rather than
+  people. Ask for one that does not exist and the reply was the club's entire
+  "page not found" web page: about 23KB of layout, fonts and menus, sent to
+  something that can only read short structured data and will choke on a web
+  page. Every one of those addresses now answers with a short structured "not
+  found" and the correct status — including the bare `/api` address itself,
+  which the first cut of this work still left on the web-page path.
+
+  Those replies are also worded identically, down to the last detail of the
+  reply, to the one given when a switched-off feature hides an address, and that
+  now holds for every kind of request rather than just the ordinary ones. Two
+  ways of telling the two apart were found while reviewing this work and closed:
+  a "headers only" request revealed the difference through a missing label, and
+  an unusual request type revealed it through a different status. Either would
+  have let a stranger, with no login and a single request, work out which
+  optional features a club has switched on.
+
+  For ordinary website addresses the decision that a page is missing is now
+  taken alongside the page's own title lookup rather than only inside the page.
+  That changes nothing a visitor can see today, and — worth being precise, since
+  it was first described more ambitiously — it is a tidy-up rather than
+  protection against future page-delivery speed-ups, which will need their own
+  guard.
+
+  Worth recording plainly, because the original report said otherwise: on a club
+  whose website setup is finished — which is every club running normally — the
+  ordinary mistyped and probed addresses were already answering correctly. The
+  wrong answers came from a test site that had never had its site style
+  completed, where an unfinished-setup holding screen answers every address. On
+  a real club that holding screen only shows before the site goes live, but it
+  does mean any address at all is answered as though it were fine until setup is
+  finished. That behaviour is deliberately untouched here — changing it halfway
+  would have let a stranger map an unlaunched club's page list by seeing which
+  addresses answered differently — and is being decided separately (#2420).
+- **A member can now find and add another club member as a guest, and is told
+  plainly what that commits the other person to (#2308).** The booking wizard's
+  Guests step gains a **+ Add Member Guest** button beside the existing
+  non-member one, and it opens a find box inline underneath the Guests heading —
+  not a pop-up. One box takes either an exact email address or, where a club has
+  deliberately switched name search on, a name that narrows as you type and picks
+  itself when only one person is left. A household sharing one address produces a
+  short pick-list; two members with the same name and age group look identical on
+  purpose, and the box points at the email address rather than inventing a
+  distinguishing detail the booker never had. A found member's full name and age
+  group show straight away, and nothing else about them is ever shown — no
+  email, no town, no photo, no membership type.
+
+  Out of the box the membership list is not browsable: a member needs the other
+  member's exact address, which they either have or have to go and ask for. The
+  name-search setting ships **off** and is a per-club decision, and the admin
+  card says in as many words what turning it on costs — your membership list
+  becomes browsable to anyone who can start a booking. Under-18s stay out of that
+  list unless a club separately opts them in. Every lookup in either mode is
+  speed-limited against the member who typed it (not their internet address, so
+  switching network gains nothing) and written to the audit log, which means
+  anyone who can read that log will see the addresses and names members typed.
+  With the feature switched off, neither find address exists at all — they answer
+  as if the page were never built, rather than admitting the club has the feature
+  and disabled it.
+
+  While somebody is still deciding, the review step now states all four
+  consequences plainly, before the money and never behind a "find out more" link:
+  the bed is held and for how long, a refusal reprices the booking, **the person
+  added can see the whole booking including the other guests' names before they
+  decide**, and **their agreement covers the booking however the dates later
+  change**, with taking themselves off subject to the usual limits once it is
+  priced or paid. The wizard's own waiting labels name the person — "Waiting for
+  Sam to approve", "Sam approved", "Sam will be told" — while the booking page
+  keeps the wording it already had; both come out of one shared function so the
+  two cannot drift apart. The admin settings card's "not in use yet" notice has
+  been removed, because it no longer is.
+
+- **Adding another member is harder to abuse as a way of tracking them
+  (#2388).** A single refusal already said nothing — "This member can't be added
+  to this booking right now", whatever the real reason — but somebody patient
+  could try date after date and read the answer out of the pattern. Three things
+  now sit behind that sentence. Anything involving a member from outside your own
+  family group is speed-limited per person, so a run of attempts across many
+  dates is slowed to something useless while an ordinary family booking is not
+  slowed at all. "Involving" rather than "adding" is the point: the cheapest way
+  to ask the question was to add the person once, then keep re-quoting new dates
+  on that booking without naming them again — which cost nothing until this
+  release. Every such preview now spends the same allowance an add does, once per
+  request however many places in it could have charged.
+
+  The "no such member" answer has stopped being the fast one, and three refusals
+  that used to escape the neutral wording altogether now read exactly like every
+  other one for a member outside your family: "linked member is inactive or not
+  found", the age-exempt-account refusal, and — found in a second review of the
+  same code — the membership-type refusal, which used to answer with the blocked
+  member's NAME (or their email address, where their name was blank) and their
+  membership category in as many words. A member adding their own child, and an
+  admin acting on somebody's behalf, still get the detailed, actionable message.
+
+  And repeated refusals against the same person are recorded where an admin can
+  find them, flagged, naming both members — **once per pair per day**, raised when
+  the line is first crossed rather than on every attempt after it. The earlier
+  behaviour turned one afternoon of ordinary re-dating into a run of flagged
+  entries about an innocent booker, which is how a club officer learns to scroll
+  past the thing they were meant to notice.
+
+  That last one is deliberately a record and **never a block**. Somebody trying
+  five weekends to find one that suits a friend produces exactly the same pattern
+  as somebody probing, and only a person who knows both of them can tell the
+  difference — so the system writes it down and leaves the judgement to a club
+  officer. The remaining limit is stated honestly rather than papered over: a
+  patient member who stays inside the daily cap can still work out which nights
+  another member is booked, over several days rather than minutes.
+
+- **A member guest already on a booking is no longer described to the booker
+  every time the dates change (#2308).** The rule that keeps one member's
+  bookings private from another only ever applied to the person being added in
+  that request. So a member added last week — a friend from another family, or
+  someone who had never even answered the request yet — was still described in
+  full on every later date change: their name, and the exact nights they were
+  booked somewhere else, one short answer per set of dates, with none of the
+  speed limits or records that were supposed to sit behind that question. The
+  club now works out who is outside the booker's family from the booking itself
+  rather than from what a single request happened to mention, so the neutral
+  answer applies to everybody it was always meant to cover. Three further gaps
+  found in the same review are closed with it: changing a booking through the
+  edit panel now carries the same speed limit, record and equal timing as every
+  other way of adding somebody; the "subscription unpaid" refusal is recorded and
+  speed-limited like its siblings, though it is honestly still answered later
+  than they are, because the limit is a minimum wait rather than a fixed one; and
+  the speed limit itself no longer answered "too many requests" for a real member
+  while answering the ordinary refusal for a made-up one, which had quietly
+  turned the protection into the very thing it was there to prevent.
+
+  Two more came out of a follow-up review. When you change only the dates on a
+  booking that already has a member guest on it and the club refuses, the edit
+  panel used to say "this member can't be added" — naming something you had not
+  done, about somebody not mentioned anywhere on the screen. It now says the
+  change can't be made, which is what actually happened. And the club-side work
+  that decides who counts as "outside the family" no longer runs on every booking
+  change at every club: it runs where the member-guest feature is switched on, or
+  on a booking that has ever carried a member-guest request, so a club that never
+  turned the feature on does not pay for it — and a club that turns it off does
+  not lose the protection on the bookings it already has.
+
+- **Smaller fixes in the same area (#2308).** A shared network — a family on the
+  lodge wifi, or a club night — no longer runs out of lookups because everyone
+  is behind one address; the per-person limit is the real control and the shared
+  one is now sized for a crowd. The email finder gained a daily cap, which it
+  had been missing while the optional name search had one. A rate-limited or
+  malformed lookup now records what was being looked up, which is exactly the
+  entry an admin would want. And the descriptions of what these limits buy have
+  been corrected where they overstated it — "three weeks to map a season" was
+  nearer three days, and "harvesting takes weeks" was nearer two days.
 - **Cancelling one member of a family no longer wipes the whole family's bill
   (#2400).** When a family or billing group is charged for memberships, one Xero
   invoice covers everyone in the group. Until now, cancelling any one of those
@@ -202,6 +386,11 @@ All notable public reference-release changes should be recorded here.
   since sharing a link is not a booking write. The one other way in is
   unchanged: the *Book these dates again* button on a tokenised payment link
   the club itself emails to a past requester.
+- **Reports can jump to the next calendar month (#2367).** The Reports page's
+  Quick Range menu now includes **Next Month**, including December-to-January
+  and leap-year February boundaries. Changing the quick range keeps the current
+  Lodge and Deleted filters, and the shared Quick Range select now has an
+  accessible programmatic label.
 - **Bed moves now stay on the guest's original lodge nights (#2366).** Dragging
   an existing allocation chip across date columns now chooses only the
   destination bed: the preview and keyboard announcement show the original NZ

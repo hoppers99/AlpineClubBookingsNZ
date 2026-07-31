@@ -48,21 +48,24 @@ import { PolicyFeedback } from "@/components/admin/booking-policies/policy-feedb
  * config transfer — this card (backed by its admin route) is the only way they
  * change.
  *
- * THOSE TWO TOGGLES ARE SAVED NOW AND USED BY NOTHING YET. Searching for a
- * member by name arrives in MG3; until it does, nothing anywhere reads either
- * value (see the "what reads this" note in src/lib/member-guest-settings.ts).
- * An admin settling their club's privacy posture ahead of time is perfectly
- * reasonable, so the toggles stay settable — but the card has to say plainly,
- * in the copy an admin actually reads and hears, that the choice starts working
- * later and on its own. Copy that reads as though the setting is already live
- * is how a privacy decision gets armed once and takes effect a release later
- * with nobody re-deciding it.
+ * THOSE TWO TOGGLES ARE LIVE AS OF MG3 (#2308). They shipped in MG2 saved but
+ * read by nothing, and the card carried a paragraph saying so in as many words
+ * — the honest copy that stopped a privacy decision being armed once and taking
+ * effect a release later with nobody re-deciding it. MG3 gives both values a
+ * reader (the member finder in the booking wizard), so that paragraph became
+ * false and was removed in the same change, which is exactly the promise
+ * src/lib/member-guest-settings.ts made when it was written.
+ *
+ * What did NOT change is the two warnings themselves. They describe what the
+ * switches actually do — turning open search on makes the membership list
+ * browsable, and including under-18s makes children's names browsable — and
+ * they are pinned by a test precisely so that a later editor cannot soften them
+ * into something more comfortable.
  */
 
 // Ids for the sentences each name-search control is described by. They are
 // spelled out here rather than inline so the control and the sentence it points
 // at cannot drift apart.
-const NOT_LIVE_YET_ID = "member-guest-search-not-live-yet";
 const OPEN_SEARCH_CONSEQUENCE_ID = "member-guest-open-search-consequence";
 const MINORS_CONSEQUENCE_ID = "member-guest-minors-consequence";
 
@@ -324,26 +327,22 @@ export function MemberGuestSettingsCard({
               Finding the other member
             </legend>
             {/*
-              Both of these settings are STORED now and READ by nothing yet
-              (see src/lib/member-guest-settings.ts). Saying so on the card is
-              the whole point: without it an admin decides their club's privacy
-              posture believing it is live, and it quietly starts working on a
-              later deploy with nobody re-deciding. Referenced by both
-              checkboxes' aria-describedby so it is heard, not just seen.
+              THE "not in use yet" NOTICE CAME OUT IN MG3 (#2308), in the same
+              change that gave these two settings a reader — exactly as MG1's
+              "not available yet" module state came off in MG2, and exactly as
+              src/lib/member-guest-settings.ts said it would.
+
+              It is removed rather than reworded because it is now FALSE: name
+              search is live, both settings take effect the moment they are
+              saved, and a notice telling an admin their choice will start
+              working later would be the same failure in reverse — it would
+              invite somebody to arm the setting believing they had time to
+              reconsider.
+
+              The two warnings below stay exactly as written. They are the
+              honest description of what these switches do and they are pinned
+              by a test so they cannot be quietly softened.
             */}
-            <p
-              id={NOT_LIVE_YET_ID}
-              className="rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground"
-            >
-              <span className="font-medium text-foreground">
-                Not in use yet.
-              </span>{" "}
-              Searching for a member by name is still being built. Whatever you
-              choose here is saved now and starts working on its own when that
-              update arrives — nobody will ask you again first, so set it the
-              way you mean it. Until then, a member always types the other
-              member&apos;s exact email address.
-            </p>
             <label className="flex items-start gap-3 rounded-md border border-border bg-muted px-3 py-2">
               <input
                 type="checkbox"
@@ -364,7 +363,7 @@ export function MemberGuestSettingsCard({
                   );
                 }}
                 disabled={!editing}
-                aria-describedby={`${NOT_LIVE_YET_ID} ${OPEN_SEARCH_CONSEQUENCE_ID}`}
+                aria-describedby={OPEN_SEARCH_CONSEQUENCE_ID}
                 className="mt-1 rounded border-input"
               />
               <span className="text-sm">
@@ -414,7 +413,7 @@ export function MemberGuestSettingsCard({
                       openMemberSearchIncludesMinors: e.target.checked,
                     })
                   }
-                  aria-describedby={`${NOT_LIVE_YET_ID} ${MINORS_CONSEQUENCE_ID}`}
+                  aria-describedby={MINORS_CONSEQUENCE_ID}
                   className="mt-1 rounded border-input"
                 />
                 <span className="text-sm">

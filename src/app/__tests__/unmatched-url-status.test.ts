@@ -1,0 +1,385 @@
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { autoImplementMethods } from "next/dist/server/route-modules/app-route/helpers/auto-implement-methods";
+
+/**
+ * Status codes for URLs nothing serves (#2405).
+ *
+ * The issue reported a soft 404: unmatched URLs answering `200 OK` while
+ * showing the "page not found" screen, so search engines index dead addresses
+ * and monitoring cannot tell a missing page from a working one. Two things came
+ * out of measuring it, and both are pinned here.
+ *
+ * 1. The PAGE class was already right. `(website)/[...slug]` claims every
+ *    human-plausible mistyped or bot-probed URL and calls `notFound()`; Next's
+ *    `HTTPAccessFallbackBoundary` catches that during the render and sets 404.
+ *    The reported 200s came from a staging stack that had never completed
+ *    site-style setup — see the layout note below. These cases stop the
+ *    `notFound()` calls being deleted or narrowed.
+ * 2. The API class was wrong, in every configuration. `/api/<anything>` that no
+ *    handler claimed fell through to that same CMS PAGE catch-all, so a JSON
+ *    client was handed ~23KB of `text/html`. `api/[[...unmatched]]/route.ts` now
+ *    terminates those URLs with JSON, bare `/api` included.
+ *
+ * The "still 200" cases are as load-bearing as the 404s: a change that 404s a
+ * published page, or that swallows a real API route, is far worse than the bug.
+ *
+ * The PRE-SETUP state is pinned here too. On a club whose `ClubTheme.completedAt`
+ * is NULL the layout answers every URL with its holding screen, and this work
+ * deliberately does not change that — a 404 from `generateMetadata()` escapes
+ * the layout (the root not-found boundary sits above it), so misses would 404
+ * while published pages still returned 200 and an anonymous visitor could read
+ * off an unlaunched site's page list. #2420 decides what that state should
+ * answer.
+ */
+
+const mocks = vi.hoisted(() => {
+  class NotFoundSignal extends Error {
+    constructor() {
+      super("NEXT_HTTP_ERROR_FALLBACK;404");
+      this.name = "NotFoundSignal";
+    }
+  }
+
+  return {
+    NotFoundSignal,
+    getPage: vi.fn(),
+    clubIdentity: vi.fn(),
+    themeRenderState: vi.fn(),
+    buildBody: vi.fn(),
+    // The real `notFound()` throws, and callers rely on it never returning.
+    // A mock that returned instead would let the code under test carry on down
+    // a path it never takes in production, and pass vacuously.
+    notFound: vi.fn(() => {
+      throw new NotFoundSignal();
+    }),
+  };
+});
+
+const { NotFoundSignal, notFound } = mocks;
+
+vi.mock("server-only", () => ({}));
+vi.mock("next/navigation", () => ({ notFound: mocks.notFound }));
+vi.mock("@/lib/page-content-html", () => ({
+  getSanitizedPageContentByPath: mocks.getPage,
+  pageContentHtmlToPlainText: (html: string) => html,
+}));
+vi.mock("@/lib/public-layout-config", () => ({
+  getCachedClubIdentity: mocks.clubIdentity,
+  getCachedWebsiteThemeRenderState: mocks.themeRenderState,
+}));
+vi.mock("@/lib/page-content-embeds", () => ({
+  buildEmbeddedBody: mocks.buildBody,
+}));
+vi.mock("@/components/website/embedded-page-content-parts", () => ({
+  EmbeddedPageContentParts: () => null,
+}));
+
+import DynamicWebsitePage, {
+  generateMetadata,
+} from "@/app/(website)/[...slug]/page";
+import * as unmatchedApi from "@/app/api/[[...unmatched]]/route";
+import { getFeatureFlagBlockResponse } from "@/proxy";
+
+const publishedPage = {
+  id: "page-1",
+  slug: "about",
+  caption: "About",
+  menuTitle: "About",
+  title: "About the Club",
+  headerText: "<p>Who we are</p>",
+  path: "/about",
+  sortOrder: 1,
+  contentHtml: "<p>Body</p>",
+  published: true,
+};
+
+function props(...slug: string[]) {
+  return { params: Promise.resolve({ slug }) };
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.clubIdentity.mockResolvedValue({ name: "Example Alpine Club" });
+  // The ordinary case: a club that has finished site-style setup, which is
+  // every club running normally.
+  mocks.themeRenderState.mockResolvedValue({ isComplete: true });
+  mocks.buildBody.mockResolvedValue([]);
+});
+
+/**
+ * Every unmatched shape the issue measured. They do not all reach the database:
+ * `/.env` and `/foo\0bar` are rejected by the slug rules and `/admin/nope` and
+ * `/wp-admin/...` by the reserved-prefix rules, while `/definitely-missing` is
+ * a well-formed slug that simply has no row. The real `isValidPageSlug` and
+ * `isReservedPageSlug` are deliberately NOT mocked so each shape travels its
+ * own path; all six must still end at `notFound()`.
+ */
+const unmatchedPageUrls: ReadonlyArray<readonly [string, string[]]> = [
+  ["/definitely-missing", ["definitely-missing"]],
+  ["/wp-admin/setup-config.php", ["wp-admin", "setup-config.php"]],
+  ["/.env", [".env"]],
+  ["/admin/nope", ["admin", "nope"]],
+  // `/foo%00bar` as Next hands it to the segment: percent-decoded, embedded
+  // NUL and all. Written as an escape so no raw NUL byte sits in the source.
+  ["/foo%00bar", ["foo\u0000bar"]],
+];
+
+describe("unmatched page URLs resolve to a 404, not a soft 200", () => {
+  it.each(unmatchedPageUrls)(
+    "%s raises notFound() from generateMetadata",
+    async (_label, slug) => {
+      mocks.getPage.mockResolvedValue(null);
+
+      await expect(generateMetadata(props(...slug))).rejects.toBeInstanceOf(
+        NotFoundSignal,
+      );
+      expect(notFound).toHaveBeenCalled();
+    },
+  );
+
+  it.each(unmatchedPageUrls)(
+    "%s raises notFound() from the page component too",
+    async (_label, slug) => {
+      mocks.getPage.mockResolvedValue(null);
+
+      await expect(DynamicWebsitePage(props(...slug))).rejects.toBeInstanceOf(
+        NotFoundSignal,
+      );
+      expect(notFound).toHaveBeenCalled();
+    },
+  );
+
+  it("404s a CMS page the admin has unpublished, like a missing one", async () => {
+    mocks.getPage.mockResolvedValue({ ...publishedPage, published: false });
+
+    await expect(generateMetadata(props("about"))).rejects.toBeInstanceOf(
+      NotFoundSignal,
+    );
+  });
+});
+
+describe("a published CMS page still answers 200", () => {
+  it("returns real metadata rather than raising notFound()", async () => {
+    mocks.getPage.mockResolvedValue(publishedPage);
+
+    const metadata = await generateMetadata(props("about"));
+
+    expect(notFound).not.toHaveBeenCalled();
+    expect(metadata.title).toBe("About the Club");
+  });
+
+  it("renders the page component rather than raising notFound()", async () => {
+    mocks.getPage.mockResolvedValue(publishedPage);
+
+    await expect(DynamicWebsitePage(props("about"))).resolves.toBeTruthy();
+    expect(notFound).not.toHaveBeenCalled();
+  });
+
+  // No test pins the React `cache()` memo on `loadPublishedPage`. It only
+  // memoises inside a request scope, which a unit test does not have, so a
+  // call-count assertion would fail against correct code and pass against
+  // broken code; a regex over the source passes on dead code and fails on a
+  // rename, which is worse than nothing. The memo is a cost optimisation with
+  // no behavioural contract to pin — it is observable in the running app as one
+  // `PageContent` read per CMS page render, and that is where to check it.
+});
+
+/**
+ * The pre-setup state, unchanged by this work and asserted so it STAYS
+ * unchanged (#2405 security review).
+ *
+ * With `ClubTheme.completedAt` NULL, `(website)/layout.tsx` returns its "Site
+ * setup in progress" screen instead of `{children}`: the page component never
+ * runs and every URL answers 200, real pages and misses alike. A `notFound()`
+ * from `generateMetadata()` would break out of that — the root not-found
+ * boundary sits ABOVE the layout — so unknown paths would answer 404 while
+ * published pages answered 200. That difference is an enumeration oracle: an
+ * anonymous visitor could walk an unlaunched club's site and learn exactly which
+ * pages exist, and the 404 body would serve database-backed content the club has
+ * not published yet. #2420 decides what an unconfigured site should answer
+ * (503 for everything); until then the answer is "exactly what it answered
+ * before".
+ */
+describe("a club that has not finished site-style setup is left alone", () => {
+  beforeEach(() => {
+    mocks.themeRenderState.mockResolvedValue({ isComplete: false });
+  });
+
+  it("does not raise notFound() for an unknown page — the holding screen still answers", async () => {
+    mocks.getPage.mockResolvedValue(null);
+
+    const metadata = await generateMetadata(props("definitely-missing"));
+
+    expect(notFound).not.toHaveBeenCalled();
+    expect(metadata.title).toBe("Example Alpine Club");
+  });
+
+  it("does not raise notFound() for an unpublished page either", async () => {
+    mocks.getPage.mockResolvedValue({ ...publishedPage, published: false });
+
+    await expect(
+      generateMetadata(props("about")),
+    ).resolves.toEqual({ title: "Example Alpine Club" });
+    expect(notFound).not.toHaveBeenCalled();
+  });
+
+  it("still returns a published page's own metadata", async () => {
+    mocks.getPage.mockResolvedValue(publishedPage);
+
+    const metadata = await generateMetadata(props("about"));
+
+    expect(notFound).not.toHaveBeenCalled();
+    expect(metadata.title).toBe("About the Club");
+  });
+
+  it("costs nothing on the normal path: the theme is only read on a miss", async () => {
+    mocks.getPage.mockResolvedValue(publishedPage);
+
+    await generateMetadata(props("about"));
+
+    expect(mocks.themeRenderState).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The handler Next actually runs for a verb on this route, rather than the
+ * export list. `autoImplementMethods()` is the framework's own resolver
+ * (`route-modules/app-route/module.js` calls it for every request), so putting
+ * it in front of the assertions means HEAD is tested as it is SERVED — derived
+ * from GET — instead of as the file happens to spell it.
+ */
+function routeHandlerFor(method: string) {
+  const handlers = autoImplementMethods(unmatchedApi) as unknown as Record<
+    string,
+    () => Response
+  >;
+  return handlers[method];
+}
+
+describe("unmatched /api URLs answer JSON, not the website's HTML", () => {
+  const exportedMethods = [
+    "GET",
+    "POST",
+    "PUT",
+    "PATCH",
+    "DELETE",
+    "OPTIONS",
+  ] as const;
+
+  it.each(exportedMethods)("%s returns 404 with a JSON body", async (method) => {
+    const response = unmatchedApi[method]();
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    await expect(response.json()).resolves.toEqual({ error: "Not found" });
+  });
+
+  it("covers bare /api as well, by being an OPTIONAL catch-all", () => {
+    // A required catch-all (`[...unmatched]`) matches one segment or more, so
+    // `/api` and `/api/` fell through to the CMS page and were answered with
+    // ~23KB of text/html on a configured club — and with the holding screen's
+    // 200 on an unconfigured one. Routing is a filesystem fact, so this is the
+    // level at which it can be pinned without a running server; the E2E suite
+    // asks the real server for both URLs.
+    const apiDir = path.join(process.cwd(), "src/app/api");
+
+    expect(existsSync(path.join(apiDir, "[[...unmatched]]/route.ts"))).toBe(
+      true,
+    );
+    expect(existsSync(path.join(apiDir, "[...unmatched]"))).toBe(false);
+    // Nothing may sit at /api itself, or it would claim the bare path first.
+    expect(existsSync(path.join(apiDir, "route.ts"))).toBe(false);
+    expect(existsSync(path.join(apiDir, "page.tsx"))).toBe(false);
+  });
+
+  it("does not hand-write HEAD, so HEAD carries GET's headers", () => {
+    // A hand-written `new NextResponse(null, { status: 404 })` carried NO
+    // content-type, while the module gate answers HEAD with its JSON response
+    // and its content-type. That single header difference let one anonymous
+    // HEAD request read off whether an optional module was switched on.
+    // Next fills HEAD in from GET and strips the body downstream, which keeps
+    // the headers identical by construction.
+    expect("HEAD" in unmatchedApi).toBe(false);
+    expect(routeHandlerFor("HEAD")).toBe(unmatchedApi.GET);
+  });
+
+  /**
+   * Byte-for-byte parity with the module gate, driven over EVERY verb.
+   *
+   * A caller must not be able to tell a route that does not exist from one a
+   * disabled module is hiding — otherwise a single anonymous request reads off
+   * which optional modules a club runs. Compared as raw text rather than parsed
+   * JSON on purpose: parsing hides key order and whitespace, and both paths
+   * have to agree on the bytes, not just the meaning. The content-type is
+   * compared for the same reason — it was the header the old hand-written HEAD
+   * got wrong.
+   */
+  describe("is indistinguishable from a path hidden by a disabled module", () => {
+    const choresOff = { chores: false } as never;
+    // HEAD included: it is the verb the oracle was found on, and going through
+    // `routeHandlerFor` compares what Next ACTUALLY runs rather than what the
+    // module happens to export. The framework strips a HEAD body on the way out
+    // for the gate response too, so the headers are the thing that has to match.
+    const servedMethods = [
+      "GET",
+      "HEAD",
+      "POST",
+      "PUT",
+      "PATCH",
+      "DELETE",
+      "OPTIONS",
+    ] as const;
+
+    it.each(servedMethods)("%s matches the gate exactly", async (method) => {
+      const gated = getFeatureFlagBlockResponse(
+        "/api/chores/zzz",
+        choresOff,
+        method,
+      );
+      const unmatched = routeHandlerFor(method)();
+
+      expect(gated).not.toBeNull();
+      expect(gated!.status).toBe(unmatched.status);
+      expect(gated!.headers.get("content-type")).toBe(
+        unmatched.headers.get("content-type"),
+      );
+      await expect(gated!.text()).resolves.toBe(await unmatched.text());
+    });
+
+    it.each(["PROPFIND", "TRACE", "MKCOL"])(
+      "%s gets the same bare 400 the framework gives a live route",
+      async (method) => {
+        // Next's app-route module rejects any verb outside its seven standard
+        // ones with `new Response(null, { status: 400 })` BEFORE resolving a
+        // handler (`route-modules/app-route/module.js`), so with the module ON
+        // that is what `/api/chores/zzz` answers. The gate used to answer the
+        // JSON 404 instead, which made the module's state readable: 400 means
+        // on, 404 means off. It now mirrors the framework.
+        const gated = getFeatureFlagBlockResponse(
+          "/api/chores/zzz",
+          choresOff,
+          method,
+        );
+
+        expect(gated!.status).toBe(400);
+        expect(gated!.headers.get("content-type")).toBeNull();
+        await expect(gated!.text()).resolves.toBe("");
+      },
+    );
+
+    it("leaves gated PAGE paths alone", () => {
+      // The 400 mirrors the ROUTE-HANDLER contract. A page is served by a
+      // different Next module with different verb handling, so the gate keeps
+      // its bodyless 404 there rather than asserting a parity nobody measured.
+      const gated = getFeatureFlagBlockResponse(
+        "/admin/chores",
+        choresOff,
+        "PROPFIND",
+      );
+
+      expect(gated!.status).toBe(404);
+    });
+  });
+});
