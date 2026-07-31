@@ -19,6 +19,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { AdminDataTable } from "@/components/admin/admin-data-table";
+import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
 import { DateRangeControls } from "@/components/admin/date-range-controls";
 import { auditAndPaymentsDateRangePresets } from "@/lib/date-range-presets";
 import { formatCents } from "@/lib/utils";
@@ -474,6 +475,16 @@ export function PromoRedemptionsPanel({
               </select>
             </div>
           ) : null}
+          <DatasetResetButton
+            disabled={!filterActive && page === 1}
+            onReset={() => {
+              setFrom("");
+              setTo("");
+              setLodgeId("");
+              setPage(1);
+              setExpanded(new Set());
+            }}
+          />
         </CardContent>
       </Card>
 
