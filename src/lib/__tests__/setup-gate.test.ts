@@ -99,6 +99,13 @@ const publicWebsiteUrls = [
   // Not the admin area: Next routing is case-sensitive, so this is an unmatched
   // website address and must be gated like any other.
   "/Admin/nope",
+  // Shapes that merely START with an excluded matcher token (#2420 review F3).
+  // These were skipping the proxy entirely, so pre-setup they answered 200.
+  "/apiary",
+  "/api-docs",
+  "/favicon.icons",
+  "/logo.pngs",
+  "/faviconXico",
 ];
 
 /**
@@ -128,7 +135,14 @@ const exemptUrls = [
   "/display",
   "/robots.txt",
   "/sitemap.xml",
+  "/favicon.ico",
   "/_next/static/chunks/main.js",
+  // Asset-shaped URLs the proxy matcher skips on purpose, so the gate agrees
+  // they are not website pages rather than claiming a 503 it can never serve
+  // (#2420 review F3).
+  "/logo.png",
+  "/branding/logo.png",
+  "/gallery.svg",
 ];
 
 describe("which addresses the setup gate covers", () => {
@@ -191,12 +205,88 @@ describe("which addresses the setup gate covers", () => {
     }
 
     expect(missing).toEqual([]);
+
     // Sanity check on the walk itself: if this came back empty the assertion
     // above would pass vacuously.
     expect(websiteSegments.length).toBeGreaterThan(0);
     for (const segment of websiteSegments) {
       expect(NON_WEBSITE_ROOT_SEGMENTS.has(segment)).toBe(false);
     }
+  });
+
+  /**
+   * The walk above only sees DIRECTORIES, so Next's FILE-based root routes were
+   * invisible to it (#2420 review finding F6a). `src/app/sitemap.ts` is a real
+   * URL — `/sitemap.xml` — held out of the gate only by the hand-maintained
+   * `NON_WEBSITE_EXACT_PATHS`, and dropping in `robots.ts`, `manifest.ts`,
+   * `icon.tsx` or `opengraph-image.tsx` later would start 503-ing a machine
+   * address during setup with nothing failing to say so.
+   *
+   * Each convention is mapped to the URL Next serves it at, and every one must
+   * be outside the gate. An UNKNOWN root file fails loudly rather than being
+   * skipped, so a convention this map has not learned yet cannot slip past.
+   */
+  it("exempts every file-based route convention at the app root", () => {
+    const appDir = path.join(process.cwd(), "src/app");
+
+    // Next's metadata/route file conventions → the URL each one serves.
+    const conventionUrls: Record<string, string> = {
+      sitemap: "/sitemap.xml",
+      robots: "/robots.txt",
+      manifest: "/manifest.webmanifest",
+      icon: "/icon",
+      "apple-icon": "/apple-icon",
+      "opengraph-image": "/opengraph-image",
+      "twitter-image": "/twitter-image",
+    };
+
+    // Files that are NOT routes: the segment conventions and plain assets.
+    const notRoutes = new Set([
+      "layout",
+      "template",
+      "error",
+      "global-error",
+      "not-found",
+      "loading",
+      "default",
+      "page",
+      "route",
+      "globals.css",
+      "favicon.ico",
+    ]);
+
+    const rootFiles = readdirSync(appDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name);
+
+    const unrecognised: string[] = [];
+
+    for (const file of rootFiles) {
+      const base = file.replace(/\.(?:tsx?|jsx?|css|ico)$/, "");
+
+      if (notRoutes.has(base) || notRoutes.has(file)) {
+        continue;
+      }
+
+      const url = conventionUrls[base];
+
+      if (!url) {
+        unrecognised.push(file);
+        continue;
+      }
+
+      expect(
+        isPublicWebsitePath(url),
+        `${file} serves ${url}; a machine address must not be gated`,
+      ).toBe(false);
+    }
+
+    expect(
+      unrecognised,
+      "unknown root route file — map it to its URL and confirm the gate's answer",
+    ).toEqual([]);
+    // Guards the walk: sitemap.ts exists today, so this can never be vacuous.
+    expect(rootFiles).toContain("sitemap.ts");
   });
 });
 
@@ -349,6 +439,23 @@ describe("the gate does not add a database read per request", () => {
     expect((await getSetupInProgressResponse(request("/")))?.status).toBe(503);
   });
 
+  it("still fails closed when the theme read FAILED rather than reported", async () => {
+    // The counterpart of the layout's F4 fix. `(website)/layout.tsx` refuses to
+    // paint a 200 holding screen off an unreadable database, because that is a
+    // claim about the club. The gate has the opposite duty: 503 is a true
+    // statement about an unreadable database, so it keeps answering one.
+    mocks.themeState.mockResolvedValue({
+      isComplete: false,
+      readFailed: true,
+      css: "",
+    });
+
+    const response = await getSetupInProgressResponse(request("/"));
+
+    expect(response?.status).toBe(503);
+    expect(response?.headers.get("Cache-Control")).toBe("no-store");
+  });
+
   it("still answers 503 with a readable screen if resolving the state throws", async () => {
     // A Prisma client that never constructed, say — a realistic first-boot state
     // for exactly the install this screen exists for. An unhandled throw in the
@@ -375,6 +482,21 @@ describe("the proxy applies the gate end to end", () => {
     for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
       expect(response.headers.get(name)).toBe(value);
     }
+  });
+
+  it("never lets the holding screen carry the anonymous page cache headers", async () => {
+    // `/` is allow-listed as browser-cacheable for 60s (300s stale) for
+    // anonymous visitors (#2322). A holding screen must never be stored under
+    // that entry — it would go on claiming the club is unlaunched long after the
+    // admin finished setup. The gate returns before the allow list is consulted
+    // and sets `no-store` of its own (#2420 review F4).
+    setupIncomplete();
+
+    const response = await proxy(request("/"));
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.get("Vary") ?? "").not.toContain("Cookie");
   });
 
   it("passes an admin request through while the gate is closed", async () => {

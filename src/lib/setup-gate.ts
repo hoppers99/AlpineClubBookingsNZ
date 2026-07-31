@@ -112,6 +112,25 @@ const NON_WEBSITE_EXACT_PATHS: ReadonlySet<string> = new Set([
   "/favicon.ico",
 ]);
 
+/**
+ * Static-asset shapes the proxy matcher deliberately skips, so the gate must
+ * agree that they are not website pages (#2420 review finding F3).
+ *
+ * This half of the reconciliation goes the OTHER way from the prefix bugs fixed
+ * in the matcher: those were widened to cover real website addresses, whereas
+ * this list is narrowed to match the matcher, because running the proxy on every
+ * image request to mint a nonce it does not need is a worse trade than leaving a
+ * handful of asset-shaped URLs ungated. Kept byte-identical to the extension
+ * alternative in `config.matcher`; `csp-proxy.test.ts` fails if they drift.
+ *
+ * Consequence, recorded rather than hidden: pre-setup, a request for an
+ * asset-shaped URL that no file backs (`/gallery.svg`) is answered by the app
+ * rather than the gate. It carries no club content — the layout still
+ * substitutes the holding screen for the page — but its status is 200, not 503.
+ */
+const STATIC_ASSET_EXTENSION_PATTERN =
+  /\.(?:png|jpg|jpeg|gif|webp|svg|ico)$/i;
+
 function normalisePathname(pathname: string) {
   return pathname.length > 1 && pathname.endsWith("/")
     ? pathname.slice(0, -1)
@@ -125,6 +144,10 @@ function normalisePathname(pathname: string) {
  * Case-sensitive, like Next's own routing: `/Admin/nope` is not the admin area,
  * it is an unmatched website address, and it should be gated exactly as
  * `/definitely-missing` is.
+ *
+ * MUST stay a subset of what `config.matcher` matches: the gate runs inside
+ * `proxy()`, so claiming a path the proxy never runs on would assert a 503 that
+ * can never be served. That invariant is asserted, not assumed.
  */
 // test seam
 export function isPublicWebsitePath(pathname: string): boolean {
@@ -139,6 +162,10 @@ export function isPublicWebsitePath(pathname: string): boolean {
   }
 
   if (NON_WEBSITE_EXACT_PATHS.has(path)) {
+    return false;
+  }
+
+  if (STATIC_ASSET_EXTENSION_PATTERN.test(path)) {
     return false;
   }
 
