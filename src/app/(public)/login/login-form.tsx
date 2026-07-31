@@ -348,16 +348,12 @@ export function LoginForm({
             </Link>
           </p>
 
-          <p className="text-sm text-center text-muted-foreground">
-            Just want to stay with us?{" "}
-            <Link
-              href="/booking-requests"
-              className="text-foreground font-medium underline-offset-4 hover:underline"
-            >
-              Request a booking without an account
-            </Link>
-          </p>
-
+          {/* No public "request a booking without an account" link here (#2421):
+              whether the club hosts non-members is the club's own policy, and
+              advertising open guest bookings reads as commercial accommodation.
+              /booking-requests still works by direct URL — the club shares that
+              link privately with guests it is willing to host (an admin copies
+              it from Admin > Booking Requests > Public Requests). */}
           <p className="text-sm text-center text-muted-foreground">
             Booking for a school group?{" "}
             <Link
