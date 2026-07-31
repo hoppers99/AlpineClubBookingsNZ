@@ -205,49 +205,65 @@ describe("a published CMS page still answers 200", () => {
  *
  * #2420 answered the wider "what should an unconfigured site say" question in
  * the proxy — 503 with the holding screen, before the render — so an ordinary
- * document request no longer reaches this code pre-setup at all. It did NOT
- * make these cases redundant: the proxy matcher deliberately skips RSC
- * prefetches and those still land here, so the oracle has to stay shut at this
- * level too. See `src/lib/__tests__/setup-gate.test.ts` for the status contract.
+ * document request no longer reaches this code pre-setup at all. That did NOT
+ * make these cases redundant, and its review round made them stricter.
+ *
+ * Stricter how: the guard used to consult the setup state only INSIDE
+ * `if (!page)`, and that half-measure was the same oracle inverted. Pre-setup a
+ * miss returned the bare club name while a HIT still returned the page's own
+ * title and header text — and a request reaches this code by carrying
+ * `Purpose: prefetch`, an ordinary header anyone can set, which the proxy
+ * matcher skips. Suppressing `{children}` in the layout does not help, because
+ * next@16.2.11 builds the document head as a separate flight slot from the
+ * page's seed data, so metadata is produced even when the component never runs.
+ *
+ * The property is therefore UNIFORMITY, not "misses are hidden": pre-setup,
+ * hit, miss and unpublished must be indistinguishable. Full coverage of that
+ * across every `(website)` page lives in
+ * `src/lib/__tests__/website-metadata-setup-gate.test.ts`; the status contract
+ * lives in `src/lib/__tests__/setup-gate.test.ts`.
  */
-describe("a club that has not finished site-style setup is left alone", () => {
+describe("a club that has not finished site-style setup discloses nothing", () => {
   beforeEach(() => {
     mocks.themeRenderState.mockResolvedValue({ isComplete: false });
   });
 
-  it("does not raise notFound() for an unknown page — the holding screen still answers", async () => {
+  it("does not raise notFound() for an unknown page — the holding screen answers", async () => {
     mocks.getPage.mockResolvedValue(null);
 
     const metadata = await generateMetadata(props("definitely-missing"));
 
     expect(notFound).not.toHaveBeenCalled();
-    expect(metadata.title).toBe("Example Alpine Club");
+    expect(metadata.title).toBe("Site setup in progress");
   });
 
   it("does not raise notFound() for an unpublished page either", async () => {
     mocks.getPage.mockResolvedValue({ ...publishedPage, published: false });
 
-    await expect(
-      generateMetadata(props("about")),
-    ).resolves.toEqual({ title: "Example Alpine Club" });
+    const metadata = await generateMetadata(props("about"));
+
+    expect(metadata.title).toBe("Site setup in progress");
     expect(notFound).not.toHaveBeenCalled();
   });
 
-  it("still returns a published page's own metadata", async () => {
+  it("gives a PUBLISHED page the same answer, so existence cannot be read off", async () => {
     mocks.getPage.mockResolvedValue(publishedPage);
 
     const metadata = await generateMetadata(props("about"));
 
     expect(notFound).not.toHaveBeenCalled();
-    expect(metadata.title).toBe("About the Club");
+    expect(metadata.title).toBe("Site setup in progress");
+    expect(JSON.stringify(metadata)).not.toContain("About the Club");
   });
 
-  it("costs nothing on the normal path: the theme is only read on a miss", async () => {
+  it("does not even look the page up", async () => {
+    // The check runs first, so an unlaunched club issues no PageContent read at
+    // all for a probed URL — there is nothing to time, either.
     mocks.getPage.mockResolvedValue(publishedPage);
 
     await generateMetadata(props("about"));
 
-    expect(mocks.themeRenderState).not.toHaveBeenCalled();
+    expect(mocks.getPage).not.toHaveBeenCalled();
   });
 });
 
