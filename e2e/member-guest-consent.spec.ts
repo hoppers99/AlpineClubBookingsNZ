@@ -259,17 +259,30 @@ test("the target declines on an unpaid booking and the booker's guest list no lo
     content.getByRole("link", { name: "Back to my bookings" }),
   ).toBeVisible();
 
-  // The booker's view: the party no longer includes the member who said no.
+  // The booker's view: the GUEST LIST no longer includes the member who said
+  // no. Scoped to the rows the editor renders the party in, deliberately — a
+  // page-wide name search also matches the booking's own history, which
+  // legitimately records that the guest was removed. The point of this
+  // assertion is that the place was released, not that her name is scrubbed
+  // from the record.
   await wandaPage.goto(`/bookings/${booking.id}`);
   const wandaView = mainContent(wandaPage);
   await expect(
     wandaView.getByText("Stay Details", { exact: true }),
   ).toBeVisible();
+  const guestRows = wandaView.locator("p.font-medium");
   await expect(
-    wandaView.getByText(
-      `${NOMINATOR_TWO.firstName} ${NOMINATOR_TWO.lastName}`,
-    ),
+    guestRows.filter({
+      hasText: `${NOMINATOR_TWO.firstName} ${NOMINATOR_TWO.lastName}`,
+    }),
   ).toHaveCount(0);
+  // …and the booker herself is still on it, so the locator above is proved to
+  // find guest rows at all rather than passing because it matches nothing.
+  await expect(
+    guestRows.filter({
+      hasText: `${WAITLISTER.firstName} ${WAITLISTER.lastName}`,
+    }),
+  ).not.toHaveCount(0);
 });
 
 test("the delegate page tells a non-delegate — even the booker — nothing, indistinguishably from a made-up id", async () => {
