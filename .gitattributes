@@ -2,7 +2,17 @@
 # Their bytes must stay identical across the public repo and downstream forks,
 # so git must not flag (or try to auto-fix) whitespace in them — e.g. a
 # trailing blank line at EOF would otherwise trip `git diff --check` on merge.
-prisma/migrations/**/*.sql -whitespace
+#
+# `eol=lf` is what actually delivers that "identical bytes" promise. Every blob
+# on `main` is already LF, but this was the one tracked text class left
+# unpinned, so a Windows checkout (`core.autocrlf=true`) silently materialised
+# CRLF while the LF-pinned `*.ts` seed source stayed LF. That made
+# `page-content-starter-backfill.test.ts` compare an LF template literal
+# against CRLF file bytes and fail on Windows only — green on Linux CI, so it
+# was repeatedly written off as an environment flake. It also left Prisma
+# migration checksums platform-dependent. Pinning is zero-churn (the blobs are
+# already LF) and ends both problems.
+prisma/migrations/**/*.sql text eol=lf -whitespace
 
 # ESM scripts are imported by vitest tests as well as run via `node`. A CRLF
 # checkout (Windows autocrlf) of a shebang line breaks vite-node's import of
