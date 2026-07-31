@@ -331,7 +331,124 @@ never a product bug. Two harness-side settings remove it:
   the production compose environment is unchanged.
 - **Playwright side:** `playwright.config.ts` sets `retries: process.env.CI ? 2
   : 0` — a backstop for any residual transport-level reset in CI, with no
-  retries locally so real failures surface immediately.
+  retries locally so real failures surface immediately. Those retries are only
+  worth having if every spec is retry-idempotent; see "Flake invariants" below.
+
+A second, unrelated transport race lives in the **mock-Xero harness** (#2302).
+Its endpoints are the app calling *itself* over the loopback origin
+(`XERO_MOCK_INTERNAL_ORIGIN`, `http://127.0.0.1:3000` in CI) in place of
+api.xero.com, and on a loaded runner that hop intermittently returns
+`ECONNREFUSED`. Nothing downstream retried it: the organisation read threw, the
+connected-org summary degraded to a null name and negative-cached it for 60
+seconds, and the wizard's post-OAuth refresh is a one-shot mount effect — so one
+refused socket pinned `/admin/xero/setup` on "Confirming the organisation name…"
+and `xero-setup-wizard.spec.ts` could only time out. `fetchMockLoopback`
+(`src/lib/xero-mock-endpoint.ts`) now retries **transport** failures on those
+self-calls (three attempts, short backoff); any HTTP status the handler returns
+is still surfaced unchanged, and the whole module stays production-inert.
+
+## Flake invariants — read before writing a spec (issue #2302)
+
+Five specs flaked on `main` over the last week of July 2026
+(`waitlist`, `xero-setup-wizard`, `stripe-payment`, `bed-allocation`,
+plus the `#21` cross-lodge case). **Every one of them shared one of the first
+two mechanisms below**, and in four of the five a *single* transient failure was
+turned into three by the retry policy. Neither mechanism is a "timing" problem,
+so neither is fixed by a longer timeout, an extra retry, or a `waitForTimeout`.
+The third invariant — no fixed dates — is the standing rule that stops a further
+class from joining them.
+
+### 1. Retries re-run against the database the failed attempt left behind
+
+`playwright.config.ts` sets `retries: 2` in CI, and a retry of a
+`test.describe.configure({ mode: "serial" })` group re-runs **the whole group**.
+The suite seeds ONCE per run (`scripts/e2e-stack.sh`) — there is no reseed
+between attempts. So a spec that permanently mutates state on its way to an
+assertion fails its retries *deterministically*, on a different assertion than
+the one that really broke:
+
+| Spec | Attempt 0 left behind | Retries then failed with |
+| --- | --- | --- |
+| `waitlist.spec.ts` | Wanda's booking on the seeded-full window | `BOOKING_MEMBER_NIGHT_CONFLICT` instead of `CAPACITY_EXCEEDED` |
+| `xero-setup-wizard.spec.ts` | the wizard's persisted step cursor on step 3 | the step-1 heading never appears |
+| `stripe-payment.spec.ts` | the persona booked onto its stay window | the wizard never reaches "Booking Summary" |
+| `bed-allocation.spec.ts` | the seeded booking already approved | "Ken King" no longer in the pending-review list |
+
+Four rules follow, and a new spec must satisfy all four:
+
+- **Keep serial groups as narrow as the real dependency.** Only tests that
+  genuinely hand state to the next one belong in a `mode: "serial"` describe;
+  everything else stays an independent test so its failure retries *it* and
+  never drags a mutating predecessor back through a dirty database.
+  `waitlist.spec.ts` is the worked example — a two-test serial describe plus two
+  standalone tests, where the file used to be serial end to end.
+- **Make setup idempotent, in a hook that re-runs on every attempt.** A retry
+  restarts the worker, so `beforeAll`/`beforeEach` run again — that is where the
+  reset belongs. Use the shared primitives in
+  [`e2e/helpers/reset.ts`](../e2e/helpers/reset.ts)
+  (`cancelMemberBookingsOnDate`, `resetXeroSetupWizard`); they drive the product's
+  own admin API, so no spec needs direct database access and no test-only
+  endpoint is added. A clean first attempt is a no-op.
+- **Give each attempt its own booking dates.** `stayWindowForAttempt(index,
+  testInfo.retry)` (`e2e/helpers/stay-dates.ts`) maps attempt 0/1/2 onto three
+  disjoint bands of Mondays, so a retry can never collide with the booking its
+  own previous attempt created. Attempt 0 is byte-identical to `stayWindow(index)`.
+  Prefer this to `stayWindow(index)` in any test that creates a booking. Keep
+  base indices unique per spec, as before.
+
+  **It is unusable in two shapes, and then the reset is the tool instead:** a
+  window held in a `const` at module scope has no `testInfo` to read `retry`
+  from, and a test that must act on the window a PREVIOUS test booked has to keep
+  that window rather than take its own. `booking.spec.ts` (test 2 re-books test
+  1's window to prove the member-night lock) and `admin-override-dates.spec.ts`
+  (later tests shift the booking test 1 made) are both, so each clears its
+  leftover in an idempotent group `beforeAll` via `cancelMemberBookingsOnDate`
+  instead — including, for the override spec, every date the booking is moved
+  through.
+
+  Those retry bands cost calendar navigation: a spec reaches its dates by
+  clicking the wizard calendar's "Next ›" one month at a time, bounded by
+  `MAX_MONTH_HOPS` in `e2e/helpers/booking.ts`. Base 0–15 × attempt 0–2 needs at
+  most 14 hops on any run date and the bound is 24, so nothing in range can run
+  out — and if a future base or stride does, `selectCalendarDay` now fails on the
+  month it could not reach rather than timing out on a day button.
+- **Restore shared state in `afterAll`, never at the end of the test body.**
+  `xero-setup-wizard-completion.spec.ts` used to disconnect Xero and rewind the
+  wizard on its last line; when it failed earlier it stranded the sibling spec on
+  a connected, step-3 wizard.
+
+### 2. A streaming route renders the same text twice for a beat
+
+Every route segment with a `loading.tsx` (`/book`, `/bookings`,
+`/bookings/[id]`, `/dashboard`, `/admin/bookings`, `/admin/dashboard`,
+`/admin/members`, `/finance`) is a React streaming (Suspense) boundary. During
+the reveal the content exists **twice** — once in a `hidden` streamed template
+and once live — so a bare `getByText("…")` resolves to two elements and strict
+mode fails the assertion outright (`resolved to 2 elements … unexpected value
+"hidden"`). This is what broke `waitlist.spec.ts`'s offer card, and `#21` before
+it in `multi-lodge/member-cross-lodge.spec.ts`.
+
+- **Prefer `getByRole` / a `getByTestId`-scoped locator.** The streamed template
+  is `hidden`, i.e. `display: none`, so it is out of the accessibility tree and
+  `getByRole` cannot match it. `getByText` has no such protection.
+- **If text is the only handle, add `.filter({ visible: true })`** so the
+  assertion converges on the revealed node instead of the template.
+- **Assert "it is gone" on the UNFILTERED locator** (`toHaveCount(0)`), so "gone"
+  means gone from the DOM rather than merely hidden in a template.
+
+### 3. Fixed dates
+
+Nothing in a spec may hardcode a calendar date. Stay windows come from
+`stayWindow` / `stayWindowForAttempt`, seeded fixtures and seasons are relative
+(`prisma/e2e-fixtures.ts`, issue #2117), and prose dates are derived with
+`lodgeNightLabel` / `calendarDayLabel`. A hardcoded date produces an assertion
+that can only pass in the week it was written.
+
+### What is deliberately NOT the fix
+
+Bumping `retries`, widening a `toBeVisible` timeout, `page.waitForTimeout`, or
+relaxing an assertion so the polluted state also passes. Each hides the
+mechanism and leaves the next author to rediscover it.
 
 ## Safety
 

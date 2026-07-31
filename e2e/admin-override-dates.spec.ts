@@ -3,6 +3,7 @@ import { bookSelfToReviewStep, confirmBookingToPaymentStep } from "./helpers/boo
 import { personas } from "./helpers/personas";
 import { E2E_ADMIN } from "./helpers/fixtures";
 import { storageStatePath } from "./helpers/auth";
+import { cancelMemberBookingsOnDate } from "./helpers/reset";
 import { stayWindow } from "./helpers/stay-dates";
 
 // docs/END_TO_END_TEST_MATRIX.md row "Admin date override (#1668)": a Full Admin
@@ -29,6 +30,22 @@ test.describe.configure({ mode: "serial" });
 // between Winter 2026 and Summer 2026-27), so index 5 is always clear of the
 // seeded-FULL/offer/IB windows AND in-season on any run date.
 const window = stayWindow(5);
+
+// RETRY IDEMPOTENCY (#2302). Serial group + a booking this file CREATES and then
+// MOVES: a retry re-runs the whole group against the leftover. `stayWindowForAttempt`
+// cannot help — the window is a module-scope const with no `testInfo`, and the
+// later tests must act on the booking the first one made — so the group's own
+// `beforeAll` clears the leftover instead.
+//
+// Where can the leftover be? On `window.checkIn` if the group got as far as
+// parking it back (or failed before the first shift), otherwise on whichever
+// override target the failing attempt stopped at: isoDay(-5), (-4), (-1) or (0).
+// The sweep below covers -6…+1, one day of slack either side so an attempt and
+// its retry that straddle NZ midnight still line up. Every date is matched
+// against the booker as OWNER, so this can only ever clear a booking this file
+// itself created: Alice's one seeded booking sits at -25 days, and the -7…-15
+// band admin-retroactive-booking.spec.ts uses is outside the sweep.
+const OVERRIDE_LEFTOVER_OFFSETS = [-6, -5, -4, -3, -2, -1, 0, 1];
 
 let memberContext: BrowserContext;
 let adminContext: BrowserContext;
@@ -122,6 +139,15 @@ test.beforeAll(async ({ browser }) => {
   // per-spec login (#1779).
   adminContext = await browser.newContext({
     storageState: storageStatePath(E2E_ADMIN.email),
+  });
+
+  // Re-runs on every attempt (a retry restarts the worker); a clean first
+  // attempt cancels nothing. Full admin matters here: the started-stay block
+  // (#2029) is waived only for ADMIN, and a leftover parked on isoDay(-5) has
+  // started.
+  await cancelMemberBookingsOnDate(adminContext.request, {
+    memberName: `${personas.booker.firstName} ${personas.booker.lastName}`,
+    checkIn: [window.checkIn, ...OVERRIDE_LEFTOVER_OFFSETS.map(isoDay)],
   });
 });
 
