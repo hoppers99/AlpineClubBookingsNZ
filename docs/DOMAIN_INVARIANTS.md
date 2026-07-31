@@ -2633,12 +2633,36 @@ of birth to a minor tier can indirectly clear `canLogin` (informational).
 
 Membership-cancellation eligibility is an account-holder question, never a
 permissions one (#2383). `isMembershipHolderRecord` (`src/lib/member-roles.ts`)
-is the single rule, shared by `createAdminMembershipCancellationRequest` and the
-admin member page's gate, and pinned to that call site by the #2354 AST contract
-test. It refuses exactly two record classes, both of which are not account
-holders: the lodge kiosk device login, and booking-request contact records
-(`NON_MEMBER`, plus non-login `SCHOOL` — the school flow's owner contact and
-teacher records).
+is the single rule, shared by `createAdminMembershipCancellationRequest`, the
+admin member page's gate (pinned to that call site by the #2354 AST contract
+test), and — since #2391 — the member-raised route in
+`loadCancellationCandidates`: its own eligibility gate, and the per-candidate
+verdict for every member of the requester's family groups. It refuses exactly
+two record classes, both of which are not account holders: the lodge kiosk
+device login, and booking-request contact records (`NON_MEMBER`, plus non-login
+`SCHOOL` — the school flow's owner contact and teacher records).
+
+The member-raised route adds exactly two further conditions, and they are about
+being able to operate your own profile, never about what class of account it is
+(#2391): the requester must be `active` and `canLogin`. Both are retained
+deliberately — a closed account or one with no login of its own cannot raise
+anything from its own profile — and neither narrows what is cancellable, because
+those memberships remain reachable from a relative's family request and from the
+member page. The family candidate query therefore carries NO role filter: a
+relative who is also an admin, or an organisation account sharing the family
+group, is listed and eligible, and the two non-holder classes are listed with a
+reason rather than dropped silently. A self-raised participant is the requester,
+so `requiresOwnConfirmation` is false and the row is created `REQUESTED` with
+`confirmedAt` set — structurally identical to an admin-raised participant, and
+never waiting on a confirmation email nobody would action (which matters most
+for an organisation account, where there is no "adult participant" in the human
+sense).
+
+Both member-raised queries select `role`, `canLogin`, `financeAccessLevel` and
+the `accessRoles` rows (`cancellationCandidateSelect`), for the same reason the
+admin path does: an unselected column arrives `undefined` and would misclassify
+a person as the kiosk device. Unit tests cannot catch that — Prisma is mocked —
+so the query shape itself is asserted.
 
 The kiosk test is a record-CLASS test, never a "holds lodge access" test.
 `LODGE` is a freely tickable checkbox in the member editor ("Can use lodge kiosk
@@ -3312,6 +3336,36 @@ Assignment additionally requires the member to hold the standard
 picker only surfaces adult `USER` members with an operational booking
 overlapping the assignment range, while the "Any member" tab rosters a
 booking-less custodian directly (see CONFIGURATION.md → "Hut Leaders").
+
+The trusted legacy induction baseline (#2361) is a one-off maintenance
+exception, not a replacement for ordinary sign-off. Its population is exactly
+the active, non-archived, non-cancelled real-member rows whose legacy member
+role is `USER` or `ADMIN`; this classification reuses the canonical member
+import role set. Login is not required, so a non-login `USER` dependant remains
+in scope, while `LODGE`, `NON_MEMBER`, and `SCHOOL` rows do not. Every
+configured person age tier participates; Infant, Child, Youth, and Adult are
+all included, while an in-scope `N/A` is reported separately and never
+changed. The age-tier partition must come from valid stored configuration —
+the command must not silently substitute application fallbacks. A completed
+induction of **any** kind makes the member historical and therefore skip-only.
+A `DRAFT` or `IN_PROGRESS` induction makes the member an apply blocker,
+including when another completed row also exists. Voided history alone does
+not count as completion.
+
+Apply requires an active, login-enabled Full Admin actor, one valid active
+`NEW_MEMBER` template, an exact effective-club-name confirmation, exact parsed
+database host and database-name confirmations, one New Zealand date-only
+value no later than the current New Zealand date, and stable provenance. It
+creates only new `NEW_MEMBER` / `COMPLETED` / `ADMIN_OVERRIDE` rows.
+`inductionDate` and `completedAt` are the same supplied date, and every row
+stores the actor, template, and provenance. It creates no signers, sign-offs,
+email, or `hutLeaderEligible` side effect; existing induction rows are never
+updated or deleted. The rows and audit event are one transaction, an open
+workflow visible after the direct-`MemberInduction` DML lock aborts the whole
+apply, and an identical rerun writes nothing. That table lock does not freeze
+the member population or a composed writer before it reaches this table, so
+the final dry run and apply require the operator write freeze in
+`docs/INDUCTION_BASELINE_RUNBOOK.md`.
 
 A `HutLeaderAssignment` may additionally hold ONE bed (`bedId`), which makes it
 a **custodian occupancy** (#2286). The invariants:
