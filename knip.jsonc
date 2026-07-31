@@ -33,10 +33,15 @@
     "scripts/audit-ib-hold-clearing.ts",
     // Documented read-only diagnostic CLI (docs/guides/calendar.md; invoked via
     // `npx tsx`, never imported). Explains a member's calendar edit access.
-    "scripts/diagnose-calendar-access.ts",
-    // Next.js runtime entry: register() and the onRequestError convention hook are
-    // invoked by the framework, not imported by app code (#1178 kept onRequestError).
-    "src/instrumentation.node.ts"
+    "scripts/diagnose-calendar-access.ts"
+    // `src/instrumentation.node.ts` deliberately has NO entry here. It used to
+    // (#1178), partly justified by an `onRequestError` export that Next never
+    // reads from this file — that hook now lives on `src/instrumentation.ts`,
+    // where the framework actually looks (#2356 review). The remaining
+    // justification was hollow too: knip already follows the dynamic
+    // `import("./instrumentation.node")` in `src/instrumentation.ts`, which the
+    // Next plugin supplies as an entry, so the carve-out changed nothing.
+    // Verified by removing it and re-running `npx knip` (exit 0).
   ],
   // The k6 load harness (#1884) is operator-invoked tooling that runs under the
   // k6 binary, not Node/Next — its scripts import k6-runtime modules (k6/http,
