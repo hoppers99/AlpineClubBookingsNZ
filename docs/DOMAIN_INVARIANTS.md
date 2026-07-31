@@ -1964,7 +1964,7 @@ helpers so the surfaces can never drift):
 ### Chasing an outstanding additional payment (#2350)
 
 Until #2350 nothing chased the member for an uncollected upward change and no
-admin surface showed one. Six rules now hold:
+admin surface showed one. These rules now hold:
 
 - **Who is owed anything at all.** `isAdditionalPaymentOwed`
   (`src/lib/additional-payment-chase.ts`) is the in-memory twin of
