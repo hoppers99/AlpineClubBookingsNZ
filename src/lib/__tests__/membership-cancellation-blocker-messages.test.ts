@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   buildMembershipCancellationApprovalBlockedMessage,
   describeMembershipCancellationBlocker,
+  describeUnpaidInvoiceBlockerParts,
   membershipCancellationBlockerHeading,
   membershipCancellationBlockerHint,
   type MembershipCancellationBlocker,
+  type MembershipCancellationInvoiceCheckUnavailableReason,
   type MembershipCancellationUnpaidInvoiceBlocker,
 } from "@/lib/membership-cancellation-blocker-messages";
 
@@ -20,7 +22,8 @@ function unpaidInvoice(
     amountDueCents: 12050,
     currency: "NZD",
     dueDate: "2026-06-30",
-    xeroUrl: null,
+    xeroUrl: "https://go.xero.com/AccountsReceivable/View.aspx?InvoiceID=inv-1",
+    xeroContactUrl: "https://go.xero.com/Contacts/View/contact-1",
     ...overrides,
   };
 }
@@ -35,9 +38,13 @@ const ownedBooking: MembershipCancellationBlocker = {
 
 describe("membership cancellation blocker wording", () => {
   it("names the invoice, its balance, its status and its due date", () => {
-    expect(describeMembershipCancellationBlocker(unpaidInvoice())).toBe(
-      "Invoice INV-0042 — NZD 120.50 still owing (AUTHORISED, due 2026-06-30)",
-    );
+    // The figures are pinned exactly; the prose around them is asserted by
+    // substring so a wording tweak does not fail an arithmetic test.
+    const line = describeMembershipCancellationBlocker(unpaidInvoice());
+    expect(line).toContain("Invoice INV-0042");
+    expect(line).toContain("NZD 120.50 still owing");
+    expect(line).toContain("AUTHORISED");
+    expect(line).toContain("due 2026-06-30");
   });
 
   it("calls a payable a bill", () => {
@@ -53,7 +60,42 @@ describe("membership cancellation blocker wording", () => {
       describeMembershipCancellationBlocker(
         unpaidInvoice({ invoiceNumber: null }),
       ),
-    ).toContain("Xero invoice inv-1");
+    ).toContain("(no number, Xero id inv-1)");
+  });
+
+  // #2392 review (H1): the queue links the label, so the sentence has to come
+  // apart at exactly that point — and rejoin into the server's own wording.
+  describe("the linkable split", () => {
+    it("rejoins into the same sentence the server sends", () => {
+      const blocker = unpaidInvoice();
+      const { label, detail } = describeUnpaidInvoiceBlockerParts(blocker);
+
+      expect(`${label} — ${detail}`).toBe(
+        describeMembershipCancellationBlocker(blocker),
+      );
+    });
+
+    it("links an invoice straight to itself in Xero", () => {
+      expect(describeUnpaidInvoiceBlockerParts(unpaidInvoice()).href).toContain(
+        "InvoiceID=inv-1",
+      );
+    });
+
+    it("falls back to the contact page for a bill, which has no invoice link", () => {
+      expect(
+        describeUnpaidInvoiceBlockerParts(
+          unpaidInvoice({ direction: "payable", xeroUrl: null }),
+        ).href,
+      ).toBe("https://go.xero.com/Contacts/View/contact-1");
+    });
+
+    it("honours the caller's date format in the detail half", () => {
+      expect(
+        describeUnpaidInvoiceBlockerParts(unpaidInvoice(), {
+          formatDate: (value) => `[${value}]`,
+        }).detail,
+      ).toContain("due [2026-06-30]");
+    });
   });
 
   it("leaves an unknown currency off rather than guessing one", () => {
@@ -114,6 +156,52 @@ describe("membership cancellation blocker wording", () => {
       expect(message).toContain("INV-0042");
     });
 
+    it("points the approver at the panel, where the whole list is linked", () => {
+      const message = buildMembershipCancellationApprovalBlockedMessage([
+        unpaidInvoice(),
+      ]);
+
+      expect(message).toContain("listed beside this participant");
+    });
+
+    // #2392 review (H2): the owner's worry was a cancellation held hostage.
+    // "Try again later" on its own IS being held hostage — Xero's daily limit
+    // resets at midnight UTC — so every failure names the way out.
+    it("offers the escape hatch on every failure, not just a disconnected Xero", () => {
+      const reasons: MembershipCancellationInvoiceCheckUnavailableReason[] = [
+        "disconnected",
+        "rate_limited",
+        "unavailable",
+        "invalid_request",
+        "too_many_invoices",
+      ];
+
+      for (const reason of reasons) {
+        const message = buildMembershipCancellationApprovalBlockedMessage([
+          { type: "invoice_check_unavailable", reason },
+        ]);
+        expect(message, reason).toContain(
+          '"Archive Xero contacts after cancellation approval"',
+        );
+        expect(message, reason).toContain("Membership Cancellation settings");
+      }
+    });
+
+    it("says so when waiting will not help", () => {
+      const invalid = buildMembershipCancellationApprovalBlockedMessage([
+        { type: "invoice_check_unavailable", reason: "invalid_request" },
+      ]);
+      expect(invalid).toContain("Waiting will not fix this one");
+      expect(invalid).toContain("merged or deleted in Xero");
+      expect(invalid).not.toContain("Try again in a few minutes");
+
+      const tooMany = buildMembershipCancellationApprovalBlockedMessage([
+        { type: "invoice_check_unavailable", reason: "too_many_invoices" },
+      ]);
+      expect(tooMany).toContain("Waiting will not fix this one");
+      expect(tooMany).toContain("settle or void them in Xero");
+    });
+
     it("explains a disconnected Xero and offers two ways out", () => {
       const message = buildMembershipCancellationApprovalBlockedMessage([
         { type: "invoice_check_unavailable", reason: "disconnected" },
@@ -136,13 +224,16 @@ describe("membership cancellation blocker wording", () => {
       expect(message).not.toContain("Reconnect Xero");
     });
 
-    it("names the API limit when that is what stopped the check", () => {
+    it("names the API limit when that is what stopped the check, and how long that is", () => {
       const message = buildMembershipCancellationApprovalBlockedMessage([
         { type: "invoice_check_unavailable", reason: "rate_limited" },
       ]);
 
       expect(message).toContain("API limit");
       expect(message).toContain("once the limit resets");
+      // Not a vague "later": the reviewer is told it can be most of a day, so
+      // they can judge whether to use the escape hatch instead.
+      expect(message).toContain("midnight UTC");
     });
   });
 
@@ -167,6 +258,20 @@ describe("membership cancellation blocker wording", () => {
       expect(
         membershipCancellationBlockerHeading([ownedBooking, unpaidInvoice()]),
       ).toBe("Resolve these before approval.");
+    });
+
+    // #2392 review (L9): the old heading read "Resolve these bookings before
+    // approval." over a bullet saying Xero was not connected — which is not a
+    // booking and not the reviewer's to resolve.
+    it("does not head a bookings-plus-failed-check panel as bookings only", () => {
+      const blockers: MembershipCancellationBlocker[] = [
+        ownedBooking,
+        { type: "invoice_check_unavailable", reason: "disconnected" },
+      ];
+
+      expect(membershipCancellationBlockerHeading(blockers)).toBe(
+        "Resolve these before approval.",
+      );
     });
 
     it("explains the check itself when that is all that is wrong", () => {

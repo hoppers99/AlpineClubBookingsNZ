@@ -114,7 +114,7 @@ import {
   getAuthenticatedXeroClient,
 } from "@/lib/xero-api-client";
 import { getXeroErrorStatusCode } from "@/lib/xero-error-shape";
-import { buildXeroInvoiceUrl } from "@/lib/xero-links";
+import { buildXeroContactUrl, buildXeroInvoiceUrl } from "@/lib/xero-links";
 
 /**
  * The same "open invoice" statuses the finance dashboard ages
@@ -213,6 +213,7 @@ function toUnpaidInvoiceBlocker(
   if (!invoiceId) {
     return null;
   }
+  const contactId = toOptionalText(invoice.contact?.contactID);
 
   const status = toOptionalText(invoice.status)?.toUpperCase() ?? "";
   // Belt and braces: the API call already filters by status, but a blocker that
@@ -251,6 +252,11 @@ function toUnpaidInvoiceBlocker(
     // The deep-link path is the receivables one; a bill has no equivalent
     // helper, so it is left without a link rather than pointed somewhere wrong.
     xeroUrl: direction === "receivable" ? buildXeroInvoiceUrl(invoiceId) : null,
+    // ...and the contact page picks up what the invoice link cannot: a bill, and
+    // any invoice Xero never numbered. A treasurer cannot search Xero by GUID,
+    // so without a link those rows name something they cannot find (#2392
+    // review, H1).
+    xeroContactUrl: contactId ? buildXeroContactUrl(contactId) : null,
   };
 }
 

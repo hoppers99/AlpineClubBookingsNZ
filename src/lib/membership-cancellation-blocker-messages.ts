@@ -43,7 +43,18 @@ export type MembershipCancellationUnpaidInvoiceBlocker = {
   currency: string;
   /** Date-only "YYYY-MM-DD", or null when the invoice carries no due date. */
   dueDate: string | null;
+  /**
+   * Deep link straight to this invoice in Xero, or null for a bill — Xero's
+   * receivable and payable views live at different paths and only the
+   * receivable one is a URL this app can build with confidence.
+   */
   xeroUrl: string | null;
+  /**
+   * Deep link to the CONTACT the invoice sits on. Always present, and it is what
+   * makes a row without an invoice number usable: a treasurer cannot search Xero
+   * by GUID, but the contact page lists every invoice and bill on the contact.
+   */
+  xeroContactUrl: string | null;
 };
 
 export type MembershipCancellationInvoiceCheckUnavailableReason =
@@ -52,7 +63,18 @@ export type MembershipCancellationInvoiceCheckUnavailableReason =
   /** Xero's API limit is in force, so the check could not be run. */
   | "rate_limited"
   /** Xero could not be reached this time — a transient failure. */
-  | "unavailable";
+  | "unavailable"
+  /**
+   * Xero refused the request itself — most often because the stored contact id
+   * no longer exists there (merged, or deleted). Waiting does not fix it, so it
+   * must not be worded as though it will (#2392 review).
+   */
+  | "invalid_request"
+  /**
+   * The contact carries more open invoices than the paged read will list, so
+   * "nothing owing" could not be established for it. Also not transient.
+   */
+  | "too_many_invoices";
 
 /**
  * The unpaid-invoice check could not be completed. This is a blocker in its own
@@ -101,24 +123,76 @@ export function formatBlockerAmount(cents: number, currency: string): string {
   return currency && currency !== "UNKNOWN" ? `${currency} ${amount}` : amount;
 }
 
-/** "INV-0042" when Xero has numbered it, otherwise a short form of its id. */
+/**
+ * "INV-0042" when Xero has numbered it. Xero leaves the number blank on plenty
+ * of bills, and a treasurer cannot search Xero by GUID, so an unnumbered one is
+ * named by its full Xero id AND given a link — `xeroUrl` for a receivable,
+ * `xeroContactUrl` otherwise — because the link is what actually makes that row
+ * actionable (#2392 review).
+ */
 export function invoiceBlockerLabel(
   blocker: MembershipCancellationUnpaidInvoiceBlocker,
 ): string {
-  return blocker.invoiceNumber ?? `Xero invoice ${blocker.invoiceId}`;
+  return blocker.invoiceNumber ?? `(no number, Xero id ${blocker.invoiceId})`;
 }
+
+/**
+ * The escape hatch, in one place. EVERY failure message ends with it: the owner's
+ * worry behind this whole blocker was a cancellation held hostage, and a refusal
+ * whose only advice is "try again later" is exactly that — Xero's daily limit
+ * resets at midnight UTC, so "wait for the limit" can be most of a working day
+ * (#2392 review, H2).
+ */
+const ARCHIVE_SETTING_ESCAPE_HATCH = `Alternatively, turn off ${MEMBERSHIP_CANCELLATION_ARCHIVE_SETTING_LABEL} in the Membership Cancellation settings: with it off no Xero contact is archived, so this check is not needed and the approval goes through.`;
 
 function describeInvoiceCheckUnavailable(
   reason: MembershipCancellationInvoiceCheckUnavailableReason,
 ): string {
   switch (reason) {
     case "disconnected":
-      return `Xero is not connected, so its unpaid invoices could not be checked. Reconnect Xero, or turn off ${MEMBERSHIP_CANCELLATION_ARCHIVE_SETTING_LABEL} in the Membership Cancellation settings.`;
+      return `Xero is not connected, so its unpaid invoices could not be checked. Reconnect Xero from the admin Xero page — this one will not clear on its own. ${ARCHIVE_SETTING_ESCAPE_HATCH}`;
     case "rate_limited":
-      return "Xero's API limit has been reached, so its unpaid invoices could not be checked. Try again once the limit resets.";
+      return `Xero's API limit has been reached, so its unpaid invoices could not be checked. Try again once the limit resets — Xero's daily limit resets at midnight UTC, which is about midday in New Zealand, so that can be most of a working day away. ${ARCHIVE_SETTING_ESCAPE_HATCH}`;
     case "unavailable":
-      return "Xero could not be reached, so its unpaid invoices could not be checked. Try again in a few minutes.";
+      return `Xero could not be reached, so its unpaid invoices could not be checked. Try again in a few minutes. ${ARCHIVE_SETTING_ESCAPE_HATCH}`;
+    case "invalid_request":
+      return `Xero refused the request for this member's contact, so its unpaid invoices could not be checked. Waiting will not fix this one: the contact has most likely been merged or deleted in Xero. Re-link the member to their Xero contact from their member page. ${ARCHIVE_SETTING_ESCAPE_HATCH}`;
+    case "too_many_invoices":
+      return `This member's Xero contact has more open invoices than this check can list, so "nothing owing" could not be established. Waiting will not fix this one: settle or void them in Xero, starting from the contact's page. ${ARCHIVE_SETTING_ESCAPE_HATCH}`;
   }
+}
+
+type DescribeBlockerOptions = { formatDate?: (value: string) => string };
+
+const defaultFormatDate = (value: string) => value.slice(0, 10);
+
+/**
+ * The unpaid-invoice line, split at the point a link belongs.
+ *
+ * The review queue renders `label` as a hyperlink to `href` and `detail` as
+ * plain text; the server joins the two into one sentence. Splitting here rather
+ * than rebuilding the sentence in the client is what keeps the one-source-of-
+ * truth promise this module exists for — the panel and the 409 cannot drift
+ * apart (#2392 review, H1).
+ */
+export function describeUnpaidInvoiceBlockerParts(
+  blocker: MembershipCancellationUnpaidInvoiceBlocker,
+  options: DescribeBlockerOptions = {},
+): { label: string; detail: string; href: string | null } {
+  const formatDate = options.formatDate ?? defaultFormatDate;
+  const noun = blocker.direction === "payable" ? "Bill" : "Invoice";
+  const due = blocker.dueDate ? `, due ${formatDate(blocker.dueDate)}` : "";
+
+  return {
+    label: `${noun} ${invoiceBlockerLabel(blocker)}`,
+    detail: `${formatBlockerAmount(
+      blocker.amountDueCents,
+      blocker.currency,
+    )} still owing (${blocker.invoiceStatus}${due})`,
+    // A bill has no receivable-view URL, so it falls back to the contact page,
+    // which lists it. Every row therefore leads somewhere in Xero.
+    href: blocker.xeroUrl ?? blocker.xeroContactUrl,
+  };
 }
 
 /**
@@ -129,9 +203,9 @@ function describeInvoiceCheckUnavailable(
  */
 export function describeMembershipCancellationBlocker(
   blocker: MembershipCancellationBlocker,
-  options: { formatDate?: (value: string) => string } = {},
+  options: DescribeBlockerOptions = {},
 ): string {
-  const formatDate = options.formatDate ?? ((value: string) => value.slice(0, 10));
+  const formatDate = options.formatDate ?? defaultFormatDate;
 
   if (isBookingBlocker(blocker)) {
     const prefix =
@@ -142,12 +216,11 @@ export function describeMembershipCancellationBlocker(
   }
 
   if (isUnpaidInvoiceBlocker(blocker)) {
-    const noun = blocker.direction === "payable" ? "Bill" : "Invoice";
-    const due = blocker.dueDate ? `, due ${formatDate(blocker.dueDate)}` : "";
-    return `${noun} ${invoiceBlockerLabel(blocker)} — ${formatBlockerAmount(
-      blocker.amountDueCents,
-      blocker.currency,
-    )} still owing (${blocker.invoiceStatus}${due})`;
+    const { label, detail } = describeUnpaidInvoiceBlockerParts(
+      blocker,
+      options,
+    );
+    return `${label} — ${detail}`;
   }
 
   return describeInvoiceCheckUnavailable(blocker.reason);
@@ -193,7 +266,7 @@ export function buildMembershipCancellationApprovalBlockedMessage(
     sentences.push(
       `Approval is blocked while Xero still shows money owing on this member's contact: ${listInvoiceBlockers(
         invoiceBlockers,
-      )}. Approving would archive that contact in Xero, so each one must be paid, credited with an allocated credit note, or voided in Xero first — then approve again. If the club is not collecting them, void or credit them in Xero; alternatively turn off ${MEMBERSHIP_CANCELLATION_ARCHIVE_SETTING_LABEL} in the Membership Cancellation settings, which stops the archive and lifts this check.`,
+      )}. Approving would archive that contact in Xero, so each one must be paid, credited with an allocated credit note, or voided in Xero first — then approve again. If the club is not collecting them, void or credit them in Xero; alternatively turn off ${MEMBERSHIP_CANCELLATION_ARCHIVE_SETTING_LABEL} in the Membership Cancellation settings, which stops the archive and lifts this check. Every one of them is listed beside this participant in the review queue, each linked into Xero.`,
     );
   }
 
@@ -220,14 +293,18 @@ export function membershipCancellationBlockerHeading(
 ): string {
   const hasBookings = blockers.some(isBookingBlocker);
   const hasInvoices = blockers.some(isUnpaidInvoiceBlocker);
+  // A failed check is a Xero bullet too. Heading a bookings-plus-"Xero is not
+  // connected" panel "Resolve these bookings before approval." contradicts the
+  // bullet directly underneath it (#2392 review, L9).
+  const hasXero = hasInvoices || blockers.some(isInvoiceCheckUnavailableBlocker);
 
-  if (hasBookings && !hasInvoices) {
+  if (hasBookings && !hasXero) {
     return "Resolve these bookings before approval.";
   }
   if (hasInvoices && !hasBookings) {
     return "Settle these in Xero before approval.";
   }
-  if (hasInvoices && hasBookings) {
+  if (hasBookings || hasInvoices) {
     return "Resolve these before approval.";
   }
   return "Approval cannot be checked yet.";

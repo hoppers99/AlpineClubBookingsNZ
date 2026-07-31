@@ -127,6 +127,9 @@ describe("membership cancellation unpaid-invoice blockers", () => {
         currency: "NZD",
         dueDate: "2026-06-30",
         xeroUrl: expect.stringContaining("inv-1"),
+        // The contact link is what makes an unnumbered invoice — and any bill —
+        // findable, so it is carried on every row (#2392 review, H1).
+        xeroContactUrl: expect.stringContaining("contact-1"),
       },
     ]);
   });
