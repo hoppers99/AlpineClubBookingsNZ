@@ -1,4 +1,5 @@
 import { BookingStatus, PaymentStatus, Prisma } from "@prisma/client";
+import { isAdditionalPaymentOwed } from "@/lib/additional-payment-chase";
 import { getDefaultLodgeCapacity, getLodgeCapacity } from "@/lib/lodge-capacity";
 import { getDefaultLodgeId, lodgeNullTolerantScope } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
@@ -178,6 +179,13 @@ interface FinanceBookingMetricsPaymentSummary {
   >;
   capturedPrimaryCents: number;
   capturedAdditionalCents: number;
+  /**
+   * #2350: upward booking changes whose extra was never collected (PENDING,
+   * FAILED, or a legacy null status). Priced into the booking total, so it is
+   * money the club has counted as booked but does not hold.
+   */
+  outstandingAdditionalCents: number;
+  outstandingAdditionalBookings: number;
   refundedCents: number;
   netCollectedCents: number;
   creditAppliedCents: number;
@@ -295,6 +303,8 @@ function createZeroPaymentSummary(): FinanceBookingMetricsPaymentSummary {
     ),
     capturedPrimaryCents: 0,
     capturedAdditionalCents: 0,
+    outstandingAdditionalCents: 0,
+    outstandingAdditionalBookings: 0,
     refundedCents: 0,
     netCollectedCents: 0,
     creditAppliedCents: 0,
@@ -541,22 +551,44 @@ function getPaymentStatusKey(
   return booking.payment?.status ?? "NONE";
 }
 
+/**
+ * Which bucket of the additional-payment split does this booking belong in?
+ *
+ * PENDING and FAILED mean "still owed", and they are gated on the SAME
+ * `isAdditionalPaymentOwed` predicate as `outstandingAdditionalCents` /
+ * `outstandingAdditionalBookings` below — because the finance panel renders the
+ * three side by side as a split and its total. Without the gate they measured
+ * different populations: the metrics window includes PENDING and
+ * PAYMENT_PENDING bookings, and a PAYMENT_PENDING booking can legitimately
+ * carry a delta (adding a guest to a booking with an issued Xero invoice raises
+ * one), so "Awaiting payment 3 / Payment failed 0 / Total outstanding across 1
+ * booking" was a panel disagreeing with itself. Legacy null-status rows read as
+ * PENDING for the same reason — the owed test counts them, so the split must.
+ *
+ * SUCCEEDED stays ungated: it is a fact about the money, not about the queue,
+ * and it is not part of the outstanding split. Everything else — including an
+ * uncollected delta on a booking the owed test excludes — is NONE, meaning "not
+ * in this queue", which is exactly what the total says about it too.
+ */
 function getAdditionalPaymentStatusKey(
   booking: BookingMetricsRecord
 ): FinanceAdditionalPaymentStatusKey {
-  if (!booking.payment?.additionalPaymentStatus) {
-    return "NONE";
-  }
-
-  if (booking.payment.additionalPaymentStatus === "PENDING") {
-    return "PENDING";
-  }
-
-  if (booking.payment.additionalPaymentStatus === "SUCCEEDED") {
+  if (booking.payment?.additionalPaymentStatus === "SUCCEEDED") {
     return "SUCCEEDED";
   }
 
-  return "FAILED";
+  if (
+    !isAdditionalPaymentOwed({
+      bookingStatus: booking.status,
+      payment: booking.payment,
+    })
+  ) {
+    return "NONE";
+  }
+
+  return booking.payment?.additionalPaymentStatus === "FAILED"
+    ? "FAILED"
+    : "PENDING";
 }
 
 function summarizePayments(
@@ -582,6 +614,27 @@ function summarizePayments(
       getAdditionalPaymentStatusKey(booking)
     ] += 1;
 
+    // KNOWN ISSUE (pre-existing, raised while reviewing #2397 and deliberately
+    // NOT changed there — needs an owner decision, see below).
+    //
+    // `capturedAdditionalCents` DOUBLE-COUNTS a collected price increase.
+    // `reconcilePaymentAggregates` (src/lib/payment-transactions.ts) sets
+    // `Payment.amountCents` to the sum of ALL captured ledger rows — PRIMARY
+    // and ADDITIONAL alike — so a $121 booking whose $21 addition captured
+    // already carries `amountCents = 121`, and `netCollectedCents` below adds
+    // the same $21 a second time to report $142. That is true of every
+    // card-settled booking with a collected addition today, and #2397's cash
+    // settlement writes the identical ledger shape, so it inherits the same
+    // overstatement on the covered answer (and is exactly right — $100 + $0 —
+    // on the not-covered one).
+    //
+    // The obvious repair — drop `capturedAdditionalCents` from the net and let
+    // `amountCents` speak for the whole capture — is right for every payment
+    // whose ledger rows exist, and would UNDER-report any legacy payment whose
+    // `additionalAmountCents` column was set without a matching captured
+    // ADDITIONAL row. Deciding that means deciding it against the club's real
+    // historical data, and it moves a published finance figure, so it belongs
+    // to the owner rather than to a bug-fix PR about cash settlement.
     const capturedPrimaryCents = FINANCE_CAPTURED_PAYMENT_STATUSES.has(
       payment.status
     )
@@ -594,6 +647,12 @@ function summarizePayments(
 
     summary.capturedPrimaryCents += capturedPrimaryCents;
     summary.capturedAdditionalCents += capturedAdditionalCents;
+    if (
+      isAdditionalPaymentOwed({ bookingStatus: booking.status, payment })
+    ) {
+      summary.outstandingAdditionalCents += payment.additionalAmountCents;
+      summary.outstandingAdditionalBookings += 1;
+    }
     summary.refundedCents += payment.refundedAmountCents;
     summary.creditAppliedCents += payment.creditAppliedCents;
     summary.changeFeeCents += payment.changeFeeCents;

@@ -103,7 +103,15 @@ interface PromoCode {
   active: boolean;
   archivedAt: string | null;
   createdAt: string;
+  // Beneficial allocation rows only — the ones that consume usage caps (#2299).
   redemptions: PromoRedemptionRow[];
+  // Every application of the code, benefit or not. Used for the archive-or-
+  // delete decision and shown as the operator-facing "applied" figure.
+  totalRedemptionCount: number;
+  // How many of those applications gave NOBODY a benefit (#2299). Counted on
+  // the server; it is not `totalRedemptionCount - currentRedemptions`, because
+  // those two are in different units (applications vs beneficiaries).
+  benefitFreeRedemptionCount: number;
   assignments: PromoAssignment[];
   lodgeIds: string[];
 }
@@ -529,9 +537,12 @@ export function PromoCodesPageClient({
   }
 
   async function handleDelete(promo: PromoCode) {
-    const hasRedemptions = promo.redemptions.length > 0;
+    // Applications, not beneficial uses: a code that was applied to a booking
+    // is always archived rather than deleted, even if it gave nobody anything
+    // (#2299) — the server refuses the hard delete for the same reason.
+    const hasRedemptions = promo.totalRedemptionCount > 0;
     const confirmMsg = hasRedemptions
-      ? `This promo code has been used ${promo.redemptions.length} time(s). It will be archived (not deleted) so you can still reference it. Continue?`
+      ? `This promo code has been applied to ${promo.totalRedemptionCount} booking(s). It will be archived (not deleted) so you can still reference it. Continue?`
       : "Are you sure you want to delete this promo code?";
 
     if (!confirm(confirmMsg)) return;
@@ -718,7 +729,7 @@ export function PromoCodesPageClient({
                     size="sm"
                     onClick={() => handleDelete(promo)}
                   >
-                    {promo.redemptions.length > 0 ? "Archive" : "Delete"}
+                    {promo.totalRedemptionCount > 0 ? "Archive" : "Delete"}
                   </ViewOnlyActionButton>
                 </>
               )}
@@ -735,16 +746,35 @@ export function PromoCodesPageClient({
               <span className="font-medium">{formatPromoValue(promo)}</span>
             </div>
             <div>
-              <span className="text-muted-foreground">Redemptions:</span>{" "}
+              {/* The number the total-uses cap is enforced against: one per
+                  member per booking, counting only members whose price actually
+                  changed (#2299). Named for what it counts, not "redemptions" —
+                  a single application that benefits three members moves this by
+                  three. */}
+              <span className="text-muted-foreground">Benefits given:</span>{" "}
               <span className="font-medium">
                 {promo.currentRedemptions}
                 {promo.maxRedemptionsTotal != null
                   ? ` / ${promo.maxRedemptionsTotal}`
                   : " (unlimited)"}
               </span>
+              {/* Always shown, so the operator can reconcile the cap figure
+                  against the number of bookings the code was actually used on;
+                  the benefit-free count comes from the server, because these
+                  two figures are in different units and cannot be subtracted. */}
+              <p className="text-xs text-muted-foreground">
+                One per member, per booking. Applied to{" "}
+                {promo.totalRedemptionCount} booking
+                {promo.totalRedemptionCount === 1 ? "" : "s"}
+                {promo.benefitFreeRedemptionCount > 0
+                  ? `, of which ${promo.benefitFreeRedemptionCount} gave no benefit and used up no allowance`
+                  : ""}
+              </p>
             </div>
             <div>
-              <span className="text-muted-foreground">Unique members:</span>{" "}
+              {/* Distinct members who benefited — the unique-members cap's own
+                  unit, so value and cap match. */}
+              <span className="text-muted-foreground">Members who benefited:</span>{" "}
               <span className="font-medium">
                 {uniqueMembers}
                 {promo.maxUniqueMembersTotal != null

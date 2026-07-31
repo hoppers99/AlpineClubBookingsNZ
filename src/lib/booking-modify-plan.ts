@@ -54,11 +54,17 @@ import {
 import { toGroupDiscountConfig } from "@/lib/policies/booking-route-decisions";
 import {
   deletePromoRedemptionAndAdjustCount,
+  lockAndRefreshPromoCodeUsage,
+  lockPromoCodeRowsForUpdate,
   redeemPromoCode,
   replacePromoRedemptionAllocations,
   shouldPersistPromoRedemption,
   validateAndCalculatePromoDiscount,
 } from "@/lib/promo";
+import {
+  describePromoCapCoverage,
+  type PromoCoverageNotice,
+} from "@/lib/promo-cap-coverage";
 import { findUnpaidMemberGuestNames } from "@/lib/booking-member-guest-subscriptions";
 import { isLikelyTypoCorrection } from "@/lib/guest-name-similarity";
 import {
@@ -1012,6 +1018,9 @@ export type PromoChangeResult = {
   newPromoAdjustmentCents: number;
   promoRemoved: boolean;
   promoChanged: boolean;
+  // #2390: set only when a usage cap stopped the promotion reaching somebody on
+  // the repriced booking; null means everyone it applies to is covered.
+  promoCoverage: PromoCoverageNotice | null;
 };
 
 function promoRequiresStoredGuestTargets(
@@ -1149,6 +1158,8 @@ export async function applyPromoCodeChanges(
       newPromoAdjustmentCents: inProgressPlan.newPromoAdjustmentCents,
       promoRemoved: false,
       promoChanged: false,
+      // An in-progress plan reuses prices already agreed; it re-runs no cap.
+      promoCoverage: null,
     };
   }
 
@@ -1156,7 +1167,31 @@ export async function applyPromoCodeChanges(
   let newPromoAdjustmentCents = 0;
   let promoRemoved = false;
   let promoChanged = false;
+  let promoCoverage: PromoCoverageNotice | null = null;
   const bookingLodgeId = booking.lodgeId ?? (await getDefaultLodgeId(tx));
+
+  // Row-lock every promo code whose usage caps this transaction may charge or
+  // refund, BEFORE the first cap read and the first counter write (#2299).
+  // Booking creation has locked its promo row for a long time; none of the four
+  // modification paths did, so two concurrent modifications could both pass a
+  // "one use left" check. (The other three now take the same lock via
+  // `lockAndRefreshPromoCodeUsage`; this one may touch TWO codes, so it uses the
+  // multi-id form.) `lockPromoCodeRowsForUpdate` sorts the ids, so the outgoing
+  // and incoming codes of a swap are always taken in the same global order and
+  // no two transactions can build a cycle.
+  const incomingPromoCodeId =
+    input.promoCode && !input.removePromoCode
+      ? (
+          await tx.promoCode.findUnique({
+            where: { code: input.promoCode.toUpperCase().trim() },
+            select: { id: true },
+          })
+        )?.id
+      : undefined;
+  await lockPromoCodeRowsForUpdate(tx, [
+    booking.promoRedemption?.promoCodeId,
+    incomingPromoCodeId,
+  ]);
 
   if (input.removePromoCode && booking.promoRedemption) {
     await deletePromoRedemptionAndAdjustCount(tx, booking.promoRedemption);
@@ -1169,6 +1204,8 @@ export async function applyPromoCodeChanges(
       promoRemoved = true;
     }
 
+    // Re-read under the lock taken above, so the caps this validation sees are
+    // the caps the redemption below consumes.
     const promoCode = await tx.promoCode.findUnique({
       where: { code: input.promoCode.toUpperCase().trim() },
       include: {
@@ -1241,7 +1278,14 @@ export async function applyPromoCodeChanges(
     !promoRemoved &&
     booking.promoRedemption?.promoCode
   ) {
-    const promo = booking.promoRedemption.promoCode;
+    // The lock is already held (taken above for both codes of a possible swap),
+    // but this snapshot was loaded with the booking, BEFORE it — so re-read the
+    // usage counter under the lock. Locking and then deciding against a number
+    // read outside the lock would leave the race open (#2299).
+    const promo = await lockAndRefreshPromoCodeUsage(
+      tx,
+      booking.promoRedemption.promoCode
+    );
     const selectedGuestIndexes = selectedIndexesForStoredGuestTargets(
       booking.promoRedemption,
       guestNightRates
@@ -1257,7 +1301,18 @@ export async function applyPromoCodeChanges(
       promo.assignments.length > 0
         ? promo.assignments.map((assignment) => assignment.memberId)
         : null,
-      { excludeBookingId: bookingId, db: tx, selectedGuestIndexes, lodgeId: bookingLodgeId },
+      {
+        excludeBookingId: bookingId,
+        db: tx,
+        selectedGuestIndexes,
+        lodgeId: bookingLodgeId,
+        // #2390: the reprice branch keeps the code the booking already has, so
+        // a cap must narrow who it covers rather than refuse the whole edit.
+        // The swap branch above deliberately does NOT do this: there the member
+        // is applying a code, nobody holds a discount from it yet, and "this
+        // code is full" is the honest answer.
+        capOverflow: "coverExisting",
+      },
     );
 
     if (application.error || !application.discount) {
@@ -1267,6 +1322,10 @@ export async function applyPromoCodeChanges(
       const promoResult = application.discount;
       newDiscountCents = promoResult.discountCents;
       newPromoAdjustmentCents = promoResult.priceAdjustmentCents;
+      promoCoverage = await describePromoCapCoverage(tx, {
+        promoCode: promo.code,
+        capCoverage: application.capCoverage,
+      });
 
       await replacePromoRedemptionAllocations(
         tx,
@@ -1284,7 +1343,13 @@ export async function applyPromoCodeChanges(
     }
   }
 
-  return { newDiscountCents, newPromoAdjustmentCents, promoRemoved, promoChanged };
+  return {
+    newDiscountCents,
+    newPromoAdjustmentCents,
+    promoRemoved,
+    promoChanged,
+    promoCoverage,
+  };
 }
 
 export async function calculateModificationChangeFee({

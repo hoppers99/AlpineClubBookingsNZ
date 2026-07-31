@@ -36,6 +36,18 @@ export interface BookingManualPaymentState {
    * before they click rather than after.
    */
   storedCreditElectionCents: number | null;
+  /**
+   * #2397: an upward price change was recorded on this booking after it was
+   * priced, and that extra has never been collected — in integer cents, or 0
+   * (the overwhelmingly common case) when there is none.
+   *
+   * When it is 0 the dialog is EXACTLY as it was: no extra question, no extra
+   * figures, no extra field on the request. When it is not, the admin holding
+   * the money is shown how the one amount splits and must say whether the cash
+   * covers the extra as well, because that answer decides whether the club goes
+   * on asking the member for it.
+   */
+  outstandingAdditionalCents: number;
   /** Whether this booking can be recorded as settled at all. */
   canMarkPaid: boolean;
   /** Why not, when it cannot — shown instead of the action. */
@@ -82,11 +94,41 @@ export function BookingManualPaymentControls({
   const [dialog, setDialog] = useState<null | "paid" | "unpaid">(null);
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  /**
+   * #2397: the admin's answer about the outstanding extra. Starts UNANSWERED
+   * and has no default — recording the payment is blocked until they choose,
+   * because guessing either way is a guess about money.
+   */
+  const [additionalCovered, setAdditionalCovered] = useState<boolean | null>(
+    null
+  );
 
   const isSettled = state.manuallyMarkedPaidAt !== null;
+  const outstandingAdditionalCents = state.outstandingAdditionalCents;
+  const hasOutstandingAdditional = outstandingAdditionalCents > 0;
+  // The extra is a SLICE of the amount owing, not a sum on top of it: an upward
+  // change raised the booking's price by the same amount it recorded as the
+  // extra. So the booking's worth before the change is the difference.
+  const baseAmountCents = state.amountOwingCents - outstandingAdditionalCents;
+  const additionalAnswered = !hasOutstandingAdditional || additionalCovered !== null;
+  /**
+   * What will actually be RECORDED AS RECEIVED (owner decision, 31 Jul 2026).
+   * The answer changes it: saying the cash did not cover the addition records
+   * only the amount from before the change, so the club's books show what was
+   * handed over rather than what the booking is worth. Null until answered —
+   * the dialog must not put a figure in the title it cannot stand behind.
+   */
+  const recordedAmountCents = !hasOutstandingAdditional
+    ? state.amountOwingCents
+    : additionalCovered === null
+      ? null
+      : additionalCovered
+        ? state.amountOwingCents
+        : baseAmountCents;
 
   function openDialog(direction: "paid" | "unpaid") {
     setNote("");
+    setAdditionalCovered(null);
     setDialog(direction);
   }
 
@@ -127,6 +169,18 @@ export function BookingManualPaymentControls({
                 // longer matches, so a price that moved is never recorded at
                 // the figure on a stale screen.
                 expectedAmountCents: state.amountOwingCents,
+                // #2397: sent ONLY when this screen showed an outstanding
+                // extra. Omitting it is the claim that it did not, which the
+                // server re-checks under its locks.
+                ...(hasOutstandingAdditional
+                  ? {
+                      additionalCoverage: {
+                        covered: additionalCovered === true,
+                        expectedAdditionalAmountCents:
+                          outstandingAdditionalCents,
+                      },
+                    }
+                  : {}),
               }
             : {}),
         }),
@@ -219,8 +273,9 @@ export function BookingManualPaymentControls({
             <>
               <DialogHeader>
                 <DialogTitle>
-                  Record {formatCents(state.amountOwingCents)} as paid for{" "}
-                  {memberName}?
+                  {recordedAmountCents === null
+                    ? `Record a payment for ${memberName}?`
+                    : `Record ${formatCents(recordedAmountCents)} as paid for ${memberName}?`}
                 </DialogTitle>
                 <DialogDescription>
                   This records money the club has already received in cash or by
@@ -243,6 +298,92 @@ export function BookingManualPaymentControls({
                   {formatCents(state.amountOwingCents)} only if that is what they
                   have actually handed over.
                 </p>
+              ) : null}
+              {hasOutstandingAdditional ? (
+                <div
+                  className="space-y-3 rounded-md border border-warning-6 bg-warning-3 px-3 py-2 text-sm text-warning-11"
+                  data-testid="manual-payment-additional-coverage"
+                >
+                  <p>
+                    A later change to this booking added{" "}
+                    <strong>{formatCents(outstandingAdditionalCents)}</strong>,
+                    which is recorded separately and is still marked as unpaid.
+                    That amount is part of the{" "}
+                    {formatCents(state.amountOwingCents)} this booking owes, not
+                    on top of it:
+                  </p>
+                  <dl className="space-y-1">
+                    <div className="flex justify-between gap-4">
+                      <dt>Booking before the change</dt>
+                      <dd data-testid="manual-payment-additional-base">
+                        {formatCents(baseAmountCents)}
+                      </dd>
+                    </div>
+                    <div className="flex justify-between gap-4">
+                      <dt>Later addition, still marked unpaid</dt>
+                      <dd data-testid="manual-payment-additional-extra">
+                        {formatCents(outstandingAdditionalCents)}
+                      </dd>
+                    </div>
+                    <div className="flex justify-between gap-4 border-t border-warning-6 pt-1">
+                      <dt>Owed in total</dt>
+                      <dd data-testid="manual-payment-additional-owing">
+                        {formatCents(state.amountOwingCents)}
+                      </dd>
+                    </div>
+                    <div className="flex justify-between gap-4 font-medium">
+                      <dt>Total being recorded as paid</dt>
+                      <dd data-testid="manual-payment-additional-total">
+                        {recordedAmountCents === null
+                          ? "answer below"
+                          : formatCents(recordedAmountCents)}
+                      </dd>
+                    </div>
+                  </dl>
+                  <fieldset className="space-y-2">
+                    <legend className="font-medium">
+                      Does the money you have received cover that{" "}
+                      {formatCents(outstandingAdditionalCents)} addition as
+                      well?
+                    </legend>
+                    <label className="flex items-start gap-2">
+                      <input
+                        type="radio"
+                        name="manual-payment-additional-covered"
+                        className="mt-1"
+                        checked={additionalCovered === true}
+                        onChange={() => setAdditionalCovered(true)}
+                      />
+                      <span>
+                        Yes — record the full{" "}
+                        {formatCents(state.amountOwingCents)}, including the{" "}
+                        {formatCents(outstandingAdditionalCents)} addition. The
+                        booking is fully paid and the member will not be asked
+                        for the addition again.
+                      </span>
+                    </label>
+                    <label className="flex items-start gap-2">
+                      <input
+                        type="radio"
+                        name="manual-payment-additional-covered"
+                        className="mt-1"
+                        checked={additionalCovered === false}
+                        onChange={() => setAdditionalCovered(false)}
+                      />
+                      <span>
+                        No — record only the{" "}
+                        {formatCents(baseAmountCents)} owed before the change.
+                        The booking is marked paid, but the{" "}
+                        {formatCents(outstandingAdditionalCents)} addition stays
+                        recorded as owing and the club will keep asking the
+                        member for it. If the member has a card payment set up
+                        for that addition it is left open, so they can pay it
+                        from their own booking page; you will be told which
+                        applies once the payment is recorded.
+                      </span>
+                    </label>
+                  </fieldset>
+                </div>
               ) : null}
               <div className="space-y-2">
                 <Label htmlFor="manual-booking-payment-note">
@@ -282,19 +423,22 @@ export function BookingManualPaymentControls({
                     <Button
                       variant="outline"
                       onClick={() => submit("paid", false)}
-                      disabled={submitting}
+                      disabled={submitting || !additionalAnswered}
                     >
                       Record without emailing
                     </Button>
                     <Button
                       onClick={() => submit("paid", true)}
-                      disabled={submitting}
+                      disabled={submitting || !additionalAnswered}
                     >
                       Record and email member
                     </Button>
                   </>
                 ) : (
-                  <Button onClick={confirmSilenced} disabled={submitting}>
+                  <Button
+                    onClick={confirmSilenced}
+                    disabled={submitting || !additionalAnswered}
+                  >
                     Record payment
                   </Button>
                 )}

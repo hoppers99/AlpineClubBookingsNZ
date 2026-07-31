@@ -2697,6 +2697,215 @@ export async function manuallyAllocateBed(input: {
   }
 }
 
+export interface SameDateAllocationMoveResult {
+  allocations: BedAllocation[];
+  promotedPartners: BedAllocation[];
+  noop: boolean;
+}
+
+/**
+ * Move existing allocation rows to one destination bed without changing any
+ * lodge night (#2366).
+ *
+ * The browser supplies allocation ids, never dates. We resolve the destination
+ * lodge only far enough to derive the lock key, take the global booking lock
+ * before that lodge's capacity lock, and then re-read every source row under
+ * both locks. Each write is keyed to that row's persisted `stayDate`.
+ *
+ * The global lock is required even though the move does not change booking
+ * status: cancellation prunes the booking's allocation rows while holding that
+ * lock. Without the shared lock, a move can re-upsert a row after cancellation
+ * deleted it and resurrect an allocation on a cancelled booking.
+ *
+ * A multi-night proxy move is all-or-nothing: one conflict rolls the whole
+ * transaction back, including partner promotions and audit rows. This differs
+ * deliberately from bucket-to-board bulk allocation, whose existing
+ * place-what-you-can semantics remain unchanged.
+ */
+export async function moveBedAllocationsSameDate(input: {
+  allocationIds: string[];
+  bedId: string;
+  actorMemberId: string;
+  db?: BedAllocationDb;
+}): Promise<SameDateAllocationMoveResult> {
+  const allocationIds = [...new Set(input.allocationIds)];
+  if (allocationIds.length === 0) {
+    throw new BedAllocationAdminError(
+      "At least one allocation is required",
+      400,
+    );
+  }
+  if (allocationIds.length > MAX_BED_ALLOCATION_RANGE_NIGHTS) {
+    throw new BedAllocationAdminError(
+      `Cannot move more than ${MAX_BED_ALLOCATION_RANGE_NIGHTS} allocations at once`,
+      400,
+    );
+  }
+
+  const moveUnderLock = async (
+    db: BedAllocationDb,
+  ): Promise<SameDateAllocationMoveResult> => {
+    const sourceRows = await db.bedAllocation.findMany({
+      where: { id: { in: allocationIds } },
+      select: {
+        id: true,
+        bookingId: true,
+        bookingGuestId: true,
+        bedId: true,
+        stayDate: true,
+      },
+    });
+    if (sourceRows.length !== allocationIds.length) {
+      throw new BedAllocationAdminError("Allocation not found", 404);
+    }
+
+    const sourceById = new Map(sourceRows.map((row) => [row.id, row]));
+    const orderedRows = allocationIds.map((id) => sourceById.get(id)!);
+    const bookingGuestIds = new Set(
+      orderedRows.map((row) => row.bookingGuestId),
+    );
+    if (bookingGuestIds.size !== 1) {
+      throw new BedAllocationAdminError(
+        "Allocations must belong to one guest",
+        400,
+      );
+    }
+
+    // A horizontally different cell on the same bed still normalises to the
+    // row's original date. Treat that as a no-op at the service boundary too:
+    // a stale or hand-written client must not create a no-change audit entry.
+    const rowsToMove = orderedRows.filter((row) => row.bedId !== input.bedId);
+    if (rowsToMove.length === 0) {
+      return { allocations: [], promotedPartners: [], noop: true };
+    }
+
+    const allocations: BedAllocation[] = [];
+    const promotedPartners: BedAllocation[] = [];
+    const promotionCauses: Array<{
+      promotedPartner: BedAllocation;
+      movedAllocationId: string;
+      movedBookingId: string;
+      movedBookingGuestId: string;
+    }> = [];
+    for (const source of rowsToMove) {
+      const result = await manuallyAllocateBed({
+        bookingGuestId: source.bookingGuestId,
+        bedId: input.bedId,
+        stayDate: formatDateOnly(source.stayDate),
+        db,
+      });
+      allocations.push(result.allocation);
+      if (result.promotedPartner) {
+        promotedPartners.push(result.promotedPartner);
+        promotionCauses.push({
+          promotedPartner: result.promotedPartner,
+          movedAllocationId: source.id,
+          movedBookingId: source.bookingId,
+          movedBookingGuestId: source.bookingGuestId,
+        });
+      }
+    }
+
+    const isBulk = rowsToMove.length > 1;
+    const firstAllocation = allocations[0];
+    await createAuditLog(
+      {
+        action: isBulk
+          ? "BED_ALLOCATION_BULK_SET"
+          : "BED_ALLOCATION_MANUAL_SET",
+        memberId: input.actorMemberId,
+        targetId: firstAllocation.bookingId,
+        entityType: "BedAllocation",
+        entityId: isBulk ? undefined : firstAllocation.id,
+        category: "admin",
+        outcome: "success",
+        summary: isBulk
+          ? "Bed allocation set across multiple nights"
+          : "Manual bed allocation set",
+        metadata: isBulk
+          ? {
+              bookingGuestId: firstAllocation.bookingGuestId,
+              bedId: input.bedId,
+              allocationIds: allocations.map((allocation) => allocation.id),
+              allocatedStayDates: allocations.map((allocation) =>
+                formatDateOnly(allocation.stayDate),
+              ),
+            }
+          : {
+              allocationId: firstAllocation.id,
+              bookingGuestId: firstAllocation.bookingGuestId,
+              bedId: firstAllocation.bedId,
+              stayDate: formatDateOnly(firstAllocation.stayDate),
+            },
+      },
+      db,
+    );
+
+    for (const {
+      promotedPartner,
+      movedAllocationId,
+      movedBookingId,
+      movedBookingGuestId,
+    } of promotionCauses) {
+      await createAuditLog(
+        {
+          action: "BED_ALLOCATION_PARTNER_PROMOTED",
+          memberId: input.actorMemberId,
+          targetId: promotedPartner.bookingId,
+          entityType: "BedAllocation",
+          entityId: promotedPartner.id,
+          category: "admin",
+          outcome: "success",
+          summary:
+            "Second occupant auto-promoted to primary after the shared double's primary was moved to another bed",
+          metadata: {
+            allocationId: promotedPartner.id,
+            bedId: promotedPartner.bedId,
+            bookingGuestId: promotedPartner.bookingGuestId,
+            stayDate: formatDateOnly(promotedPartner.stayDate),
+            movedAllocationId,
+            movedBookingId,
+            movedBookingGuestId,
+          },
+        },
+        db,
+      );
+    }
+
+    return { allocations, promotedPartners, noop: false };
+  };
+
+  if (input.db) {
+    return moveUnderLock(input.db);
+  }
+
+  // Only the destination bed is read before the transaction, and only for its
+  // immutable lodge key. Source rows, dates, guest state and bed state are all
+  // re-read after BOTH locks are held. Global must precede lodge everywhere:
+  // cancellation owns the global key and prunes allocations, while custodian
+  // holds and other capacity writers own the lodge key.
+  const lockLodgeId = await resolveBedLodgeIdForLock(input.bedId, prisma);
+  try {
+    return await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+      if (lockLodgeId) await acquireLodgeCapacityLock(tx, lockLodgeId);
+      return moveUnderLock(tx);
+    });
+  } catch (error) {
+    if (
+      error instanceof BedAllocationAdminError &&
+      error.status === 409 &&
+      allocationIds.length > 1
+    ) {
+      throw new BedAllocationAdminError(
+        `No allocations were moved. ${error.message}`,
+        409,
+      );
+    }
+    throw error;
+  }
+}
+
 interface BulkAllocationConflict {
   stayDate: string;
   // CUSTODIAN_HOLD (#2286): the bed is held for a season by a custodian on that

@@ -99,6 +99,109 @@ describe("buildBookingHistoryItems", () => {
     expect(items[0].occurredAt.toISOString()).toBe("2026-04-08T14:00:00.000Z");
   });
 
+  /*
+    #2350: the timeline had fallbacks for a SUCCEEDED and a FAILED additional
+    payment but none for one still awaiting the member — the state an
+    outstanding delta spends nearly all of its life in. The moment the price
+    went up therefore left no mark on the timeline at all.
+  */
+  describe("an additional payment still awaiting the member (#2350)", () => {
+    function build(
+      additionalPaymentStatus: string | null,
+      additionalAmountCents = 21_000,
+      latestAdditionalTransactionCreatedAt: Date | null = new Date(
+        "2026-04-05T11:00:00Z",
+      ),
+    ) {
+      return buildBookingHistoryItems({
+        createdAt: new Date("2026-04-01T09:00:00Z"),
+        payment: {
+          status: "SUCCEEDED",
+          amountCents: 9000,
+          refundedAmountCents: 0,
+          additionalAmountCents,
+          additionalPaymentStatus,
+          latestAdditionalTransactionCreatedAt,
+          createdAt: new Date("2026-04-01T09:00:00Z"),
+          // Deliberately later than everything else: the reminder cron writes
+          // its stamps to this row, so `updatedAt` moves every time the member
+          // is chased.
+          updatedAt: new Date("2026-04-08T14:00:00Z"),
+        },
+        modifications: [],
+        refundRequests: [],
+        auditLogs: [],
+      });
+    }
+
+    /*
+      Dated from the obligation, never from the payment row's last touch. The
+      #2350 reminder cron stamps this very row each time it chases the member,
+      so dating the entry from `updatedAt` marched it up the timeline on every
+      nudge, claiming the price had just changed when nothing had.
+    */
+    it("records the request with its amount and the moment it was raised", () => {
+      const item = build("PENDING").find(
+        (entry) => entry.id === "payment-additional-pending",
+      );
+
+      expect(item).toMatchObject({
+        category: "Payment",
+        title: "Additional payment requested",
+        amountDisplay: "$210.00",
+        tone: "warning",
+      });
+      expect(item?.occurredAt.toISOString()).toBe("2026-04-05T11:00:00.000Z");
+      expect(item?.detail).toContain("has not been paid yet");
+    });
+
+    it("falls back to the payment's own creation, not its last touch", () => {
+      const item = build("PENDING", 21_000, null).find(
+        (entry) => entry.id === "payment-additional-pending",
+      );
+
+      expect(item?.occurredAt.toISOString()).toBe("2026-04-01T09:00:00.000Z");
+    });
+
+    it("does not claim a request when the extra was collected or failed", () => {
+      for (const status of ["SUCCEEDED", "FAILED"]) {
+        expect(
+          build(status).find(
+            (entry) => entry.id === "payment-additional-pending",
+          ),
+        ).toBeUndefined();
+      }
+    });
+
+    it("stays silent when there is no additional payment at all", () => {
+      expect(
+        build("PENDING", 0).find(
+          (entry) => entry.id === "payment-additional-pending",
+        ),
+      ).toBeUndefined();
+    });
+
+    /*
+      A legacy row written before `additionalPaymentStatus` was populated carries
+      a null status, and the owed predicate — every admin queue, the finance
+      panel, the reports figure and the chase cron — counts it as owing. Matching
+      the literal string "PENDING" left exactly those bookings with no timeline
+      entry for the moment their price went up, which is the gap this entry
+      exists to close.
+    */
+    it("records a legacy null-status request the owed predicate counts", () => {
+      const item = build(null).find(
+        (entry) => entry.id === "payment-additional-pending",
+      );
+
+      expect(item).toMatchObject({
+        title: "Additional payment requested",
+        amountDisplay: "$210.00",
+        tone: "warning",
+      });
+    });
+  });
+
   it("renders a #1992 duplicate-capture auto-refund with honest copy when supplied (admin view, #2008)", () => {
     const items = buildBookingHistoryItems({
       createdAt: new Date("2026-04-01T09:00:00Z"),
@@ -246,5 +349,67 @@ describe("buildBookingHistoryItems — unapplied credit election (#2265)", () =>
       tone: "warning",
     });
     expect(item?.detail).toContain("balance was not reduced");
+  });
+});
+
+/**
+ * #2397 — an admin recorded a cash / off-Xero payment on a booking that still
+ * carried an uncollected price increase, and confirmed the money covered that
+ * increase too. The extra moved, so the timeline has to say so.
+ */
+describe("buildBookingHistoryItems — a manually settled extra (#2397)", () => {
+  function build(auditLogs: Parameters<typeof buildBookingHistoryItems>[0]["auditLogs"]) {
+    return buildBookingHistoryItems({
+      createdAt: new Date("2026-07-01T09:00:00Z"),
+      payment: {
+        status: "SUCCEEDED",
+        amountCents: 12100,
+        refundedAmountCents: 0,
+        additionalAmountCents: 2100,
+        additionalPaymentStatus: "SUCCEEDED",
+        createdAt: new Date("2026-07-01T09:00:00Z"),
+        updatedAt: new Date("2026-07-05T09:00:00Z"),
+      },
+      modifications: [],
+      refundRequests: [],
+      auditLogs,
+    });
+  }
+
+  it("renders the manual settlement of the extra, naming the amount", () => {
+    const items = build([
+      {
+        id: "audit-additional",
+        action: "booking-payment.manual-payment.additional-settled",
+        details: JSON.stringify({ additionalAmountCents: 2100 }),
+        createdAt: new Date("2026-07-05T09:00:00Z"),
+      },
+    ]);
+
+    const item = items.find((entry) => entry.id === "audit-audit-additional");
+    expect(item).toMatchObject({
+      title: "Additional payment recorded manually",
+      category: "Payment",
+      amountDisplay: "$21.00",
+      tone: "success",
+    });
+    expect(item?.detail).toContain("also covered the extra owing");
+  });
+
+  it("replaces the generic fallback rather than doubling it up", () => {
+    // Without the flag the payment-row fallback would add a second, vaguer
+    // "Additional payment recorded" entry for the same money.
+    const titles = build([
+      {
+        id: "audit-additional",
+        action: "booking-payment.manual-payment.additional-settled",
+        details: JSON.stringify({ additionalAmountCents: 2100 }),
+        createdAt: new Date("2026-07-05T09:00:00Z"),
+      },
+    ]).map((entry) => entry.title);
+
+    expect(titles.filter((title) => title.startsWith("Additional payment"))).toEqual([
+      "Additional payment recorded manually",
+    ]);
   });
 });

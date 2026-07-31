@@ -42,12 +42,14 @@ function mockDashboardCounts({
   pendingDeletionRequests = 0,
   unpaidFinishedStays = 0,
   unsettledAdditionalFinishedStays = 0,
+  unsettledAdditionalUpcomingStays = 0,
 }: {
   pendingBookingReviews: number;
   pendingBookingChangeRequests: number;
   pendingDeletionRequests?: number;
   unpaidFinishedStays?: number;
   unsettledAdditionalFinishedStays?: number;
+  unsettledAdditionalUpcomingStays?: number;
 }) {
   // A Full Admin actor so every permission-gated officer card renders (#2091).
   vi.mocked(auth).mockResolvedValue({ user: { id: "admin-1" } } as any);
@@ -59,7 +61,8 @@ function mockDashboardCounts({
   vi.mocked(prisma.member.count).mockResolvedValue(0);
   // booking.count call order mirrors getStats(): totalBookings,
   // activeBookings, upcomingCheckIns, unpaidFinishedStays,
-  // unsettledAdditionalFinishedStays, pendingBookingReviews. The roster and bed
+  // unsettledAdditionalFinishedStays, unsettledAdditionalUpcomingStays (#2350),
+  // pendingBookingReviews. The roster and bed
   // officer-card counts no longer use booking.count — they run through
   // window-scoped helpers backed by booking.findMany + choreAssignment.findMany
   // / bedAllocation.findMany (all mocked empty below → count 0).
@@ -69,6 +72,7 @@ function mockDashboardCounts({
     .mockResolvedValueOnce(0)
     .mockResolvedValueOnce(unpaidFinishedStays)
     .mockResolvedValueOnce(unsettledAdditionalFinishedStays)
+    .mockResolvedValueOnce(unsettledAdditionalUpcomingStays)
     .mockResolvedValueOnce(pendingBookingReviews);
   vi.mocked(prisma.payment.aggregate).mockResolvedValue({
     _sum: { amountCents: 0 },
@@ -172,24 +176,23 @@ describe("admin dashboard deep links", () => {
     expect(html).not.toContain("Unpaid Finished Stays");
   });
 
-  it("flags unsettled finished-stay additions and links to the additionalOwed filter (#1723)", async () => {
+  it("flags unsettled stay additions and links to the additionalOwed filter (#1723, split by #2350)", async () => {
     mockDashboardCounts({
       pendingBookingReviews: 0,
       pendingBookingChangeRequests: 0,
       unsettledAdditionalFinishedStays: 3,
+      unsettledAdditionalUpcomingStays: 2,
     });
 
     const html = renderToStaticMarkup(await AdminDashboardPage());
-    const todayKey = formatDateOnly(getTodayDateOnly());
 
-    expect(html).toContain("Finished Stays With Unpaid Additions");
-    expect(html).toContain(
-      `href="/admin/bookings?additionalOwed=owed&amp;checkOutTo=${todayKey}"`,
-    );
-    expect(html).toContain("3 paid bookings");
-    expect(html).toContain(
-      "with an additional payment still owing after check-out",
-    );
+    expect(html).toContain("Bookings With Unpaid Additions");
+    // #2350: one link covering BOTH halves — the bookings list has no
+    // upcoming-only filter, and the split is stated in the label instead.
+    expect(html).toContain(`href="/admin/bookings?additionalOwed=owed"`);
+    expect(html).toContain("5 confirmed bookings");
+    expect(html).toContain("2 upcoming");
+    expect(html).toContain("3 finished");
 
     // The count uses the sibling finished-stay predicate (#1723 path 2):
     // settled statuses (never PAYMENT_PENDING, so it stays disjoint from the

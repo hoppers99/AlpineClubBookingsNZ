@@ -38,11 +38,18 @@ vi.mock("@/lib/prisma", () => ({
   },
 }));
 
-vi.mock("@/lib/whakapapa-report.server", () => ({
+// Only the upstream fetch is mocked. `findInvalidSelectorOverrides` is
+// deliberately left REAL so the malformed-selector cases below compile their
+// selectors against the same engine the scraper uses. A stub returning a
+// hand-written key would pass even if the engine disagreed about what is
+// invalid — and jsdom's engine is lenient in places (it accepts an unclosed
+// `[class*="x`), so that disagreement is a live risk, not a theoretical one.
+vi.mock("@/lib/whakapapa-report.server", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/whakapapa-report.server")>()),
   fetchWhakapapaCurlData: mocks.fetchWhakapapaCurlData,
 }));
 
-import { PATCH } from "@/app/api/admin/mountain-conditions/route";
+import { PATCH, POST } from "@/app/api/admin/mountain-conditions/route";
 
 const ADMIN_USER = {
   id: "admin_1",
@@ -87,14 +94,20 @@ describe("PATCH /api/admin/mountain-conditions", () => {
     vi.clearAllMocks();
     mocks.auth.mockResolvedValue({ user: ADMIN_USER });
     mocks.requireActiveSessionUser.mockResolvedValue(null);
-    // Echo the written row back so toResponseRecord can serialize it. Both the
-    // create and update branches carry identical values in this route, so the
-    // update fields represent whatever was written.
+    // Echo a complete row back so toResponseRecord can serialize it. Real
+    // Prisma upsert returns every column, not only the fields written, so fall
+    // back to the create branch (and safe defaults) for anything a partial
+    // update omits — e.g. a config-only save leaves payload/fetchedAt untouched.
     mocks.upsert.mockImplementation(async (args) => ({
       source: args.where.source,
-      payload: args.update.payload,
-      fetchedAt: args.update.fetchedAt,
-      frozenUntil: args.update.frozenUntil,
+      payload:
+        args.update.payload ?? args.create?.payload ?? emptyWhakapapaCurlData(),
+      config: args.update.config ?? args.create?.config ?? null,
+      fetchedAt:
+        args.update.fetchedAt ??
+        args.create?.fetchedAt ??
+        new Date("2026-07-08T09:00:00.000Z"),
+      frozenUntil: args.update.frozenUntil ?? args.create?.frozenUntil ?? null,
       updatedAt: new Date("2026-07-08T12:00:00.000Z"),
     }));
   });
@@ -132,7 +145,7 @@ describe("PATCH /api/admin/mountain-conditions", () => {
     const missing = await PATCH(patchRequest({}));
     expect(missing.status).toBe(400);
     expect(await missing.json()).toEqual({
-      error: "visibility object is required",
+      error: "visibility or config object is required",
     });
 
     const notObject = await PATCH(patchRequest({ visibility: "all" }));
@@ -204,5 +217,159 @@ describe("PATCH /api/admin/mountain-conditions", () => {
     // The serialized response advertises the stale (epoch) timestamp.
     const bodyRecord = (await response.json()).record;
     expect(bodyRecord.fetchedAt).toBe(new Date(0).toISOString());
+  });
+});
+
+describe("PATCH config (source URL + selectors)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.auth.mockResolvedValue({ user: ADMIN_USER });
+    mocks.requireActiveSessionUser.mockResolvedValue(null);
+    mocks.findUnique.mockResolvedValue(null);
+    mocks.upsert.mockImplementation(async (args) => ({
+      source: args.where.source,
+      payload:
+        args.update.payload ?? args.create?.payload ?? emptyWhakapapaCurlData(),
+      config: args.update.config ?? args.create?.config ?? null,
+      fetchedAt: args.create?.fetchedAt ?? new Date(0),
+      frozenUntil: args.create?.frozenUntil ?? null,
+      updatedAt: new Date("2026-07-08T12:00:00.000Z"),
+    }));
+  });
+
+  it("saves a valid config and only writes the config column on update", async () => {
+    const response = await PATCH(
+      patchRequest({
+        config: {
+          sourceUrl: "https://www.whakapapa.com/report",
+          selectorOverrides: { item: '[class*="row_"]', ignored: "x" },
+        },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const [args] = mocks.upsert.mock.calls[0];
+    // Config-only save never rewrites the cached report or its timestamps.
+    expect(args.update).toEqual({
+      config: {
+        sourceUrl: "https://www.whakapapa.com/report",
+        selectorOverrides: { item: '[class*="row_"]' },
+      },
+    });
+
+    const bodyRecord = (await response.json()).record;
+    expect(bodyRecord.config.sourceUrl).toBe(
+      "https://www.whakapapa.com/report",
+    );
+  });
+
+  it("rejects an off-allowlist source URL (SSRF guard) and never writes", async () => {
+    const response = await PATCH(
+      patchRequest({ config: { sourceUrl: "https://evil.example.com/report" } }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(mocks.upsert).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-https source URL", async () => {
+    const response = await PATCH(
+      patchRequest({
+        config: { sourceUrl: "http://www.whakapapa.com/report" },
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(mocks.upsert).not.toHaveBeenCalled();
+  });
+
+  it("rejects a malformed selector override, naming the field, and never writes", async () => {
+    // Compiled for real by the scraper's own engine: this string throws, so
+    // the route must refuse the save rather than store a selector that would
+    // throw on every later scrape.
+    const response = await PATCH(
+      patchRequest({
+        config: {
+          sourceUrl: "https://www.whakapapa.com/report",
+          selectorOverrides: { item: "[[not-a-selector" },
+        },
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    // The error names the human-readable field label.
+    expect(body.error).toContain("Item: row");
+    expect(mocks.upsert).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST preview (test config without saving)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.auth.mockResolvedValue({ user: ADMIN_USER });
+    mocks.requireActiveSessionUser.mockResolvedValue(null);
+    mocks.findUnique.mockResolvedValue(null);
+  });
+
+  function postRequest(body: unknown) {
+    return new NextRequest("http://localhost/api/admin/mountain-conditions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("fetches with the supplied config and returns the parsed preview without persisting", async () => {
+    const preview = cachedReport();
+    mocks.fetchWhakapapaCurlData.mockResolvedValue(preview);
+
+    const response = await POST(
+      postRequest({
+        preview: true,
+        config: { sourceUrl: "https://www.whakapapa.com/report" },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.preview.roadStatus).toEqual(preview.roadStatus);
+    // Preview must not write to the cache.
+    expect(mocks.upsert).not.toHaveBeenCalled();
+    expect(mocks.fetchWhakapapaCurlData).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceUrl: "https://www.whakapapa.com/report",
+      }),
+    );
+  });
+
+  it("rejects a preview whose URL is off-allowlist before fetching", async () => {
+    const response = await POST(
+      postRequest({
+        preview: true,
+        config: { sourceUrl: "https://internal.local/report" },
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(mocks.fetchWhakapapaCurlData).not.toHaveBeenCalled();
+  });
+
+  it("names the bad selector on preview instead of the generic upstream 502", async () => {
+    const response = await POST(
+      postRequest({
+        preview: true,
+        config: {
+          sourceUrl: "https://www.whakapapa.com/report",
+          // Trailing empty attribute clause — the scraper's own engine throws.
+          selectorOverrides: { conditionRow: '[class*="locationRow_"][' },
+        },
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    // The admin is told WHICH field to fix, by its human-readable label.
+    expect((await response.json()).error).toContain("Conditions: location row");
+    expect(mocks.fetchWhakapapaCurlData).not.toHaveBeenCalled();
   });
 });

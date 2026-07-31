@@ -295,11 +295,21 @@ as the [Member & Guest Guide](user-guide/README.md) under `docs/user-guide/`
 [`UX_FLOW_MAP.md`](UX_FLOW_MAP.md) and the public route tree. Route realities the
 guides document:
 
-- **Two guest paths need no login.** The sign-in page (`/login`) links to
-  *Request a booking without an account* (the public quote flow,
-  `/booking-requests/respond/[token]`) and *Request a school group booking*
-  (`/school-bookings/confirm/[token]`). The [Booking a stay](user-guide/booking-a-stay.md)
-  guide covers both as the guest journey; operators handle them via
+- **Two guest paths need no login, but only one is advertised.** The sign-in
+  page (`/login`) links to *Request a school group booking*
+  (`/school-bookings`). The general guest quote flow
+  (`/booking-requests`, `/booking-requests/respond/[token]`) is deliberately
+  unlisted (#2421): no page a visitor can browse to links to it, and it is
+  excluded from search engines via a route-level `noindex` (`robots.txt`
+  deliberately does not disallow it, so crawlers can fetch the page and see the
+  noindex). The club shares the direct URL only with guests it has agreed to
+  host — an admin copies it from the **Public Requests** tab of
+  `/admin/booking-requests` — and the only other path in is the rebook button
+  on a tokenised `/pay/[token]` link the club itself emailed a past requester.
+  The
+  [Booking a stay](user-guide/booking-a-stay.md) guide covers both as the guest
+  journey, and says plainly that whether a non-member can stay is the club's own
+  policy; operators handle them via
   [Booking Requests](guides/booking-requests.md).
 - **The booking wizard is a client-side flow.** `/book` renders four steps
   (Select Dates → Add Guests → Review & Confirm → Pay); only the landing (Select

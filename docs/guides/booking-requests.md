@@ -80,6 +80,24 @@ are listed on the booking for you to relay.
 
    ![Booking Requests, Public Requests tab: the status filter row and the flow explainer for non-member requests](../images/admin/admin-booking-requests-public.png)
 
+   (The screenshot predates the **Guest request form link** field described
+   next, so that field is not in it; recapture is tracked in #2429.)
+
+   At the top of the tab is **Guest request form link (unlisted)** with a
+   **Copy** button. That is the URL of the guest request form
+   (`/booking-requests`), and this is the only place in the app that shows it:
+   the form is **deliberately unlisted** — no page a visitor can browse to
+   links to it, and it is excluded from search engines via a route-level
+   `noindex` (`robots.txt` deliberately does *not* disallow it, so crawlers can
+   fetch the page and see the noindex rather than merely listing the bare URL).
+   The only other path in is the **Book these dates again** button on a
+   tokenised payment link the club itself emailed a past requester, so it
+   reaches nobody the club has not already dealt with. Send the link to a guest
+   the club has agreed to host, and to nobody else. The field is available to
+   view-only admins too, since sharing the link is not a booking write. Whether
+   the club hosts non-members at all is the club's own policy; the public
+   website never states or implies that a non-member can simply book (#2421).
+
 2. Open a **Verified** request. Set the **Pricing mode** (Overall total or Per
    guest-night) and enter the price, then **Save quote** and **Send quote** to
    email the requester a quote link.

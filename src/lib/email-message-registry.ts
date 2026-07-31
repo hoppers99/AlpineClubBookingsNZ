@@ -323,7 +323,24 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
   // body carries {{doorCodeNote}} instead of a bare "Door code:" heading that
   // printed even for a lodge with no code. An override written before the
   // change still satisfies this through REQUIRED_TOKEN_ALTERNATIVES.
-  "pre-arrival-reminder": ["CLUB_LODGE_TRAVEL_NOTE", "doorCodeNote"],
+  //
+  // #2350: {{outstandingAdditionalNote}} is the only place a pre-arrival
+  // reminder says money is still owed on the booking. Dropping it in an override
+  // would silence that for every booking, so it is pinned like the travel note.
+  "pre-arrival-reminder": [
+    "CLUB_LODGE_TRAVEL_NOTE",
+    "doorCodeNote",
+    "outstandingAdditionalNote",
+  ],
+  // #2350: this email exists to ask for money, so the amount, the date it was
+  // raised and the stay it belongs to are all load-bearing — an override that
+  // drops any of them leaves a demand a member cannot act on or check.
+  "additional-payment-reminder": [
+    "additionalAmount",
+    "requestedOn",
+    "checkIn",
+    "checkOut",
+  ],
   "password-reset": ["token"],
   "admin-password-reset": ["token"],
   "member-setup-invite": ["token"],
@@ -608,6 +625,12 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
   "pre-arrival-reminder": {
     triggerSummary: "Pre-arrival reminder with current lodge access details",
     frequency: "Once per confirmed or paid booking in the reminder window",
+  },
+  "additional-payment-reminder": {
+    triggerSummary:
+      "A booking change increased the total and the extra amount is still uncollected",
+    frequency:
+      "Twice per outstanding amount at most — a few days after the change, and once more shortly before check-in — plus any manual re-send an admin triggers from the booking page. The chase stops when the money arrives or the stay ends",
   },
   "booking-request-verification": {
     triggerSummary: "Public booking request submitted",
@@ -936,6 +959,17 @@ export function sampleValue(token: string): string {
   if (token === "ownBookingNote") {
     return splitGuestPortionOwnBookingLine(true);
   }
+  // #2350: pre-composed like {{doorCodeNote}} above — the whole sentence as the
+  // send builds it, so the preview reads as a member reads it instead of
+  // printing the token's own name mid-paragraph. Empty on a live send when
+  // nothing is owed. The amount reconciles with the sample below.
+  if (token === "outstandingAdditionalNote") {
+    return "There is still $123.45 to pay on this booking after a change to your stay. Please pay it from your booking page before you arrive.";
+  }
+  // #2350: the day the outstanding extra was raised. Named like a date but
+  // matching none of the generic date rules below, so it would otherwise
+  // preview as the literal word "requestedOn" where a date belongs.
+  if (token === "requestedOn") return "1 Jul 2026";
   // #2267: mirror what sendBookingConfirmedEmail composes — each row carries
   // its own trailing newline so the default body's
   // "{{promoSummary}}Total Paid: …" previews as a contiguous block.
@@ -1236,6 +1270,10 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "oldTotal",
   "operation",
   "operationType",
+  // #2350: pre-composed "there is still $X to pay on this booking" sentence for
+  // the pre-arrival reminder; empty when nothing is owed, so the body never
+  // carries a dangling claim (the {{doorCodeNote}} convention).
+  "outstandingAdditionalNote",
   "organiserName",
   "originalRecipient",
   "originalTemplateName",
@@ -1261,7 +1299,9 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   // #2263 × #2267: the booking-confirmed money story as ONE pre-composed block
   // (the {{promoSummary}} convention) — "Total Paid + processed" for a paid
   // booking, "Total Due + the owing sentence" for a confirmed-but-unpaid one,
-  // so the default body can never claim money moved when it did not.
+  // and (#2397) "Booking Total / Paid / Still Owing + the balance sentence"
+  // for one settled in cash for less than it is worth — so the default body
+  // can never claim money moved when it did not.
   "paymentOutcome",
   "price",
   "percent",
@@ -1303,6 +1343,9 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   // never approved (see lodgeName). Stays subject-sensitive.
   "respondUrl",
   "requestedAmountNote",
+  // #2350: the day the uncollected additional payment was raised, so the
+  // reminder can say how long it has been outstanding.
+  "requestedOn",
   "requesterName",
   "rejoinProcessNote",
   "rejoinProcessText",
@@ -1336,9 +1379,16 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "total",
   "totalAlerts",
   // #2263: the two halves of an UNPAID confirmation. `totalDue` replaces
-  // `totalPaid` (exactly one of the pair ever carries a figure), and
+  // `totalPaid` (exactly one of the pair carries a figure), and
   // `paymentDueNote` is the pre-composed sentence naming the amount owing and
   // the internet-banking reference.
+  //
+  // #2397 adds a third, PARTLY paid state — a cash settlement the admin said
+  // did not cover an uncollected price increase — in which BOTH carry a
+  // figure, because both are true: `totalPaid` is what the club actually has
+  // and `totalDue` is only the balance, never the whole price. `paymentDueNote`
+  // stays empty there (there is no internet-banking reference to quote); the
+  // whole story is in `paymentOutcome`.
   "totalDue",
   "paymentDueNote",
   "totalPaid",

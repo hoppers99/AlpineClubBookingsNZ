@@ -13,10 +13,10 @@ export type ApiRouteSecurityMetadata = {
 };
 
 export const explicitPublicApiRoutes = {
-  "src/app/api/[...unmatched]/route.ts": {
+  "src/app/api/[[...unmatched]]/route.ts": {
     boundary: "public",
     reason:
-      "Terminal 404 for /api URLs no real handler claims (#2405). Reads nothing, queries nothing and touches no session: every method returns the same frozen {error:\"Not found\"} body that src/proxy.ts already returns for a module-hidden /api path, so a route that does not exist and one hidden by a module flag look identical to a caller. Public by necessity — a guard here would answer 401/403 and tell an anonymous prober that the path is real.",
+      "Terminal 404 for /api URLs no real handler claims, bare /api included (#2405). Reads nothing, queries nothing and touches no session. Every method it exports (GET, POST, PUT, PATCH, DELETE, OPTIONS) returns the same frozen {error:\"Not found\"} body, with the same content-type, that src/proxy.ts's module gate returns for a hidden /api path; HEAD is deliberately NOT exported so Next derives it from GET and it carries GET's headers, rather than the hand-written bodyless response with no content-type this route used to send; and a non-standard verb never reaches this file at all, because Next answers those with a bare 400, which the proxy gate now mirrors. Net effect: an /api path under a module-gated prefix that no handler claims answers exactly the same thing whether that module is switched on or off, on every verb, so it cannot be used to probe which optional modules an install runs. Public by necessity — a guard here would answer 401/403 and tell an anonymous prober that the path is real.",
   },
   "src/app/api/address-autocomplete/details/[id]/route.ts": {
     boundary: "public",

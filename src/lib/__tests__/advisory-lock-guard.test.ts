@@ -43,6 +43,12 @@ const GLOBAL_BOOKING_MONEY_LOCK_INVENTORY: Record<string, number> = {
   // its status writes did not exclude a concurrent cancel.
   "src/app/api/payments/create-payment-intent/route.ts": 1,
   "src/app/api/payments/switch-to-internet-banking/route.ts": 1,
+  // #2366: an existing-allocation move does not change booking status, but it
+  // composes with cancellation because cancellation prunes those rows. It
+  // therefore takes global lock(1) before the destination-lodge capacity lock,
+  // re-reads the source rows under both, and cannot resurrect a cancelled
+  // booking's allocation after the prune commits.
+  "src/lib/admin-bed-allocation.ts": 1,
   "src/lib/booking-batch-modification-service.ts": 1,
   // #1881 residual: the fifth site protects the linked provisional-child
   // PENDING -> CANCELLED claim. That path also takes the child's per-lodge lock
@@ -132,6 +138,24 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
 const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   "src/lib/admin-bed-allocation.ts": 1,
   "src/lib/booking-create-promo.ts": 1,
+  // Promo usage caps (#2299): `lockPromoCodeRowsForUpdate` takes a
+  // `SELECT "id" … FOR UPDATE` on the promo row for the modification paths,
+  // which can now RELEASE a cap slot as well as take one. One raw statement
+  // serves all four of them — the batch-modification path calls it directly
+  // (it may lock two codes for a swap), and adding guests / changing dates /
+  // removing guests reach it through `lockAndRefreshPromoCodeUsage`, which also
+  // re-reads `currentRedemptions` under the lock. That wrapper has four call
+  // sites, not three: the batch path also calls it on its no-swap reprice
+  // branch, where the lock is already held and the refreshed counter is the
+  // point. Booking creation takes its own
+  // lock in booking-create-promo.ts above, by selecting and READING the whole
+  // row. Ids are sorted and locked one
+  // statement at a time so a promo swap (outgoing + incoming code in one
+  // transaction) can never build a lock cycle with another swap; callers hold
+  // the per-lodge capacity lock first, so the order stays lodge -> promo row.
+  // Only "id" is selected and the result discarded — a lock, never a read. See
+  // docs/CONCURRENCY_AND_LOCKING.md -> "Narrow row-lock protocols".
+  "src/lib/promo.ts": 1,
   // Site-style save (#2322) locks the ClubTheme singleton
   // (`SELECT "logoUrl" … FOR UPDATE`) so concurrent saves serialise and never
   // both delete the same replaced LOGO blob. Order: ClubTheme row -> MediaImage.

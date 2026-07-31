@@ -17,6 +17,11 @@ import { SendGuestPaymentLinkButton } from "@/components/send-guest-payment-link
 import { BookingNotesEditor } from "@/components/booking-notes-editor";
 import { BookingEditor, type BookingEditorData } from "@/components/booking-editor";
 import { AdditionalPaymentCard } from "@/components/additional-payment-card";
+import { BookingAdditionalPaymentPanel } from "@/components/admin/booking-additional-payment-panel";
+import {
+  additionalPaymentEpisodeStartedAt,
+  isAdditionalPayableBookingStatus,
+} from "@/lib/additional-payment-chase";
 import { ConfirmDraftButton } from "@/components/confirm-draft-button";
 import { AdminBookingToolsCard } from "@/components/admin/admin-booking-tools-card";
 import { getBookingManualPaymentState } from "@/lib/manual-booking-payment-state";
@@ -194,7 +199,19 @@ export default async function BookingDetailPage({
         include: { nights: { select: { stayDate: true } } },
         orderBy: [{ createdAt: "asc" }, { id: "asc" }],
       },
-      payment: true,
+      payment: {
+        // #2350: every Payment scalar as before, plus the most recent ADDITIONAL
+        // transaction so the admin panel can say when the outstanding extra was
+        // raised (the summary columns only describe the latest one).
+        include: {
+          transactions: {
+            where: { kind: "ADDITIONAL" },
+            select: { createdAt: true },
+            orderBy: { createdAt: "desc" },
+            take: 1,
+          },
+        },
+      },
       member: { select: { firstName: true, lastName: true } },
       // Admin capacity hold (#1764): who placed it, for the admin tools card.
       adminCapacityHoldBy: { select: { firstName: true, lastName: true } },
@@ -496,6 +513,9 @@ export default async function BookingDetailPage({
           "booking.payment.failed",
           "booking.modification.payment.confirmed",
           "booking.modification.payment.failed",
+          // #2397: the cash / off-Xero settlement of an outstanding price
+          // increase, so the extra is never absorbed silently.
+          "booking-payment.manual-payment.additional-settled",
           // #2265 (#2319 door 2): the settle-time note telling the member their
           // saved credit choice was not applied and is still on their account.
           "booking.credit_election.unapplied",
@@ -732,6 +752,10 @@ export default async function BookingDetailPage({
           refundedAmountCents: booking.payment.refundedAmountCents,
           additionalAmountCents: booking.payment.additionalAmountCents,
           additionalPaymentStatus: booking.payment.additionalPaymentStatus,
+          // #2350: dates the "additional payment requested" timeline entry from
+          // the obligation itself rather than the payment row's last touch.
+          latestAdditionalTransactionCreatedAt:
+            booking.payment.transactions[0]?.createdAt ?? null,
           createdAt: booking.payment.createdAt,
           updatedAt: booking.payment.updatedAt,
         }
@@ -2010,12 +2034,38 @@ export default async function BookingDetailPage({
         </Card>
       )}
 
+      {/* #2350: the admin-side view of the same outstanding amount. The card
+          below is owner-only (it holds the member's own card controls), which
+          left every other admin viewer with no sign that money was owing at all.
+          Read-only, plus a re-send for admins who may write. */}
+      {nonOwnerAdminViewer && !isDeleted && booking.payment ? (
+        <BookingAdditionalPaymentPanel
+          bookingId={booking.id}
+          bookingStatus={booking.status}
+          payment={booking.payment}
+          requestedOn={additionalPaymentEpisodeStartedAt({
+            paymentCreatedAt: booking.payment.createdAt,
+            latestAdditionalTransactionCreatedAt:
+              booking.payment.transactions[0]?.createdAt ?? null,
+          })}
+          canResend={canSeeAdminTools}
+        />
+      ) : null}
+
       {/* Additional payment required after a modification that increased the
           price. Member-personal payment (Stripe card entry) — owner-only so a
-          non-owner admin/officer never sees the member's pay controls (#1303). */}
+          non-owner admin/officer never sees the member's pay controls (#1303).
+
+          The lifecycle check is load-bearing, not tidiness (#2350): cancelling a
+          booking marks the additional intent FAILED and leaves the amount alone,
+          so an amount-and-status-only condition kept showing the owner of a
+          CANCELLED booking a "pay this extra" card — and the secret route behind
+          it would still hand out a confirmable client secret. Same predicate the
+          route now uses, so the card and the money agree. */}
       {booking.payment &&
         isBookingOwner &&
         !isDeleted &&
+        isAdditionalPayableBookingStatus(booking.status) &&
         booking.payment.additionalAmountCents > 0 &&
         booking.payment.additionalPaymentStatus !== "SUCCEEDED" && (
           <AdditionalPaymentCard

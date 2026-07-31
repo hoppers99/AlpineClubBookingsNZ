@@ -2,7 +2,10 @@ import { cache } from "react";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { EmbeddedPageContentParts } from "@/components/website/embedded-page-content-parts";
-import { getCachedClubIdentity } from "@/lib/public-layout-config";
+import {
+  getCachedClubIdentity,
+  getCachedWebsiteThemeRenderState,
+} from "@/lib/public-layout-config";
 import {
   getSanitizedPageContentByPath,
   pageContentHtmlToPlainText,
@@ -56,32 +59,68 @@ function pageSlugFromPath(path: string) {
 }
 
 /**
- * Raises the miss here, before the page component renders (#2405, owner
+ * Raises the miss here as well as in the component below (#2405, owner
  * decision 31 Jul 2026 "Option A").
  *
- * Be clear about what this does and does not buy, because the issue's
- * hypothesis turned out to be wrong. It was thought the response shell flushed
- * before this route's database read resolved, committing a 200 that the later
- * `notFound()` could no longer change. It does not: measured on a club that has
- * completed site-style setup, every unmatched shape in the issue
- * (`/definitely-missing`, `/wp-admin/setup-config.php`, `/.env`, `/admin/nope`,
- * `/foo%00bar`, `POST /definitely-missing`) ALREADY answered 404 before this
- * line existed. `notFound()` from a page is caught by Next's
- * `HTTPAccessFallbackBoundary` and the status is set from the render, not from
- * a race with the wire.
+ * Be clear about what this does and does not buy, because both the issue's
+ * hypothesis AND this guard's first justification turned out to be wrong.
  *
- * So this is a guard, not a repair, and it is kept for one reason: it is the
- * only version of the decision that survives the page being rendered behind a
- * streaming boundary. Today nothing in `(website)` has a `loading.tsx`, so the
- * page sits in the shell and its own `notFound()` below is reached in time.
- * Add one — or take the static/ISR slices in #2352 — and the component's throw
- * could land after the shell is committed, which is exactly the failure the
- * issue described. Deciding in `generateMetadata()` runs earlier than any of
- * that.
+ * The issue supposed the response shell flushed before this route's database
+ * read resolved, committing a 200 that the later `notFound()` could no longer
+ * change. It does not: measured on a club that has completed site-style setup,
+ * every unmatched shape in the issue (`/definitely-missing`,
+ * `/wp-admin/setup-config.php`, `/.env`, `/admin/nope`, `/foo%00bar`,
+ * `POST /definitely-missing`) ALREADY answered 404 before this line existed.
+ * `notFound()` from a page is caught by Next's `HTTPAccessFallbackBoundary` and
+ * the status is set from the render, not from a race with the wire.
+ *
+ * This guard was then justified as "the version of the decision that survives a
+ * streaming boundary". That is false, and saying so is the point of this
+ * paragraph — read against the vendored next@16.2.11 rather than assumed.
+ * `create-component-tree.js` puts `MetadataOutlet` in the SAME `Fragment` as the
+ * page element (both children of one `createSeedData` call), so a `loading.tsx`
+ * added to this segment would wrap the two of them together, not one ahead of
+ * the other. Worse for the claim: when metadata is STREAMED — which is the
+ * default for anything not in `HTML_LIMITED_BOT_UA_RE`, and Googlebot is not in
+ * it — `metadata.js`'s `MetadataOutlet` puts its pending promise behind an
+ * EXTRA `Suspense`, so it commits the status LATER than the page's own
+ * `notFound()`, not earlier. Do not describe this as running "before the page
+ * renders": the two render concurrently.
+ *
+ * What it does buy, honestly:
+ *  • for an HTML-limited bot (`serveStreamingMetadata` false — the crawlers in
+ *    that list) Next blocks on metadata instead of streaming it, so the miss is
+ *    settled without the page tree having to produce anything; and
+ *  • on a configured club the metadata branch below is never reached for a URL
+ *    with no page, so a miss cannot emit a `<title>` describing a page that
+ *    does not exist.
+ *
+ * It is NOT a substitute for a segment-level guard. If the static/ISR slices in
+ * #2352 land, or a `loading.tsx` is added here, the 404 decision has to move
+ * somewhere that runs before the segment is rendered at all — this line will not
+ * cover it.
  *
  * `loadPublishedPage()` memoises the lookup for the request, so the component's
  * own `getPageForParams()` call below reuses this result rather than repeating
  * the query.
+ *
+ * Pre-setup, the miss is deliberately NOT raised here. On a club whose
+ * `ClubTheme.completedAt` is NULL, `(website)/layout.tsx` returns its "Site
+ * setup in progress" screen instead of `{children}`. `notFound()` here would
+ * escape that, because the root not-found boundary sits ABOVE the layout:
+ * unknown paths would answer 404 while published pages still rendered the
+ * holding screen, which hands an anonymous visitor a way to enumerate an
+ * unlaunched site's page list and renders database-backed 404 content before
+ * the site is meant to be visible.
+ *
+ * #2420 has since landed and it does NOT retire this guard, it demotes it. The
+ * setup gate in `src/proxy.ts` answers every public-website address with 503
+ * before the render starts, so no document request reaches this code path
+ * pre-setup at all — but the proxy matcher deliberately skips RSC prefetches,
+ * and those still arrive here. This guard is what stops one of them raising the
+ * enumeration oracle above, exactly as the layout keeps its own pre-setup
+ * branch for the same shapes. The theme read is the layout's own tagged cache,
+ * so it costs no extra query, and it only runs on the miss path.
  */
 export async function generateMetadata(
   props: DynamicPageProps,
@@ -92,7 +131,13 @@ export async function generateMetadata(
   ]);
 
   if (!page) {
-    notFound();
+    const { isComplete } = await getCachedWebsiteThemeRenderState();
+
+    if (isComplete) {
+      notFound();
+    }
+
+    return { title: clubName };
   }
 
   return {

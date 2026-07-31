@@ -22,9 +22,12 @@ vi.mock("next-auth/react", () => ({
 
 // The page reads only the "tab" search param (defaults to "approvals") and
 // calls router.replace on tab change (never on render), so stub minimally.
+// `searchParamsQuery` lets a test open the page on a specific tab.
+let searchParamsQuery = "";
+
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ replace: vi.fn(), push: vi.fn(), refresh: vi.fn() }),
-  useSearchParams: () => new URLSearchParams(),
+  useSearchParams: () => new URLSearchParams(searchParamsQuery),
 }));
 
 // The gate under test is purely "render the panel only once canEditBookings
@@ -68,6 +71,7 @@ describe("BookingRequestsPage session-resolution render gate (#2065)", () => {
   beforeEach(() => {
     sessionMatrix = null;
     sessionStatus = "loading";
+    searchParamsQuery = "";
     // The page's best-effort pending-count fetch must not hit an unstubbed URL.
     vi.stubGlobal(
       "fetch",
@@ -118,5 +122,57 @@ describe("BookingRequestsPage session-resolution render gate (#2065)", () => {
     expect(
       screen.getByText(/can view booking requests but cannot approve/i),
     ).toBeInTheDocument();
+  });
+});
+
+describe("Public Requests tab share link (#2421)", () => {
+  beforeEach(() => {
+    sessionMatrix = null;
+    sessionStatus = "loading";
+    searchParamsQuery = "tab=public";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ total: 0 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  // The public form is unlisted, so this copy field is the only place an admin
+  // can get the URL to hand a guest. Sharing it is not a booking write, so it
+  // must NOT be gated on bookings:edit.
+  it("shows the copyable public request form link to a view-only admin", () => {
+    sessionStatus = "authenticated";
+    sessionMatrix = { ...editMatrix(), bookings: "view" };
+    render(<BookingRequestsPage />);
+
+    expect(
+      screen.getByText("Guest request form link (unlisted)"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(`${window.location.origin}/booking-requests`),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /copy/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("still shows it while the session is resolving, when the panel is gated out", () => {
+    sessionStatus = "loading";
+    sessionMatrix = editMatrix();
+    render(<BookingRequestsPage />);
+
+    expect(
+      screen.getByText("Guest request form link (unlisted)"),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("public-panel")).not.toBeInTheDocument();
   });
 });

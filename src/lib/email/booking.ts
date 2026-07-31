@@ -10,6 +10,7 @@ import {
   bookingModifiedTemplate,
   setupIntentFailedTemplate,
   preArrivalReminderTemplate,
+  additionalPaymentReminderTemplate,
   splitGuestPortionCancelledTemplate,
   promoAdjustmentSummaryRows,
   resolvePromoAdjustmentCents,
@@ -71,6 +72,17 @@ export async function sendBookingConfirmedEmail(
     paymentDue?: {
       reference: string;
       invoiceEmailed: boolean;
+    };
+    // #2397: the booking IS settled, but for less than it is worth — an admin
+    // recorded a cash / off-Xero payment and said it did not cover an
+    // uncollected price increase, so the club will still ask for the rest.
+    // Passing this is what stops the confirmation telling the member they paid
+    // in full while the admin's own receipt says the opposite. See
+    // `bookingConfirmedTemplate` for the field meanings; `paymentDue` (nothing
+    // paid at all) wins if both are supplied.
+    outstandingBalance?: {
+      amountCents: number;
+      payableOnline: boolean;
     };
   },
 ) {
@@ -143,9 +155,24 @@ export async function sendBookingConfirmedEmail(
   // "Payment has been processed successfully" for money that has not moved.
   // The legacy per-piece tokens (totalPaid, totalDue, paymentDueNote,
   // paymentReference) stay supplied for overrides that build their own lines.
+  // #2397: the third money outcome — settled, but for LESS than the booking is
+  // worth. Same convention again: complete lines, then the composed sentence,
+  // byte-identical to what the FILE template renders.
+  const outstandingBalance = paymentDue ? undefined : options?.outstandingBalance;
+  const outstandingPaidCents = outstandingBalance
+    ? totalCents - outstandingBalance.amountCents
+    : 0;
+  const outstandingBalanceNote = outstandingBalance
+    ? `Your payment of ${formatMoneyCents(outstandingPaidCents)} has been recorded and your booking is confirmed. ${formatMoneyCents(outstandingBalance.amountCents)} is still owing from a later change to this booking.` +
+      (outstandingBalance.payableOnline
+        ? " You can pay it from your booking page."
+        : " The club will be in touch to arrange it.")
+    : "";
   const paymentOutcome = paymentDue
     ? `Total Due: ${formatMoneyCents(totalCents)}\n\n${paymentDueNote}`
-    : `Total Paid: ${formatMoneyCents(totalCents)}\n\nPayment has been processed successfully.`;
+    : outstandingBalance
+      ? `Booking Total: ${formatMoneyCents(totalCents)}\nPaid: ${formatMoneyCents(outstandingPaidCents)}\nStill Owing: ${formatMoneyCents(outstandingBalance.amountCents)}\n\n${outstandingBalanceNote}`
+      : `Total Paid: ${formatMoneyCents(totalCents)}\n\nPayment has been processed successfully.`;
   // #2262: the outcome is RETURNED so a caller that promised the admin a
   // receipt can report honestly what became of it (queued vs withheld vs
   // failed) instead of turning a decision into a delivery claim. Existing
@@ -193,10 +220,21 @@ export async function sendBookingConfirmedEmail(
         promoAdjustmentCents !== 0
           ? `${promoAdjustmentPrefix}${formatMoneyCents(Math.abs(promoAdjustmentCents))}`
           : "",
-      // Exactly one of these carries a figure: an unpaid confirmation must not
-      // render a "Total Paid" line at all (#2263).
-      totalPaid: paymentDue ? "" : formatMoneyCents(totalCents),
-      totalDue: paymentDue ? formatMoneyCents(totalCents) : "",
+      // An unpaid confirmation must not render a "Total Paid" line at all
+      // (#2263). #2397 adds the third case: a PARTLY paid confirmation carries
+      // BOTH, because both are true — {{totalPaid}} is what the club actually
+      // has (cash plus any credit applied) and {{totalDue}} is what is still
+      // owed, never the whole price.
+      totalPaid: paymentDue
+        ? ""
+        : formatMoneyCents(
+            outstandingBalance ? outstandingPaidCents : totalCents,
+          ),
+      totalDue: paymentDue
+        ? formatMoneyCents(totalCents)
+        : outstandingBalance
+          ? formatMoneyCents(outstandingBalance.amountCents)
+          : "",
       total: formatMoneyCents(totalCents),
       paymentOutcome,
       paymentDueNote,
@@ -581,8 +619,14 @@ export async function sendPreArrivalReminderEmail(params: {
   // default lodge — including its real door code, so always thread the
   // booking's own lodgeId.
   lodgeId?: string | null;
+  // #2350: extra still owing on this booking after an upward change. Passed by
+  // the pre-arrival cron when the delta is uncollected; zero/omitted otherwise,
+  // which leaves the message byte-for-byte as it was.
+  outstandingAdditionalAmountCents?: number;
 }) {
   const settings = await loadEmailMessageSettingsForLodge(params.lodgeId);
+  const outstandingAdditionalAmountCents =
+    params.outstandingAdditionalAmountCents ?? 0;
   await sendEmail({
     to: params.email,
     subject: `Pre-arrival Information - ${EMAIL_DEFAULT_LODGE_NAME}`,
@@ -614,6 +658,52 @@ export async function sendPreArrivalReminderEmail(params: {
       doorCodeNote: composeOptionalEmailLine("Door code", settings.doorCode, {
         trailing: "",
       }),
+      // Pre-composed so an admin override places one block rather than having
+      // to write the conditional itself (the {{doorCodeNote}} convention).
+      outstandingAdditionalNote:
+        outstandingAdditionalAmountCents > 0
+          ? `There is still ${formatMoneyCents(outstandingAdditionalAmountCents)} to pay on this booking after a change to your stay. Please pay it from your booking page before you arrive.`
+          : "",
+    },
+    lodgeId: params.lodgeId,
+  });
+}
+
+/**
+ * F-#2350: the extra owed after an upward booking change has not been paid.
+ *
+ * Sent automatically a few days after the change and once more shortly before
+ * check-in (src/lib/cron-additional-payment-reminders.ts), and on demand by an
+ * admin from the booking page. One template for all three so the member always
+ * reads the same wording, and so an admin override edits one message rather than
+ * three.
+ */
+export async function sendAdditionalPaymentReminderEmail(params: {
+  bookingId: string;
+  email: string;
+  firstName: string;
+  additionalAmountCents: number;
+  checkIn: Date;
+  checkOut: Date;
+  requestedOn: Date;
+  lodgeId?: string | null;
+}) {
+  // Returns the outcome rather than swallowing it (#2350): both callers write a
+  // stamp BEFORE sending, and that stamp is also the 60-minute cooldown, so a
+  // withheld/suppressed/placeholder send — which returns, it does not throw —
+  // must not be mistaken for a delivered one.
+  return sendEmail({
+    to: params.email,
+    subject: `Payment Still Needed - ${EMAIL_DEFAULT_LODGE_NAME}`,
+    html: additionalPaymentReminderTemplate(params),
+    bookingContext: { bookingId: params.bookingId },
+    templateName: "additional-payment-reminder",
+    templateData: {
+      firstName: params.firstName,
+      additionalAmount: formatMoneyCents(params.additionalAmountCents),
+      requestedOn: formatNZDate(params.requestedOn),
+      checkIn: formatNZDate(params.checkIn),
+      checkOut: formatNZDate(params.checkOut),
     },
     lodgeId: params.lodgeId,
   });
@@ -641,6 +731,11 @@ export async function sendBookingModifiedEmail(params: {
   additionalPaymentMethod?: "STRIPE" | "INTERNET_BANKING";
   paymentReference?: string | null;
   xeroInvoiceNumber?: string | null;
+  // #2390: the plain-English sentence about who a capped promotion still covers
+  // after this edit. Flows into the shared change rows, so the HTML email, the
+  // admin-editable body, the edit preview and the booking's own history all
+  // carry the identical wording.
+  promoCoverageNote?: string | null;
   // Booking's lodge (multi-lodge phase 8): see sendBookingConfirmedEmail.
   lodgeId?: string | null;
 }) {

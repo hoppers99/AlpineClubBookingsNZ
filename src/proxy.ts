@@ -135,9 +135,47 @@ export function getAnonymousPageCacheControl(
   return hasSessionCookie ? null : ANONYMOUS_PAGE_CACHE_CONTROL;
 }
 
+/**
+ * The seven verbs Next's app-route module will resolve a handler for
+ * (`next/dist/server/web/http.js`'s `HTTP_METHODS`). Anything else — `PROPFIND`
+ * and the rest of the WebDAV/scanner vocabulary — is rejected by
+ * `AppRouteRouteModule.resolve()` with a bare `400` and no body, before any
+ * userland code runs. Kept in step with the vendored next@16.2.11.
+ */
+const STANDARD_HTTP_METHODS = new Set([
+  "GET",
+  "HEAD",
+  "OPTIONS",
+  "POST",
+  "PUT",
+  "DELETE",
+  "PATCH",
+]);
+
+/**
+ * The reply for a path a disabled module hides, or null when nothing is hidden.
+ *
+ * `method` matters because this response has to be INDISTINGUISHABLE from what
+ * the same `/api` path answers when the module is switched ON (#2405 security
+ * review). With the module on, the request reaches a real route handler — or
+ * `src/app/api/[[...unmatched]]/route.ts` if no handler claims it — and Next
+ * answers a non-standard verb with a bare `400` rather than running anything.
+ * Answering those verbs with the JSON 404 here would have made the module state
+ * readable from a single anonymous `PROPFIND /api/<gated-prefix>/zzz`: `400`
+ * means on, `404` means off. Mirroring the bare 400 closes that.
+ *
+ * Scoped to `/api` paths on purpose. The 400 mirrors the ROUTE-HANDLER
+ * contract; a page path is served by a different Next module with different
+ * verb handling, so borrowing the same answer there would assert a parity that
+ * has not been measured.
+ *
+ * Defaults to `GET` so a caller that only cares about the ordinary case (the
+ * existing gate tests) reads plainly; `proxy()` always passes the real method.
+ */
 export function getFeatureFlagBlockResponse(
   pathname: string,
   flags: FeatureFlags,
+  method: string = "GET",
 ): NextResponse | null {
   const disabledFeature = getDisabledFeatureForPath(pathname, flags);
 
@@ -145,18 +183,25 @@ export function getFeatureFlagBlockResponse(
     return null;
   }
 
-  return pathname.startsWith("/api/")
+  if (!pathname.startsWith("/api/")) {
+    return new NextResponse(null, { status: 404 });
+  }
+
+  return STANDARD_HTTP_METHODS.has(method)
     ? NextResponse.json({ error: "Not found" }, { status: 404 })
-    : new NextResponse(null, { status: 404 });
+    : new NextResponse(null, { status: 400 });
 }
 
-async function getEffectiveModuleBlockResponse(pathname: string) {
+async function getEffectiveModuleBlockResponse(
+  pathname: string,
+  method: string,
+) {
   if (getRequiredFeaturesForPath(pathname).length === 0) {
     return null;
   }
 
   const effectiveFlags = await loadEffectiveModuleFlags();
-  return getFeatureFlagBlockResponse(pathname, effectiveFlags);
+  return getFeatureFlagBlockResponse(pathname, effectiveFlags, method);
 }
 
 export async function proxy(request: NextRequest) {
@@ -174,8 +219,9 @@ export async function proxy(request: NextRequest) {
   // otherwise tell an anonymous prober which modules an unconfigured install has
   // on. It also means the module read is skipped entirely while the gate is
   // closed. Never reached for `/api/*`: those paths are gated by the matcher and
-  // by `isPublicWebsitePath`, so `api/[...unmatched]` keeps answering JSON 404
-  // in both setup states (#2405).
+  // by `isPublicWebsitePath`, so `api/[[...unmatched]]` keeps answering JSON 404
+  // — and the bare 400 for a non-standard verb, above — in both setup states
+  // (#2405).
   const setupInProgressResponse = await getSetupInProgressResponse(request);
 
   if (setupInProgressResponse) {
@@ -186,6 +232,7 @@ export async function proxy(request: NextRequest) {
 
   const featureFlagBlockResponse = await getEffectiveModuleBlockResponse(
     request.nextUrl.pathname,
+    request.method,
   );
 
   if (featureFlagBlockResponse) {

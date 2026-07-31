@@ -33,6 +33,108 @@ Future reviews and issues should cite this file when proposing changes.
   (the composition heuristic is removed). Fee changes affect future resolution
   only.
 - Do not introduce floating point money arithmetic.
+- **A promo "use" means the member actually got something (#2299).** A
+  `PromoRedemptionAllocation` row exists only where the application delivered a
+  benefit — `discountCents > 0`, `priceAdjustmentCents ≠ 0`, or
+  `freeNightsUsed > 0` (a price-RAISING fixed-nightly application counts: the
+  member's price genuinely changed). All three usage caps count those rows and
+  nothing else: uses per member, unique members, and total redemptions via the
+  denormalised `PromoCode.currentRedemptions`. The single write-time choke point
+  is `normalizeAllocations` in `src/lib/promo.ts`; every cap query additionally
+  applies `BENEFICIAL_PROMO_ALLOCATION_FILTER` so a legacy all-zero row cannot
+  occupy a slot. Two corollaries: (a) `currentRedemptions` is always the RAW
+  count of a code's allocation rows, so `redeemPromoCode`,
+  `replacePromoRedemptionAllocations` and `deletePromoRedemptionAndAdjustCount`
+  must measure their delta against the raw row count, never a filtered one; and
+  (b) a reprice that destroys a booking's promo benefit RELEASES the slot it
+  held, in the same transaction that removes the benefit — a member holds
+  exactly as many slots as they hold benefits, at every instant. The
+  `PromoRedemption` row is never benefit-gated: it persists for any application
+  with eligible guests and is the audit and reporting trail, which is why the
+  archive-or-delete decision for a promo code counts redemptions, not
+  allocations (`PromoRedemption.promoCodeId` is `onDelete: Restrict`).
+  **Statement order in the two redemption writers is load-bearing**, because the
+  `PromoRedemption_sync_allocation_insert` / `..._update` triggers
+  (`20260527120000_add_promo_redemption_allocations`) upsert a booker allocation
+  row straight from the redemption's own scalars on every `PromoRedemption`
+  write — they exist so an old blue/green colour that writes only
+  `PromoRedemption` still records an allocation. For a zero-benefit application
+  that row is all-zero, so the allocation `deleteMany` must stay AFTER the
+  redemption create/update (or the database silently puts back the row this
+  invariant removes), and `replacePromoRedemptionAllocations` must count the
+  existing rows BEFORE its update (or it counts the trigger's transient row and
+  skews the counter delta).
+  - **Reading `currentRedemptions` for a cap check requires the row lock, and a
+    read under it.** Every path that may write the counter for an existing
+    booking — `booking-modify-plan.ts`, the add-guests route,
+    `booking-date-modification-service.ts`,
+    `booking-guest-removal-service.ts` — takes the `FOR UPDATE` promo row lock
+    before its first cap read, and re-reads the counter under that lock, because
+    the `PromoCode` snapshot it carries was loaded with the booking, before the
+    locks. All four reprice call sites do that re-read through
+    `lockAndRefreshPromoCodeUsage` (including `booking-modify-plan.ts` on its
+    no-swap reprice branch; its swap branch re-reads the whole promo row under
+    the same lock instead), and each must then validate against the object the
+    wrapper RETURNS — validating the snapshot that went in reopens the race. See
+    `docs/CONCURRENCY_AND_LOCKING.md` → "Narrow row-lock protocols".
+  - **A reprice narrows a promotion's coverage; it never refuses the edit
+    (#2390).** On the four reprice paths (and the edit preview, which must match
+    them) the cap question is "who does this code still cover?", not "may this
+    booking use it?". Members already holding a **beneficial** allocation on the
+    booking being repriced are counted first and kept unconditionally — even
+    where they alone exceed a cap, which is the stated behaviour when an admin
+    lowers a cap under bookings that already have the discount; everyone else is
+    admitted in the order the promotion applies to them — **most expensive stay
+    first**, the order `selectPromoDiscountGuests` produces — until the
+    allowance runs out. Booking creation and applying a newly-entered code still
+    refuse, because nobody holds a discount from the code yet.
+    - Protection is applied **inside** that selection, not after it: a
+      `maxGuestsPerBooking` cap is spent while the beneficiary list is built, so
+      an expensive newly-added guest would otherwise evict a member who already
+      held the discount before any protection check could see them. Anyone a
+      protected member keeps their slot ahead of is named in the coverage
+      notice, so nobody is left out silently.
+    - A member who has personally used the code up is left out **by the trim**,
+      not filtered away before it, so they reach the notice rather than being
+      priced normally with nothing said.
+    - For a `FREE_NIGHTS` code the lifetime cap is a budget, not a slot, so a
+      protected member's remaining nights are floored at what this booking's own
+      allocation rows already granted them. Keeping them on the list is not
+      enough: a lowered cap would otherwise award them zero nights while still
+      reporting them as covered.
+    - The protected set is read from `PromoRedemptionAllocation` **before the
+      redemption write**, for the same trigger reason as the two orderings
+      above: `PromoRedemption_sync_allocation_update` upserts a booker
+      allocation row, and a protected-set read placed after it would grant
+      protection nobody earned.
+    - An empty covered set is refused explicitly rather than falling through.
+      Downstream an empty beneficiary list means "unassigned promo", which would
+      price the code for every guest on the booking, cap and all.
+  - **A cap check that excludes a booking must exclude it from
+    `currentRedemptions` too.** The counter includes the rows the excluded
+    booking holds right now, and unlike every other cap it cannot be filtered by
+    a `where`. So `excludeBookingId` is paired with an explicit raw count of
+    that booking's own allocation rows, subtracted before the total-redemptions
+    cap is applied. Omitting it makes a booking holding a code's last slot fail
+    its OWN reprice, silently drop the discount, and bill the member the
+    discount back for a date change.
+  - **TRAP: the in-memory `PromoDiscountResult.allocations` is NOT
+    benefit-filtered on the assigned-member path.** `policies/pricing.ts`
+    deliberately emits a zero entry for a `SET_PRICE` guest whose rate already
+    equals the fixed price (`includeWhenZero`), and
+    `calculatePromoDiscountForGuestRates` returns the assigned-member result
+    before `normalizeAllocations` runs. The filter is applied at WRITE time
+    instead, inside `redeemPromoCode` / `replacePromoRedemptionAllocations`.
+    Anything that reads that in-memory list as "who benefited" must apply
+    `isBeneficialPromoAllocation` itself.
+  - **A `SET_PRICE` application whose per-guest adjustments net to exactly zero
+    counts as no use** (deliberate; #2299). In `SET_PRICE` mode every night is
+    re-priced, so a fixed price of $30 against nights of $50 and $10 nets to
+    zero, as does one member owning two guest rows that cancel. The member's
+    total is byte-identical with and without the code, so under the "any price
+    effect" rule there is no effect, and it consumes nothing. The accepted
+    consequence is that such a stay can carry the code indefinitely — which
+    costs nothing, because it gives nothing.
 - Refunds, credits, discounts, Stripe amounts, Xero invoice amounts, and
   membership fees must reconcile back to cent-based ledger records.
 - Admin adjustments need audit, approval, and a visible business reason.
@@ -639,6 +741,27 @@ Future reviews and issues should cite this file when proposing changes.
   The same three paths (single-night/drag placements, `source: "AUTO"`
   suggestions, and move re-drafts) are why draft rows persist under #2251's
   auto-approve, and why a confirmation affordance stays meaningful.
+- **Existing allocation moves preserve their lodge nights and commit atomically
+  (#2366):** an existing-chip drag selects a destination bed only. The hovered
+  column is presentation input, never a target date; the server accepts
+  allocation ids and re-reads each persisted `stayDate` under global booking
+  `lock(1)` followed by the destination lodge's capacity lock. The shared
+  global key makes cancellation's allocation prune and the move mutually
+  exclusive, so a move can never resurrect a row after cancellation. A
+  first-visible chip proxies for that guest's currently
+  visible allocated nights, while a later chip represents only its own night.
+  Every selected row keeps its original NZ date. A same-bed normalized move is a
+  no-op at both client and service boundaries, with no request from the normal
+  client and no audit even if another client calls the route directly.
+  Multi-night existing-allocation moves are all-or-nothing: one destination
+  conflict, inactive bed/room, lodge mismatch, status/guest-date failure,
+  custodian hold or invalid double-bed share rolls back every row. The row
+  updates, any second-occupant promotions, and all corresponding audit entries
+  live in the same transaction. Each promotion audit identifies both the
+  promoted row/guest and the causal moved allocation/guest. This does not
+  change bucket-to-board placement,
+  whose existing bulk path continues to report and skip individual conflicting
+  nights while placing the rest.
 - **A range assignment writes all or nothing, and records itself once (#2251):**
   `assignBedRange` scans, writes and audits inside one transaction. If any
   requested night is blocked, NOTHING is written and the caller receives a
@@ -671,8 +794,10 @@ Future reviews and issues should cite this file when proposing changes.
   will be written, so a partial result is never one click from a warning. The
   31-night `MAX_BED_ALLOCATION_RANGE_NIGHTS` bounds
   the board's READ window, not this write: lodge capacity is the active bed
-  count and never reads `BedAllocation` rows, and no capacity or advisory lock
-  is taken on any allocation write path. The separate write bound
+  count and never reads `BedAllocation` rows. Placement paths nevertheless take
+  the destination lodge's capacity lock because custodian holds share the bed
+  inventory (#2286); existing-allocation moves follow destination-key read →
+  lock → authoritative re-read. The separate write bound
   (`MAX_BED_ALLOCATION_ASSIGN_RANGE_NIGHTS`, 366) exists only to keep one
   transaction finite, and is **refused at, never silently truncated to** — as is
   every board window the admin types.
@@ -767,6 +892,158 @@ Future reviews and issues should cite this file when proposing changes.
     first, and the reversal refuses on any settled Stripe transaction before
     the disarm. The deleted rows' full content is preserved in the reversal's
     `AuditLog` metadata.
+  - An OUTSTANDING upward-modification delta on the booking is never silently
+    absorbed or silently left behind (#2397). `additionalAmountCents` /
+    `additionalPaymentStatus` were previously written only by the CARD
+    additional-payment flow, so a price increase settled in cash still read as
+    owing on every surface — including the automatic chase (#2350) — and the
+    member would be emailed for money the club already held. The mark-paid
+    dialog therefore ASKS (owner decision, 31 Jul 2026) whenever the booking
+    carries one, showing the amount before the change, the extra, and the total
+    being recorded; and the answer is a REQUIRED, defaultless part of the
+    settle's contract. Absence of an answer is the caller's positive claim that
+    there was no extra, re-checked under the locks like every other claim: an
+    extra that exists without one is a 409, an answer for an extra that does not
+    is a 409, and a figure that moved since the dialog rendered is a 409 — the
+    same law as `expectedAmountCents`.
+    Said covered, the extra is settled through the columns every consumer
+    already reads (`additionalPaymentStatus = "SUCCEEDED"`, re-asserted in the
+    fenced write) AND as a durable INTERNET_BANKING ADDITIONAL
+    `PaymentTransaction` with reason `manual_mark_paid_additional`, because
+    `reconcilePaymentAggregates` re-derives those columns from the latest
+    ADDITIONAL transaction and a column-only write would be undone by the next
+    ledger reconcile. **No money is created:** an upward modification raises
+    `Booking.finalPriceCents` by the same delta it records as the extra, and
+    this settle collects `finalPriceCents - credit` in one go, so the cash is
+    SPLIT (the ADDITIONAL row carries the delta, the PRIMARY row the rest) and
+    `Payment.amountCents` is the money the club took, never more. An extra
+    LARGER than the whole amount owing cannot be a slice of it (a modification
+    change fee is added to the extra but never to `finalPriceCents`) and is
+    refused rather than guessed, on BOTH answers.
+    Said NOT covered, the extra stays outstanding **and is subtracted from the
+    settled figure** (owner decision, 31 Jul 2026): the settlement records
+    `finalPriceCents - credit - outstandingAdditionalCents`, so the books show
+    what was actually handed over ($100 received, $21 owing) instead of the old
+    contradiction ($121 received, $21 owing). The PRIMARY transaction figure is
+    identical under both answers — the booking's worth before the change — and
+    the answer only decides whether an ADDITIONAL row sits beside it. A "not
+    covered" answer whose extra IS the whole amount owing is refused: there is
+    nothing left to record, and a $0 settlement must never flip a booking to
+    PAID. Downstream this is a strengthening, not a loosening: the cancellation
+    refund basis (`paidAmountCents = amountCents - refunded`) and every captured
+    figure now follow the cash the club actually holds.
+    A "not covered" settle must also leave a WAY TO COLLECT the extra it leaves
+    owing. The settlement's blanket Stripe-intent cancellation therefore SPARES
+    exactly one intent — the payment's current `additionalPaymentIntentId`, and
+    only when the answer was "not covered" — because that instrument is the
+    member's only self-service door to the extra
+    (`/api/bookings/[id]/additional-payment-secret` hands back precisely that
+    id, and neither it nor the booking page's pay card gates on booking status,
+    so both keep working on the now-PAID booking). Capturing it is
+    ledger-correct: `reconcilePaymentAggregates` sums the captured rows, so
+    `Payment.amountCents` becomes cash + addition = `finalPriceCents` and the
+    generalised mirror below closes with a zero third term. Superseded addition
+    intents are still cancelled (they are doors to a figure nobody is owed), and
+    the "covered" answer still cancels the addition's intent, because there the
+    extra is paid and a live intent would be a door to a SECOND payment. The
+    admin's receipt and the member's confirmation both state which of the two
+    situations applies, so nobody is chased for money they cannot send.
+    **The member's confirmation must agree with the admin's receipt.** A "not
+    covered" settle sends the ordinary booking-confirmed message with the
+    balance stated: the money rows become Booking Total / Paid / Still Owing and
+    the alert box says the payment was recorded, names what is still owing, and
+    says whether it can be paid from the booking page or the club will be in
+    touch. "Total Paid: <whole price>" plus "Payment has been processed
+    successfully" would tell the member the opposite of what the same HTTP
+    response tells the admin.
+    **A payment that has already taken money is refused at READ time**, not only
+    at the fenced write. The settle-from statuses are PENDING / PROCESSING /
+    FAILED (a declined or expired card attempt is exactly what an admin remedies
+    with cash); SUCCEEDED and the refunded variants are refused with a message
+    that says so. Without the read-time half, the one production shape that puts
+    an uncollected extra on a payable booking — a card capture stranded before
+    its status promotion (#1418: `confirm-pending-guests` and
+    `cron-confirm-pending` both commit the SUCCEEDED ledger row in their own
+    transaction and deliberately leave the booking CONFIRMED when the promotion
+    then fails) — opened the whole dialog, asked the admin the coverage
+    question, and refused every answer with "changed while you were recording
+    it", which was untrue and repeated on every retry. The admin booking page's
+    advisory state applies the same rule, so the action is not offered at all.
+    The three payment-level refusals are also checked in the SAME ORDER on both
+    surfaces — refund history, then already-captured, then Xero evidence — so a
+    booking that trips more than one is given the same sentence before the click
+    and after it. Refund history leads because it is the most specific truth
+    (a fully REFUNDED payment is a captured one too, and only the refund message
+    names the remedy); Xero trails because the cheap in-memory refusals should
+    settle it without the extra lookups `assertNoXeroInvoiceEvidence` costs
+    inside the locked transaction.
+    **Reachability, stated plainly.** With that read-time refusal in place, no
+    production path is known that presents the coverage question on a settle
+    that can COMPLETE, other than the reverse-then-re-settle loop and legacy
+    pre-ledger rows. Every writer of `additionalAmountCents` requires the
+    payment to be captured at the moment the delta is recorded
+    (`applyPaymentAdjustments` arm (a) needs `hasCapturedPayment`; arm (b) needs
+    an issued Xero invoice, which this settle refuses outright and which nothing
+    ever clears), and a captured payment is not a legal settle-from. The
+    question and both its branches are therefore correctness insurance for the
+    reversal loop, for legacy data, and against a future writer that records a
+    delta earlier — not a live hazard. Treat this paragraph as the thing to
+    re-check if either the settle-from status set or the delta writers change.
+  - **The ledger mirror, generalised (#2397).**
+    `amountCents + creditAppliedCents = finalPriceCents` is only the special
+    case where nothing is left owing; it cannot hold on a partially settled
+    booking. What holds in every case — and what a CARD-settled booking carrying
+    an uncollected addition already satisfied, so the manual path now MATCHES
+    the card path rather than diverging from it — is
+    `amountCents + creditAppliedCents + (uncollected addition) = finalPriceCents`:
+    every cent of the price is collected, paid with credit, or still owed. The
+    covered answer reduces it to the original mirror with the third term at 0.
+    This is NOT enforced by a runtime assertion inside the settle, and it cannot
+    be: the settled figure is *defined* as `finalPriceCents - credit -
+    uncollected`, so any in-transaction check reduces to `finalPrice ===
+    finalPrice`, and re-reading the values after the writes only returns what
+    the same locals just wrote. What enforces it, in order, is (1) CONSTRUCTION
+    — the PRIMARY and ADDITIONAL rows are a split of one figure, and that figure
+    is what `Payment.amountCents` is set to, so the reconciler's own derivation
+    reproduces it rather than inflating it; (2) THE FENCE — the fenced
+    `payment.updateMany` re-asserts the outstanding delta (on BOTH answers, not
+    only the covered one), the settle-from status, the zero refund history and
+    the absence of Xero evidence as WHERE clauses, so a concurrent writer that
+    moved any of them yields count 0 → 409; and (3) AFTER THE FACT, NARROWLY —
+    `auditIbAppliedCreditStrands` recomputes
+    `amountCents + creditAppliedCents - finalPriceCents` over committed data and
+    reports the uncollected addition beside it, so where it reports at all, a
+    residual that is not exactly the uncollected delta is visible to an
+    operator. Only (3) is a check that can actually fire, because it is not
+    reading back its own writes.
+    **(3) is not a safety net for this settle, and must not be relied on as
+    one.** It enumerates a payment only when the booking still carries
+    UN-ALLOCATED applied credit (`deriveIbAppliedCreditStrandFinding` returns
+    null on `ledgerAppliedCents <= 0`, and the ledger sum counts
+    `BOOKING_APPLIED` rows with `xeroCreditNoteId: null` only), it scans
+    INTERNET_BANKING payments only, and it is an operator-run script
+    (`scripts/audit-ib-hold-clearing.ts`), not a scheduled job or an alert. An
+    ordinary "not covered" cash settlement on a booking with no applied credit
+    therefore produces no finding at all and its residual is never printed.
+    Construction and the fence are what keep this settle honest; the audit is a
+    reading aid for the credit-strand population it already lists.
+    Within that population, a NEGATIVE `mirrorInvariantDeltaCents` is not
+    automatically drift: equal-and-opposite to the payment's uncollected
+    addition means the generalised mirror holds. Because that audit scans
+    INTERNET_BANKING payments only, a card-settled booking never appears in it
+    at all; the two shapes that legitimately produce the residual there are a
+    Xero-invoiced pay-on-account booking whose later addition was invoiced but
+    never paid, and this #2397 "not covered" cash settlement.
+    Either answer is recorded on the mark-paid audit row BOTH ways — together
+    with the settled figure actually written, the amount owing, and what was
+    deliberately left uncollected, so a later reader can reconstruct which
+    branch ran and what it meant. A covered extra also writes its own
+    `booking-payment.manual-payment.additional-settled` audit row so the booking
+    history shows it, and the REVERSAL gives back exactly what its settle took:
+    the reversed amount is the figure that was written, and a covered extra goes
+    back to owing (ADDITIONAL row → FAILED, column restored by a guarded claim
+    matching exactly what the settle wrote), while a not-covered settle has
+    nothing about the extra to restore.
   - A stored, unconsumed credit election (#2265) on the booking is never
     silently stranded or ignored (door 3 of the #2319 invariant below): the
     settle clears it with the shared guarded claim, records the cleared cents
@@ -1930,6 +2207,14 @@ The rules are:
   **keeps warning after the switch is cleared** whenever withheld rows exist,
   because clearing re-sends nothing — a member never told about a cancellation
   is still never told.
+
+  One documented exception (#2350): the additional-payment chase cron checks the
+  switch ITSELF and skips before it reaches the mailer, deliberately, so that no
+  stamp is burned and the reminder is still due once the switch comes off. Since
+  the mailer never runs, no `SKIPPED_NO_EMAILS` row is written and that skipped
+  chase does not appear in this list. It is the one booking message the banner
+  cannot name — and the only one that is not lost by being withheld, because it
+  will be sent for real later.
   Rows are **grouped per template with an exact count**, read with aggregates
   (`getWithheldBookingEmailSummary`). That is a correctness property, not a
   presentational one: a chore-roster send fans out to one row per guest per
@@ -2163,14 +2448,152 @@ helpers so the surfaces can never drift):
   `additionalAmountCents > 0` with `additionalPaymentStatus` null or not
   `SUCCEEDED` — a settled stay whose upward modification delta (admin
   recalculate, guest add, date change) was never collected. The payment
-  summary columns mirror the LATEST ADDITIONAL payment transaction, and the
-  predicate mirrors the member-facing owed test (member dashboard / booking
-  detail), so admin and member agree on what is owed; `PAYMENT_PENDING` is
-  deliberately excluded so the two queue counts can be summed without
-  double-counting a booking. Deep link:
+  summary columns mirror the LATEST ADDITIONAL payment transaction. The
+  in-memory twin of this predicate is `isAdditionalPaymentOwed`
+  (`src/lib/additional-payment-chase.ts`), which takes the booking status as a
+  REQUIRED argument for exactly this reason: cancelling a booking leaves
+  `additionalAmountCents` and `additionalPaymentStatus` untouched, so an
+  amount-only test reads a cancelled booking as still owing. `PAYMENT_PENDING`
+  is deliberately excluded so the two queue counts can be summed without
+  double-counting a booking — a narrowing for counting, NOT a claim that such a
+  delta is uncollectable (see "Who may pay one" below). Deep link:
   `/admin/bookings?additionalOwed=owed&checkOutTo=<today>` via the bookings
   list's `additionalOwed` filter (AND-composed, so explicit status/date
   filters in the same URL still narrow).
+- **Unsettled additions on a stay still ahead** (#2350): the same predicate
+  with `checkOut > today` instead of `checkOut <= today`, so the two halves are
+  disjoint by construction and their counts sum without double-counting. This
+  is the half that can still be chased while the member is paying attention;
+  the finished half is a follow-up conversation. The dashboard shows one card
+  with a split label ("N upcoming, M finished") and the sidebar badge shows the
+  sum, both deep-linking to `/admin/bookings?additionalOwed=owed` - the whole
+  queue, with no date bound, because the bookings list has no upcoming-only
+  filter to point at.
+
+### Chasing an outstanding additional payment (#2350)
+
+Until #2350 nothing chased the member for an uncollected upward change and no
+admin surface showed one. These rules now hold:
+
+- **Who is owed anything at all.** `isAdditionalPaymentOwed`
+  (`src/lib/additional-payment-chase.ts`) is the in-memory twin of
+  `buildAdditionalOwedWhere` and tests BOTH halves: booking status in
+  {`CONFIRMED`, `PAID`, `COMPLETED`} (one shared list,
+  `ADDITIONAL_OWED_BOOKING_STATUSES`), and `additionalAmountCents > 0` with
+  `additionalPaymentStatus` other than `SUCCEEDED`. The status half is not
+  decoration: booking cancellation marks the additional intent `FAILED` (or
+  leaves it PENDING where no intent exists) WITHOUT zeroing the amount, so an
+  amount-only test would show cancelled bookings as owing and would email their
+  members a payment demand. It takes the status as a required argument so a
+  caller cannot forget it.
+- **Who may PAY one.** The member-facing surfaces use a second, deliberately
+  wider list, `ADDITIONAL_PAYABLE_BOOKING_STATUSES` — the owed list plus
+  `PAYMENT_PENDING`, which the owed list drops only to keep the two admin queue
+  counts summable. Both surfaces that can move money gate on it: the booking
+  page's `AdditionalPaymentCard` and
+  `GET /api/bookings/[id]/additional-payment-secret`. The member dashboard's
+  owed total is scoped instead by its own query (`ACTIVE_BOOKING_STATUSES` +
+  `COMPLETED`), wider again. **What every one of them excludes is CANCELLED and
+  BUMPED**, and that is the invariant: a member is never shown, and can never
+  complete, a card payment for a booking the club has stopped counting.
+  Enforcement is not cosmetic — cancellation marks the additional intent
+  `FAILED` without zeroing the amount, and the cancel path asks Stripe to cancel
+  only an intent that was still *outstanding*, so an intent that had already
+  failed (a declined card) stays confirmable at Stripe. Before this gate the
+  owner of a cancelled booking could open the booking, be offered "pay this
+  extra", fetch a live client secret and complete the charge; the late-capture
+  backstop (#1350) auto-refunded and alerted, but the member had still been
+  charged for a booking that no longer existed.
+- **What the member is told.** While the stay is still ahead, the member is
+  emailed at most twice per obligation: `ADDITIONAL_PAYMENT_REMINDER_DAYS`
+  (3) days after the extra was raised, and
+  `ADDITIONAL_PAYMENT_FINAL_REMINDER_DAYS_BEFORE_CHECK_IN` (2) days before
+  check-in. The pre-arrival reminder also names the amount when one is owing.
+  Nothing is ever auto-cancelled or auto-expired, and the chase stops the
+  moment `checkOut <= today` - a finished stay belongs to the queue above.
+- **Nothing raised before the chase existed is chased, and the cutover is a
+  fact rather than a plan.** An obligation whose episode started before the
+  cutover is never emailed about by the cron: on first deploy every pre-existing
+  delta is already past the day-3 threshold, so without this the first pass
+  would mail the whole backlog at once, and legacy rows with no ADDITIONAL
+  transaction would date the demand from the payment row's creation rather than
+  the day the price changed. Those deltas stay on every admin surface and can
+  still be chased by hand — and the exclusion is per EPISODE, so a later upward
+  change (or a member retrying a failed charge) is chased normally.
+
+  The cutover is **derived, not hand-written**: it is the `startedAt` of the
+  FIRST `CronJobRun` row for `additional-payment-reminders`
+  (`resolveAdditionalPaymentChaseStartedAt`). If there is no such row, this pass
+  is the first, so it sends nothing and the row it writes becomes the cutover —
+  whenever the deploy actually happens. A hand-edited constant pinned to a
+  migration date was the previous design and it was enforced by nothing: had the
+  deploy slipped past it, every obligation raised in the gap would have been
+  backlog mailed on the first pass, which is the exact failure the guard exists
+  to prevent. Run rows are pruned after 90 days, which can only move the cutover
+  forward to the oldest surviving run — still months behind anything this job
+  chases three days after it is raised. A read failure sends nothing that pass:
+  not knowing where the cutover is must never mean "email everyone".
+- **What makes it idempotent.** Two nullable stamps on `Payment`,
+  `additionalReminderSentAt` and `additionalFinalReminderSentAt`, written by a
+  guarded `updateMany` BEFORE each send, so a cron rerun (or two runners
+  racing) claims nothing and sends nothing. The stamps are read RELATIVE to the
+  current obligation - which starts at the latest ADDITIONAL
+  `PaymentTransaction.createdAt`, falling back to the payment row's own
+  creation for legacy rows - so a stamp left by an earlier, settled delta never
+  suppresses the chase for a later one, and no writer has to reset them.
+
+  Every claim also FENCES the obligation the read decided on: the full owed test
+  (booking status included), the exact `additionalAmountCents`, and no ADDITIONAL
+  transaction newer than the episode being chased. The episode fence is the
+  load-bearing one - a member retrying a failed charge mints a new Stripe intent
+  and therefore a new ADDITIONAL transaction row at the SAME amount, which an
+  amount-only pin would not notice; the email would quote the old obligation
+  while the stamp (written at `now`) counted as the new episode's, burning its
+  first reminder for good. A lost claim is re-read and re-decided rather than
+  treated as another runner's win.
+- **One clock for automatic and manual, in both directions.** An admin can
+  re-send the same email from the booking page (`POST
+  /api/admin/bookings/[id]/additional-payment-reminder`, `bookings:edit`,
+  audited). It writes the stamp for whichever reminder is currently due - and
+  when that is the last-chance one it closes BOTH stamps, exactly as the cron's
+  own final branch does. Writing only the day-N stamp made the cooldown
+  one-directional: an admin re-send inside the pre-arrival window was followed
+  by the cron's near-identical email at the next three-hourly tick.
+
+  `ADDITIONAL_PAYMENT_RESEND_COOLDOWN_MINUTES` (60) is honoured by BOTH senders,
+  in both directions: an automatic nudge inside the window refuses a manual one
+  with a 429, and a manual one inside the window makes the cron read "not due"
+  (in its decision AND in its claim's WHERE). Stamps alone were not enough — a
+  manual send late on the NZ day before the last-chance window opens writes only
+  the day-N stamp, and the next tick after NZ midnight would have found the
+  final reminder unstamped and sent it minutes later. The cost is that a due
+  reminder can slip to the following tick, three hours, not a lost email. On a
+  send failure the stamps are given back, so a failed re-send never silently
+  disarms the automatic chase.
+- **Only a transmitted message counts as sent, and a stamp is only ever spent on
+  a message that went out or one that will be replayed.** `sendEmail` RETURNS
+  rather than throws when it withholds a message (a suppressed address, a
+  walk-in placeholder address, the "No emails" switch flipping on after the
+  check), so both senders inspect the outcome. The manual re-send answers with
+  what really happened instead of a success. Both then apply the SAME rule with
+  the SAME single exception: the stamps go back, unless the withhold was an
+  UNREADABLE "No emails" switch, which leaves a `FAILED` `EmailLog` row the
+  retry cron replays (re-checking the switch first) — restoring there would risk
+  the member getting two copies, so the 503 reply says the message is queued and
+  tells the admin not to re-send rather than inviting a retry the cooldown would
+  refuse.
+- **Silence is refused, not swallowed — and unreachability is checked before
+  anything is claimed.** A booking with the "No emails" switch on is skipped by
+  the cron with no stamp burned (so the reminder is still due once the switch
+  comes off) and refused outright by the manual re-send with an explanation - an
+  admin standing at the screen must not read a silent withhold as a successful
+  send. Both fail CLOSED if the switch cannot be read. The cron additionally
+  checks the recipient BEFORE claiming - a walk-in placeholder `.invalid`
+  address, or an active bounce/complaint suppression - so an unreachable member
+  costs one skipped pass instead of a burned stamp and a manufactured bounce row
+  every three hours, and the reminder stays cleanly due for whenever the address
+  is fixed or the suppression cleared. That pre-check is what makes the shared
+  stamp rule above affordable in a job that runs eight times a day.
 
 Three side doors into the finished-unpaid state are closed at the door
 (owner decisions 2026-07-11, #1723):

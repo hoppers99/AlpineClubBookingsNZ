@@ -104,13 +104,18 @@ const publicWebsiteUrls = [
 /**
  * Everything an operator part-way through setup still needs, plus the machine
  * surfaces. `/api/*` is listed even though the proxy matcher already drops it —
- * the gate must refuse it on its own so `api/[...unmatched]` (#2405) keeps
- * answering JSON 404 in both setup states.
+ * the gate must refuse it on its own so `api/[[...unmatched]]` (#2405) keeps
+ * answering JSON 404, and the module gate keeps its verb-by-verb parity with
+ * that route, identically in both setup states. Bare `/api` and `/api/` are
+ * included because #2405 moved that route to an OPTIONAL catch-all to claim
+ * them, and the gate must not take them back.
  */
 const exemptUrls = [
   "/admin",
   "/admin/site-style",
   "/admin/setup",
+  "/api",
+  "/api/",
   "/api/admin/site-style",
   "/api/definitely-missing",
   "/login",

@@ -132,7 +132,7 @@ export function AllocationChip({
       />
       <button
         type="button"
-        aria-label={`Drag ${allocation.guestName} to another bed or night`}
+        aria-label={`Drag ${allocation.guestName} to another bed; original lodge night ${allocation.stayDate} will be kept`}
         disabled={!canEdit}
         title={canEdit === false ? ADMIN_VIEW_ONLY_ACTION_REASON : undefined}
         className="cursor-grab touch-none rounded p-0.5 text-muted-foreground hover:bg-accent active:cursor-grabbing"

@@ -57,8 +57,9 @@ import {
  * in order to FINISH setup: the admin area and its site-style wizard, the login
  * and password flows that get them there, the lodge/finance/authenticated member
  * areas, and the lobby display. `/api/*` is excluded by the proxy matcher itself
- * rather than by this list, which is what keeps `api/[...unmatched]/route.ts`
- * (#2405) answering JSON 404 in both setup states.
+ * as well as here, which is what keeps `api/[[...unmatched]]/route.ts` (#2405)
+ * answering JSON 404 — and the module gate's verb-by-verb parity with it —
+ * identical in both setup states.
  *
  * @see setup-gate.test.ts — the filesystem check that keeps this exhaustive.
  */

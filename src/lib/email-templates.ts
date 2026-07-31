@@ -404,6 +404,27 @@ export function bookingConfirmedTemplate(
       /** True once the club's accounting system actually emails the invoice. */
       invoiceEmailed: boolean;
     };
+    // #2397: the booking is settled but NOT in full — an admin recorded a cash
+    // / off-Xero payment and said it did not cover an uncollected price
+    // increase, so the club took less than the booking is worth and will go on
+    // asking for the rest. "Total Paid: <whole price>" and "Payment has been
+    // processed successfully" would both be false, and would contradict the
+    // admin's own receipt. The money rows split into paid vs still owing and
+    // the alert box says what happens next. `paymentDue` (nothing paid at all)
+    // takes precedence if both are somehow supplied — it is the stronger
+    // statement, and the two are mutually exclusive by construction.
+    outstandingBalance?: {
+      /** Still owed, in integer cents. Always < totalCents. */
+      amountCents: number;
+      /**
+       * True when the member still holds a live card instrument for it (the
+       * addition's own payment intent, deliberately spared by the settlement),
+       * so their booking page can actually take the money. False means the
+       * only route is the club contacting them, and the copy must say so
+       * rather than sending them to a door that does not open.
+       */
+      payableOnline: boolean;
+    };
   }
 ): string {
   const promoAdjustmentCents = resolvePromoAdjustmentCents(options);
@@ -439,11 +460,22 @@ export function bookingConfirmedTemplate(
   }
 
   const paymentDue = options?.paymentDue;
-  rows.push(
-    paymentDue
-      ? { label: "Total Due", value: formatCents(totalCents) }
-      : { label: "Total Paid", value: formatCents(totalCents) },
-  );
+  // #2397: only when nothing is due in full — the two states are exclusive.
+  const outstandingBalance = paymentDue ? undefined : options?.outstandingBalance;
+  if (paymentDue) {
+    rows.push({ label: "Total Due", value: formatCents(totalCents) });
+  } else if (outstandingBalance) {
+    rows.push(
+      { label: "Booking Total", value: formatCents(totalCents) },
+      {
+        label: "Paid",
+        value: formatCents(totalCents - outstandingBalance.amountCents),
+      },
+      { label: "Still Owing", value: formatCents(outstandingBalance.amountCents) },
+    );
+  } else {
+    rows.push({ label: "Total Paid", value: formatCents(totalCents) });
+  }
 
   // One composed sentence, shared with the {{paymentDueNote}} token in
   // sendBookingConfirmedEmail so an operator override tells the same story.
@@ -453,6 +485,13 @@ export function bookingConfirmedTemplate(
         ? " An invoice has been emailed to you separately."
         : " The club will send you an invoice for it.")
     : "";
+  // #2397, same convention: one composed sentence shared with the token path.
+  const outstandingBalanceNote = outstandingBalance
+    ? `Your payment of ${formatCents(totalCents - outstandingBalance.amountCents)} has been recorded and your booking is confirmed. ${formatCents(outstandingBalance.amountCents)} is still owing from a later change to this booking.` +
+      (outstandingBalance.payableOnline
+        ? " You can pay it from your booking page."
+        : " The club will be in touch to arrange it.")
+    : "";
 
   return layout(`
     ${heading("Booking Confirmed")}
@@ -461,7 +500,9 @@ export function bookingConfirmedTemplate(
     ${
       paymentDue
         ? alertBox(paymentDueNote, "warning")
-        : alertBox("Payment has been processed successfully.", "success")
+        : outstandingBalance
+          ? alertBox(outstandingBalanceNote, "warning")
+          : alertBox("Payment has been processed successfully.", "success")
     }
     ${provisionalSection}
     ${arrivalInstructionsSection({
@@ -832,6 +873,10 @@ export function preArrivalReminderTemplate(params: {
   expectedArrivalTime?: string | null;
   lodgeTravelNote: string;
   doorCode?: string | null;
+  // #2350: extra still owing on this booking after an upward change, when the
+  // stay is about to start and it has not been collected. Zero/absent for the
+  // ordinary case, which renders exactly as before.
+  outstandingAdditionalAmountCents?: number;
 }): string {
   const rows: Array<{ label: string; value: string }> = [
     { label: "Check-in", value: formatNZDate(params.checkIn) },
@@ -850,11 +895,57 @@ export function preArrivalReminderTemplate(params: {
     ${heading("Upcoming Lodge Stay")}
     ${paragraph("Hi " + escapeHtml(params.firstName) + ", your lodge stay is coming up.")}
     ${infoTable(rows)}
+    ${outstandingAdditionalPaymentNote(params.outstandingAdditionalAmountCents)}
     ${arrivalInstructionsSection({
       travelNote: params.lodgeTravelNote,
       doorCode: params.doorCode,
     })}
     ${button("View Booking", BASE_URL + "/bookings")}
+  `);
+}
+
+/**
+ * The one-line "there is still money owing on this booking" block (#2350),
+ * shared by the pre-arrival reminder and the standalone additional-payment
+ * reminder so both say the same thing in the same words. Empty for a booking
+ * with nothing outstanding, so the surrounding template is unchanged.
+ */
+function outstandingAdditionalPaymentNote(amountCents: number | undefined): string {
+  if (!amountCents || amountCents <= 0) return "";
+  return alertBox(
+    `There is still ${formatCents(amountCents)} to pay on this booking after a change to your stay. Please pay it from your booking page before you arrive.`,
+    "warning",
+  );
+}
+
+/**
+ * F-#2350: standalone reminder that an additional payment raised by a booking
+ * change has not been collected. Sent automatically a few days after the change
+ * and again shortly before check-in, and by an admin on demand from the booking
+ * page. Carries no token or link secret, so its rendered body is retained
+ * normally.
+ */
+export function additionalPaymentReminderTemplate(params: {
+  firstName: string;
+  additionalAmountCents: number;
+  checkIn: Date;
+  checkOut: Date;
+  requestedOn: Date;
+}): string {
+  return layout(`
+    ${heading("Payment Still Needed")}
+    ${paragraph("Hi " + escapeHtml(params.firstName) + ", a change to your lodge booking increased the total, and the extra amount has not been paid yet.")}
+    ${infoTable([
+      { label: "Amount still to pay", value: formatCents(params.additionalAmountCents) },
+      { label: "Requested on", value: formatNZDate(params.requestedOn) },
+      { label: "Check-in", value: formatNZDate(params.checkIn) },
+      { label: "Check-out", value: formatNZDate(params.checkOut) },
+    ])}
+    ${alertBox(
+      "Open your booking and complete the outstanding payment. If you have already paid, or you think this is wrong, please contact the club.",
+      "warning",
+    )}
+    ${button("Pay Now", BASE_URL + "/bookings")}
   `);
 }
 
@@ -1793,6 +1884,12 @@ export function bookingModificationSummaryRows(params: {
   oldFinalPriceCents: number;
   newFinalPriceCents: number;
   changeFeeCents: number;
+  // #2390: present only when a promotion's usage cap stopped it reaching
+  // somebody this edit added. Added as a row here, rather than as a new
+  // template token, so the hand-built HTML email and the admin-editable flat
+  // body cannot end up telling different stories about the same split — the
+  // whole reason this helper exists.
+  promoCoverageNote?: string | null;
 }): Array<{ label: string; value: string }> {
   const dateRange = (from: Date, to: Date) =>
     `${formatNZDate(from)} – ${formatNZDate(to)}`;
@@ -1847,6 +1944,11 @@ export function bookingModificationSummaryRows(params: {
     });
   }
 
+  // Last, deliberately: it explains the New Total above it.
+  if (params.promoCoverageNote && params.promoCoverageNote.trim().length > 0) {
+    rows.push({ label: "Promo coverage", value: params.promoCoverageNote });
+  }
+
   return rows;
 }
 
@@ -1892,6 +1994,9 @@ export function bookingModifiedTemplate(params: {
   additionalPaymentMethod?: "STRIPE" | "INTERNET_BANKING";
   paymentReference?: string | null;
   xeroInvoiceNumber?: string | null;
+  // #2390: see bookingModificationSummaryRows — it renders as one more change
+  // row, so the HTML and the flat body stay identical.
+  promoCoverageNote?: string | null;
 }): string {
   const {
     firstName,
@@ -1911,6 +2016,7 @@ export function bookingModifiedTemplate(params: {
     additionalPaymentMethod,
     paymentReference,
     xeroInvoiceNumber,
+    promoCoverageNote,
   } = params;
 
   // The change rows come from the shared helper the flat {{changeSummary}}
@@ -1926,6 +2032,7 @@ export function bookingModifiedTemplate(params: {
     oldFinalPriceCents,
     newFinalPriceCents,
     changeFeeCents,
+    promoCoverageNote,
   }).map((row) => ({
     label: escapeHtml(row.label),
     value: escapeHtml(row.value),
