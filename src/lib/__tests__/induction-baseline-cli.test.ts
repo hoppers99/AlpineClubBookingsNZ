@@ -95,6 +95,36 @@ describe("induction baseline CLI", () => {
     expect(() =>
       parseInductionBaselineArgs(["--apply", ...REQUIRED_ARGS]),
     ).toThrow("--confirm-club-name is required with --apply.");
+    expect(() =>
+      parseInductionBaselineArgs([
+        "--apply",
+        ...REQUIRED_ARGS,
+        "--confirm-club-name",
+        "Example Alpine Club",
+      ]),
+    ).toThrow("--confirm-db-host is required with --apply.");
+    expect(() =>
+      parseInductionBaselineArgs([
+        "--apply",
+        ...REQUIRED_ARGS,
+        "--confirm-club-name",
+        "Example Alpine Club",
+        "--confirm-db-host",
+        "db.internal:5432",
+      ]),
+    ).toThrow("--confirm-db-name is required with --apply.");
+    expect(() =>
+      parseInductionBaselineArgs([
+        "--apply",
+        ...REQUIRED_ARGS,
+        "--confirm-club-name",
+        "Example Alpine Club",
+        "--confirm-db-host",
+        "db.internal:5432",
+        "--confirm-db-name",
+        "club_bookings",
+      ]),
+    ).toThrow("--confirm-plan-digest is required with --apply.");
 
     const parsed = parseInductionBaselineArgs([
       "--apply",

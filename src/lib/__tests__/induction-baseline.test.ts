@@ -766,6 +766,32 @@ describe("runInductionBaseline", () => {
     );
   });
 
+  it("aborts before audit when the database reports a partial baseline insert", async () => {
+    const fake = createFakeStore();
+    const dryRun = await runInductionBaseline({
+      ...BASE_OPTIONS,
+      store: fake.store as never,
+    });
+    fake.tx.memberInduction.createMany.mockResolvedValueOnce({
+      count: dryRun.toCreate.length - 1,
+    });
+
+    await expect(
+      runInductionBaseline({
+        ...BASE_OPTIONS,
+        apply: true,
+        confirmClubName: "Example Alpine Club",
+        confirmPlanDigest: dryRun.planDigest,
+        store: fake.store as never,
+      }),
+    ).rejects.toThrow(
+      `Atomic apply failed: planned ${dryRun.toCreate.length} row(s) but created ${dryRun.toCreate.length - 1}.`,
+    );
+    expect(fake.tx.auditLog.create).not.toHaveBeenCalled();
+    expect(fake.rows).toHaveLength(0);
+    expect(fake.auditRows).toHaveLength(0);
+  });
+
   it("skips any member with a completed induction of any kind", async () => {
     const fake = createFakeStore({
       existing: [
