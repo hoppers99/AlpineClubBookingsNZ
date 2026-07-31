@@ -273,10 +273,10 @@ test("existing-chip pointer and keyboard drops preserve dates, while keyboard ca
       );
     }
     // DndContext uses closestCenter, so preserve the handle-to-card-centre grab
-    // offset and put the dragged CARD's centre on the destination cell. Aiming
-    // the cursor at the cell centre instead leaves the taller card centred over
-    // the following row.
-    const targetPointer = {
+    // offset and aim the dragged CARD's centre at the destination cell. If the
+    // offset would put the cursor just outside that cell, clamp it one pixel
+    // inside while staying as close as possible to the ideal alignment.
+    const idealTargetPointer = {
       x:
         to!.x +
         to!.width / 2 +
@@ -285,6 +285,16 @@ test("existing-chip pointer and keyboard drops preserve dates, while keyboard ca
         to!.y +
         to!.height / 2 +
         (from!.y + from!.height / 2 - (dragged!.y + dragged!.height / 2)),
+    };
+    const targetPointer = {
+      x: Math.min(
+        Math.max(idealTargetPointer.x, to!.x + 1),
+        to!.x + to!.width - 1,
+      ),
+      y: Math.min(
+        Math.max(idealTargetPointer.y, to!.y + 1),
+        to!.y + to!.height - 1,
+      ),
     };
     expect(
       targetPointer.x,

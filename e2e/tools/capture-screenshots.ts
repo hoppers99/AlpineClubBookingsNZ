@@ -308,8 +308,9 @@ async function prepareBedAllocationSnapPreview(page: Page): Promise<void> {
     }
   }
   // DndContext uses closestCenter. Keep the handle-to-card-centre grab offset
-  // so the dragged card, rather than only the cursor, centres on A4.
-  const to = {
+  // so the dragged card aims at A4, then clamp the cursor one pixel inside A4
+  // when that ideal alignment falls just beyond the cell boundary.
+  const idealTarget = {
     x:
       target.x +
       target.width / 2 +
@@ -318,6 +319,16 @@ async function prepareBedAllocationSnapPreview(page: Page): Promise<void> {
       target.y +
       target.height / 2 +
       (from.y + from.height / 2 - (dragged.y + dragged.height / 2)),
+  };
+  const to = {
+    x: Math.min(
+      Math.max(idealTarget.x, target.x + 1),
+      target.x + target.width - 1,
+    ),
+    y: Math.min(
+      Math.max(idealTarget.y, target.y + 1),
+      target.y + target.height - 1,
+    ),
   };
   if (
     to.x < target.x ||
