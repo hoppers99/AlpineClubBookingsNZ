@@ -4,6 +4,45 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Recording a cash payment now asks about any extra still owing (#2397).**
+  When a booking is priced up after it was made — someone adds a guest, say —
+  the increase is tracked separately as an "additional payment" the member is
+  normally asked to pay by card. Until now, recording the booking as paid in
+  cash or by an off-Xero bank transfer said nothing about that extra and left it
+  recorded as still owing: the bookings list kept showing a "$X due" chip
+  against a fully settled booking, the reports counted the money as uncollected,
+  and the reminder emails would have gone on asking the member for money the
+  club already had. **Record manual payment** now shows the split — the booking
+  amount before the change, the extra, and what the booking owes in total — and
+  asks whether the money you received covers the addition as well. Say **yes**
+  and the full amount is recorded and the addition marked settled, so nothing
+  chases the member again and the booking's history says the payment covered it.
+  Say **no** and only the amount owed *before* the change is recorded: the
+  booking is still marked paid, but the books say the club received that smaller
+  amount and is still owed the addition, so the figures add up and the member is
+  rightly still asked for the rest. Neither answer is a default, you cannot
+  record the payment until you have chosen, and the dialog does not name a total
+  until you have — because your answer changes it. Bookings with no such extra —
+  nearly all of them — see the dialog completely unchanged. Reversing a manual
+  payment gives back exactly what it recorded, putting a covered addition back
+  to owing.
+
+  If you answer **no**, the member is left a way to pay. Recording a cash
+  payment normally closes any card payment the member still had open, so they
+  cannot pay twice for money the club already holds; the card payment for the
+  addition itself is now the one exception, because that money is still being
+  asked for. The member can settle it from their own booking page exactly as
+  before, and the confirmation on screen tells you whether they can — or whether
+  someone will need to contact them instead. Their confirmation email says the
+  same thing: rather than claiming the booking was paid in full, it shows the
+  booking total, what has been paid and what is still owing, and how to pay the
+  rest. Separately, a booking whose card payment has already taken money can no
+  longer be offered the cash-payment button at all: it now says why, instead of
+  refusing every attempt with a message about the booking having changed. Where
+  more than one reason applies, the most specific one is shown — a payment that
+  has already had money refunded says so, and says to resolve the refund first —
+  and it is the same sentence before you click as after.
+
 - **A promo code that turned out to be worth nothing no longer uses up
   someone's one permitted go at it (#2299).** Until now the system counted a
   promo code as "used" the moment it was applied to a booking with eligible
@@ -56,8 +95,6 @@ All notable public reference-release changes should be recorded here.
   drop the first time you look — that is the correction, not a loss. Nothing in
   the redemptions report or its CSV is removed; only what counts as a use
   changes.
-
-
 
 - **Clubs can safely record a trusted induction history when moving an
   established membership onto the digital register (#2361).** A new
