@@ -1,0 +1,15 @@
+-- Whakapapa report source config (skifieldConditions module).
+--
+-- Blue/green EXPAND migration (see docs/BLUE_GREEN_MIGRATION_SAFETY.tsv):
+--  * ALTER TABLE "WhakapapaReportCache" ADD COLUMN "config" JSONB — a
+--    PostgreSQL metadata-only ADD COLUMN of a NULLable column with no default
+--    (no table rewrite, no backfill), on the cold WhakapapaReportCache table
+--    (a single-row scraper cache), taking a brief ACCESS EXCLUSIVE lock.
+--  Purely additive / expand-safe: the previously deployed (old-colour) Prisma
+--  client has no `config` field, so it never reads or writes the new column and
+--  is unaffected. The new column stores the admin-configurable source URL and
+--  selector overrides separately from `payload`, so an upstream refresh (which
+--  replaces `payload`) never wipes the config. No DROP, no RENAME, no ALTER
+--  COLUMN TYPE / SET NOT NULL on existing data, no backfill DML, no provider
+--  call. WhakapapaReportCache is absent from HOT_TABLE_SQL_REGEX.
+ALTER TABLE "WhakapapaReportCache" ADD COLUMN "config" JSONB;
