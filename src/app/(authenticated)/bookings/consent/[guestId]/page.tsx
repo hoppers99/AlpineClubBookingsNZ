@@ -145,10 +145,18 @@ async function DelegateAskCard({
   // The booking's own lodge identity, the same source the emails use.
   const emailSettings = await loadEmailMessageSettingsForLodge(facts.lodgeId);
 
+  // A guest row is allowed to carry an empty last name (a single-name member,
+  // or a row an admin left half-filled). `.trim()` only tidies the ENDS, so
+  // "Tama" with no surname and a known age rendered as "Tama  (age 9)" — two
+  // spaces, in the page's own heading. Collapsing the run fixes every such gap
+  // at once rather than special-casing the surname.
+  const guestFullName = `${facts.guest.firstName} ${facts.guest.lastName}`
+    .replace(/\s+/g, " ")
+    .trim();
   const guestHeadingName =
     facts.guest.ageYears !== null && facts.guest.ageYears < 18
-      ? `${facts.guest.firstName} ${facts.guest.lastName} (age ${facts.guest.ageYears})`.trim()
-      : `${facts.guest.firstName} ${facts.guest.lastName}`.trim();
+      ? `${guestFullName} (age ${facts.guest.ageYears})`
+      : guestFullName;
 
   return (
     <MemberGuestDelegateConsentCard
