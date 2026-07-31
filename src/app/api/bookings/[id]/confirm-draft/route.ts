@@ -58,6 +58,19 @@ export async function POST(
     return NextResponse.json({ error: "Booking is not a draft" }, { status: 400 });
   }
 
+  // Defence in depth (#2266): a booking with an unresolved admin review must
+  // never confirm. The writers enforce this by parking review-flagged drafts
+  // to AWAITING_REVIEW (booking-create and the modify path alike), so a
+  // review-flagged DRAFT should not exist — but the invariant is a
+  // child-safety gate, so this door checks it too rather than trusting every
+  // writer forever. Fail closed on any non-APPROVED review state.
+  if (booking.requiresAdminReview && booking.adminReviewStatus !== "APPROVED") {
+    return NextResponse.json(
+      { error: "This booking needs admin review before it can be confirmed" },
+      { status: 409 }
+    );
+  }
+
   if (booking.finalPriceCents !== 0) {
     return NextResponse.json(
       { error: "Use the payment flow to complete non-zero bookings" },
@@ -125,6 +138,17 @@ export async function POST(
 
     if (!freshBooking || freshBooking.status !== BookingStatus.DRAFT) {
       throw new Error("Booking is no longer a draft");
+    }
+
+    // Re-assert the review gate under the lock (#2266): a concurrent edit
+    // could have flagged the draft between the outer read and this claim.
+    if (
+      freshBooking.requiresAdminReview &&
+      freshBooking.adminReviewStatus !== "APPROVED"
+    ) {
+      throw new Error(
+        "This booking needs admin review before it can be confirmed"
+      );
     }
 
     const capacity = await checkCapacityForGuestRanges(

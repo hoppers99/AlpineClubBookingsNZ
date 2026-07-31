@@ -252,6 +252,12 @@ export type LifecycleTransitionResult = {
   // and any over-consumed slice refunded to the member on this modification.
   appliedCreditCents: number;
   refundedExcessCreditCents: number;
+  // #2266: this edit parked a DRAFT to AWAITING_REVIEW, so the caller must
+  // null draftExpiresAt — a parked booking is held for an admin decision and
+  // must not be swept by the 72-hour draft expiry mid-review (the exact
+  // create-path behaviour: booking-create nulls draftExpiresAt whenever
+  // review.blockForReview lands a draft directly in AWAITING_REVIEW).
+  clearDraftExpiresAt: boolean;
 };
 
 export async function applyLifecycleTransitions(
@@ -288,15 +294,37 @@ export async function applyLifecycleTransitions(
   // paid/confirmed booking that trips a review rule is flagged (the caller
   // writes requiresAdminReview + adminReviewStatus PENDING, which drives the
   // admin queue) but keeps its status.
+  //
+  // #2266: DRAFT parks too, in CREATE PARITY — a member-created draft that
+  // trips the no-adult rule at booking-create lands directly in
+  // AWAITING_REVIEW (booking-create.ts), so a member DRAFT edit that trips
+  // the same rule must land in the same place. Without this, the edit wrote
+  // adminReviewStatus PENDING while the booking STAYED DRAFT — and the DRAFT
+  // pay/confirm doors did not check review fields, so a minors-only booking
+  // could reach PAID with its review still pending. Parking from DRAFT also
+  // clears draftExpiresAt (via clearDraftExpiresAt below), again matching
+  // create. Approval then releases to PAYMENT_PENDING exactly like a
+  // review-parked created draft.
   const canParkForReview =
-    newStatus === "PENDING" || newStatus === "PAYMENT_PENDING";
+    newStatus === BookingStatus.PENDING ||
+    newStatus === BookingStatus.PAYMENT_PENDING ||
+    newStatus === BookingStatus.DRAFT;
+  let clearDraftExpiresAt = false;
   if (reviewUpdate?.parkForReview && canParkForReview) {
+    clearDraftExpiresAt = newStatus === BookingStatus.DRAFT;
     newStatus = "AWAITING_REVIEW";
   } else if (reviewUpdate?.releaseFromReview && newStatus === "AWAITING_REVIEW") {
     newStatus = "PAYMENT_PENDING";
   }
 
-  if (!skipBookingLifecycleRules && hasNonMembers) {
+  // #2266: a DRAFT never carries a hold — it holds no capacity and owes no
+  // money until the pay step (or $0 confirm-draft) makes it real, and THAT
+  // door computes the hold rail. Member draft edits reach here with
+  // skipBookingLifecycleRules false (only admin edits of non-lifecycle
+  // statuses skip), so without this guard a member editing a draft with
+  // non-member guests would stamp a meaningless nonMemberHoldUntil onto it.
+  const isDraftEdit = booking.status === BookingStatus.DRAFT;
+  if (!skipBookingLifecycleRules && hasNonMembers && !isDraftEdit) {
     const holdPolicy = await getNonMemberHoldPolicy(newCheckIn, booking.lodgeId);
     const holdDecision = calculateBookingHoldDecision({
       hasNonMembers,
@@ -315,7 +343,7 @@ export async function applyLifecycleTransitions(
         newStatus = "PAYMENT_PENDING";
       }
     }
-  } else if (!skipBookingLifecycleRules) {
+  } else if (!skipBookingLifecycleRules && !isDraftEdit) {
     newNonMemberHoldUntil = null;
   }
 
@@ -414,11 +442,20 @@ export async function applyLifecycleTransitions(
     // amount (#1161): the payment page would hand back its stale
     // client_secret and Stripe would capture the old total. Supersede the
     // mismatched intents now; the pay-time paths mint a fresh one.
+    //
+    // Compare against the EFFECTIVE (credit-reduced) price (#2266, INFO-10):
+    // the pay page mints primary intents at finalPrice - appliedCredit, so a
+    // pending intent already at the correct effective amount is not stale and
+    // must not be swept (the old raw-price comparison cancelled it
+    // needlessly; benign — the pay page re-minted — but wasteful). Outside
+    // the pre-payment reprice arm appliedCreditCents is 0, so
+    // effectivePriceCents equals newFinalPriceCents and behaviour is
+    // unchanged there.
     supersededPrimaryPaymentIntents =
       await queueSupersededPrimaryIntentCancellations(tx, {
         bookingId,
         paymentId: booking.payment.id,
-        newFinalPriceCents,
+        newFinalPriceCents: effectivePriceCents,
       });
   }
 
@@ -430,5 +467,6 @@ export async function applyLifecycleTransitions(
     supersededPrimaryPaymentIntents,
     appliedCreditCents,
     refundedExcessCreditCents,
+    clearDraftExpiresAt,
   };
 }

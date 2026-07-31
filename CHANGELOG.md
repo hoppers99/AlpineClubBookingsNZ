@@ -33,6 +33,41 @@ All notable public reference-release changes should be recorded here.
   that successor approves. Cancelling a member no longer needs their roles
   deleted, so the record of what they once did for the club stays intact.
 
+
+- **Editing a booking no longer loses your account credit or your promo codes
+  (#2266, epic #2245 E2).** Going "back into" a booking — the dashboard's
+  Resume button, or Edit Booking on the booking page — lands on a different
+  screen from the create wizard, and every credit and promo affordance lived
+  only in the wizard. Both now exist on the edit path, built on the wizard's
+  own machinery so the two cannot drift. The edit panel gains an **Account
+  credit** card (its own card above the Return-method radio, with explicit
+  "Credit → booking" / "Booking → you" direction tags): tick **Apply credit to
+  this booking** and your choice is saved on the booking (#2265's stored
+  election) and applied when you confirm and pay — nothing is taken from your
+  balance at edit time, and the booking page reminds you with *"Your $X credit
+  choice is saved and will be applied when you confirm."* The panel's promo
+  section now surfaces your eligible codes as clickable chips and uses the
+  shared promo input, so codes that need you to pick which guests they cover
+  work on the edit path too (the in-progress promo lock is unchanged). And
+  members can now **edit their own drafts** — Resume previously landed a plain
+  member on a page with no Edit button at all. A draft edit commits you to
+  nothing: no change fee, no holds, no capacity claim; the confirm/pay doors
+  keep enforcing all of that when the draft becomes real. Server-side, the
+  modify preview/apply routes accept the election and promo guest selection
+  with the same status guards the pay step honours (never on a hold-rail
+  PENDING booking, never once money is captured, never on an organiser-settled
+  booking), and a credit-only edit is price-preserving by construction — it
+  can never reprice an untouched booking across a season-rate change. Review
+  hardening in the same change: a draft edit that leaves minors with no adult
+  parks the booking for admin review exactly as creating it that way would
+  (and the confirm/pay doors refuse an unresolved review outright); a promo
+  code's chosen guests are remembered by *who they are*, not by their position
+  in the list, so a simultaneous edit elsewhere can never quietly hand the
+  discount to the wrong guest; a saved credit choice is never rewritten just
+  because your balance happened to dip; and the price summary now shows the
+  credit figure the save will actually keep, any slice returning to your
+  balance, and the change fee inside "Remaining to pay".
+
 - **Admins can now cancel the membership of a member who has no login of
   their own (#2354).** Opening such a member's admin page used to show no
   **Request Cancellation** action at all — not greyed out, simply absent —
@@ -47,7 +82,6 @@ All notable public reference-release changes should be recorded here.
   eligibility question the server enforces — is this an active,
   not-yet-cancelled, not-archived member — so the action appears for
   exactly the members it can act on.
-
 
 - **Self-hosted sites now use whatever processing power the server has free,
   instead of being rationed to a fraction of one core (#2351).** The standard
@@ -70,7 +104,6 @@ All notable public reference-release changes should be recorded here.
   behind it, how to reimpose a hard cap on a shared server, and two
   mitigations for genuinely starved machines (a keep-warm pinger, and the
   planned pre-rendered public pages of #2352).
-
 
 - **A custodian can now be given a bed for the season without booking it
   (#2286).** Clubs that keep someone on site all winter had no honest way to

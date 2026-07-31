@@ -52,6 +52,11 @@ import {
 } from "@/lib/booking-review";
 import logger from "@/lib/logger";
 import { createBookingModificationCredit } from "@/lib/member-credit";
+import {
+  CreditElectionNotAllowedError,
+  resolveCreditElectionUpdate,
+} from "@/lib/booking-credit-election";
+import { hasCapturedPayment } from "@/lib/booking-payment-state";
 import { prisma } from "@/lib/prisma";
 import { queueXeroBookingEditSettlement } from "@/lib/xero-booking-edit-settlement";
 import {
@@ -96,6 +101,12 @@ type BatchModificationTransactionResult =
     guestNameUpdates: ResolvedGuestNameUpdate[];
     guestIdentityChanged: boolean;
     identityOnlyModification: boolean;
+    // #2266: this edit changed ONLY the stored credit election (#2265) — no
+    // member email, exactly like an identity-only edit.
+    creditElectionOnlyModification: boolean;
+    // #2266: the election as stored after this edit, and whether it moved.
+    creditElectionCents: number | null;
+    creditElectionChanged: boolean;
     // #1372: this edit newly dropped a paid (capacity-holding) booking into the
     // blocked minors-only review state, so the post-tx step alerts admins.
     minorsOnlyReviewNewlyFlagged: boolean;
@@ -114,6 +125,9 @@ export type BatchModificationResponse = {
   promoRemoved: boolean;
   promoChanged: boolean;
   choreWarnings: string[];
+  // #2266: the stored credit election (#2265) after this edit, so the panel
+  // can confirm what was remembered without a second fetch.
+  creditElectionCents: number | null;
 };
 
 /**
@@ -187,8 +201,11 @@ export async function modifyBookingBatch({
       input.guestStayRanges?.length ||
       input.guestUpdates?.length ||
       input.promoCode ||
-      input.promoGuestIndexes?.length ||
-      input.removePromoCode
+      input.promoGuestIds?.length ||
+      input.promoAddedGuestIndexes?.length ||
+      input.removePromoCode ||
+      // #2266: an explicit undefined-check — a 0-cent election is falsy.
+      input.applyCreditCents !== undefined
     ) {
       throw new ApiError("Admin override edits change dates only", 400);
     }
@@ -265,8 +282,13 @@ export async function modifyBookingBatch({
       where: { id: bookingId },
       include: {
         // Per-night sets (issue #713): preserve unedited guests' gaps and
-        // re-sync edited guests' nights.
-        guests: { include: { nights: { select: { stayDate: true, priceCents: true } } } },
+        // re-sync edited guests' nights. Deterministic order (#2266 MED-4):
+        // pricing, promo targeting and the client's guest list must all agree
+        // on guest order, so never rely on the planner's unordered scan.
+        guests: {
+          include: { nights: { select: { stayDate: true, priceCents: true } } },
+          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        },
         payment: true,
         member: true,
         promoRedemption: {
@@ -302,8 +324,16 @@ export async function modifyBookingBatch({
     );
     const requestIsIdentityOnly =
       !requestedStructuralChange && Boolean(input.guestUpdates?.length);
+    // #2266: a credit election with nothing structural is price-preserving by
+    // construction — it only writes Booking.creditElectionCents (#2265) — so
+    // it must not run the pricing engine (a season-rate change would silently
+    // reprice an untouched booking) and is safe on quote-priced bookings.
+    const requestIsCreditElectionOnly =
+      !requestedStructuralChange &&
+      !input.guestUpdates?.length &&
+      input.applyCreditCents !== undefined;
     const quotePriced = await isQuotePricedBooking(tx, bookingId);
-    if (!requestIsIdentityOnly && quotePriced) {
+    if (!requestIsIdentityOnly && !requestIsCreditElectionOnly && quotePriced) {
       throw new ApiError(QUOTE_PRICED_EDIT_BLOCK_MESSAGE, 400);
     }
 
@@ -349,8 +379,11 @@ export async function modifyBookingBatch({
     // move money — not on quoted bookings (no per-tier basis to reprice
     // from), not on legacy bookings without night rows, not across a season
     // rate change. The promo is equally untouched: nothing promo-relevant
-    // changes when a name does.
-    const pricing = identityOnlyModification
+    // changes when a name does. #2266: a credit-election-only modification is
+    // price-preserving for the same reason and takes the same echo.
+    const pricePreservingModification =
+      identityOnlyModification || requestIsCreditElectionOnly;
+    const pricing = pricePreservingModification
       ? buildIdentityOnlyPricing(booking)
       : await calculateModifiedPricing(tx, {
           booking,
@@ -373,7 +406,7 @@ export async function modifyBookingBatch({
           partnerSharedGuests: input.partnerSharedGuests,
         });
 
-    const promo = identityOnlyModification
+    const promo = pricePreservingModification
       ? {
           newDiscountCents: booking.discountCents,
           newPromoAdjustmentCents: booking.promoAdjustmentCents,
@@ -446,6 +479,32 @@ export async function modifyBookingBatch({
       reviewUpdate: guestPlan.reviewUpdate,
     });
 
+    // #2266: resolve what this edit writes to the stored credit election
+    // (#2265). Evaluated against the POST-lifecycle status, so an edit that
+    // parked the booking for review still stores the election (create-flow
+    // parity) and an edit that settled it at $0 drops the now-moot request.
+    // The write itself rides the booking update below, inside this
+    // lock(1)-holding transaction — every consumer of the column serialises
+    // on the same lock, so no guarded claim is needed here.
+    let creditElectionCentsUpdate: number | null | undefined;
+    try {
+      creditElectionCentsUpdate = resolveCreditElectionUpdate({
+        requestedCents: input.applyCreditCents,
+        status: lifecycle.newStatus,
+        organiserSettled: booking.organiserSettled,
+        hasCapturedPayment: hasCapturedPayment(booking.payment),
+        settledAtZeroDollars: lifecycle.zeroDollarAutoPaid,
+      });
+    } catch (err) {
+      if (err instanceof CreditElectionNotAllowedError) {
+        throw new ApiError(err.message, 400);
+      }
+      throw err;
+    }
+    const creditElectionChanged =
+      creditElectionCentsUpdate !== undefined &&
+      creditElectionCentsUpdate !== booking.creditElectionCents;
+
     const updatedBooking = await tx.booking.update({
       where: { id: bookingId },
       data: {
@@ -458,6 +517,10 @@ export async function modifyBookingBatch({
         hasNonMembers: lifecycle.hasNonMembers,
         nonMemberHoldUntil: lifecycle.newNonMemberHoldUntil,
         status: lifecycle.newStatus,
+        // #2266: a DRAFT parked to AWAITING_REVIEW must not be swept by the
+        // 72-hour draft expiry while an admin is deciding — create parity
+        // (booking-create nulls draftExpiresAt for review-parked drafts).
+        ...(lifecycle.clearDraftExpiresAt ? { draftExpiresAt: null } : {}),
         requiresAdminReview: guestPlan.reviewUpdate.requiresAdminReview,
         adminReviewReason: guestPlan.reviewUpdate.adminReviewReason,
         memberReviewJustification: guestPlan.reviewUpdate.memberReviewJustification,
@@ -476,6 +539,11 @@ export async function modifyBookingBatch({
         capacityOverriddenByMemberId: pricing.capacityOverridden
           ? actor.id
           : null,
+        // #2266: the stored credit election (#2265). A conditional spread so
+        // an edit that carried no credit input leaves the column untouched.
+        ...(creditElectionCentsUpdate !== undefined
+          ? { creditElectionCents: creditElectionCentsUpdate }
+          : {}),
       },
       include: { guests: true, payment: true },
     });
@@ -501,7 +569,11 @@ export async function modifyBookingBatch({
           ? "GUEST_TYPO_FIX"
           : identityOnlyModification
             ? "GUEST_UPDATE"
-            : "BATCH_MODIFY",
+            : // #2266: a credit-election-only edit is queryably distinct from a
+              // structural modification (modificationType is free text).
+              requestIsCreditElectionOnly
+              ? "CREDIT_ELECTION"
+              : "BATCH_MODIFY",
         previousData: {
           checkIn: new Date(booking.checkIn).toISOString().split("T")[0],
           checkOut: new Date(booking.checkOut).toISOString().split("T")[0],
@@ -542,6 +614,15 @@ export async function modifyBookingBatch({
           settlementMethod: payments.settlementMethod,
           accountCreditAmountCents: payments.accountCreditAmountCents,
           policyRetainedAmountCents: payments.policyRetainedAmountCents,
+          // #2266: what this edit did to the stored credit election (#2265),
+          // recorded whenever the request carried a credit input — the
+          // member's booking history reads it back.
+          ...(creditElectionCentsUpdate !== undefined
+            ? {
+                creditElectionCents: creditElectionCentsUpdate,
+                previousCreditElectionCents: booking.creditElectionCents,
+              }
+            : {}),
           // Post-payment identity-preserving spelling correction (#1386).
           ...(paidNameTypoFix ? { paidNameTypoFix: true } : {}),
           // Admin override recalculate (#1668).
@@ -607,6 +688,12 @@ export async function modifyBookingBatch({
       guestNameUpdates,
       guestIdentityChanged: guestNameUpdates.length > 0,
       identityOnlyModification,
+      creditElectionOnlyModification: requestIsCreditElectionOnly,
+      // Read back from the row this transaction just wrote, so a lifecycle
+      // clear (the $0 settle arm) is reflected even when this edit carried no
+      // credit input of its own.
+      creditElectionCents: updatedBooking.creditElectionCents,
+      creditElectionChanged,
       // #1372: newly blocked a paid booking on the minors-only rule? Computed
       // from the pre-edit review state and the freshly written booking.
       minorsOnlyReviewNewlyFlagged: minorsReviewAlertShouldFire({
@@ -679,6 +766,7 @@ export async function modifyBookingBatch({
     promoRemoved: result.promoRemoved,
     promoChanged: result.promoChanged,
     choreWarnings: result.choreWarnings,
+    creditElectionCents: result.creditElectionCents,
   };
 }
 
@@ -709,6 +797,12 @@ async function dispatchBatchPostTransactionSideEffects({
     promoChanged: result.promoChanged,
     updatedGuestCount: result.guestNameUpdates.length,
     guestIdentityChanged: result.guestIdentityChanged,
+    // #2266: the stored credit election (#2265) after this edit — audited
+    // whenever it moved, so a member's "use my credit" choice on the edit
+    // path is as traceable as the create path's.
+    ...(result.creditElectionChanged
+      ? { creditElectionCents: result.creditElectionCents }
+      : {}),
     zeroDollarAutoPaid: result.zeroDollarAutoPaid,
     settlementMethod: result.settlementMethod,
     policyRetainedAmountCents: result.policyRetainedAmountCents,
@@ -798,7 +892,9 @@ async function dispatchBatchPostTransactionSideEffects({
     );
   }
 
-  if (result.identityOnlyModification) {
+  // #2266: a credit-election-only edit changes nothing about the stay, so no
+  // change-notification email — same silence as an identity-only name fix.
+  if (result.identityOnlyModification || result.creditElectionOnlyModification) {
     return;
   }
 
