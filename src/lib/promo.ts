@@ -274,38 +274,83 @@ function filterGuestsByIndexes(guests: PromoDiscountGuest[], indexes: number[]) 
   return indexes.map((index) => guests[index]).filter(Boolean);
 }
 
+/**
+ * Did this allocation actually give the member something? (#2299, owner
+ * decision 1: "any price effect".) A money-off discount, a price change in
+ * either direction, or a subsidised night all count as a benefit; an
+ * application that moved none of the three delivered nothing.
+ *
+ * A price-RAISING fixed-nightly application counts as a use, because the
+ * member's price genuinely changed — the rejected alternative was to count
+ * price reductions only.
+ */
+export function isBeneficialPromoAllocation(allocation: {
+  discountCents: number;
+  priceAdjustmentCents: number;
+  freeNightsUsed: number;
+}): boolean {
+  return (
+    allocation.discountCents > 0 ||
+    allocation.priceAdjustmentCents !== 0 ||
+    allocation.freeNightsUsed > 0
+  );
+}
+
+/**
+ * The same "did the member actually get something" test, expressed as a Prisma
+ * filter over stored allocation rows. Applied defensively to every cap count so
+ * a historical all-zero row written before #2299 (or by an old colour during a
+ * blue/green drain) stops consuming a member's slot immediately, without
+ * waiting for the repair migration to run.
+ */
+export const BENEFICIAL_PROMO_ALLOCATION_FILTER = {
+  OR: [
+    { discountCents: { gt: 0 } },
+    { priceAdjustmentCents: { not: 0 } },
+    { freeNightsUsed: { gt: 0 } },
+  ],
+} satisfies Prisma.PromoRedemptionAllocationWhereInput;
+
+/**
+ * Build the allocation rows to persist for a redemption.
+ *
+ * An allocation row means "this member benefited", which is what every usage
+ * cap counts (#2299). Non-beneficial entries are dropped here — the single
+ * write-time choke point both `redeemPromoCode` and
+ * `replacePromoRedemptionAllocations` go through — so a zero-benefit
+ * application can never occupy a per-member, total-redemptions or
+ * unique-members slot. The `PromoRedemption` row itself is still written by the
+ * caller; it remains the audit and reporting trail.
+ */
 function normalizeAllocations(
   allocations: PromoDiscountAllocation[] | undefined,
   fallbackMemberId: string,
   discountCents: number,
   priceAdjustmentCents: number,
-  freeNightsUsed: number,
-  forceFallback = false
+  freeNightsUsed: number
 ): PromoBeneficiaryAllocation[] {
-  const meaningfulAllocations = allocations ?? [];
+  const suppliedAllocations = allocations ?? [];
 
-  if (meaningfulAllocations.length > 0) {
-    return meaningfulAllocations.map((allocation) => ({
-      memberId: allocation.memberId,
-      discountCents: allocation.discountCents,
-      priceAdjustmentCents: allocation.priceAdjustmentCents,
-      freeNightsUsed: allocation.freeNightsUsed,
-    }));
+  if (suppliedAllocations.length > 0) {
+    // Pricing can emit a deliberately zero entry (a SET_PRICE fixed-nightly
+    // guest whose rate already equals the fixed price), so filter here too.
+    return suppliedAllocations
+      .map((allocation) => ({
+        memberId: allocation.memberId,
+        discountCents: allocation.discountCents,
+        priceAdjustmentCents: allocation.priceAdjustmentCents,
+        freeNightsUsed: allocation.freeNightsUsed,
+      }))
+      .filter(isBeneficialPromoAllocation);
   }
 
-  if (
-    discountCents <= 0 &&
-    freeNightsUsed <= 0 &&
-    priceAdjustmentCents === 0 &&
-    !forceFallback
-  ) return [];
-
-  return [{
+  const fallback = {
     memberId: fallbackMemberId,
     discountCents,
     priceAdjustmentCents,
     freeNightsUsed,
-  }];
+  };
+  return isBeneficialPromoAllocation(fallback) ? [fallback] : [];
 }
 
 // test seam
@@ -342,6 +387,12 @@ export function calculatePromoDiscountForGuestRates(
     return result;
   }
 
+  // Unassigned promos attribute the whole benefit to the booker. Before #2299
+  // this fallback row was FORCED whenever any guest was eligible, so a promo
+  // that produced no discount at all (a fixed-nightly cap that never bit, a
+  // percentage off $0 guest-nights) still manufactured an allocation row and
+  // burned the member's single permitted use. It is now written only when there
+  // is something to attribute.
   return {
     ...result,
     allocations: normalizeAllocations(
@@ -349,8 +400,7 @@ export function calculatePromoDiscountForGuestRates(
       bookingMemberId,
       result.discountCents,
       result.priceAdjustmentCents,
-      result.freeNightsUsed,
-      result.eligibleGuestCount > 0
+      result.freeNightsUsed
     ),
   };
 }
@@ -397,6 +447,15 @@ function getPromoBeneficiaryMemberIds(
   )];
 }
 
+/**
+ * Whether to write a `PromoRedemption` row for this application.
+ *
+ * Deliberately WIDER than the benefit test above: a promo that had eligible
+ * guests but delivered nothing still records its redemption, because that row
+ * is the audit and reporting trail an operator needs to see that a code is
+ * misconfigured (#2299, owner decision 3). What changed is that such a
+ * redemption now carries no allocation rows, so it counts toward no cap.
+ */
 export function shouldPersistPromoRedemption(result: PromoDiscountResult | null | undefined) {
   return Boolean(
     result &&
@@ -411,6 +470,10 @@ export function shouldPersistPromoRedemption(result: PromoDiscountResult | null 
 /**
  * Get the total number of free nights a member has already consumed
  * from a specific promo code across all their redemptions.
+ *
+ * Deliberately NOT benefit-filtered: this sum is already benefit-proportional
+ * (a zero-benefit row contributes zero nights), and summing every row is the
+ * fail-safe direction — it can never miss a night a member really claimed.
  */
 async function getMemberFreeNightsUsed(
   promoCodeId: string,
@@ -436,7 +499,7 @@ async function getMemberFreeNightsUsed(
 }
 
 /**
- * Count distinct members who have redeemed this promo code.
+ * Count distinct members who have BENEFITED from this promo code.
  * Excludes a specific booking id when updating an existing booking.
  */
 async function getUniqueMemberRedemptionCount(
@@ -444,8 +507,9 @@ async function getUniqueMemberRedemptionCount(
   excludeBookingId?: string,
   db: PromoUsageClient = prisma
 ): Promise<number> {
-  const where: { promoCodeId: string; bookingId?: { not: string } } = {
+  const where: Prisma.PromoRedemptionAllocationWhereInput = {
     promoCodeId,
+    ...BENEFICIAL_PROMO_ALLOCATION_FILTER,
   };
   if (excludeBookingId) {
     where.bookingId = { not: excludeBookingId };
@@ -458,17 +522,23 @@ async function getUniqueMemberRedemptionCount(
   return rows.length;
 }
 
+/**
+ * How many times this member has already BENEFITED from this promo code — the
+ * denominator of the uses-per-member cap. A zero-benefit application never
+ * counts (#2299), so a member who applied a code that did nothing for them can
+ * still use it later.
+ */
 async function getMemberPromoRedemptionCount(
   promoCodeId: string,
   memberId: string,
   excludeBookingId?: string,
   db: PromoUsageClient = prisma
 ): Promise<number> {
-  const where: {
-    promoCodeId: string;
-    memberId: string;
-    bookingId?: { not: string };
-  } = { promoCodeId, memberId };
+  const where: Prisma.PromoRedemptionAllocationWhereInput = {
+    promoCodeId,
+    memberId,
+    ...BENEFICIAL_PROMO_ALLOCATION_FILTER,
+  };
   if (excludeBookingId) {
     where.bookingId = { not: excludeBookingId };
   }
@@ -504,13 +574,10 @@ async function getExistingBeneficiaryMemberIds(
   const uniqueMemberIds = [...new Set(memberIds)];
   if (uniqueMemberIds.length === 0) return new Set();
 
-  const where: {
-    promoCodeId: string;
-    memberId: { in: string[] };
-    bookingId?: { not: string };
-  } = {
+  const where: Prisma.PromoRedemptionAllocationWhereInput = {
     promoCodeId,
     memberId: { in: uniqueMemberIds },
+    ...BENEFICIAL_PROMO_ALLOCATION_FILTER,
   };
   if (excludeBookingId) {
     where.bookingId = { not: excludeBookingId };
@@ -554,8 +621,14 @@ export async function getAssignedPromoCodeSummariesForMember(
     include: {
       promoCode: {
         include: {
+          // Beneficial allocations only (#2299): this list drives both the
+          // uses-per-member count and the member-facing "Already used by
+          // member" status, and neither may be tripped by an application that
+          // gave the member nothing. The lifetime free-nights sum below is
+          // unaffected by the filter — every excluded row carries
+          // freeNightsUsed = 0 by definition.
           allocations: {
-            where: { memberId },
+            where: { memberId, ...BENEFICIAL_PROMO_ALLOCATION_FILTER },
             select: { id: true, freeNightsUsed: true },
           },
         },
@@ -593,6 +666,8 @@ export async function getAssignedPromoCodeSummariesForMember(
       maxRedemptionsTotal: promoCode.maxRedemptionsTotal,
       currentRedemptions: promoCode.currentRedemptions,
       maxUsesPerMember: promoCode.maxUsesPerMember,
+      // Beneficial uses by this member (#2299), matching what the
+      // uses-per-member cap actually enforces.
       redemptionCount: promoCode.allocations.length,
       freeNightsUsed,
       visibleToMember: statusReason === null,
@@ -1179,9 +1254,44 @@ export async function validatePromoCodeFull(
 }
 
 /**
- * Create a PromoRedemption record and increment the promo code's currentRedemptions.
- * Should be called within a Prisma transaction.
+ * Take a `FOR UPDATE` row lock on every promo code this transaction is about to
+ * charge or refund a use against, BEFORE any cap is read and before any
+ * `currentRedemptions` write.
+ *
+ * Without it a cap check and the redemption that consumes it are two separate
+ * statements, so two concurrent modifications of different bookings can both
+ * read "one use left" and both take it. Booking creation has locked its promo
+ * row this way since the per-individual redesign
+ * (`booking-create-promo.ts`, docs/CONCURRENCY_AND_LOCKING.md → "Narrow
+ * row-lock protocols"); this is the same protocol for the modification paths,
+ * which matters more now that a reprice can RELEASE a slot as well as take one.
+ *
+ * Two properties keep it safe:
+ *
+ * 1. **No lock-order cycle.** Ids are sorted and locked one statement at a
+ *    time, so every caller takes promo row locks in the same global order —
+ *    including a swap that touches the outgoing code and the incoming code in
+ *    the same transaction. Sorting in the application rather than relying on
+ *    `ORDER BY ... FOR UPDATE` keeps the ordering independent of the query
+ *    plan. Callers already hold the per-lodge capacity lock, so the order stays
+ *    lodge -> promo row, as documented.
+ * 2. **No dependence on the raw result shape.** Only `"id"` is selected and the
+ *    result is discarded; the statement exists purely for its lock, so it
+ *    cannot repeat the raw-SQL shape trap of #2289.
+ *
+ * A missing id simply locks nothing — the caller's own lookup reports "Promo
+ * code not found".
  */
+export async function lockPromoCodeRowsForUpdate(
+  tx: PrismaTx,
+  promoCodeIds: (string | null | undefined)[]
+): Promise<void> {
+  const ids = [...new Set(promoCodeIds.filter((id): id is string => Boolean(id)))].sort();
+  for (const id of ids) {
+    await tx.$queryRaw`SELECT "id" FROM "PromoCode" WHERE "id" = ${id} FOR UPDATE`;
+  }
+}
+
 /**
  * Re-check the promo's optional per-lodge restriction against the booking's
  * lodge, inside the same transaction that creates the redemption row. Belt
@@ -1204,6 +1314,12 @@ async function assertPromoRedeemableAtLodge(
   }
 }
 
+/**
+ * Create a PromoRedemption record and increment the promo code's
+ * currentRedemptions by the number of BENEFICIAL allocation rows written —
+ * zero when the application delivered nothing (#2299).
+ * Should be called within a Prisma transaction.
+ */
 export async function redeemPromoCode(
   tx: PrismaTx,
   promoCodeId: string,
@@ -1237,6 +1353,14 @@ export async function redeemPromoCode(
     priceAdjustmentCents,
     freeNightsUsed ?? 0
   );
+  // LOAD-BEARING, not housekeeping: the `PromoRedemption_sync_allocation_insert`
+  // trigger (20260527120000_add_promo_redemption_allocations) fires on the
+  // create above and upserts a booker allocation row from the redemption's own
+  // scalars — it exists so an old blue/green colour that writes only
+  // PromoRedemption still gets an allocation. For a zero-benefit application
+  // that row is all-zero, so without this delete the database would put back
+  // exactly the row #2299 removes, and the member would burn their use again.
+  // Must stay AFTER the redemption write.
   await tx.promoRedemptionAllocation.deleteMany({
     where: { promoRedemptionId: redemption.id },
   });
@@ -1271,6 +1395,16 @@ export async function redeemPromoCode(
   });
 }
 
+/**
+ * Reprice an existing redemption in place.
+ *
+ * When a repriced booking loses all its promo benefit (its guests are removed,
+ * its nights shrink below a fixed-nightly cap, its rates fall to zero) the new
+ * allocation set is empty and the cap slot it held is released in the same
+ * transaction that removes the benefit. That is deliberate and cannot
+ * double-spend: at every instant the member holds exactly as many slots as they
+ * hold benefits (#2299).
+ */
 export async function replacePromoRedemptionAllocations(
   tx: PrismaTx,
   redemption: { id: string; promoCodeId: string; bookingId: string; memberId: string },
@@ -1281,6 +1415,16 @@ export async function replacePromoRedemptionAllocations(
   allocations?: PromoBeneficiaryAllocation[],
   targetBookingGuestIds?: string[]
 ): Promise<void> {
+  // Counted RAW (no benefit filter) on purpose: `currentRedemptions` is the
+  // denormalised count of allocation ROWS, so the delta must be measured
+  // against however many rows are actually there. Counting only beneficial rows
+  // here would leave the counter high by one for every legacy all-zero row this
+  // reprice deletes.
+  //
+  // Must also stay BEFORE the redemption update below: that update fires the
+  // `PromoRedemption_sync_allocation_update` trigger, which upserts a booker
+  // allocation row. Counting afterwards would see the trigger's transient row
+  // and skew the delta.
   const existingAllocationCount = await tx.promoRedemptionAllocation.count({
     where: { promoRedemptionId: redemption.id },
   });
@@ -1302,6 +1446,11 @@ export async function replacePromoRedemptionAllocations(
     freeNightsUsed ?? 0
   );
 
+  // Same load-bearing delete as `redeemPromoCode`, for the same reason: the
+  // update above fired `PromoRedemption_sync_allocation_update`, which upserted
+  // a booker allocation row from the redemption's scalars. Must stay AFTER the
+  // redemption write, or a reprice that removes all benefit would leave the
+  // trigger's all-zero row holding a cap slot.
   await tx.promoRedemptionAllocation.deleteMany({
     where: { promoRedemptionId: redemption.id },
   });
@@ -1350,6 +1499,8 @@ export async function deletePromoRedemptionAndAdjustCount(
   tx: PrismaTx,
   redemption: { id: string; promoCodeId: string }
 ): Promise<void> {
+  // Raw row count, for the same symmetry reason as
+  // `replacePromoRedemptionAllocations`: give back exactly what was taken.
   const allocationCount = await tx.promoRedemptionAllocation.count({
     where: { promoRedemptionId: redemption.id },
   });

@@ -14,6 +14,11 @@ const mocks = vi.hoisted(() => ({
       groupBy: vi.fn(),
       findMany: vi.fn(),
     },
+    // Distinct members who actually benefited (#2299): the cap progress
+    // numerator, separate from the every-application tiles.
+    promoRedemptionAllocation: {
+      groupBy: vi.fn(),
+    },
   },
 }));
 
@@ -160,7 +165,8 @@ const ROWS = [
 
 function seedHappyPath(codeOverride: Record<string, unknown> = {}) {
   mocks.prisma.promoCode.findUnique.mockResolvedValue({ ...PROMO_CODE, ...codeOverride });
-  // Promise.all order: aggregate(all), groupBy(all), aggregate(filtered),
+  // Promise.all order: aggregate(all), groupBy(all),
+  // allocation.groupBy(beneficial unique members), aggregate(filtered),
   // groupBy(filtered), findMany(orderedForCode), findMany(rows).
   mocks.prisma.promoRedemption.aggregate
     .mockResolvedValueOnce({
@@ -174,6 +180,10 @@ function seedHappyPath(codeOverride: Record<string, unknown> = {}) {
   mocks.prisma.promoRedemption.groupBy
     .mockResolvedValueOnce([{ memberId: "m1" }, { memberId: "m2" }])
     .mockResolvedValueOnce([{ memberId: "m1" }, { memberId: "m2" }]);
+  mocks.prisma.promoRedemptionAllocation.groupBy.mockResolvedValue([
+    { memberId: "m1" },
+    { memberId: "m2" },
+  ]);
   mocks.prisma.promoRedemption.findMany
     .mockResolvedValueOnce(ORDERED_FOR_CODE)
     .mockResolvedValueOnce(ROWS);
@@ -184,7 +194,8 @@ function seedHappyPath(codeOverride: Record<string, unknown> = {}) {
 // 1 redemption / 1000c / one member.
 function seedDivergentTotals() {
   mocks.prisma.promoCode.findUnique.mockResolvedValue(PROMO_CODE);
-  // Promise.all order: aggregate(all), groupBy(all), aggregate(filtered),
+  // Promise.all order: aggregate(all), groupBy(all),
+  // allocation.groupBy(beneficial unique members), aggregate(filtered),
   // groupBy(filtered), findMany(orderedForCode), findMany(rows).
   mocks.prisma.promoRedemption.aggregate
     .mockResolvedValueOnce({
@@ -198,6 +209,10 @@ function seedDivergentTotals() {
   mocks.prisma.promoRedemption.groupBy
     .mockResolvedValueOnce([{ memberId: "m1" }, { memberId: "m2" }])
     .mockResolvedValueOnce([{ memberId: "m1" }]);
+  // Only m1 ever got a benefit, so m2 occupies no unique-member place.
+  mocks.prisma.promoRedemptionAllocation.groupBy.mockResolvedValue([
+    { memberId: "m1" },
+  ]);
   mocks.prisma.promoRedemption.findMany
     .mockResolvedValueOnce(ORDERED_FOR_CODE)
     .mockResolvedValueOnce([ROWS[2]]);
@@ -428,5 +443,59 @@ describe("GET /api/admin/promo-codes/[id]/redemptions", () => {
     const res = await GET(req(BASE_URL), params("pc-1"));
     expect(res.status).toBe(200);
     expect(mocks.createAuditLog).not.toHaveBeenCalled();
+  });
+});
+
+// #2299: the report keeps listing every application of the code, but the usage
+// caps only count applications that gave someone a benefit — so the cap
+// progress has to be driven from a separate, benefit-filtered numerator.
+describe("GET /api/admin/promo-codes/[id]/redemptions - cap usage (#2299)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.auth.mockResolvedValue(bookingsUser("view"));
+    mocks.requireActiveSessionUser.mockResolvedValue(null);
+  });
+
+  it("reports cap usage from beneficial rows while the totals keep every application", async () => {
+    seedDivergentTotals();
+
+    const res = await GET(req(BASE_URL), params("pc-1"));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    // Every application still shows in the totals...
+    expect(body.totals.all.redemptions).toBe(3);
+    expect(body.totals.all.uniqueMembers).toBe(2);
+    // ...while the cap numerators count only what actually consumes a cap.
+    expect(body.code.capUsage).toEqual({
+      redemptions: body.code.currentRedemptions,
+      uniqueMembers: 1,
+    });
+
+    expect(mocks.prisma.promoRedemptionAllocation.groupBy).toHaveBeenCalledWith({
+      by: ["memberId"],
+      where: {
+        promoCodeId: "pc-1",
+        OR: [
+          { discountCents: { gt: 0 } },
+          { priceAdjustmentCents: { not: 0 } },
+          { freeNightsUsed: { gt: 0 } },
+        ],
+      },
+    });
+  });
+
+  it("does not narrow the beneficial unique-member count by the date/lodge filter", async () => {
+    // The caps are all-time, so their numerator must ignore the report filter.
+    seedDivergentTotals();
+
+    await GET(
+      req(`${BASE_URL}?from=2026-07-01&to=2026-07-31&lodgeId=lodge-1`),
+      params("pc-1")
+    );
+
+    const [[args]] = mocks.prisma.promoRedemptionAllocation.groupBy.mock.calls;
+    expect(args.where).not.toHaveProperty("createdAt");
+    expect(args.where).not.toHaveProperty("booking");
   });
 });

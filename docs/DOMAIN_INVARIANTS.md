@@ -33,6 +33,37 @@ Future reviews and issues should cite this file when proposing changes.
   (the composition heuristic is removed). Fee changes affect future resolution
   only.
 - Do not introduce floating point money arithmetic.
+- **A promo "use" means the member actually got something (#2299).** A
+  `PromoRedemptionAllocation` row exists only where the application delivered a
+  benefit — `discountCents > 0`, `priceAdjustmentCents ≠ 0`, or
+  `freeNightsUsed > 0` (a price-RAISING fixed-nightly application counts: the
+  member's price genuinely changed). All three usage caps count those rows and
+  nothing else: uses per member, unique members, and total redemptions via the
+  denormalised `PromoCode.currentRedemptions`. The single write-time choke point
+  is `normalizeAllocations` in `src/lib/promo.ts`; every cap query additionally
+  applies `BENEFICIAL_PROMO_ALLOCATION_FILTER` so a legacy all-zero row cannot
+  occupy a slot. Two corollaries: (a) `currentRedemptions` is always the RAW
+  count of a code's allocation rows, so `redeemPromoCode`,
+  `replacePromoRedemptionAllocations` and `deletePromoRedemptionAndAdjustCount`
+  must measure their delta against the raw row count, never a filtered one; and
+  (b) a reprice that destroys a booking's promo benefit RELEASES the slot it
+  held, in the same transaction that removes the benefit — a member holds
+  exactly as many slots as they hold benefits, at every instant. The
+  `PromoRedemption` row is never benefit-gated: it persists for any application
+  with eligible guests and is the audit and reporting trail, which is why the
+  archive-or-delete decision for a promo code counts redemptions, not
+  allocations (`PromoRedemption.promoCodeId` is `onDelete: Restrict`).
+  **Statement order in the two redemption writers is load-bearing**, because the
+  `PromoRedemption_sync_allocation_insert` / `..._update` triggers
+  (`20260527120000_add_promo_redemption_allocations`) upsert a booker allocation
+  row straight from the redemption's own scalars on every `PromoRedemption`
+  write — they exist so an old blue/green colour that writes only
+  `PromoRedemption` still records an allocation. For a zero-benefit application
+  that row is all-zero, so the allocation `deleteMany` must stay AFTER the
+  redemption create/update (or the database silently puts back the row this
+  invariant removes), and `replacePromoRedemptionAllocations` must count the
+  existing rows BEFORE its update (or it counts the trigger's transient row and
+  skews the counter delta).
 - Refunds, credits, discounts, Stripe amounts, Xero invoice amounts, and
   membership fees must reconcile back to cent-based ledger records.
 - Admin adjustments need audit, approval, and a visible business reason.

@@ -103,7 +103,11 @@ interface PromoCode {
   active: boolean;
   archivedAt: string | null;
   createdAt: string;
+  // Beneficial allocation rows only — the ones that consume usage caps (#2299).
   redemptions: PromoRedemptionRow[];
+  // Every application of the code, benefit or not. Used for the archive-or-
+  // delete decision and shown as the operator-facing "applied" figure.
+  totalRedemptionCount: number;
   assignments: PromoAssignment[];
   lodgeIds: string[];
 }
@@ -529,9 +533,12 @@ export function PromoCodesPageClient({
   }
 
   async function handleDelete(promo: PromoCode) {
-    const hasRedemptions = promo.redemptions.length > 0;
+    // Applications, not beneficial uses: a code that was applied to a booking
+    // is always archived rather than deleted, even if it gave nobody anything
+    // (#2299) — the server refuses the hard delete for the same reason.
+    const hasRedemptions = promo.totalRedemptionCount > 0;
     const confirmMsg = hasRedemptions
-      ? `This promo code has been used ${promo.redemptions.length} time(s). It will be archived (not deleted) so you can still reference it. Continue?`
+      ? `This promo code has been applied to ${promo.totalRedemptionCount} booking(s). It will be archived (not deleted) so you can still reference it. Continue?`
       : "Are you sure you want to delete this promo code?";
 
     if (!confirm(confirmMsg)) return;
@@ -718,7 +725,7 @@ export function PromoCodesPageClient({
                     size="sm"
                     onClick={() => handleDelete(promo)}
                   >
-                    {promo.redemptions.length > 0 ? "Archive" : "Delete"}
+                    {promo.totalRedemptionCount > 0 ? "Archive" : "Delete"}
                   </ViewOnlyActionButton>
                 </>
               )}
@@ -735,16 +742,27 @@ export function PromoCodesPageClient({
               <span className="font-medium">{formatPromoValue(promo)}</span>
             </div>
             <div>
-              <span className="text-muted-foreground">Redemptions:</span>{" "}
+              <span className="text-muted-foreground">Redemptions that gave a benefit:</span>{" "}
               <span className="font-medium">
                 {promo.currentRedemptions}
                 {promo.maxRedemptionsTotal != null
                   ? ` / ${promo.maxRedemptionsTotal}`
                   : " (unlimited)"}
               </span>
+              {/* Only applications that actually changed someone's price count
+                  toward the caps (#2299). Surfacing the gap tells the operator
+                  a code is being applied fruitlessly — usually a sign it is
+                  misconfigured for the bookings people are making. */}
+              {promo.totalRedemptionCount > promo.currentRedemptions && (
+                <p className="text-xs text-muted-foreground">
+                  Applied to {promo.totalRedemptionCount} booking(s);{" "}
+                  {promo.totalRedemptionCount - promo.currentRedemptions} gave no benefit
+                  and used up no allowance
+                </p>
+              )}
             </div>
             <div>
-              <span className="text-muted-foreground">Unique members:</span>{" "}
+              <span className="text-muted-foreground">Members who benefited:</span>{" "}
               <span className="font-medium">
                 {uniqueMembers}
                 {promo.maxUniqueMembersTotal != null

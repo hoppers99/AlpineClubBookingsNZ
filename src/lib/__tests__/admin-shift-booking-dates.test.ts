@@ -114,6 +114,9 @@ vi.mock("@/lib/membership-type-policy", () => ({
 vi.mock("@/lib/promo", () => ({
   deletePromoRedemptionAndAdjustCount: vi.fn(),
   replacePromoRedemptionAllocations: vi.fn(),
+  // #2299: the promo path row-locks each PromoCode it may charge or
+  // refund before reading or writing any usage cap.
+  lockPromoCodeRowsForUpdate: vi.fn(),
   validateAndCalculatePromoDiscount: vi.fn(),
 }));
 vi.mock("@/lib/logger", () => ({

@@ -5,6 +5,7 @@ import { z } from "zod";
 import { parseJsonRequestBody } from "@/lib/api-json";
 import { logAudit } from "@/lib/audit";
 import { isDateOnlyString, parseDateOnly } from "@/lib/date-only";
+import { BENEFICIAL_PROMO_ALLOCATION_FILTER } from "@/lib/promo";
 
 const dateOnlyString = z.string().refine(isDateOnlyString, {
   message: "Date must be YYYY-MM-DD",
@@ -59,7 +60,13 @@ export async function GET(req: NextRequest) {
       ? { archivedAt: { not: null }, internal: false }
       : { archivedAt: null, internal: false },
     include: {
+      // Beneficial allocations only (#2299): this list is what the card's
+      // "Unique members" figure is measured against the maxUniqueMembersTotal
+      // cap with, and the cap itself only counts members who actually got
+      // something. `_count.redemptions` below carries the unfiltered total for
+      // reporting and for the archive-or-delete decision.
       allocations: {
+        where: BENEFICIAL_PROMO_ALLOCATION_FILTER,
         select: {
           id: true,
           discountCents: true,
@@ -68,6 +75,7 @@ export async function GET(req: NextRequest) {
           createdAt: true,
         },
       },
+      _count: { select: { redemptions: true } },
       assignments: {
         include: {
           member: { select: { id: true, firstName: true, lastName: true, email: true } },
@@ -79,9 +87,12 @@ export async function GET(req: NextRequest) {
   });
 
   return NextResponse.json(
-    promoCodes.map(({ allocations, lodges, ...promoCode }) => ({
+    promoCodes.map(({ allocations, lodges, _count, ...promoCode }) => ({
       ...promoCode,
       redemptions: allocations,
+      // Every recorded application of the code, including the ones that
+      // delivered no benefit and so consume no cap (#2299).
+      totalRedemptionCount: _count.redemptions,
       lodgeIds: lodges.map((row) => row.lodgeId),
     }))
   );

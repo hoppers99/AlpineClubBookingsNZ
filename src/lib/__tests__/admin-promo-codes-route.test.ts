@@ -23,6 +23,8 @@ const mocks = vi.hoisted(() => {
       promoCode: {
         findUnique: vi.fn(),
         findMany: vi.fn(),
+        update: vi.fn(),
+        delete: vi.fn(),
       },
       $transaction: vi.fn(async (callback: (innerTx: typeof tx) => unknown) => callback(tx)),
     },
@@ -47,8 +49,9 @@ vi.mock("@/lib/audit", () => ({
   logAudit: mocks.logAudit,
 }));
 
-import { POST } from "@/app/api/admin/promo-codes/route";
-import { PUT } from "@/app/api/admin/promo-codes/[id]/route";
+import { GET, POST } from "@/app/api/admin/promo-codes/route";
+import { DELETE, PUT } from "@/app/api/admin/promo-codes/[id]/route";
+import { BENEFICIAL_PROMO_ALLOCATION_FILTER } from "@/lib/promo";
 
 function request(url: string, body: Record<string, unknown>) {
   return new NextRequest(url, {
@@ -277,5 +280,108 @@ describe("admin promo code routes - fixed nightly price", () => {
         assignedMembersOnlyOwnNights: true,
       }),
     });
+  });
+});
+
+// #2299: a promo application that gave nobody a benefit consumes no usage cap,
+// but it is still a recorded redemption — which the admin surface has to keep
+// straight in two places.
+describe("admin promo code routes - zero-benefit redemptions (#2299)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.auth.mockResolvedValue({
+      user: { id: "admin-1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] },
+    });
+    mocks.requireActiveSessionUser.mockResolvedValue(null);
+  });
+
+  it("lists cap-consuming allocations separately from every recorded application", async () => {
+    mocks.prisma.promoCode.findMany.mockResolvedValue([
+      {
+        id: "pc-1",
+        code: "CAP80",
+        currentRedemptions: 1,
+        allocations: [
+          {
+            id: "alloc-1",
+            discountCents: 2000,
+            priceAdjustmentCents: -2000,
+            memberId: "member-1",
+            createdAt: new Date("2026-07-01T00:00:00Z"),
+          },
+        ],
+        _count: { redemptions: 3 },
+        lodges: [],
+        assignments: [],
+      },
+    ]);
+
+    const response = await GET(
+      new NextRequest("http://localhost/api/admin/promo-codes")
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json();
+
+    // The cap-facing list is filtered to beneficial rows...
+    expect(mocks.prisma.promoCode.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        include: expect.objectContaining({
+          allocations: expect.objectContaining({
+            where: BENEFICIAL_PROMO_ALLOCATION_FILTER,
+          }),
+          _count: { select: { redemptions: true } },
+        }),
+      })
+    );
+    // ...while the operator still sees that the code was applied three times.
+    expect(body[0].redemptions).toHaveLength(1);
+    expect(body[0].totalRedemptionCount).toBe(3);
+    expect(body[0]._count).toBeUndefined();
+  });
+
+  it("archives (never hard-deletes) a code whose only application gave no benefit", async () => {
+    // PromoRedemption.promoCodeId is onDelete: Restrict, so counting
+    // allocations here would offer a delete the database then refuses.
+    mocks.prisma.promoCode.findUnique.mockResolvedValue({
+      id: "pc-1",
+      code: "CAP80",
+      internal: false,
+      _count: { redemptions: 1 },
+    });
+
+    const response = await DELETE(
+      new NextRequest("http://localhost/api/admin/promo-codes/pc-1", {
+        method: "DELETE",
+      }),
+      { params: Promise.resolve({ id: "pc-1" }) }
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ success: true, archived: true });
+    expect(mocks.prisma.promoCode.delete).not.toHaveBeenCalled();
+    expect(mocks.prisma.promoCode.update).toHaveBeenCalledWith({
+      where: { id: "pc-1" },
+      data: expect.objectContaining({ active: false }),
+    });
+  });
+
+  it("still hard-deletes a code that was never applied to a booking", async () => {
+    mocks.prisma.promoCode.findUnique.mockResolvedValue({
+      id: "pc-1",
+      code: "UNUSED",
+      internal: false,
+      _count: { redemptions: 0 },
+    });
+
+    const response = await DELETE(
+      new NextRequest("http://localhost/api/admin/promo-codes/pc-1", {
+        method: "DELETE",
+      }),
+      { params: Promise.resolve({ id: "pc-1" }) }
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ success: true, archived: false });
+    expect(mocks.prisma.promoCode.delete).toHaveBeenCalledWith({ where: { id: "pc-1" } });
   });
 });

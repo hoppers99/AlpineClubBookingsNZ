@@ -10,6 +10,7 @@ import {
 } from "@/lib/date-only";
 import type { Prisma } from "@prisma/client";
 import { createAuditLog } from "@/lib/audit";
+import { BENEFICIAL_PROMO_ALLOCATION_FILTER } from "@/lib/promo";
 
 const dateOnlyString = z.string().refine(isDateOnlyString, {
   message: "Date must be YYYY-MM-DD",
@@ -123,6 +124,7 @@ export async function GET(
   const [
     allAggregate,
     allUniqueMembers,
+    beneficialUniqueMembers,
     filteredAggregate,
     filteredUniqueMembers,
     // Lightweight full-history scan (asc) to rank each redemption as the nth
@@ -140,6 +142,14 @@ export async function GET(
     prisma.promoRedemption.groupBy({
       by: ["memberId"],
       where: allWhere,
+    }),
+    // Distinct members who actually BENEFITED from the code (#2299). The tiles
+    // report every application, but the cap progress must be measured against
+    // what the unique-members cap really counts, or a code that was applied
+    // fruitlessly reads as over its cap while still being perfectly usable.
+    prisma.promoRedemptionAllocation.groupBy({
+      by: ["memberId"],
+      where: { promoCodeId: id, ...BENEFICIAL_PROMO_ALLOCATION_FILTER },
     }),
     prisma.promoRedemption.aggregate({
       where: filteredWhere,
@@ -259,6 +269,13 @@ export async function GET(
       archived: promoCode.archivedAt != null,
       internal: promoCode.internal,
       currentRedemptions: promoCode.currentRedemptions,
+      // What the usage caps are actually measured against (#2299): only
+      // applications that gave someone a benefit. Every tile below still counts
+      // every application; these two are what the cap progress uses.
+      capUsage: {
+        redemptions: promoCode.currentRedemptions,
+        uniqueMembers: beneficialUniqueMembers.length,
+      },
       caps: {
         maxRedemptionsTotal: promoCode.maxRedemptionsTotal,
         maxUniqueMembersTotal: promoCode.maxUniqueMembersTotal,

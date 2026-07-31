@@ -75,13 +75,16 @@ export function MemberPromoCodesCard({ promoCodes, className }: { promoCodes: Me
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground">
                     <div className="space-y-1">
+                      {/* Both figures count only applications that actually
+                          gave someone a benefit — the same rule the caps
+                          enforce (#2299). */}
                       <p>
                         {promo.currentRedemptions}
-                        {promo.maxRedemptionsTotal !== null ? `/${promo.maxRedemptionsTotal}` : ""} total redemptions
+                        {promo.maxRedemptionsTotal !== null ? `/${promo.maxRedemptionsTotal}` : ""} redemptions that gave a benefit
                       </p>
                       <p>
                         {promo.redemptionCount}
-                        {promo.maxUsesPerMember !== null ? `/${promo.maxUsesPerMember}` : ""} by this member
+                        {promo.maxUsesPerMember !== null ? `/${promo.maxUsesPerMember}` : ""} benefited this member
                       </p>
                       {promo.type === "FREE_NIGHTS" && promo.lifetimeFreeNightsCap !== null && (
                         <p>

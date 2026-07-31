@@ -4,6 +4,37 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **A promo code that turned out to be worth nothing no longer uses up
+  someone's one permitted go at it (#2299).** Until now the system counted a
+  promo code as "used" the moment it was applied to a booking with eligible
+  guests, whether or not it actually took anything off the price. That is
+  easier to hit than it sounds and needs no bug anywhere: a "fixed price per
+  night" code used as a cap does nothing for a member whose nightly rate is
+  already at or below that cap, and a percentage-off or free-nights code does
+  nothing on nights that are already free (young children, a zero-dollar
+  stay). The member got no money off and was then told, for ever, "You have
+  already used this promo code". The empty use also counted toward the code's
+  total-redemptions limit and took up one of its unique-member places, so a
+  code could look exhausted when nobody had benefited from it at all.
+
+  A use now means the member actually got something — money off, a change to
+  what they pay, or a subsidised night. All three limits (uses per member,
+  total redemptions, unique members) count only those, matching how the
+  lifetime free-nights allowance has always worked. The application is still
+  recorded and still appears in the code's redemptions report, so an operator
+  can see that a code is being applied fruitlessly — usually the sign that it
+  is set up wrong for the stays people are booking. The promo code card now
+  says exactly that: how many redemptions gave a benefit, and, underneath, how
+  many bookings the code was applied to that it did nothing for. If a booking
+  is later edited so its promo benefit disappears, the allowance it was holding
+  is handed back at the same moment, so nobody is left paying full price while
+  still counted as having used the code.
+
+  Existing sites are repaired on upgrade: benefit-free records stop counting
+  immediately, the dead rows are cleared out, and each code's redemption total
+  is recalculated from what is left. Nothing in the redemptions report or its
+  CSV is removed — only what counts as a use changes.
+
 - **Self-hosted sites now use whatever processing power the server has free,
   instead of being rationed to a fraction of one core (#2351).** The standard
   deployment recipe used to cap each app container at eight-tenths of a

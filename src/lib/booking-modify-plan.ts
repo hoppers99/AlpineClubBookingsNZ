@@ -53,6 +53,7 @@ import {
 import { toGroupDiscountConfig } from "@/lib/policies/booking-route-decisions";
 import {
   deletePromoRedemptionAndAdjustCount,
+  lockPromoCodeRowsForUpdate,
   redeemPromoCode,
   replacePromoRedemptionAllocations,
   shouldPersistPromoRedemption,
@@ -1030,6 +1031,27 @@ export async function applyPromoCodeChanges(
   let promoChanged = false;
   const bookingLodgeId = booking.lodgeId ?? (await getDefaultLodgeId(tx));
 
+  // Row-lock every promo code whose usage caps this transaction may charge or
+  // refund, BEFORE the first cap read and the first counter write (#2299).
+  // Booking creation has locked its promo row this way for a long time; the
+  // modification paths did not, so two concurrent modifications could both pass
+  // a "one use left" check. `lockPromoCodeRowsForUpdate` sorts the ids, so the
+  // outgoing and incoming codes of a swap are always taken in the same global
+  // order and no two transactions can build a cycle.
+  const incomingPromoCodeId =
+    input.promoCode && !input.removePromoCode
+      ? (
+          await tx.promoCode.findUnique({
+            where: { code: input.promoCode.toUpperCase().trim() },
+            select: { id: true },
+          })
+        )?.id
+      : undefined;
+  await lockPromoCodeRowsForUpdate(tx, [
+    booking.promoRedemption?.promoCodeId,
+    incomingPromoCodeId,
+  ]);
+
   if (input.removePromoCode && booking.promoRedemption) {
     await deletePromoRedemptionAndAdjustCount(tx, booking.promoRedemption);
     promoRemoved = true;
@@ -1041,6 +1063,8 @@ export async function applyPromoCodeChanges(
       promoRemoved = true;
     }
 
+    // Re-read under the lock taken above, so the caps this validation sees are
+    // the caps the redemption below consumes.
     const promoCode = await tx.promoCode.findUnique({
       where: { code: input.promoCode.toUpperCase().trim() },
       include: {

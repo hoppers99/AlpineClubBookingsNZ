@@ -150,6 +150,9 @@ vi.mock("@/lib/promo", () => ({
   shouldPersistPromoRedemption: vi.fn().mockReturnValue(true),
   redeemPromoCode: vi.fn(),
   replacePromoRedemptionAllocations: vi.fn(),
+  // #2299: the promo path row-locks each PromoCode it may charge or
+  // refund before reading or writing any usage cap.
+  lockPromoCodeRowsForUpdate: vi.fn(),
   deletePromoRedemptionAndAdjustCount: vi.fn(),
   getMemberFreeNightsUsed: vi.fn().mockResolvedValue(0),
 }));
@@ -301,6 +304,9 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
     // #1881 — the batch service now takes the global lock(1) via $executeRaw.
     $executeRaw: vi.fn().mockResolvedValue(undefined),
     $executeRawUnsafe: vi.fn().mockResolvedValue(undefined),
+    // #2299 — the promo path row-locks each PromoCode it may charge or refund
+    // with SELECT "id" ... FOR UPDATE before reading or writing any cap.
+    $queryRaw: vi.fn().mockResolvedValue([]),
     lodge: {
       findFirst: vi.fn().mockResolvedValue({ id: "lodge-1" }),
     },

@@ -81,6 +81,11 @@ interface RedemptionsResponse {
     archived: boolean;
     internal: boolean;
     currentRedemptions: number;
+    // What the usage caps count: applications that actually gave a benefit
+    // (#2299). The tiles below report every application, so the cap progress
+    // has to be driven from here or a fruitlessly-applied code reads as over
+    // its cap while still being usable.
+    capUsage: { redemptions: number; uniqueMembers: number };
     caps: {
       maxRedemptionsTotal: number | null;
       maxUniqueMembersTotal: number | null;
@@ -229,6 +234,9 @@ export function PromoRedemptionsPanel({
 
   const totals = data?.totals;
   const caps = data?.code.caps;
+  // Cap progress counts only applications that gave a benefit (#2299); the
+  // tile values themselves keep reporting every recorded application.
+  const capUsage = data?.code.capUsage;
   const total = data?.pagination.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const resultStart = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
@@ -328,7 +336,7 @@ export function PromoRedemptionsPanel({
           value={String(totals?.filtered.redemptions ?? 0)}
           subtitle={
             caps?.maxRedemptionsTotal != null
-              ? `${totals?.all.redemptions ?? 0} of ${caps.maxRedemptionsTotal} all-time`
+              ? `${capUsage?.redemptions ?? 0} of ${caps.maxRedemptionsTotal} all-time gave a benefit`
               : filterActive
                 ? `${totals?.all.redemptions ?? 0} all-time`
                 : "No total cap"
@@ -336,7 +344,7 @@ export function PromoRedemptionsPanel({
           progress={
             caps?.maxRedemptionsTotal != null
               ? {
-                  current: totals?.all.redemptions ?? 0,
+                  current: capUsage?.redemptions ?? 0,
                   cap: caps.maxRedemptionsTotal,
                 }
               : null
@@ -347,7 +355,7 @@ export function PromoRedemptionsPanel({
           value={String(totals?.filtered.uniqueMembers ?? 0)}
           subtitle={
             caps?.maxUniqueMembersTotal != null
-              ? `${totals?.all.uniqueMembers ?? 0} of ${caps.maxUniqueMembersTotal} all-time`
+              ? `${capUsage?.uniqueMembers ?? 0} of ${caps.maxUniqueMembersTotal} all-time benefited`
               : filterActive
                 ? `${totals?.all.uniqueMembers ?? 0} all-time`
                 : "No unique-member cap"
@@ -355,7 +363,7 @@ export function PromoRedemptionsPanel({
           progress={
             caps?.maxUniqueMembersTotal != null
               ? {
-                  current: totals?.all.uniqueMembers ?? 0,
+                  current: capUsage?.uniqueMembers ?? 0,
                   cap: caps.maxUniqueMembersTotal,
                 }
               : null

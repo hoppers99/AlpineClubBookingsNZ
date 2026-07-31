@@ -357,16 +357,22 @@ export async function DELETE(
   });
   if (!guard.ok) return guard.response;
   const session = guard.session;
+  // Archive-or-delete is decided on REDEMPTION rows, not allocation rows
+  // (#2299). `PromoRedemption.promoCodeId` is an onDelete: Restrict foreign
+  // key, so a code that was applied to a booking cannot be hard-deleted even
+  // when the application delivered no benefit and therefore wrote no
+  // allocation row — counting allocations here would offer a delete that the
+  // database then refuses.
   const existing = await prisma.promoCode.findUnique({
     where: { id },
-    include: { allocations: { select: { id: true } } },
+    include: { _count: { select: { redemptions: true } } },
   });
 
   if (!existing || existing.internal) {
     return NextResponse.json({ error: "Promo code not found" }, { status: 404 });
   }
 
-  if (existing.allocations.length > 0) {
+  if (existing._count.redemptions > 0) {
     await prisma.promoCode.update({
       where: { id },
       data: { archivedAt: new Date(), active: false },
@@ -376,7 +382,7 @@ export async function DELETE(
       action: "promo.archive",
       memberId: session.user.id,
       targetId: id,
-      details: `Archived promo code: ${existing.code} (${existing.allocations.length} redemption(s))`,
+      details: `Archived promo code: ${existing.code} (${existing._count.redemptions} redemption(s))`,
     });
 
     return NextResponse.json({ success: true, archived: true });

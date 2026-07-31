@@ -229,6 +229,22 @@ do not use unnamespaced `hashtext(<id>)` for new lock families.
   before validating and consuming its use count. Booking creation has already
   taken the per-lodge capacity lock, so the current order is lodge -> promo row;
   no counterpart writer may take the promo row and then a lodge lock.
+- `booking-modify-plan.ts` (`applyPromoCodeChanges`, the batch-modification
+  promo path) takes the **same** protocol via `lockPromoCodeRowsForUpdate`
+  (`src/lib/promo.ts`), and takes it *before* its first cap read and its first
+  `currentRedemptions` write. Its caller (`booking-batch-modification-service.ts`)
+  has already taken the per-lodge capacity lock, so the order is again
+  lodge -> promo row. A promo **swap** touches two promo rows in one
+  transaction (the outgoing code's counter is refunded, the incoming code's is
+  charged), so the helper sorts the ids and locks them one statement at a time:
+  every caller therefore takes promo row locks in the same global order and two
+  opposite swaps cannot build a cycle. The sort is done in the application
+  rather than by `ORDER BY ... FOR UPDATE`, so the ordering does not depend on
+  the query plan. The lock became load-bearing with #2299: a reprice can now
+  *release* a usage slot as well as take one, so check-then-consume must be
+  serialised. The helper selects only `"id"` and discards the result — it exists
+  purely for its lock and never reads a value out of a raw row, which is the
+  trap #2289 documents.
 - `admin-bed-allocation.ts` locks the owning `LodgeRoom` row with `FOR UPDATE`
   before checking and changing one room's bunk-group membership. This protocol
   is independent of the booking/capacity/credit lock cluster.
