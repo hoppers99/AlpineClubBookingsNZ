@@ -80,6 +80,7 @@ export const ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES: ReadonlySet<string> =
     "booking-review-rejected",
     "checkin-reminder",
     "pre-arrival-reminder",
+    "additional-payment-reminder",
     "booking-modified",
     "setup-intent-failed",
     // src/lib/email/waitlist.ts — a waitlist entry IS a booking row

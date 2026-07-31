@@ -180,6 +180,64 @@ All notable public reference-release changes should be recorded here.
   the redemptions report or its CSV is removed; only what counts as a use
   changes.
 
+- **Money still owed after a booking change is now visible everywhere, and the
+  member is actually asked for it (#2350).** When a change pushed a confirmed
+  booking's price up — an admin adding a non-member guest, say — the difference
+  became an "additional payment" the member had to make from their own booking
+  page. Nothing chased them for it, no admin screen showed it, and the revenue
+  report counted it as money in the bank. It could sit there indefinitely, and
+  did.
+
+  The bookings list now says when the money is short: such a row reads **Partly
+  paid** with an amber **"$210.00 due"** beside it. The booking's own status chip
+  still reads Paid,
+  which is right — the stay is confirmed; it is the money that is short. Opening
+  the booking gives any admin an **Additional payment outstanding** panel with
+  the amount, when the change was made and how long ago, whether the last
+  attempt to charge the card failed, and when the member was last emailed. It is
+  read-only on purpose: nothing here takes, waives or zeroes the money, because
+  collecting it belongs to the member's own card or to an ordinary booking
+  change. The booking's timeline gains the entry that was missing too — it
+  recorded an extra payment succeeding and failing, but never its being asked
+  for in the first place.
+
+  The member is now chased while it still matters: a few days after the change,
+  and once more shortly before check-in, with the pre-arrival message naming the
+  amount as well. An admin can send the same message on demand with **Resend
+  payment request email**, which takes the place of whichever automatic reminder
+  was coming rather than adding to it. Automatic and manual sends share one
+  clock, so a member emailed within the last hour — by an officer, or by the
+  reminder — is not chased twice over, and every re-send is audited. A booking
+  with the **No emails** switch on is refused with an explanation rather than
+  silently swallowed, and a message the mail system withholds (a bounced address,
+  a member with no real address on file) is reported as not sent rather than
+  counted as sent. Only confirmed, paid and completed bookings are chased at all
+  — cancelling a booking ends the club's claim on the difference, and no screen
+  calls it outstanding afterwards. **A cancelled booking no longer offers the
+  member a way to pay it, either:** the pay-the-extra card and the card form
+  behind it were still being shown on a cancelled booking, and because
+  cancelling does not always close the card charge at the payment provider, a
+  member could complete a payment for a stay that no longer existed. (The system
+  refunded it automatically and alerted the club, but the member had still been
+  charged.) Both now check the booking's state before offering anything. Changes
+  made before this shipped are shown but never emailed about automatically, so
+  going live does not mail the backlog — and that cut-off is now taken from the
+  moment the reminders first ran on the club's own system rather than a date
+  written into the code in advance, so it stays right however long the release
+  takes.
+  Nothing is ever auto-cancelled or expired over an unpaid addition,
+  and the chasing stops once the stay is over: from then on it is a
+  conversation, which is what the dashboard card is for.
+
+  That dashboard card and its sidebar badge stopped being finished-stays-only.
+  They now count upcoming stays too — the half that can still be chased — shown
+  as "3 upcoming, 1 finished" behind one link to the owed filter. And the money
+  is honest on the finance surfaces: the reports page's revenue figure keeps its
+  meaning but is labelled **Booked Revenue**, with **Outstanding Additions**
+  beside it (in the CSV as well, along with the subtraction), and the finance
+  dashboard finally renders the additional-payment split it had been quietly
+  computing all along.
+
 - **Xero setup no longer gets stuck on "Confirming the organisation name…"
   (#2394).** After connecting Xero, the setup wizard fetches your organisation's
   name so you can check you picked the right one. That fetch happened exactly

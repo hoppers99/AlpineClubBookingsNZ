@@ -12,7 +12,7 @@
  * the notify gating is exercised through the actual route end-to-end.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
 
 const mockTransaction = vi.fn();
@@ -114,6 +114,19 @@ function makeAdminSession() {
 
 const CHECK_IN = new Date("2026-08-01T00:00:00.000Z");
 const CHECK_OUT = new Date("2026-08-05T00:00:00.000Z"); // 4 nights: Aug 1-4
+
+/**
+ * These scenarios add a guest to a booking that has NOT started — the "future"
+ * edit mode this route serves. Left on the real clock the suite quietly changed
+ * meaning once the NZ calendar date reached CHECK_IN: getBookingEditPolicy then
+ * classifies the same fixture as "in-progress" and the route correctly answers
+ * 400 ("Use the full booking edit flow ..."), so the notify-choice assertions
+ * never ran. Pin the clock so the scenario under test stays the intended one.
+ *
+ * Only `Date` is faked — real timers still run, so awaited promises resolve
+ * normally.
+ */
+const FIXED_NOW = new Date("2026-07-15T00:00:00.000Z"); // NZ 2026-07-15 12:00
 
 function night(day: string, priceCents: number) {
   return { stayDate: new Date(`2026-08-0${day}T00:00:00.000Z`), priceCents };
@@ -254,6 +267,8 @@ const NON_MEMBER_GUEST = { firstName: "Bob", lastName: "Jones", ageTier: "ADULT"
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(FIXED_NOW);
   mockMemberCount.mockResolvedValue(1);
   mockMemberFindUnique.mockResolvedValue({
     id: "m1",
@@ -264,6 +279,10 @@ beforeEach(() => {
   mockedAuth.mockResolvedValue(makeMemberSession() as any);
   mockedCheckCapacity.mockResolvedValue({ available: true, availableBeds: 20 } as any);
   mockedCheckCapacityForGuestRanges.mockResolvedValue({ available: true, minAvailable: 20, nightDetails: [] } as any);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("POST /api/bookings/[id]/guests notify choice (#1769b)", () => {
