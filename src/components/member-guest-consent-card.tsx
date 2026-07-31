@@ -242,11 +242,23 @@ export function MemberGuestConsentCard({
           </ul>
         </div>
 
+        {/*
+          The release is stated as the USUAL case, not as a promise. Letting a
+          request lapse runs the same removal path a decline does, so the same
+          blockers apply — the only guest on the booking, a hand-priced booking,
+          a status that forbids guest changes — and those rows go to the club's
+          exception list still holding their bed. Saying "the held bed is
+          released" flatly would promise the member something the server
+          sometimes cannot deliver.
+        */}
         <p className="text-muted-foreground">
           If you do not answer by{" "}
           <span className="font-medium text-foreground">{lapseByLabel}</span>{" "}
-          the request lapses on its own, the held bed is released, and{" "}
-          {bookerFirstName} is told. You do not have to do anything to decline.
+          the request lapses on its own and {bookerFirstName} is told. You do not
+          have to do anything to decline. In most cases the held bed is released
+          at the same time; occasionally it cannot be — when there would be
+          nobody left on the booking, for example — and the club sorts that out
+          by hand.
         </p>
 
         {refusalWarning ? (

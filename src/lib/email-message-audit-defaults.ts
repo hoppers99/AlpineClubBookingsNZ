@@ -420,7 +420,7 @@ export const EMAIL_AUDIT_DEFAULTS = {
   },
   "member-guest-consent-request": {
     "defaultSubject": "{{askHeading}}",
-    "defaultBody": "{{askHeading}}\n\nHi {{firstName}}, {{askContextNote}}\n\nLodge: {{CLUB_LODGE_NAME}}\nStay: {{checkIn}} - {{checkOut}}\nNights: {{guestNightsLabel}}\nBooked by: {{bookerName}}\nPlease answer by: {{consentExpiresAt}}\n\n{{partyListNote}}\n\nIf you do not answer by {{consentExpiresAt}}, the request lapses on its own, the bed is released, and {{bookerName}} is told. You do not have to do anything to decline.\n\nAnswer this request: {{consentUrl}}\n\nIf you were not expecting this, you can safely ignore it - the place is only confirmed if somebody answers yes."
+    "defaultBody": "{{askHeading}}\n\nHi {{firstName}}, {{askContextNote}}\n\nLodge: {{CLUB_LODGE_NAME}}\nStay: {{checkIn}} - {{checkOut}}\nNights: {{guestNightsLabel}}\nBooked by: {{bookerName}}\nPlease answer by: {{consentExpiresAt}}\n\n{{partyListNote}}\n\nIf you do not answer by {{consentExpiresAt}}, the request lapses on its own and {{bookerName}} is told. You do not have to do anything to decline. In most cases the held bed is released at the same time; occasionally it cannot be - when there would be nobody left on the booking, for example - and the club sorts that out by hand.\n\nAnswer this request: {{consentUrl}}\n\nIf you were not expecting this, you can safely ignore it - the place is only confirmed if somebody answers yes."
   },
   "member-guest-added": {
     "defaultSubject": "{{addedHeading}} - {{CLUB_LODGE_NAME}}",

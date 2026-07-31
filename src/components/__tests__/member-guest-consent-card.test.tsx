@@ -71,10 +71,16 @@ describe("MemberGuestConsentCard", () => {
     expect(screen.getByText("Everyone on the booking:")).toBeInTheDocument();
     expect(screen.getByText(/Priya Kaur — that's you/)).toBeInTheDocument();
     expect(
-      screen.getByText(/the request lapses on its own, the held bed is released/),
+      screen.getByText(/the request lapses on its own/),
     ).toBeInTheDocument();
     expect(
       screen.getByText(/You do not have to do anything to decline/),
+    ).toBeInTheDocument();
+    // The release is stated as the usual case, never as a promise: a lapse runs
+    // the same removal path a decline does, so the same blockers can leave the
+    // member on the booking (B5).
+    expect(
+      screen.getByText(/In most cases the held bed is released at the same time/),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Yes, add me" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "No thanks" })).toBeInTheDocument();

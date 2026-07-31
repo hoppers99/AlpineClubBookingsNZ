@@ -3501,7 +3501,7 @@ export function memberGuestConsentRequestTemplate(data: {
     ])}
     ${data.partyList.html}
     ${paragraph(
-      `If you do not answer by <strong>${answerBy}</strong>, the request lapses on its own, the bed is released, and ${booker} is told. You do not have to do anything to decline.`,
+      `If you do not answer by <strong>${answerBy}</strong>, the request lapses on its own and ${booker} is told. You do not have to do anything to decline. In most cases the held bed is released at the same time; occasionally it cannot be - when there would be nobody left on the booking, for example - and the club sorts that out by hand.`,
     )}
     ${button("Answer this request", data.consentUrl, { sameOrigin: true })}
     ${muted("If you were not expecting this, you can safely ignore it - the place is only confirmed if somebody answers yes.")}
