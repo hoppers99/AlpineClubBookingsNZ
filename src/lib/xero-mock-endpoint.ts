@@ -20,6 +20,7 @@ import {
   saveXeroTokens,
 } from "@/lib/xero-token-store";
 import { getOperationalXeroRedirectUri } from "@/lib/xero-config";
+import { XERO_OAUTH_CALLBACK_NO_TENANT_MESSAGE } from "@/lib/xero-oauth-callback-messages";
 
 const MOCK_BASE_PATH = "/api/testing/xero-mock";
 
@@ -111,6 +112,13 @@ function mockUrl(origin: string, path: string): string {
  * post-OAuth `refresh()` is a one-shot mount effect — so a single refused socket
  * pinned the step on "Confirming the organisation name…" and the spec could only
  * time out.
+ *
+ * That was the HARNESS half. The product half — a real Xero blip pinning a real
+ * operator on the same message — was fixed in #2394: the summary now carries a
+ * classified `readFailure`, and the step shows it with a manual **Try again**
+ * that forces a fresh read. The retry here still matters, because a mock
+ * loopback refusal is an artefact of the harness that no operator should have to
+ * click through in a spec.
  */
 const MOCK_FETCH_ATTEMPTS = 3;
 const MOCK_FETCH_RETRY_DELAY_MS = 150;
@@ -204,9 +212,7 @@ export async function handleMockXeroCallback(
   const connections = (await connRes.json()) as Array<{ tenantId: string }>;
   const tenantId = connections[0]?.tenantId ?? null;
   if (!tenantId) {
-    throw new Error(
-      "Xero did not return an organisation to connect. Please reconnect and choose the club organisation in Xero.",
-    );
+    throw new Error(XERO_OAUTH_CALLBACK_NO_TENANT_MESSAGE);
   }
 
   await saveXeroTokens({

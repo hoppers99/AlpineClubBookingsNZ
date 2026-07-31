@@ -47,6 +47,12 @@ import {
   findBookingMemberNightConflicts,
   getBookingMemberNightConflictResponse,
 } from "@/lib/booking-member-night-conflicts";
+import {
+  handleMemberGuestAddRefusal,
+  memberGuestAddThrottleHook,
+  MemberGuestAddThrottledError,
+  startMemberGuestRefusalClock,
+} from "@/lib/member-guest-probe-guard";
 
 const dateOnlyString = z.string().refine(isDateOnlyString, {
   message: "Date must be YYYY-MM-DD",
@@ -71,6 +77,10 @@ const quoteSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
+  // #2388: read once, at the very top, so the response-timing floor on a
+  // collapsed cross-family refusal covers the WHOLE request rather than only the
+  // part after the refusal was detected.
+  const startedAt = startMemberGuestRefusalClock();
   const rateLimited = await applyRateLimit(rateLimiters.bookingQuery, request);
   if (rateLimited) return rateLimited;
 
@@ -156,8 +166,22 @@ export async function POST(request: NextRequest) {
         {
           skipAuthorization: isAuthorizedOnBehalf,
           memberGuestWideningEnabled: memberGuestPolicy.wideningEnabled,
+          // #2388, owner decision 31 Jul: per-ACTING-MEMBER throttling on the
+          // add paths. Applied only when the attempt actually names a
+          // beyond-family member, so an ordinary family booking is never
+          // rate-limited by it — and applied the moment the family boundary is
+          // known, BEFORE any member record is read (H1) and before the checks
+          // whose pattern of answers is the channel. Spending it any later made
+          // a real member answer 429 while an id with nobody behind it answered
+          // 403, which is an existence oracle made out of the mitigation.
+          onBoundaryResolved: memberGuestAddThrottleHook({
+            request,
+            actorMemberId: session.user.id,
+            skipAuthorization: isAuthorizedOnBehalf,
+          }),
         }
       );
+
     await assertLinkedBookingMembersCanBeBooked(
       prisma,
       linkedMembers,
@@ -179,7 +203,17 @@ export async function POST(request: NextRequest) {
       boundary,
     );
   } catch (error) {
+    if (error instanceof MemberGuestAddThrottledError) return error.response;
     if (error instanceof BookingGuestValidationError) {
+      await handleMemberGuestAddRefusal({
+        request,
+        actorMemberId: session.user.id,
+        error,
+        route: "bookings/quote",
+        startedAt,
+        throttle: "ALREADY_CHARGED",
+        skipAuthorization: isAuthorizedOnBehalf,
+      });
       return NextResponse.json(
         getBookingGuestValidationErrorResponse(error),
         { status: error.status }
@@ -237,6 +271,18 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     if (error instanceof BookingGuestValidationError) {
+      // The person-night guard's collapsed refusal is the single most
+      // date-dependent answer this route gives, so it is the one #2388's
+      // correlation channel is actually built out of.
+      await handleMemberGuestAddRefusal({
+        request,
+        actorMemberId: session.user.id,
+        error,
+        route: "bookings/quote",
+        startedAt,
+        throttle: "ALREADY_CHARGED",
+        skipAuthorization: isAuthorizedOnBehalf,
+      });
       return NextResponse.json(
         getBookingGuestValidationErrorResponse(error),
         { status: error.status },
@@ -270,6 +316,8 @@ export async function POST(request: NextRequest) {
 
   try {
     const price = await priceBookingGuestsWithMembershipTypePolicy(prisma, {
+      // Finding 2 (privacy re-review of MG3 #2308).
+      skipAuthorization: isAuthorizedOnBehalf,
       ownerMemberId: effectiveMemberId,
       checkIn,
       checkOut,
@@ -330,6 +378,21 @@ export async function POST(request: NextRequest) {
     });
   } catch (err) {
     if (err instanceof MembershipTypeBookingPolicyError) {
+      // Finding 2 (privacy re-review of MG3 #2308). The membership-type refusal
+      // is D-8's FOURTH collapsing refusal, so when it collapsed it owes the
+      // same three mitigations as its siblings — the throttle unit, the audit
+      // row naming actor and target, and the timing floor. A no-op for every
+      // other membership-type block: the handler returns immediately unless the
+      // error carries `crossFamilyMemberIds`, which only a collapsed one does.
+      await handleMemberGuestAddRefusal({
+        request,
+        actorMemberId: session.user.id,
+        error: err,
+        route: "bookings/quote",
+        startedAt,
+        throttle: "ALREADY_CHARGED",
+        skipAuthorization: isAuthorizedOnBehalf,
+      });
       return NextResponse.json(
         getMembershipTypeBookingPolicyErrorBody(err),
         { status: err.status },

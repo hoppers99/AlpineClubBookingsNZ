@@ -99,6 +99,267 @@ All notable public reference-release changes should be recorded here.
   seeing which addresses answered differently. It is settled by the #2420 entry
   above, which turns the whole unfinished-setup site into a plain "not ready
   yet".
+  finished. That behaviour is deliberately untouched here — changing it halfway
+  would have let a stranger map an unlaunched club's page list by seeing which
+  addresses answered differently — and is being decided separately (#2420).
+- **A member can now find and add another club member as a guest, and is told
+  plainly what that commits the other person to (#2308).** The booking wizard's
+  Guests step gains a **+ Add Member Guest** button beside the existing
+  non-member one, and it opens a find box inline underneath the Guests heading —
+  not a pop-up. One box takes either an exact email address or, where a club has
+  deliberately switched name search on, a name that narrows as you type and picks
+  itself when only one person is left. A household sharing one address produces a
+  short pick-list; two members with the same name and age group look identical on
+  purpose, and the box points at the email address rather than inventing a
+  distinguishing detail the booker never had. A found member's full name and age
+  group show straight away, and nothing else about them is ever shown — no
+  email, no town, no photo, no membership type.
+
+  Out of the box the membership list is not browsable: a member needs the other
+  member's exact address, which they either have or have to go and ask for. The
+  name-search setting ships **off** and is a per-club decision, and the admin
+  card says in as many words what turning it on costs — your membership list
+  becomes browsable to anyone who can start a booking. Under-18s stay out of that
+  list unless a club separately opts them in. Every lookup in either mode is
+  speed-limited against the member who typed it (not their internet address, so
+  switching network gains nothing) and written to the audit log, which means
+  anyone who can read that log will see the addresses and names members typed.
+  With the feature switched off, neither find address exists at all — they answer
+  as if the page were never built, rather than admitting the club has the feature
+  and disabled it.
+
+  While somebody is still deciding, the review step now states all four
+  consequences plainly, before the money and never behind a "find out more" link:
+  the bed is held and for how long, a refusal reprices the booking, **the person
+  added can see the whole booking including the other guests' names before they
+  decide**, and **their agreement covers the booking however the dates later
+  change**, with taking themselves off subject to the usual limits once it is
+  priced or paid. The wizard's own waiting labels name the person — "Waiting for
+  Sam to approve", "Sam approved", "Sam will be told" — while the booking page
+  keeps the wording it already had; both come out of one shared function so the
+  two cannot drift apart. The admin settings card's "not in use yet" notice has
+  been removed, because it no longer is.
+
+- **Adding another member is harder to abuse as a way of tracking them
+  (#2388).** A single refusal already said nothing — "This member can't be added
+  to this booking right now", whatever the real reason — but somebody patient
+  could try date after date and read the answer out of the pattern. Three things
+  now sit behind that sentence. Anything involving a member from outside your own
+  family group is speed-limited per person, so a run of attempts across many
+  dates is slowed to something useless while an ordinary family booking is not
+  slowed at all. "Involving" rather than "adding" is the point: the cheapest way
+  to ask the question was to add the person once, then keep re-quoting new dates
+  on that booking without naming them again — which cost nothing until this
+  release. Every such preview now spends the same allowance an add does, once per
+  request however many places in it could have charged.
+
+  The "no such member" answer has stopped being the fast one, and three refusals
+  that used to escape the neutral wording altogether now read exactly like every
+  other one for a member outside your family: "linked member is inactive or not
+  found", the age-exempt-account refusal, and — found in a second review of the
+  same code — the membership-type refusal, which used to answer with the blocked
+  member's NAME (or their email address, where their name was blank) and their
+  membership category in as many words. A member adding their own child, and an
+  admin acting on somebody's behalf, still get the detailed, actionable message.
+
+  And repeated refusals against the same person are recorded where an admin can
+  find them, flagged, naming both members — **once per pair per day**, raised when
+  the line is first crossed rather than on every attempt after it. The earlier
+  behaviour turned one afternoon of ordinary re-dating into a run of flagged
+  entries about an innocent booker, which is how a club officer learns to scroll
+  past the thing they were meant to notice.
+
+  That last one is deliberately a record and **never a block**. Somebody trying
+  five weekends to find one that suits a friend produces exactly the same pattern
+  as somebody probing, and only a person who knows both of them can tell the
+  difference — so the system writes it down and leaves the judgement to a club
+  officer. The remaining limit is stated honestly rather than papered over: a
+  patient member who stays inside the daily cap can still work out which nights
+  another member is booked, over several days rather than minutes.
+
+- **A member guest already on a booking is no longer described to the booker
+  every time the dates change (#2308).** The rule that keeps one member's
+  bookings private from another only ever applied to the person being added in
+  that request. So a member added last week — a friend from another family, or
+  someone who had never even answered the request yet — was still described in
+  full on every later date change: their name, and the exact nights they were
+  booked somewhere else, one short answer per set of dates, with none of the
+  speed limits or records that were supposed to sit behind that question. The
+  club now works out who is outside the booker's family from the booking itself
+  rather than from what a single request happened to mention, so the neutral
+  answer applies to everybody it was always meant to cover. Three further gaps
+  found in the same review are closed with it: changing a booking through the
+  edit panel now carries the same speed limit, record and equal timing as every
+  other way of adding somebody; the "subscription unpaid" refusal is recorded and
+  speed-limited like its siblings, though it is honestly still answered later
+  than they are, because the limit is a minimum wait rather than a fixed one; and
+  the speed limit itself no longer answered "too many requests" for a real member
+  while answering the ordinary refusal for a made-up one, which had quietly
+  turned the protection into the very thing it was there to prevent.
+
+  Two more came out of a follow-up review. When you change only the dates on a
+  booking that already has a member guest on it and the club refuses, the edit
+  panel used to say "this member can't be added" — naming something you had not
+  done, about somebody not mentioned anywhere on the screen. It now says the
+  change can't be made, which is what actually happened. And the club-side work
+  that decides who counts as "outside the family" no longer runs on every booking
+  change at every club: it runs where the member-guest feature is switched on, or
+  on a booking that has ever carried a member-guest request, so a club that never
+  turned the feature on does not pay for it — and a club that turns it off does
+  not lose the protection on the bookings it already has.
+
+- **Smaller fixes in the same area (#2308).** A shared network — a family on the
+  lodge wifi, or a club night — no longer runs out of lookups because everyone
+  is behind one address; the per-person limit is the real control and the shared
+  one is now sized for a crowd. The email finder gained a daily cap, which it
+  had been missing while the optional name search had one. A rate-limited or
+  malformed lookup now records what was being looked up, which is exactly the
+  entry an admin would want. And the descriptions of what these limits buy have
+  been corrected where they overstated it — "three weeks to map a season" was
+  nearer three days, and "harvesting takes weeks" was nearer two days.
+- **Cancelling one member of a family no longer wipes the whole family's bill
+  (#2400).** When a family or billing group is charged for memberships, one Xero
+  invoice covers everyone in the group. Until now, cancelling any one of those
+  members credited that invoice's **entire** remaining balance — so cancelling
+  one child cleared the bill for the parents and siblings who were staying, and
+  nothing said so. The invoice simply went to zero, the memberships carried on,
+  and the club quietly stopped being owed for them. It was invisible: no warning
+  at approval, and no report that would show it.
+
+  The rule now is the plain one. If the member leaving is the **last** one that
+  invoice covers who is still with the club, nothing changes — the whole
+  remaining balance is credited exactly as before, which is what happens for the
+  ordinary single-member cancellation. If **other members it covers are
+  staying**, no credit note is raised at all: the invoice is left exactly as it
+  is, because the club is genuinely still owed it by the people who remain. The
+  review queue says so before you approve, in a blue notice that names the
+  members who are staying and links the invoice straight into Xero, so a credit
+  note can be raised by hand if one really is due. What was silently wrong is
+  now visibly deliberate.
+
+  Cancelling a whole family still works, and still credits the invoice in full —
+  approve them one at a time and the last approval does it, because by then
+  nobody else the invoice covers is with the club any more. The member who holds
+  the family's Xero contact normally has to go last: while the others are still
+  members, their share of that invoice is real money owing, so the check
+  introduced with #2392 rightly refuses to archive that contact over it, and the
+  notice beside them says plainly that the approval will be refused rather than
+  simply go through. Cancel the rest of the family first and that refusal clears
+  by itself. Where a whole family shares a single Xero contact — which happens
+  when children inherit a parent's email address — approving them in any order
+  gets nowhere, because every one of them is refused over the same invoice; the
+  notice says that too, instead of sending you round the loop, and points at
+  settling, crediting or voiding the invoice in Xero. So does the refusal
+  itself, so an admin approving from a stale page gets the real answer and not
+  just "pay, credit or void it". The same goes for members who were deactivated
+  rather than cancelled: there is no cancellation to approve for them, and they
+  keep the invoice open by design.
+
+  Two quieter fixes travel with it. Approving a family in a burst could raise
+  **two** full-balance credit notes for one invoice, when two of the approvals
+  reached the "nobody else is covered" moment together in overlapping background
+  runs — Xero accepted both, allocated one, and left the other sitting on the
+  family's contact as unallocated credit anyone could spend. The right to credit
+  an invoice is now claimed once before anything is sent to Xero, so the second
+  cancellation raises nothing and records why. And a family whose last member out
+  had already **paid** their own subscription used to leave the invoice with its
+  full balance and say nothing at all — the cancellation credited nothing, and
+  the archive check would later wave the invoice through as "about to be
+  credited" when its credit note had already been and gone, archiving the Xero
+  contact over live money. The check now reads what the credit note actually did,
+  never what it would do if it ran again, and an admin alert names any invoice a
+  cancellation walks away from with nobody left to pay it.
+
+  That check moved with this change, and had to. It deliberately ignores the
+  member's own subscription invoice, on the grounds that the cancellation is
+  about to credit it. That is now true only when the credit will clear the whole
+  balance, so the exemption applies only then: an invoice this cancellation is
+  not going to credit is treated like any other money owing, and cannot be
+  archived out of sight behind a closed contact. Both halves ask the same
+  question of the same rule, so the invoice the approval excuses is always
+  exactly the invoice it is about to clear.
+
+- **A young member can now be recorded as a parent (#2282).** A 16 or 17 year
+  old can genuinely be a parent, and until now the club simply could not write
+  that down: adding a dependant refused with "Dependants can only be linked
+  under active adult members", and the search never offered a non-adult, so the
+  only options were to leave the child looking parentless or to attach them to a
+  grandparent. Both record the wrong thing. **The family relationship can now be
+  recorded at any age.**
+  **Nothing about responsibility has moved.** Being someone's recorded parent
+  never granted the powers people assume it does — booking on another member's
+  behalf, editing or confirming their details, answering a consent request for
+  them, and billing are all decided by family-group membership plus being an
+  active adult with a login, and none of them looks at the parent link at all.
+  Those rules are untouched. In particular the club's **contact of record** for
+  a child's mail is still an adult: a dependant added under a young parent has
+  their notifications routed on up to the nearest adult in the family, usually
+  the young parent's own parent, and the member's page now says on screen which
+  adult that is *before* you add the dependant. The two "link" dialogs say it
+  too, next to the notification-recipient list — that list names *parents*, and
+  the person the mail actually reaches can be someone further up, which the
+  screen used not to mention. If no adult in the family has a real email
+  address, adding the dependant is refused with that reason rather than quietly
+  leaving the child unreachable.
+  **Organisation and school accounts are not people**, so they cannot be
+  recorded as anyone's parent — they were never offered before, and are not
+  offered now.
+  **The dead ends are gone too.** "Add Dependent" used to disappear entirely on
+  a member who could not have one, teaching an admin nothing; on an inactive or
+  archived member it stayed and then failed on save. It is now always shown, and
+  disabled with the reason — "This member is inactive — reactivate them to add
+  dependents" — on both the *create new* and *link existing* paths, with the
+  reason read out to screen readers alongside the control rather than merely
+  sitting beside it. Where a dependant genuinely cannot be added because no
+  adult in the family can receive club email, the dialog now says so *and*
+  points at the way that does work, instead of letting the save fail. And the
+  copy that claimed only adults can manage dependants is gone, because that is
+  no longer the rule.
+  Two smaller corrections ride along: the age-up job's "your child is becoming
+  an adult" notice now goes to the family's actual contact of record instead of
+  whoever the parent link names, and creating a member under a parent without
+  asking for inherited email no longer records them as inheriting from nobody.
+- **Clubs that had saved their own email wording stop emailing our editing notes
+  (#2269).** Older releases shipped little square-bracketed notes inside the
+  built-in email wording — things like `Door code: {{doorCode}} [only when a door
+  code is set]`. They were written for whoever was reading the template, but
+  emails fill in `{{tokens}}` and copy everything else through exactly as typed,
+  so those notes were being sent to members word for word. Earlier fixes cleaned
+  the built-in wording, which quietly fixed every club that had not customised
+  the message. A club that had **saved its own copy** of a message kept its copy,
+  and so kept the notes, for ever. This release repairs those saved copies on
+  upgrade. It matches the **exact** notes this project shipped — not anything
+  that merely looks like one — and leaves the rest of your wording byte for byte
+  as it was. Your own square-bracketed text is never touched, even when it reads
+  like ours (`[when you are 30 minutes away]` is your wording, and it stays);
+  such text keeps being flagged in the admin screen for a person to decide
+  about, rather than deleted by a script. The trade we chose deliberately: if
+  one of our notes was retyped or re-spaced by an admin at some point, the
+  repair leaves it alone rather than risk deleting something you meant, and the
+  admin screen keeps flagging it. Every message the repair changes is recorded
+  in the audit log with the whole before and after, so a club can see exactly
+  what we changed and, with an administrator's help, restore any of it.
+  **Every message the repair touched is named on screen afterwards.** Some of
+  those notes were the only thing marking a line as conditional — `Payment has
+  been processed successfully.` was our wording, with `[only when the booking is
+  already paid]` beside it — so once the note goes, that line sends every time,
+  including on a booking that still owes money. **Admin → Email messages** lists
+  each repaired message, the notes removed and the lines they were attached to,
+  so an admin can read them and fix anything that no longer makes sense. Saving
+  the message clears the notice. **And Restore Default now keeps a full copy.**
+  It still deletes your wording and still cannot be undone from that screen, but
+  the subject and body it deletes are written to the audit log in full — not an
+  extract — so an administrator can read them back.
+  **And the editor now tells you when your saved wording has fallen behind.**
+  **Admin → Email messages** names any message whose saved copy no longer shows
+  something that message is required to tell the recipient — most often a
+  booking confirmation saved before the promo explanation moved into its own
+  token, which now shows a subtotal and a total with nothing in between to
+  explain the difference. Open that message and **Show differences** lays your
+  saved copy beside the current built-in wording line by line, so you can patch
+  your own words or restore the default knowing exactly what you would be giving
+  up. Wording that simply *reads* differently is reported as a plain difference
+  and never as a problem — that is what saving your own copy is for.
 - **The public site no longer advertises guest bookings (#2421).** The
   signed-out help corpus previously answered "Can I stay without being a
   member?" with "Yes", and the sign-in page carried a *Request a booking
@@ -116,6 +377,11 @@ All notable public reference-release changes should be recorded here.
   since sharing a link is not a booking write. The one other way in is
   unchanged: the *Book these dates again* button on a tokenised payment link
   the club itself emails to a past requester.
+- **Reports can jump to the next calendar month (#2367).** The Reports page's
+  Quick Range menu now includes **Next Month**, including December-to-January
+  and leap-year February boundaries. Changing the quick range keeps the current
+  Lodge and Deleted filters, and the shared Quick Range select now has an
+  accessible programmatic label.
 - **Bed moves now stay on the guest's original lodge nights (#2366).** Dragging
   an existing allocation chip across date columns now chooses only the
   destination bed: the preview and keyboard announcement show the original NZ
@@ -378,6 +644,47 @@ All notable public reference-release changes should be recorded here.
   dashboard finally renders the additional-payment split it had been quietly
   computing all along.
 
+- **Xero setup no longer gets stuck on "Confirming the organisation name…"
+  (#2394).** After connecting Xero, the setup wizard fetches your organisation's
+  name so you can check you picked the right one. That fetch happened exactly
+  once, and if it failed — because Xero was momentarily busy, briefly
+  unreachable, or the connection needed re-authorising — the page simply sat on
+  "Confirming the organisation name…" with no explanation, no way to retry, and
+  no way forward. The only escape was guessing that a reload might help.
+
+  The step now tells you what actually happened, in the terms that decide what
+  you should do about it, and offers a **Try again** button wherever pressing it
+  could genuinely help — including when Xero's daily limit has been reached,
+  since that limit can clear while you are still on the page. If Xero needs
+  re-authorising, it says so and points at Disconnect and Connect, and offers no
+  button, because retrying would never have worked. If the daily limit was hit
+  it says when that clears — midnight UTC, about midday in New Zealand — so you
+  can judge whether to wait or come back tomorrow. If your sign-in has simply
+  expired it tells you to sign in again rather than blaming your permissions,
+  and if your admin role really isn't allowed to read the organisation it says
+  that instead of pretending a retry might fix it. Each attempt is stamped
+  ("Checked 3 times, most recently at 2:32 pm") so a repeat failure is visible
+  rather than a silent flicker.
+
+  Nothing retries on its own, deliberately. Each Xero connection has a limited
+  number of calls per day, and hammering a limit that has already been hit only
+  makes it last longer — so apart from one fresh check when you come back from
+  authorising Xero (where the organisation may have just changed), a live check
+  happens only when you press the button. That check can also no longer put the
+  rest of the Xero integration on hold: it used to be able to trip the app-wide
+  "Xero looks unwell, pause everything" guard that stops invoicing and syncing
+  for a couple of minutes, and a button inviting you to press it during an
+  outage should never be able to do that.
+
+  Two related gaps closed at the same time. If Xero refused the authorisation
+  itself, the wizard used to show only "Not Connected" with no hint that
+  anything had gone wrong; it now says the connection attempt failed and what to
+  do about it. (It deliberately does not quote Xero's own wording back at you —
+  that text arrives through the browser and cannot be trusted to be Xero's.) And
+  a connected organisation whose name we could not re-check no longer shows a
+  green "all set" tick: it now says plainly that the name is the last one we
+  saw, not a confirmation — which is what you would see if the club revoked the
+  app inside Xero.
 - **A refused save no longer blames the email address when the email address is
   not the problem, and switching a family's login holder now explains an email
   clash (#2385).** Only one member per email address can sign in — that is why a

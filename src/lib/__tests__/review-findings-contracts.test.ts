@@ -1,4 +1,11 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "fs";
 import { tmpdir } from "os";
 import path from "path";
 import { spawnSync } from "child_process";
@@ -225,7 +232,289 @@ function runMigrationSafetyCoverage(
   });
 }
 
+/**
+ * Every non-test file under `src/` that calls the person-night guard, found by
+ * walking the tree rather than by a list somebody has to remember to update.
+ */
+function personNightGuardCallers(): string[] {
+  const roots = [path.resolve(process.cwd(), "src")];
+  const found: string[] = [];
+  while (roots.length > 0) {
+    const dir = roots.pop()!;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      // Test helper: walks the repo's own src tree; no user input.
+      // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === "__tests__" || entry.name === "node_modules") continue;
+        roots.push(full);
+        continue;
+      }
+      if (!/\.tsx?$/.test(entry.name)) continue;
+      if (/\.test\.tsx?$/.test(entry.name)) continue;
+      // Test helper: reads a file discovered by walking the repo's src tree.
+      // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+      const source = readFileSync(full, "utf8");
+      if (
+        source.includes("findBookingMemberNightConflicts(") ||
+        source.includes("assertNoBookingMemberNightConflicts(")
+      ) {
+        found.push(path.relative(process.cwd(), full).split(path.sep).join("/"));
+      }
+    }
+  }
+  return found.sort();
+}
+
 describe("review finding source/schema contracts", () => {
+  // MG3 (#2308), privacy finding C1. The person-night 409 always carries the
+  // clashing member's NAME and the exact nights they are booked elsewhere — the
+  // #2250 payload gates everything about the other booking on entitlement, but
+  // those two fields sit outside the gate, justified by "the requester already
+  // knows this: they chose the member and the dates". That justification holds
+  // for the booker's own household and fails completely for a stranger.
+  //
+  // The guard learns which guests are strangers from a marker, and the marker is
+  // set by whoever builds the guest list. So a NEW caller that builds a list and
+  // forgets is a silent re-opening of a CRITICAL leak with no test to catch it —
+  // which is precisely how the original defect survived. This contract makes that
+  // impossible to do accidentally: every caller must be classified here, with a
+  // reason, or the build fails.
+  // MG3 (#2308) / #2388, privacy findings H2 and H3. Every member-facing add
+  // path owes a collapsed cross-family refusal three things — the throttle
+  // charged exactly once, an audit row naming actor and target, and the response
+  // held to the timing floor — and `handleMemberGuestAddRefusal` is the one call
+  // that does all three in the right order.
+  //
+  // Two of the routes did not make it. `bookings/[id]/modify` carried NONE of the
+  // mitigations at all (its docblock listed four routes; there are six), and
+  // `modify-quote`'s unpaid-subscription catch answered directly, so that refusal
+  // wrote no audit row and reported its own longer, uncapped duration — which put
+  // "subscription unpaid" back on a stopwatch, the exact distinction D-8 removes.
+  // Both are the kind of omission that is invisible in behaviour tests, because
+  // the BODY is identical either way. Hence a source contract.
+  it("routes every collapsed cross-family refusal through the one handler (#2308 H2/H3)", () => {
+    const addPaths = [
+      "src/app/api/bookings/quote/route.ts",
+      "src/app/api/bookings/route.ts",
+      "src/app/api/bookings/[id]/modify-quote/route.ts",
+      "src/app/api/bookings/[id]/guests/route.ts",
+      "src/app/api/bookings/[id]/modify/route.ts",
+      "src/app/api/bookings/[id]/modify-dates/route.ts",
+    ];
+    // Which side charges the throttle unit. The three that resolve members inside
+    // their own transaction cannot spend it on the way in (a counter write is a
+    // second connection under the per-lodge capacity lock), so they spend it on
+    // the way out; the rest spend it at the boundary hook, before a single member
+    // row is read. Charging on BOTH sides quietly halved the advertised budget.
+    const chargesAtTheHook = new Set([
+      "src/app/api/bookings/quote/route.ts",
+      "src/app/api/bookings/route.ts",
+      "src/app/api/bookings/[id]/modify-quote/route.ts",
+    ]);
+    // HIGH-1 (privacy re-review of MG3 #2308). The boundary hook counts an
+    // attempt that NAMES a beyond-family member, and `modify-quote`'s cheapest
+    // attack path names nobody: the member guest is already on the booking and
+    // the request only moves the dates. With an empty `addGuests`,
+    // `resolveLinkedBookingMembersWithBoundary` returns before the boundary is
+    // computed, so the hook never runs, and the refusal that follows — raised far
+    // later by the person-night guard off the C1 marker — was asserting
+    // `throttle: "ALREADY_CHARGED"` having charged nothing at all. ~150 previews
+    // sweep a season for free. So this route owes a SECOND charge point over the
+    // whole marked party, before the guard reads anything.
+    const chargesOverTheWholeParty = new Set([
+      "src/app/api/bookings/[id]/modify-quote/route.ts",
+    ]);
+
+    for (const file of addPaths) {
+      const source = readRepoFile(file);
+      const marker = "instanceof BookingGuestValidationError";
+      let from = 0;
+      let blocks = 0;
+      for (;;) {
+        const at = source.indexOf(marker, from);
+        if (at === -1) break;
+        from = at + marker.length;
+        blocks += 1;
+        const block = source.slice(at, at + 1200);
+        // A block that only re-throws is not answering the caller, so it owes
+        // nothing — the route's outer catch is where the refusal is handled.
+        const body = block.slice(marker.length);
+        const firstStatement = body
+          .split("\n")
+          .map((line) => line.trim())
+          .filter((line) => line && !line.startsWith("//") && line !== ") {" && line !== "{")
+          .at(0);
+        if (firstStatement === "throw error;" || firstStatement === "throw err;") {
+          continue;
+        }
+        expect(
+          block,
+          `${file}: a collapsed refusal answered here without going through handleMemberGuestAddRefusal`,
+        ).toContain("handleMemberGuestAddRefusal");
+      }
+      expect(blocks, `${file}: still catches the refusal`).toBeGreaterThan(0);
+
+      if (chargesAtTheHook.has(file)) {
+        expect(source, `${file}: charges the throttle at the boundary hook`).toContain(
+          "memberGuestAddThrottleHook",
+        );
+        expect(
+          source,
+          `${file}: must not charge the throttle a second time on the way out`,
+        ).not.toContain('throttle: "CHARGE_NOW"');
+      } else {
+        expect(
+          source,
+          `${file}: resolves inside a transaction, so it charges on the way out`,
+        ).toContain('throttle: "CHARGE_NOW"');
+      }
+
+      if (chargesOverTheWholeParty.has(file)) {
+        const stripped = stripComments(source);
+        const partyChargeAt = stripped.search(
+          /\bawait applyMemberGuestPartyProbeThrottle\(/,
+        );
+        expect(
+          partyChargeAt,
+          `${file}: must spend a throttle unit over the WHOLE marked party, not only when the request names a beyond-family member`,
+        ).toBeGreaterThanOrEqual(0);
+        const guardAt = stripped.search(
+          /\b(assertNoBookingMemberNightConflicts|findBookingMemberNightConflicts)\(/,
+        );
+        expect(
+          partyChargeAt,
+          `${file}: charges over the party BEFORE the person-night guard is asked anything`,
+        ).toBeLessThan(guardAt);
+        // Two charge points, both conditional, so no refusal on this route can
+        // truthfully claim either "already charged" or "charge now". The ledger
+        // is what keeps the pair to one unit per request.
+        expect(
+          stripped,
+          `${file}: shares one ledger between its charge points`,
+        ).toContain("createMemberGuestAddThrottleLedger(");
+        expect(
+          stripped,
+          `${file}: a conditional charge point cannot assert ALREADY_CHARGED`,
+        ).not.toContain('throttle: "ALREADY_CHARGED"');
+        expect(
+          stripped,
+          `${file}: refusals fall back to the ledger-checked charge`,
+        ).toContain('throttle: "CHARGE_IF_UNCHARGED"');
+      }
+    }
+  });
+
+  it("classifies every person-night guard caller as marking or entitled (#2308 C1)", () => {
+    // Callers that must mark the party against the LIVE family boundary before
+    // they ask the guard anything, because a member reads their answer.
+    const mustMark = new Set([
+      "src/app/api/bookings/[id]/modify-quote/route.ts",
+      "src/lib/booking-modify-plan.ts",
+      "src/lib/booking-date-modification-service.ts",
+    ]);
+    // Callers that need no marking, each for a stated reason.
+    const exempt = new Map([
+      [
+        "src/app/api/admin/booking-requests/[id]/link-conflicts/route.ts",
+        "admin-only surface; an officer is entitled to the detail",
+      ],
+      [
+        "src/app/api/bookings/[id]/guests/route.ts",
+        "passes ONLY the guests being added, every beyond-family one of which already carries the marker from planMemberGuestConsentWrites",
+      ],
+      [
+        "src/app/api/bookings/quote/route.ts",
+        "a create-shaped quote has no existing guests; every member-linked guest in the list is one this request supplied and markCrossFamilyMemberGuests marked",
+      ],
+      [
+        "src/app/api/bookings/route.ts",
+        "booking creation: same as the quote route, there is no existing party",
+      ],
+      [
+        "src/lib/booking-create.ts",
+        "creation only, called with the marked list the route built",
+      ],
+      [
+        "src/lib/booking-request-quotes.ts",
+        "public/school booking requests: admin-facing, no member reads the answer",
+      ],
+      [
+        "src/lib/booking-request-shared.ts",
+        "public/school booking requests: admin-facing, no member reads the answer",
+      ],
+      [
+        "src/lib/booking-member-night-conflicts.ts",
+        "the guard itself",
+      ],
+      [
+        "src/lib/booking-guest-self-removal.ts",
+        "type-only import of the conflict shape",
+      ],
+      [
+        "src/lib/booking-member-night-conflict-messages.ts",
+        "message builder; takes conflicts, never calls the guard on a party",
+      ],
+    ]);
+
+    const callers = personNightGuardCallers();
+    const unclassified = callers.filter(
+      (file) => !mustMark.has(file) && !exempt.has(file),
+    );
+    expect(
+      unclassified,
+      "A new caller of the person-night guard must be classified in this test: " +
+        "either it marks cross-family guests with markCrossFamilyGuestsOnBooking " +
+        "before calling the guard, or it is exempt for a reason written down here.",
+    ).toEqual([]);
+
+    // EVERY occurrence, not the first (privacy re-review of MG3 #2308, LOW-3).
+    // This block used to compare `source.search(...)` against `source.search(...)`
+    // — first marking call against FIRST guard call — which proved nothing about
+    // a file's second guard call. Both `booking-date-modification-service.ts` and
+    // `modify-quote/route.ts` have one, and neither was marked. Both happen to be
+    // admin-only today, so nothing leaked; the contract simply would not have
+    // caught a member-facing second caller added to either file. Pair them up in
+    // order instead: the Nth guard call must be preceded by an Nth marking call.
+    const offsetsOf = (source: string, pattern: RegExp): number[] => {
+      const scan = new RegExp(pattern.source, `${pattern.flags}g`);
+      const offsets: number[] = [];
+      for (let match = scan.exec(source); match; match = scan.exec(source)) {
+        offsets.push(match.index);
+      }
+      return offsets;
+    };
+
+    for (const file of mustMark) {
+      expect(callers, `${file} still calls the guard`).toContain(file);
+      const source = stripComments(readRepoFile(file));
+      // The CALL, not the import and not a lookalike identifier. A first version
+      // of this assertion matched the bare substring, and three mutation probes
+      // walked straight through it: deleting the call left the import behind,
+      // and renaming it to `SKIPPED_markCrossFamilyGuestsOnBooking` still
+      // contained the string.
+      const markAt = offsetsOf(source, /\bawait markCrossFamilyGuestsOnBooking\(/);
+      const guardAt = offsetsOf(
+        source,
+        /\b(assertNoBookingMemberNightConflicts|findBookingMemberNightConflicts)\(/,
+      );
+      expect(
+        guardAt.length,
+        `${file}: still calls the person-night guard after stripping comments`,
+      ).toBeGreaterThan(0);
+      expect(
+        markAt.length,
+        `${file}: must AWAIT markCrossFamilyGuestsOnBooking once per person-night guard call — ${guardAt.length} guard call(s) found`,
+      ).toBeGreaterThanOrEqual(guardAt.length);
+      guardAt.forEach((guardOffset, index) => {
+        expect(
+          markAt[index],
+          `${file}: person-night guard call #${index + 1} is not preceded by its own markCrossFamilyGuestsOnBooking — the guard would read an unmarked party`,
+        ).toBeLessThan(guardOffset);
+      });
+    }
+  });
+
   it("keeps guest chore token links read-only", () => {
     const source = readRepoFile("src/app/api/chores/[token]/route.ts");
     const putBlock = sliceFrom(source, "export async function PUT");
@@ -690,6 +979,27 @@ describe("review finding source/schema contracts", () => {
     expect(migrationBlock).not.toContain("drift_main");
     expect(workflow).toContain(
       "npx vitest run src/lib/__tests__/concurrency-lock-races.realdb.test.ts"
+    );
+  });
+
+  it("executes the email-override annotation strip against a real PostgreSQL in CI (#2269, #2418)", () => {
+    // The audit half of that migration was pinned by string-matching the SQL
+    // only: mutating `) AS found ON TRUE` to `... WHERE FALSE` wrote zero audit
+    // rows and every assertion still passed. The suite now runs the statement
+    // in a disposable schema — and it describe.skip's itself without the env
+    // var, so the step going missing would silently un-test it again.
+    const workflow = readRepoFile(".github/workflows/ci.yml");
+    expect(workflow).toContain(
+      "EMAIL_OVERRIDE_ANNOTATION_STRIP_TEST_DATABASE_URL:"
+    );
+    expect(workflow).toContain(
+      "npx vitest run src/lib/__tests__/email-message-annotation-strip.test.ts"
+    );
+    const suite = readRepoFile(
+      "src/lib/__tests__/email-message-annotation-strip.test.ts"
+    );
+    expect(suite).toContain(
+      "process.env.EMAIL_OVERRIDE_ANNOTATION_STRIP_TEST_DATABASE_URL"
     );
   });
 

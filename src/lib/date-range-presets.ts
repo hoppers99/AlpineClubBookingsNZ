@@ -165,6 +165,7 @@ export const bookingFilterDateRangePresets: readonly DateRangePreset[] = [
 export const reportsDateRangePresets: readonly DateRangePreset[] = [
   thisMonthPreset,
   lastMonthPreset,
+  nextMonthPreset,
   lastQuarterPreset,
   yearToDatePreset,
   lastYearPreset,

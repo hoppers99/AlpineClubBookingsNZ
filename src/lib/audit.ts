@@ -104,6 +104,61 @@ const PAYMENT_CARD_NUMBER_PATTERN = /\b(?:\d[ -]?){13,19}\b/g;
 
 type SanitizedMetadataValue = Prisma.InputJsonValue | null;
 
+/**
+ * ARCHIVE MODE for audit metadata (#2269 review).
+ *
+ * The defaults above are tuned for INCIDENTAL metadata — a payload echoed into
+ * an audit row so an operator can see what happened. Clipping such a value at
+ * 1000 characters loses nothing that matters.
+ *
+ * A few audit rows are different in kind: the metadata IS the record. #2269's
+ * Restore Default deletes a club's own email wording with one click and no undo
+ * in the product, and the audit row is the only copy afterwards; a 1748-char
+ * body was measured stored as 1014 characters ending "[TRUNCATED]", which is
+ * not a copy of anything. Those callers pass this.
+ *
+ * WHAT IT DOES NOT RELAX, because these are the parts that protect people
+ * rather than the parts that save space:
+ *
+ *   - secret/API-key redaction (SECRET_VALUE_PATTERN) still runs;
+ *   - `password: …` / `token: …` style key-value redaction still runs;
+ *   - payment-card-number redaction (Luhn-checked) still runs;
+ *   - sensitive KEY names are still replaced wholesale.
+ *
+ * What it does relax is size: strings are kept whole up to `maxStringLength`
+ * instead of 1000, the JSON envelope gets matching headroom (JSON escaping can
+ * double a value made mostly of newlines), and a long value is not swapped for
+ * [REDACTED_LONG_HTML] merely because it contains angle brackets. That last
+ * placeholder exists to keep giant rendered HTML emails out of the audit log,
+ * a size concern the caller has already answered by bounding the value — the
+ * email-template columns are capped at 500 and 10,000 characters by the save
+ * route — and letting it fire would put a club's wording back out of reach for
+ * the sake of a "<see the noticeboard>" somewhere in the middle of it.
+ */
+export interface AuditMetadataOptions {
+  archiveText?: {
+    /** Longest single string kept whole. Bound it from the caller's own cap. */
+    maxStringLength: number;
+  };
+}
+
+function metadataStringLimit(options?: AuditMetadataOptions): number {
+  return options?.archiveText?.maxStringLength ?? MAX_METADATA_STRING_LENGTH;
+}
+
+function metadataJsonLimit(options?: AuditMetadataOptions): number {
+  const archived = options?.archiveText?.maxStringLength;
+  // Headroom for one archived value on top of the ordinary envelope. Two bytes
+  // per character is what JSON escaping costs at worst for ORDINARY text — a
+  // value that is entirely newlines, quotes or backslashes. A value stuffed
+  // with C0 control characters escapes to six bytes each and could still
+  // overflow; that falls back to the {_truncated, preview} stub, which is
+  // degraded but never wrong, and no email template body reaches this shape.
+  return archived === undefined
+    ? MAX_METADATA_JSON_LENGTH
+    : MAX_METADATA_JSON_LENGTH + archived * 2;
+}
+
 function sanitizeAuditDetails(value?: string | null): string | undefined {
   if (value === undefined || value === null) {
     return undefined;
@@ -189,20 +244,29 @@ function redactSensitiveText(value: string): string {
     });
 }
 
-function sanitizeMetadataString(value: string): string {
+function sanitizeMetadataString(
+  value: string,
+  options?: AuditMetadataOptions
+): string {
   if (SECRET_VALUE_PATTERN.test(value)) {
     return REDACTED;
   }
   const redacted = redactSensitiveText(value);
-  if (isLongHtml(value)) {
+  if (isLongHtml(value) && !options?.archiveText) {
     return REDACTED_LONG_HTML;
   }
-  if (redacted.length > MAX_METADATA_STRING_LENGTH) {
-    return `${redacted.slice(0, MAX_METADATA_STRING_LENGTH)}...${TRUNCATED}`;
+  const limit = metadataStringLimit(options);
+  if (redacted.length > limit) {
+    return `${redacted.slice(0, limit)}...${TRUNCATED}`;
   }
   return redacted;
 }
 
+/**
+ * Sanitize a free-text audit value at the ORDINARY limits (the 1000-character
+ * clip included). "Archive" here is about the `details` column rather than
+ * about AuditMetadataOptions.archiveText, which is what keeps a value whole.
+ */
 export function sanitizeAuditArchiveText(
   value?: string | null
 ): string | null {
@@ -215,7 +279,8 @@ export function sanitizeAuditArchiveText(
 function sanitizeMetadataValue(
   value: unknown,
   depth: number,
-  seen: WeakSet<object>
+  seen: WeakSet<object>,
+  options?: AuditMetadataOptions
 ): SanitizedMetadataValue | undefined {
   if (
     value === undefined ||
@@ -228,7 +293,7 @@ function sanitizeMetadataValue(
     return value;
   }
   if (typeof value === "string") {
-    return sanitizeMetadataString(value);
+    return sanitizeMetadataString(value, options);
   }
   if (typeof value === "bigint") {
     return value.toString();
@@ -255,14 +320,15 @@ function sanitizeMetadataValue(
         message: value.message,
       },
       depth + 1,
-      seen
+      seen,
+      options
     );
   }
 
   if (Array.isArray(value)) {
     const sanitizedItems = value
       .slice(0, MAX_METADATA_ARRAY_ITEMS)
-      .map((item) => sanitizeMetadataValue(item, depth + 1, seen))
+      .map((item) => sanitizeMetadataValue(item, depth + 1, seen, options))
       .filter((item): item is SanitizedMetadataValue => item !== undefined);
 
     if (value.length > MAX_METADATA_ARRAY_ITEMS) {
@@ -281,7 +347,12 @@ function sanitizeMetadataValue(
       continue;
     }
 
-    const sanitizedChild = sanitizeMetadataValue(childValue, depth + 1, seen);
+    const sanitizedChild = sanitizeMetadataValue(
+      childValue,
+      depth + 1,
+      seen,
+      options
+    );
     if (sanitizedChild !== undefined) {
       sanitizedObject[key] = sanitizedChild;
     }
@@ -295,15 +366,21 @@ function sanitizeMetadataValue(
 }
 
 export function sanitizeAuditMetadata(
-  metadata: unknown
+  metadata: unknown,
+  options?: AuditMetadataOptions
 ): Prisma.InputJsonValue | undefined {
-  const sanitized = sanitizeMetadataValue(metadata, 0, new WeakSet<object>());
+  const sanitized = sanitizeMetadataValue(
+    metadata,
+    0,
+    new WeakSet<object>(),
+    options
+  );
   if (sanitized === undefined || sanitized === null) {
     return undefined;
   }
 
   const serialized = JSON.stringify(sanitized);
-  if (serialized.length <= MAX_METADATA_JSON_LENGTH) {
+  if (serialized.length <= metadataJsonLimit(options)) {
     return sanitized;
   }
 
@@ -417,7 +494,8 @@ function buildAuditLogCreateData(
 }
 
 function buildStructuredAuditLogCreateData(
-  event: StructuredAuditEvent
+  event: StructuredAuditEvent,
+  options?: AuditMetadataOptions
 ): Prisma.AuditLogUncheckedCreateInput {
   const actorMemberId = event.actor?.memberId ?? undefined;
   const subjectMemberId = event.subject?.memberId ?? undefined;
@@ -442,7 +520,7 @@ function buildStructuredAuditLogCreateData(
     severity: event.severity ?? undefined,
     outcome: event.outcome ?? "success",
     summary: event.summary ?? undefined,
-    metadata: sanitizeAuditMetadata(event.metadata),
+    metadata: sanitizeAuditMetadata(event.metadata, options),
     requestId: event.request?.id ?? undefined,
     userAgent: event.request?.userAgent ?? undefined,
     retentionClass,
@@ -452,10 +530,11 @@ function buildStructuredAuditLogCreateData(
 }
 
 export function buildStructuredAuditLogCreateArgs(
-  event: StructuredAuditEvent
+  event: StructuredAuditEvent,
+  options?: AuditMetadataOptions
 ): Prisma.AuditLogCreateArgs {
   return {
-    data: buildStructuredAuditLogCreateData(event),
+    data: buildStructuredAuditLogCreateData(event, options),
   };
 }
 

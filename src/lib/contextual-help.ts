@@ -740,20 +740,20 @@ const adminHelpEntries: HelpEntry[] = [
       "Reports",
       "Reports provides admin-facing operational exports and summaries for bookings, members, payments, and lodge activity.",
       [
-        "Choose the report type and date range before generating output.",
-        "Export only the data needed for the operational question.",
-        "Check filters before sharing a report outside the admin team.",
+        "Choose a Quick Range, including Next Month, or enter From and To dates.",
+        "Set the Lodge and Deleted filters, then select Update to refresh the report.",
+        "Check the active range and filters before exporting CSV or PDF.",
       ],
       [
         {
-          name: "Report type",
+          name: "Quick Range",
           description:
-            "Selects which dataset or summary is generated.",
+            "Sets common date windows without changing the Lodge or Deleted filters.",
         },
         {
-          name: "Date range",
+          name: "Lodge and Deleted",
           description:
-            "Limits records to the relevant operational window.",
+            "Scopes which lodge and soft-deleted bookings are included.",
         },
         {
           name: "Export",

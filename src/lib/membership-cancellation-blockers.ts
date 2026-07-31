@@ -6,6 +6,7 @@ import type {
   MembershipCancellationBookingBlocker,
 } from "@/lib/membership-cancellation-blocker-messages";
 import { loadMembershipCancellationInvoiceBlockersByMemberId } from "@/lib/membership-cancellation-invoice-blockers";
+import type { MembershipCancellationSubscriptionCreditPlan } from "@/lib/membership-cancellation-subscription-credit";
 import { prisma } from "@/lib/prisma";
 
 export type {
@@ -24,6 +25,16 @@ export type LoadMembershipCancellationBlockersOptions = {
    * panel does not (#2392).
    */
   freshInvoiceCheck?: boolean;
+  /**
+   * The subscription credit plans, already loaded by the caller. Passed straight
+   * through to the invoice check so a caller that also needs the plans (the
+   * review queue, for the shared-invoice notice) reads them once rather than
+   * twice per page load (#2400 review, F8).
+   */
+  creditPlansByMemberId?: ReadonlyMap<
+    string,
+    MembershipCancellationSubscriptionCreditPlan | null
+  >;
 };
 
 export function emptyMembershipCancellationBlockerMap(memberIds: readonly string[]) {
@@ -146,6 +157,7 @@ export async function loadMembershipCancellationBlockersByMemberId(
     loadBookingBlockersByMemberId(uniqueMemberIds, db),
     loadMembershipCancellationInvoiceBlockersByMemberId(uniqueMemberIds, {
       fresh: options.freshInvoiceCheck,
+      creditPlansByMemberId: options.creditPlansByMemberId,
     }),
   ]);
 

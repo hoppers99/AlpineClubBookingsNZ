@@ -1,5 +1,9 @@
 import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
 import {
+  computeMemberGuestBoundary,
+  type BookingGuestLookupDb,
+} from "@/lib/booking-guests";
+import {
   buildMemberGuestConsentWrite,
   computeMemberGuestConsentExpiry,
   MEMBER_GUEST_MODULE_KEY,
@@ -297,4 +301,195 @@ export function markCrossFamilyMemberGuests<Guest extends GuestWithMemberId>(
       ? { ...guest, crossFamilyMemberGuest: true }
       : (guest as Guest & MemberGuestConsentGuestFields),
   );
+}
+
+/**
+ * Mark EVERY member-linked guest on a booking who sits outside the booking
+ * owner's family — not only the ones this request is ADDING.
+ *
+ * WHY THIS EXISTS AT ALL, because the difference is a whole class of leak
+ * (privacy review of MG3 #2308, finding C1). `markCrossFamilyMemberGuests` and
+ * `planMemberGuestConsentWrites` mark guests from the boundary computed over the
+ * ids in `addGuests`, so the marker only ever landed on somebody being added in
+ * THIS request. A cross-family member guest who is ALREADY on the booking —
+ * added successfully last week — was therefore unmarked forever, and the
+ * person-night guard, which derives its entire D-8 set from the marker, answered
+ * for them in full: name, and the exact nights they are booked elsewhere.
+ *
+ * That turned every later date change into a free read-out. Add the member once
+ * on dates where they are free, then call `POST /api/bookings/[id]/modify-quote`
+ * — a side-effect-free preview — repeatedly with different ranges and NO
+ * `addGuests`. With no added guests the boundary is empty, so the #2388 throttle
+ * never fires, no refusal is audited and no timing floor applies; and the answer
+ * is not the neutral refusal at all but a 409 carrying `memberName` and
+ * `conflictingNights`. One request per range, unthrottled and unlogged. That is
+ * not the documented residual (correlating a PATTERN of refusals) — it is a
+ * direct read.
+ *
+ * WHY THE BOUNDARY AND NOT THE PERSISTED CONSENT COLUMNS. The other candidate
+ * fix was to treat `consentStatus != null` as "beyond family", since MG2 writes
+ * those columns on exactly the cross-family adds. It was rejected:
+ *
+ *   * the columns record HOW A ROW WAS CREATED, not the relationship that holds
+ *     now. They are null on every row written before MG2, and null on every
+ *     cross-family row an ADMIN adds while the module is off (see the module-off
+ *     early return in `planMemberGuestConsentWrites`) — so a stranger placed on
+ *     the booking by an officer would still have been described in full;
+ *   * they never change when a family group does, so a guest who has since
+ *     joined the booker's household would stay collapsed, and one who has left
+ *     it would stay disclosed.
+ *
+ * The boundary is the live truth, and it is the SAME `getAllowedGuestMemberIds`
+ * set MG1's authorization check and MG2's consent planner already use, so this
+ * adds no second, drifting definition of "family". It costs two indexed reads on
+ * the modify paths.
+ *
+ * GATED — ON THE MODULE FLAG **OR** THE BOOKING'S OWN CONSENT HISTORY (owner
+ * decision, 1 Aug 2026, privacy re-review of MG3 #2308 finding 4). This docblock
+ * used to say "NOT GATED ON THE MODULE FLAG, deliberately", and the owner has
+ * since decided the opposite, so the paragraph is rewritten rather than softened.
+ *
+ * The recomputation now runs only when EITHER:
+ *
+ *   (a) the club's member-guest module is effectively enabled — the only state in
+ *       which a member can put a beyond-family guest on a booking at all; or
+ *   (b) this booking already carries at least one member-guest consent row, i.e.
+ *       a non-null `BookingGuest.consentStatus`.
+ *
+ * Arm (b) is the whole reason a gate is safe. Without it, a club that used the
+ * module and then switched it off would re-open the C1 read-out on every booking
+ * it had already created — which is precisely the objection the old "not gated"
+ * paragraph was written against. With it, a legacy or in-flight booking that ever
+ * held a cross-family member guest keeps its protection for as long as the row
+ * exists, whatever the flag now says.
+ *
+ * WHAT THE GATE COSTS, AND WHAT IT SAVES. Arm (a) is one `findUnique` on the
+ * module-settings singleton by fixed primary key; arm (b) is one `findFirst` on
+ * `BookingGuest` covered by `@@index([bookingId])`. So a module-off club with an
+ * ordinary booking now pays two trivially indexed reads instead of the two
+ * `FamilyGroupMember` reads `computeMemberGuestBoundary` would have run — which
+ * is what the owner asked for: the family-boundary recomputation stops running on
+ * every booking change at every club that never adopted the feature.
+ *
+ * WHAT THE GATE GIVES UP, STATED BECAUSE IT IS AN ACCEPTED TRADE. When the gate
+ * says skip there is no cross-family marker on the returned party, so everything
+ * downstream that keys off the marker degrades with it — the person-night guard
+ * answers in full detail, and `applyMemberGuestPartyProbeThrottle` (which filters
+ * on the marker) charges nothing. That is coherent rather than half-protected:
+ * the only way such a booking exists is an admin having placed a beyond-family
+ * member on it at a club that never turned the module on and where no consent row
+ * was ever written, and the admin-created case was already the one this function's
+ * original note called out as its only visible consequence.
+ *
+ * IT FAILS CLOSED WHEN IT CANNOT ANSWER. Both arms need a `db` that can serve
+ * them and a `bookingId` to ask about. If any of the three is missing — a caller
+ * that has not been taught the option, or a narrowed test double — the gate does
+ * NOT apply and the marking runs exactly as it did before. "I could not tell" must
+ * never be treated as "the module is off": that would turn a missing argument into
+ * a silent privacy regression, which is the failure mode C1 was.
+ *
+ * ADMIN AND ON-BEHALF PATHS ARE EXEMPT, exactly as `collapseForMemberIds` is: an
+ * officer is entitled to the detail, and withholding it from them would buy
+ * nothing and cost support tickets.
+ */
+export async function markCrossFamilyGuestsOnBooking<Guest extends GuestWithMemberId>(
+  db: BookingGuestLookupDb,
+  bookingMemberId: string,
+  guests: readonly Guest[],
+  options?: {
+    skipAuthorization?: boolean;
+    /**
+     * The booking the party belongs to. Required for the owner's gate to apply —
+     * without it arm (b) is unanswerable, so the gate abstains and the marking
+     * runs unconditionally (see the fail-closed note above).
+     */
+    bookingId?: string | null;
+  },
+): Promise<Array<Guest & MemberGuestConsentGuestFields>> {
+  if (options?.skipAuthorization) {
+    return guests as Array<Guest & MemberGuestConsentGuestFields>;
+  }
+
+  const memberIds = [
+    ...new Set(
+      guests
+        .map((guest) => guest.memberId?.trim())
+        .filter((memberId): memberId is string => Boolean(memberId)),
+    ),
+  ];
+  if (memberIds.length === 0) {
+    return guests as Array<Guest & MemberGuestConsentGuestFields>;
+  }
+
+  if (await memberGuestBoundaryRecomputeIsSkippable(db, options?.bookingId)) {
+    return guests as Array<Guest & MemberGuestConsentGuestFields>;
+  }
+
+  const boundary = await computeMemberGuestBoundary(db, bookingMemberId, memberIds);
+  return markCrossFamilyMemberGuests(guests, boundary);
+}
+
+/**
+ * The two structural reads the owner's gate needs, both optional.
+ *
+ * Declared as a structural widening of `BookingGuestLookupDb` rather than by
+ * importing the Prisma types, for the same reason the rest of this module does:
+ * the marking function is called with a `PrismaClient` on the quote paths and
+ * with a `Prisma.TransactionClient` inside the modify paths' capacity lock, and
+ * both satisfy this shape at runtime.
+ */
+type MemberGuestGateDb = {
+  clubModuleSettings?: { findUnique: unknown };
+  bookingGuest?: {
+    findFirst: (args: {
+      where: { bookingId: string; consentStatus: { not: null } };
+      select: { id: true };
+    }) => Promise<{ id: string } | null>;
+  };
+};
+
+/**
+ * The owner's gate, as one question: may the family-boundary recomputation be
+ * skipped for this booking?
+ *
+ * `true` ONLY when both arms answer no — the module is effectively off AND this
+ * booking has never carried a member-guest consent row. Every other outcome,
+ * including "this db cannot answer", returns `false` and the recomputation runs.
+ *
+ * ARM ORDER IS THE CHEAP ONE FIRST. When the module is on the answer is already
+ * "do not skip", so the `BookingGuest` read never happens on an adopting club. On
+ * a module-off club — the common case, and the one the owner's decision is about —
+ * both reads run, and both are single indexed lookups.
+ *
+ * NOTE ON THE TRANSACTION CLIENTS. `isEffectiveModuleEnabled` is given the
+ * caller's own `db`, so the modify paths ask the module question on the
+ * transaction that already holds the per-lodge capacity lock rather than opening a
+ * second connection under it. That is the ordering rule at the top of this file,
+ * applied to a read the file did not previously make.
+ */
+async function memberGuestBoundaryRecomputeIsSkippable(
+  db: BookingGuestLookupDb,
+  bookingId: string | null | undefined,
+): Promise<boolean> {
+  if (!bookingId) return false;
+
+  const gateDb = db as unknown as MemberGuestGateDb;
+  if (typeof gateDb.clubModuleSettings?.findUnique !== "function") return false;
+  if (typeof gateDb.bookingGuest?.findFirst !== "function") return false;
+
+  // (a) The club's member-guest module. Enabled means a member can put a
+  // beyond-family guest on a booking today, so the marker has to be live.
+  const moduleClient = db as Parameters<typeof isEffectiveModuleEnabled>[1];
+  if (await isEffectiveModuleEnabled(MEMBER_GUEST_MODULE_KEY, moduleClient)) {
+    return false;
+  }
+
+  // (b) The booking's own history. A non-null consentStatus on any row means this
+  // booking has held a cross-family member guest, so it keeps its protection even
+  // though the club has since switched the module off.
+  const consentRow = await gateDb.bookingGuest.findFirst({
+    where: { bookingId, consentStatus: { not: null } },
+    select: { id: true },
+  });
+  return consentRow === null;
 }

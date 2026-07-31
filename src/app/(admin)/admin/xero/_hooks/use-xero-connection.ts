@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
+import { toSafeXeroOAuthCallbackMessage } from "@/lib/xero-oauth-callback-messages"
 import { SECTION_DEFAULTS, SECTION_STORAGE_KEY, type SectionKey, type XeroStatus } from "../_components/types"
 
 export function useXeroConnection() {
@@ -80,8 +81,17 @@ export function useXeroConnection() {
       setConnectSuccess(true)
       void fetchStatus()
     }
-    const errorParam = params.get("error")
-    if (errorParam) setError(decodeURIComponent(errorParam))
+    // ALLOW-LISTED, not rendered raw (#2394 review, F9). The callback route only
+    // ever emits one of three messages of ours, and this value now reaches a
+    // danger-styled box on two admin pages — so a crafted link must not be able
+    // to put arbitrary prose of arbitrary length into an authoritative-looking
+    // red banner on a trusted page. Anything unrecognised becomes the generic
+    // "Xero connection failed" rather than being dropped: the connect attempt
+    // really did fail, and silence would be worse. `params.get` is already
+    // percent-decoded, so the old extra `decodeURIComponent` was both redundant
+    // and a `URIError` waiting for a malformed escape.
+    const safeError = toSafeXeroOAuthCallbackMessage(params.get("error"))
+    if (safeError) setError(safeError)
   }, [fetchStatus])
 
   return {

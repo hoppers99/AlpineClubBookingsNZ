@@ -1,0 +1,1037 @@
+<title>Adding another member as a guest — mockup for sign-off (MG3)</title>
+
+<style>
+  /* ------------------------------------------------------------------
+     Two token layers.
+
+     1. --app-*  : the booking app's REAL tokens, copied out of
+                   src/app/globals.css (.app-theme-scope and
+                   .dark .app-theme-scope). Everything inside a .screen
+                   is drawn with these, so the panels look like the app.
+     2. --doc-*  : this document's own chrome, sitting a shade away from
+                   the app ground so each panel reads as an inset screen.
+     ------------------------------------------------------------------ */
+  :root {
+    --app-background:#f2f4f2;
+    --app-foreground:#1c211d;
+    --app-card:#f6f8f7;
+    --app-primary:#57b3ab;
+    --app-primary-foreground:#1c211d;
+    --app-secondary:#e9ebe9;
+    --app-muted:#e9ebe9;
+    --app-muted-foreground:#5a635e;
+    --app-accent:#e0e3e1;
+    --app-accent-foreground:#1c211d;
+    --app-border:#d0d3d0;
+    --app-input:#767c78;
+    --app-ring:#767c78;
+
+    --warning-3:#fee9b2;  --warning-6:#ffc85c;  --warning-11:#815100;
+    --success-3:#dff0e3;  --success-6:#ade1ba;  --success-11:#007130;
+    --danger-3:#f9e5e2;   --danger-6:#ffbeb5;   --danger-11:#b70000;
+    --info-3:#e4ebf8;     --info-6:#b9cbf0;     --info-11:#194fc9;
+    --cat3-3:#f9e3ee;     --cat3-6:#f4c1db;     --cat3-11:#a40074;
+
+    --doc-bg:#e6ebe8;
+    --doc-ink:#141917;
+    --doc-muted:#525c57;
+    --doc-line:#c9d1cc;
+    --doc-panel:#f4f7f5;
+    --doc-accent:#1f6b64;
+    --doc-shadow:0 1px 2px rgba(20,25,23,.06);
+    --doc-shadow-lg:0 12px 28px -14px rgba(20,25,23,.30);
+
+    --radius:10px;
+    --radius-sm:8px;
+    --radius-lg:12px;
+
+    --font-body:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --app-background:#1b1d1c;
+      --app-foreground:#eceeed;
+      --app-card:#151716;
+      --app-primary:#57b3ab;
+      --app-primary-foreground:#1c211d;
+      --app-secondary:#232524;
+      --app-muted:#232524;
+      --app-muted-foreground:#b3b8b5;
+      --app-accent:#292c2a;
+      --app-accent-foreground:#eceeed;
+      --app-border:#383b39;
+      --app-input:#757d76;
+      --app-ring:#757d76;
+
+      --warning-3:#3a2e10;  --warning-6:#6d5518;  --warning-11:#f5cf7a;
+      --success-3:#10291b;  --success-6:#1f5738;  --success-11:#7fd6a5;
+      --danger-3:#2f1618;   --danger-6:#5f2b2f;   --danger-11:#f2a2a6;
+      --info-3:#151f33;     --info-6:#2a3d63;     --info-11:#9db8f0;
+      --cat3-3:#2d1424;     --cat3-6:#57274a;     --cat3-11:#f0a8d0;
+
+      --doc-bg:#0a0c0b;
+      --doc-ink:#e9ece9;
+      --doc-muted:#9aa5a0;
+      --doc-line:#2a2f2c;
+      --doc-panel:#131614;
+      --doc-accent:#7fd0c8;
+      --doc-shadow:0 1px 2px rgba(0,0,0,.5);
+      --doc-shadow-lg:0 14px 32px -14px rgba(0,0,0,.75);
+    }
+  }
+
+  :root[data-theme="light"] {
+    --app-background:#f2f4f2; --app-foreground:#1c211d; --app-card:#f6f8f7;
+    --app-primary:#57b3ab; --app-primary-foreground:#1c211d;
+    --app-secondary:#e9ebe9; --app-muted:#e9ebe9; --app-muted-foreground:#5a635e;
+    --app-accent:#e0e3e1; --app-accent-foreground:#1c211d;
+    --app-border:#d0d3d0; --app-input:#767c78; --app-ring:#767c78;
+    --warning-3:#fee9b2; --warning-6:#ffc85c; --warning-11:#815100;
+    --success-3:#dff0e3; --success-6:#ade1ba; --success-11:#007130;
+    --danger-3:#f9e5e2; --danger-6:#ffbeb5; --danger-11:#b70000;
+    --info-3:#e4ebf8; --info-6:#b9cbf0; --info-11:#194fc9;
+    --cat3-3:#f9e3ee; --cat3-6:#f4c1db; --cat3-11:#a40074;
+    --doc-bg:#e6ebe8; --doc-ink:#141917; --doc-muted:#525c57; --doc-line:#c9d1cc;
+    --doc-panel:#f4f7f5; --doc-accent:#1f6b64;
+    --doc-shadow:0 1px 2px rgba(20,25,23,.06);
+    --doc-shadow-lg:0 12px 28px -14px rgba(20,25,23,.30);
+  }
+
+  :root[data-theme="dark"] {
+    --app-background:#1b1d1c; --app-foreground:#eceeed; --app-card:#151716;
+    --app-primary:#57b3ab; --app-primary-foreground:#1c211d;
+    --app-secondary:#232524; --app-muted:#232524; --app-muted-foreground:#b3b8b5;
+    --app-accent:#292c2a; --app-accent-foreground:#eceeed;
+    --app-border:#383b39; --app-input:#757d76; --app-ring:#757d76;
+    --warning-3:#3a2e10; --warning-6:#6d5518; --warning-11:#f5cf7a;
+    --success-3:#10291b; --success-6:#1f5738; --success-11:#7fd6a5;
+    --danger-3:#2f1618; --danger-6:#5f2b2f; --danger-11:#f2a2a6;
+    --info-3:#151f33; --info-6:#2a3d63; --info-11:#9db8f0;
+    --cat3-3:#2d1424; --cat3-6:#57274a; --cat3-11:#f0a8d0;
+    --doc-bg:#0a0c0b; --doc-ink:#e9ece9; --doc-muted:#9aa5a0; --doc-line:#2a2f2c;
+    --doc-panel:#131614; --doc-accent:#7fd0c8;
+    --doc-shadow:0 1px 2px rgba(0,0,0,.5);
+    --doc-shadow-lg:0 14px 32px -14px rgba(0,0,0,.75);
+  }
+
+  * { box-sizing:border-box; }
+
+  body {
+    margin:0;
+    background:var(--doc-bg);
+    color:var(--doc-ink);
+    font-family:var(--font-body);
+    font-size:16px;
+    line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  .wrap { max-width:1000px; margin:0 auto; padding:clamp(28px,6vw,64px) clamp(16px,4vw,40px) 96px; }
+
+  .eyebrow {
+    font-size:11.5px; letter-spacing:.16em; text-transform:uppercase;
+    font-weight:700; color:var(--doc-accent); margin:0 0 12px;
+  }
+  h1 {
+    font-size:clamp(28px,5vw,44px); line-height:1.04; letter-spacing:-.03em;
+    font-weight:800; margin:0 0 16px; text-wrap:balance;
+  }
+  .lede { font-size:clamp(16px,2.1vw,18.5px); color:var(--doc-muted); max-width:62ch; margin:0 0 10px; }
+  .lede strong { color:var(--doc-ink); font-weight:650; }
+
+  h2 {
+    font-size:clamp(19px,2.6vw,25px); letter-spacing:-.02em; font-weight:750;
+    margin:clamp(48px,7vw,72px) 0 6px; text-wrap:balance;
+  }
+  h2 .sec {
+    display:inline-block; font-size:12px; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--doc-accent); font-weight:700; margin-right:10px; vertical-align:middle;
+  }
+  .sectionsub { margin:0 0 22px; color:var(--doc-muted); font-size:15px; max-width:68ch; }
+
+  .rule { height:2px; border-radius:2px; margin:0 0 22px;
+          background:linear-gradient(to right,var(--doc-accent),transparent 60%); opacity:.45; }
+
+  .docpanel {
+    background:var(--doc-panel); border:1px solid var(--doc-line);
+    border-radius:14px; padding:clamp(18px,3vw,26px); box-shadow:var(--doc-shadow);
+  }
+  .docpanel + .docpanel { margin-top:16px; }
+  .docpanel h3 { margin:0 0 10px; font-size:17px; letter-spacing:-.01em; font-weight:700; }
+  .docpanel p:last-child { margin-bottom:0; }
+
+  ul.plain { margin:0; padding-left:20px; }
+  ul.plain li { margin-bottom:7px; }
+  ul.plain li:last-child { margin-bottom:0; }
+
+  ul.ticked { list-style:none; margin:0; padding:0; }
+  ul.ticked li { position:relative; padding-left:28px; margin-bottom:9px; font-size:15px; }
+  ul.ticked li:last-child { margin-bottom:0; }
+  ul.ticked li::before {
+    content:"✓"; position:absolute; left:0; top:0;
+    color:var(--doc-accent); font-weight:800; font-size:14px;
+  }
+  ul.ticked b { font-weight:650; }
+
+  /* ---------- panel scaffolding ---------- */
+  .panel { margin-top:clamp(30px,4.5vw,44px); }
+  .panel:first-of-type { margin-top:26px; }
+
+  .ptitle {
+    display:flex; align-items:baseline; gap:12px;
+    margin:0 0 4px; font-size:19px; font-weight:700; letter-spacing:-.015em;
+  }
+  .ptitle .n {
+    flex:none; display:inline-flex; align-items:center; justify-content:center;
+    min-width:28px; height:24px; padding:0 7px;
+    border-radius:6px; background:var(--doc-accent); color:var(--doc-bg);
+    font-size:12.5px; font-weight:800; letter-spacing:.02em;
+    font-variant-numeric:tabular-nums;
+  }
+  .where { margin:0 0 12px; font-size:13.5px; color:var(--doc-muted); }
+  .why { margin:0 0 14px; font-size:15px; color:var(--doc-muted); max-width:70ch; }
+  .why strong { color:var(--doc-ink); font-weight:650; }
+
+  code {
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    font-size:12.5px; background:var(--doc-bg); border:1px solid var(--doc-line);
+    border-radius:5px; padding:1px 6px;
+  }
+  .docpanel code { background:var(--doc-bg); }
+
+  /* ---------- the fake app screen ---------- */
+  .screen {
+    background:var(--app-background);
+    color:var(--app-foreground);
+    border:1px solid var(--doc-line);
+    border-radius:14px;
+    padding:clamp(16px,3vw,26px);
+    box-shadow:var(--doc-shadow-lg);
+    font-size:15px;
+    overflow-x:auto;
+  }
+  .screen .col { max-width:768px; } /* the real wizard column is max-w-3xl */
+  .screen .crumb { font-size:13px; color:var(--app-muted-foreground); margin:0 0 6px; }
+  .screen .pagetitle { font-size:26px; font-weight:800; letter-spacing:-.02em; margin:0 0 18px; }
+
+  .card {
+    background:var(--app-card); border:1px solid var(--app-border);
+    border-radius:var(--radius-lg); box-shadow:0 1px 2px rgba(0,0,0,.06);
+  }
+  .card + .card { margin-top:16px; }
+  .card-header { padding:22px 22px 0; }
+  .card-title { font-weight:650; letter-spacing:-.01em; font-size:16.5px; line-height:1.2; }
+  .card-title .dim { font-size:13.5px; font-weight:400; color:var(--app-muted-foreground); margin-left:8px; }
+  .card-desc { font-size:13.5px; color:var(--app-muted-foreground); margin:6px 0 0; }
+  .card-content { padding:18px 22px 22px; }
+  .stack { display:flex; flex-direction:column; gap:16px; }
+  .stack-sm { display:flex; flex-direction:column; gap:8px; }
+
+  .hrow { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+  .h3app { font-size:17px; font-weight:650; margin:0; letter-spacing:-.01em; }
+  .btnset { display:flex; gap:8px; flex-wrap:wrap; }
+
+  .btn {
+    display:inline-flex; align-items:center; justify-content:center; gap:8px;
+    white-space:nowrap; border-radius:var(--radius-sm);
+    font-family:inherit; font-size:14px; font-weight:500;
+    height:36px; padding:0 16px; border:1px solid transparent; cursor:default;
+    background:transparent; color:var(--app-foreground);
+  }
+  .btn.sm { height:32px; padding:0 12px; font-size:12px; }
+  .btn.pri { background:var(--app-primary); color:var(--app-primary-foreground); box-shadow:0 1px 2px rgba(0,0,0,.10); font-weight:600; }
+  .btn.out { border-color:var(--app-input); background:var(--app-background); box-shadow:0 1px 2px rgba(0,0,0,.05); }
+  .btn.sec { background:var(--app-secondary); color:var(--app-foreground); box-shadow:0 1px 2px rgba(0,0,0,.05); }
+  .btn.ghost { background:transparent; }
+  .btn.danger-ghost { background:transparent; color:var(--danger-11); }
+  .btn.off { opacity:.5; }
+  .btn.new { position:relative; }
+  .btn.new::after {
+    content:""; position:absolute; inset:-4px; border-radius:11px;
+    border:2px dashed var(--doc-accent); opacity:.85; pointer-events:none;
+  }
+
+  .label { display:block; font-size:13.5px; font-weight:500; margin:0 0 6px; }
+  .input {
+    display:flex; align-items:center; height:36px; width:100%;
+    border-radius:var(--radius-sm); border:1px solid var(--app-input);
+    background:transparent; padding:0 12px; font-size:14px; color:var(--app-foreground);
+  }
+  .input .ph { color:var(--app-muted-foreground); font-style:italic; }
+  .input .caret { display:inline-block; width:1px; height:17px; background:var(--app-foreground); margin-left:1px; }
+  .field-row { display:flex; gap:8px; align-items:flex-end; }
+  .field-row .grow { flex:1; min-width:0; }
+  .hint { font-size:12.5px; color:var(--app-muted-foreground); margin:6px 0 0; }
+
+  .badge {
+    display:inline-flex; align-items:center; border:1px solid var(--app-border);
+    border-radius:var(--radius-sm); padding:2px 10px;
+    font-size:12px; font-weight:600; line-height:1.5; white-space:nowrap;
+  }
+  .badge.pending { border-color:var(--warning-6); background:var(--warning-3); color:var(--warning-11); }
+  .badge.ok      { border-color:var(--success-6); background:var(--success-3); color:var(--success-11); }
+  .badge.blocked { border-color:var(--danger-6);  background:var(--danger-3);  color:var(--danger-11); }
+  .badge.plain   { color:var(--app-foreground); background:transparent; }
+
+  .alert { display:flex; align-items:flex-start; gap:12px; border-radius:var(--radius-sm); border:1px solid; padding:14px 16px; font-size:14px; }
+  .alert .ico { flex:none; width:16px; height:16px; margin-top:3px; }
+  .alert .body { min-width:0; flex:1; }
+  .alert .body p { margin:0 0 6px; }
+  .alert .body p:last-child { margin-bottom:0; }
+  .alert .body .t { font-weight:650; }
+  .alert.warn { border-color:var(--warning-6); background:var(--warning-3); color:var(--warning-11); }
+  .alert.err  { border-color:var(--danger-6);  background:var(--danger-3);  color:var(--danger-11); }
+  .alert.info { border-color:var(--info-6);    background:var(--info-3);    color:var(--info-11); }
+  .alert.good { border-color:var(--success-6); background:var(--success-3); color:var(--success-11); }
+
+  .neutralbox { border:1px solid var(--app-border); background:var(--app-muted); color:var(--app-muted-foreground); border-radius:var(--radius-sm); padding:10px 14px; font-size:13.5px; }
+  .neutralbox b { color:var(--app-foreground); }
+
+  /* find panel */
+  .findpanel { border:1px solid var(--app-border); border-radius:var(--radius); padding:16px; background:var(--app-background); }
+  .findpanel.hi { border-color:var(--app-primary); box-shadow:0 0 0 1px var(--app-primary); }
+  .findpanel > * + * { margin-top:12px; }
+
+  .lb { position:relative; border:1px solid var(--app-border); border-radius:var(--radius-sm); background:var(--app-background); box-shadow:0 10px 15px -6px rgba(0,0,0,.18); overflow:hidden; }
+  .lb ul { list-style:none; margin:0; padding:4px 0; max-height:260px; overflow-y:auto; }
+  .lb li { margin:0; }
+  .lb .opt { display:flex; align-items:center; gap:10px; width:100%; padding:8px 12px; text-align:left; font:inherit; font-size:14px; border:0; background:transparent; color:var(--app-foreground); cursor:default; }
+  .lb .opt.hl { background:var(--app-accent); color:var(--app-accent-foreground); }
+  .lb .opt .nm { font-weight:550; }
+  .lb .foot { padding:8px 12px; font-size:13px; color:var(--app-muted-foreground); border-top:1px solid var(--app-border); }
+  .lb .empty { padding:9px 12px; font-size:14px; color:var(--app-muted-foreground); margin:0; }
+
+  .radiolist { display:flex; flex-direction:column; gap:8px; }
+  .radioopt { display:flex; align-items:center; gap:11px; border:1px solid var(--app-border); border-radius:var(--radius-sm); padding:10px 13px; background:var(--app-muted); font-size:14px; }
+  .radioopt .dot { flex:none; width:15px; height:15px; border-radius:50%; border:1.5px solid var(--app-input); }
+  .radioopt.sel { border-color:var(--app-primary); background:var(--app-card); }
+  .radioopt.sel .dot { border-color:var(--app-primary); box-shadow:inset 0 0 0 3.5px var(--app-primary); }
+  .radioopt .nm { font-weight:550; }
+
+  .chip { display:flex; align-items:center; gap:10px; flex-wrap:wrap; border:1px solid var(--app-primary); background:var(--app-card); border-radius:var(--radius-sm); padding:11px 14px; }
+  .chip .nm { font-weight:650; font-size:15px; }
+  .chip .sp { flex:1; }
+
+  .guestcard { border:1px solid var(--app-border); border-radius:var(--radius); padding:15px; }
+  .guestcard + .guestcard { margin-top:10px; }
+  .guestcard .gh { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:10px; }
+  .guestcard .gh .who { font-size:13.5px; font-weight:600; }
+  .guestcard .gh .sp { flex:1; }
+  .guestcard .helper { font-size:13.5px; color:var(--app-muted-foreground); margin:10px 0 0; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  @media (max-width:560px) { .grid2 { grid-template-columns:1fr; } }
+  .input.dis { background:var(--app-muted); color:var(--app-muted-foreground); opacity:.75; }
+
+  .revrow { display:flex; justify-content:space-between; gap:12px; padding:5px 0; font-size:14px; flex-wrap:wrap; }
+  .revrow .money { font-weight:600; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .revrow .sub { display:block; font-size:12.5px; color:var(--app-muted-foreground); }
+  .sepblock { border-top:1px solid var(--app-border); padding-top:16px; }
+
+  .dashedcallout { border:1px dashed var(--cat3-6); background:var(--cat3-3); border-radius:var(--radius); padding:14px; font-size:13.5px; color:var(--app-muted-foreground); }
+
+  .fieldset { border:0; margin:0; padding:0; }
+  .legend { font-size:13.5px; font-weight:600; margin:0 0 8px; padding:0; }
+  .checkopt { display:flex; align-items:flex-start; gap:11px; border:1px solid var(--app-border); border-radius:var(--radius-sm); padding:10px 13px; background:var(--app-muted); font-size:14px; }
+  .checkopt .box { flex:none; width:15px; height:15px; margin-top:3px; border-radius:4px; border:1.5px solid var(--app-input); background:var(--app-background); }
+  .checkopt .box.on { background:var(--app-primary); border-color:var(--app-primary); position:relative; }
+  .checkopt .box.on::after { content:"✓"; position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:900; color:var(--app-primary-foreground); }
+  .checkopt .t { display:block; font-weight:600; }
+  .checkopt .d { color:var(--app-muted-foreground); font-size:13.5px; }
+  .subfield { margin-left:22px; border-left:2px solid var(--app-border); padding-left:16px; }
+  .subfield.off { opacity:.55; }
+
+  /* annotation */
+  .anno {
+    margin-top:14px; border-left:3px solid var(--doc-accent);
+    background:var(--doc-panel); border-radius:0 10px 10px 0;
+    padding:12px 16px; font-size:14px; color:var(--doc-muted);
+  }
+  .anno b { color:var(--doc-ink); font-weight:650; }
+  .anno.warnish { border-left-color:var(--warning-6); }
+
+  /* decisions */
+  .decision { border:1px solid var(--doc-line); background:var(--doc-panel); border-radius:14px; padding:clamp(18px,3vw,26px); box-shadow:var(--doc-shadow); }
+  .decision + .decision { margin-top:18px; }
+  .decision h3 { margin:0 0 6px; font-size:18px; font-weight:750; letter-spacing:-.015em; }
+  .decision .q { margin:0 0 14px; color:var(--doc-muted); font-size:15px; max-width:70ch; }
+  .opts { list-style:none; margin:0; padding:0; }
+  .opts li { margin-bottom:9px; }
+  .opts li:last-child { margin-bottom:0; }
+  .opts label {
+    display:flex; gap:12px; align-items:flex-start; padding:12px 14px;
+    border:1px solid var(--doc-line); border-radius:10px; background:var(--doc-bg);
+    font-size:14.5px; cursor:pointer;
+    transition:border-color .12s ease, background-color .12s ease, box-shadow .12s ease;
+  }
+  .opts label:hover { border-color:var(--doc-accent); }
+  .opts li.rec label { border-color:color-mix(in srgb, var(--doc-accent) 55%, var(--doc-line)); }
+  .opts input[type="radio"] {
+    flex:none; width:17px; height:17px; margin:3px 0 0; accent-color:var(--doc-accent); cursor:pointer;
+  }
+  .opts label:has(input:checked) {
+    border-color:var(--doc-accent);
+    background:color-mix(in srgb, var(--doc-accent) 9%, var(--doc-panel));
+    box-shadow:inset 3px 0 0 var(--doc-accent);
+  }
+  .opts label:has(input:focus-visible) { outline:2px solid var(--doc-accent); outline-offset:2px; }
+  .opts .t { font-weight:650; }
+  .opts .recflag { display:inline-block; margin-left:8px; font-size:11px; letter-spacing:.1em; text-transform:uppercase; font-weight:800; color:var(--doc-accent); vertical-align:1px; }
+  .opts .d { display:block; color:var(--doc-muted); margin-top:3px; }
+
+  /* answers summary */
+  .answers { margin-top:24px; border:2px solid var(--doc-accent); border-radius:14px; background:var(--doc-panel); padding:clamp(18px,3vw,26px); }
+  .answers h3 { margin:0 0 4px; font-size:18px; font-weight:750; letter-spacing:-.015em; }
+  .answers .q { margin:0 0 16px; color:var(--doc-muted); font-size:15px; max-width:70ch; }
+  .answers ol { margin:0 0 18px; padding-left:22px; }
+  .answers li { margin-bottom:9px; font-size:14.5px; }
+  .answers li:last-child { margin-bottom:0; }
+  .answers .qlabel { color:var(--doc-muted); }
+  .answers .val { font-weight:650; }
+  .answers .val.none { font-weight:400; color:var(--doc-muted); font-style:italic; }
+  .answers .tools { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .docbtn {
+    font:inherit; font-size:14px; font-weight:650; border-radius:9px;
+    padding:10px 18px; border:1px solid var(--doc-accent);
+    background:var(--doc-accent); color:var(--doc-bg); cursor:pointer;
+  }
+  .docbtn.sub { background:transparent; color:var(--doc-accent); }
+  .docbtn:focus-visible { outline:2px solid var(--doc-accent); outline-offset:2px; }
+  .copied { font-size:13.5px; color:var(--doc-accent); font-weight:650; }
+  .answers textarea {
+    width:100%; margin-top:14px; min-height:150px; resize:vertical;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12.5px; line-height:1.6;
+    border:1px solid var(--doc-line); border-radius:10px; padding:12px 14px;
+    background:var(--doc-bg); color:var(--doc-ink);
+  }
+  .answers textarea:focus-visible { outline:2px solid var(--doc-accent); outline-offset:1px; }
+
+  .foot { margin-top:64px; padding-top:20px; border-top:1px solid var(--doc-line); font-size:13.5px; color:var(--doc-muted); }
+  .foot p { margin:0 0 8px; }
+  .foot p:last-child { margin-bottom:0; }
+
+  a { color:var(--doc-accent); }
+  a:focus-visible, .btn:focus-visible { outline:2px solid var(--doc-accent); outline-offset:2px; }
+
+  @media (prefers-reduced-motion: reduce) { * { animation:none !important; transition:none !important; } }
+</style>
+
+<div class="wrap">
+
+  <p class="eyebrow">Alpine Sports Club · epic #2305 · MG3 (#2308)</p>
+  <h1>Adding another member as a guest</h1>
+  <p class="lede">This is the part members actually touch: a <strong>+ Add Member Guest</strong> button in the booking wizard, the box you use to find the person, and everything the booker is told while that person decides.</p>
+  <p class="lede">Fifteen panels, drawn in the app's own colours and type. Every name and price is invented; every word of copy is the real wording.</p>
+  <p class="lede"><strong>Signed off by the owner on 31 July 2026</strong>, with four answers recorded at the foot of this page. This file is the frozen record of what was agreed before MG3 was built — see issue #2308 for the thread.</p>
+
+  <h2><span class="sec">Before you start</span>What is already settled</h2>
+  <div class="rule"></div>
+  <div class="docpanel">
+    <h3>Decisions you have already made — shown here as decided, not re-asked</h3>
+    <ul class="ticked">
+      <li><b>Finding someone is by exact email address by default.</b> The membership list is not browsable unless a club deliberately turns that on.</li>
+      <li><b>A club can turn on name search</b>, and it ships <b>off</b>. When it is on, the find box becomes a name list that narrows as you type. Under-18s are <b>excluded</b> from that list unless a club separately opts them in.</li>
+      <li><b>Any active member can be resolved by their email address</b> — including someone without a login, and including a child at a shared household address. Where several people share an address, you pick from a list.</li>
+      <li><b>A found member's full name shows straight away</b>, before they have agreed.</li>
+      <li><b>A row in any list shows full name and age group only</b> — no email, no town, no photo, no membership type.</li>
+      <li><b>Someone you have added can see the booking immediately</b>, including the other guests' names, before they decide.</li>
+      <li><b>Their agreement covers the booking however it later changes</b> — we do not ask again if you move the dates.</li>
+      <li><b>The usual removal limits apply to them too</b> — they cannot always take themselves off once the booking is priced or paid.</li>
+      <li><b>Repeated refusals get logged for an admin to look at, never automatically blocked</b> (your 31 July decision on #2388). Someone trying a few dates for a friend is the normal case and must not be stopped.</li>
+    </ul>
+  </div>
+  <div class="docpanel">
+    <h3>So what am I actually asking?</h3>
+    <p style="margin:0 0 10px;">Only whether this <em>looks and reads</em> right. There are <strong>four questions</strong> at the bottom — on badge wording, on what happens to the find box when a club turns name search on, on where the panel opens, and on the exact sentences we tell a booker while someone is deciding. Each has a recommended answer, so <strong>&ldquo;go with the recommendations&rdquo; is a complete reply.</strong></p>
+    <p style="margin:0;">One of those four matters more than the rest: <strong>panel 12</strong>. Two of its four sentences exist only because of choices you made earlier, and they are blunt. I would rather you read them now than meet them in production.</p>
+  </div>
+
+  <!-- ============================= SECTION A ============================= -->
+  <h2><span class="sec">Section A</span>Finding a member by email — how it works out of the box</h2>
+  <p class="sectionsub">This is what every club gets on day one. You can only find someone whose email address you already have, so nothing about the membership list is given away.</p>
+  <div class="rule"></div>
+
+  <div class="panel">
+    <p class="ptitle"><span class="n">1</span> The new button, next to the one that is already there</p>
+    <p class="where">Where: <code>/book</code> → the Guests step</p>
+    <p class="why">The only change to this screen is one extra button, ringed below. Everything else — the quick-add family row, the wording, the Continue button — is exactly as it is today.</p>
+    <div class="screen">
+      <div class="col">
+        <div class="crumb">← Back to dashboard</div>
+        <p class="pagetitle">Book a Stay</p>
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">Add Guests <span class="dim">15/08/2026 - 17/08/2026 (2 nights)</span></div>
+          </div>
+          <div class="card-content">
+            <div class="stack">
+              <div class="stack-sm">
+                <p style="font-size:13.5px;font-weight:500;color:var(--app-muted-foreground);margin:0;">Quick add family members</p>
+                <div class="btnset">
+                  <span class="btn sec sm">✓ Jordan Hartley-Smith (You)</span>
+                  <span class="btn out sm">+ Mia Hartley-Smith (CHILD)</span>
+                </div>
+              </div>
+
+              <div class="hrow">
+                <h3 class="h3app">Guests (1/8 max)</h3>
+                <div class="btnset">
+                  <span class="btn out sm new">+ Add Member Guest</span>
+                  <span class="btn out sm">+ Add Non-Member Guest</span>
+                </div>
+              </div>
+
+              <div class="guestcard">
+                <div class="gh">
+                  <span class="who">Guest 1</span>
+                  <span class="sp"></span>
+                  <span class="btn danger-ghost sm">Remove</span>
+                </div>
+                <div class="grid2">
+                  <div><span class="label">First Name</span><span class="input dis">Jordan</span></div>
+                  <div><span class="label">Last Name</span><span class="input dis">Hartley-Smith</span></div>
+                </div>
+                <p class="helper">Linked family members keep their member details and member pricing.</p>
+              </div>
+
+              <div class="hrow" style="padding-top:8px;">
+                <span class="btn out">Back</span>
+                <span class="btn pri">Continue</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="anno"><b>Which order?</b> Member first, then non-member — a member guest is the cheaper, better-recorded outcome, so it should be the one that catches the eye. Say if you would rather it sat on the right.</p>
+  </div>
+
+  <div class="panel">
+    <p class="ptitle"><span class="n">2</span> The find box, before you type anything</p>
+    <p class="where">Where: opens underneath the Guests heading when you press the new button</p>
+    <p class="why">It says out loud that you need the address already. That sentence is doing real work — it is the difference between &ldquo;this tool won't help me browse&rdquo; and a member trying twenty guesses.</p>
+    <div class="screen">
+      <div class="col">
+        <div class="card">
+          <div class="card-content" style="padding-top:22px;">
+            <div class="stack">
+              <div class="hrow">
+                <h3 class="h3app">Guests (1/8 max)</h3>
+                <div class="btnset">
+                  <span class="btn sec sm">+ Add Member Guest</span>
+                  <span class="btn out sm">+ Add Non-Member Guest</span>
+                </div>
+              </div>
+
+              <div class="findpanel hi">
+                <div>
+                  <span class="label">Find a member by email address</span>
+                  <div class="field-row">
+                    <span class="input grow"><span class="ph">their email address</span></span>
+                    <span class="btn pri">Find</span>
+                  </div>
+                  <p class="hint">You need the address they use for the club. We don't list members here — if you don't have it, ask them for it.</p>
+                </div>
+                <div class="hrow" style="justify-content:flex-end;">
+                  <span class="btn ghost sm">Cancel</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <p class="ptitle"><span class="n">3</span> One person found</p>
+    <p class="where">Where: same panel, after pressing Find</p>
+    <p class="why">Full name and age group appear straight away — that is your earlier decision, and it is the honest trade: mistype an address that happens to belong to a real member and you learn their name. Nothing else about them is shown, and nothing is shown about whether they <em>can</em> come — that check happens when you add them, so this box can never be used to test people's availability.</p>
+    <div class="screen">
+      <div class="col">
+        <div class="card">
+          <div class="card-content" style="padding-top:22px;">
+            <div class="findpanel hi">
+              <div>
+                <span class="label">Find a member by email address</span>
+                <div class="field-row">
+                  <span class="input grow">sam.whittaker@example.co.nz</span>
+                  <span class="btn out">Find</span>
+                </div>
+              </div>
+              <div class="chip">
+                <span class="nm">Sam Whittaker</span>
+                <span class="badge plain">Adult</span>
+                <span class="sp"></span>
+                <span class="btn ghost sm">Change</span>
+                <span class="btn pri sm">Add to booking</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <p class="ptitle"><span class="n">4</span> Nobody found</p>
+    <p class="where">Where: same panel</p>
+    <p class="why">One fixed sentence, whatever the real reason — no such address, the person has left the club, their membership has lapsed. All of them read the same, so a member cannot use this box to work out who is and isn't on the roll.</p>
+    <div class="screen">
+      <div class="col">
+        <div class="card">
+          <div class="card-content" style="padding-top:22px;">
+            <div class="findpanel hi">
+              <div>
+                <span class="label">Find a member by email address</span>
+                <div class="field-row">
+                  <span class="input grow">s.whitaker@example.co.nz</span>
+                  <span class="btn out">Find</span>
+                </div>
+              </div>
+              <div class="neutralbox">No bookable member found for that email.</div>
+              <p class="hint" style="margin:0;">Check the spelling, or ask them which address the club has for them.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="anno"><b>Deliberately unhelpful, once.</b> We can't say &ldquo;that member's subscription is unpaid&rdquo; or &ldquo;no such member&rdquo; without turning this box into a way of checking up on people. The second line is the honest help we <em>can</em> give.</p>
+  </div>
+
+  <div class="panel">
+    <p class="ptitle"><span class="n">5</span> A whole household at one address</p>
+    <p class="where">Where: same panel, when the address belongs to more than one member</p>
+    <p class="why">Families share an address, so one email can mean three people. You pick. This does show who lives at that address — but you already had the address, so nothing about anyone else's household is revealed. That was the trade you accepted when you chose to let any active member be found by email.</p>
+    <div class="screen">
+      <div class="col">
+        <div class="card">
+          <div class="card-content" style="padding-top:22px;">
+            <div class="findpanel hi">
+              <div>
+                <span class="label">Find a member by email address</span>
+                <div class="field-row">
+                  <span class="input grow">whittakers@example.co.nz</span>
+                  <span class="btn out">Find</span>
+                </div>
+              </div>
+              <div>
+                <p class="hint" style="margin:0 0 8px;">Three members use that address. Which one are you adding?</p>
+                <div class="radiolist">
+                  <span class="radioopt sel"><span class="dot"></span><span class="nm">Sam Whittaker</span><span class="badge plain">Adult</span></span>
+                  <span class="radioopt"><span class="dot"></span><span class="nm">Ella Whittaker</span><span class="badge plain">Adult</span></span>
+                  <span class="radioopt"><span class="dot"></span><span class="nm">Toby Whittaker</span><span class="badge plain">Child</span></span>
+                </div>
+              </div>
+              <div class="hrow" style="justify-content:flex-end;">
+                <span class="btn ghost sm">Cancel</span>
+                <span class="btn pri sm">Add to booking</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================= SECTION B ============================= -->
+  <h2><span class="sec">Section B</span>Name search — only if a club switches it on</h2>
+  <p class="sectionsub">Ships off. When a club turns it on, the same box becomes a name list that narrows as you type. This deliberately makes the membership list browsable — that is the whole point of the setting, and the admin screen says so in those words.</p>
+  <div class="rule"></div>
+
+  <div class="panel">
+    <p class="ptitle"><span class="n">6</span> Typing a name</p>
+    <p class="where">Where: the same find box, with name search on</p>
+    <p class="why">Two letters minimum, matching from the start of a first or last name — never from the middle, so &ldquo;an&rdquo; doesn't return every Alexander, Duncan and Hannah at once.</p>
+    <div class="screen">
+      <div class="col">
+        <div class="card">
+          <div class="card-content" style="padding-top:22px;">
+            <div class="findpanel hi">
+              <div>
+                <span class="label">Find a member by name or email address</span>
+                <span class="input">whit<span class="caret"></span></span>
+                <div class="lb" style="margin-top:4px;">
+                  <ul>
+                    <li><span class="opt hl"><span class="nm">Anna Whitcombe</span><span class="badge plain">Adult</span></span></li>
+                    <li><span class="opt"><span class="nm">Daniel White</span><span class="badge plain">Adult</span></span></li>
+                    <li><span class="opt"><span class="nm">Ella Whittaker</span><span class="badge plain">Adult</span></span></li>
+                    <li><span class="opt"><span class="nm">Sam Whittaker</span><span class="badge plain">Adult</span></span></li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="anno"><b>No children in this list</b> — that is the separate sub-setting, and it ships excluded. A child can still be added by their household email address, which is panel 5.</p>
+  </div>
+
+  <div class="panel">
+    <p class="ptitle"><span class="n">7</span> Down to one — picked for you</p>
+    <p class="where">Where: same box, after a few more letters</p>
+    <p class="why">When exactly one person is left, we select them rather than making you click. This is the &ldquo;auto-resolves in the dropdown&rdquo; behaviour you asked for.</p>
+    <div class="screen">
+      <div class="col">
+        <div class="card">
+          <div class="card-content" style="padding-top:22px;">
+            <div class="findpanel hi">
+              <div>
+                <span class="label">Find a member by name or email address</span>
+                <span class="input">sam whitt<span class="caret"></span></span>
+              </div>
+              <div class="chip">
+                <span class="nm">Sam Whittaker</span>
+                <span class="badge plain">Adult</span>
+                <span class="sp"></span>
+                <span class="btn ghost sm">Change</span>
+                <span class="btn pri sm">Add to booking</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <p class="ptitle"><span class="n">8</span> Too many to show</p>
+    <p class="where">Where: same box, on a very common start of a name</p>
+    <p class="why">We show ten and stop. Note what we <em>don't</em> say: never &ldquo;showing 10 of 47&rdquo;. A count would quietly tell every member how big the club is, and how many Smiths are in it.</p>
+    <div class="screen">
+      <div class="col">
+        <div class="card">
+          <div class="card-content" style="padding-top:22px;">
+            <div class="findpanel hi">
+              <div>
+                <span class="label">Find a member by name or email address</span>
+                <span class="input">sm<span class="caret"></span></span>
+                <div class="lb" style="margin-top:4px;">
+                  <ul>
+                    <li><span class="opt hl"><span class="nm">Aroha Smart</span><span class="badge plain">Adult</span></span></li>
+                    <li><span class="opt"><span class="nm">Callum Smith</span><span class="badge plain">Adult</span></span></li>
+                    <li><span class="opt"><span class="nm">Jane Smith</span><span class="badge plain">Adult</span></span></li>
+                    <li><span class="opt"><span class="nm">John Smith</span><span class="badge plain">Adult</span></span></li>
+                    <li><span class="opt" style="opacity:.62;"><span class="nm">Peter Smithson</span><span class="badge plain">Adult</span></span></li>
+                  </ul>
+                  <p class="foot" style="margin:0;">Keep typing to narrow this down.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <p class="ptitle"><span class="n">9</span> Two members with the same name</p>
+    <p class="where">Where: same box</p>
+    <p class="why">Because a row shows only name and age group, two John Smiths look identical — and we deliberately don't add a town or a masked email to tell them apart, because that would hand out something the booker never had. Instead we point them at the one thing that <em>is</em> unambiguous.</p>
+    <div class="screen">
+      <div class="col">
+        <div class="card">
+          <div class="card-content" style="padding-top:22px;">
+            <div class="findpanel hi">
+              <div>
+                <span class="label">Find a member by name or email address</span>
+                <span class="input">john smith<span class="caret"></span></span>
+                <div class="lb" style="margin-top:4px;">
+                  <ul>
+                    <li><span class="opt hl"><span class="nm">John Smith</span><span class="badge plain">Adult</span></span></li>
+                    <li><span class="opt"><span class="nm">John Smith</span><span class="badge plain">Adult</span></span></li>
+                  </ul>
+                  <p class="foot" style="margin:0;">Two members match that name — use their email address to be sure.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <p class="ptitle"><span class="n">10</span> Searching too much</p>
+    <p class="where">Where: same box</p>
+    <p class="why">There is a cap on how much one member can search in a day. An ordinary booker will never see this; somebody working through the alphabet will. It is also written down, so an admin can see who hit it.</p>
+    <div class="screen">
+      <div class="col">
+        <div class="card">
+          <div class="card-content" style="padding-top:22px;">
+            <div class="findpanel hi">
+              <div>
+                <span class="label">Find a member by name or email address</span>
+                <span class="input">br<span class="caret"></span></span>
+              </div>
+              <div class="alert warn">
+                <span class="ico">⚠</span>
+                <div class="body"><p>Too many searches — try again shortly.</p></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================= SECTION C ============================= -->
+  <h2><span class="sec">Section C</span>What the booker sees once someone is added</h2>
+  <p class="sectionsub">The find box is the easy half. This is the half that sets expectations — and where two of your earlier decisions have consequences a member needs to be told about before they commit.</p>
+  <div class="rule"></div>
+
+  <div class="panel">
+    <p class="ptitle"><span class="n">11</span> The guest list, with three different states</p>
+    <p class="where">Where: <code>/book</code> → Guests step, after adding</p>
+    <p class="why"><b>Updated 31 July 2026.</b> These labels now show the <strong>warmer, name-bearing wizard wording</strong> the owner chose in Decision 1 below; the booking-detail page keeps MG2&rsquo;s &ldquo;Waiting for consent&rdquo; / &ldquo;Consented&rdquo; / &ldquo;Told, not asked&rdquo;. The panel originally drew the MG2 wording here, because it was drawn before the decision was taken.</p>
+    <div class="screen">
+      <div class="col">
+        <div class="card">
+          <div class="card-content" style="padding-top:22px;">
+            <div class="stack">
+              <div class="hrow">
+                <h3 class="h3app">Guests (4/8 max)</h3>
+                <div class="btnset">
+                  <span class="btn out sm">+ Add Member Guest</span>
+                  <span class="btn out sm">+ Add Non-Member Guest</span>
+                </div>
+              </div>
+
+              <div class="guestcard">
+                <div class="gh"><span class="who">Guest 1</span><span class="sp"></span><span class="btn danger-ghost sm">Remove</span></div>
+                <div class="grid2">
+                  <div><span class="label">First Name</span><span class="input dis">Jordan</span></div>
+                  <div><span class="label">Last Name</span><span class="input dis">Hartley-Smith</span></div>
+                </div>
+                <p class="helper">Linked family members keep their member details and member pricing.</p>
+              </div>
+
+              <div class="guestcard">
+                <div class="gh">
+                  <span class="who">Guest 2</span>
+                  <span class="badge pending">Waiting for Sam to approve</span>
+                  <span class="sp"></span>
+                  <span class="btn danger-ghost sm">Remove</span>
+                </div>
+                <div class="grid2">
+                  <div><span class="label">First Name</span><span class="input dis">Sam</span></div>
+                  <div><span class="label">Last Name</span><span class="input dis">Whittaker</span></div>
+                </div>
+                <p class="helper">Sam will be emailed when you confirm this booking, and their bed is held until they answer.</p>
+              </div>
+
+              <div class="guestcard">
+                <div class="gh">
+                  <span class="who">Guest 3</span>
+                  <span class="badge ok">Anna approved</span>
+                  <span class="sp"></span>
+                  <span class="btn danger-ghost sm">Remove</span>
+                </div>
+                <div class="grid2">
+                  <div><span class="label">First Name</span><span class="input dis">Anna</span></div>
+                  <div><span class="label">Last Name</span><span class="input dis">Whitcombe</span></div>
+                </div>
+              </div>
+
+              <div class="guestcard">
+                <div class="gh">
+                  <span class="who">Guest 4</span>
+                  <span class="badge ok">Daniel will be told</span>
+                  <span class="sp"></span>
+                  <span class="btn danger-ghost sm">Remove</span>
+                </div>
+                <div class="grid2">
+                  <div><span class="label">First Name</span><span class="input dis">Daniel</span></div>
+                  <div><span class="label">Last Name</span><span class="input dis">White</span></div>
+                </div>
+                <p class="helper">Your club adds member guests straight away and emails them to say so.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="anno"><b>Guest 4 only appears in clubs that chose &ldquo;just tell them&rdquo;</b> instead of &ldquo;ask them first&rdquo;. Both are drawn here so you can see the two worlds side by side; no single club sees both.</p>
+  </div>
+
+  <div class="panel">
+    <p class="ptitle"><span class="n">12</span> What we tell the booker before they pay — the panel that matters</p>
+    <p class="where">Where: <code>/book</code> → Review step, whenever anyone is still deciding</p>
+    <p class="why"><strong>Please read all four sentences.</strong> The first two are ordinary. The third and fourth exist because of choices you made earlier — that a person you add can see the booking straight away, and that their agreement carries over if you later change the dates. Both are defensible. Both will surprise a member who isn't told, which is why they are on screen before the money.</p>
+    <div class="screen">
+      <div class="col">
+        <div class="card">
+          <div class="card-header"><div class="card-title">Booking Summary</div></div>
+          <div class="card-content">
+            <div class="stack">
+              <div class="revrow"><span style="color:var(--app-muted-foreground);">Check-in:&nbsp;<span style="color:var(--app-foreground);font-weight:600;">15/08/2026</span></span><span style="color:var(--app-muted-foreground);">Nights:&nbsp;<span style="color:var(--app-foreground);font-weight:600;">2</span></span></div>
+
+              <div class="sepblock">
+                <h4 style="font-size:15px;font-weight:600;margin:0 0 6px;">Guests</h4>
+                <div class="revrow"><span>Jordan Hartley-Smith (ADULT, Member)</span><span class="money">$90.00</span></div>
+                <div class="revrow"><span>Sam Whittaker (ADULT, Member)<span class="sub">Waiting for Sam to approve</span></span><span class="money">$90.00</span></div>
+                <div class="revrow"><span>Anna Whitcombe (ADULT, Member)<span class="sub">Anna approved</span></span><span class="money">$90.00</span></div>
+              </div>
+
+              <div class="alert warn">
+                <span class="ico">⚠</span>
+                <div class="body">
+                  <p class="t">Sam hasn't answered yet</p>
+                  <p>Their bed is held while you wait. If they haven't answered within 7 days, they'll come off the booking automatically and it will be repriced.</p>
+                  <p>If they say no, they come off the booking and it's repriced.</p>
+                  <p>As soon as you add them they can see this booking, including the other guests' names — before they decide.</p>
+                  <p>Their approval covers this booking including any later changes you make to it. They can take themselves off the booking, subject to the usual limits once it's been priced or paid.</p>
+                </div>
+              </div>
+
+              <div class="revrow" style="font-size:16px;font-weight:700;border-top:1px solid var(--app-border);padding-top:12px;"><span>Total</span><span class="money">$270.00</span></div>
+              <span class="btn pri" style="align-self:flex-start;">Confirm booking</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="anno warnish"><b>The two sentences worth arguing about.</b> &ldquo;They can see this booking… before they decide&rdquo; means a person you added by mistake sees who else is coming. &ldquo;Their approval covers… any later changes&rdquo; means you can move a July weekend to a September one and we will not ask them again. If either now reads wrong to you, say so — it is a change to the rule, not to this wording, and it is much cheaper to change today than after it ships.</p>
+  </div>
+
+  <div class="panel">
+    <p class="ptitle"><span class="n">13</span> When someone can't be added</p>
+    <p class="where">Where: the find panel, after you press Add to booking</p>
+    <p class="why">One sentence, and it is the same sentence whether their subscription is unpaid, their profile is incomplete, or they are already booked in somewhere else those nights. A booker who could tell those apart could map another member's movements by trying date after date.</p>
+    <div class="screen">
+      <div class="col">
+        <div class="card">
+          <div class="card-content" style="padding-top:22px;">
+            <div class="findpanel hi">
+              <div class="chip">
+                <span class="nm">Sam Whittaker</span>
+                <span class="badge plain">Adult</span>
+                <span class="sp"></span>
+                <span class="btn ghost sm">Change</span>
+                <span class="btn out sm off">Add to booking</span>
+              </div>
+              <div class="alert err">
+                <span class="ico">✕</span>
+                <div class="body"><p>This member can't be added to this booking right now.</p></div>
+              </div>
+              <p class="hint" style="margin:0;">If you think that's wrong, ask them directly, or contact the club.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="anno"><b>What backs this up.</b> The same wording alone isn't enough — somebody patient could still try date after date and learn things from the pattern of yes and no. Your 31 July decision closes that: the add path gets a per-person speed limit, the &ldquo;no such member&rdquo; answer is made to take the same time as the others, and a member who is repeatedly refused against the <em>same</em> person gets written into a list an admin can look at. Never an automatic block — someone hunting for a date that works for a friend is the normal case.</p>
+  </div>
+
+  <!-- ============================= SECTION D ============================= -->
+  <h2><span class="sec">Section D</span>Clubs that don't want this at all</h2>
+  <div class="rule"></div>
+
+  <div class="panel">
+    <p class="ptitle"><span class="n">14</span> Module off — the surface disappears completely</p>
+    <p class="where">Where: <code>/book</code> → Guests step, in a club with member guests switched off</p>
+    <p class="why">Not hidden by the browser — genuinely not sent. The button is absent and the find address does not exist, so there is nothing to poke at.</p>
+    <div class="screen">
+      <div class="col">
+        <div class="card">
+          <div class="card-content" style="padding-top:22px;">
+            <div class="stack">
+              <div class="hrow">
+                <h3 class="h3app">Guests (1/8 max)</h3>
+                <div class="btnset">
+                  <span class="btn out sm">+ Add Non-Member Guest</span>
+                </div>
+              </div>
+              <div class="dashedcallout">Family member missing? Add or invite them in your User Profile &gt; Family Group, then return here to quick add them at member rates.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================= SECTION E ============================= -->
+  <h2><span class="sec">Section E</span>The admin screen, after this ships</h2>
+  <p class="sectionsub">This card already exists — it shipped last release with both switches live but nothing reading them yet. The only change here is that one paragraph stops being true and comes out.</p>
+  <div class="rule"></div>
+
+  <div class="panel">
+    <p class="ptitle"><span class="n">15</span> Member guests settings, with the &ldquo;not yet&rdquo; notice removed</p>
+    <p class="where">Where: <code>/admin/bookings-setup</code> → Member guests</p>
+    <p class="why">Today this section carries a paragraph beginning <em>&ldquo;Not in use yet. Searching for a member by name is still being built…&rdquo;</em>. The moment this work ships that sentence is false, so it goes. The two warnings stay exactly as written — they are the honest description of what the switches do.</p>
+    <div class="screen">
+      <div class="col">
+        <div class="card">
+          <div class="card-header">
+            <div class="hrow">
+              <div>
+                <div class="card-title">Member guests</div>
+                <p class="card-desc">Lets a member add another club member — outside their own family group — as a guest on their booking.</p>
+              </div>
+              <span class="btn out sm">Edit</span>
+            </div>
+          </div>
+          <div class="card-content">
+            <div class="stack">
+              <fieldset class="fieldset">
+                <p class="legend">Finding the other member</p>
+                <div class="stack-sm">
+                  <span class="checkopt"><span class="box"></span><span><span class="t">Let members search by name</span><span class="d">Off: a member must type the other member's exact email address. On: they can type a name and pick from a list.</span></span></span>
+                  <div class="alert warn"><span class="ico">⚠</span><div class="body"><p>Turning this on makes your membership list browsable. Any member can type a few letters and see the names of other members who match. Leave it off unless your club has agreed to that.</p></div></div>
+                  <div class="subfield off">
+                    <p class="legend" style="margin-top:4px;">Only while name search is on</p>
+                    <div class="stack-sm">
+                      <span class="checkopt"><span class="box"></span><span><span class="t">Include under-18s in name search</span><span class="d">Off: children never appear in the name list. This can only be set while &ldquo;Let members search by name&rdquo; above is on.</span></span></span>
+                      <div class="alert warn"><span class="ico">⚠</span><div class="body"><p>Turning this on makes children's names browsable to any member. A child can still be added by their household email address either way.</p></div></div>
+                    </div>
+                  </div>
+                </div>
+              </fieldset>
+              <div class="neutralbox"><b>These two search settings never travel in club config transfer.</b> Importing another club's configuration must not quietly make your membership list browsable. The module switch, the ask-first choice and the waiting period do travel.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================= DECISIONS ============================= -->
+  <h2><span class="sec">Signed off</span>The four answers, as given</h2>
+  <p class="sectionsub">Answered by the owner on 31 July 2026 on issue #2308. Recorded here so the reasoning stays attached to the drawings it was given against.</p>
+  <div class="rule"></div>
+
+  <div class="decision">
+    <h3>1 &middot; What the waiting labels say in the booking wizard</h3>
+    <p class="q"><b>Answer: warmer, name-bearing wording in the wizard only.</b> The booking wizard says &ldquo;Waiting for Sam to approve&rdquo;, &ldquo;Sam approved&rdquo;, &ldquo;Sam will be told&rdquo;. The booking-detail page keeps the wording MG2 shipped &mdash; &ldquo;Waiting for consent&rdquo;, &ldquo;Consented&rdquo;, &ldquo;Told, not asked&rdquo;.</p>
+    <p class="q">This was the option against the recommendation, taken deliberately: warmer wording at the moment of booking is worth carrying two vocabularies for one underlying thing. To stop those two drifting apart, they are <b>not</b> a forked copy &mdash; both come out of the single consent-badge function, which gained a third audience alongside member and admin, so no consent state can be added without all three being considered.</p>
+  </div>
+
+  <div class="decision">
+    <h3>2 &middot; What happens to the email box when a club turns name search on</h3>
+    <p class="q"><b>Answer: one box that takes either.</b> If what the member typed parses as an email address it resolves exactly, by the email path; otherwise it searches names. No mode switch and nothing extra to explain. Both paths are rate-limited and audited, so this adds no privacy surface that the two-box version did not already have.</p>
+  </div>
+
+  <div class="decision">
+    <h3>3 &middot; Where the find panel opens</h3>
+    <p class="q"><b>Answer: inline, as drawn.</b> It opens underneath the Guests heading, so the booker keeps sight of their existing guests and the guest limit. No dialog.</p>
+  </div>
+
+  <div class="decision">
+    <h3>4 &middot; The four sentences at the review step</h3>
+    <p class="q"><b>Answer: say all four plainly, always visible while anyone is waiting.</b> That includes the two that follow from the earlier D-11 and D-13 decisions &mdash; that a person who has been added can see the booking, including the other guests&rsquo; names, before they decide, and that their agreement covers the booking however it later changes. Neither underlying rule was reopened.</p>
+  </div>
+
+  <div class="foot">
+    <p><b>Amendments — 31 July 2026, after the build.</b> Four panels were re-drawn to match what actually shipped. Every change is <em>authorised by an answer recorded on this page</em>; nothing here was softened, and nothing was changed that the owner did not decide.</p>
+    <ul class="q">
+      <li><b>Panels 11 and 12 &mdash; the waiting labels.</b> Drawn with MG2&rsquo;s wording (&ldquo;Waiting for consent &middot; expires 7 Aug&rdquo;, &ldquo;Consented&rdquo;, &ldquo;Told, not asked&rdquo;) because they predate Decision 1. Now drawn with the <b>warmer, name-bearing wizard wording</b> that Decision 1 chose. The booking-detail page is unchanged and still uses MG2&rsquo;s wording; both come from one function with two audiences, so there is only ever one place to change.</li>
+      <li><b>Panels 2, 4, 5 and 6&ndash;10 &mdash; the box label.</b> Drawn as two separate boxes, &ldquo;Find a member by email address&rdquo; and &ldquo;Find a member by name&rdquo;. Decision 2 replaced that with <b>one box that takes either</b>, so the open-search panels now read &ldquo;Find a member by name or email address&rdquo;. The default (email-only) panels keep their original label, which is what ships.</li>
+      <li><b>Panel 11 &mdash; the sentence under a waiting guest.</b> Drawn as &ldquo;Sam has been emailed and their bed is held until they answer.&rdquo; In the wizard that is not true yet: no booking exists, so nothing has been sent and no bed is held until the booker confirms. What ships is the same sentence in the correct tense &mdash; &ldquo;Sam will be emailed when you confirm this booking, and their bed is held until they answer.&rdquo; This is the one amendment that is a factual correction rather than a decision, and it is recorded here rather than folded in silently.</li>
+    </ul>
+    <p><b>What this file is for.</b> It is the frozen record of what was agreed before MG3 was built, kept so that a later reader can see what the owner actually signed off rather than inferring it from the code. If the shipped screens and this page ever disagree, this page is the one that is out of date — fix the page with a dated note, and never quietly re-draw it to match a change nobody agreed to.</p>
+    <p><b>What is invented here and what is real.</b> All names, emails and prices are made up. All copy is the real wording. The colours and type are the app's own; the only visual approximation is the exact shade of the amber and red tints in dark mode, because this page does not load the app's stylesheet.</p>
+    <p>Issue #2308 · epic #2305 · signed off 31 July 2026</p>
+  </div>
+
+</div>
