@@ -410,6 +410,25 @@ function buildBookingWhere(query: AdminBookingsQuery): Prisma.BookingWhereInput 
 }
 
 /**
+ * The SQL half of this list's filter, for callers that need to COUNT what a
+ * filtered view will show without paying for the whole list pipeline.
+ *
+ * #2307's "Waiting for consent · N" chip is the caller: clicking it stacks with
+ * whatever filters are already in the URL, so its number has to be taken inside
+ * the same filter or it promises rows the click then hides.
+ *
+ * IT IS THE SQL HALF ONLY. The Xero/bed/change filters are derived in
+ * JavaScript after this query (see `listAdminBookings`), so a count taken
+ * through this clause is an upper bound while one of those three is active.
+ * Anything that must be exact has to run the list itself.
+ */
+export function buildAdminBookingsWhere(
+  query: AdminBookingsQuery,
+): Prisma.BookingWhereInput {
+  return buildBookingWhere(query);
+}
+
+/**
  * SQL-expressible orderings (#1884). Returns null for the two sort modes that
  * genuinely need the JS comparator: "member" sorts on the lowercased
  * "lastName firstName" string and "status" on the lifecycle rank (#1215),

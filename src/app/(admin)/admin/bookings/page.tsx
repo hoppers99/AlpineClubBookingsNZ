@@ -20,6 +20,7 @@ import { type ChipTone } from "@/lib/chip-tones";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
   adminBookingsQuerySchema,
+  buildAdminBookingsWhere,
   getDefaultAdminBookingSortDir,
   listAdminBookings,
   type AdminBookingRow,
@@ -147,7 +148,15 @@ export default async function AdminBookingsPage({
   // in the per-guest exception table). The chips stay visible while the module
   // is off if anything is still stuck, because those rows need a human either
   // way.
-  const consentQueues = await loadMemberGuestConsentQueueCounts();
+  //
+  // The waiting count is taken INSIDE the filters this URL already applies,
+  // because clicking the chip narrows those filters rather than replacing
+  // them. The consent chips are stripped out of the scope first: a waiting
+  // count taken while the attention chip was open would only count bookings
+  // that were both waiting AND stuck.
+  const consentQueues = await loadMemberGuestConsentQueueCounts(prisma, {
+    waitingScope: buildAdminBookingsWhere({ ...query, consentState: "all" }),
+  });
   const showConsentChips =
     effectiveModules.memberGuests ||
     consentQueues.waitingBookings > 0 ||
@@ -257,10 +266,26 @@ export default async function AdminBookingsPage({
       <AdminBookingCalendar />
 
       {showConsentChips ? (
-        <div className="flex flex-wrap gap-2" aria-label="Consent queues">
+        // `role="group"` because an aria-label on a bare <div> is not exposed
+        // to assistive technology at all — the div has no role to hang a name
+        // on, so the label is simply dropped. Same pattern as the "Rows per
+        // page" group in admin-pagination.tsx.
+        //
+        // Each chip that is ON says so IN ITS ACCESSIBLE NAME, not only through
+        // colour and `aria-current`: a screen-reader user should hear which
+        // queue they are looking at without having to infer it, and the repo
+        // already writes exactly this ("N rows per page, current"). The label
+        // still starts with the visible text, so a voice-control user can say
+        // what they can see.
+        <div role="group" aria-label="Consent queues" className="flex flex-wrap gap-2">
           <Link
             href={consentChipHref("waiting")}
             aria-current={consentState === "waiting" ? "true" : undefined}
+            aria-label={
+              consentState === "waiting"
+                ? `Waiting for consent · ${consentQueues.waitingBookings}, current`
+                : undefined
+            }
             className={consentChipClass(consentState === "waiting")}
           >
             Waiting for consent · {consentQueues.waitingBookings}
@@ -268,6 +293,11 @@ export default async function AdminBookingsPage({
           <Link
             href={consentChipHref("attention")}
             aria-current={consentState === "attention" ? "true" : undefined}
+            aria-label={
+              consentState === "attention"
+                ? `Consent needs attention · ${consentQueues.attentionGuests}, current`
+                : undefined
+            }
             className={consentChipClass(consentState === "attention")}
           >
             Consent needs attention · {consentQueues.attentionGuests}
@@ -307,7 +337,10 @@ export default async function AdminBookingsPage({
             </TableHeader>
             <TableBody>
               {consentExceptions.map((row) => (
-                <TableRow key={`${row.bookingId}-${row.guestFirstName}-${row.guestLastName}`}>
+                // The guest row's own id: two guests on one booking may share a
+                // name (a family with a repeated first name, or two "J Smith"),
+                // and a duplicate key makes React reuse the wrong row.
+                <TableRow key={row.guestId}>
                   <TableCell>
                     <Link
                       href={buildHrefWithReturnTo(`/bookings/${row.bookingId}`, currentBookingsPath)}
