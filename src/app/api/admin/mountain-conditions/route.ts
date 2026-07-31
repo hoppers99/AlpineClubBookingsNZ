@@ -2,13 +2,22 @@ import { NextRequest, NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
 import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
+import logger from "@/lib/logger";
 import {
   coerceWhakapapaCurlData,
   coerceWhakapapaSectionVisibility,
+  coerceWhakapapaSourceConfig,
   emptyWhakapapaCurlData,
+  resolveWhakapapaSelectors,
+  validateWhakapapaSourceUrl,
+  WHAKAPAPA_SELECTOR_LABELS,
   type WhakapapaSectionVisibility,
+  type WhakapapaSourceConfig,
 } from "@/lib/whakapapa-report";
-import { fetchWhakapapaCurlData } from "@/lib/whakapapa-report.server";
+import {
+  fetchWhakapapaCurlData,
+  findInvalidSelectorOverrides,
+} from "@/lib/whakapapa-report.server";
 
 const WHAKAPAPA_SOURCE = "whakapapa-report";
 const ADMIN_FREEZE_TTL_MS = 12 * 60 * 60 * 1000;
@@ -16,6 +25,7 @@ const ADMIN_FREEZE_TTL_MS = 12 * 60 * 60 * 1000;
 type WhakapapaReportCacheRecord = {
   source: string;
   payload: Prisma.JsonValue;
+  config: Prisma.JsonValue;
   fetchedAt: Date;
   frozenUntil: Date | null;
   updatedAt: Date;
@@ -30,13 +40,15 @@ type WhakapapaReportCacheDelegate = {
     create: {
       source: string;
       payload: Prisma.InputJsonValue;
+      config?: Prisma.InputJsonValue;
       fetchedAt: Date;
       frozenUntil: Date | null;
     };
     update: {
-      payload: Prisma.InputJsonValue;
-      fetchedAt: Date;
-      frozenUntil: Date | null;
+      payload?: Prisma.InputJsonValue;
+      config?: Prisma.InputJsonValue;
+      fetchedAt?: Date;
+      frozenUntil?: Date | null;
     };
   }): Promise<WhakapapaReportCacheRecord>;
 };
@@ -45,23 +57,105 @@ const whakapapaReportCache = (
   prisma as unknown as { whakapapaReportCache: WhakapapaReportCacheDelegate }
 ).whakapapaReportCache;
 
-function toResponseRecord(record: {
-  source: string;
-  payload: Prisma.JsonValue;
-  fetchedAt: Date;
-  frozenUntil: Date | null;
-  updatedAt: Date;
-}) {
+function toResponseRecord(record: WhakapapaReportCacheRecord) {
   const payload =
     coerceWhakapapaCurlData(record.payload) ?? emptyWhakapapaCurlData();
+  const config = coerceWhakapapaSourceConfig(record.config);
 
   return {
     source: record.source,
     payload,
+    config,
     fetchedAt: record.fetchedAt.toISOString(),
     frozenUntil: record.frozenUntil?.toISOString() ?? null,
     updatedAt: record.updatedAt.toISOString(),
   };
+}
+
+function configToInputJson(config: WhakapapaSourceConfig): Prisma.InputJsonValue {
+  return config as unknown as Prisma.InputJsonValue;
+}
+
+/**
+ * Shared 400 for a selector override the scraper's own engine cannot compile.
+ * Used by BOTH the save and the preview paths so a malformed selector names the
+ * offending field either way, instead of surfacing as the generic upstream 502.
+ * Returns null when every override compiles.
+ */
+function invalidSelectorResponse(
+  overrides: WhakapapaSourceConfig["selectorOverrides"],
+): NextResponse | null {
+  const invalidSelectors = findInvalidSelectorOverrides(overrides);
+  if (invalidSelectors.length === 0) {
+    return null;
+  }
+  const fields = invalidSelectors
+    .map((key) => WHAKAPAPA_SELECTOR_LABELS[key])
+    .join(", ");
+  return NextResponse.json(
+    {
+      error: `Invalid CSS selector for: ${fields}. Fix the selector so it is valid, or clear the field to use the default.`,
+    },
+    { status: 400 },
+  );
+}
+
+async function saveConfig(rawConfig: unknown): Promise<NextResponse> {
+  const rawUrl =
+    rawConfig && typeof rawConfig === "object"
+      ? (rawConfig as { sourceUrl?: unknown }).sourceUrl
+      : undefined;
+
+  // Validate the raw URL explicitly so an out-of-allowlist value returns a clear
+  // error instead of silently falling back to the default.
+  const urlCheck = validateWhakapapaSourceUrl(rawUrl);
+  if (!urlCheck.ok) {
+    return NextResponse.json({ error: urlCheck.error }, { status: 400 });
+  }
+
+  const config: WhakapapaSourceConfig = {
+    sourceUrl: urlCheck.url,
+    selectorOverrides:
+      coerceWhakapapaSourceConfig(rawConfig).selectorOverrides,
+  };
+
+  // Refuse a malformed selector up front, naming the field, rather than saving
+  // cleanly and then throwing on every scrape (a stale public widget and a 500
+  // on Update from upstream). This compiles each override against the same
+  // engine the scraper uses.
+  const selectorError = invalidSelectorResponse(config.selectorOverrides);
+  if (selectorError) {
+    return selectorError;
+  }
+
+  // Preserve the cached report data, its fetch timestamp, and any freeze window;
+  // only the config column changes here.
+  const existing = await whakapapaReportCache.findUnique({
+    where: { source: WHAKAPAPA_SOURCE },
+  });
+  const payload =
+    coerceWhakapapaCurlData(existing?.payload) ?? emptyWhakapapaCurlData();
+  const fetchedAt = existing?.fetchedAt ?? new Date(0);
+  const frozenUntil = existing?.frozenUntil ?? null;
+
+  const record = await whakapapaReportCache.upsert({
+    where: { source: WHAKAPAPA_SOURCE },
+    create: {
+      source: WHAKAPAPA_SOURCE,
+      payload: payload as unknown as Prisma.InputJsonValue,
+      config: configToInputJson(config),
+      fetchedAt,
+      frozenUntil,
+    },
+    update: {
+      config: configToInputJson(config),
+    },
+  });
+
+  return NextResponse.json({
+    record: toResponseRecord(record),
+    message: "Source configuration saved.",
+  });
 }
 
 async function getCurrentRecord() {
@@ -151,7 +245,7 @@ export async function PUT(request: NextRequest) {
   });
 }
 
-export async function POST() {
+export async function POST(request: NextRequest) {
   const guard = await requireAdmin({
     permission: { area: "content", level: "edit" },
   });
@@ -159,11 +253,79 @@ export async function POST() {
     return guard.response;
   }
 
+  // POST accepts an optional body. `{ preview: true, config }` fetches and
+  // parses with the supplied (unsaved) config so an admin can test a URL /
+  // selector change before committing it. An empty body refreshes from the
+  // stored config and persists as usual.
+  let body: unknown = null;
+  try {
+    const text = await request.text();
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+
+  const isPreview = Boolean(
+    body && typeof body === "object" && (body as { preview?: unknown }).preview,
+  );
+
   const existing = await whakapapaReportCache.findUnique({
     where: { source: WHAKAPAPA_SOURCE },
   });
 
-  const payload = await fetchWhakapapaCurlData();
+  if (isPreview) {
+    const rawConfig = (body as { config?: unknown }).config;
+    const rawUrl =
+      rawConfig && typeof rawConfig === "object"
+        ? (rawConfig as { sourceUrl?: unknown }).sourceUrl
+        : undefined;
+
+    // Validate the raw URL so a bad value returns a clear error rather than
+    // silently previewing the default host.
+    const urlCheck = validateWhakapapaSourceUrl(rawUrl);
+    if (!urlCheck.ok) {
+      return NextResponse.json({ error: urlCheck.error }, { status: 400 });
+    }
+
+    const candidate = coerceWhakapapaSourceConfig(rawConfig);
+    // Same compile check as the save path, so a typo names the field here too
+    // rather than coming back as the generic "Preview failed" 502 below.
+    const selectorError = invalidSelectorResponse(candidate.selectorOverrides);
+    if (selectorError) {
+      return selectorError;
+    }
+
+    try {
+      const preview = await fetchWhakapapaCurlData({
+        sourceUrl: urlCheck.url,
+        selectors: resolveWhakapapaSelectors(candidate.selectorOverrides),
+      });
+      return NextResponse.json({
+        preview,
+        message: "Preview generated. Nothing was saved.",
+      });
+    } catch (previewError) {
+      // Do not leak the raw error to the client (api-error-response-contract);
+      // log the detail server-side and return a generic, actionable message.
+      logger.error(
+        { err: previewError },
+        "Whakapapa report preview fetch failed",
+      );
+      return NextResponse.json(
+        {
+          error:
+            "Preview failed. Check the report URL and selectors, then try again.",
+        },
+        { status: 502 },
+      );
+    }
+  }
+
+  const storedConfig = coerceWhakapapaSourceConfig(existing?.config);
+  const payload = await fetchWhakapapaCurlData({
+    sourceUrl: storedConfig.sourceUrl,
+    selectors: resolveWhakapapaSelectors(storedConfig.selectorOverrides),
+  });
 
   // Section visibility is admin-controlled config stored in the payload; keep
   // the current choices instead of resetting them on an upstream refresh.
@@ -179,6 +341,7 @@ export async function POST() {
     create: {
       source: WHAKAPAPA_SOURCE,
       payload: payload as unknown as Prisma.InputJsonValue,
+      config: configToInputJson(storedConfig),
       fetchedAt: now,
       frozenUntil: null,
     },
@@ -210,6 +373,12 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
+  // A `{ config }` body saves the source URL + selector overrides, which live in
+  // the separate `config` column so an upstream refresh never wipes them.
+  if (body && typeof body === "object" && "config" in body) {
+    return saveConfig((body as { config?: unknown }).config);
+  }
+
   const rawVisibility =
     body && typeof body === "object" && "visibility" in body
       ? (body as { visibility?: unknown }).visibility
@@ -217,7 +386,7 @@ export async function PATCH(request: NextRequest) {
 
   if (!rawVisibility || typeof rawVisibility !== "object") {
     return NextResponse.json(
-      { error: "visibility object is required" },
+      { error: "visibility or config object is required" },
       { status: 400 },
     );
   }

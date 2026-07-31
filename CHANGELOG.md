@@ -30,6 +30,127 @@ All notable public reference-release changes should be recorded here.
   dependants" — on both the *create new* and *link existing* paths. And the copy
   that claimed only adults can manage dependants is gone, because that is no
   longer the rule.
+- **Recording a cash payment now asks about any extra still owing (#2397).**
+  When a booking is priced up after it was made — someone adds a guest, say —
+  the increase is tracked separately as an "additional payment" the member is
+  normally asked to pay by card. Until now, recording the booking as paid in
+  cash or by an off-Xero bank transfer said nothing about that extra and left it
+  recorded as still owing: the bookings list kept showing a "$X due" chip
+  against a fully settled booking, the reports counted the money as uncollected,
+  and the reminder emails would have gone on asking the member for money the
+  club already had. **Record manual payment** now shows the split — the booking
+  amount before the change, the extra, and what the booking owes in total — and
+  asks whether the money you received covers the addition as well. Say **yes**
+  and the full amount is recorded and the addition marked settled, so nothing
+  chases the member again and the booking's history says the payment covered it.
+  Say **no** and only the amount owed *before* the change is recorded: the
+  booking is still marked paid, but the books say the club received that smaller
+  amount and is still owed the addition, so the figures add up and the member is
+  rightly still asked for the rest. Neither answer is a default, you cannot
+  record the payment until you have chosen, and the dialog does not name a total
+  until you have — because your answer changes it. Bookings with no such extra —
+  nearly all of them — see the dialog completely unchanged. Reversing a manual
+  payment gives back exactly what it recorded, putting a covered addition back
+  to owing.
+
+  If you answer **no**, the member is left a way to pay. Recording a cash
+  payment normally closes any card payment the member still had open, so they
+  cannot pay twice for money the club already holds; the card payment for the
+  addition itself is now the one exception, because that money is still being
+  asked for. The member can settle it from their own booking page exactly as
+  before, and the confirmation on screen tells you whether they can — or whether
+  someone will need to contact them instead. Their confirmation email says the
+  same thing: rather than claiming the booking was paid in full, it shows the
+  booking total, what has been paid and what is still owing, and how to pay the
+  rest. Separately, a booking whose card payment has already taken money can no
+  longer be offered the cash-payment button at all: it now says why, instead of
+  refusing every attempt with a message about the booking having changed. Where
+  more than one reason applies, the most specific one is shown — a payment that
+  has already had money refunded says so, and says to resolve the refund first —
+  and it is the same sentence before you click as after.
+
+- **The Whakapapa conditions widget survives the source page changing, and now
+  shows the trails.** The public widget is scraped from an external report page
+  whose style names carry a build hash that changes every time that site
+  redeploys — and each time it did, a section quietly went blank (road status was
+  broken this way when this work started). The scraper now matches on the stable
+  parts of the page rather than those rotating hashes, so a routine upstream
+  rebuild no longer breaks it. A new **Trails** section joins road status, lifts,
+  facilities, food & drink and conditions: trails are grouped by sub-area (small
+  neighbouring areas share a line to save space) and each shows its run
+  difficulty as the standard ski symbol — green circle, blue square, black
+  diamond, red diamond — with a matching key, plus whether it is groomed and its
+  size. The status badges gained **On Hold** (yellow) alongside Open, Closed and
+  Coming Soon, and an **Unknown** state renders grey. Operators get a new
+  **Source & selectors** panel on *Admin → Mountain Conditions*: set the report
+  URL (locked to whakapapa.com / snow.nz so it can never be pointed at an
+  internal address), and, only if a deeper page change defeats the defaults,
+  override the per-section element selectors — with a **Preview** that fetches
+  and parses without saving, and a save that refuses a malformed selector up
+  front (naming the field) instead of storing one that would throw on every
+  later scrape. The built-in selector set is seeded into the database, and the
+  whole configuration can be **exported and imported as a JSON file** so one
+  site's known-good settings can be handed to another rather than re-entered by
+  hand.
+
+- **Clubs can safely record a trusted induction history when moving an
+  established membership onto the digital register (#2361).** A new
+  dry-run-first operator command classifies every active real-member
+  (`USER`/`ADMIN`) record across the configured Infant, Child, Youth, and Adult
+  tiers, includes non-login dependants, excludes operational and non-member
+  contacts, reports an in-scope `N/A` separately, and preserves anyone who
+  already has a completed induction of any kind. Apply needs a login-enabled
+  Full Admin actor, one New Zealand baseline date, stable source provenance,
+  and exact club, database, and reviewed SHA-256 plan-digest confirmations.
+  Apply rebuilds the complete safe plan under its table lock and rejects stale
+  digests before blocker, no-op, or write handling. It refuses to run
+  over an open induction, locks direct induction-table writes during apply, and
+  commits all completed New Member baseline rows with one audit event or none
+  at all. The runbook requires a short member-population, induction, and
+  configuration, group-join member-creation, and actor-access freeze from the
+  final dry run through post-apply verification because the table lock does not
+  freeze those inputs.
+  The records are explicit Admin Overrides with no invented signers, sign-offs,
+  emails, or hut-leader eligibility; a fresh post-apply dry-run digest permits
+  an identical no-op rerun while the stale pre-apply digest fails closed. The new
+  operator runbook documents rehearsal, review, verification, and recovery.
+- **The browser test suite stopped crying wolf (#2302).** Over three days five
+  different browser tests went red on code that was perfectly fine, each costing
+  someone an investigation and one of them turning the main branch red for the
+  best part of an hour. None of it was a real defect, and none of it was
+  "slowness" either. Two causes were behind all five.
+
+  The first: when a browser test fails, it is automatically run again — but it
+  was run again against the *leftovers* of the attempt that just failed. A test
+  that books a bed on its way to the thing it actually checks left that booking
+  behind, so the second and third attempts failed on the booking clash rather
+  than on the original problem, and the error finally reported was the clean-up
+  mess rather than the cause. Tests that permanently change something now put it
+  back before each attempt, and each attempt books different nights, so a repeat
+  run starts from where the first one did. Where a test genuinely has to re-use
+  or move the booking an earlier test made, and so cannot simply pick different
+  nights, it clears that booking before every attempt instead. Groups of tests
+  that used to be chained together end to end have also been unchained down to
+  the pairs that genuinely depend on each other, so one test's bad luck can no
+  longer drag its neighbours down with it. Relatedly, the tests reach a booking's
+  dates by paging forward through the booking calendar a month at a time: that
+  walk now has room for the furthest dates a repeat run can ask for, and says so
+  plainly if it ever runs out, instead of quietly stopping on the wrong month and
+  failing later on a day it was never showing.
+
+  The second: the pages that stream in progressively briefly contain each piece
+  of text twice — once in the version being delivered and once in the version
+  being shown — and a test that looked for text by wording alone could catch the
+  invisible copy and give up. Those checks now look for the copy that is actually
+  on screen.
+
+  Also fixed: the stand-in Xero server used by the tests calls the app back
+  through its own network loopback, which on a busy build machine occasionally
+  refuses the connection; a single refused connection used to leave the Xero
+  setup wizard stuck on "Confirming the organisation name…" for the rest of the
+  test. That call now retries. The testing guide gains a "Flake invariants"
+  section so a future test cannot quietly reintroduce any of this. No part of
+  this touches the running club site.
 
 - **Adding another club member as a guest (#2306, #2307).** Until now a member
   could only put people from their own family group on a booking. There is now a
@@ -76,7 +197,7 @@ All notable public reference-release changes should be recorded here.
   is stuck and what actually fixes it (cancel the booking, add another guest,
   re-quote the request), never a dead-end "ask the club".
   The published banner-coverage figures were re-measured with the new settings
-  card: **297** gated admin controls, **250** of them covered by a banner (224
+  card: **299** gated admin controls, **252** of them covered by a banner (226
   in their own file, 26 by a verified vouching parent — 5 of those through the
   wizard frame), and **47** across 25 files deliberately keeping their own
   reason.
@@ -142,9 +263,40 @@ All notable public reference-release changes should be recorded here.
   that nothing may quietly un-cancel a membership. Related hardening found
   while checking this: the lobby-display preview endpoint now re-checks that the
   admin previewing it still has an active account, which every other admin
-  endpoint already did. The member-facing **Cancel Membership** flow in a
-  member's own profile is unchanged and still limited to ordinary member
-  accounts; its wording no longer implies otherwise.
+  endpoint already did. The member-facing **Membership Cancellation** panel in a
+  member's own profile follows the same rule — see the next entry.
+
+- **A full admin, and an organisation account, can now start a cancellation
+  from their own profile (#2391).** The **Membership Cancellation** panel in a
+  member's profile asked a narrower question than the member page did, and it
+  turned away exactly the two kinds of account the member page used to turn away
+  before the entry above fixed it: a **Full Admin**, and an **organisation or
+  school account**. A departing full admin was told to ring the office; an
+  organisation was told the same and had no self-service route at all.
+  Committee members were never affected — a Membership Officer, Booking Officer,
+  Treasurer, Content Manager or holder of a club-defined custom role keeps an
+  ordinary member account underneath their access, so they were always offered
+  the panel and always appeared in a relative's family list. Family lists had
+  the matching gap for the two classes that were refused: a relative who is a
+  full admin, and an organisation sharing a family group, were simply missing
+  from the list of memberships you could include, with no reason shown, so it
+  looked as though they held no membership at all. The profile panel now asks
+  exactly the question the member page asks: is there an account holder here
+  with a membership? So a full admin can start their own cancellation, an
+  organisation can start its own, and a relative who is a full admin appears in
+  the family list and can be included. Two conditions remain, and both are about
+  being able to use your own profile rather than about what kind of account it
+  is: the account must be active, and it must have its own login. A member with
+  no login of their own — most family dependants — is still cancelled either by a
+  relative including them in a family request or by an admin from their member
+  page, and the refusal now says that instead of implying they are not a proper
+  member. The lodge kiosk login and the contact records created by booking
+  requests are refused here as everywhere else, because they hold no membership,
+  and if one ever appears in a family list it now says so rather than vanishing.
+  Nothing about approval changed: whoever raises a cancellation, a *different*
+  admin must approve it, and the club can still never be left with no full
+  admin — so a sole full admin who starts their own departure from their profile
+  must appoint a successor before anyone can approve it.
 
 - **A booking paid in cash — or by a bank transfer that never reached Xero —
   can now be recorded as paid, properly (#2262).** Open the booking, and under
@@ -546,8 +698,8 @@ All notable public reference-release changes should be recorded here.
   added its three, once more when #2286's Release/Change bed controls landed,
   again when the cash / off-Xero payment feature, #2262, landed its four
   per-button-reason controls, and again with #2307's Member guests settings
-  card): **297**
-  gated admin controls, **250** of them covered by a banner (224 in their own
+  card): **299**
+  gated admin controls, **252** of them covered by a banner (226 in their own
   file, 26 by a verified vouching parent — 5 of those through the wizard frame),
   and **47** across 25 files deliberately keeping their own reason.
 - **Choosing to use your account credit and then saving the booking as a draft

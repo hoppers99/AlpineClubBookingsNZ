@@ -132,6 +132,9 @@ family/committee, the membership lifecycle, and membership billing):
   groupings to confirm or dismiss.
 - [Induction](guides/induction.md) — the induction register, sign-offs, and
   induction settings.
+- [Trusted legacy induction baseline](INDUCTION_BASELINE_RUNBOOK.md) — the
+  dry-run-first maintenance runbook for recording an authorised historical
+  induction baseline.
 - [Deletion Requests](guides/deletion-requests.md) — member self-service
   deletions and admin-initiated hard-delete review (two-admin rule).
 - [Lockers](guides/lockers.md) — locker inventory and member allocation

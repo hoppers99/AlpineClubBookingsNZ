@@ -22,6 +22,8 @@ function relationshipLabel(candidate: MembershipCancellationCandidate) {
   switch (candidate.relationship) {
     case "self":
       return "You";
+    case "organisation":
+      return "Organisation";
     case "dependent":
       return "Dependant";
     case "non_login_adult":

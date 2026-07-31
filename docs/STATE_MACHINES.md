@@ -891,11 +891,73 @@ PaymentTransaction: an INTERNET_BANKING PRIMARY row with NO Stripe intent id,
   reason "manual_mark_paid", -> SUCCEEDED
 ```
 
+#2397 — an OUTSTANDING upward-modification delta on the same booking. The admin
+is asked whether the cash covers it (no default, and the answer is part of the
+settle's contract). The delta is a SLICE of the amount owing — an upward
+modification raised `finalPriceCents` by the same amount it recorded as the
+extra — so the PRIMARY transaction is the booking's worth BEFORE the change
+under **both** answers, and the answer decides what sits beside it:
+
+```text
+covered:
+  Payment: amountCents = finalPriceCents - credit
+           additionalPaymentStatus PENDING|FAILED|null -> "SUCCEEDED"
+           (re-asserted in the fenced write on the exact additionalAmountCents)
+  PaymentTransaction: PRIMARY = (finalPriceCents - credit - delta), plus an
+    INTERNET_BANKING ADDITIONAL row with NO Stripe intent id, reason
+    "manual_mark_paid_additional", -> SUCCEEDED. The two sum to amountCents:
+    the cash is SPLIT, never doubled.
+  AuditLog: a second row, "booking-payment.manual-payment.additional-settled",
+    which is what puts the extra on the booking-history timeline
+
+NOT covered (owner decision, 31 Jul 2026 — record what was handed over):
+  Payment: amountCents = finalPriceCents - credit - delta
+           additional* columns UNTOUCHED, so the delta is still owed and still
+           chased
+  PaymentTransaction: PRIMARY = (finalPriceCents - credit - delta). No
+    ADDITIONAL row.
+```
+
+The generalised ledger mirror, which holds for both answers (and already held
+for a card-settled booking carrying an uncollected addition):
+
+```text
+amountCents + creditAppliedCents + (uncollected addition) = finalPriceCents
+```
+
+It is not asserted at runtime inside the settle — the settled figure is defined
+as the left-hand side, so any in-transaction check is a tautology. It is upheld
+by construction (the two rows are a split of one figure), by the fenced write's
+WHERE clauses, and after the fact by `auditIbAppliedCreditStrands`; see
+`docs/DOMAIN_INVARIANTS.md` for the full statement.
+
+Stripe-intent hygiene differs by answer. Both answers enqueue a durable
+CANCEL_PAYMENT_INTENT for every live Stripe intent on the payment, EXCEPT that
+a NOT-covered answer spares the payment's current `additionalPaymentIntentId`:
+that extra is still owed, and that intent is the member's only self-service way
+to pay it. Superseded addition intents are still cancelled, and the covered
+answer cancels the addition's intent like any other.
+
+On the reversal, the reversed amount is the figure that was written. A covered
+extra goes back to owing: the ADDITIONAL row SUCCEEDED -> FAILED (reason
+"manual_mark_paid_additional_reversed") and `additionalPaymentStatus` is restored
+by a guarded claim matching exactly the amount and status the settle recorded. A
+not-covered settle left the extra owing throughout, so there is nothing to
+restore.
+
 Refused (409, nothing written) when the booking is already PAID, is not in a
 payable status, participates in a group settlement, has ANY Xero invoice
 evidence including a queued mint, carries any refund history
-(`refundedAmountCents > 0`), owes nothing, no longer fits the lodge, or when
-the amount owing moved since the admin's dialog rendered.
+(`refundedAmountCents > 0`), is in a payment status OUTSIDE
+PENDING/PROCESSING/FAILED — i.e. has already taken money, refused at read time
+since #2397 with a message that says so rather than at the fence with
+"changed while you were recording it" — owes nothing, no longer fits the lodge, when
+the amount owing moved since the admin's dialog rendered, or (#2397) when the
+outstanding extra moved, appeared, or vanished since it did — including when an
+answer arrives for an extra that no longer exists, when an extra exists and no
+answer was given, when the extra is larger than the whole amount owing (either
+answer), and when a "not covered" answer would leave nothing to record because
+the extra IS the whole amount owing.
 
 Reversal (`direction: "unpaid"`), permitted only while nothing has happened
 that it could not undo:
@@ -1501,11 +1563,26 @@ admin/application creates induction -> assigned signers review checklist
 signer records overall Pass -> sign-off count increments
 required sign-offs reached -> COMPLETED
 admin override -> COMPLETED
+trusted legacy baseline -> NEW_MEMBER COMPLETED (ADMIN_OVERRIDE)
 admin void -> VOIDED
 ```
 
 Checklist templates are versioned and active per workflow kind, so a Hut Leader
 Induction can use different checklist wording from a New Member Induction.
+The trusted legacy baseline transition is the guarded, dry-run-first exception
+for an authorised pre-register history (#2361). It creates a new row only for
+an active, non-archived, non-cancelled real-member row (`USER` or `ADMIN`) in a
+configured person age tier who has neither an open workflow nor a completed
+induction of any kind. Login is not required, so non-login dependants remain
+included; `LODGE`, `NON_MEMBER`, and `SCHOOL` rows are excluded. It preserves
+all existing rows and creates no signers or sign-offs. All new rows use the
+same supplied, non-future New Zealand date for `inductionDate` and
+`completedAt`, record the Full Admin actor and stable provenance, and commit
+atomically. An open `DRAFT` or `IN_PROGRESS` row visible under the direct-DML
+table lock blocks the entire apply; a repeat apply is a no-op. The required
+operator freeze protects the wider member population from the final dry run
+through apply. `N/A` members are reported but never transitioned.
+
 Completing a `HUT_LEADER` induction sets the member's hut-leader eligibility
 flag. Actual `HutLeaderAssignment` rows remain separate dated roster/coverage
 records and are not created by induction completion.
@@ -1543,17 +1620,26 @@ visible. The list API (`/api/admin/member-lifecycle-action-requests`) takes an
 `action` of `ARCHIVE` (default) or `DELETE` and maps the page-filter status
 `PENDING` onto the lifecycle `REQUESTED` state.
 
-Entry eligibility (#2383): an admin-raised cancellation request is accepted for
-any account holder — every member whatever admin access they hold, and
-organisation/school accounts — and refused only for the lodge kiosk device login
-and booking-request contact records, which hold no membership. The kiosk is
+Entry eligibility (#2383, #2391): a cancellation request — raised by an admin
+from the member page, or by the member themselves from the **Membership
+Cancellation** panel in their own profile — is accepted for any account holder
+— every member whatever admin access they hold, and organisation/school
+accounts — and refused only for the lodge kiosk device login and
+booking-request contact records, which hold no membership. The kiosk is
 recognised by the record's whole classification, so a person who merely also
 holds the lodge tools stays cancellable. One rule,
-`isMembershipHolderRecord`, shared by server and admin page. Approval is where
+`isMembershipHolderRecord`, shared by three call sites: the admin-raised server
+route, the admin member page's gate, and (since #2391) the member-raised route
+in `loadCancellationCandidates`, which applies it both to the requester and to
+every candidate in the family list. The member-raised route adds exactly two
+further conditions, and they are about being able to operate your own profile
+rather than about the class of account: the requester must be `active` and
+`canLogin`. Approval is where
 the admin-account guards bite: a privileged target needs a Full Admin approver,
 and the last active login-enabled Full Admin can never be cancelled, both
 evaluated inside the approval transaction. A self-raised cancellation is
-allowed but cannot be self-approved. See
+allowed but cannot be self-approved — including one raised from the profile
+panel, where the requester is recorded as the member themselves. See
 [`DOMAIN_INVARIANTS.md`](DOMAIN_INVARIANTS.md#membership-lifecycle) and
 [`CANCELLATIONS.md`](CANCELLATIONS.md#who-can-be-cancelled).
 

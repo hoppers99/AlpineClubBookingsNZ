@@ -1,7 +1,10 @@
 import { createHmac, randomBytes } from "crypto";
 import { NextResponse } from "next/server";
 import { getOperationalXeroWebhookKey } from "@/lib/xero-config";
-import { getXeroMockInternalOrigin } from "@/lib/xero-mock-endpoint";
+import {
+  fetchMockLoopback,
+  getXeroMockInternalOrigin,
+} from "@/lib/xero-mock-endpoint";
 import { mockDisabledResponse } from "../_guard";
 
 // Mock Xero intent-to-receive (ITR) validation ping (#2081). Simulates Xero's
@@ -44,7 +47,11 @@ export async function POST() {
   });
   const signature = createHmac("sha256", webhookKey).update(body).digest("base64");
 
-  const res = await fetch(`${origin.replace(/\/$/, "")}/api/webhooks/xero`, {
+  // Same loopback hop, same retry policy as every other mock self-fetch (#2302):
+  // a refused connection on a loaded runner must not read as "the webhook route
+  // rejected the ping". Retries only on a transport failure; any HTTP status the
+  // real handler returns is forwarded unchanged.
+  const res = await fetchMockLoopback(`${origin.replace(/\/$/, "")}/api/webhooks/xero`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

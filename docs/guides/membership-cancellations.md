@@ -32,6 +32,14 @@ allocated Xero credit note.
   See [who can be cancelled](../CANCELLATIONS.md#who-can-be-cancelled) for the
   two record types that are not offered the action, and for the two rules that
   govern approving a cancellation for an account with admin access.
+- A member has started their own cancellation from the **Membership
+  Cancellation** panel in their profile. That panel now follows the same rule as
+  the member page, so requests can arrive from an admin cancelling their own
+  membership, or from an organisation account, and a relative's family list can
+  include a spouse who is also an admin. It adds only two conditions of its own,
+  both about being able to use your own profile: the account must be active and
+  must have its own login. Whoever raised it, approval is still a separate
+  decision by a *different* admin.
 - An admin has requested to archive a member and a *different* admin must approve.
 - You are auditing completed, rejected, or withdrawn lifecycle requests.
 
@@ -126,6 +134,7 @@ approval (checkbox).
 | --- | --- | --- |
 | Everything is read-only ("… can view membership cancellations but cannot approve or reject them") | Your admin role has membership view but not edit | Ask a full admin for membership edit access |
 | A participant can't be approved | Bookings are outstanding, or the member has not confirmed their own inclusion (member-raised requests only — an admin-raised one is already confirmed) | Resolve the listed bookings; wait for the member to confirm their request |
+| A member says the **Membership Cancellation** panel in their profile refuses them | It is open to any account holder, including admins and organisation accounts, but it needs an active account with **its own login** — so a dependant or any other member without a login of their own cannot use it. The lodge kiosk login and booking-request contact records are refused too: they hold no membership | Include them in a family request raised by a relative, or open their member page and use **Request Cancellation** on their behalf |
 | A member's page shows no **Request Cancellation** action | Their membership is already cancelled or archived, or is not active. Otherwise the record is not an account holder at all — the lodge kiosk account, or a booking-request contact (a public booking request's guest contact, or a school request's owner contact or teacher record). For a person, having no login does *not* hide it, and neither does holding admin access | Check the member's status first. If they are active and it is still missing, look at their **User Type**: "Lodge (kiosk account)" is the shared device login and has no membership — a real person who needs the kiosk should hold another role too — and a record created by a booking request is a contact, not a member |
 | **Approve** on a cancellation says only a Full Admin can do it | The member holds a privileged access role (any admin, finance, lodge, or custom role), and only a Full Admin may approve a cancellation for such an account | Ask a full admin to approve it |
 | **Approve** says this is the last Full Admin account | Approving would disable the login of the club's only remaining active Full Admin, leaving nobody able to administer the club | Give another active account Full Admin access first, then approve. This applies to an admin cancelling their own membership too — appoint your successor first |
