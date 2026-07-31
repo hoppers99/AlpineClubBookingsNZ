@@ -2558,6 +2558,97 @@ strand an existing admin. The one remaining path that can clear `canLogin` on an
 admin and is NOT guarded is indirect — the age-down cron, where editing a date
 of birth to a minor tier can indirectly clear `canLogin` (informational).
 
+Membership-cancellation eligibility is an account-holder question, never a
+permissions one (#2383). `isMembershipHolderRecord` (`src/lib/member-roles.ts`)
+is the single rule, shared by `createAdminMembershipCancellationRequest` and the
+admin member page's gate, and pinned to that call site by the #2354 AST contract
+test. It refuses exactly two record classes, both of which are not account
+holders: the lodge kiosk device login, and booking-request contact records
+(`NON_MEMBER`, plus non-login `SCHOOL` — the school flow's owner contact and
+teacher records).
+
+The kiosk test is a record-CLASS test, never a "holds lodge access" test.
+`LODGE` is a freely tickable checkbox in the member editor ("Can use lodge kiosk
+and lodge operations tools") with no exclusivity guard, so a Booking Officer who
+also runs the lodge screen carries a `LODGE` row while being an ordinary
+fee-paying person. Refusing on the presence of the token would hide the
+cancellation action from such a person silently — the #2354 failure mode this
+rule exists to eliminate. The rule is therefore `deriveUserType(...) === "lodge"`
+over the record's login-blind stored tokens: refused only when `LODGE` is the
+record's ENTIRE classification, which is exactly when the admin UI labels its
+User Type "Lodge (kiosk account)". A record whose only tokens are `USER` and
+`LODGE` is still refused, and is correct to be: it is indistinguishable from a
+kiosk, and the refusal agrees with the User Type the operator is shown.
+
+The `canLogin` term applies to `SCHOOL` alone and must not be generalised:
+`SCHOOL` is the legacy role of BOTH a real organisation account (User Type
+"Organisation", which stores an `ORG` row; the admin UI only ever sets it on a
+login-capable account, though `createMemberSchema` does not enforce that on
+write — an API caller could store `role: "SCHOOL"` with `canLogin: false`) and
+every school booking-request contact (always created `canLogin: false`);
+non-login is the line `MAPPABLE_CONTACT_SCOPE`
+(`src/lib/non-member-contact.ts`) already draws between them. Every other
+account is cancellable, including admins of every class — the rule this replaced
+was legacy `role === "USER"`, which refused only the Full Admin bundle while
+accepting all four scoped admin classes, and swept up organisations that hold
+real fee-paying memberships. The privileged-target and last-Full-Admin guards
+above are what make widening this safe: they run inside the approval
+transaction, so a cancellation can never strand the club with no active,
+login-enabled Full Admin, and only a Full Admin may approve one against a
+privileged account. Separation of duties holds on the self-cancellation case a
+widened rule newly reaches — `assertCancellationApprovalIsIndependent` refuses
+an approval by the member who raised the request — so a club's sole Full Admin
+must appoint a successor before their own cancellation can be approved. That
+guard fails CLOSED on a null `requestedByMemberId` (the FK is
+`onDelete: SetNull`, so hard-deleting the raiser nulls it): "we cannot tell who
+raised this" means "not you", never "anyone". Rejection is unaffected, so such
+a request is never stuck. The approval queue also surfaces, per participant,
+whether the target holds privileged access (the guard's own predicate) and
+whether it is an organisation account, so an approval that is permitted but
+mistaken has a human check in front of it.
+
+Both callers of the rule must feed it the same shape. The admin member page is
+served `resolveAccessRoleTokens` output, which is EMPTY whenever
+`canLogin === false`; the server reads the stored `MemberAccessRole` rows, which
+are NOT cleared when login is disabled (the family login-holder transfer
+de-logins cluster members and leaves their rows). `isMembershipHolderRecord`
+therefore accepts raw rows and resolved tokens interchangeably and applies the
+same login-clearing to both — the rows are consulted only for a login-capable
+record — so the page can never offer an action the server answers with a 422.
+The legacy `role` column is exempt from that clearing and still identifies a
+de-logined kiosk. The AST contract test pins the call site, not the shape, so
+this property is pinned by unit tests over the helper instead
+(`src/lib/__tests__/member-roles.test.ts`).
+
+Cancellation approval does NOT clear `MemberAccessRole` rows,
+`financeAccessLevel`, or the legacy `role` column (#2383, confirming existing
+behaviour). Archive approval, deletion anonymisation, and bulk deactivate all
+leave them too. **`active: false` is the load-bearing flag**, not
+`canLogin: false`: `requireAdmin` (`src/lib/session-guards.ts`) rejects an
+inactive member, and it does not select `canLogin` at all, while
+`getAdminPermissionMatrix` zeroes the matrix only on an explicit
+`canLogin === false` — pass it a row set without that field and the full bundle
+resolves. De-logined accounts that still hold live rows therefore exist today
+(the login-holder transfer again), so nothing may be built on "no login means no
+permissions". The dormant rows are what keep the account inside the
+canLogin-blind `memberHoldsPrivilegedRole` guard for any later archive, and
+deleting them on cancellation would be novel and would weaken that later guard.
+The corollary is a hard constraint on any future work: **a path that reactivates
+a cancelled member would silently restore every privileged role it left in
+place.** No such path exists today — the member edit service and bulk update
+both refuse to reactivate a cancelled member, and nothing writes
+`cancelledAt: null` — and any that is added must clear or re-grant the roles
+deliberately.
+
+The same fact constrains session-authenticated routes: cancellation neither
+clears the rows nor invalidates the JWT (`auth()` invalidates only on
+`passwordChangedAt`, and re-stamps `token.accessRoles` from the retained rows on
+every request), so any route that resolves admin access from a member row must
+re-read `active` rather than trusting the rows. `requireAdmin` does; the display
+preview branch of `GET /api/display/state` did not, and now does (#2383) — it
+was unreachable before, because a cancelled member could not previously hold an
+`ADMIN` row.
+
 Application-approval mapping (link + overwrite of an existing member at approval
 time) preserves the login-uniqueness and auth invariants: it never creates a
 second `canLogin: true` member for an email (the create-path `canLogin` guard is

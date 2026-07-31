@@ -4,6 +4,52 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **A member's membership can now be cancelled without first destroying their
+  admin access, and school and organisation accounts can be cancelled at all
+  (#2383).** The old rule claimed to allow "only member accounts", but what it
+  actually tested was whether the account held the full admin bundle — so a
+  Membership Officer, Booking Officer, Treasurer, Content Manager or holder of
+  a club-defined custom role was cancellable all along, and only a Full Admin
+  was refused. That refusal had no way out worth using: to cancel a Full
+  Admin's membership you first had to strip their access, which throws away
+  every privileged role they held and cannot be given back from the member page
+  afterwards, because a cancelled member cannot be reactivated there. Worse,
+  nobody can strip their own access, so a departing sole admin could not cancel
+  their own membership by any route at all. The same rule also refused school
+  and organisation accounts, which hold real fee-paying memberships and had no
+  cancellation path whatsoever. Cancellation now asks the only question that
+  matters — is there an account holder here with a membership? — so every
+  member is cancellable whatever admin access they hold, as is every
+  organisation account. Two kinds of record are still refused, because they are
+  not people and hold no membership: the lodge kiosk device login, and the
+  contact records the booking-request flows create (a public request's guest
+  contact, and a school request's owner contact and teacher records). Those
+  simply show no cancellation action, with nothing to explain, because nothing
+  is being withheld. "The lodge kiosk" here means the shared device account
+  itself — the one whose account type reads *Lodge (kiosk account)* — and not
+  anyone who has merely been given the lodge role alongside their own: a
+  booking officer who also runs the lodge screen is a person with a membership,
+  and was quietly losing the cancellation action too. The safeguards that
+  matter sit where the decision is actually made, at approval: only a full admin
+  may approve a cancellation for an account with admin access, an admin can
+  never approve a cancellation they raised themselves, and the club can never be
+  left with no full admin — so a sole admin who wants to leave must appoint
+  their successor first, and then that successor approves. The review queue now
+  says what it is you are approving, marking a participant who holds admin
+  access or is an organisation account — "cancel the treasurer" and "cancel an
+  ordinary member" used to look identical there — and an approval is refused
+  outright if the admin who raised the request has since been deleted, since
+  the club can no longer tell that it is a second pair of eyes. Cancelling a
+  member no longer needs their roles deleted, so the record of what they once
+  did for the club stays intact; the flip side, now written down, is that the
+  club cannot delete such a record outright until the roles are removed, and
+  that nothing may quietly un-cancel a membership. Related hardening found
+  while checking this: the lobby-display preview endpoint now re-checks that the
+  admin previewing it still has an active account, which every other admin
+  endpoint already did. The member-facing **Cancel Membership** flow in a
+  member's own profile is unchanged and still limited to ordinary member
+  accounts; its wording no longer implies otherwise.
+
 - **A booking paid in cash — or by a bank transfer that never reached Xero —
   can now be recorded as paid, properly (#2262).** Open the booking, and under
   **Admin tools** you will find **Cash / off-Xero payment**: it shows the exact
@@ -144,7 +190,8 @@ All notable public reference-release changes should be recorded here.
   queue, exactly as it does for anyone else. The page now asks the same
   eligibility question the server enforces — is this an active,
   not-yet-cancelled, not-archived member — so the action appears for
-  exactly the members it can act on.
+  exactly the members it can act on. That question was later widened by
+  #2383 above.
 
 - **Self-hosted sites now use whatever processing power the server has free,
   instead of being rationed to a fraction of one core (#2351).** The standard

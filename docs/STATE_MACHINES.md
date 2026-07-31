@@ -1474,6 +1474,20 @@ visible. The list API (`/api/admin/member-lifecycle-action-requests`) takes an
 `action` of `ARCHIVE` (default) or `DELETE` and maps the page-filter status
 `PENDING` onto the lifecycle `REQUESTED` state.
 
+Entry eligibility (#2383): an admin-raised cancellation request is accepted for
+any account holder — every member whatever admin access they hold, and
+organisation/school accounts — and refused only for the lodge kiosk device login
+and booking-request contact records, which hold no membership. The kiosk is
+recognised by the record's whole classification, so a person who merely also
+holds the lodge tools stays cancellable. One rule,
+`isMembershipHolderRecord`, shared by server and admin page. Approval is where
+the admin-account guards bite: a privileged target needs a Full Admin approver,
+and the last active login-enabled Full Admin can never be cancelled, both
+evaluated inside the approval transaction. A self-raised cancellation is
+allowed but cannot be self-approved. See
+[`DOMAIN_INVARIANTS.md`](DOMAIN_INVARIANTS.md#membership-lifecycle) and
+[`CANCELLATIONS.md`](CANCELLATIONS.md#who-can-be-cancelled).
+
 To verify: financial blockers, future booking blockers, family cleanup, Xero
 group/archive behavior, and email visibility.
 

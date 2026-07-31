@@ -530,10 +530,16 @@ export default function MemberDetailPage({
     member.cancelledAt && !member.archivedAt && !pendingArchiveRequest,
   );
   const openCancellationRequest = member.openCancellationRequest;
-  // Member-level role, not access roles: dependants and non-login adults
-  // resolve to zero access roles (canLogin clearing), but their memberships
-  // are cancellable — the helper mirrors the API-side validation in
-  // createAdminMembershipCancellationRequest (#2354).
+  // An account-holder question, never a permissions one — the helper mirrors
+  // the API-side validation in createAdminMembershipCancellationRequest.
+  // Dependants and non-login adults resolve to zero access roles (canLogin
+  // clearing) yet their memberships are cancellable (#2354), and so are those
+  // of admins of every class and of organisation accounts (#2383) — including
+  // an admin who also holds the lodge tools, whose LODGE row makes them look
+  // like the kiosk only if you test for the token instead of the record's whole
+  // classification. Only the lodge kiosk device login and the booking-request
+  // contact records are refused, and silently: they are not account holders, so
+  // there is no blocked membership to explain to an admin.
   const canRequestCancellation = Boolean(
     canAdminRequestMembershipCancellation(member) && !openCancellationRequest,
   );
