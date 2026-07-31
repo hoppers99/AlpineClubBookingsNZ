@@ -211,4 +211,26 @@ describe("custodian write-path contract (#2286)", () => {
     expect(autoRun).toContain("acquireLodgeCapacityLock(tx, lodgeId)");
     expect(autoRun).toContain("prisma.$transaction");
   });
+
+  it("keeps existing-allocation moves global-then-destination locked, date-preserving and on the guarded manual funnel", () => {
+    const source = readRepoFile("src/lib/admin-bed-allocation.ts");
+    const move = source.slice(
+      source.indexOf("export async function moveBedAllocationsSameDate("),
+      source.indexOf("interface BulkAllocationConflict"),
+    );
+    const wrapper = move.slice(
+      move.indexOf("// Only the destination bed is read before the transaction"),
+    );
+
+    expect(wrapper.indexOf("resolveBedLodgeIdForLock(input.bedId, prisma)"))
+      .toBeLessThan(wrapper.indexOf("prisma.$transaction"));
+    expect(wrapper.indexOf("pg_advisory_xact_lock(1)"))
+      .toBeLessThan(wrapper.indexOf("acquireLodgeCapacityLock(tx, lockLodgeId)"));
+    expect(wrapper.indexOf("acquireLodgeCapacityLock(tx, lockLodgeId)"))
+      .toBeLessThan(wrapper.indexOf("return moveUnderLock(tx)"));
+    expect(move).toContain("db.bedAllocation.findMany");
+    expect(move).toContain("stayDate: formatDateOnly(source.stayDate)");
+    expect(move).toContain("await manuallyAllocateBed({");
+    expect(move).toContain("pg_advisory_xact_lock(1)");
+  });
 });

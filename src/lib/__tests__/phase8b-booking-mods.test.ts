@@ -103,6 +103,13 @@ vi.mock("@/lib/promo", () => ({
   shouldPersistPromoRedemption: vi.fn().mockReturnValue(true),
   redeemPromoCode: vi.fn(),
   replacePromoRedemptionAllocations: vi.fn(),
+  // #2299: the promo path row-locks each PromoCode it may charge or
+  // refund before reading or writing any usage cap; the reprice paths also
+  // re-read the usage counter under that lock.
+  lockPromoCodeRowsForUpdate: vi.fn(),
+  lockAndRefreshPromoCodeUsage: vi.fn(
+    async (_tx: unknown, promoCode: unknown) => promoCode
+  ),
   deletePromoRedemptionAndAdjustCount: vi.fn(),
   getMemberFreeNightsUsed: vi.fn().mockResolvedValue(0),
 }));

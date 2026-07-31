@@ -5,11 +5,22 @@ import { prisma } from "@/lib/prisma";
 import { getPaymentIntent } from "@/lib/stripe";
 import logger from "@/lib/logger";
 import { hasAdminAccess } from "@/lib/access-roles";
+import { isAdditionalPayableBookingStatus } from "@/lib/additional-payment-chase";
 
 /**
  * GET /api/bookings/[id]/additional-payment-secret
  * Returns the clientSecret for a pending additional modification payment.
  * Used by the booking detail page to render the Stripe payment form.
+ *
+ * #2350: the booking's LIFECYCLE is part of the gate, not context around it.
+ * Cancelling a booking marks the additional intent FAILED without zeroing
+ * `additionalAmountCents`, and the cancel path only asks Stripe to cancel an
+ * intent that was still outstanding — an intent that had ALREADY failed (a
+ * declined card) is left confirmable at Stripe. So an intent-id-and-status gate
+ * handed the owner of a cancelled booking a live client secret they could
+ * confirm with a different card. The late-capture backstop (#1350) then
+ * auto-refunds and alerts, but the member has still been charged for a booking
+ * that no longer exists. This is the door that keeps shut.
  */
 export async function GET(
   _request: NextRequest,
@@ -29,7 +40,7 @@ export async function GET(
   try {
     const payment = await prisma.payment.findUnique({
       where: { bookingId },
-      include: { booking: { select: { memberId: true } } },
+      include: { booking: { select: { memberId: true, status: true, deletedAt: true } } },
     });
 
     if (!payment) {
@@ -45,7 +56,9 @@ export async function GET(
 
     if (
       !payment.additionalPaymentIntentId ||
-      payment.additionalPaymentStatus === "SUCCEEDED"
+      payment.additionalPaymentStatus === "SUCCEEDED" ||
+      payment.booking.deletedAt !== null ||
+      !isAdditionalPayableBookingStatus(payment.booking.status)
     ) {
       return NextResponse.json(
         { error: "No pending additional payment" },

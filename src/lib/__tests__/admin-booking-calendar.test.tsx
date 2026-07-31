@@ -3,6 +3,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AdminBookingCalendar } from "@/components/admin-booking-calendar";
+import { getTodayDateOnly } from "@/lib/date-only";
 
 // The component reads router/search params from next/navigation; provide
 // minimal stand-ins so it renders outside the App Router.
@@ -14,10 +15,17 @@ vi.mock("next/navigation", () => ({
 }));
 
 // The calendar initially shows the current month, so build booking dates
-// inside it (days 5-12 exist in every month).
-const now = new Date();
+// inside it (days 5-20 exist in every month).
+//
+// The month must be resolved the way the COMPONENT resolves it — from the club
+// timezone via getTodayDateOnly (which returns UTC midnight of the NZ calendar
+// date), not from the runner's local clock. A raw `new Date()` here disagreed
+// with the component for the last hours of every month whenever the runner's
+// zone trails NZ — exactly the UTC CI runner — and every fixture booking then
+// landed outside the rendered grid, so nothing painted at all.
+const now = getTodayDateOnly();
 const isoDay = (day: number) =>
-  `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 
 const calendarResponse = {
   bookings: [

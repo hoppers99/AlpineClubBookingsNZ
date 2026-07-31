@@ -620,6 +620,112 @@ describe("AdminBookingsPage", () => {
     expect(html).not.toContain("page=99");
   });
 
+  /*
+    #2350: an upward change after payment leaves money uncollected while the
+    booking's lifecycle status still reads PAID. Before this the list showed
+    nothing at all, so the outstanding amount was invisible to every admin.
+  */
+  describe("outstanding additional payments (#2350)", () => {
+    function paidPayment(overrides: Record<string, unknown> = {}) {
+      return {
+        id: "payment-1",
+        source: "STRIPE",
+        status: "SUCCEEDED",
+        xeroInvoiceId: null,
+        xeroInvoiceNumber: null,
+        refundedAmountCents: 0,
+        additionalAmountCents: 0,
+        additionalPaymentStatus: null,
+        ...overrides,
+      };
+    }
+
+    async function renderRow(
+      payment: Record<string, unknown> | null,
+      bookingOverrides: Record<string, unknown> = {},
+    ) {
+      installAdminBookingsDbMock([makeBooking({ payment, ...bookingOverrides })]);
+      return renderToStaticMarkup(
+        await AdminBookingsPage({ searchParams: Promise.resolve({}) }),
+      );
+    }
+
+    it("marks a booking with a pending addition as partly paid and names the amount", async () => {
+      const html = await renderRow(
+        paidPayment({
+          additionalAmountCents: 21_000,
+          additionalPaymentStatus: "PENDING",
+        }),
+      );
+
+      expect(html).toContain("Partly paid");
+      expect(html).toContain("$210.00 due");
+      // The lifecycle chip is deliberately untouched: the stay IS confirmed.
+      expect(html).toContain("Paid");
+    });
+
+    it("treats a FAILED addition exactly like a pending one", async () => {
+      const html = await renderRow(
+        paidPayment({
+          additionalAmountCents: 4_550,
+          additionalPaymentStatus: "FAILED",
+        }),
+      );
+
+      expect(html).toContain("Partly paid");
+      expect(html).toContain("$45.50 due");
+    });
+
+    it("shows a fully collected booking as paid with no amount due", async () => {
+      const html = await renderRow(
+        paidPayment({
+          additionalAmountCents: 21_000,
+          additionalPaymentStatus: "SUCCEEDED",
+        }),
+      );
+
+      expect(html).not.toContain("Partly paid");
+      expect(html).not.toContain("due");
+      expect(html).toContain("Paid");
+    });
+
+    it("says nothing about settlement on a booking with no payment row", async () => {
+      const html = await renderRow(null);
+
+      expect(html).not.toContain("Partly paid");
+      expect(html).not.toContain("due");
+    });
+
+    /*
+      A cancelled booking keeps its delta columns exactly as they were, so an
+      amount-only owed test put an amber "$210.00 due" beside a Cancelled status
+      chip — the row contradicting itself about whether the club wants money.
+    */
+    it("says nothing is due on a booking whose lifecycle ended the obligation", async () => {
+      const html = await renderRow(
+        paidPayment({
+          additionalAmountCents: 21_000,
+          additionalPaymentStatus: "FAILED",
+        }),
+        { status: "CANCELLED" },
+      );
+
+      expect(html).not.toContain("Partly paid");
+      expect(html).not.toContain("$210.00 due");
+    });
+
+    /*
+      Settlement reports the DISAGREEMENT with lifecycle, nothing else: a fully
+      paid row already carries a "Paid" status chip, and a second identical chip
+      immediately beside it in the next column is pure noise.
+    */
+    it("does not repeat the Paid chip when settlement agrees with lifecycle", async () => {
+      const html = await renderRow(paidPayment());
+
+      expect(html.match(/>Paid</g) ?? []).toHaveLength(1);
+    });
+  });
+
   it("formats total guests with non-member guests in brackets", () => {
     expect(formatAdminBookingGuestCount(6, 2)).toBe("6 (2 non-members)");
     expect(formatAdminBookingGuestCount(1, 1)).toBe("1 (1 non-member)");
