@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, ExternalLink, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -463,6 +463,21 @@ export function ConnectStep({
     ? describeChecks(context.orgErrorAttempts, context.orgErrorAt)
     : null;
 
+  // The other half of the focus story (F3). Keeping Try again enabled means it
+  // holds focus while it works — but a SUCCESSFUL retry removes the whole
+  // failure box, unmounting the button under the operator's focus and dropping
+  // it to <body> after all. So a press that clears the failure hands focus to
+  // the confirmation it produced, which is the next thing worth reading. Armed
+  // only by an actual click, so nothing steals focus on an ordinary load.
+  const retryPressedRef = useRef(false);
+  const confirmationRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!retryPressedRef.current) return;
+    if (context.orgError !== null || context.orgLoading) return;
+    retryPressedRef.current = false;
+    confirmationRef.current?.focus();
+  }, [context.orgError, context.orgLoading]);
+
   const onConnect = () => {
     window.location.href = `/api/admin/xero/connect?return=${encodeURIComponent(
       CONNECT_RETURN,
@@ -542,7 +557,10 @@ export function ConnectStep({
                   variant="outline"
                   size="sm"
                   aria-busy={context.orgLoading}
-                  onClick={() => helpers.refresh()}
+                  onClick={() => {
+                    retryPressedRef.current = true;
+                    helpers.refresh();
+                  }}
                 >
                   {context.orgLoading ? (
                     <>
@@ -565,8 +583,12 @@ export function ConnectStep({
         // an authorisation revoked inside Xero read as "all set" on the very
         // step that exists to confirm it (#2394 review, F4).
         <div
+          ref={confirmationRef}
+          // Focus target only (the effect above), never in the tab order —
+          // the same shape as the wizard shell's step container.
+          tabIndex={-1}
           className={cn(
-            "flex items-start gap-2 rounded-md border p-3 text-sm",
+            "flex items-start gap-2 rounded-md border p-3 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-ring",
             orgFailure
               ? "border-border bg-muted text-muted-foreground"
               : "border-success-6 bg-success-3 text-success-11",

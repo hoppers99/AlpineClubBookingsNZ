@@ -530,3 +530,43 @@ describe("ConnectStep: the OAuth ?error= is allow-listed on read (#2394)", () =>
     expect(screen.queryByText(/0800-000-000/)).toBeNull();
   });
 });
+
+// The other half of review F3. Keeping Try again enabled means it holds focus
+// while it works — but a successful retry removes the whole failure box, so the
+// button unmounts under the operator's focus and it would fall to <body> after
+// all. The press hands focus to the confirmation it produced instead.
+describe("ConnectStep: focus survives a successful retry (#2394)", () => {
+  it("moves focus to the confirmation when the failure clears", async () => {
+    const helpers = makeHelpers();
+    const failing = makeContext({ orgError: failure({ kind: "unavailable" }) });
+    const { rerender } = render(
+      <ConnectStep context={failing} helpers={helpers} />,
+    );
+
+    const button = screen.getByRole("button", { name: /try again/i });
+    button.focus();
+    fireEvent.click(button);
+
+    // The retry succeeded: the failure box (and its button) unmount.
+    rerender(
+      <ConnectStep
+        context={makeContext({ orgName: "Alpine Sports Club" })}
+        helpers={helpers}
+      />,
+    );
+
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement?.textContent).toMatch(/Alpine Sports Club/);
+  });
+
+  it("does not steal focus on an ordinary load", () => {
+    render(
+      <ConnectStep
+        context={makeContext({ orgName: "Alpine Sports Club" })}
+        helpers={makeHelpers()}
+      />,
+    );
+
+    expect(document.activeElement).toBe(document.body);
+  });
+});
