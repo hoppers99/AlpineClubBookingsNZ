@@ -12,7 +12,10 @@ function escapeHtml(value: string): string {
 function findBookingHref(html: string, fromIndex = 0) {
   const baseUrl = getAppBaseUrl().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const pattern = new RegExp(
-    `href="${baseUrl}\\/bookings(?:\\/[^"#?]*)?(?:[?#][^"]*)?"`,
+    // `/bookings/consent/<token>` is a bearer action for recipients who may
+    // not have a login. It must never be removed or rewritten as though it
+    // were the authenticated `/bookings/<booking-id>` detail route.
+    `href="${baseUrl}\\/bookings(?:\\/(?!consent(?:\\/|[?#]|$))[^"#?]*)?(?:[?#][^"]*)?"`,
     "g",
   );
   pattern.lastIndex = fromIndex;

@@ -24,13 +24,29 @@ describe("built-in booking email HTML links", () => {
   it("removes authenticated booking buttons for a public contact but preserves bearer actions", () => {
     const html =
       '<table role="presentation" cellpadding="0" cellspacing="0"><tr><td><a href="https://bookings.example.nz/bookings/bk_private">View booking</a></td></tr></table>' +
-      '<table role="presentation" cellpadding="0" cellspacing="0"><tr><td><a href="https://bookings.example.nz/pay/bearer_secret">Pay now</a></td></tr></table>';
+      '<table role="presentation" cellpadding="0" cellspacing="0"><tr><td><a href="https://bookings.example.nz/pay/bearer_secret">Pay now</a></td></tr></table>' +
+      '<table role="presentation" cellpadding="0" cellspacing="0"><tr><td><a href="https://bookings.example.nz/bookings/consent/consent_secret">Answer for this member</a></td></tr></table>';
 
     const rendered = applyBookingDetailLinkToBuiltInHtml(html, null);
     expect(rendered).not.toContain("/bookings/bk_private");
     expect(rendered).not.toContain("View booking");
     expect(rendered).toContain("/pay/bearer_secret");
     expect(rendered).toContain("Pay now");
+    expect(rendered).toContain("/bookings/consent/consent_secret");
+    expect(rendered).toContain("Answer for this member");
+  });
+
+  it("does not rewrite a bearer consent action for an authorized recipient", () => {
+    const consentUrl =
+      "https://bookings.example.nz/bookings/consent/consent_secret";
+    const html = `<table role="presentation" cellpadding="0" cellspacing="0"><tr><td><a href="${consentUrl}">Answer for this member</a></td></tr></table>`;
+
+    const rendered = applyBookingDetailLinkToBuiltInHtml(
+      html,
+      "https://bookings.example.nz/bookings/bk_1",
+    );
+    expect(rendered).toContain(`href="${consentUrl}"`);
+    expect(rendered).toContain('href="https://bookings.example.nz/bookings/bk_1"');
   });
 
   it("adds one canonical CTA when the built-in has no booking link", () => {
