@@ -124,7 +124,6 @@ function renderToolbar() {
     <MemberFilterToolbar
       search=""
       filters={emptyFilters}
-      activeFilterCount={0}
       xeroFeatures={{ liveMemberGroupLookups: false, autoLoadContactGroups: false }}
       xeroContactGroupsList={[]}
       onSearchChange={vi.fn()}

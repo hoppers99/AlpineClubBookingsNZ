@@ -291,7 +291,6 @@ describe("admin member access-role UI", () => {
       <MemberFilterToolbar
         search=""
         filters={emptyFilters}
-        activeFilterCount={0}
         xeroFeatures={{
           liveMemberGroupLookups: false,
           autoLoadContactGroups: false,
@@ -346,7 +345,6 @@ describe("admin member access-role UI", () => {
       <MemberFilterToolbar
         search=""
         filters={filters}
-        activeFilterCount={1}
         xeroFeatures={{
           liveMemberGroupLookups: false,
           autoLoadContactGroups: false,
@@ -367,7 +365,6 @@ describe("admin member access-role UI", () => {
       <MemberFilterToolbar
         search=""
         filters={emptyFilters}
-        activeFilterCount={0}
         xeroFeatures={{
           liveMemberGroupLookups: false,
           autoLoadContactGroups: false,
@@ -401,7 +398,6 @@ describe("admin member access-role UI", () => {
       <MemberFilterToolbar
         search=""
         filters={filters}
-        activeFilterCount={1}
         xeroFeatures={{
           liveMemberGroupLookups: false,
           autoLoadContactGroups: false,
