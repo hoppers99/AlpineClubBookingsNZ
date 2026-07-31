@@ -26,19 +26,26 @@ All notable public reference-release changes should be recorded here.
   owes the contact count too, for the same reason. The member's own unpaid
   season subscription is deliberately not counted, because approving the
   cancellation is what credits it — counting it would make the most ordinary
-  cancellation of all impossible to approve. If Xero cannot be asked at all —
-  not connected, rate limited, or simply unreachable — the approval is refused
-  rather than let through, because "we could not find out" is not the same
-  answer as "nothing is owing"; the notice says which of those it is and what to
-  do, since a disconnected Xero needs reconnecting while an unreachable one just
-  needs another try in a few minutes. None of this applies to a club that has
-  **Archive Xero contacts after cancellation approval** switched off, or to a
-  member with no Xero contact: nothing is archived in either case, so nothing is
-  checked and a Xero outage cannot hold up a cancellation. The review queue
-  shows the outstanding invoices next to the participant as soon as the request
-  arrives, so a reviewer finds out before they press Approve rather than after.
-
-
+  cancellation of all impossible to approve. (An invoice for *next* season, at a
+  club that bills early, is not credited by the cancellation and so does count;
+  void it in Xero, which is right anyway for a member who is leaving.) If Xero
+  cannot be asked at all — not connected, rate limited, unreachable, or refusing
+  the request because the member's Xero contact has been merged or deleted there
+  — the approval is refused rather than let through, because "we could not find
+  out" is not the same answer as "nothing is owing". The notice says which of
+  those it is and what to do about that particular one, including whether
+  waiting will help at all, and **every** version of it also offers the way out:
+  switching **Archive Xero contacts after cancellation approval** off means no
+  contact is archived, so the check is not needed. None of this applies to a
+  club that has that setting off already, or to a member with no Xero contact:
+  nothing is archived in either case, so nothing is checked and a Xero outage
+  cannot hold up a cancellation. The review queue shows the outstanding invoices
+  next to each participant that is ready for review — each one linked straight
+  into Xero, so a bill or an invoice Xero never numbered can still be opened in
+  one click — so a reviewer finds out before they press Approve rather than
+  after. Finally, because the Xero archive itself happens later on the sync
+  queue rather than at the moment of approval, it asks the same question again
+  just before it runs and holds off if the answer has changed since.
 
 - **Adding another club member as a guest (#2306, #2307).** Until now a member
   could only put people from their own family group on a booking. There is now a

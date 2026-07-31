@@ -1563,7 +1563,10 @@ two parts — future owned bookings / guest appearances (local), and unpaid Xero
 invoices on the member's contact. The invoice half runs only when
 `xeroArchiveContactsOnCancellation` is on AND the member has a linked
 `xeroContactId`, because those are exactly the conditions under which approval
-archives a Xero contact; otherwise no Xero call is made. "Unpaid" means
+archives a Xero contact; otherwise no Xero call is made. That setting is read
+through `loadMembershipCancellationSettingsStrict`, so a failed read is an
+unknown (the check runs) rather than a silent "off" (the check is skipped) —
+the ordinary loader degrades to defaults whose archive flag is false. "Unpaid" means
 AUTHORISED or SUBMITTED with `AmountDue > 0` (the finance dashboard's own open-
 invoice definition), across ACCREC and ACCPAY, minus the member's current-season
 subscription invoice when the approval is itself about to credit it — mirroring
@@ -1571,10 +1574,21 @@ subscription invoice when the approval is itself about to credit it — mirrorin
 deadlock the ordinary unpaid-subscription cancellation. If Xero cannot be
 reached the check FAILS CLOSED: the participant gets an
 `invoice_check_unavailable` blocker (`disconnected` / `rate_limited` /
-`unavailable`) and the approval is refused, because an unknown answer is not
-"nothing owing". The review queue reads through a 60s in-process memo; the
-approval guard always passes `freshInvoiceCheck` so a decision is never taken on
-a cached answer. See
+`unavailable` / `invalid_request` / `too_many_invoices`) and the approval is
+refused, because an unknown answer is not "nothing owing". `invalid_request`
+(Xero 400/404 — usually a contact merged or deleted there) and
+`too_many_invoices` are the NON-transient ones and are worded as such; every
+failure message names the archive-setting escape hatch. Contact ids are chunked
+40 to a `getInvoices` call, and hitting the `MAX_INVOICE_PAGES` cap raises
+`too_many_invoices` for the batch rather than returning a truncated list — Xero
+orders a batched read `DueDate ASC` across all its contacts, so a truncated
+result could otherwise leave a quiet contact looking clear. The review queue
+reads through a 60s in-process memo; the approval guard always passes
+`freshInvoiceCheck` so a decision is never taken on a cached answer, and
+failures are never memoised. Because the archive is an outbox operation drained
+later, `syncXeroMembershipCancellationContact` re-runs the same check `fresh`
+immediately before archiving and DEFERS (fails for retry, like the credit-note
+guard) if anything is owing. See
 [`CANCELLATIONS.md`](CANCELLATIONS.md#unpaid-invoices-block-approval).
 
 To verify: financial blockers, future booking blockers, family cleanup, Xero
