@@ -927,6 +927,24 @@ describe("dependentParentStateBlocker (#2282)", () => {
     ).toBe("ORGANISATION");
   });
 
+  it("clears a NON-LOGIN member whose ORG token is cleared and role is not SCHOOL", () => {
+    // Not a product rule so much as the PARITY rule. `resolveAccessRoleTokens`
+    // returns [] for `canLogin: false`, so `isOrganisationMember` says no here —
+    // and the SQL half spells the same thing out as
+    // `canLogin: true AND accessRoles.some(role: ORG)`. If this predicate
+    // ignored `canLogin` (or the SQL wrote a plain `accessRoles: { none: … }`)
+    // the search would hide a member the write route accepts, which is the
+    // #2254 drift in the other direction.
+    expect(
+      dependentParentStateBlocker({
+        ...CURRENT,
+        role: "USER",
+        accessRoles: ["ORG"],
+        canLogin: false,
+      }),
+    ).toBeNull();
+  });
+
   it("says ORGANISATION before ARCHIVED or INACTIVE", () => {
     // Order decides the sentence the admin reads, and "archive" and
     // "reactivate" both imply that undoing the state would let them add a

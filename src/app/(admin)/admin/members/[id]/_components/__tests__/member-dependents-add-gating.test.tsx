@@ -3,22 +3,35 @@
 /**
  * #2282 — "Add Dependent" as the admin actually meets it.
  *
- * Two behaviours are pinned here, because both were dead ends before:
+ * What is pinned here, all of it a dead end before:
  *
  *  1. AGE NO LONGER HIDES THE CONTROL. The card used to render the button only
  *     for an ADULT and to explain the absence with "Only adult members can
  *     manage dependents" — copy for a rule the code no longer enforces, on a
  *     member who can now genuinely be a parent.
- *  2. AN INACTIVE OR ARCHIVED MEMBER SEES THE CONTROL DISABLED WITH THE REASON,
- *     on BOTH the create and the link path. Those are two endpoints with two
- *     messages, so gating one leaves the identical dead end on the other; the
- *     dialog therefore states the block itself and disables its submit in
- *     whichever tab is showing.
+ *  2. AN INACTIVE, ARCHIVED OR ORGANISATION MEMBER SEES THE CONTROL DISABLED
+ *     WITH THE REASON, and the reason is ATTACHED to it by `aria-describedby`
+ *     rather than merely printed beside a control that is out of the tab order.
+ *  3. THE DEAD END THIS CHANGE CREATED. A parent with no adult in reach who can
+ *     receive club email is refused per TAB, because that is where the
+ *     endpoints differ: the create tab always inherits and so always fails,
+ *     while the link tab fails only for a notification choice that resolves to
+ *     nobody. The opener stays enabled precisely because "use their own email"
+ *     still works, and that is asserted rather than left implicit.
+ *  4. BOTH LINK DIALOGS NAME THE MAILBOX, NOT THE MIDDLEMAN. The picker lists
+ *     parents; the write stores whoever the walk lands on.
  *
- * Mutation probes: drop `disabled={Boolean(blockReason)}` from either the card
- * or the dialog and the matching test fails; drop the dialog's `blockReason`
- * from the submit's `disabled` and both tab tests fail; re-add the age condition
- * around the card's button and "offers Add Dependent on a YOUTH member" fails.
+ * The two "blocks the CREATE/LINK tab" cases at (2) are DEFENCE IN DEPTH, not a
+ * screen an admin normally meets: both openers are already disabled for those
+ * reasons and the member cannot change while the dialog is open. Do not read
+ * them as evidence of admin-visible behaviour. The (3) cases are different —
+ * nothing disables the opener there, so those are reachable.
+ *
+ * Mutation probes (all re-run and confirmed to fail): drop
+ * `disabled={Boolean(blockReason)}` from the card or the dialog; drop either
+ * tab's no-email-source block; drop the card's `aria-describedby`; make the
+ * routing notice ignore the parent/mailbox mismatch; re-add the age condition
+ * around the card's button.
  */
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -62,6 +75,7 @@ vi.mock("@/hooks/use-access-role-options", () => ({
 import { MemberDependentsCard } from "../member-dependents-card";
 import { MemberDependentDialog } from "../member-dependent-dialog";
 import { MemberDetailHeader } from "../member-detail-header";
+import { MemberParentLinkDialog } from "../member-parent-link-dialog";
 import {
   DEPENDENT_PARENT_BLOCK_EXPLANATIONS,
   DEPENDENT_PARENT_CREATE_ERRORS,
@@ -528,6 +542,93 @@ describe("MemberDetailHeader — the toolbar copy of the same control (#2282)", 
     expect(screen.getByRole("button", { name: /add dependent/i })).toBeDisabled();
     expect(
       screen.getByText(DEPENDENT_PARENT_BLOCK_EXPLANATIONS.ARCHIVED),
+    ).toBeInTheDocument();
+  });
+});
+
+/**
+ * The MIRROR dialog. "Link Parent" adds a parent ABOVE the viewed member, and it
+ * has the same notification-recipient picker with the same problem: the options
+ * name parents, the write stores whoever the walk lands on, and the two differ
+ * routinely now that a parent may be any age.
+ */
+describe("MemberParentLinkDialog — the same picker, the same truth (#2282)", () => {
+  const candidate = {
+    id: "tui",
+    firstName: "Tui",
+    lastName: "Rangi",
+    email: "tui@example.org",
+    ageTier: "YOUTH",
+    active: true,
+    canLogin: false,
+    dateOfBirth: null,
+    familyGroups: [],
+  };
+
+  function renderParentDialog(overrides: Record<string, unknown> = {}) {
+    const onSubmit = vi.fn();
+    render(
+      <MemberParentLinkDialog
+        open
+        onOpenChange={vi.fn()}
+        member={buildMember({ ageTier: "CHILD" })}
+        search=""
+        searching={false}
+        searchResults={[]}
+        selected={candidate as never}
+        notificationParentId="tui"
+        disableLogin={false}
+        familyGroupIds={[]}
+        saving={false}
+        error=""
+        onChangeSearch={vi.fn()}
+        onSelectCandidate={vi.fn()}
+        onClearSelection={vi.fn()}
+        onChangeNotificationParentId={vi.fn()}
+        onChangeDisableLogin={vi.fn()}
+        onToggleFamilyGroup={vi.fn()}
+        onSubmit={onSubmit}
+        {...overrides}
+      />,
+    );
+    return onSubmit;
+  }
+
+  it("names the adult the mail reaches, not the parent that was picked", async () => {
+    mockEmailSourceResponse({
+      source: {
+        id: "gran-1",
+        firstName: "Nan",
+        lastName: "Rangi",
+        email: "nan@example.org",
+      },
+    });
+    renderParentDialog();
+    expect(
+      await screen.findByText(
+        /Club notifications will go to Nan Rangi \(nan@example\.org\), not Tui Rangi/i,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("refuses the save when the chosen parent reaches nobody", async () => {
+    mockEmailSourceResponse({ source: null });
+    const onSubmit = renderParentDialog();
+    expect(
+      await screen.findByText(/cannot be routed through them/i),
+    ).toBeInTheDocument();
+    const submit = screen.getByRole("button", { name: /link parent/i });
+    expect(submit).toBeDisabled();
+    fireEvent.click(submit);
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("states the limit of 'any age' so it cannot be read as covering orgs", () => {
+    // The copy said "an active member of any age" with nothing else, which read
+    // as though offering a school account were intended.
+    renderParentDialog({ notificationParentId: "" });
+    expect(
+      screen.getByText(/organisation and school accounts are not people/i),
     ).toBeInTheDocument();
   });
 });

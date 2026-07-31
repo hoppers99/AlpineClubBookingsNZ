@@ -650,6 +650,98 @@ describe("Admin: Create dependent member", () => {
     );
   });
 
+  it("rejects dependent creation under an ORGANISATION account, by role", async () => {
+    // #2282 review: the removed ADULT clause was the only thing keeping
+    // organisations off the parent side. Classified by role, because
+    // `NOT_APPLICABLE` is the age-EXEMPT tier and age-exempt PEOPLE carry it
+    // too (#1440, #2106) — the tier below is set to prove it is not what the
+    // refusal turns on.
+    vi.mocked(auth).mockResolvedValue(adminSession);
+    vi.mocked(prisma.member.findUnique).mockResolvedValue({
+      id: "school1",
+      role: "SCHOOL",
+      canLogin: true,
+      accessRoles: [{ role: "ORG", roleDefinitionId: null }],
+      ageTier: "NOT_APPLICABLE",
+      active: true,
+      archivedAt: null,
+    } as any);
+
+    const res = await createMember(makePostRequest({
+      email: "child@test.com",
+      firstName: "Child",
+      lastName: "Doe",
+      parentMemberId: "school1",
+    }));
+    expect(res.status).toBe(422);
+    expect((await res.json()).error).toBe(
+      DEPENDENT_PARENT_CREATE_ERRORS.ORGANISATION,
+    );
+  });
+
+  it("stores no inheritance when the caller did not ask for it", async () => {
+    // #2282 review. `inheritParentEmail: data.inheritParentEmail ??
+    // Boolean(data.parentMemberId)` meant a create with a parent and no
+    // `inheritParentEmail` key stored `true` beside a NULL source — "inherits
+    // from nobody", which `member-lifecycle-actions.ts` documents as a
+    // combination no writer produces, and which the age-up cron reads as
+    // "mail the parent link directly". This route was the writer producing it.
+    vi.mocked(auth).mockResolvedValue(adminSession);
+    vi.mocked(prisma.member.findFirst).mockResolvedValue(null);
+    vi.mocked(prisma.member.findUnique).mockResolvedValue({
+      id: "parent1",
+      role: "USER",
+      canLogin: true,
+      accessRoles: [],
+      active: true,
+      archivedAt: null,
+    } as any);
+    vi.mocked(prisma.member.findMany).mockResolvedValue([] as never);
+
+    const txMemberCreate = vi.fn().mockResolvedValue({
+      id: "dep-no-inherit",
+      firstName: "Child",
+      lastName: "Doe",
+      email: "own@test.com",
+      role: "MEMBER",
+      ageTier: "CHILD",
+      active: true,
+      canLogin: false,
+      parentMemberId: "parent1",
+      inheritParentEmail: false,
+      inheritEmailFromId: null,
+      xeroContactId: null,
+      joinedDate: null,
+      createdAt: new Date(),
+    });
+    vi.mocked(prisma.$transaction).mockImplementation(async (cb: any) =>
+      cb({
+        member: { create: txMemberCreate },
+        familyGroupMember: { createMany: vi.fn() },
+      }),
+    );
+
+    const res = await createMember(makePostRequest({
+      email: "own@test.com",
+      firstName: "Child",
+      lastName: "Doe",
+      dateOfBirth: "2020-06-15",
+      parentMemberId: "parent1",
+      canLogin: false,
+    }));
+
+    expect(res.status).toBe(201);
+    expect(txMemberCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          parentMemberId: "parent1",
+          inheritParentEmail: false,
+          inheritEmailFromId: null,
+        }),
+      }),
+    );
+  });
+
   it("rejects dependent creation under an archived parent, and says so", async () => {
     vi.mocked(auth).mockResolvedValue(adminSession);
     vi.mocked(prisma.member.findUnique).mockResolvedValue({
