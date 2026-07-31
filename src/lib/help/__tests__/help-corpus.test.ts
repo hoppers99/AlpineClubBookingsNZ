@@ -1,3 +1,5 @@
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   getContextualHelp,
@@ -50,7 +52,12 @@ describe("admin/finance parity with the existing registry", () => {
 });
 
 describe("member guide parity", () => {
-  // Each of the seven member guides is distilled into at least one corpus entry.
+  const MEMBER_GUIDE_DIR = join(process.cwd(), "docs", "user-guide");
+
+  // Every member guide is distilled into at least one corpus entry, and this is
+  // where each one says which. docs/user-guide/README.md is the standing
+  // instruction: change a guide, review the matching corpus entry in the same
+  // pull request.
   const GUIDE_TO_MEMBER_PATH: Record<string, string> = {
     "booking-a-stay.md": "/book",
     "paying-for-your-stay.md": "/bookings/abc123",
@@ -59,17 +66,52 @@ describe("member guide parity", () => {
     "your-account.md": "/profile",
     "managing-your-family.md": "/profile",
     "joining-the-club.md": "/dashboard",
+    // "+ Add Member Guest" (epic #2305, MG2 #2307): the consent card lives on
+    // the booking's own page, so the answers are distilled into that entry.
+    "being-added-to-a-booking.md": "/bookings/abc123",
   };
 
+  // Files in docs/user-guide/ that are deliberately NOT member guides. Keep this
+  // list tiny and justify each entry — everything not named here must be mapped.
+  const NOT_A_GUIDE = new Set([
+    // The folder's own index page: it explains how the guides are written and
+    // links to them, and distils into no single help entry.
+    "README.md",
+  ]);
+
+  function memberGuideFiles(): string[] {
+    return readdirSync(MEMBER_GUIDE_DIR)
+      .filter((name) => name.endsWith(".md"))
+      .filter((name) => !NOT_A_GUIDE.has(name))
+      .sort();
+  }
+
+  // THE GUARD ONLY WORKS IF IT ENUMERATES THE FOLDER. Iterating the hand-written
+  // map alone can never notice a guide that was added without a row — which is
+  // exactly what happened when being-added-to-a-booking.md landed — so the map is
+  // checked against what is actually on disk before it is used.
+  it("has a row for every member guide in docs/user-guide, and no stale rows", () => {
+    const onDisk = memberGuideFiles();
+    const mapped = Object.keys(GUIDE_TO_MEMBER_PATH).sort();
+    expect(
+      mapped,
+      "add the new guide to GUIDE_TO_MEMBER_PATH (or to NOT_A_GUIDE, with a reason) " +
+        "and distil it into a member help entry in the same pull request",
+    ).toEqual(onDisk);
+  });
+
   it("maps every guide to an existing member entry with at least 3 questions", () => {
-    for (const [guide, path] of Object.entries(GUIDE_TO_MEMBER_PATH)) {
-      const content = getHelpForPage("member", path);
-      expect(content.title, `${guide} -> ${path} should not be the fallback`).not.toBe(
-        "Member help",
-      );
+    for (const guide of memberGuideFiles()) {
+      const helpPath = GUIDE_TO_MEMBER_PATH[guide];
+      expect(helpPath, `${guide} has no GUIDE_TO_MEMBER_PATH row`).toBeDefined();
+      const content = getHelpForPage("member", helpPath);
+      expect(
+        content.title,
+        `${guide} -> ${helpPath} should not be the fallback`,
+      ).not.toBe("Member help");
       expect(
         content.questions?.length ?? 0,
-        `${guide} -> ${path} needs >= 3 questions`,
+        `${guide} -> ${helpPath} needs >= 3 questions`,
       ).toBeGreaterThanOrEqual(3);
     }
   });

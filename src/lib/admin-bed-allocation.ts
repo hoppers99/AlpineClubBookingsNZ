@@ -60,6 +60,10 @@ import {
   findCustodianBedHolds,
   findFutureCustodianHoldsForBed,
 } from "@/lib/custodian-occupancy";
+import {
+  OPERATIONALLY_PRESENT_GUEST_WHERE,
+  isOperationallyPresentConsent,
+} from "@/lib/member-guest-consent";
 import { prisma } from "@/lib/prisma";
 
 const BED_ALLOCATION_SETTINGS_ID = "default";
@@ -1332,6 +1336,14 @@ async function loadBookingRecords(
       status: { in: [...BED_ALLOCATABLE_BOOKING_STATUSES] },
       checkIn: { lt: range.to },
       checkOut: { gt: range.from },
+      // DELIBERATELY NOT consent-filtered, unlike the guest select below (owner
+      // decision D-12, #2307). This `some` decides which bookings the BOARD
+      // shows; the guest select decides who is placeable. An officer still needs
+      // to see a booking that overlaps their window — its held nights, its
+      // whole-lodge-hold flag, its existing allocations — even if every guest
+      // currently on it is awaiting consent. What they must not get is an
+      // unconsented guest in the awaiting-allocation queue, and that comes from
+      // the filtered select.
       guests: {
         some: {
           stayStart: { lt: range.to },
@@ -1383,6 +1395,14 @@ async function loadBookingRecords(
         where: {
           stayStart: { lt: range.to },
           stayEnd: { gt: range.from },
+          // Owner decision D-12 (#2307): the board's guest list is what feeds
+          // `buildGuestNightRows`, and from there the awaiting-allocation queue
+          // and the planner's candidate set. A member guest whose consent is
+          // still PENDING holds a bed under D-4 but is not somebody an officer
+          // should be placing, so they never enter the queue. Occupancy on the
+          // board is unaffected: `loadAllocationRecords` reads the BedAllocation
+          // rows independently and names their guests from the allocation row.
+          ...OPERATIONALLY_PRESENT_GUEST_WHERE,
         },
         select: {
           id: true,
@@ -2036,6 +2056,11 @@ export async function countGuestsAwaitingBed(input: {
         wholeLodgeHold: false,
         checkIn: { lt: to },
         checkOut: { gt: from },
+        // Left broad for the same reason as `loadBookingRecords`' `some` above
+        // (D-12, #2307): this mirrors the board's booking-existence rule, and the
+        // exclusion that matters is on the guest select below. A booking whose
+        // only overlapping guests are unconsented loads here and contributes
+        // nobody, which is the right answer either way.
         guests: {
           some: {
             stayStart: { lt: to },
@@ -2050,6 +2075,11 @@ export async function countGuestsAwaitingBed(input: {
           where: {
             stayStart: { lt: to },
             stayEnd: { gt: from },
+            // D-12 (#2307): this counter is a window-scoped mirror of the
+            // board's own awaiting-allocation construction, so it has to apply
+            // the same exclusion — otherwise the officer card advertises work
+            // the board itself does not list.
+            ...OPERATIONALLY_PRESENT_GUEST_WHERE,
           },
           select: {
             id: true,
@@ -2308,6 +2338,26 @@ async function assertGuestAndBedForAllocation(input: {
   ) {
     throw new BedAllocationAdminError(
       "Booking status is not allocatable",
+      409,
+    );
+  }
+  // Owner decision D-12 (#2307), the WRITE half. Every read surface filters
+  // unconsented member guests out with OPERATIONALLY_PRESENT_GUEST_WHERE, so an
+  // officer never sees one in the awaiting-allocation queue — but the manual
+  // paths take a bookingGuestId from the request, not from the queue, so a
+  // pending guest's id supplied by hand (or left in a stale browser tab) would
+  // still write bed rows here. Those rows are exactly what
+  // `pruneAllocationsForBooking` sweeps on the next reconcile, so the officer's
+  // work would quietly disappear and the bed would look free again.
+  //
+  // Refused at the write chokepoint for the same reason as the whole-lodge hold
+  // above: it is the one place all three manual paths — single night, bulk, and
+  // the #2251 range path — pass through. `consentStatus` comes back on the
+  // `include` above and is read inside the caller's transaction, so it cannot be
+  // a stale pre-transaction snapshot.
+  if (!isOperationallyPresentConsent(guest.consentStatus)) {
+    throw new BedAllocationAdminError(
+      "This guest has not consented to being on this booking, so they cannot be given a bed yet.",
       409,
     );
   }

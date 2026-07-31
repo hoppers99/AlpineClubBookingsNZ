@@ -1,0 +1,181 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Member guests — what the admin sees (MG2 #2307)</title>
+<style>
+  :root { --bg:#eef2f4; --panel:#fff; --panel2:#f6f9fa; --ink:#102329; --muted:#516670; --line:#dce5e9; --accent:#0e6e78; --accent-ink:#0a545c; --warn:#8a5a00; --warn-bg:#fff6e2; --warn-line:#e8cf9a; --bad:#a3242b; --bad-bg:#fdeced; --bad-line:#f0c2c5; --ok:#1d6b45; --ok-bg:#e9f6ee; --radius:14px; --maxw:960px; }
+  @media (prefers-color-scheme: dark){ :root{ --bg:#08171c; --panel:#0f242b; --panel2:#0c1e24; --ink:#e8f4f6; --muted:#8fb0b8; --line:#213840; --accent:#3fb9cb; --accent-ink:#6fd2e0; --warn:#f0c674; --warn-bg:#2b2313; --warn-line:#5a4a20; --bad:#f2a2a6; --bad-bg:#2c1618; --bad-line:#5a2a2e; --ok:#7fd6a5; --ok-bg:#12261c; } }
+  :root[data-theme="light"]{ --bg:#eef2f4; --panel:#fff; --panel2:#f6f9fa; --ink:#102329; --muted:#516670; --line:#dce5e9; --accent:#0e6e78; --accent-ink:#0a545c; --warn:#8a5a00; --warn-bg:#fff6e2; --warn-line:#e8cf9a; --bad:#a3242b; --bad-bg:#fdeced; --bad-line:#f0c2c5; --ok:#1d6b45; --ok-bg:#e9f6ee; }
+  :root[data-theme="dark"]{ --bg:#08171c; --panel:#0f242b; --panel2:#0c1e24; --ink:#e8f4f6; --muted:#8fb0b8; --line:#213840; --accent:#3fb9cb; --accent-ink:#6fd2e0; --warn:#f0c674; --warn-bg:#2b2313; --warn-line:#5a4a20; --bad:#f2a2a6; --bad-bg:#2c1618; --bad-line:#5a2a2e; --ok:#7fd6a5; --ok-bg:#12261c; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; line-height:1.55; }
+  .wrap { max-width:var(--maxw); margin:0 auto; padding: clamp(22px,5vw,52px) clamp(16px,4vw,34px) 80px; }
+  .eyebrow { font-size:12px; letter-spacing:.18em; text-transform:uppercase; color:var(--accent-ink); font-weight:700; margin:0 0 10px; }
+  h1 { font-size:clamp(26px,5vw,40px); line-height:1.05; margin:0 0 12px; letter-spacing:-.025em; font-weight:800; }
+  .lede { font-size:clamp(15px,2.2vw,18px); color:var(--muted); max-width:66ch; margin:0 0 8px; }
+  h2 { font-size:clamp(18px,2.6vw,23px); margin:clamp(32px,6vw,48px) 0 4px; letter-spacing:-.01em; }
+  .sub { margin:0 0 14px; color:var(--muted); font-size:14.5px; max-width:72ch; }
+  .rule { height:2px; background:linear-gradient(to right, var(--accent), transparent 65%); border-radius:2px; margin:0 0 18px; opacity:.5; }
+  .note { background:var(--panel2); border:1px solid var(--line); border-left:3px solid var(--accent); border-radius:10px; padding:12px 15px; font-size:13.5px; color:var(--muted); margin:14px 0; }
+  .note b { color:var(--ink); }
+  .screen { background:var(--panel2); border:1px solid var(--line); border-radius:var(--radius); padding:16px; }
+  .screen .crumb { font-size:12px; color:var(--muted); margin:0 4px 12px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px 20px; }
+  .card + .card { margin-top:12px; }
+  .card h3 { margin:0 0 4px; font-size:17px; letter-spacing:-.01em; }
+  .card > p.hint { margin:0 0 16px; font-size:14px; color:var(--muted); }
+  fieldset { border:0; padding:0; margin:0 0 18px; }
+  legend { padding:0; font-size:14.5px; font-weight:650; margin-bottom:8px; }
+  .opt { display:flex; gap:10px; align-items:flex-start; padding:10px 12px; border:1px solid var(--line); border-radius:10px; margin-bottom:8px; background:var(--panel2); }
+  .opt.sel { border-color:color-mix(in srgb,var(--accent) 50%, var(--line)); background:color-mix(in srgb,var(--accent) 7%, transparent); }
+  .opt .txt { font-size:14px; } .opt .txt b { display:block; font-weight:650; }
+  .opt .txt span { color:var(--muted); font-size:13.5px; }
+  .field { margin-bottom:18px; }
+  .field label { display:block; font-size:14.5px; font-weight:650; margin-bottom:5px; }
+  .field .hint2 { font-size:13.5px; color:var(--muted); margin:5px 0 0; }
+  input[type=number] { font:inherit; width:110px; padding:8px 10px; border:1px solid var(--line); border-radius:9px; background:var(--panel2); color:var(--ink); }
+  .toggle { display:flex; gap:12px; align-items:flex-start; padding:12px 14px; border:1px solid var(--line); border-radius:10px; background:var(--panel2); margin-bottom:10px; }
+  .toggle.sub { margin-left:26px; }
+  .sw { flex:0 0 auto; width:40px; height:23px; border-radius:999px; background:var(--line); position:relative; margin-top:2px; }
+  .sw::after { content:""; position:absolute; top:3px; left:3px; width:17px; height:17px; border-radius:999px; background:var(--panel); }
+  .sw.on { background:var(--accent); } .sw.on::after { left:20px; }
+  .toggle .txt { font-size:14px; } .toggle .txt b { display:block; font-weight:650; }
+  .toggle .txt span { color:var(--muted); font-size:13.5px; }
+  .warnbox { background:var(--warn-bg); border:1px solid var(--warn-line); color:var(--warn); border-radius:10px; padding:11px 14px; font-size:13.5px; margin:8px 0 0 26px; }
+  .warnbox.top { margin:0 0 14px; }
+  .banner { background:var(--panel2); border:1px solid var(--line); border-left:3px solid var(--muted); border-radius:10px; padding:11px 14px; font-size:13.5px; color:var(--muted); margin:0 0 16px; }
+  button { font:inherit; font-size:14px; font-weight:650; border-radius:9px; padding:9px 16px; border:1px solid var(--line); background:var(--panel2); color:var(--ink); cursor:default; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button[disabled] { opacity:.45; }
+  .badge { display:inline-flex; align-items:center; gap:5px; font-size:11.5px; font-weight:700; letter-spacing:.02em; text-transform:uppercase; padding:3px 9px; border-radius:999px; border:1px solid var(--line); background:var(--panel2); color:var(--muted); white-space:nowrap; }
+  .badge.pend { background:var(--warn-bg); color:var(--warn); border-color:var(--warn-line); }
+  .badge.ok { background:var(--ok-bg); color:var(--ok); border-color:color-mix(in srgb,var(--ok) 35%, var(--line)); }
+  .badge.bad { background:var(--bad-bg); color:var(--bad); border-color:var(--bad-line); }
+  table.list { width:100%; border-collapse:collapse; font-size:14px; }
+  table.list th { text-align:left; font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); padding:0 10px 8px 0; border-bottom:1px solid var(--line); font-weight:700; }
+  table.list td { padding:11px 10px 11px 0; border-bottom:1px solid var(--line); vertical-align:top; }
+  table.list tr:last-child td { border-bottom:0; }
+  .who { font-weight:650; } .meta { color:var(--muted); font-size:13px; }
+  .chips { display:flex; gap:7px; flex-wrap:wrap; margin:0 0 14px; }
+  .chip { font-size:13px; padding:6px 12px; border-radius:999px; border:1px solid var(--line); background:var(--panel2); color:var(--muted); }
+  .chip.on { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:650; }
+  .foot { margin-top:44px; padding-top:16px; border-top:1px solid var(--line); font-size:13px; color:var(--muted); }
+  code { background:var(--panel2); border:1px solid var(--line); border-radius:6px; padding:1px 6px; font-size:12.5px; }
+  .tw { overflow-x:auto; }
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">Alpine Sports Club · epic #2305 · MG2 (#2307)</p>
+  <h1>Member guests — what the <em>admin</em> sees</h1>
+  <p class="lede">Static mockup, mock data. Three surfaces: the settings card that turns the policy knobs, the consent state on a booking, and the exception list of rows the system could not resolve on its own.</p>
+
+  <!-- =============== settings =============== -->
+  <h2>1 · The settings card</h2>
+  <p class="sub">Where: <b>Admin › Bookings setup</b>, beside the other booking-policy cards. Per owner decision <b>D-17</b> this ships in the same release as the behaviour it controls — MG1 shipped the module switch alone with "arrives in a later update" copy, so no admin can change a setting over an inert feature.</p>
+  <div class="rule"></div>
+  <div class="screen">
+    <p class="crumb">Admin › Bookings setup › Member guests</p>
+    <div class="card">
+      <h3>Member guests</h3>
+      <p class="hint">Lets a member add another club member — outside their own family group — as a guest on their booking.</p>
+
+      <fieldset>
+        <legend>Does the other member have to agree first?</legend>
+        <div class="opt sel"><input type="radio" checked><div class="txt"><b>Ask them first</b><span>The member is emailed and the bed is held until they answer. Recommended, and the default.</span></div></div>
+        <div class="opt"><input type="radio"><div class="txt"><b>Just tell them</b><span>The guest is added straight away and the member is emailed to say so. They can still take themselves off.</span></div></div>
+      </fieldset>
+
+      <div class="field">
+        <label for="days">How long to wait for an answer</label>
+        <input id="days" type="number" value="7" min="1" max="60">
+        <p class="hint2">Days, 1 to 60. After this the request lapses on its own, the bed is released, and the person who made the booking is told. A request never outlives the stay: it always lapses at least a day before check-in.</p>
+      </div>
+
+      <fieldset>
+        <legend>Finding the other member</legend>
+        <div class="toggle"><div class="sw"></div><div class="txt"><b>Let members search by name</b><span>Off: a member must type the other member's exact email address. On: they can type a name and pick from a list.</span></div></div>
+        <div class="warnbox">Turning this on makes your membership list browsable. Any member can type a few letters and see the names of other members who match. Leave it off unless your club has agreed to that.</div>
+        <div class="toggle sub"><div class="sw"></div><div class="txt"><b>Include under-18s in name search</b><span>Off: children never appear in the name list.</span></div></div>
+        <div class="warnbox">Turning this on makes children's names browsable to any member. A child can still be added by their household email address either way.</div>
+      </fieldset>
+
+      <div class="note" style="margin-top:0"><b>These two search settings never travel in club config transfer</b> (owner decision D-18). Importing another club's configuration must not quietly make your membership list browsable. The module switch, the ask-first choice and the waiting period do travel.</div>
+
+      <div style="display:flex;gap:10px;margin-top:4px"><button class="primary">Save</button><button>Cancel</button></div>
+    </div>
+  </div>
+
+  <p class="sub" style="margin-top:20px"><b>Two states the same card has to render honestly:</b></p>
+  <div class="screen">
+    <p class="crumb">State A — the module is switched off</p>
+    <div class="card">
+      <h3>Member guests</h3>
+      <div class="banner">Member guests is switched off, so none of this is in use. You can still set it up here; turn the module on under <b>Admin › Modules</b> when you are ready.</div>
+      <p class="hint" style="margin:0">(Controls render as above, editable — settings are saved but inert until the module is on.)</p>
+    </div>
+  </div>
+  <div class="screen" style="margin-top:12px">
+    <p class="crumb">State B — an admin with view access but not manage access</p>
+    <div class="card">
+      <h3>Member guests</h3>
+      <div class="banner">You can see these settings but not change them. Ask an administrator with booking-settings access if something here needs changing.</div>
+      <fieldset style="margin-bottom:10px">
+        <legend>Does the other member have to agree first?</legend>
+        <div class="opt sel"><input type="radio" checked disabled><div class="txt"><b>Ask them first</b><span>Currently in use.</span></div></div>
+      </fieldset>
+      <div class="field" style="margin-bottom:10px"><label>How long to wait for an answer</label><input type="number" value="7" disabled></div>
+      <div style="display:flex;gap:10px"><button class="primary" disabled>Save</button></div>
+    </div>
+  </div>
+  <div class="note"><b>View-only is a real third state, not a disabled second one.</b> The card reads its own permission and renders read / write / no-access distinctly, so an admin is never shown a Save button that will 403.</div>
+
+  <!-- =============== badges =============== -->
+  <h2>2 · Consent state on a booking</h2>
+  <p class="sub">There is no separate admin booking-detail page in this app — an admin reads the member booking page with admin tools — so the badge lives on the guest list there, and the same badge is what the member sees. Family and non-member guests get no badge at all.</p>
+  <div class="rule"></div>
+  <div class="screen">
+    <div class="card">
+      <h3>Guests</h3>
+      <div class="tw"><table class="list">
+        <tr><th>Guest</th><th>Type</th><th>Consent</th></tr>
+        <tr><td><span class="who">Dave Ngata</span></td><td class="meta">Member · booking owner</td><td class="meta">—</td></tr>
+        <tr><td><span class="who">Ari Ngata</span></td><td class="meta">Family · child</td><td class="meta">—</td></tr>
+        <tr><td><span class="who">Priya Kaur</span></td><td class="meta">Member guest</td><td><span class="badge pend">Waiting for consent · expires 7 Aug</span></td></tr>
+        <tr><td><span class="who">Sione Tui</span></td><td class="meta">Member guest</td><td><span class="badge ok">Consented 2 Aug</span></td></tr>
+        <tr><td><span class="who">Tama Kaur</span></td><td class="meta">Member guest · child</td><td><span class="badge ok">Consented by Ana Kaur, 2 Aug</span></td></tr>
+        <tr><td><span class="who">Hana Lee</span></td><td class="meta">Member guest</td><td><span class="badge ok">Told, not asked</span></td></tr>
+        <tr><td><span class="who">Rewi Boyd</span></td><td class="meta">Member guest</td><td><span class="badge ok">Added by Jo Admin</span></td></tr>
+        <tr><td><span class="who">Tui Aporo</span></td><td class="meta">Member guest</td><td><span class="badge bad">Said no — could not be removed</span></td></tr>
+        <tr><td><span class="who">Mere Paki</span></td><td class="meta">Member guest</td><td><span class="badge bad">Lapsed — could not be removed</span></td></tr>
+      </table></div>
+    </div>
+  </div>
+
+  <!-- =============== exception list =============== -->
+  <h2>3 · The exception list — rows the system could not resolve</h2>
+  <p class="sub">Where: a filter on the existing <b>Admin › Bookings</b> list, not a new page. Owner decision <b>D-15</b> means an ordinary paid booking expires cleanly on its own (the money becomes the owner's account credit). What lands here is the genuinely stuck remainder — and it must be unmissable, because it is the only state that needs a human.</p>
+  <div class="rule"></div>
+  <div class="screen">
+    <p class="crumb">Admin › Bookings</p>
+    <div class="card">
+      <div class="chips"><span class="chip">All</span><span class="chip">Upcoming</span><span class="chip">Awaiting review</span><span class="chip">Waiting for consent · 4</span><span class="chip on">Consent needs attention · 2</span></div>
+      <div class="tw"><table class="list">
+        <tr><th>Booking</th><th>Guest</th><th>Why it is stuck</th><th>What fixes it</th></tr>
+        <tr>
+          <td><span class="who">#4821</span><div class="meta">Silverpeak · 8–10 Aug<br>Dave Ngata</div></td>
+          <td><span class="who">Tui Aporo</span><div class="meta">Said no, 3 Aug</div></td>
+          <td>Tui is the only guest on this booking, so taking them off would leave it empty.</td>
+          <td>Cancel the booking, or add another guest first.</td>
+        </tr>
+        <tr>
+          <td><span class="who">#4790</span><div class="meta">Silverpeak · 12–15 Aug<br>Booking request</div></td>
+          <td><span class="who">Mere Paki</span><div class="meta">Lapsed 5 Aug, never answered</div></td>
+          <td>This booking was priced by hand, so the system will not reprice it.</td>
+          <td>Re-quote the request without Mere.</td>
+        </tr>
+      </table></div>
+    </div>
+  </div>
+  <div class="note"><b>Four reasons reach this list, and only four:</b> the guest is the booking's last one; the booking was quote-priced by hand; the booking is in a status that forbids guest changes; or check-in has already happened. Everything else — including every ordinary paid booking — resolves without an admin. The nightly sweep counts these separately from the ones it settled, so a growing number is visible in the background-jobs health view rather than buried.</div>
+
+  <p class="foot">Mock data. Copy is the real proposed copy — mark it up if it is wrong.</p>
+</div>

@@ -3,6 +3,7 @@ import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { addDaysDateOnly, formatDateOnly, isDateOnlyString, parseDateOnly } from "@/lib/date-only";
 import { OPERATIONAL_STAY_BOOKING_STATUSES } from "@/lib/booking-status";
+import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent";
 
 /**
  * GET /api/admin/hut-leaders/eligible-members?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
@@ -37,6 +38,13 @@ export async function GET(req: NextRequest) {
       memberId: { not: null },
       stayStart: { lte: rangeEnd },
       stayEnd: { gt: rangeStart },
+      // Owner decision D-12 (#2307): the picker offers the officer members who
+      // will actually be at the lodge. A member whose consent to being added as
+      // a guest is still PENDING is not operationally present, so their guest
+      // row does not make them a hut-leader candidate. Booking OWNERS are
+      // collected separately below and are not guest rows, so they are
+      // unaffected — a booker is never a consent subject on their own booking.
+      ...OPERATIONALLY_PRESENT_GUEST_WHERE,
       booking: {
         status: { in: [...OPERATIONAL_STAY_BOOKING_STATUSES] },
         checkIn: { lte: rangeEnd },

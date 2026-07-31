@@ -50,8 +50,16 @@ import {
   BookingGuestValidationError,
   getBookingGuestValidationErrorResponse,
   normalizeBookingGuestInputs,
-  resolveLinkedBookingMembers,
+  resolveLinkedBookingMembersWithBoundary,
 } from "@/lib/booking-guests";
+import {
+  loadMemberGuestAddPolicy,
+  matchMemberGuestNotificationRows,
+  planMemberGuestConsentWrites,
+  type MemberGuestConsentGuestFields,
+  type MemberGuestConsentWritePlanEntry,
+} from "@/lib/member-guest-add-policy";
+import type { MemberGuestAddActor } from "@/lib/member-guest-consent";
 import { findUnpaidMemberGuestNames } from "@/lib/booking-member-guest-subscriptions";
 import {
   ADULT_SUPERVISION_REVIEW_REASON,
@@ -201,6 +209,23 @@ export async function POST(
   const ipAddress =
     request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
 
+  // "+ Add Member Guest" (epic #2305, MG2 #2307). Read the module flag and the
+  // policy singleton HERE, OUTSIDE the transaction below.
+  //
+  // This is the call site the ordering rule was written for. The resolver runs
+  // INSIDE `prisma.$transaction`, after `acquireLodgeCapacityLock`, so the
+  // obvious-looking place to read these values is right next to where they are
+  // used — and that would hold the lodge's capacity lock across two extra queries
+  // on every guest add, including the ones with no member guest in them.
+  // `planMemberGuestConsentWrites` is pure, so only the READS have to move out.
+  const memberGuestPolicy = await loadMemberGuestAddPolicy();
+  // MG4-D-a, brought forward: `isAdmin` is exactly the flag that passes
+  // `skipAuthorization` on this route, so an admin add is consent-free and
+  // always-notify, stamped with the admin who made it.
+  const memberGuestActor: MemberGuestAddActor = isAdmin
+    ? { kind: "ADMIN", adminMemberId: session.user.id }
+    : { kind: "MEMBER" };
+
   try {
     const result = await prisma.$transaction(async (tx) => {
       // Lock the booking's lodge before re-reading it; the booking's lodge
@@ -288,15 +313,23 @@ export async function POST(
       // stored AgeTier, so the element type widens ageTier (only) beyond
       // the bookable-tier zod inference.
       let normalizedNewGuests: Array<
-        Omit<(typeof newGuests)[number], "ageTier"> & { ageTier: AgeTier }
+        Omit<(typeof newGuests)[number], "ageTier"> & { ageTier: AgeTier } &
+          MemberGuestConsentGuestFields
       > = newGuests;
+      // The cross-family rows this add will create, keyed by target member id.
+      // Populated inside the transaction and consumed AFTER it commits.
+      let memberGuestEntries = new Map<string, MemberGuestConsentWritePlanEntry>();
       try {
-        const linkedMembers = await resolveLinkedBookingMembers(
-          tx,
-          booking.memberId,
-          newGuests.map((guest) => guest.memberId),
-          { skipAuthorization: isAdmin }
-        );
+        const { members: linkedMembers, boundary } =
+          await resolveLinkedBookingMembersWithBoundary(
+            tx,
+            booking.memberId,
+            newGuests.map((guest) => guest.memberId),
+            {
+              skipAuthorization: isAdmin,
+              memberGuestWideningEnabled: memberGuestPolicy.wideningEnabled,
+            }
+          );
         await assertLinkedBookingMembersCanBeBooked(
           tx,
           linkedMembers,
@@ -304,9 +337,22 @@ export async function POST(
           {
             actorRole,
             onBehalfOfMemberId: isAdmin ? booking.memberId : null,
+            // D-8: a blocked cross-family member is refused neutrally.
+            crossFamilyMemberIds: boundary.beyondFamilyMemberIds,
           }
         );
-        normalizedNewGuests = normalizeBookingGuestInputs(newGuests, linkedMembers);
+        // Planned before the person-night guard and the unpaid-subscription check
+        // below, because both read the D-8 marker this attaches.
+        const consentPlan = planMemberGuestConsentWrites({
+          guests: normalizeBookingGuestInputs(newGuests, linkedMembers),
+          boundary,
+          actor: memberGuestActor,
+          now: new Date(),
+          bookingCheckIn: booking.checkIn,
+          policy: memberGuestPolicy,
+        });
+        normalizedNewGuests = consentPlan.guests;
+        memberGuestEntries = consentPlan.entriesByMemberId;
       } catch (error) {
         if (error instanceof BookingGuestValidationError) {
           throw error;
@@ -475,6 +521,11 @@ export async function POST(
             // Persist the rate-type snapshot at creation (#1930, E4) so a later
             // Xero line picks the matching item code.
             rateMembershipTypeId: priced.rateMembershipTypeId,
+            // Member-guest consent (MG2 #2307), already decided by
+            // `buildMemberGuestConsentWrite`. Spread only when present: a
+            // family-scope or non-member guest writes exactly what it wrote
+            // before.
+            ...(normalizedNewGuests[i].memberGuestConsent ?? {}),
             nights: {
               create: (priced.nightDates ?? []).map((stayDate, k) => ({
                 stayDate,
@@ -717,8 +768,44 @@ export async function POST(
         memberId: booking.memberId,
         addedGuestNames: normalizedNewGuests.map((guest) => `${guest.firstName} ${guest.lastName}`),
         bookingModificationId: bookingModification.id,
+        // MG2 #2307: the cross-family rows to tell about, matched to the guest
+        // ids this transaction actually created. Carried OUT of the transaction
+        // so the sends happen after the commit — no provider call may sit inside
+        // a booking transaction holding the capacity lock.
+        memberGuestNotificationRows: matchMemberGuestNotificationRows({
+          createdGuests: createdGuests,
+          entriesByMemberId: memberGuestEntries,
+        }),
       };
     });
+
+    // AFTER the commit, and awaited rather than fire-and-forget: an unsent consent
+    // request leaves a PENDING row holding a bed (D-4) that nobody was ever asked
+    // about, and a `void` promise is what a serverless freeze after the response
+    // drops.
+    if (result.memberGuestNotificationRows.length > 0) {
+      // Loaded lazily: the sender pulls in the whole email/template graph, and
+      // only a booking that actually added a cross-family member guest needs it.
+      const { sendMemberGuestAddNotifications } = await import(
+        "@/lib/member-guest-consent-notifications"
+      );
+      // Belt and braces around a function documented never to reject: the booking
+      // is ALREADY COMMITTED here, so an unexpected throw would hand the member an
+      // error for a booking that exists. A notification problem is logged, never
+      // surfaced as a booking failure.
+      try {
+        await sendMemberGuestAddNotifications({
+          bookingId,
+          rows: result.memberGuestNotificationRows,
+          actor: memberGuestActor,
+        });
+      } catch (err) {
+        logger.error(
+          { err, bookingId },
+          "Failed to dispatch member-guest add notifications",
+        );
+      }
+    }
 
     // Create additional PaymentIntent for price increases (outside transaction
     // to avoid holding the advisory lock). Shared settlement helper (#1096):

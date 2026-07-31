@@ -102,6 +102,10 @@ Conventions carried through every guide, matching the domain rules in
 - **[Changing or cancelling a booking](changing-or-cancelling-a-booking.md)** —
   changing dates or guests, cancelling, and understanding whether you get a
   refund or account credit.
+- **[Being added to a booking by another member](being-added-to-a-booking.md)** —
+  what happens when another member puts you (or your child) on their booking:
+  answering the consent request, answering for a family member without a login,
+  and what "told, not asked" means.
 
 ## Related links
 

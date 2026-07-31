@@ -322,11 +322,11 @@ const NOTICE = "AdminViewOnlyNotice";
 */
 const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 295,
+  callSites: 297,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 248,
+  optOuts: 250,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 222,
+  staticOptOuts: 224,
   /** `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch. */
   vouchedOptOuts: 26,
   /** …of the vouched: proved at a parent's own JSX render site (#2168). */
@@ -340,7 +340,7 @@ const FIGURES = {
   leafControls: 34,
   leafFiles: 20,
   /** Components that render an `AdminViewOnlySectionBanner`. */
-  bannerComponents: 79,
+  bannerComponents: 80,
 } as const;
 
 const WIZARD_SHELL = "IntegrationWizard";
@@ -1189,6 +1189,16 @@ describe("view-only section banner coverage (#2160)", () => {
                exceptions 43 -> 47 (+4), exceptionFiles 23 -> 25 (+2), and the
                leaf bucket 30/18 -> 34/20; optOuts, the vouched split and
                bannerComponents are untouched.
+          293  +2  #2307's Member guests settings card on Bookings setup
+               (member-guest-settings-card.tsx): Edit + Save, both static
+               opt-outs under the card's own banner, so staticOptOuts and
+               optOuts move +2 with it and bannerComponents +1 (79 -> 80).
+               Re-measured on the merged tree rather than added to either
+               side's figure: #2286 and #2307 landed in the same window and
+               both moved the count.
+          297      Re-measured on the merged tree: #2262's +4 and #2307's +2 are
+               independent, so 291 -> 295 -> 297. Neither side's number is
+               taken as-is.
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into
@@ -1352,7 +1362,30 @@ describe("view-only section banner coverage (#2160)", () => {
       }
       const flat = flatten(readFileSync(file, "utf8"));
       for (const phrase of phrases) {
-        if (!flat.includes(phrase)) offenders.push(`${rel}: "${phrase}"`);
+        if (!flat.includes(phrase)) {
+          offenders.push(`${rel}: "${phrase}"`);
+          continue;
+        }
+        // A CORRECT SENTENCE ELSEWHERE IN THE SAME FILE MUST NOT EXCUSE A STALE
+        // ONE, and that is not hypothetical: `includes` only answers "does the
+        // measured figure appear at least once". A CHANGELOG quotes this
+        // sentence once per release that moved the numbers, so a new entry
+        // carrying the right figure let an older entry keep publishing a
+        // superseded one — a reader landing on the wrong paragraph is told a
+        // number no test disagrees with, which is the exact failure the census
+        // above exists to prevent.
+        //
+        // So every occurrence of each sentence's SHAPE — the same words with any
+        // digits in the numeric slots — has to carry the measured figures.
+        const shape = new RegExp(
+          phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\d+/g, "\\d+"),
+          "g",
+        );
+        for (const match of flat.matchAll(shape)) {
+          if (match[0] !== phrase) {
+            offenders.push(`${rel}: stale "${match[0]}" — should read "${phrase}"`);
+          }
+        }
       }
     }
 

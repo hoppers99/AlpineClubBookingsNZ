@@ -51,10 +51,17 @@ import {
   checkCapacityForGuestRanges,
   findOverlappingCapacityHoldingBookings,
   findOverlappingOverriddenNonHoldingBookings,
+  // #2307 freeze tests: the public entry point over buildOccupancyIndex +
+  // getOccupiedBedsForNightFromIndex, which are private.
+  getOccupiedBedsForNight,
   getLodgeHeldNights,
   getMonthAvailability,
   sameLodgeNullTolerant,
 } from "@/lib/capacity";
+import {
+  countActiveGuestsForNight,
+  isGuestActiveOnNight,
+} from "@/lib/booking-guest-stay-ranges";
 import {
   overCapacityNights,
   OverCapacityConfirmationRequiredError,
@@ -1218,5 +1225,306 @@ describe("getLodgeHeldNights — admin companion to getLodgeCapacityStatus (issu
         db,
       ),
     ).toEqual([]);
+  });
+});
+
+// ============================================================================
+// FREEZE TESTS (#2307): a PENDING member guest HOLDS A BED
+// ============================================================================
+//
+// Owner decision D-4: a member guest whose consent is still PENDING holds the
+// bed until the hold expires. Owner decision D-12 keeps that same guest off every
+// OPERATIONAL surface — the kiosk, the roster, bed allocation, the arrival
+// emails, the wall. The two decisions pull in opposite directions on purpose, and
+// this file is the side that must NOT move.
+//
+// The failure these tests exist to prevent: somebody applies D-12 tidily by
+// spreading OPERATIONALLY_PRESENT_GUEST_WHERE into "the guest queries", capacity
+// included, and the lodge quietly overbooks by exactly the number of pending
+// member guests — a category of bug that shows up as a family with no bed on
+// arrival night, not as a failing build.
+//
+// Person-night conflicts are frozen for a sharper reason still: a PENDING guest
+// holds a bed, so it MUST hold that member's person-night as well, or the same
+// member can be placed in two beds on one night.
+describe("#2307 capacity freeze: a PENDING member guest still occupies a bed (D-4)", () => {
+  const CAPACITY = 10;
+
+  // A guest row exactly as MG2 writes it for an approval-required cross-family
+  // add: PENDING, requested, unanswered, with an expiry the sweep will read.
+  function pendingGuest(id: string) {
+    return {
+      id,
+      stayStart: parseDateOnly("2026-08-01"),
+      stayEnd: parseDateOnly("2026-08-03"),
+      nights: [],
+      consentStatus: "PENDING",
+      consentRequestedAt: new Date("2026-07-25T00:00:00.000Z"),
+      consentRespondedAt: null,
+      consentRespondedByMemberId: null,
+      consentExpiresAt: new Date("2026-07-31T12:00:00.000Z"),
+    };
+  }
+
+  function ordinaryGuest(id: string) {
+    return {
+      id,
+      stayStart: parseDateOnly("2026-08-01"),
+      stayEnd: parseDateOnly("2026-08-03"),
+      nights: [],
+      // Every non-member guest, every family-scope add, every pre-feature row.
+      consentStatus: null,
+    };
+  }
+
+  function holdingBooking(guests: Array<Record<string, unknown>>) {
+    return {
+      id: "booking-existing",
+      checkIn: parseDateOnly("2026-08-01"),
+      checkOut: parseDateOnly("2026-08-03"),
+      status: BookingStatus.PAID,
+      lodgeId: LODGE_A,
+      wholeLodgeHold: false,
+      guests,
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.bookingFindMany.mockResolvedValue([]);
+    mocks.clubModuleSettingsFindUnique.mockResolvedValue(null);
+    mocks.lodgeBedCount.mockResolvedValue(0);
+    mocks.lodgeSettingsFindUnique.mockResolvedValue({ capacity: CAPACITY });
+  });
+
+  it("counts a PENDING guest in checkCapacity's occupancy", async () => {
+    mocks.bookingFindMany.mockResolvedValue([
+      holdingBooking([ordinaryGuest("g-ordinary"), pendingGuest("g-pending")]),
+    ]);
+
+    const result = await checkCapacity(
+      LODGE_A,
+      parseDateOnly("2026-08-01"),
+      parseDateOnly("2026-08-03"),
+      1,
+    );
+
+    // Two occupants, not one. If the pending guest were filtered out, this reads
+    // 1 and the lodge is one bed overbooked on both nights.
+    for (const night of result.nightDetails) {
+      expect(night.occupiedBeds).toBe(2);
+      expect(night.availableBeds).toBe(CAPACITY - 2);
+    }
+  });
+
+  it("sends no consent filter in checkCapacity's guest include", async () => {
+    await checkCapacity(
+      LODGE_A,
+      parseDateOnly("2026-08-01"),
+      parseDateOnly("2026-08-03"),
+      1,
+    );
+
+    const args = mocks.bookingFindMany.mock.calls[0][0];
+    expect(JSON.stringify(args.include)).not.toContain("consentStatus");
+    expect(JSON.stringify(args.where)).not.toContain("consentStatus");
+  });
+
+  it("counts a PENDING guest in checkCapacityForGuestRanges", async () => {
+    mocks.bookingFindMany.mockResolvedValue([
+      holdingBooking([ordinaryGuest("g-ordinary"), pendingGuest("g-pending")]),
+    ]);
+
+    const result = await checkCapacityForGuestRanges(
+      LODGE_A,
+      parseDateOnly("2026-08-01"),
+      parseDateOnly("2026-08-03"),
+      [
+        {
+          stayStart: parseDateOnly("2026-08-01"),
+          stayEnd: parseDateOnly("2026-08-03"),
+        },
+      ],
+    );
+
+    // This function reports existing occupancy PLUS the proposal: 2 existing
+    // (one of them the pending member guest) + 1 proposed = 3. Drop the pending
+    // guest and this reads 2, which is how a booking gets accepted onto a bed
+    // that is already held.
+    for (const night of result.nightDetails) {
+      expect(night.occupiedBeds).toBe(3);
+      expect(night.availableBeds).toBe(CAPACITY - 3);
+    }
+    const args = mocks.bookingFindMany.mock.calls[0][0];
+    expect(JSON.stringify(args)).not.toContain("consentStatus");
+  });
+
+  it("counts a PENDING guest in getMonthAvailability", async () => {
+    mocks.bookingFindMany.mockResolvedValue([
+      holdingBooking([ordinaryGuest("g-ordinary"), pendingGuest("g-pending")]),
+    ]);
+
+    // A Map of date key -> occupied beds; this is what the public availability
+    // calendar renders, so an undercount here shows the lodge as having a free
+    // bed that a pending member guest is holding.
+    // month is 0-indexed here, as everywhere else in this suite.
+    const availability = await getMonthAvailability(LODGE_A, 2026, 7);
+
+    expect(availability.get("2026-08-01")).toBe(2);
+    expect(availability.get("2026-08-02")).toBe(2);
+    const args = mocks.bookingFindMany.mock.calls[0][0];
+    expect(JSON.stringify(args)).not.toContain("consentStatus");
+  });
+
+  it("counts a PENDING guest in getOccupiedBedsForNight (and its index twin)", async () => {
+    // getOccupiedBedsForNight delegates to buildOccupancyIndex +
+    // getOccupiedBedsForNightFromIndex, so this covers all three: the public
+    // entry point and the two private halves it is built from.
+    const occupied = getOccupiedBedsForNight(parseDateOnly("2026-08-01"), [
+      holdingBooking([
+        ordinaryGuest("g-ordinary"),
+        pendingGuest("g-pending"),
+      ]) as never,
+    ]);
+
+    expect(occupied).toBe(2);
+  });
+
+  it("counts a PENDING guest in findOverlappingCapacityHoldingBookings' _count", async () => {
+    // The _count.guests here is a Prisma relation count with no filter, so this
+    // pins the query shape: a `where` on the counted relation would silently
+    // shrink the conflict message an admin reads before overriding.
+    const bookingFindMany = vi.fn().mockResolvedValue([
+      {
+        id: "booking-existing",
+        checkIn: parseDateOnly("2026-08-01"),
+        checkOut: parseDateOnly("2026-08-03"),
+        status: BookingStatus.PAID,
+        member: { firstName: "Ada", lastName: "Holder", email: "ada@example.org" },
+        _count: { guests: 2 },
+      },
+    ]);
+
+    const conflicts = await findOverlappingCapacityHoldingBookings(
+      { booking: { findMany: bookingFindMany } } as never,
+      {
+        lodgeId: LODGE_A,
+        checkIn: parseDateOnly("2026-08-01"),
+        checkOut: parseDateOnly("2026-08-03"),
+      },
+    );
+
+    expect(conflicts[0].guestCount).toBe(2);
+    const args = bookingFindMany.mock.calls[0][0];
+    expect(args.select._count).toEqual({ select: { guests: true } });
+    expect(JSON.stringify(args)).not.toContain("consentStatus");
+  });
+
+  it("counts a PENDING guest in the overridden-non-holding twin's _count", async () => {
+    const bookingFindMany = vi.fn().mockResolvedValue([
+      {
+        id: "booking-overridden",
+        checkIn: parseDateOnly("2026-08-01"),
+        checkOut: parseDateOnly("2026-08-03"),
+        status: BookingStatus.PAYMENT_PENDING,
+        member: { firstName: "Bo", lastName: "Override", email: "bo@example.org" },
+        _count: { guests: 3 },
+      },
+    ]);
+
+    const conflicts = await findOverlappingOverriddenNonHoldingBookings(
+      { booking: { findMany: bookingFindMany } } as never,
+      {
+        lodgeId: LODGE_A,
+        checkIn: parseDateOnly("2026-08-01"),
+        checkOut: parseDateOnly("2026-08-03"),
+      },
+    );
+
+    expect(conflicts[0].guestCount).toBe(3);
+    const args = bookingFindMany.mock.calls[0][0];
+    expect(args.select._count).toEqual({ select: { guests: true } });
+    expect(JSON.stringify(args)).not.toContain("consentStatus");
+  });
+
+  it("has no consent filter anywhere in capacity.ts", () => {
+    // The catch-all, and the reason it is worth having: buildOccupancyIndex and
+    // getOccupiedBedsForNightFromIndex are private, and future capacity paths
+    // will be added without anyone thinking to extend this suite. Any mention of
+    // consent in this file is either an intentional change to D-4 — which is the
+    // owner's call, not a refactor's — or the overbooking bug.
+    const source = readFileSync(
+      path.resolve(process.cwd(), "src/lib/capacity.ts"),
+      "utf8",
+    );
+    expect(source).not.toContain("consentStatus");
+    expect(source).not.toContain("OPERATIONALLY_PRESENT_GUEST_WHERE");
+    expect(source).not.toContain("isOperationallyPresentConsent");
+  });
+});
+
+// ============================================================================
+// FREEZE TEST (#2307): the stay-range occupancy primitives are consent-blind
+// ============================================================================
+//
+// `isGuestActiveOnNight` and its `countActiveGuestsForNight` wrapper are the
+// primitives every capacity path in the repo counts with. They take a guest's
+// stay envelope (or explicit night set) and a night, and answer "is this person
+// occupying a bed tonight". Consent has no place in that question: a PENDING
+// member guest IS occupying the bed (D-4), and D-12's exclusion belongs on the
+// operational QUERIES, not on the arithmetic they all share.
+//
+// A filter added here would leak into every caller at once — capacity, pricing,
+// the roster headcount, the print sheet — which is exactly why it is frozen in
+// its own suite rather than left implied by the callers' tests.
+describe("#2307 stay-range occupancy primitives ignore consent (D-4)", () => {
+  const NIGHT = parseDateOnly("2026-08-01");
+  const BOOKING = {
+    checkIn: parseDateOnly("2026-08-01"),
+    checkOut: parseDateOnly("2026-08-03"),
+  };
+
+  const guestWithConsent = (consentStatus: string | null) => ({
+    stayStart: parseDateOnly("2026-08-01"),
+    stayEnd: parseDateOnly("2026-08-03"),
+    nights: [],
+    consentStatus,
+  });
+
+  it("treats every consent state as occupying the night", () => {
+    for (const consentStatus of [
+      null,
+      "PENDING",
+      "CONFIRMED",
+      "DECLINED",
+      "EXPIRED",
+    ]) {
+      expect(
+        isGuestActiveOnNight(guestWithConsent(consentStatus) as never, NIGHT, BOOKING),
+        `a ${String(consentStatus)} guest must still occupy the night`,
+      ).toBe(true);
+    }
+  });
+
+  it("counts a mixed-consent booking at full headcount", () => {
+    const guests = [
+      guestWithConsent(null),
+      guestWithConsent("CONFIRMED"),
+      guestWithConsent("PENDING"),
+      guestWithConsent("DECLINED"),
+      guestWithConsent("EXPIRED"),
+    ];
+
+    expect(countActiveGuestsForNight(guests as never, NIGHT, BOOKING)).toBe(5);
+  });
+
+  it("has no consent filter anywhere in booking-guest-stay-ranges.ts", () => {
+    const source = readFileSync(
+      path.resolve(process.cwd(), "src/lib/booking-guest-stay-ranges.ts"),
+      "utf8",
+    );
+    expect(source).not.toContain("consentStatus");
+    expect(source).not.toContain("OPERATIONALLY_PRESENT_GUEST_WHERE");
+    expect(source).not.toContain("isOperationallyPresentConsent");
   });
 });

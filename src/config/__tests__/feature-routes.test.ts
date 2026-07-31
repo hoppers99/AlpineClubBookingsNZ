@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+  FEATURE_ROUTE_RULES,
   getDisabledFeatureForPath,
   getRequiredFeaturesForPath,
   isFeatureHrefVisible,
 } from "@/config/feature-routes";
-import { MODULE_KEYS, getEffectiveModuleFlags } from "@/config/modules";
+import {
+  MODULE_KEYS,
+  getEffectiveModuleFlags,
+  type ModuleKey,
+} from "@/config/modules";
 import type { FeatureFlags } from "@/config/schema";
 
 const allOn = Object.fromEntries(
@@ -239,6 +244,101 @@ describe("feature route map", () => {
         xeroIntegration: false,
       })
     ).toBe(false);
+  });
+
+  describe("member guests (#2305 / #2307)", () => {
+    it("gates the delegate answer page and the consent endpoint", () => {
+      expect(getRequiredFeaturesForPath("/bookings/consent/bg-1")).toEqual([
+        "memberGuests",
+      ]);
+      expect(
+        getRequiredFeaturesForPath("/api/bookings/bk-1/guests/bg-1/consent"),
+      ).toEqual(["memberGuests"]);
+      expect(
+        getDisabledFeatureForPath("/bookings/consent/bg-1", {
+          ...allOn,
+          memberGuests: false,
+        }),
+      ).toBe("memberGuests");
+      expect(
+        getDisabledFeatureForPath("/api/bookings/bk-1/guests/bg-1/consent", {
+          ...allOn,
+          memberGuests: false,
+        }),
+      ).toBe("memberGuests");
+    });
+
+    it("leaves the shared booking-guest routes alone", () => {
+      // Ordinary (non-member) guests are core booking behaviour and travel
+      // through the same two paths. Gating either on memberGuests would stop a
+      // club that does not run member guests from adding a guest at all.
+      expect(getRequiredFeaturesForPath("/api/bookings/bk-1/guests")).toEqual(
+        [],
+      );
+      expect(
+        getRequiredFeaturesForPath("/api/bookings/bk-1/guests/bg-1"),
+      ).toEqual([]);
+      expect(getRequiredFeaturesForPath("/bookings/bk-1")).toEqual([]);
+    });
+
+    it("keeps the admin settings route reachable while the module is off", () => {
+      // MG2-M-4: an admin configures the member-guest policy first and turns
+      // the module on afterwards, so this route must survive the module being
+      // off. It is protected by its `bookings` admin permission area instead.
+      expect(
+        getRequiredFeaturesForPath("/api/admin/member-guest-settings"),
+      ).toEqual([]);
+      expect(
+        getDisabledFeatureForPath("/api/admin/member-guest-settings", {
+          ...allOn,
+          memberGuests: false,
+        }),
+      ).toBeNull();
+      expect(
+        getDisabledFeatureForPath("/admin/bookings-setup", {
+          ...allOn,
+          memberGuests: false,
+        }),
+      ).toBeNull();
+    });
+  });
+
+  it("gives every module a feature-route rule, or a stated reason for having none", () => {
+    // A whole module once shipped with pages, API routes and no rule at all,
+    // and every suite still passed (#2307 review M10). This is the tripwire: a
+    // new module key either gates its own routes here, or it is written down
+    // below as one that owns no routes to gate.
+    //
+    // The allow-list is only for modules that change how an EXISTING shared
+    // route behaves rather than owning a route namespace of their own:
+    //   twoFactor / magicLink / googleLogin — extra ways to get through the
+    //     shared login and account pages. Gating /login on any of them would
+    //     lock every member out of the site whenever the module was off.
+    //   analytics — injects a consent-gated tracking script into public pages;
+    //     it has no page or endpoint of its own to 404.
+    const MODULES_WITHOUT_ROUTE_RULES: ModuleKey[] = [
+      "twoFactor",
+      "magicLink",
+      "googleLogin",
+      "analytics",
+    ];
+
+    const gatedFlags = new Set<string>(
+      FEATURE_ROUTE_RULES.map((rule) => rule.flag),
+    );
+
+    expect(
+      MODULE_KEYS.filter(
+        (key) =>
+          !gatedFlags.has(key) && !MODULES_WITHOUT_ROUTE_RULES.includes(key),
+      ),
+    ).toEqual([]);
+
+    // The allow-list must not rot either: once a module grows a rule, it stops
+    // being an exception and the list has to say so.
+    expect(
+      MODULES_WITHOUT_ROUTE_RULES.filter((key) => gatedFlags.has(key)),
+    ).toEqual([]);
   });
 
   it("does not match shared booking APIs or similar prefixes", () => {

@@ -56,6 +56,15 @@ const GLOBAL_BOOKING_MONEY_LOCK_INVENTORY: Record<string, number> = {
   "src/lib/group-cancel.ts": 2,
   "src/lib/group-settlement.ts": 6,
   "src/lib/internet-banking-payment-cron.ts": 1,
+  // "+ Add Member Guest" (#2307, epic #2305). Two sites, both in the
+  // global-cohort class and both genuinely needing BOTH locks: a consent decline
+  // and a lapse each reprice the booking, can elect account credit to the owner
+  // (owner decision D-15), AND release a bed. Global `lock(1)` is taken FIRST and
+  // `acquireLodgeCapacityLock` second in both, matching the declared
+  // global-before-per-lodge order, and each then re-reads under the locks and
+  // makes a status-guarded claim before any side effect. See
+  // docs/CONCURRENCY_AND_LOCKING.md, "Global-cohort money / status transition".
+  "src/lib/member-guest-consent-service.ts": 2,
   // #2262: site 1 is the ONE settlement body, shared byte-for-byte by the
   // Stripe capture and the admin's manual cash settlement (the refactor that
   // generalised it over a settlement source added NO lock site — the manual
