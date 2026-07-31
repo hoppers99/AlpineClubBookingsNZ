@@ -12,14 +12,17 @@ All notable public reference-release changes should be recorded here.
   contacts, reports an in-scope `N/A` separately, and preserves anyone who
   already has a completed induction of any kind. Apply needs a login-enabled
   Full Admin actor, one New Zealand baseline date, stable source provenance,
-  and exact club and database confirmations. It refuses to run
+  and exact club, database, and reviewed SHA-256 plan-digest confirmations.
+  Apply rebuilds the complete safe plan under its table lock and rejects stale
+  digests before blocker, no-op, or write handling. It refuses to run
   over an open induction, locks direct induction-table writes during apply, and
   commits all completed New Member baseline rows with one audit event or none
   at all. The runbook requires a short member-population, induction, and
   configuration-write freeze around the final dry run and apply because the
   table lock does not freeze those inputs.
   The records are explicit Admin Overrides with no invented signers, sign-offs,
-  emails, or hut-leader eligibility; an identical rerun is a no-op. The new
+  emails, or hut-leader eligibility; a fresh post-apply dry-run digest permits
+  an identical no-op rerun while the stale pre-apply digest fails closed. The new
   operator runbook documents rehearsal, review, verification, and recovery.
 - **A booking paid in cash — or by a bank transfer that never reached Xero —
   can now be recorded as paid, properly (#2262).** Open the booking, and under

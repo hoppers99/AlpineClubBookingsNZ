@@ -11,6 +11,7 @@ import process from "node:process";
 import {
   assertDatabaseTargetConfirmation,
   buildBlockedInductionBaselineResult,
+  buildPlanMismatchInductionBaselineResult,
   formatInductionBaselineOutput,
   parseInductionBaselineArgs,
   parseSafeDatabaseTarget,
@@ -30,6 +31,7 @@ function printUsage() {
   IFS= read -r CONFIRM_CLUB_NAME < /protected/path/confirm-club-name
   IFS= read -r CONFIRM_DB_HOST < /protected/path/confirm-db-host
   IFS= read -r CONFIRM_DB_NAME < /protected/path/confirm-db-name
+  IFS= read -r CONFIRM_PLAN_DIGEST < /protected/path/confirm-plan-digest
 
   npm run induction:baseline -- \\
     --apply \\
@@ -38,7 +40,8 @@ function printUsage() {
     --provenance-note "$PROVENANCE_NOTE" \\
     --confirm-club-name "$CONFIRM_CLUB_NAME" \\
     --confirm-db-host "$CONFIRM_DB_HOST" \\
-    --confirm-db-name "$CONFIRM_DB_NAME"
+    --confirm-db-name "$CONFIRM_DB_NAME" \\
+    --confirm-plan-digest "$CONFIRM_PLAN_DIGEST"
 
 Options:
   --dry-run                 Explicit dry run (the default). Never writes.
@@ -50,6 +53,8 @@ Options:
                             Exact effective DB-first club name (apply only).
   --confirm-db-host <host>  Exact parsed DATABASE_URL host[:port] (apply only).
   --confirm-db-name <name>  Exact parsed DATABASE_URL database name (apply only).
+  --confirm-plan-digest <digest>
+                            Exact PLAN DIGEST from the reviewed dry run (apply only).
   --json                    Emit safe machine-readable JSON after the report.
   --help, -h                Show this help.
 
@@ -90,8 +95,10 @@ async function main() {
       actorMemberId: args.actorMemberId,
       baselineDate: args.baselineDate,
       provenanceNote: args.provenanceNote,
+      databaseTarget,
       apply: args.apply,
       confirmClubName: args.confirmClubName,
+      confirmPlanDigest: args.confirmPlanDigest,
     });
     console.log(
       formatInductionBaselineOutput(report, databaseTarget, args.json),
@@ -105,6 +112,17 @@ async function main() {
       );
       console.log(blocked.output);
       process.exitCode = blocked.exitCode;
+      return;
+    }
+    if (error instanceof baseline.InductionBaselinePlanMismatchError) {
+      const mismatch = buildPlanMismatchInductionBaselineResult(
+        error.report,
+        databaseTarget,
+        args.json,
+      );
+      console.log(mismatch.output);
+      process.exitCode = mismatch.exitCode;
+      return;
     }
     throw error;
   } finally {

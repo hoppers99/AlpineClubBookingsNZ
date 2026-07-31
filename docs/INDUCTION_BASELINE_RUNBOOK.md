@@ -10,9 +10,10 @@ digital induction register was introduced. The command records that baseline
 without fabricating signers, sign-offs, or hut-leader eligibility.
 
 The command is dry-run-first. A run without `--apply` only reports what it
-would do. An apply needs exact club and database confirmations, runs in one
-database transaction, and either creates every planned row or creates none.
-It does not call Stripe, Xero, SES, Sentry, or another external provider.
+would do. An apply needs the exact plan digest from the reviewed dry run plus
+exact club and database confirmations, runs in one database transaction, and
+either creates every planned row or creates none. It does not call Stripe,
+Xero, SES, Sentry, or another external provider.
 
 This is not a general induction import. Do not use it when the historical
 source cannot support one common New Zealand date and one provenance note, or
@@ -357,20 +358,29 @@ REHEARSAL_EVIDENCE_DIR="$(mktemp -d)"
 grep -Eq '^  CREATE: [1-9][0-9]*$' "$REHEARSAL_EVIDENCE_DIR/dry-run.txt"
 ```
 
-Copy the exact club name, parsed database host, and database name from that
-report into three new protected one-line files; do not paste their contents
-into the shell. Confirm the rehearsal starts with no prior baseline audit,
-apply, then rerun the dry run:
+Confirm the dry-run output contains one well-formed digest:
+
+```bash
+grep -Eq '^PLAN DIGEST: sha256:[a-f0-9]{64}$' \
+  "$REHEARSAL_EVIDENCE_DIR/dry-run.txt"
+```
+
+Copy the exact club name, parsed database host, database name, and `PLAN
+DIGEST` value from that report into four new protected one-line files; do not
+paste their contents into the shell. Confirm the rehearsal starts with no
+prior baseline audit, apply, then rerun the dry run:
 
 ```bash
 vi -- "$REHEARSAL_INPUT_DIR/confirm-club-name"
 vi -- "$REHEARSAL_INPUT_DIR/confirm-db-host"
 vi -- "$REHEARSAL_INPUT_DIR/confirm-db-name"
+vi -- "$REHEARSAL_INPUT_DIR/confirm-plan-digest"
 
 for INPUT_FILE in \
   "$REHEARSAL_INPUT_DIR/confirm-club-name" \
   "$REHEARSAL_INPUT_DIR/confirm-db-host" \
-  "$REHEARSAL_INPUT_DIR/confirm-db-name"
+  "$REHEARSAL_INPUT_DIR/confirm-db-name" \
+  "$REHEARSAL_INPUT_DIR/confirm-plan-digest"
 do
   if [ ! -f "$INPUT_FILE" ] || [ "$(wc -l < "$INPUT_FILE")" -ne 1 ]; then
     printf 'Expected exactly one newline-terminated line in %s\n' "$INPUT_FILE" >&2
@@ -381,9 +391,11 @@ done
 IFS= read -r REHEARSAL_CLUB_NAME < "$REHEARSAL_INPUT_DIR/confirm-club-name"
 IFS= read -r REHEARSAL_DB_HOST < "$REHEARSAL_INPUT_DIR/confirm-db-host"
 IFS= read -r REHEARSAL_DB_NAME < "$REHEARSAL_INPUT_DIR/confirm-db-name"
+IFS= read -r REHEARSAL_PLAN_DIGEST < "$REHEARSAL_INPUT_DIR/confirm-plan-digest"
 if [ -z "$REHEARSAL_CLUB_NAME" ] ||
    [ -z "$REHEARSAL_DB_HOST" ] ||
-   [ -z "$REHEARSAL_DB_NAME" ]; then
+   [ -z "$REHEARSAL_DB_NAME" ] ||
+   [ -z "$REHEARSAL_PLAN_DIGEST" ]; then
   printf 'Rehearsal confirmation files must not be empty.\n' >&2
   exit 1
 fi
@@ -402,6 +414,7 @@ REHEARSAL_AUDITS_BEFORE="$(
   --confirm-club-name "$REHEARSAL_CLUB_NAME" \
   --confirm-db-host "$REHEARSAL_DB_HOST" \
   --confirm-db-name "$REHEARSAL_DB_NAME" \
+  --confirm-plan-digest "$REHEARSAL_PLAN_DIGEST" \
   --json | tee "$REHEARSAL_EVIDENCE_DIR/apply.txt"
 
 grep -Eq '^Applied [1-9][0-9]* completed baseline row\(s\)\.$' \
@@ -469,7 +482,17 @@ and database name. It never displays the database URL, username, or password.
 Do not paste a database URL or credentials into the note, a ticket, or the
 retained report.
 
-Review all four deterministic categories and the per-age-tier counts:
+The prominent `PLAN DIGEST` is a versioned `sha256:<64 hex characters>` digest
+of the complete plan, not of the formatted report. It binds the safe database
+host and name; club, actor, date, and full stored provenance; active template
+identity, name, version, and ordered section/item content; complete validated
+age-tier settings; required sign-off count; and all four ordered member
+categories, including existing induction IDs, kinds, statuses, and `N/A`
+member IDs. Report mode and applied count are deliberately excluded, so an
+unchanged dry run and its apply produce the same digest.
+
+Review the digest, all four deterministic categories, and the per-age-tier
+counts:
 
 | Category | Meaning | Apply behaviour |
 | --- | --- | --- |
@@ -497,19 +520,22 @@ generate a fresh dry run. Do not edit a saved report and treat it as current.
 
 ## 2. Apply with exact confirmations
 
-Use the exact effective club name, parsed host, and database name printed by
-the reviewed dry run. Put each value into a new protected one-line file with
-the trusted editor; do not paste report content into executable shell text.
+Use the exact effective club name, parsed host, database name, and plan digest
+printed by the reviewed dry run. Put each value into a new protected one-line
+file with the trusted editor; do not paste report content into executable shell
+text.
 
 ```bash
 vi -- "$INDUCTION_INPUT_DIR/confirm-club-name"
 vi -- "$INDUCTION_INPUT_DIR/confirm-db-host"
 vi -- "$INDUCTION_INPUT_DIR/confirm-db-name"
+vi -- "$INDUCTION_INPUT_DIR/confirm-plan-digest"
 
 for INPUT_FILE in \
   "$INDUCTION_INPUT_DIR/confirm-club-name" \
   "$INDUCTION_INPUT_DIR/confirm-db-host" \
-  "$INDUCTION_INPUT_DIR/confirm-db-name"
+  "$INDUCTION_INPUT_DIR/confirm-db-name" \
+  "$INDUCTION_INPUT_DIR/confirm-plan-digest"
 do
   if [ ! -f "$INPUT_FILE" ] || [ "$(wc -l < "$INPUT_FILE")" -ne 1 ]; then
     printf 'Expected exactly one newline-terminated line in %s\n' "$INPUT_FILE" >&2
@@ -520,9 +546,11 @@ done
 IFS= read -r CONFIRM_CLUB_NAME < "$INDUCTION_INPUT_DIR/confirm-club-name"
 IFS= read -r CONFIRM_DB_HOST < "$INDUCTION_INPUT_DIR/confirm-db-host"
 IFS= read -r CONFIRM_DB_NAME < "$INDUCTION_INPUT_DIR/confirm-db-name"
+IFS= read -r CONFIRM_PLAN_DIGEST < "$INDUCTION_INPUT_DIR/confirm-plan-digest"
 if [ -z "$CONFIRM_CLUB_NAME" ] ||
    [ -z "$CONFIRM_DB_HOST" ] ||
-   [ -z "$CONFIRM_DB_NAME" ]; then
+   [ -z "$CONFIRM_DB_NAME" ] ||
+   [ -z "$CONFIRM_PLAN_DIGEST" ]; then
   printf 'Apply confirmation files must not be empty.\n' >&2
   exit 1
 fi
@@ -539,23 +567,28 @@ exact Compose context on the apply itself:
   --confirm-club-name "$CONFIRM_CLUB_NAME" \
   --confirm-db-host "$CONFIRM_DB_HOST" \
   --confirm-db-name "$CONFIRM_DB_NAME" \
+  --confirm-plan-digest "$CONFIRM_PLAN_DIGEST" \
   --json
 ```
 
-All confirmations are case-sensitive and exact. Apply validates the actor,
-configuration, template, and population again. It then locks the
-`MemberInduction` table against direct concurrent insert, update, and delete
-statements before re-reading and classifying every row. Direct DML already in
-progress finishes before the locked read; direct DML that reaches the table
-later waits until apply commits. The lock does **not** serialize earlier member
-creation, import, approval, lifecycle, or configuration steps, which is why the
-operator freeze is required. A timeout, lock error, changed club or database
-target, invalid configuration, or open workflow visible under the lock fails
+All confirmations are case-sensitive, untrimmed, and exact. Apply takes the
+`MemberInduction` table lock as its first database statement, then validates
+and rebuilds the whole plan under that lock. Before checking the open-workflow
+or no-op branches, and before any write, it requires the rebuilt digest to
+equal `--confirm-plan-digest`. Direct DML already in progress finishes before
+the locked read; direct DML that reaches the table later waits until apply
+commits. The lock does **not** serialize earlier member creation, import,
+approval, lifecycle, or configuration steps, which is why the operator freeze
+is required. A timeout, lock error, changed club or database target, invalid
+configuration, changed digest, or open workflow visible under the lock fails
 the whole transaction.
 
-Supply each mode and value flag exactly once. If apply is blocked and `--json`
-was requested, the command still prints the human report and safe JSON between
-the marker lines, then exits nonzero. Treat that as a failed apply.
+Supply each mode and value flag exactly once. If apply is blocked or the plan
+digest is stale and `--json` was requested, the command prints the refreshed
+human report and safe JSON between the marker lines once, then exits nonzero.
+It prints no credentials and writes nothing. Treat that as a failed apply,
+review the change, and start again with a fresh dry run; do not feed a digest
+from a failed apply directly into another apply.
 
 Each created row is:
 
@@ -568,7 +601,8 @@ Each created row is:
 
 The command creates no assigned signers, sign-offs, emails, provider jobs, or
 hut-leader side effects. Existing induction rows are never updated or deleted.
-An audit entry and all baseline rows commit together.
+An audit entry containing the successful plan digest and all baseline rows
+commit together.
 
 ## 3. Verify
 
@@ -588,10 +622,13 @@ An audit entry and all baseline rows commit together.
    ```
 
    It should report `CREATE: 0`; the applied members should now be
-   `ALREADY_COMPLETED`.
+   `ALREADY_COMPLETED`. Its plan digest must differ from the pre-apply digest
+   because the member categories changed.
 
-Rerunning apply after a successful run is a no-op: no induction rows and no
-additional audit entry are created.
+The pre-apply digest is now stale and deliberately fails if reused. If an
+authorised operator deliberately needs to prove the idempotent apply path, use
+the exact digest from this fresh `CREATE: 0` verification dry run. That apply
+is a no-op: it creates no induction row and no additional audit entry.
 
 ## Recovery and rollback
 
@@ -605,6 +642,9 @@ additional audit entry are created.
   pre-run backup may be safer than inventing a reverse script.
 - If apply reports `OPEN_WORKFLOW`, resolve those named records in the
   Induction Register rather than changing their database rows directly.
+- If apply reports a plan-digest mismatch, retain the refreshed safe report,
+  identify what changed, and start again with a fresh dry run. Never bypass the
+  digest comparison or reuse the stale value.
 - If config or template validation fails, fix it through the relevant admin
   settings page, then run dry-run again. Never weaken the guard to force an
   apply.

@@ -202,12 +202,16 @@ npm run induction:baseline -- \
 The protected files must pass the runbook's exact one-line validation; embedded
 newlines are forbidden. Keep the variables unexported and quoted so club and
 provenance text remains literal data rather than executable shell syntax.
-Apply additionally requires `--apply` plus exact club-name, parsed database
-host, and parsed database-name confirmations from the reviewed report. It
-preserves all existing induction rows, blocks on every eligible Draft or In
-Progress workflow, and commits the new rows and audit event atomically under a
-PostgreSQL lock against direct `MemberInduction` DML. The lock does not freeze
-the wider member population: pause membership approvals, member
+Apply additionally requires `--apply` plus the exact `PLAN DIGEST`, club name,
+parsed database host, and parsed database name from the reviewed dry-run
+report. The digest binds the complete safe plan and is compared after apply
+takes the induction table lock and rebuilds that plan, but before the blocker,
+no-op, or write branches. A mismatch prints the refreshed safe report, writes
+nothing, and requires a fresh dry run. Apply preserves all existing induction
+rows, blocks on every eligible Draft or In Progress workflow, and commits the
+new rows plus a digest-bearing audit event atomically under a PostgreSQL lock
+against direct `MemberInduction` DML. The lock does not freeze the wider member
+population: pause membership approvals, member
 creation/import, induction writes, and lifecycle writes from the final dry run
 through apply. See the full
 [trusted legacy induction baseline runbook](INDUCTION_BASELINE_RUNBOOK.md)

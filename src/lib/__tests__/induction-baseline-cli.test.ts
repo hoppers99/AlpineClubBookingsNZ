@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   assertDatabaseTargetConfirmation,
   buildBlockedInductionBaselineResult,
+  buildPlanMismatchInductionBaselineResult,
   formatInductionBaselineOutput,
   formatInductionBaselineReport,
   INDUCTION_BASELINE_JSON_BEGIN,
@@ -22,8 +23,11 @@ const REQUIRED_ARGS = [
   "Committee minute 2024-07",
 ];
 
+const PLAN_DIGEST = `sha256:${"a".repeat(64)}`;
+
 const REPORT: InductionBaselineReport = {
   mode: "dry-run",
+  planDigest: PLAN_DIGEST,
   clubName: "Example Alpine Club",
   actorMemberId: "admin-1",
   baselineDate: "2024-06-30",
@@ -62,9 +66,7 @@ const REPORT: InductionBaselineReport = {
     openWorkflow: 0,
     notApplicable: 1,
   },
-  toCreate: [
-    { memberId: "child-1", ageTier: "CHILD", existingInductions: [] },
-  ],
+  toCreate: [{ memberId: "child-1", ageTier: "CHILD", existingInductions: [] }],
   alreadyCompleted: [
     {
       memberId: "adult-1",
@@ -75,9 +77,7 @@ const REPORT: InductionBaselineReport = {
     },
   ],
   openWorkflows: [],
-  notApplicable: [
-    { memberId: "org-1", ageTier: "NOT_APPLICABLE" },
-  ],
+  notApplicable: [{ memberId: "org-1", ageTier: "NOT_APPLICABLE" }],
   appliedCount: 0,
 };
 
@@ -105,18 +105,20 @@ describe("induction baseline CLI", () => {
       "db.internal:5432",
       "--confirm-db-name",
       "club_bookings",
+      "--confirm-plan-digest",
+      PLAN_DIGEST,
     ]);
     expect(parsed).toMatchObject({
       apply: true,
       confirmClubName: "Example Alpine Club",
       confirmDatabaseHost: "db.internal:5432",
       confirmDatabaseName: "club_bookings",
+      confirmPlanDigest: PLAN_DIGEST,
     });
   });
 
   it("preserves literal shell metacharacters in quoted argument values", () => {
-    const provenance =
-      'Minute "$HOME" `not-a-command` $(also-data); & | < >';
+    const provenance = 'Minute "$HOME" `not-a-command` $(also-data); & | < >';
     const clubName = 'Example "$CLUB" $(literal); Alpine Club';
     const parsed = parseInductionBaselineArgs([
       "--apply",
@@ -132,10 +134,31 @@ describe("induction baseline CLI", () => {
       "postgres:5432",
       "--confirm-db-name",
       "tacbookings",
+      "--confirm-plan-digest",
+      PLAN_DIGEST,
     ]);
 
     expect(parsed.provenanceNote).toBe(provenance);
     expect(parsed.confirmClubName).toBe(clubName);
+    expect(parsed.confirmPlanDigest).toBe(PLAN_DIGEST);
+  });
+
+  it("preserves the plan digest exactly without trimming", () => {
+    const exactDigest = ` ${PLAN_DIGEST} `;
+    const parsed = parseInductionBaselineArgs([
+      "--apply",
+      ...REQUIRED_ARGS,
+      "--confirm-club-name",
+      "Example Alpine Club",
+      "--confirm-db-host",
+      "postgres:5432",
+      "--confirm-db-name",
+      "tacbookings",
+      "--confirm-plan-digest",
+      exactDigest,
+    ]);
+
+    expect(parsed.confirmPlanDigest).toBe(exactDigest);
   });
 
   it.each([
@@ -156,6 +179,7 @@ describe("induction baseline CLI", () => {
     "--confirm-club-name",
     "--confirm-db-host",
     "--confirm-db-name",
+    "--confirm-plan-digest",
   ])("rejects duplicate %s values", (flag) => {
     expect(() =>
       parseInductionBaselineArgs([flag, "first", flag, "second"]),
@@ -231,6 +255,7 @@ describe("induction baseline CLI", () => {
     };
     const text = formatInductionBaselineReport(REPORT, target);
     expect(text).toContain("CREATE: 1");
+    expect(text).toContain(`PLAN DIGEST: ${PLAN_DIGEST}`);
     expect(text).toContain("ALREADY_COMPLETED: 1");
     expect(text).toContain("NOT_APPLICABLE (reported only): 1");
     expect(text).toContain("CHILD (Child): population=1 create=1");
@@ -238,8 +263,41 @@ describe("induction baseline CLI", () => {
 
     const json = safeInductionBaselineJson(REPORT, target);
     expect(json).toContain('"host": "db.internal:55432"');
+    expect(json).toContain(`"planDigest": "${PLAN_DIGEST}"`);
     expect(json).not.toContain("postgresql://");
     expect(json).not.toContain("password");
+  });
+
+  it("prints a refreshed mismatch report once without calling it a no-op or leaking credentials", () => {
+    const mismatch: InductionBaselineReport = {
+      ...REPORT,
+      mode: "apply",
+      planDigest: `sha256:${"b".repeat(64)}`,
+      counts: {
+        ...REPORT.counts,
+        toCreate: 0,
+        alreadyCompleted: 2,
+      },
+      toCreate: [],
+    };
+    const result = buildPlanMismatchInductionBaselineResult(
+      mismatch,
+      {
+        host: "db.internal:55432",
+        databaseName: "club_bookings",
+      },
+      true,
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.output).toContain(
+      "Apply stopped: plan digest did not match; no changes written.",
+    );
+    expect(result.output).not.toContain("Apply was a no-op");
+    expect(result.output.match(/PLAN DIGEST:/g)).toHaveLength(1);
+    expect(result.output).toContain(`"planDigest": "${mismatch.planDigest}"`);
+    expect(result.output).not.toContain("postgresql://");
+    expect(result.output).not.toContain("password");
   });
 
   it("does not describe a blocked apply as a no-op", () => {

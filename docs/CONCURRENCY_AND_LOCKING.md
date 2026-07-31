@@ -235,10 +235,14 @@ do not use unnamespaced `hashtext(<id>)` for new lock families.
   waits for existing direct induction DML and then makes later direct DML wait
   until apply commits. It re-reads the complete active `USER`/`ADMIN`
   real-member population and all of their induction rows only after that lock,
-  refuses the entire apply if any eligible member has a `DRAFT` or
-  `IN_PROGRESS` row visible in that locked read, and performs its `createMany`
-  plus audit write in the same transaction. Dry run never takes the lock and
-  never writes.
+  rebuilds a versioned SHA-256 digest over every safe plan input, and compares
+  it exactly with the reviewed dry-run digest before the blocker, no-op, or
+  write branches. A concurrent writer that changes the plan therefore makes
+  the waiting apply fail with a refreshed report rather than silently taking
+  the blocker or no-op path. With a matching digest, apply refuses the entire
+  run if any eligible member has a `DRAFT` or `IN_PROGRESS` row visible in that
+  locked read, and performs its `createMany` plus digest-bearing audit write in
+  the same transaction. Dry run never takes the lock and never writes.
 
   This is deliberately a table lock rather than a new advisory-lock family:
   PostgreSQL makes ordinary `MemberInduction` DML in

@@ -38,7 +38,7 @@ import {
 let prisma: typeof import("@/lib/prisma")["prisma"];
 let markGroupSettlementIntentFailed: typeof import("@/lib/group-settlement")["markGroupSettlementIntentFailed"];
 let runInductionBaseline: typeof import("@/lib/induction-baseline")["runInductionBaseline"];
-let InductionBaselineBlockedError: typeof import("@/lib/induction-baseline")["InductionBaselineBlockedError"];
+let InductionBaselinePlanMismatchError: typeof import("@/lib/induction-baseline")["InductionBaselinePlanMismatchError"];
 let inductionBaselineLockSql: string;
 let baselineClientA: PrismaClient;
 let baselineClientB: PrismaClient;
@@ -390,15 +390,40 @@ describe("concurrency race DB safety guard (#1881)", () => {
       });
     }
 
-    function applyInductionBaseline(
+    function baselineDatabaseTarget() {
+      const parsed = new URL(RACE_DB_URL);
+      return {
+        host: parsed.host,
+        databaseName: decodeURIComponent(parsed.pathname.replace(/^\/+/, "")),
+      };
+    }
+
+    function planInductionBaseline(
       store: PrismaClient | ReturnType<typeof createBaselineStore>,
     ) {
       return runInductionBaseline({
         actorMemberId: BASELINE_ACTOR_ID,
         baselineDate: BASELINE_DATE,
         provenanceNote: "Race harness committee minute",
+        databaseTarget: baselineDatabaseTarget(),
+        store: store as never,
+        fallbackClubName: "unused",
+        fallbackClubNameSource: "primary",
+      });
+    }
+
+    function applyInductionBaseline(
+      store: PrismaClient | ReturnType<typeof createBaselineStore>,
+      confirmPlanDigest: string,
+    ) {
+      return runInductionBaseline({
+        actorMemberId: BASELINE_ACTOR_ID,
+        baselineDate: BASELINE_DATE,
+        provenanceNote: "Race harness committee minute",
+        databaseTarget: baselineDatabaseTarget(),
         apply: true,
         confirmClubName: BASELINE_CLUB_NAME,
+        confirmPlanDigest,
         store: store as never,
         fallbackClubName: "unused",
         fallbackClubNameSource: "primary",
@@ -432,7 +457,8 @@ describe("concurrency race DB safety guard (#1881)", () => {
       ({ markGroupSettlementIntentFailed } = await import("@/lib/group-settlement"));
       const baseline = await import("@/lib/induction-baseline");
       runInductionBaseline = baseline.runInductionBaseline;
-      InductionBaselineBlockedError = baseline.InductionBaselineBlockedError;
+      InductionBaselinePlanMismatchError =
+        baseline.InductionBaselinePlanMismatchError;
       inductionBaselineLockSql = baseline.INDUCTION_BASELINE_LOCK_SQL;
       const [{ PrismaClient: SeparatePrismaClient }, { createPrismaPgAdapter }] =
         await Promise.all([
@@ -676,6 +702,7 @@ describe("concurrency race DB safety guard (#1881)", () => {
       });
 
       it("holds SHARE ROW EXCLUSIVE until commit and blocks an ordinary induction create", async () => {
+        const plan = await planInductionBaseline(baselineClientA);
         const lockAcquired = deferred();
         const releaseBaseline = deferred();
         const baselineStore = createBaselineStore(baselineClientA, {
@@ -684,7 +711,10 @@ describe("concurrency race DB safety guard (#1881)", () => {
             await releaseBaseline.promise;
           },
         });
-        const applyPromise = applyInductionBaseline(baselineStore);
+        const applyPromise = applyInductionBaseline(
+          baselineStore,
+          plan.planDigest,
+        );
         await lockAcquired.promise;
 
         let writerSettled = false;
@@ -726,6 +756,7 @@ describe("concurrency race DB safety guard (#1881)", () => {
         ]);
         if (observationError) throw observationError;
         expect(report.appliedCount).toBe(BASELINE_ELIGIBLE_MEMBER_IDS.length);
+        expect(report.planDigest).toBe(plan.planDigest);
         expect(writer.id).toBe("race-2361-writer-after-baseline");
         expect(await countBaselineRows()).toBe(
           BASELINE_ELIGIBLE_MEMBER_IDS.length,
@@ -733,7 +764,8 @@ describe("concurrency race DB safety guard (#1881)", () => {
         expect(await countBaselineAudits()).toBe(1);
       });
 
-      it("waits behind an ordinary writer, re-reads after commit, and blocks without baseline writes", async () => {
+      it("waits behind an ordinary writer, re-reads after commit, and rejects the stale digest before baseline writes", async () => {
+        const plan = await planInductionBaseline(baselineClientA);
         const writerInserted = deferred();
         const releaseWriter = deferred();
         const writerPromise = ordinaryWriterClient.$transaction(async (tx) => {
@@ -755,11 +787,12 @@ describe("concurrency race DB safety guard (#1881)", () => {
         await writerInserted.promise;
 
         let applySettled = false;
-        const applyPromise = applyInductionBaseline(baselineClientA).finally(
-          () => {
-            applySettled = true;
-          },
-        );
+        const applyPromise = applyInductionBaseline(
+          baselineClientA,
+          plan.planDigest,
+        ).finally(() => {
+          applySettled = true;
+        });
         let observationError: unknown;
         try {
           await waitForTableLock({ mode: "RowExclusiveLock", granted: true });
@@ -782,13 +815,26 @@ describe("concurrency race DB safety guard (#1881)", () => {
           applyError = error;
         }
         if (observationError) throw observationError;
-        expect(applyError).toBeInstanceOf(InductionBaselineBlockedError);
+        expect(applyError).toBeInstanceOf(
+          InductionBaselinePlanMismatchError,
+        );
         expect(
-          (applyError as InstanceType<typeof InductionBaselineBlockedError>)
+          (
+            applyError as InstanceType<
+              typeof InductionBaselinePlanMismatchError
+            >
+          )
             .report.openWorkflows,
         ).toEqual([
           expect.objectContaining({ memberId: BASELINE_MEMBER_B_ID }),
         ]);
+        expect(
+          (
+            applyError as InstanceType<
+              typeof InductionBaselinePlanMismatchError
+            >
+          ).report.planDigest,
+        ).not.toBe(plan.planDigest);
         expect(await countBaselineRows()).toBe(0);
         expect(await countBaselineAudits()).toBe(0);
         expect(
@@ -802,6 +848,7 @@ describe("concurrency race DB safety guard (#1881)", () => {
       });
 
       it("rolls back baseline rows and audit when the real audit insert fails", async () => {
+        const plan = await planInductionBaseline(baselineClientA);
         const forcedAuditId = "race-2361-forced-audit-failure";
         let rowsVisibleBeforeAudit = 0;
         const baselineStore = createBaselineStore(baselineClientA, {
@@ -823,7 +870,9 @@ describe("concurrency race DB safety guard (#1881)", () => {
           },
         });
 
-        await expect(applyInductionBaseline(baselineStore)).rejects.toThrow();
+        await expect(
+          applyInductionBaseline(baselineStore, plan.planDigest),
+        ).rejects.toThrow();
         expect(rowsVisibleBeforeAudit).toBe(
           BASELINE_ELIGIBLE_MEMBER_IDS.length,
         );
@@ -834,7 +883,8 @@ describe("concurrency race DB safety guard (#1881)", () => {
         ).toBe(0);
       });
 
-      it("serializes two concurrent applies into one inserted set and one no-op", async () => {
+      it("serializes two concurrent applies so the stale second digest fails, then permits a freshly planned no-op", async () => {
+        const plan = await planInductionBaseline(baselineClientA);
         const firstLockAcquired = deferred();
         const releaseFirstApply = deferred();
         const firstStore = createBaselineStore(baselineClientA, {
@@ -843,11 +893,17 @@ describe("concurrency race DB safety guard (#1881)", () => {
             await releaseFirstApply.promise;
           },
         });
-        const firstPromise = applyInductionBaseline(firstStore);
+        const firstPromise = applyInductionBaseline(
+          firstStore,
+          plan.planDigest,
+        );
         await firstLockAcquired.promise;
 
         let secondSettled = false;
-        const secondPromise = applyInductionBaseline(baselineClientB);
+        const secondPromise = applyInductionBaseline(
+          baselineClientB,
+          plan.planDigest,
+        );
         void secondPromise.then(
           () => {
             secondSettled = true;
@@ -881,15 +937,28 @@ describe("concurrency race DB safety guard (#1881)", () => {
           secondPromise,
         ]);
         if (observationError) throw observationError;
-        const reports = outcomes.map((outcome) => {
-          if (outcome.status === "rejected") throw outcome.reason;
-          return outcome.value;
+        expect(outcomes[0]).toMatchObject({
+          status: "fulfilled",
+          value: {
+            appliedCount: BASELINE_ELIGIBLE_MEMBER_IDS.length,
+            planDigest: plan.planDigest,
+          },
         });
-
-        expect(reports.map((report) => report.appliedCount).sort()).toEqual([
-          0,
-          BASELINE_ELIGIBLE_MEMBER_IDS.length,
-        ]);
+        expect(outcomes[1]).toMatchObject({ status: "rejected" });
+        if (outcomes[1].status !== "rejected") {
+          throw new Error("Expected the second apply to reject its stale digest");
+        }
+        expect(outcomes[1].reason).toBeInstanceOf(
+          InductionBaselinePlanMismatchError,
+        );
+        const refreshedPlan = await planInductionBaseline(baselineClientB);
+        expect(refreshedPlan.planDigest).not.toBe(plan.planDigest);
+        const noOp = await applyInductionBaseline(
+          baselineClientB,
+          refreshedPlan.planDigest,
+        );
+        expect(noOp.appliedCount).toBe(0);
+        expect(noOp.planDigest).toBe(refreshedPlan.planDigest);
         expect(await countBaselineRows()).toBe(
           BASELINE_ELIGIBLE_MEMBER_IDS.length,
         );

@@ -1,4 +1,7 @@
-import type { InductionBaselineReport } from "@/lib/induction-baseline";
+import type {
+  InductionBaselineReport,
+  InductionBaselineSafeDatabaseTarget,
+} from "@/lib/induction-baseline";
 
 export interface InductionBaselineCliOptions {
   apply: boolean;
@@ -8,15 +11,14 @@ export interface InductionBaselineCliOptions {
   confirmClubName?: string;
   confirmDatabaseHost?: string;
   confirmDatabaseName?: string;
+  confirmPlanDigest?: string;
   json: boolean;
   help: boolean;
 }
 
-export interface SafeDatabaseTarget {
-  /** URL host, including an explicit port when present. */
-  host: string;
-  databaseName: string;
-}
+export type SafeDatabaseTarget = InductionBaselineSafeDatabaseTarget;
+
+type InductionBaselineOutcome = "success" | "blocked" | "plan-mismatch";
 
 export class InductionBaselineCliError extends Error {
   constructor(message: string) {
@@ -49,6 +51,7 @@ export function parseInductionBaselineArgs(
   let confirmClubName: string | undefined;
   let confirmDatabaseHost: string | undefined;
   let confirmDatabaseName: string | undefined;
+  let confirmPlanDigest: string | undefined;
   let json = false;
   let help = false;
   const seenValueFlags = new Set<string>();
@@ -95,6 +98,10 @@ export function parseInductionBaselineArgs(
       "--confirm-db-name": (value) => {
         confirmDatabaseName = value;
       },
+      "--confirm-plan-digest": (value) => {
+        // Do not trim: apply confirmation is deliberately exact.
+        confirmPlanDigest = value;
+      },
     };
     const assign = valueFlags[arg];
     if (assign) {
@@ -123,6 +130,7 @@ export function parseInductionBaselineArgs(
       confirmClubName,
       confirmDatabaseHost,
       confirmDatabaseName,
+      confirmPlanDigest,
       json,
       help,
     };
@@ -152,6 +160,11 @@ export function parseInductionBaselineArgs(
       "--confirm-db-name is required with --apply.",
     );
   }
+  if (apply && confirmPlanDigest === undefined) {
+    throw new InductionBaselineCliError(
+      "--confirm-plan-digest is required with --apply.",
+    );
+  }
 
   return {
     apply,
@@ -161,6 +174,7 @@ export function parseInductionBaselineArgs(
     confirmClubName,
     confirmDatabaseHost,
     confirmDatabaseName,
+    confirmPlanDigest,
     json,
     help,
   };
@@ -245,9 +259,11 @@ function memberIds(
 export function formatInductionBaselineReport(
   report: InductionBaselineReport,
   target: SafeDatabaseTarget,
+  outcome: InductionBaselineOutcome = "success",
 ): string {
   const lines = [
     `Trusted legacy induction baseline (${report.mode})`,
+    `PLAN DIGEST: ${report.planDigest}`,
     `Club: ${report.clubName}`,
     `Database target: host=${target.host} name=${target.databaseName}`,
     `Actor member ID: ${report.actorMemberId}`,
@@ -282,7 +298,12 @@ export function formatInductionBaselineReport(
     memberIds(report.notApplicable, "none"),
   ];
 
-  if (report.mode === "dry-run") {
+  if (outcome === "plan-mismatch") {
+    lines.push(
+      "",
+      "Apply stopped: plan digest did not match; no changes written. Review this refreshed report, then start again with a fresh dry run.",
+    );
+  } else if (report.mode === "dry-run") {
     lines.push(
       "",
       "Dry run: no changes written. Review this report, resolve every OPEN_WORKFLOW row, then re-run with --apply and all exact confirmations.",
@@ -319,8 +340,9 @@ export function formatInductionBaselineOutput(
   report: InductionBaselineReport,
   target: SafeDatabaseTarget,
   includeJson: boolean,
+  outcome: InductionBaselineOutcome = "success",
 ): string {
-  const parts = [formatInductionBaselineReport(report, target)];
+  const parts = [formatInductionBaselineReport(report, target, outcome)];
   if (includeJson) {
     parts.push(
       [
@@ -339,7 +361,28 @@ export function buildBlockedInductionBaselineResult(
   includeJson: boolean,
 ): { output: string; exitCode: 1 } {
   return {
-    output: formatInductionBaselineOutput(report, target, includeJson),
+    output: formatInductionBaselineOutput(
+      report,
+      target,
+      includeJson,
+      "blocked",
+    ),
+    exitCode: 1,
+  };
+}
+
+export function buildPlanMismatchInductionBaselineResult(
+  report: InductionBaselineReport,
+  target: SafeDatabaseTarget,
+  includeJson: boolean,
+): { output: string; exitCode: 1 } {
+  return {
+    output: formatInductionBaselineOutput(
+      report,
+      target,
+      includeJson,
+      "plan-mismatch",
+    ),
     exitCode: 1,
   };
 }

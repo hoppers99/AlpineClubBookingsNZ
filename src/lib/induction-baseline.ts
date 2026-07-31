@@ -1,10 +1,16 @@
 import type {
   AgeTier,
   InductionKind,
+  InductionSectionPriority,
   InductionStatus,
   Prisma,
 } from "@prisma/client";
-import { clubConfig, clubConfigSource, type ClubConfigSource } from "@/config/club";
+import { createHash } from "node:crypto";
+import {
+  clubConfig,
+  clubConfigSource,
+  type ClubConfigSource,
+} from "@/config/club";
 import { DEFAULT_MEMBERSHIP_NOMINATION_SETTINGS } from "@/config/club-settings-defaults";
 import { buildStructuredAuditLogCreateArgs } from "@/lib/audit";
 import {
@@ -31,12 +37,12 @@ export const INDUCTION_BASELINE_LOCK_SQL =
 export const INDUCTION_BASELINE_PROVENANCE_PREFIX =
   "Trusted legacy induction baseline";
 
-const PERSON_AGE_TIERS: AgeTier[] = [
-  "INFANT",
-  "CHILD",
-  "YOUTH",
-  "ADULT",
-];
+export const INDUCTION_BASELINE_PLAN_DIGEST_DOMAIN =
+  "alpine-club-bookings-nz/trusted-induction-baseline-plan";
+
+export const INDUCTION_BASELINE_PLAN_DIGEST_VERSION = 1;
+
+const PERSON_AGE_TIERS: AgeTier[] = ["INFANT", "CHILD", "YOUTH", "ADULT"];
 
 type BaselineActor = {
   id: string;
@@ -56,10 +62,24 @@ type BaselineTemplate = {
   id: string;
   name: string;
   version: string;
+  kind: InductionKind;
+  sourceLabel: string | null;
   sections: Array<{
     id: string;
     title: string;
-    items: Array<{ id: string; label: string }>;
+    description: string | null;
+    priority: InductionSectionPriority;
+    sortOrder: number;
+    items: Array<{
+      id: string;
+      label: string;
+      competencyPrompt: string | null;
+      notesPrompt: string | null;
+      isMandatory: boolean;
+      requiresDemonstration: boolean;
+      sortOrder: number;
+      legacySourceText: string | null;
+    }>;
   }>;
 };
 
@@ -134,8 +154,14 @@ export type InductionBaselineTierCount = {
   openWorkflow: number;
 };
 
+export type InductionBaselineSafeDatabaseTarget = {
+  host: string;
+  databaseName: string;
+};
+
 export interface InductionBaselineReport {
   mode: "dry-run" | "apply";
+  planDigest: string;
   clubName: string;
   actorMemberId: string;
   baselineDate: string;
@@ -178,12 +204,24 @@ export class InductionBaselineBlockedError extends InductionBaselineError {
   }
 }
 
+export class InductionBaselinePlanMismatchError extends InductionBaselineError {
+  constructor(
+    message: string,
+    readonly report: InductionBaselineReport,
+  ) {
+    super(message);
+    this.name = "InductionBaselinePlanMismatchError";
+  }
+}
+
 export interface RunInductionBaselineOptions {
   actorMemberId: string;
   baselineDate: string;
   provenanceNote: string;
+  databaseTarget: InductionBaselineSafeDatabaseTarget;
   apply?: boolean;
   confirmClubName?: string;
+  confirmPlanDigest?: string;
   store?: InductionBaselineStore;
   fallbackClubName?: string;
   fallbackClubNameSource?: ClubConfigSource;
@@ -197,7 +235,9 @@ function validateInputs(options: RunInductionBaselineOptions): {
 } {
   const actorMemberId = options.actorMemberId.trim();
   if (!actorMemberId) {
-    throw new InductionBaselineError("A Full Admin actor member ID is required.");
+    throw new InductionBaselineError(
+      "A Full Admin actor member ID is required.",
+    );
   }
 
   if (!isDateOnlyString(options.baselineDate)) {
@@ -249,7 +289,9 @@ function resolveClubName(params: {
   );
 }
 
-function assertValidActor(actor: BaselineActor | null): asserts actor is BaselineActor {
+function assertValidActor(
+  actor: BaselineActor | null,
+): asserts actor is BaselineActor {
   if (!actor) {
     throw new InductionBaselineError("The actor member was not found.");
   }
@@ -291,7 +333,16 @@ function validateAgeTierSettings(
   return validation.sorted;
 }
 
-function validateActiveTemplate(templates: BaselineTemplate[]): BaselineTemplate {
+function compareOrderedRows(
+  left: { sortOrder: number; id: string },
+  right: { sortOrder: number; id: string },
+): number {
+  return left.sortOrder - right.sortOrder || left.id.localeCompare(right.id);
+}
+
+function validateActiveTemplate(
+  templates: BaselineTemplate[],
+): BaselineTemplate {
   if (templates.length !== 1) {
     throw new InductionBaselineError(
       `Exactly one active NEW_MEMBER induction template is required; found ${templates.length}.`,
@@ -317,7 +368,15 @@ function validateActiveTemplate(templates: BaselineTemplate[]): BaselineTemplate
     );
   }
 
-  return template;
+  return {
+    ...template,
+    sections: [...template.sections]
+      .sort(compareOrderedRows)
+      .map((section) => ({
+        ...section,
+        items: [...section.items].sort(compareOrderedRows),
+      })),
+  };
 }
 
 function inductionRefs(
@@ -330,12 +389,14 @@ function inductionRefs(
 
 function buildReport(params: {
   mode: "dry-run" | "apply";
+  databaseTarget: InductionBaselineSafeDatabaseTarget;
   clubName: string;
   actorMemberId: string;
   baselineDate: string;
   provenance: string;
   template: BaselineTemplate;
   settings: BaselineAgeTierSetting[];
+  requiredSignOffs: number;
   eligibleMembers: BaselineMember[];
   notApplicableMembers: BaselineMember[];
   existingInductions: BaselineExistingInduction[];
@@ -351,7 +412,9 @@ function buildReport(params: {
   const alreadyCompleted: InductionBaselineMemberPlan[] = [];
   const openWorkflows: InductionBaselineMemberPlan[] = [];
 
-  for (const member of params.eligibleMembers) {
+  for (const member of [...params.eligibleMembers].sort((left, right) =>
+    left.id.localeCompare(right.id),
+  )) {
     const existing = rowsByMember.get(member.id) ?? [];
     const plan = {
       memberId: member.id,
@@ -390,7 +453,14 @@ function buildReport(params: {
     ).length,
   }));
 
-  return {
+  const notApplicable = [...params.notApplicableMembers]
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map((member) => ({
+      memberId: member.id,
+      ageTier: "NOT_APPLICABLE" as const,
+    }));
+
+  const reportWithoutDigest: Omit<InductionBaselineReport, "planDigest"> = {
     mode: params.mode,
     clubName: params.clubName,
     actorMemberId: params.actorMemberId,
@@ -416,12 +486,72 @@ function buildReport(params: {
     toCreate,
     alreadyCompleted,
     openWorkflows,
-    notApplicable: params.notApplicableMembers.map((member) => ({
-      memberId: member.id,
-      ageTier: "NOT_APPLICABLE",
-    })),
+    notApplicable,
     appliedCount: 0,
   };
+
+  const canonicalPlan = {
+    domain: INDUCTION_BASELINE_PLAN_DIGEST_DOMAIN,
+    version: INDUCTION_BASELINE_PLAN_DIGEST_VERSION,
+    databaseTarget: {
+      host: params.databaseTarget.host,
+      databaseName: params.databaseTarget.databaseName,
+    },
+    club: { name: params.clubName },
+    actor: { memberId: params.actorMemberId },
+    baseline: {
+      date: params.baselineDate,
+      provenance: params.provenance,
+    },
+    template: {
+      id: params.template.id,
+      name: params.template.name,
+      version: params.template.version,
+      kind: params.template.kind,
+      sourceLabel: params.template.sourceLabel,
+      sections: params.template.sections.map((section) => ({
+        id: section.id,
+        title: section.title,
+        description: section.description,
+        priority: section.priority,
+        sortOrder: section.sortOrder,
+        items: section.items.map((item) => ({
+          id: item.id,
+          label: item.label,
+          competencyPrompt: item.competencyPrompt,
+          notesPrompt: item.notesPrompt,
+          isMandatory: item.isMandatory,
+          requiresDemonstration: item.requiresDemonstration,
+          sortOrder: item.sortOrder,
+          legacySourceText: item.legacySourceText,
+        })),
+      })),
+    },
+    ageTierSettings: params.settings.map((setting) => ({
+      tier: setting.tier,
+      minAge: setting.minAge,
+      maxAge: setting.maxAge,
+      label: setting.label,
+      sortOrder: setting.sortOrder,
+    })),
+    requiredSignOffs: params.requiredSignOffs,
+    memberPlans: {
+      toCreate,
+      alreadyCompleted,
+      openWorkflows,
+      notApplicable,
+    },
+  };
+  const digestInput = [
+    INDUCTION_BASELINE_PLAN_DIGEST_DOMAIN,
+    `v${INDUCTION_BASELINE_PLAN_DIGEST_VERSION}`,
+    JSON.stringify(canonicalPlan),
+  ].join("\0");
+  const planDigest = `sha256:${createHash("sha256")
+    .update(digestInput, "utf8")
+    .digest("hex")}`;
+
+  return { ...reportWithoutDigest, planDigest };
 }
 
 /**
@@ -436,9 +566,7 @@ export async function runInductionBaseline(
 ): Promise<InductionBaselineReport> {
   const input = validateInputs(options);
   const apply = options.apply === true;
-  const store =
-    options.store ??
-    (prisma as unknown as InductionBaselineStore);
+  const store = options.store ?? (prisma as unknown as InductionBaselineStore);
   const fallbackClubName = options.fallbackClubName ?? clubConfig.name;
   const fallbackClubNameSource =
     options.fallbackClubNameSource ?? clubConfigSource;
@@ -518,12 +646,30 @@ export async function runInductionBaseline(
             id: true,
             name: true,
             version: true,
+            kind: true,
+            sourceLabel: true,
             sections: {
               select: {
                 id: true,
                 title: true,
-                items: { select: { id: true, label: true } },
+                description: true,
+                priority: true,
+                sortOrder: true,
+                items: {
+                  select: {
+                    id: true,
+                    label: true,
+                    competencyPrompt: true,
+                    notesPrompt: true,
+                    isMandatory: true,
+                    requiresDemonstration: true,
+                    sortOrder: true,
+                    legacySourceText: true,
+                  },
+                  orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
+                },
               },
+              orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
             },
           },
           orderBy: { id: "asc" },
@@ -575,12 +721,14 @@ export async function runInductionBaseline(
 
       const report = buildReport({
         mode: apply ? "apply" : "dry-run",
+        databaseTarget: options.databaseTarget,
         clubName,
         actorMemberId: input.actorMemberId,
         baselineDate: input.baselineDate,
         provenance: input.provenance,
         template,
         settings: ageTierSettings,
+        requiredSignOffs,
         eligibleMembers,
         notApplicableMembers,
         existingInductions,
@@ -588,6 +736,12 @@ export async function runInductionBaseline(
 
       if (!apply) {
         return report;
+      }
+      if (options.confirmPlanDigest !== report.planDigest) {
+        throw new InductionBaselinePlanMismatchError(
+          "Apply stopped: the confirmed plan digest does not exactly match the plan rebuilt under the induction table lock.",
+          report,
+        );
       }
       if (report.openWorkflows.length > 0) {
         throw new InductionBaselineBlockedError(
@@ -629,6 +783,7 @@ export async function runInductionBaseline(
           summary: `Applied trusted legacy induction baseline to ${created.count} member(s).`,
           details: input.provenance,
           metadata: {
+            planDigest: report.planDigest,
             baselineDate: input.baselineDate,
             templateId: template.id,
             configuredAgeTiers: ageTierSettings.map((setting) => setting.tier),

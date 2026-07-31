@@ -4,6 +4,10 @@ import { runInductionBaseline } from "@/lib/induction-baseline";
 const BASE_OPTIONS = {
   actorMemberId: "admin-1",
   provenanceNote: "Committee minute 2024-07",
+  databaseTarget: {
+    host: "postgres.internal:5432",
+    databaseName: "alpine_club",
+  },
   fallbackClubName: "unused",
   fallbackClubNameSource: "primary" as const,
 };

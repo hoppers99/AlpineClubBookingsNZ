@@ -3,6 +3,7 @@ import {
   INDUCTION_BASELINE_PROVENANCE_PREFIX,
   InductionBaselineBlockedError,
   InductionBaselineError,
+  InductionBaselinePlanMismatchError,
   runInductionBaseline,
   type InductionBaselineReport,
 } from "@/lib/induction-baseline";
@@ -55,11 +56,27 @@ const DEFAULT_TEMPLATE = {
   id: "template-new-member",
   name: "Club induction",
   version: "legacy-v1",
+  kind: "NEW_MEMBER" as const,
+  sourceLabel: "Legacy committee checklist",
   sections: [
     {
       id: "section-1",
       title: "Safety",
-      items: [{ id: "item-1", label: "Emergency exits" }],
+      description: "Core safety competencies",
+      priority: "CRITICAL" as const,
+      sortOrder: 0,
+      items: [
+        {
+          id: "item-1",
+          label: "Emergency exits",
+          competencyPrompt: "Show both exits",
+          notesPrompt: "Record any support needed",
+          isMandatory: true,
+          requiresDemonstration: true,
+          sortOrder: 0,
+          legacySourceText: "Emergency exit briefing",
+        },
+      ],
     },
   ],
 };
@@ -107,6 +124,7 @@ function existingRow(
 }
 
 function createFakeStore({
+  clubName = "Example Alpine Club",
   actor = DEFAULT_ACTOR,
   ageTiers = DEFAULT_AGE_TIERS,
   templates = [DEFAULT_TEMPLATE],
@@ -124,9 +142,10 @@ function createFakeStore({
   requiredSignOffs = 2,
   auditFailure,
 }: {
+  clubName?: string;
   actor?: FakeActor | null;
   ageTiers?: ReadonlyArray<FakeAgeTierSetting>;
-  templates?: typeof DEFAULT_TEMPLATE[];
+  templates?: (typeof DEFAULT_TEMPLATE)[];
   members?: FakeMember[];
   existing?: ExistingRow[];
   requiredSignOffs?: number;
@@ -148,7 +167,7 @@ function createFakeStore({
     clubIdentitySettings: {
       findUnique: vi.fn(async () => {
         sequence.push("club");
-        return { name: "Example Alpine Club" };
+        return { name: clubName };
       }),
     },
     member: {
@@ -172,8 +191,7 @@ function createFakeStore({
         return members
           .filter(
             (member) =>
-              (where.active === undefined ||
-                member.active === where.active) &&
+              (where.active === undefined || member.active === where.active) &&
               (where.archivedAt === undefined ||
                 member.archivedAt === where.archivedAt) &&
               (where.cancelledAt === undefined ||
@@ -279,6 +297,10 @@ const BASE_OPTIONS = {
   actorMemberId: "admin-1",
   baselineDate: "2024-06-30",
   provenanceNote: "Committee minute 2024-07, verified legacy register",
+  databaseTarget: {
+    host: "postgres.internal:5432",
+    databaseName: "alpine_club",
+  },
   fallbackClubName: "unused",
   fallbackClubNameSource: "primary" as const,
 };
@@ -303,6 +325,31 @@ function classification(report: InductionBaselineReport) {
     openWorkflows: report.openWorkflows,
     notApplicable: report.notApplicable,
   };
+}
+
+async function applyCurrentPlan(
+  fake: ReturnType<typeof createFakeStore>,
+  overrides: Partial<Parameters<typeof runInductionBaseline>[0]> = {},
+): Promise<{
+  dryRun: InductionBaselineReport;
+  apply: InductionBaselineReport;
+}> {
+  const dryRun = await runInductionBaseline({
+    ...BASE_OPTIONS,
+    ...overrides,
+    apply: false,
+    store: fake.store as never,
+  });
+  fake.sequence.length = 0;
+  const apply = await runInductionBaseline({
+    ...BASE_OPTIONS,
+    ...overrides,
+    apply: true,
+    confirmClubName: "Example Alpine Club",
+    confirmPlanDigest: dryRun.planDigest,
+    store: fake.store as never,
+  });
+  return { dryRun, apply };
 }
 
 describe("runInductionBaseline", () => {
@@ -344,8 +391,8 @@ describe("runInductionBaseline", () => {
       expect.objectContaining({ tier: "ADULT", alreadyCompleted: 1 }),
     ]);
     expect(report.toCreate.map((member) => member.memberId)).toEqual([
-      "infant-1",
       "child-1",
+      "infant-1",
       "youth-1",
     ]);
     expect(report.notApplicable).toEqual([
@@ -384,9 +431,9 @@ describe("runInductionBaseline", () => {
       ACTIVE_REAL_MEMBER_QUERY,
     );
     expect(report.toCreate.map((member) => member.memberId)).toEqual([
+      "legacy-admin",
       "login-user",
       "non-login-dependant",
-      "legacy-admin",
     ]);
     expect(report.counts.eligiblePopulation).toBe(3);
     expect(report.notApplicable).toEqual([]);
@@ -395,12 +442,7 @@ describe("runInductionBaseline", () => {
   it("locks first, re-reads under the lock, and creates completed override rows with stable provenance", async () => {
     const fake = createFakeStore();
 
-    const report = await runInductionBaseline({
-      ...BASE_OPTIONS,
-      apply: true,
-      confirmClubName: "Example Alpine Club",
-      store: fake.store as never,
-    });
+    const { apply: appliedReport } = await applyCurrentPlan(fake);
 
     expect(fake.sequence[0]).toBe("lock");
     expect(fake.tx.member.findUnique).toHaveBeenCalledWith({
@@ -429,7 +471,7 @@ describe("runInductionBaseline", () => {
       "create",
       "audit",
     ]);
-    expect(report.appliedCount).toBe(4);
+    expect(appliedReport.appliedCount).toBe(4);
 
     const createArgs = fake.tx.memberInduction.createMany.mock.calls[0][0] as {
       data: Array<Record<string, unknown>>;
@@ -447,14 +489,21 @@ describe("runInductionBaseline", () => {
           `${INDUCTION_BASELINE_PROVENANCE_PREFIX}: ` +
           "Committee minute 2024-07, verified legacy register",
       });
-      expect(row.inductionDate).toEqual(
-        new Date("2024-06-30T00:00:00.000Z"),
-      );
+      expect(row.inductionDate).toEqual(new Date("2024-06-30T00:00:00.000Z"));
       expect(row.completedAt).toBe(row.inductionDate);
       expect(row).not.toHaveProperty("assignedSigners");
       expect(row).not.toHaveProperty("signOffs");
     }
     expect(fake.tx.auditLog.create).toHaveBeenCalledTimes(1);
+    expect(fake.tx.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            planDigest: appliedReport.planDigest,
+          }),
+        }),
+      }),
+    );
   });
 
   it("skips any member with a completed induction of any kind", async () => {
@@ -469,12 +518,7 @@ describe("runInductionBaseline", () => {
       ],
     });
 
-    const report = await runInductionBaseline({
-      ...BASE_OPTIONS,
-      apply: true,
-      confirmClubName: "Example Alpine Club",
-      store: fake.store as never,
-    });
+    const { apply: report } = await applyCurrentPlan(fake);
 
     expect(report.alreadyCompleted.map((member) => member.memberId)).toEqual([
       "child-1",
@@ -531,6 +575,7 @@ describe("runInductionBaseline", () => {
         ...BASE_OPTIONS,
         apply: true,
         confirmClubName: "Example Alpine Club",
+        confirmPlanDigest: dryRun.planDigest,
         store: fake.store as never,
       }),
     ).rejects.toMatchObject({
@@ -558,10 +603,300 @@ describe("runInductionBaseline", () => {
       ...BASE_OPTIONS,
       apply: true,
       confirmClubName: "Example Alpine Club",
+      confirmPlanDigest: dryRun.planDigest,
       store: fake.store as never,
     });
 
     expect(classification(apply)).toEqual(classification(dryRun));
+    expect(apply.planDigest).toBe(dryRun.planDigest);
+  });
+
+  it("produces the same versioned SHA-256 digest for semantically identical plans returned in different orders", async () => {
+    const secondItem = {
+      ...DEFAULT_TEMPLATE.sections[0].items[0],
+      id: "item-2",
+      label: "Fire response",
+      sortOrder: 10,
+    };
+    const secondSection = {
+      ...DEFAULT_TEMPLATE.sections[0],
+      id: "section-2",
+      title: "Lodge systems",
+      sortOrder: 10,
+      items: [
+        {
+          ...DEFAULT_TEMPLATE.sections[0].items[0],
+          id: "item-3",
+          label: "Water shutoff",
+        },
+      ],
+    };
+    const orderedTemplate = {
+      ...DEFAULT_TEMPLATE,
+      sections: [
+        {
+          ...DEFAULT_TEMPLATE.sections[0],
+          items: [DEFAULT_TEMPLATE.sections[0].items[0], secondItem],
+        },
+        secondSection,
+      ],
+    };
+    const shuffledTemplate = {
+      ...orderedTemplate,
+      sections: [
+        secondSection,
+        {
+          ...orderedTemplate.sections[0],
+          items: [secondItem, DEFAULT_TEMPLATE.sections[0].items[0]],
+        },
+      ],
+    };
+    const members = [
+      fakeMember("member-z", "USER"),
+      fakeMember("member-a", "USER", { ageTier: "CHILD" }),
+      fakeMember("na-z", "USER", { ageTier: "NOT_APPLICABLE" }),
+      fakeMember("na-a", "USER", { ageTier: "NOT_APPLICABLE" }),
+    ];
+    const existing = [
+      existingRow("induction-z", "member-z", "HUT_LEADER", "VOIDED"),
+      existingRow("induction-a", "member-z", "NEW_MEMBER", "VOIDED"),
+    ];
+    const ordered = createFakeStore({
+      ageTiers: DEFAULT_AGE_TIERS,
+      templates: [orderedTemplate],
+      members,
+      existing,
+    });
+    const shuffled = createFakeStore({
+      ageTiers: [...DEFAULT_AGE_TIERS].reverse(),
+      templates: [shuffledTemplate],
+      members: [...members].reverse(),
+      existing: [...existing].reverse(),
+    });
+
+    const orderedReport = await runInductionBaseline({
+      ...BASE_OPTIONS,
+      store: ordered.store as never,
+    });
+    const shuffledReport = await runInductionBaseline({
+      ...BASE_OPTIONS,
+      store: shuffled.store as never,
+    });
+
+    expect(orderedReport.planDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(shuffledReport.planDigest).toBe(orderedReport.planDigest);
+    expect(classification(shuffledReport)).toEqual(
+      classification(orderedReport),
+    );
+  });
+
+  it("binds every safety-relevant plan input into the digest", async () => {
+    async function digestFor(
+      storeOptions: Parameters<typeof createFakeStore>[0] = {},
+      optionOverrides: Partial<Parameters<typeof runInductionBaseline>[0]> = {},
+    ) {
+      const fake = createFakeStore(storeOptions);
+      return (
+        await runInductionBaseline({
+          ...BASE_OPTIONS,
+          ...optionOverrides,
+          store: fake.store as never,
+        })
+      ).planDigest;
+    }
+
+    const baselineDigest = await digestFor();
+    const changedTemplateContent = structuredClone(DEFAULT_TEMPLATE);
+    changedTemplateContent.sections[0].items[0].competencyPrompt =
+      "Demonstrate both exits without prompting";
+    const changedAgeTiers = structuredClone(DEFAULT_AGE_TIERS);
+    changedAgeTiers[0] = {
+      ...changedAgeTiers[0],
+      maxAge: 3,
+      label: "Infant under four",
+      sortOrder: 40,
+    };
+    changedAgeTiers[1] = { ...changedAgeTiers[1], minAge: 4 };
+    const completedMembers = [
+      fakeMember("adult-1", "ADMIN"),
+      fakeMember("na-member-1", "USER", {
+        ageTier: "NOT_APPLICABLE",
+        canLogin: false,
+      }),
+    ];
+    const variants: Array<[string, Promise<string>]> = [
+      [
+        "database host",
+        digestFor(
+          {},
+          {
+            databaseTarget: {
+              ...BASE_OPTIONS.databaseTarget,
+              host: "other.internal:5432",
+            },
+          },
+        ),
+      ],
+      [
+        "database name",
+        digestFor(
+          {},
+          {
+            databaseTarget: {
+              ...BASE_OPTIONS.databaseTarget,
+              databaseName: "other_club",
+            },
+          },
+        ),
+      ],
+      ["club", digestFor({ clubName: "Other Alpine Club" })],
+      [
+        "actor",
+        digestFor(
+          { actor: { ...DEFAULT_ACTOR, id: "admin-2" } },
+          { actorMemberId: "admin-2" },
+        ),
+      ],
+      ["date", digestFor({}, { baselineDate: "2024-06-29" })],
+      [
+        "full stored provenance",
+        digestFor({}, { provenanceNote: "A different trusted register" }),
+      ],
+      [
+        "template identity",
+        digestFor({
+          templates: [{ ...DEFAULT_TEMPLATE, id: "other-template" }],
+        }),
+      ],
+      [
+        "template name",
+        digestFor({
+          templates: [{ ...DEFAULT_TEMPLATE, name: "Other induction" }],
+        }),
+      ],
+      [
+        "template version",
+        digestFor({
+          templates: [{ ...DEFAULT_TEMPLATE, version: "legacy-v2" }],
+        }),
+      ],
+      [
+        "template section/item content",
+        digestFor({ templates: [changedTemplateContent] }),
+      ],
+      ["age-tier partition", digestFor({ ageTiers: changedAgeTiers })],
+      ["required sign-offs", digestFor({ requiredSignOffs: 3 })],
+      [
+        "eligible member ID",
+        digestFor({
+          members: [
+            fakeMember("adult-2", "ADMIN"),
+            fakeMember("na-member-1", "USER", {
+              ageTier: "NOT_APPLICABLE",
+              canLogin: false,
+            }),
+          ],
+        }),
+      ],
+      [
+        "existing induction ID and kind",
+        digestFor({
+          members: completedMembers,
+          existing: [
+            existingRow(
+              "different-induction",
+              "adult-1",
+              "HUT_LEADER",
+              "COMPLETED",
+            ),
+          ],
+        }),
+      ],
+      [
+        "existing induction status/category",
+        digestFor({
+          members: completedMembers,
+          existing: [
+            existingRow(
+              "existing-induction",
+              "adult-1",
+              "NEW_MEMBER",
+              "IN_PROGRESS",
+            ),
+          ],
+        }),
+      ],
+      [
+        "not-applicable member ID",
+        digestFor({
+          members: [
+            fakeMember("adult-1", "ADMIN"),
+            fakeMember("different-na-member", "USER", {
+              ageTier: "NOT_APPLICABLE",
+              canLogin: false,
+            }),
+          ],
+        }),
+      ],
+    ];
+
+    for (const [label, pendingDigest] of variants) {
+      expect(await pendingDigest, label).not.toBe(baselineDigest);
+    }
+  });
+
+  it("rejects a stale digest before the blocked and write branches and exposes the refreshed safe report", async () => {
+    const fake = createFakeStore();
+    const dryRun = await runInductionBaseline({
+      ...BASE_OPTIONS,
+      store: fake.store as never,
+    });
+    fake.sequence.length = 0;
+    fake.rows.push(
+      existingRow("concurrent-draft", "child-1", "NEW_MEMBER", "DRAFT"),
+    );
+
+    let thrown: unknown;
+    try {
+      await runInductionBaseline({
+        ...BASE_OPTIONS,
+        apply: true,
+        confirmClubName: "Example Alpine Club",
+        confirmPlanDigest: dryRun.planDigest,
+        store: fake.store as never,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(InductionBaselinePlanMismatchError);
+    const mismatch = thrown as InductionBaselinePlanMismatchError;
+    expect(mismatch.report.planDigest).not.toBe(dryRun.planDigest);
+    expect(mismatch.report.openWorkflows).toEqual([
+      expect.objectContaining({ memberId: "child-1" }),
+    ]);
+    expect(fake.sequence[0]).toBe("lock");
+    expect(fake.tx.memberInduction.createMany).not.toHaveBeenCalled();
+    expect(fake.tx.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it("compares the apply digest exactly without trimming", async () => {
+    const fake = createFakeStore();
+    const dryRun = await runInductionBaseline({
+      ...BASE_OPTIONS,
+      store: fake.store as never,
+    });
+
+    await expect(
+      runInductionBaseline({
+        ...BASE_OPTIONS,
+        apply: true,
+        confirmClubName: "Example Alpine Club",
+        confirmPlanDigest: ` ${dryRun.planDigest} `,
+        store: fake.store as never,
+      }),
+    ).rejects.toBeInstanceOf(InductionBaselinePlanMismatchError);
+    expect(fake.tx.memberInduction.createMany).not.toHaveBeenCalled();
   });
 
   it("rejects duplicate active templates and invalid age-tier configuration", async () => {
@@ -647,11 +982,16 @@ describe("runInductionBaseline", () => {
       auditFailure: new Error("audit storage unavailable"),
     });
 
+    const dryRun = await runInductionBaseline({
+      ...BASE_OPTIONS,
+      store: fake.store as never,
+    });
     await expect(
       runInductionBaseline({
         ...BASE_OPTIONS,
         apply: true,
         confirmClubName: "Example Alpine Club",
+        confirmPlanDigest: dryRun.planDigest,
         store: fake.store as never,
       }),
     ).rejects.toThrow("audit storage unavailable");
@@ -660,17 +1000,31 @@ describe("runInductionBaseline", () => {
     expect(fake.auditRows).toEqual([]);
   });
 
-  it("is idempotent: a successful rerun writes no induction or audit row", async () => {
+  it("requires a fresh digest for an idempotent no-op rerun", async () => {
     const fake = createFakeStore();
-    const options = {
+    const dryRun = await runInductionBaseline({
       ...BASE_OPTIONS,
-      apply: true,
+      store: fake.store as never,
+    });
+    const applyOptions = {
+      ...BASE_OPTIONS,
+      apply: true as const,
       confirmClubName: "Example Alpine Club",
+      confirmPlanDigest: dryRun.planDigest,
       store: fake.store as never,
     };
-
-    const first = await runInductionBaseline(options);
-    const second = await runInductionBaseline(options);
+    const first = await runInductionBaseline(applyOptions);
+    await expect(runInductionBaseline(applyOptions)).rejects.toBeInstanceOf(
+      InductionBaselinePlanMismatchError,
+    );
+    const refreshedDryRun = await runInductionBaseline({
+      ...BASE_OPTIONS,
+      store: fake.store as never,
+    });
+    const second = await runInductionBaseline({
+      ...applyOptions,
+      confirmPlanDigest: refreshedDryRun.planDigest,
+    });
 
     expect(first.appliedCount).toBe(4);
     expect(second.counts).toMatchObject({
@@ -689,6 +1043,7 @@ describe("runInductionBaseline", () => {
         ...BASE_OPTIONS,
         apply: true,
         confirmClubName: "example alpine club",
+        confirmPlanDigest: "sha256:not-reached",
         store: fake.store as never,
       }),
     ).rejects.toThrow(
@@ -729,18 +1084,23 @@ describe("runInductionBaseline", () => {
     });
 
     try {
+      const dryRun = await runInductionBaseline({
+        ...BASE_OPTIONS,
+        store: fake.store as never,
+      });
       await runInductionBaseline({
         ...BASE_OPTIONS,
         apply: true,
         confirmClubName: "Example Alpine Club",
+        confirmPlanDigest: dryRun.planDigest,
         store: fake.store as never,
       });
       throw new Error("expected apply to be blocked");
     } catch (error) {
       expect(error).toBeInstanceOf(InductionBaselineBlockedError);
-      expect((error as InductionBaselineBlockedError).report.openWorkflows).toHaveLength(
-        1,
-      );
+      expect(
+        (error as InductionBaselineBlockedError).report.openWorkflows,
+      ).toHaveLength(1);
     }
   });
 });
