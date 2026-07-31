@@ -941,6 +941,66 @@ describe("runInductionBaseline", () => {
     ).rejects.toThrow("Age-tier configuration is invalid");
   });
 
+  it("rejects an otherwise valid ADULT-only partition before population planning", async () => {
+    const fake = createFakeStore({
+      ageTiers: [fakeAgeTier("ADULT", 0, null, "Adult", 0)],
+    });
+
+    await expect(
+      runInductionBaseline({
+        ...BASE_OPTIONS,
+        store: fake.store as never,
+      }),
+    ).rejects.toThrow(
+      "the induction baseline requires exactly one INFANT, CHILD, YOUTH, and ADULT tier",
+    );
+    expect(fake.tx.member.findMany).not.toHaveBeenCalled();
+    expect(fake.tx.memberInduction.findMany).not.toHaveBeenCalled();
+    expect(fake.tx.memberInduction.createMany).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      missingTier: "INFANT",
+      ageTiers: [
+        fakeAgeTier("CHILD", 0, 9, "Child", 0),
+        fakeAgeTier("YOUTH", 10, 17, "Youth", 1),
+        fakeAgeTier("ADULT", 18, null, "Adult", 2),
+      ],
+    },
+    {
+      missingTier: "CHILD",
+      ageTiers: [
+        fakeAgeTier("INFANT", 0, 9, "Infant", 0),
+        fakeAgeTier("YOUTH", 10, 17, "Youth", 1),
+        fakeAgeTier("ADULT", 18, null, "Adult", 2),
+      ],
+    },
+    {
+      missingTier: "YOUTH",
+      ageTiers: [
+        fakeAgeTier("INFANT", 0, 4, "Infant", 0),
+        fakeAgeTier("CHILD", 5, 17, "Child", 1),
+        fakeAgeTier("ADULT", 18, null, "Adult", 2),
+      ],
+    },
+  ])(
+    "rejects a gapless partition missing $missingTier",
+    async ({ ageTiers }) => {
+      const fake = createFakeStore({ ageTiers });
+
+      await expect(
+        runInductionBaseline({
+          ...BASE_OPTIONS,
+          store: fake.store as never,
+        }),
+      ).rejects.toThrow(
+        "the induction baseline requires exactly one INFANT, CHILD, YOUTH, and ADULT tier",
+      );
+      expect(fake.tx.member.findMany).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([
     {
       label: "inactive",

@@ -323,6 +323,17 @@ function validateAgeTierSettings(
       `Age-tier configuration is invalid: ${validation.error}`,
     );
   }
+  const configuredTiers = new Set(
+    validation.sorted.map((setting) => setting.tier),
+  );
+  if (
+    validation.sorted.length !== PERSON_AGE_TIERS.length ||
+    PERSON_AGE_TIERS.some((tier) => !configuredTiers.has(tier))
+  ) {
+    throw new InductionBaselineError(
+      "Age-tier configuration is invalid: the induction baseline requires exactly one INFANT, CHILD, YOUTH, and ADULT tier.",
+    );
+  }
   for (const setting of validation.sorted) {
     if (!setting.label.trim()) {
       throw new InductionBaselineError(
