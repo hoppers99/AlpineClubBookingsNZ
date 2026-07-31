@@ -21,6 +21,11 @@ All notable public reference-release changes should be recorded here.
   since sharing a link is not a booking write. The one other way in is
   unchanged: the *Book these dates again* button on a tokenised payment link
   the club itself emails to a past requester.
+- **Reports can jump to the next calendar month (#2367).** The Reports page's
+  Quick Range menu now includes **Next Month**, including December-to-January
+  and leap-year February boundaries. Changing the quick range keeps the current
+  Lodge and Deleted filters, and the shared Quick Range select now has an
+  accessible programmatic label.
 - **Bed moves now stay on the guest's original lodge nights (#2366).** Dragging
   an existing allocation chip across date columns now chooses only the
   destination bed: the preview and keyboard announcement show the original NZ
