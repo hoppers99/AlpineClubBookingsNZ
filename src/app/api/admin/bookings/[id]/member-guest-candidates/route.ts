@@ -137,12 +137,12 @@ export async function GET(
   try {
     const result = await searchMemberGuestCandidatesByName({
       q: rawQ,
-      // D-20: the officer's search is not bound by the club's member-facing
-      // privacy switches, so the minors flag is forced on rather than read.
-      // Passing a synthesised settings object keeps the age-tier decision in
-      // `searchMemberGuestCandidatesByName` — there is still exactly one place
-      // that turns a flag into a set of tiers.
-      settings: { ...gate.settings, openMemberSearchIncludesMinors: true },
+      settings: gate.settings,
+      // D-20: an officer's search is not bound by the club's member-facing
+      // minors switch. This route says WHO is asking; the find service decides
+      // what that means for discoverability, so this file never turns a privacy
+      // setting into an age-tier filter of its own.
+      audience: "ADMIN",
     });
     await auditMemberGuestSearch({
       request,

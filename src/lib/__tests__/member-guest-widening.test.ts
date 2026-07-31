@@ -780,6 +780,22 @@ describe("consent columns have exactly one writer", () => {
       // own.
       "src/lib/booking-request.ts":
         "the held-booking guest swap reads the old consent state and clears it on substitution",
+      // --- MG4's edit surface (#2309). Neither WRITES a column.
+      // The panel builds one of the two legal preview shapes for the pre-save
+      // badge, exactly as the wizard's predictor does — no row exists yet.
+      "src/components/edit-booking-panel.tsx":
+        "the edit panel's pre-save consent prediction for a newly added member guest",
+      // Reads the status of a guest the edit REMOVED, to decide whether the
+      // member was ever told about this booking and which sentence they are
+      // owed. A null status means no message was ever sent about that row.
+      "src/lib/booking-batch-modification-service.ts":
+        "the batch edit reads a removed guest's consent state to decide who is owed a withdrawal notice",
+      // The same read on the single-guest removal route. It is the ONE of the
+      // three callers of removeBookingGuestInTransaction that owes a withdrawal
+      // notice — the decline endpoint and the expiry sweep each have their own
+      // message for the same event.
+      "src/app/api/bookings/[id]/guests/[guestId]/route.ts":
+        "the guest-removal route reads the removed row's consent state to decide who is owed a withdrawal notice",
     };
 
     const mentions = productionFilesUnder("src")
@@ -840,6 +856,14 @@ describe("the two open-search privacy toggles are off by default, and have exact
       "src/app/api/members/guest-candidates/search/route.ts",
       // Renders one find box or the other from the prop it was handed.
       "src/app/(authenticated)/book/_components/guests-step.tsx",
+      // MG4 (#2309). Decides which find box the EDIT panel draws, from the same
+      // already-decided boolean — and for an ADMIN reader does not consult the
+      // setting at all, because D-20 gates the officer's picker on
+      // `membership:view` instead. The routes still re-check.
+      "src/app/(authenticated)/bookings/[id]/page.tsx",
+      // MG4 (#2309). Obeys `loadMemberGuestFindGate`'s answer and names the
+      // AUDIENCE it is serving; the minors decision stays in the find service.
+      "src/app/api/admin/bookings/[id]/member-guest-candidates/route.ts",
     ]);
 
     const namers = sourceFilesUnder("src")
