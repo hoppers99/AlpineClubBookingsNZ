@@ -4,6 +4,26 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Turning on login for a member now explains an email clash instead of just
+  failing (#2385).** Only one member per email address can sign in — that is why
+  a family's children can share a parent's address as long as they do not log in
+  themselves. Changing a member's address to one that is already someone's login
+  has always said so plainly: "A member with this email already exists". But
+  ticking **Can Login** on **Account & Access** for a member whose *existing*
+  address is already someone else's login went a different way. That form sends
+  the login switch and the access roles, and no email address at all, so the
+  check that produces the friendly message — which only looked at addresses that
+  had *changed* — was skipped, the save went through to the database, the
+  database refused it, and the admin got an unexplained failure with nothing to
+  act on. It is a plausible thing to do: enabling login on an imported record
+  whose address a spouse already signs in with. The check now also runs whenever
+  login is being switched on, against the address the member already has, so the
+  same clear message appears. If two admins happen to claim the same address in
+  the same moment, the one who loses now gets that message too, rather than the
+  unexplained failure. Nothing about who is allowed to sign in has changed — the
+  database rule that permits only one login per address was always doing its job,
+  and still is; this is purely about being told why a save was refused.
+
 - **Clubs can safely record a trusted induction history when moving an
   established membership onto the digital register (#2361).** A new
   dry-run-first operator command classifies every active real-member
