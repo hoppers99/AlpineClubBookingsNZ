@@ -238,6 +238,8 @@ describe("concurrency race DB safety guard (#1881)", () => {
 (RUN ? describe : describe.skip)(
   "two-tier lock protocol — real-DB interleavings (#1881)",
   () => {
+    let setupCompleted = false;
+
     async function clearBaselineRunState() {
       await prisma.auditLog.deleteMany({
         where: {
@@ -533,22 +535,59 @@ describe("concurrency race DB safety guard (#1881)", () => {
         },
       });
       await seedBaselineFixtures();
-    });
+      setupCompleted = true;
+    }, 60_000);
 
     afterAll(async () => {
-      await clearBaselineFixtures();
-      await prisma.groupBooking.deleteMany({ where: { id: APP_GROUP_ID } });
-      await prisma.booking.deleteMany({ where: { id: APP_BOOKING_ID } });
-      await prisma.lodge.deleteMany({ where: { id: APP_LODGE_ID } });
-      await prisma.member.deleteMany({ where: { id: APP_MEMBER_ID } });
-      await prisma.$executeRawUnsafe(`DROP TABLE IF EXISTS "${PROBE_TABLE}"`);
-      await Promise.all([
-        baselineClientA.$disconnect(),
-        baselineClientB.$disconnect(),
-        ordinaryWriterClient.$disconnect(),
-      ]);
-      await prisma.$disconnect();
-    });
+      const cleanupErrors: unknown[] = [];
+      const attemptCleanup = async (cleanup: () => Promise<unknown>) => {
+        try {
+          await cleanup();
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      };
+
+      if (typeof prisma !== "undefined") {
+        await attemptCleanup(() => clearBaselineFixtures());
+        await attemptCleanup(() =>
+          prisma.groupBooking.deleteMany({ where: { id: APP_GROUP_ID } })
+        );
+        await attemptCleanup(() =>
+          prisma.booking.deleteMany({ where: { id: APP_BOOKING_ID } })
+        );
+        await attemptCleanup(() =>
+          prisma.lodge.deleteMany({ where: { id: APP_LODGE_ID } })
+        );
+        await attemptCleanup(() =>
+          prisma.member.deleteMany({ where: { id: APP_MEMBER_ID } })
+        );
+        await attemptCleanup(() =>
+          prisma.$executeRawUnsafe(`DROP TABLE IF EXISTS "${PROBE_TABLE}"`)
+        );
+      }
+      if (typeof baselineClientA !== "undefined") {
+        await attemptCleanup(() => baselineClientA.$disconnect());
+      }
+      if (typeof baselineClientB !== "undefined") {
+        await attemptCleanup(() => baselineClientB.$disconnect());
+      }
+      if (typeof ordinaryWriterClient !== "undefined") {
+        await attemptCleanup(() => ordinaryWriterClient.$disconnect());
+      }
+      if (typeof prisma !== "undefined") {
+        await attemptCleanup(() => prisma.$disconnect());
+      }
+
+      // A partial setup already has a primary beforeAll failure. Best-effort
+      // teardown must never replace it with a secondary cleanup error.
+      if (setupCompleted && cleanupErrors.length > 0) {
+        throw new AggregateError(
+          cleanupErrors,
+          "Real-DB race harness teardown failed"
+        );
+      }
+    }, 60_000);
 
     async function seedProbe(id: string, status: string) {
       await prisma.$executeRawUnsafe(
