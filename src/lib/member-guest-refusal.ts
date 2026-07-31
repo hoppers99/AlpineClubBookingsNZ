@@ -70,8 +70,8 @@
  *   * **The probing is now throttled**, per ACTING MEMBER rather than per IP,
  *     and only on attempts that name a beyond-family member — so an ordinary
  *     family booking is not rate-limited at all, and a run of probes across
- *     dates is capped at 15 per quarter-hour and 50 per day. That is what turns
- *     "map a season in an afternoon" into "map a season over three weeks".
+ *     dates is capped at 15 per quarter-hour and 50 per day, charged exactly
+ *     once per attempt.
  *   * **Every collapsed refusal is now audited**, naming the actor and the
  *     target, and a run of them against the same target raises a distinct
  *     admin-visible row. By the owner's explicit sub-decision this LOGS and
@@ -79,14 +79,49 @@
  *     friend is the normal case, and refusing them would produce a vague answer
  *     they could not act on.
  *
+ * THREE CORRECTIONS THE PRIVACY AND CORRECTNESS REVIEWS FORCED ON THIS FILE, kept
+ * here rather than quietly folded in, because the mistakes are instructive and an
+ * overclaiming docblock is worse than no docblock at all.
+ *
+ *   1. **"Fifty probes a day is three weeks to map a season" was wrong by about
+ *      a factor of seven.** A lodge season is roughly 150 nights; at fifty a day
+ *      that is about THREE DAYS, and a whole year is about seven and a half. The
+ *      cap is still worth having — it turns a scripted afternoon into days of
+ *      work that leave up to fifty audit rows a day naming the prober and their
+ *      target — but it does not make mapping infeasible and this file must not
+ *      say that it does.
+ *   2. **The throttle briefly WAS the oracle it was meant to remove.** Applied
+ *      after member resolution, an unresolvable beyond-family id threw first and
+ *      answered with the neutral 403 while a real bookable member answered 429 —
+ *      one bit per request, for free, out of the mitigation itself. It is now
+ *      spent the moment the family boundary is known, before a single member row
+ *      is read, so both answer alike.
+ *   3. **"Every collapsed refusal is audited" was not true when it was written.**
+ *      `POST /api/bookings/[id]/modify` is a fifth member-facing add path and
+ *      carried none of the three mitigations, and `modify-quote`'s
+ *      unpaid-subscription branch skipped the handler. Both are fixed; the
+ *      audited set is now every refusal on `bookings/quote`, `bookings/create`,
+ *      `bookings/guests-add`, `bookings/modify-quote`, `bookings/modify` and
+ *      `bookings/modify-dates`.
+ *
+ * AND ONE LEAK THAT WAS NOT A RESIDUAL AT ALL. The collapse used to be driven by
+ * a marker set only on guests a request was ADDING, so a cross-family member
+ * guest ALREADY on a booking was never marked and the person-night guard answered
+ * for them in full — name and exact booked nights — on every later date change,
+ * through a side-effect-free preview that spent no throttle and wrote no audit
+ * row. That was a direct read-out rather than a pattern to be inferred, and it
+ * defeated all of the above at once. `markCrossFamilyGuestsOnBooking` now derives
+ * the set from the live family boundary over the WHOLE proposed party.
+ *
  * SO THE HONEST STATEMENT AFTER MG3 IS THIS: a single refusal still tells a
  * caller nothing, and a run of them is now slow, capped, and recorded against
  * the caller's name — but the PATTERN of answers still carries the signal it
  * always did, and a patient member who stays inside the daily cap can still
- * learn which nights another member is booked. That residual is deliberate: the
- * owner rejected closing it with an automatic block, on the grounds that the
- * innocent case is indistinguishable from the probing one and only a person can
- * tell them apart. It is now a detectable residual rather than an invisible one.
+ * learn which nights another member is booked, over days rather than minutes.
+ * That residual is deliberate: the owner rejected closing it with an automatic
+ * block, on the grounds that the innocent case is indistinguishable from the
+ * probing one and only a person can tell them apart. It is now a detectable
+ * residual rather than an invisible one.
  *
  * STRICTLY CROSS-FAMILY, STRICTLY PRE-CONSENT. A family-scope add (D-6) keeps
  * today's detailed, actionable errors verbatim — a member adding their own child

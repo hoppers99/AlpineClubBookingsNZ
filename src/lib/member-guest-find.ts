@@ -82,9 +82,15 @@ export const MEMBER_GUEST_CANDIDATE_MINOR_TIERS: readonly AgeTier[] = Object.fre
  * `resolveLinkedMemberRecords` (`booking-guests.ts`) refuses an age-exempt
  * account as a booking guest outright — "This account is age-exempt (N/A) and
  * cannot be added as a booking guest". Offering one here would hand the booker a
- * candidate that can NEVER be added, and the refusal it produces is a distinct
- * 400 rather than D-8's neutral message, so the plan's rule would have created a
- * new way to tell one refusal from another.
+ * candidate that can NEVER be added.
+ *
+ * (This justification used to have a second half — that the refusal such a
+ * candidate produces is a distinct 400 and so would be a new way to tell one
+ * refusal from another. That was already false when it was written, because THIS
+ * SAME RELEASE collapses that refusal for a beyond-family target,
+ * `booking-guests.ts`'s `collapseForMemberIds`. Deleted rather than reworded:
+ * the first ground stands on its own, and a stale justification is how somebody
+ * later "restores" the plan's rule believing nothing depends on it.)
  *
  * Excluding the tier at the finder discloses nothing: age tier is a static
  * property of the ACCOUNT TYPE that the candidate row already shows, not a piece

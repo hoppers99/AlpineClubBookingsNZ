@@ -649,7 +649,7 @@
           <div class="card-content" style="padding-top:22px;">
             <div class="findpanel hi">
               <div>
-                <span class="label">Find a member by name</span>
+                <span class="label">Find a member by name or email address</span>
                 <span class="input">whit<span class="caret"></span></span>
                 <div class="lb" style="margin-top:4px;">
                   <ul>
@@ -678,7 +678,7 @@
           <div class="card-content" style="padding-top:22px;">
             <div class="findpanel hi">
               <div>
-                <span class="label">Find a member by name</span>
+                <span class="label">Find a member by name or email address</span>
                 <span class="input">sam whitt<span class="caret"></span></span>
               </div>
               <div class="chip">
@@ -705,7 +705,7 @@
           <div class="card-content" style="padding-top:22px;">
             <div class="findpanel hi">
               <div>
-                <span class="label">Find a member by name</span>
+                <span class="label">Find a member by name or email address</span>
                 <span class="input">sm<span class="caret"></span></span>
                 <div class="lb" style="margin-top:4px;">
                   <ul>
@@ -735,7 +735,7 @@
           <div class="card-content" style="padding-top:22px;">
             <div class="findpanel hi">
               <div>
-                <span class="label">Find a member by name</span>
+                <span class="label">Find a member by name or email address</span>
                 <span class="input">john smith<span class="caret"></span></span>
                 <div class="lb" style="margin-top:4px;">
                   <ul>
@@ -762,7 +762,7 @@
           <div class="card-content" style="padding-top:22px;">
             <div class="findpanel hi">
               <div>
-                <span class="label">Find a member by name</span>
+                <span class="label">Find a member by name or email address</span>
                 <span class="input">br<span class="caret"></span></span>
               </div>
               <div class="alert warn">
@@ -784,7 +784,7 @@
   <div class="panel">
     <p class="ptitle"><span class="n">11</span> The guest list, with three different states</p>
     <p class="where">Where: <code>/book</code> → Guests step, after adding</p>
-    <p class="why">The wording on these labels is <strong>already live</strong> on the booking page — it shipped in the previous release. The question in Decision 1 below is whether the booking wizard should reuse it or say something warmer.</p>
+    <p class="why"><b>Updated 31 July 2026.</b> These labels now show the <strong>warmer, name-bearing wizard wording</strong> the owner chose in Decision 1 below; the booking-detail page keeps MG2&rsquo;s &ldquo;Waiting for consent&rdquo; / &ldquo;Consented&rdquo; / &ldquo;Told, not asked&rdquo;. The panel originally drew the MG2 wording here, because it was drawn before the decision was taken.</p>
     <div class="screen">
       <div class="col">
         <div class="card">
@@ -810,7 +810,7 @@
               <div class="guestcard">
                 <div class="gh">
                   <span class="who">Guest 2</span>
-                  <span class="badge pending">Waiting for consent · expires 7 Aug</span>
+                  <span class="badge pending">Waiting for Sam to approve</span>
                   <span class="sp"></span>
                   <span class="btn danger-ghost sm">Remove</span>
                 </div>
@@ -818,13 +818,13 @@
                   <div><span class="label">First Name</span><span class="input dis">Sam</span></div>
                   <div><span class="label">Last Name</span><span class="input dis">Whittaker</span></div>
                 </div>
-                <p class="helper">Sam has been emailed and their bed is held until they answer.</p>
+                <p class="helper">Sam will be emailed when you confirm this booking, and their bed is held until they answer.</p>
               </div>
 
               <div class="guestcard">
                 <div class="gh">
                   <span class="who">Guest 3</span>
-                  <span class="badge ok">Consented</span>
+                  <span class="badge ok">Anna approved</span>
                   <span class="sp"></span>
                   <span class="btn danger-ghost sm">Remove</span>
                 </div>
@@ -837,7 +837,7 @@
               <div class="guestcard">
                 <div class="gh">
                   <span class="who">Guest 4</span>
-                  <span class="badge ok">Told, not asked</span>
+                  <span class="badge ok">Daniel will be told</span>
                   <span class="sp"></span>
                   <span class="btn danger-ghost sm">Remove</span>
                 </div>
@@ -870,8 +870,8 @@
               <div class="sepblock">
                 <h4 style="font-size:15px;font-weight:600;margin:0 0 6px;">Guests</h4>
                 <div class="revrow"><span>Jordan Hartley-Smith (ADULT, Member)</span><span class="money">$90.00</span></div>
-                <div class="revrow"><span>Sam Whittaker (ADULT, Member)<span class="sub">Waiting for consent · expires 7 Aug</span></span><span class="money">$90.00</span></div>
-                <div class="revrow"><span>Anna Whitcombe (ADULT, Member)<span class="sub">Consented</span></span><span class="money">$90.00</span></div>
+                <div class="revrow"><span>Sam Whittaker (ADULT, Member)<span class="sub">Waiting for Sam to approve</span></span><span class="money">$90.00</span></div>
+                <div class="revrow"><span>Anna Whitcombe (ADULT, Member)<span class="sub">Anna approved</span></span><span class="money">$90.00</span></div>
               </div>
 
               <div class="alert warn">
@@ -1023,6 +1023,12 @@
   </div>
 
   <div class="foot">
+    <p><b>Amendments — 31 July 2026, after the build.</b> Four panels were re-drawn to match what actually shipped. Every change is <em>authorised by an answer recorded on this page</em>; nothing here was softened, and nothing was changed that the owner did not decide.</p>
+    <ul class="q">
+      <li><b>Panels 11 and 12 &mdash; the waiting labels.</b> Drawn with MG2&rsquo;s wording (&ldquo;Waiting for consent &middot; expires 7 Aug&rdquo;, &ldquo;Consented&rdquo;, &ldquo;Told, not asked&rdquo;) because they predate Decision 1. Now drawn with the <b>warmer, name-bearing wizard wording</b> that Decision 1 chose. The booking-detail page is unchanged and still uses MG2&rsquo;s wording; both come from one function with two audiences, so there is only ever one place to change.</li>
+      <li><b>Panels 2, 4, 5 and 6&ndash;10 &mdash; the box label.</b> Drawn as two separate boxes, &ldquo;Find a member by email address&rdquo; and &ldquo;Find a member by name&rdquo;. Decision 2 replaced that with <b>one box that takes either</b>, so the open-search panels now read &ldquo;Find a member by name or email address&rdquo;. The default (email-only) panels keep their original label, which is what ships.</li>
+      <li><b>Panel 11 &mdash; the sentence under a waiting guest.</b> Drawn as &ldquo;Sam has been emailed and their bed is held until they answer.&rdquo; In the wizard that is not true yet: no booking exists, so nothing has been sent and no bed is held until the booker confirms. What ships is the same sentence in the correct tense &mdash; &ldquo;Sam will be emailed when you confirm this booking, and their bed is held until they answer.&rdquo; This is the one amendment that is a factual correction rather than a decision, and it is recorded here rather than folded in silently.</li>
+    </ul>
     <p><b>What this file is for.</b> It is the frozen record of what was agreed before MG3 was built, kept so that a later reader can see what the owner actually signed off rather than inferring it from the code. If the shipped screens and this page ever disagree, this page is the one that is out of date — fix the page with a dated note, and never quietly re-draw it to match a change nobody agreed to.</p>
     <p><b>What is invented here and what is real.</b> All names, emails and prices are made up. All copy is the real wording. The colours and type are the app's own; the only visual approximation is the exact shade of the amber and red tints in dark mode, because this page does not load the app's stylesheet.</p>
     <p>Issue #2308 · epic #2305 · signed off 31 July 2026</p>

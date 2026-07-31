@@ -31,10 +31,19 @@ export interface GuestData {
    * prediction derived from the club's own `approvalRequired` setting, not a
    * consent record.
    *
-   * `buildGuestPayload` picks the fields it sends field by field, so this never
-   * reaches an API; and were it forged it would change nothing, because every
-   * consent column is written server-side by
-   * `buildMemberGuestConsentWrite`.
+   * IT IS TRANSMITTED, and the first version of this note wrongly claimed it was
+   * not (correctness review of MG3 #2308, LOW-1). `buildGuestPayload` SPREADS the
+   * guest rows, and `handleSubmit` / `handleJoinWaitlist` send `guests:
+   * guestPayload` whole, so this field does travel to `POST /api/bookings`. That
+   * is harmless — the route's zod schema does not declare it and strips it — but
+   * the reason it is harmless has to be the true one:
+   *
+   * NOTHING SERVER-SIDE READS IT, FORGED OR OTHERWISE. Every consent column is
+   * written by `buildMemberGuestConsentWrite` from the family boundary the server
+   * recomputes itself, so a client that sends
+   * `memberGuestConsentPreview: "NOTIFY_ONLY"` for a stranger still gets a
+   * PENDING row and still triggers the consent request. `member-guest-add-call-sites`
+   * and the wizard's own tests pin that.
    */
   memberGuestConsentPreview?: "PENDING" | "NOTIFY_ONLY";
 }

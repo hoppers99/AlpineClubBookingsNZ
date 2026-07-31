@@ -138,8 +138,25 @@ From #2388, three things back that wording up:
   not a rule that fired.
 
 Being honest about the limit: a patient member who stays inside the daily cap can
-still work out which nights another member is booked. That residual is known,
-deliberate, and now recorded rather than invisible.
+still work out which nights another member is booked — over **days**, not
+minutes. The daily cap is fifty cross-family attempts, and a lodge season is
+roughly 150 nights, so it turns a scripted afternoon into several days of work
+that leaves up to fifty audit entries a day naming the person doing it. It does
+not make that work impossible, and this guide will not claim it does. Closing the
+gap entirely would mean blocking members automatically, which the club decided
+against for the reason above.
+
+### One thing this does NOT cover
+
+The uniform "we never say why" envelope described here applies to the
+member-guest finder and to adding a member guest to a booking. It is **not** an
+app-wide property. In particular, the older **partner-link** screen (a member
+linking their partner's account to their own) still answers an email lookup with
+different messages for "no such member", "that member cannot be linked" and "that
+address is not usable", and its speed limit is keyed on the internet address
+rather than on the member. That is pre-existing behaviour on a different, much
+narrower surface, and MG3 deliberately did not copy it — but nobody should read
+this section as saying the whole application behaves the way the finder does.
 
 The card stays editable while the `memberGuests` module is off — a banner says
 nothing is in use yet, so you can configure the policy first and then turn the

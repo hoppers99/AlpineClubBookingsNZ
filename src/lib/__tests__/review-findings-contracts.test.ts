@@ -259,7 +259,7 @@ function personNightGuardCallers(): string[] {
         source.includes("findBookingMemberNightConflicts(") ||
         source.includes("assertNoBookingMemberNightConflicts(")
       ) {
-        found.push(path.relative(process.cwd(), full).replace(/\/g, "/"));
+        found.push(path.relative(process.cwd(), full).split(path.sep).join("/"));
       }
     }
   }

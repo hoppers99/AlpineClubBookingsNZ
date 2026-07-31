@@ -63,7 +63,36 @@ All notable public reference-release changes should be recorded here.
   difference — so the system writes it down and leaves the judgement to a club
   officer. The remaining limit is stated honestly rather than papered over: a
   patient member who stays inside the daily cap can still work out which nights
-  another member is booked.
+  another member is booked, over several days rather than minutes.
+
+- **A member guest already on a booking is no longer described to the booker
+  every time the dates change (#2308).** The rule that keeps one member's
+  bookings private from another only ever applied to the person being added in
+  that request. So a member added last week — a friend from another family, or
+  someone who had never even answered the request yet — was still described in
+  full on every later date change: their name, and the exact nights they were
+  booked somewhere else, one short answer per set of dates, with none of the
+  speed limits or records that were supposed to sit behind that question. The
+  club now works out who is outside the booker's family from the booking itself
+  rather than from what a single request happened to mention, so the neutral
+  answer applies to everybody it was always meant to cover. Three further gaps
+  found in the same review are closed with it: changing a booking through the
+  edit panel now carries the same speed limit, record and equal timing as every
+  other way of adding somebody; the "subscription unpaid" refusal no longer
+  answers noticeably later than its siblings; and the speed limit itself no
+  longer answered "too many requests" for a real member while answering the
+  ordinary refusal for a made-up one, which had quietly turned the protection
+  into the very thing it was there to prevent.
+
+- **Smaller fixes in the same area (#2308).** A shared network — a family on the
+  lodge wifi, or a club night — no longer runs out of lookups because everyone
+  is behind one address; the per-person limit is the real control and the shared
+  one is now sized for a crowd. The email finder gained a daily cap, which it
+  had been missing while the optional name search had one. A rate-limited or
+  malformed lookup now records what was being looked up, which is exactly the
+  entry an admin would want. And the descriptions of what these limits buy have
+  been corrected where they overstated it — "three weeks to map a season" was
+  nearer three days, and "harvesting takes weeks" was nearer two days.
 - **Recording a cash payment now asks about any extra still owing (#2397).**
   When a booking is priced up after it was made — someone adds a guest, say —
   the increase is tracked separately as an "additional payment" the member is

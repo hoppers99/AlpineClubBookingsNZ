@@ -7,10 +7,32 @@ import {
 } from "@/lib/rate-limit";
 
 /**
- * The three mitigations the owner decided on #2388 (31 Jul 2026), applied to the
- * booking ADD PATHS — `POST /api/bookings/quote`, `POST /api/bookings`,
- * `POST /api/bookings/[id]/guests` and `POST /api/bookings/[id]/modify-quote` —
- * and not only to MG3's new find routes.
+ * The three mitigations the owner decided on #2388 (31 Jul 2026), applied to
+ * every member-facing booking ADD PATH — and not only to MG3's new find routes.
+ *
+ * THE SIX PATHS, listed because the list was wrong when it was first written and
+ * the omission was a real hole (privacy review of MG3 #2308, finding H2):
+ *
+ *   * `POST /api/bookings/quote`            — throttled at the boundary hook
+ *   * `POST /api/bookings`                  — throttled at the boundary hook
+ *   * `POST /api/bookings/[id]/modify-quote`— throttled at the boundary hook
+ *   * `POST /api/bookings/[id]/guests`      — charged on the refusal path
+ *   * `PUT  /api/bookings/[id]/modify`      — charged on the refusal path
+ *   * `PUT  /api/bookings/[id]/modify-dates`— charged on the refusal path
+ *
+ * `bookings/[id]/modify` is the one that was missed. `addGuests` is in its
+ * schema, any authenticated member reaches it, and `booking-modify-plan.ts`
+ * passes `memberGuestWideningEnabled`, so cross-family adds genuinely resolve
+ * there — with no throttle, no `member_guest.add_refused` row (so the
+ * admin-visible repeated-refusal signal was blind to the route entirely) and no
+ * timing floor. `modify-dates` joined the list when MG3's C1 fix made the
+ * collapsed refusal reachable there too.
+ *
+ * The last three resolve their members INSIDE `prisma.$transaction` while holding
+ * the per-lodge capacity lock, so the throttle cannot be spent on the way in
+ * without taking a second connection under that lock. They spend it on the way
+ * out instead — see `handleMemberGuestAddRefusal`, whose `throttle` parameter
+ * makes which of the two a route is doing an explicit, unforgettable decision.
  *
  * WHAT #2388 IS ABOUT, in one paragraph, because the mitigations only make sense
  * against it. D-8 collapses every cross-family refusal to one neutral sentence,
@@ -182,9 +204,22 @@ export const MEMBER_GUEST_REFUSAL_FLOOR_MS = 250;
  * all — they call this, whose name says what the number is for. Anything built
  * from a value called "the refusal timing clock" is visibly wrong at the call
  * site, which is the property the grep was protecting.
+ *
+ * BRANDED, so a wall-clock reading cannot be passed by accident (privacy review
+ * of MG3 #2308, finding L4). `equaliseMemberGuestRefusalTiming` subtracts this
+ * value from `performance.now()`; hand it a `Date.now()` reading and the delta
+ * is a vast negative number, the computed delay clamps to zero, and the floor
+ * SILENTLY DOES NOT APPLY — a privacy control failing open with no error and no
+ * test failure. The brand makes that a compile error at the call site, and the
+ * range check in `memberGuestRefusalDelayMs` catches anything that reaches it
+ * anyway.
  */
-export function startMemberGuestRefusalClock(): number {
-  return performance.now();
+export type MemberGuestRefusalClock = number & {
+  readonly __memberGuestRefusalClock: unique symbol;
+};
+
+export function startMemberGuestRefusalClock(): MemberGuestRefusalClock {
+  return performance.now() as MemberGuestRefusalClock;
 }
 
 let refusalFloorMs = MEMBER_GUEST_REFUSAL_FLOOR_MS;
@@ -195,8 +230,25 @@ export function __setMemberGuestRefusalFloorMs(ms: number): void {
   refusalFloorMs = ms;
 }
 
-/** How long a refusal that has already taken `elapsedMs` must still wait. */
+/**
+ * How long a refusal that has already taken `elapsedMs` must still wait.
+ *
+ * FAILS CLOSED ON AN IMPOSSIBLE ELAPSED TIME. A negative delta, or one longer
+ * than any request could plausibly take, means the caller measured against the
+ * wrong clock — and the arithmetic's natural answer to that is "wait zero", i.e.
+ * skip the control entirely. Applying the WHOLE floor instead costs a quarter of
+ * a second on a refusal and cannot leak anything.
+ */
+const IMPLAUSIBLE_ELAPSED_MS = 10 * 60 * 1000;
+
 export function memberGuestRefusalDelayMs(elapsedMs: number): number {
+  if (
+    !Number.isFinite(elapsedMs) ||
+    elapsedMs < 0 ||
+    elapsedMs > IMPLAUSIBLE_ELAPSED_MS
+  ) {
+    return refusalFloorMs;
+  }
   return Math.max(0, refusalFloorMs - elapsedMs);
 }
 
@@ -224,7 +276,7 @@ export function memberGuestRefusalDelayMs(elapsedMs: number): number {
  * whole request rather than only the part after the failure was detected.
  */
 export async function equaliseMemberGuestRefusalTiming(
-  startedAt: number,
+  startedAt: MemberGuestRefusalClock,
   now: number = performance.now(),
 ): Promise<void> {
   const delay = memberGuestRefusalDelayMs(now - startedAt);
@@ -409,7 +461,7 @@ export async function handleMemberGuestAddRefusal(params: {
   error: { crossFamilyMemberIds?: readonly string[] };
   route: string;
   /** `startMemberGuestRefusalClock()` from the top of the handler. */
-  startedAt: number;
+  startedAt: MemberGuestRefusalClock;
   skipAuthorization?: boolean;
   /** Who charged this attempt's throttle unit — see above. Required on purpose. */
   throttle: "ALREADY_CHARGED" | "CHARGE_NOW";
