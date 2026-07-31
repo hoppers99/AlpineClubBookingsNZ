@@ -132,8 +132,8 @@ export function findBracketAnnotations(
 }
 
 /**
- * #2269 (F3) — the annotation families this project ever SHIPPED inside a
- * default body, expressed as a regex alternation.
+ * #2269 (F3) — the EXACT authoring annotations this project ever SHIPPED
+ * inside a default subject or body.
  *
  * Guard 1 above treats ANY square-bracketed span as an authoring note, which is
  * the right rule for a save-time refusal and for a "your row still carries
@@ -143,68 +143,164 @@ export function findBracketAnnotations(
  * purpose; deleting it silently is the "forced reset destroys legitimate
  * customisation" failure mode #2269 exists to avoid.
  *
- * So the migration strips only text WE wrote and shipped. These four prefixes
- * are the complete set found by replaying every historical revision of
- * `email-message-registry.ts`, `email-message-audit-defaults.ts` and
- * `email-message-notes.ts` and extracting every bracketed span:
+ * WHY LITERAL STRINGS AND NOT A PREFIX FAMILY (owner decision, #2269 review).
+ * The first cut of this matched a prefix family — anything opening "[only when",
+ * "[when", "[heading becomes" or "[falls back to". Three reviewers reproduced
+ * real club prose being destroyed by it, and a word boundary only fixed two of
+ * the three:
  *
- *   [only when …]          the bulk of them (conditional-line notes)
- *   [when …]               the "and when it did not" siblings
- *   [heading becomes …]    school attendee-confirmation subject note
- *   [falls back to …]      school attendee-confirmation body note
+ *   "Ring the bell [whenever you arrive after 8pm]."          prefix match
+ *   "the hut sits on [whenua administered by the rūnanga]"    prefix match
+ *   "Ring the lodge [when you are 30 minutes away]."          SURVIVES a
+ *                                                            boundary fix
  *
- * Anything else bracketed survives the migration and keeps showing up in guard
- * 1's banner, where an admin resolves it deliberately.
+ * The last one is ordinary New Zealand alpine-club wording that a boundary can
+ * never tell apart from "[when dates did not change]", because it genuinely is
+ * the same shape. What decides it is that the damage is NOT RECOVERABLE in the
+ * product: the editor refuses to save square brackets (#2320), so a club whose
+ * wording we delete by mistake cannot paste it back — only a DBA reading the
+ * audit row can. A rule that can be wrong must not be the one that writes.
+ *
+ * So the migration strips only the exact strings we ourselves shipped. The list
+ * below is the complete set, recovered by replaying EVERY historical revision
+ * of `email-message-registry.ts`, `email-message-audit-defaults.ts` and
+ * `email-message-notes.ts` across every ref, extracting every bracketed span
+ * that appears on a non-comment line, and un-escaping the TypeScript string
+ * literals. 38 distinct spans, all four families, none containing a `]` or a
+ * newline. Guard 1 above fails the registry test if an annotation is ever put
+ * back into a shipped default, so the list cannot fall behind the code.
+ *
+ * THE ACCEPTED COST, stated plainly because it is a real one: a club that
+ * reflowed the whitespace INSIDE a shipped annotation, or retyped it with a
+ * different word, keeps it. That row is not healed by this migration. It is not
+ * abandoned either — #2320's bracket banner and #2269's per-template indicator
+ * both still name it, and an admin resolves it deliberately. That is the same
+ * choice made everywhere else in this change: an ambiguous case goes to a
+ * person, never to a script.
  */
-const SHIPPED_ANNOTATION_PREFIXES =
-  "(?:only when|when|heading becomes|falls back to)";
+export const SHIPPED_ANNOTATIONS: readonly string[] = [
+  "[falls back to \"your school group's stay\" when no school name is recorded]",
+  "[heading becomes \"Reminder: Confirm Your Attendee List\" on reminders]",
+  "[only when a door code is set]",
+  "[only when additional payment is due]",
+  "[only when adminNote exists]",
+  "[only when adminNotes exists]",
+  "[only when adminNotes is non-empty]",
+  "[only when changeFeeCents > 0]",
+  "[only when choreLink exists]",
+  "[only when chores exist]",
+  "[only when dates changed]",
+  "[only when discount exists without promoCode]",
+  "[only when discountCents > 0]",
+  "[only when familyMemberCount > 0]",
+  "[only when guest count changed]",
+  "[only when localUrl exists]",
+  "[only when non-member guests are held provisionally as a split linked booking]",
+  "[only when payment is still owing - states the amount owing and the internet-banking reference {{paymentReference}}]",
+  "[only when promoCode exists]",
+  "[only when provided]",
+  "[only when reason exists]",
+  "[only when rejoinProcessText exists]",
+  "[only when requestedAmountCents is truthy]",
+  "[only when reviewNote exists]",
+  "[only when reviewReason exists]",
+  "[only when the booking is already paid]",
+  "[only when the booking is confirmed but payment is still owing]",
+  "[only when the club has a recorded fee amount for this season]",
+  "[only when total changed]",
+  "[only when xeroObjectUrl exists]",
+  "[only when your own linked booking reference is available]",
+  "[when dates did not change]",
+  "[when guest count did not change]",
+  "[when the automatic refund could not complete inline: the refund could not complete and a durable recovery operation is queued — the payment recovery cron will retry it with backoff; watch the recovery queue and confirm the refund lands. Failure detail: {{errorMessage}}]",
+  "[when the member's own linked booking is also unpaid: no payment link is sent and a human must chase payment for the whole booking, because the guest portion must not settle ahead of the member's own place]",
+  "[when the member's own linked booking is not settled: the member's own linked booking is not settled either (it may be unpaid or already cancelled), so review the whole booking]",
+  "[when total did not change]",
+  "[when your own linked booking is not settled: your own linked booking has not been changed by this cancellation]",
+];
+
+/** Escape a literal so it matches itself in both JS and PostgreSQL ARE. */
+function escapeForBothRegexEngines(value: string): string {
+  // Punctuation only. Backslash before an ALPHANUMERIC is an error in ARE, so
+  // this must never touch letters or digits.
+  return value.replace(/[\\^$.|?*+()[\]{}]/g, (character) => `\\${character}`);
+}
 
 /**
- * One shipped authoring annotation, e.g. "[only when a door code is set]".
- * Case-sensitive on purpose: this matches the text this project shipped, not
- * an approximation of it.
+ * One shipped authoring annotation, as an alternation of the exact strings
+ * above — e.g. "[only when a door code is set]".
+ *
+ * Case-sensitive and whitespace-exact on purpose: this matches the text this
+ * project shipped, not an approximation of it. There are no wildcards at all,
+ * so it cannot reach a club's own bracketed wording however similar it looks.
+ *
+ * Sorted longest-first. No entry is a prefix of another (the test asserts it),
+ * so leftmost-first alternation in JavaScript and PostgreSQL ARE's preference
+ * for the longest match cannot disagree; the ordering makes that independent of
+ * the assertion rather than reliant on it. Ties break by CODE POINT, not
+ * `localeCompare`, because this exact byte sequence is also written into the
+ * migration SQL and a locale-dependent order would make that parity depend on
+ * the machine the generator ran on.
  */
-export const SHIPPED_ANNOTATION_PATTERN = `\\[${SHIPPED_ANNOTATION_PREFIXES}[^\\]]*\\]`;
+export const SHIPPED_ANNOTATION_PATTERN = `(?:${[...SHIPPED_ANNOTATIONS]
+  .sort(
+    (left, right) =>
+      right.length - left.length ||
+      (left < right ? -1 : left > right ? 1 : 0),
+  )
+  .map(escapeForBothRegexEngines)
+  .join("|")})`;
 
 /**
  * The strip, as an ORDERED list of regex sources, each applied globally with an
  * EMPTY replacement.
  *
- * This exact list is what the #2269 migration runs: every pattern below appears
- * verbatim as a `regexp_replace(..., '<pattern>', '', 'g')` in
- * `prisma/migrations/20260801150000_strip_email_override_bracket_annotations/migration.sql`,
- * and `email-message-annotation-strip.test.ts` reads the SQL file back and
- * proves the two lists are identical, then runs the fixture corpus through the
- * patterns lifted OUT OF THE SQL. Every construct used here means the same
- * thing in PostgreSQL's ARE engine and in JavaScript's — verified against
- * postgres:16 before the patterns were fixed:
+ * This exact list is what the #2269 migration runs: the migration defines the
+ * annotation alternation once, builds these six pass patterns from it, and
+ * `email-message-annotation-strip.test.ts` reads the SQL file back, rebuilds
+ * the patterns the SQL will actually use, proves they equal this list, and runs
+ * the fixture corpus through the ones lifted OUT OF THE SQL. Every construct
+ * used here means the same thing in PostgreSQL's ARE engine and in
+ * JavaScript's — verified against postgres:16:
  *
- *   `[^\]]`          an escape inside a bracket expression (ARE, not POSIX)
- *   `(?=\n|$)`       lookahead; `$` is end-of-STRING in both (no n/m flag)
- *   `(?<=[^ \t\r\n])` fixed-width lookbehind
- *   `^`              start-of-STRING in both (no n/m flag)
+ *   `(?=\n|$)`        lookahead; `$` is end-of-STRING in both (no n/m flag)
+ *   `(?<=\n)`         fixed-width lookbehind
+ *   `(?:…)+`          non-capturing group with a greedy repeat
+ *   `^`               start-of-STRING in both (no n/m flag)
  *
- * Why four passes rather than one:
+ * Deliberately NOT used: `\b` / `\y`, which do not mean the same thing in
+ * the two engines and so cannot live in a shared pattern string.
  *
- *   1. an annotation that occupies a whole line takes the line with it, so a
- *      stripped body does not grow a blank line where a note used to sit;
- *   2. the same, for an annotation on the very first line;
- *   3. an annotation with content before it on the line takes the whitespace
+ * Why six passes rather than one:
+ *
+ *   1. a run of whole-line annotations sitting between two BLANK lines takes
+ *      one of the blank lines with it, or the paragraph break either side would
+ *      add up to a stray empty line in the delivered email;
+ *   2. the same, for a run at the very start of the value;
+ *   3. any remaining annotation that occupies a whole line takes the line with
+ *      it, so a stripped body does not grow a blank line where a note sat;
+ *   4. the same, for an annotation on the very first line;
+ *   5. an annotation with content before it on the line takes the whitespace
  *      that separated it — the defaults padded them into a column
  *      ("Subtotal: {{subtotal}}          [only when discountCents > 0]"), and
  *      leaving that padding behind would be its own trailing-whitespace defect;
- *   4. whatever is left is an annotation at the start of a line with content
+ *   6. whatever is left is an annotation at the start of a line with content
  *      after it, which takes the whitespace that follows instead.
  *
- * Order matters: 3 must run before 4, or a padded end-of-line annotation would
- * be removed by 4 and leave its padding as trailing whitespace.
+ * Order matters twice: 1 before 3 and 2 before 4 (the blank-line-aware forms
+ * are strictly more specific), and 5 before 6, or a padded end-of-line
+ * annotation would be removed by 6 and leave its padding as trailing
+ * whitespace.
  */
 export const SHIPPED_ANNOTATION_STRIP_PATTERNS: readonly string[] = [
+  `(?<=\\n)(?:\\n[ \\t]*${SHIPPED_ANNOTATION_PATTERN}[ \\t\\r]*)+\\n(?=\\n)`,
+  `^(?:[ \\t]*${SHIPPED_ANNOTATION_PATTERN}[ \\t\\r]*\\n)+\\n`,
   `\\n[ \\t]*${SHIPPED_ANNOTATION_PATTERN}[ \\t\\r]*(?=\\n|$)`,
   `^[ \\t]*${SHIPPED_ANNOTATION_PATTERN}[ \\t\\r]*\\n`,
   `(?<=[^ \\t\\r\\n])[ \\t]*${SHIPPED_ANNOTATION_PATTERN}`,
   `${SHIPPED_ANNOTATION_PATTERN}[ \\t]*`,
 ];
+
 
 /** Every shipped annotation present in a value, in the order they appear. */
 export function findShippedAnnotations(value: string): string[] {
