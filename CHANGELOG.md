@@ -60,6 +60,30 @@ All notable public reference-release changes should be recorded here.
   has already had money refunded says so, and says to resolve the refund first —
   and it is the same sentence before you click as after.
 
+- **The Whakapapa conditions widget survives the source page changing, and now
+  shows the trails.** The public widget is scraped from an external report page
+  whose style names carry a build hash that changes every time that site
+  redeploys — and each time it did, a section quietly went blank (road status was
+  broken this way when this work started). The scraper now matches on the stable
+  parts of the page rather than those rotating hashes, so a routine upstream
+  rebuild no longer breaks it. A new **Trails** section joins road status, lifts,
+  facilities, food & drink and conditions: trails are grouped by sub-area (small
+  neighbouring areas share a line to save space) and each shows its run
+  difficulty as the standard ski symbol — green circle, blue square, black
+  diamond, red diamond — with a matching key, plus whether it is groomed and its
+  size. The status badges gained **On Hold** (yellow) alongside Open, Closed and
+  Coming Soon, and an **Unknown** state renders grey. Operators get a new
+  **Source & selectors** panel on *Admin → Mountain Conditions*: set the report
+  URL (locked to whakapapa.com / snow.nz so it can never be pointed at an
+  internal address), and, only if a deeper page change defeats the defaults,
+  override the per-section element selectors — with a **Preview** that fetches
+  and parses without saving, and a save that refuses a malformed selector up
+  front (naming the field) instead of storing one that would throw on every
+  later scrape. The built-in selector set is seeded into the database, and the
+  whole configuration can be **exported and imported as a JSON file** so one
+  site's known-good settings can be handed to another rather than re-entered by
+  hand.
+
 - **Clubs can safely record a trusted induction history when moving an
   established membership onto the digital register (#2361).** A new
   dry-run-first operator command classifies every active real-member
@@ -164,7 +188,7 @@ All notable public reference-release changes should be recorded here.
   is stuck and what actually fixes it (cancel the booking, add another guest,
   re-quote the request), never a dead-end "ask the club".
   The published banner-coverage figures were re-measured with the new settings
-  card: **297** gated admin controls, **250** of them covered by a banner (224
+  card: **299** gated admin controls, **252** of them covered by a banner (226
   in their own file, 26 by a verified vouching parent — 5 of those through the
   wizard frame), and **47** across 25 files deliberately keeping their own
   reason.
@@ -665,8 +689,8 @@ All notable public reference-release changes should be recorded here.
   added its three, once more when #2286's Release/Change bed controls landed,
   again when the cash / off-Xero payment feature, #2262, landed its four
   per-button-reason controls, and again with #2307's Member guests settings
-  card): **297**
-  gated admin controls, **250** of them covered by a banner (224 in their own
+  card): **299**
+  gated admin controls, **252** of them covered by a banner (226 in their own
   file, 26 by a verified vouching parent — 5 of those through the wizard frame),
   and **47** across 25 files deliberately keeping their own reason.
 - **Choosing to use your account credit and then saving the booking as a draft
