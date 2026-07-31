@@ -1,4 +1,5 @@
 import { BookingStatus } from "@prisma/client";
+import { isAdditionalPaymentOwed } from "@/lib/additional-payment-chase";
 import {
   addDaysDateOnly,
   formatDateOnly,
@@ -53,6 +54,18 @@ export async function sendPreArrivalReminders(): Promise<PreArrivalReminderResul
       // include is what fixes `guests.length` below — the count has no separate
       // query of its own.
       guests: { where: { ...OPERATIONALLY_PRESENT_GUEST_WHERE } },
+      // #2350: an upward booking change may have left money uncollected. The
+      // pre-arrival note is the last thing most members read before they
+      // travel, so it says so when that is true. This is the booking's own
+      // balance, so it is unaffected by the guest filter above — a pending
+      // member guest still holds their bed, and the money owed for it is still
+      // owed.
+      payment: {
+        select: {
+          additionalAmountCents: true,
+          additionalPaymentStatus: true,
+        },
+      },
     },
     orderBy: [{ checkIn: "asc" }, { createdAt: "asc" }],
   });
@@ -96,6 +109,12 @@ export async function sendPreArrivalReminders(): Promise<PreArrivalReminderResul
         guestCount: booking.guests.length,
         expectedArrivalTime: booking.expectedArrivalTime,
         lodgeId: booking.lodgeId,
+        outstandingAdditionalAmountCents: isAdditionalPaymentOwed({
+          bookingStatus: booking.status,
+          payment: booking.payment,
+        })
+          ? booking.payment?.additionalAmountCents ?? 0
+          : 0,
       });
       result.sentBookingIds.push(booking.id);
     } catch (err) {
