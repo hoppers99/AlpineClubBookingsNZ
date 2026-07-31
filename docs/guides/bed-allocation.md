@@ -84,6 +84,9 @@ year in one go).
    every row represented by that chip already uses the destination bed. If the
    first visible chip itself is on that bed but a later visible night is on a
    different bed, the later night still moves.
+
+   ![Bed Allocation board while Dave Davis is dragged across date columns: the preview says the destination is Bunk Room A bed A4 and that the original lodge nights will be kept](../images/admin/admin-bed-allocation-snap-preview.png)
+
 4. To free a bed, drag the chip back to the pool or use **Remove allocation**.
    This removes only the chip you dragged, even when it is the first visible
    chip; its preview therefore names that one original night, not every proxy
