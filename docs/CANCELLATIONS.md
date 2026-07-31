@@ -41,6 +41,20 @@ bundle, a finance role, or a club-defined custom role). A person given *only*
 the Lodge role and nothing else is indistinguishable from the kiosk account, and
 is treated as one — their member page says so, in the same User Type field.
 
+Two consequences of classifying by *whole account type*, recorded so neither is
+a surprise. First, the reverse also holds: if an operator deliberately grants
+the kiosk login an admin bundle or another privileged role, it stops being
+classified as a device and becomes cancellable (and selectable when booking on
+behalf of someone). That is the intended flip side of the rule, and an operator
+handing the shared kiosk real admin access is a larger problem than either
+consequence. Second, the account type shown on the member page is derived from
+a member's access-role rows, while the cancellation rule also folds in the two
+legacy `role` / finance columns; a record whose legacy column disagrees with its
+rows could therefore show one thing and behave as another. Every write path
+since the access-role migration derives the legacy column from the rows, so this
+is not reachable in practice today — it is written down because the rule above
+leans on the page's label and the gate agreeing.
+
 **The member-raised route is narrower than this.** Everything above describes
 the admin-raised route, from a member's admin page. Members using
 **Cancel Membership** in their own profile still see the older, narrower rule:

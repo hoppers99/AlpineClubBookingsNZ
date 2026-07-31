@@ -50,7 +50,6 @@ All notable public reference-release changes should be recorded here.
   member's own profile is unchanged and still limited to ordinary member
   accounts; its wording no longer implies otherwise.
 
-
 - **A booking paid in cash — or by a bank transfer that never reached Xero —
   can now be recorded as paid, properly (#2262).** Open the booking, and under
   **Admin tools** you will find **Cash / off-Xero payment**: it shows the exact
