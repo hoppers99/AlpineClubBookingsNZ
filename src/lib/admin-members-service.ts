@@ -46,8 +46,10 @@ import {
   DEPENDENT_LINK_CANDIDATE_SELECT,
   DEPENDENT_LINK_INELIGIBILITY_EXPLANATIONS,
   DEPENDENT_PARENT_CREATE_ERRORS,
+  DEPENDENT_PARENT_STATE_SELECT,
   dependentLinkBlockers,
   dependentLinkCandidateWhere,
+  dependentParentEligibleWhere,
   dependentParentStateBlocker,
   type DependentLinkIneligibleMatch,
 } from "@/lib/dependent-link-eligibility";
@@ -495,17 +497,21 @@ export async function listAdminMembers(
     // #2282: `{ ageTier: "ADULT" }` is GONE from this filter. Recording that a
     // 16 or 17 year old is a parent is a fact about the family, and the search
     // must offer exactly what `POST /api/admin/members/[id]/dependents/link`
-    // accepts (the #2254 no-drift rule) — that route now refuses only on
-    // active/archived. `{ archivedAt: null }` is ADDED for the same reason: the
-    // route always refused an archived parent and this search never filtered
-    // one out, so the dialog could offer a candidate the write then 422'd.
+    // accepts (the #2254 no-drift rule). Both halves of what the route DOES
+    // still refuse come from one place — `dependentParentEligibleWhere`, the SQL
+    // mirror of `dependentParentStateBlocker` — so this search cannot drift from
+    // the write again. It adds `archivedAt: null`, which the route always
+    // refused and this search never filtered, and it keeps organisation/school
+    // accounts out by ROLE: the old ADULT clause excluded them as a side
+    // effect, and without a replacement the dialog offered a school as a
+    // candidate PARENT and the route accepted it. By role and not by
+    // `ageTier: NOT_APPLICABLE`, which age-exempt HUMAN members carry too.
     andConditions.push(
       { id: { notIn: excludedParentIds } },
       ancestorDepthWithinWhere(
         allowedParentAncestorGenerations(childSide.descendantGenerations),
       ),
-      { active: true },
-      { archivedAt: null },
+      ...dependentParentEligibleWhere(),
     );
   }
 
@@ -1099,12 +1105,21 @@ export async function createAdminMember(
   // branch on the PARENT's age again — the email source that actually needs an
   // adult is resolved and validated separately below — so dropping the column
   // makes a re-introduced age gate a compile error rather than a review catch.
-  let parentMember: {
-    id: string;
-    active: boolean;
-    inheritEmailFromId: string | null;
-    archivedAt: Date | null;
-  } | null = null;
+  // The one rule about WHO the parent is that survives — an organisation or
+  // school account is not a person and cannot be a parent — is classified by
+  // ROLE, not by the age-exempt `NOT_APPLICABLE` tier that age-exempt humans
+  // also carry (#1440, #2106), and comes in through the shared select below.
+  //
+  // `inheritEmailFromId` is deliberately absent too (it was selected until
+  // #2282's review). Nothing reads it any more — the one-hop
+  // `parentMember.inheritEmailFromId || parentMember.id` it fed was replaced by
+  // the transitive resolver — and leaving it selected invites a future one-hop
+  // shortcut back in.
+  let parentMember:
+    | ({ id: string } & Prisma.MemberGetPayload<{
+        select: typeof DEPENDENT_PARENT_STATE_SELECT;
+      }>)
+    | null = null;
 
   // Validate family group assignments
   if (data.familyGroupIds && data.familyGroupIds.length > 0) {
@@ -1132,9 +1147,7 @@ export async function createAdminMember(
       where: { id: data.parentMemberId },
       select: {
         id: true,
-        active: true,
-        inheritEmailFromId: true,
-        archivedAt: true,
+        ...DEPENDENT_PARENT_STATE_SELECT,
       },
     });
 
@@ -1144,9 +1157,11 @@ export async function createAdminMember(
 
     // #2282: the CREATE half of the same rule change as the link route. Age no
     // longer gates recording parentage; `active`/`archivedAt` still do, because
-    // they say whether the record is current. Keep the two paths in step — this
-    // one and the link route were the two different endpoints and two different
-    // messages behind the identical dead end.
+    // they say whether the record is current, and an organisation/school
+    // account still cannot be a parent because it is an account, not a person.
+    // Keep the two paths in step — this one and the link route were the two
+    // different endpoints and two different messages behind the identical dead
+    // end.
     const parentStateBlocker = dependentParentStateBlocker(parentMember);
     if (parentStateBlocker) {
       return jsonResult(
@@ -1357,8 +1372,18 @@ export async function createAdminMember(
           active: data.active,
           canLogin,
           parentMemberId: data.parentMemberId?.trim() || null,
-          inheritParentEmail:
-            data.inheritParentEmail ?? Boolean(data.parentMemberId),
+          // #2282 review: the flag now follows the SOURCE, and never stands
+          // alone. `data.inheritParentEmail ?? Boolean(data.parentMemberId)`
+          // meant a create with a `parentMemberId` and no `inheritParentEmail`
+          // key stored `inheritParentEmail: true` beside a NULL
+          // `inheritEmailFromId` — the exact combination
+          // `member-lifecycle-actions.ts` documents as one "no writer produces
+          // and no reader expects", and the age-up cron reads it as "mail the
+          // parent directly". This route was the writer producing it. When the
+          // caller does ask to inherit, resolution has already run above and
+          // 422'd if no mailbox was reachable, so a truthy source here is the
+          // same answer with the invariant kept.
+          inheritParentEmail: Boolean(resolvedInheritEmailFromId),
           inheritEmailFromId: resolvedInheritEmailFromId,
           passwordHash: placeholderHash,
           emailVerified: !canLogin, // Non-login members don't need verification

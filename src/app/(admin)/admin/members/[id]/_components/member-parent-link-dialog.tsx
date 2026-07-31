@@ -1,5 +1,6 @@
 "use client"
 
+import { useId } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -19,6 +20,8 @@ import {
   formatMemberDateNz,
   parentLinkTypeLabel,
 } from "@/lib/admin-member-detail-helpers"
+import { useDependentEmailSource } from "@/hooks/use-dependent-email-source"
+import { DependentNotificationRoutingNotice } from "./dependent-notices"
 import type { LinkParentSearchResult, MemberDetail } from "../_types"
 
 interface MemberParentLinkDialogProps {
@@ -64,6 +67,27 @@ export function MemberParentLinkDialog({
   onToggleFamilyGroup,
   onSubmit,
 }: MemberParentLinkDialogProps) {
+  // #2282 review: where this member's club email would actually land if the
+  // notifications were routed through the chosen parent. The route walks up from
+  // that parent to the nearest adult who can receive mail and stores THEM, so
+  // the picker's own label is not the answer. A resolution of "nobody" is the
+  // 422 the write returns, so the save is refused here with the reason instead.
+  const routing = useDependentEmailSource(selected ? notificationParentId : null)
+  const routingNoticeId = useId()
+  const blockedByNoEmailSource =
+    routing.status === "ready" && routing.source === null
+  const notificationParentName = (() => {
+    if (selected && notificationParentId === selected.id) {
+      return `${selected.firstName} ${selected.lastName}`
+    }
+    const parent = (member.parentLinks ?? []).find(
+      (link) => link.id === notificationParentId,
+    )
+    return parent
+      ? `${parent.firstName} ${parent.lastName}`
+      : "the selected parent"
+  })()
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
@@ -73,10 +97,13 @@ export function MemberParentLinkDialog({
               write route, so the copy must not claim it does. A young member can
               be recorded as a parent; what stays adult-only is being the contact
               of record for the child's mail, which the dialog's own notification
-              picker and the server resolve separately. */}
+              picker and the server resolve separately. "Any age" is also stated
+              with its limit, so it cannot be read as covering organisation and
+              school accounts — those carry no age at all and are excluded. */}
           <DialogDescription>
             Link {member.firstName} {member.lastName} under an active member of
-            any age. Club notifications still route to an adult.
+            any age. Organisation and school accounts are not people, so they
+            are not offered. Club notifications still route to an adult.
           </DialogDescription>
         </DialogHeader>
         {error && <div className="p-2 bg-danger-3 border border-danger-6 text-danger-11 rounded text-sm">{error}</div>}
@@ -174,6 +201,19 @@ export function MemberParentLinkDialog({
                       </option>
                     ))}
                   </select>
+                  {/* #2282 review: the options name PARENTS; the write resolves
+                      the chosen one to the nearest adult who can actually
+                      receive club mail. With parentage now recordable at any
+                      age, the two differ routinely, so the resolved answer is
+                      stated here rather than left to be discovered from a
+                      stored pointer afterwards. */}
+                  <DependentNotificationRoutingNotice
+                    id={routingNoticeId}
+                    state={routing}
+                    selectedParentId={notificationParentId}
+                    selectedParentName={notificationParentName}
+                    ownEmailOptionLabel={`Use ${member.firstName}'s own email`}
+                  />
                 </div>
                 <div className="flex items-start gap-2">
                   <Checkbox
@@ -220,7 +260,11 @@ export function MemberParentLinkDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
             Cancel
           </Button>
-          <Button onClick={onSubmit} disabled={saving || !selected}>
+          <Button
+            onClick={onSubmit}
+            aria-describedby={blockedByNoEmailSource ? routingNoticeId : undefined}
+            disabled={saving || !selected || blockedByNoEmailSource}
+          >
             {saving ? "Linking..." : "Link Parent"}
           </Button>
         </DialogFooter>

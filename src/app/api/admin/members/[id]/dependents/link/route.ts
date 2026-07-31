@@ -14,6 +14,7 @@ import {
   DEPENDENT_LINK_CANDIDATE_SELECT,
   DEPENDENT_LINK_INELIGIBILITY_ERRORS,
   DEPENDENT_PARENT_LINK_ERRORS,
+  DEPENDENT_PARENT_STATE_SELECT,
   dependentLinkBlockers,
   dependentParentStateBlocker,
 } from "@/lib/dependent-link-eligibility";
@@ -119,14 +120,17 @@ export async function POST(
         where: { id: parentId },
         select: {
           id: true,
-          // #2282: `ageTier` is deliberately no longer selected here. Nothing on
-          // this route may branch on the parent's age again — the email source
-          // is resolved and validated by `resolveInheritedEmailSourceId` /
+          // #2282: `ageTier` is deliberately not selected here. Nothing on this
+          // route may branch on the parent's age again — the email source is
+          // resolved and validated by `resolveInheritedEmailSourceId` /
           // `validateInheritEmailSource`, which read the age of whoever they
-          // land on for themselves — so removing the column makes a
-          // re-introduced age gate fail to compile rather than pass review.
-          active: true,
-          archivedAt: true,
+          // land on for themselves — so its absence makes a re-introduced age
+          // gate fail to compile rather than pass review. The one surviving
+          // rule about who the parent IS (an organisation or school account is
+          // not a person) rides in on the shared state select, classified by
+          // ROLE: `NOT_APPLICABLE` is the age-EXEMPT tier and age-exempt humans
+          // carry it too (#1440, #2106).
+          ...DEPENDENT_PARENT_STATE_SELECT,
           // The parent's own parent columns are NOT selected: the ancestry and
           // depth answers come from describeParentSideDepth below, which reads
           // them itself, and a second copy here would invite a stale one.
@@ -145,7 +149,9 @@ export async function POST(
       // the child as parentless or hanging them off a grandparent — both of
       // which misstate who the parent is. `active` and `archivedAt` stay,
       // because they are about whether the record is CURRENT, not about
-      // capacity to take responsibility. The responsibility functions keep
+      // capacity to take responsibility, and an organisation/school ACCOUNT
+      // stays refused because it is not a person at all. The responsibility
+      // functions keep
       // their own adult gates further down this route (the email-inheritance
       // source, resolved and validated below) and elsewhere; a young parent who
       // cannot be the contact of record is the correct outcome, and the
