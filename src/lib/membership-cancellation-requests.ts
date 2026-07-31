@@ -16,11 +16,7 @@ import {
   loadMembershipCancellationSettings,
   type MembershipCancellationSettings,
 } from "@/lib/membership-cancellation-settings";
-import {
-  MEMBER_LEVEL_ROLE_VALUES,
-  isMemberLevelRole,
-  isMembershipHolderRecord,
-} from "@/lib/member-roles";
+import { isMembershipHolderRecord } from "@/lib/member-roles";
 import { prisma } from "@/lib/prisma";
 
 const MEMBERSHIP_CANCELLATION_CONFIRMATION_TTL_MS =
@@ -41,6 +37,31 @@ const participantMemberSummarySelect = {
   ageTier: true,
   canLogin: true,
   active: true,
+} satisfies Prisma.MemberSelect;
+
+/**
+ * Every column the member-raised candidate rules read, in one place so the
+ * requester query and the family query cannot drift apart (#2391). The last two
+ * are what `isMembershipHolderRecord` needs to tell a lodge kiosk device from a
+ * person who merely also holds the lodge tools; omit either and the field
+ * arrives `undefined` at runtime and the record is misclassified as the device.
+ * `src/lib/__tests__/membership-cancellation-requests.test.ts` asserts both
+ * queries against this, the way the admin path is already asserted.
+ */
+const cancellationCandidateSelect = {
+  id: true,
+  email: true,
+  firstName: true,
+  lastName: true,
+  ageTier: true,
+  active: true,
+  canLogin: true,
+  role: true,
+  cancelledAt: true,
+  parentMemberId: true,
+  secondaryParentId: true,
+  financeAccessLevel: true,
+  accessRoles: { select: { role: true, roleDefinitionId: true } },
 } satisfies Prisma.MemberSelect;
 
 const cancellationRequestInclude = {
@@ -69,6 +90,12 @@ type CancellationMemberRecord = {
   active: boolean;
   canLogin: boolean;
   role: string;
+  // #2391: the three extra columns `isMembershipHolderRecord` reads to tell a
+  // device or a booking-request contact from a person. Selected here as well as
+  // on the admin path, because a field that is not selected arrives `undefined`
+  // and would silently misclassify the record as the lodge kiosk.
+  financeAccessLevel: string | null;
+  accessRoles: Array<{ role: string | null; roleDefinitionId: string | null }>;
   cancelledAt: Date | null;
   parentMemberId: string | null;
   secondaryParentId: string | null;
@@ -301,21 +328,29 @@ function toCandidate(
 ): MembershipCancellationCandidate {
   const relationship = relationshipForMember(member, requesterId);
   const requiresOwnConfirmation = member.id !== requesterId && member.canLogin;
-  const roleAllowed = isMemberLevelRole(member.role);
+  // #2391: one rule for both routes. A relative who is also an admin, or an
+  // organisation account in the family, is a membership like any other and is
+  // selectable here — the old narrow test (legacy role USER) dropped them from
+  // the list with no explanation at all.
+  const holdsMembership = isMembershipHolderRecord({
+    role: member.role,
+    canLogin: member.canLogin,
+    financeAccessLevel: member.financeAccessLevel,
+    // Raw access-role rows, the shape a server-side select yields. The helper
+    // takes these or the admin page's resolved tokens and applies the same
+    // login-clearing to both, so no two callers can disagree.
+    accessRoles: member.accessRoles,
+  });
   const activeAllowed = member.active && !member.cancelledAt;
-  const eligible = roleAllowed && activeAllowed && !activeParticipant;
+  const eligible = holdsMembership && activeAllowed && !activeParticipant;
 
   let ineligibleReason: string | null = null;
-  if (!roleAllowed) {
-    // #2383: say what the rule actually is. The member-raised route keeps the
-    // narrow `isMemberLevelRole` test (legacy role USER), so an admin or
-    // organisation account in the family is not selectable HERE — but its
-    // membership is perfectly cancellable by an admin from the member page,
-    // which is the wider `isMembershipHolderRecord` rule. The old wording,
-    // "Only member accounts can be included", read as "that account is not a
-    // member", which was never true of an admin.
+  if (!holdsMembership) {
+    // The only records this can now be: the shared lodge kiosk device login,
+    // and the contact records the booking-request flows mint. Neither holds a
+    // membership, so say that rather than pointing at another route.
     ineligibleReason =
-      "This account is cancelled by an admin from the member page, not from here.";
+      "This record holds no membership to cancel — it is a shared lodge kiosk login or a booking-request contact.";
   } else if (!activeAllowed) {
     ineligibleReason = "This membership is not active.";
   } else if (activeParticipant) {
@@ -348,17 +383,7 @@ async function loadCancellationCandidates(requesterMemberId: string) {
   const currentMember = await prisma.member.findUnique({
     where: { id: requesterMemberId },
     select: {
-      id: true,
-      email: true,
-      firstName: true,
-      lastName: true,
-      ageTier: true,
-      active: true,
-      canLogin: true,
-      role: true,
-      cancelledAt: true,
-      parentMemberId: true,
-      secondaryParentId: true,
+      ...cancellationCandidateSelect,
       familyGroupMemberships: {
         select: {
           familyGroupId: true,
@@ -372,20 +397,31 @@ async function loadCancellationCandidates(requesterMemberId: string) {
     throw new MembershipCancellationRequestError("Member not found", 404);
   }
 
-  // The member-raised route deliberately keeps the pre-#2383 narrow rule
-  // (`isMemberLevelRole`: legacy role USER). Widening it is a separate piece of
-  // work with its own UX questions — self-service cancellation of an
-  // organisation account, and of one's own admin account, both need more than a
-  // predicate change. The admin-raised route on the member page is wider and
-  // covers every account this refuses, so nothing is uncancellable; the message
-  // must say so rather than telling a Full Admin they are not a member account.
+  // #2391: the member-raised route now asks the same question as the
+  // admin-raised one — is there an account holder here with a membership? The
+  // only records this refuses are the two that are not account holders at all.
   if (
-    !currentMember.active ||
-    !currentMember.canLogin ||
-    !isMemberLevelRole(currentMember.role)
+    !isMembershipHolderRecord({
+      role: currentMember.role,
+      canLogin: currentMember.canLogin,
+      financeAccessLevel: currentMember.financeAccessLevel,
+      accessRoles: currentMember.accessRoles,
+    })
   ) {
     throw new MembershipCancellationRequestError(
-      "Cancelling your membership from here is available to ordinary member accounts with an active login. Admin and organisation accounts are cancelled by an admin from the member page instead — contact the club office.",
+      "This login holds no membership of its own. The shared lodge kiosk login and the contact records created by booking requests have nothing to cancel here.",
+      403,
+    );
+  }
+
+  // The two conditions this route retains, and the only ones. They are about
+  // being able to USE your own profile, not about what kind of account it is:
+  // an account that is closed, or that has no login of its own, cannot raise
+  // anything from here. Those memberships are still cancellable — an admin
+  // raises it from the member page on their behalf.
+  if (!currentMember.active || !currentMember.canLogin) {
+    throw new MembershipCancellationRequestError(
+      "Cancelling a membership from here needs an active account with its own login. Contact the club office and an administrator can raise the cancellation for you.",
       403,
     );
   }
@@ -396,11 +432,12 @@ async function loadCancellationCandidates(requesterMemberId: string) {
   const relatedMembers = await prisma.member.findMany({
     where: {
       active: true,
-      // Same deliberate narrowness as the gate above (#2383): a family member
-      // who is also an admin never appears in this list at all, and so gets no
-      // "why not" message either. Their membership is cancellable by an admin
-      // from the member page. Widening this route is tracked separately.
-      role: { in: [...MEMBER_LEVEL_ROLE_VALUES] },
+      // #2391: no role filter. A relative who is also an admin, or an
+      // organisation account sharing the family group, is listed like anyone
+      // else; whether each one may actually be selected is decided per
+      // candidate by `isMembershipHolderRecord` in `toCandidate`, which can
+      // also say WHY not. Filtering here instead would drop them from the list
+      // silently, which is the failure #2354 and #2383 both set out to end.
       OR: [
         { id: currentMember.id },
         ...(groupIds.length > 0
@@ -409,17 +446,7 @@ async function loadCancellationCandidates(requesterMemberId: string) {
       ],
     },
     select: {
-      id: true,
-      email: true,
-      firstName: true,
-      lastName: true,
-      ageTier: true,
-      active: true,
-      canLogin: true,
-      role: true,
-      cancelledAt: true,
-      parentMemberId: true,
-      secondaryParentId: true,
+      ...cancellationCandidateSelect,
       familyGroupMemberships: {
         where: groupIds.length > 0 ? { familyGroupId: { in: groupIds } } : undefined,
         select: {

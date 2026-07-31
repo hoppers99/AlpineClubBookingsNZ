@@ -55,14 +55,18 @@ since the access-role migration derives the legacy column from the rows, so this
 is not reachable in practice today — it is written down because the rule above
 leans on the page's label and the gate agreeing.
 
-**The member-raised route is narrower than this.** Everything above describes
-the admin-raised route, from a member's admin page. Members using
-**Cancel Membership** in their own profile still see the older, narrower rule:
-that self-service flow is offered only to ordinary member accounts, and only
-ordinary member accounts appear in its family list — so an admin, or an
-organisation account, must be cancelled by an admin from the member page.
-Widening the self-service flow is tracked separately; nothing about the
-admin-raised route depends on it.
+**Both routes ask the same question** (#2391). The **Membership Cancellation**
+panel in a member's own profile uses the rule above, exactly as the member page
+does: an admin may start their own cancellation from their profile, an
+organisation may start its own, and a relative who is also an admin appears in
+the family list like anyone else. The self-service route adds two conditions,
+and only two, because they are about being able to use your own profile at all:
+the account must be **active** and must have **its own login**. A membership
+with no login of its own — most family dependants — is therefore cancelled
+either by a relative who includes them in a family request, or by an admin from
+the member page; nothing is uncancellable. The lodge kiosk login and the
+booking-request contact records are refused here as well, for the same reason as
+above: they hold no membership.
 
 Cancellation eligibility is deliberately not a permissions question. Two
 separate rules govern the **approval** of a cancellation against an account that
@@ -84,7 +88,9 @@ one needs a Full Admin — the badge uses the guard's own test), and an
 organisation account is marked as one. The reviewer is the last human check
 before an approval that is allowed but mistaken.
 
-An admin may raise a cancellation request against their own membership. They
+An admin may raise a cancellation request against their own membership — from
+the member page, or from the **Membership Cancellation** panel in their own
+profile like any other member. They
 cannot then approve it: cancellation approval always requires a different admin.
 A club's only Full Admin therefore cannot complete their own departure alone —
 they must appoint a successor Full Admin, who then approves. This is deliberate,
