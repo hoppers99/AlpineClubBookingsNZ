@@ -45,9 +45,14 @@ type InstrumentationOnRequestError = (
  * lazily imports.
  *
  * It previously lived only in `./instrumentation.node`, which `register()` above
- * imports at runtime, so nothing ever reached it: the built entry chunk
- * contained no `onRequestError` at all and the server-side channel was dead
- * (found while reviewing #2356).
+ * imports at runtime, so nothing ever reached it: this module's compiled output
+ * exported `register` and nothing else, and the server-side channel was dead
+ * (found while reviewing #2356). To check that yourself, look in the emitted
+ * CHUNK, not in `.next/server/instrumentation.js` — that file is a ~160-byte
+ * Turbopack wrapper (`R.c("server/chunks/<hash>._.js"); module.exports =
+ * R.m(<id>).exports`) and contains neither name in either state. The chunk it
+ * loads carries the export list; post-fix it reads `["onRequestError", …,
+ * "register", …]`.
  *
  * Defined here rather than re-exported from `./instrumentation.node`, because a
  * static re-export would drag that module — Prisma, node-cron, `node:*`
@@ -59,7 +64,9 @@ type InstrumentationOnRequestError = (
  * well-known digest before the error handler runs
  * (`next/dist/server/app-render/create-error-handler.js` ->
  * `getDigestForWellKnownError` -> `isNextRouterError`), and
- * `sentry.server.config.ts` additionally lists `NEXT_NOT_FOUND` /
+ * `sentry.server.config.ts` additionally lists `NEXT_HTTP_ERROR_FALLBACK` (the
+ * digest prefix `notFound()` actually throws on Next 16 — the older
+ * `NEXT_NOT_FOUND` string matched nothing and was corrected here) and
  * `NEXT_REDIRECT` in `ignoreErrors`. That matters now that
  * `src/app/not-found.tsx` renders per-request for every unmatched URL (#2356) —
  * bot probes do not become Sentry events.

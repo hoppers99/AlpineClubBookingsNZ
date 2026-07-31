@@ -1146,12 +1146,24 @@ lobby TV display (fork #54) and the global 404 (#2356).
     `src/instrumentation.ts`. Until #2356 that hook lived in
     `src/instrumentation.node.ts` — a module Next never reads it from, since the
     framework looks only at the `instrumentation` convention entry — so it had
-    never run at all: the built `.next/server/instrumentation.js` entry chunk
-    contained zero occurrences of `onRequestError`. It is wired now (the entry
-    chunk exports it, verified in the build output), and
-    `src/lib/__tests__/instrumentation-hooks.test.ts` asserts it stays on the
-    convention module. It also now records the request `path` Next actually
-    passes; the old dead copy read a `request.url` that does not exist.
+    never run at all: the compiled convention entry exported `register` and
+    nothing else. To re-check that, read the emitted **chunk**, not
+    `.next/server/instrumentation.js` — that file is a ~160-byte Turbopack
+    wrapper (`R.c("server/chunks/<hash>._.js"); module.exports =
+    R.m(<id>).exports`) and contains neither name before or after the fix. The
+    chunk it loads carries the export list. It is wired now — that chunk's
+    export list reads `["onRequestError", …, "register", …]`, verified in a
+    rebuild — and `src/lib/__tests__/instrumentation-hooks.test.ts` asserts it
+    stays on the convention module and is reached there directly, not via a
+    static re-export from `instrumentation.node` (which would drag Prisma and
+    node-cron into the edge bundle). It also now records the request `path` Next
+    actually passes; the old dead copy read a `request.url` that does not exist.
+    Router errors never reach this channel: Next resolves `notFound()` and
+    `redirect()` to a digest first, and the Sentry configs additionally ignore
+    `NEXT_HTTP_ERROR_FALLBACK` (the prefix `notFound()`/`forbidden()`/
+    `unauthorized()` actually throw on Next 16 — the long-standing
+    `NEXT_NOT_FOUND` string matched nothing and was corrected in this work) and
+    `NEXT_REDIRECT`.
 - **Enforced by `scripts/ci/check-prerendered-script-nonces.mjs`**, run in the
   `verify` job immediately after `npm run build` (the only point where the
   property is observable). It walks every `.html` under `server/app/**` and

@@ -27,9 +27,6 @@ All notable public reference-release changes should be recorded here.
   fails instead of the reports quietly stopping. Clubs that have not configured
   Sentry are unaffected.
 
-
-
-
 - **Adding another club member as a guest (#2306, #2307).** Until now a member
   could only put people from their own family group on a booking. There is now a
   new **Add another member as a guest** switch on **Admin → Modules**, off by
