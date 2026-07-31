@@ -37,8 +37,18 @@ All notable public reference-release changes should be recorded here.
   a member with no real address on file) is reported as not sent rather than
   counted as sent. Only confirmed, paid and completed bookings are chased at all
   — cancelling a booking ends the club's claim on the difference, and no screen
-  calls it outstanding afterwards. Changes made before this shipped are shown but
-  never emailed about automatically, so going live does not mail the backlog.
+  calls it outstanding afterwards. **A cancelled booking no longer offers the
+  member a way to pay it, either:** the pay-the-extra card and the card form
+  behind it were still being shown on a cancelled booking, and because
+  cancelling does not always close the card charge at the payment provider, a
+  member could complete a payment for a stay that no longer existed. (The system
+  refunded it automatically and alerted the club, but the member had still been
+  charged.) Both now check the booking's state before offering anything. Changes
+  made before this shipped are shown but never emailed about automatically, so
+  going live does not mail the backlog — and that cut-off is now taken from the
+  moment the reminders first ran on the club's own system rather than a date
+  written into the code in advance, so it stays right however long the release
+  takes.
   Nothing is ever auto-cancelled or expired over an unpaid addition,
   and the chasing stops once the stay is over: from then on it is a
   conversation, which is what the dashboard card is for.

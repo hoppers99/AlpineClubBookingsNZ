@@ -13,14 +13,17 @@ const {
   mockPrisma,
   mockSendAdditionalPaymentReminderEmail,
   mockReadBookingNoEmails,
+  mockGetActiveEmailSuppression,
   mockLogger,
 } = vi.hoisted(() => ({
   mockPrisma: {
     booking: { findMany: vi.fn(), findUnique: vi.fn() },
     payment: { updateMany: vi.fn() },
+    cronJobRun: { findFirst: vi.fn() },
   },
   mockSendAdditionalPaymentReminderEmail: vi.fn(),
   mockReadBookingNoEmails: vi.fn(),
+  mockGetActiveEmailSuppression: vi.fn(),
   mockLogger: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
 }));
 
@@ -30,6 +33,9 @@ vi.mock("@/lib/email", () => ({
 }));
 vi.mock("@/lib/booking-email-suppression", () => ({
   readBookingNoEmails: mockReadBookingNoEmails,
+}));
+vi.mock("@/lib/email-suppression", () => ({
+  getActiveEmailSuppression: mockGetActiveEmailSuppression,
 }));
 vi.mock("@/lib/logger", () => ({ default: mockLogger }));
 
@@ -67,6 +73,13 @@ function booking(overrides: Record<string, unknown> = {}) {
 
 const EPISODE_STARTED_AT = new Date("2026-10-01T00:00:00.000Z");
 
+/**
+ * The first-deploy cutover is DERIVED from the job's own first recorded run
+ * rather than read from a hand-edited constant, so the tests state the deploy
+ * date the way production will: as a `CronJobRun` row.
+ */
+const FIRST_RUN_AT = new Date("2026-08-01T00:00:00.000Z");
+
 describe("sendAdditionalPaymentReminders", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -75,7 +88,11 @@ describe("sendAdditionalPaymentReminders", () => {
     mockPrisma.booking.findMany.mockResolvedValue([]);
     mockPrisma.booking.findUnique.mockResolvedValue(null);
     mockPrisma.payment.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.cronJobRun.findFirst.mockResolvedValue({
+      startedAt: FIRST_RUN_AT,
+    });
     mockReadBookingNoEmails.mockResolvedValue(false);
+    mockGetActiveEmailSuppression.mockResolvedValue(null);
     // The mailer RETURNS its outcome; "sent" is the only one that means the
     // member actually received something.
     mockSendAdditionalPaymentReminderEmail.mockResolvedValue({
@@ -454,9 +471,14 @@ describe("sendAdditionalPaymentReminders", () => {
     });
   });
 
-  it("keeps the stamp when re-attempting could not possibly help", async () => {
-    // A suppressed (bounced/complained) address never accepts mail, so handing
-    // the stamp back would only manufacture a bounce row every three hours.
+  /*
+    ONE stamp rule, shared with the manual re-send: a stamp is only ever spent
+    on a message that went out, or on one something else will replay. A
+    suppression can be cleared by a person, so it must not permanently disarm
+    the chase — and reaching the mailer at all means the address was suppressed
+    between the pre-check below and the send.
+  */
+  it("hands the stamp back for a suppressed address, exactly as the manual re-send does", async () => {
     mockPrisma.booking.findMany.mockResolvedValue([booking()]);
     mockSendAdditionalPaymentReminderEmail.mockResolvedValue({
       status: "suppressed",
@@ -469,12 +491,78 @@ describe("sendAdditionalPaymentReminders", () => {
 
     expect(result.initialSentBookingIds).toEqual([]);
     expect(result.suppressedBookingIds).toEqual(["booking-1"]);
+    expect(mockPrisma.payment.updateMany).toHaveBeenLastCalledWith({
+      where: { id: "payment-1", additionalReminderSentAt: NOW },
+      data: { additionalReminderSentAt: null },
+    });
+  });
+
+  it("keeps the stamp only where the message will be replayed for us", async () => {
+    // An unreadable switch leaves a FAILED EmailLog that the retry cron picks
+    // up (re-checking the switch first), so handing the stamp back here is the
+    // one case that could produce a second copy.
+    mockPrisma.booking.findMany.mockResolvedValue([booking()]);
+    mockSendAdditionalPaymentReminderEmail.mockResolvedValue({
+      status: "withheld_for_booking",
+      emailLogId: "log-1",
+      bookingId: "booking-1",
+      reason: "booking_flag_unreadable",
+    });
+
+    const result = await sendAdditionalPaymentReminders();
+
+    expect(result.suppressedBookingIds).toEqual(["booking-1"]);
     // One write only: the claim. Nothing was given back.
     expect(mockPrisma.payment.updateMany).toHaveBeenCalledTimes(1);
   });
 
   /*
-    First-deploy guard: on the day this shipped every pre-existing delta was
+    The pre-check is what makes the shared stamp rule affordable in a job that
+    runs eight times a day: an unreachable member never reaches the claim, so
+    there is no stamp to burn and no bounce row manufactured every three hours,
+    and the reminder stays due for whenever the address is fixed.
+  */
+  it("skips an unreachable member before claiming anything", async () => {
+    mockPrisma.booking.findMany.mockResolvedValue([booking()]);
+    mockGetActiveEmailSuppression.mockResolvedValue({
+      id: "sup-1",
+      reason: "BOUNCE",
+    });
+
+    const result = await sendAdditionalPaymentReminders();
+
+    expect(mockSendAdditionalPaymentReminderEmail).not.toHaveBeenCalled();
+    expect(mockPrisma.payment.updateMany).not.toHaveBeenCalled();
+    expect(result.suppressedBookingIds).toEqual(["booking-1"]);
+  });
+
+  it("skips a walk-in placeholder address before claiming anything", async () => {
+    mockPrisma.booking.findMany.mockResolvedValue([
+      booking({
+        member: { email: "walk-in-abc@no-email.invalid", firstName: "Walk-in" },
+      }),
+    ]);
+
+    const result = await sendAdditionalPaymentReminders();
+
+    expect(mockSendAdditionalPaymentReminderEmail).not.toHaveBeenCalled();
+    expect(mockPrisma.payment.updateMany).not.toHaveBeenCalled();
+    expect(result.suppressedBookingIds).toEqual(["booking-1"]);
+  });
+
+  it("fails closed when the suppression state cannot be read", async () => {
+    mockPrisma.booking.findMany.mockResolvedValue([booking()]);
+    mockGetActiveEmailSuppression.mockRejectedValue(new Error("db down"));
+
+    const result = await sendAdditionalPaymentReminders();
+
+    expect(mockSendAdditionalPaymentReminderEmail).not.toHaveBeenCalled();
+    expect(mockPrisma.payment.updateMany).not.toHaveBeenCalled();
+    expect(result.suppressedBookingIds).toEqual(["booking-1"]);
+  });
+
+  /*
+    First-deploy guard: on the day this ships every pre-existing delta is
     already long past the day-3 threshold, so without this the first pass would
     email the club's entire backlog at once.
   */
@@ -493,6 +581,96 @@ describe("sendAdditionalPaymentReminders", () => {
     expect(mockSendAdditionalPaymentReminderEmail).not.toHaveBeenCalled();
     expect(mockPrisma.payment.updateMany).not.toHaveBeenCalled();
     expect(result.skippedBookingIds).toEqual(["booking-1"]);
+  });
+
+  /*
+    The cutover is derived from the job's own first recorded run rather than a
+    hand-edited constant, which is what stops a slipped deploy mailing the gap
+    as backlog. It is read from CronJobRun, not from the calendar.
+  */
+  it("takes the cutover from the job's first recorded run", async () => {
+    mockPrisma.booking.findMany.mockResolvedValue([booking()]);
+    // The chase started AFTER this obligation was raised, so it is backlog.
+    mockPrisma.cronJobRun.findFirst.mockResolvedValue({
+      startedAt: new Date("2026-10-05T00:00:00.000Z"),
+    });
+
+    const result = await sendAdditionalPaymentReminders();
+
+    expect(mockPrisma.cronJobRun.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { jobName: "additional-payment-reminders" },
+        orderBy: { startedAt: "asc" },
+      }),
+    );
+    expect(mockSendAdditionalPaymentReminderEmail).not.toHaveBeenCalled();
+    expect(result.chaseStartsAt).toEqual(new Date("2026-10-05T00:00:00.000Z"));
+  });
+
+  it("sends nothing on the very first run, which establishes the cutover", async () => {
+    mockPrisma.booking.findMany.mockResolvedValue([booking()]);
+    mockPrisma.cronJobRun.findFirst.mockResolvedValue(null);
+
+    const result = await sendAdditionalPaymentReminders();
+
+    // Not even the sweep runs: there is nothing this pass may act on.
+    expect(mockPrisma.booking.findMany).not.toHaveBeenCalled();
+    expect(mockSendAdditionalPaymentReminderEmail).not.toHaveBeenCalled();
+    expect(result.chaseStartsAt).toBeNull();
+  });
+
+  it("sends nothing when the cutover cannot be read", async () => {
+    mockPrisma.booking.findMany.mockResolvedValue([booking()]);
+    mockPrisma.cronJobRun.findFirst.mockRejectedValue(new Error("db down"));
+
+    const result = await sendAdditionalPaymentReminders();
+
+    expect(mockSendAdditionalPaymentReminderEmail).not.toHaveBeenCalled();
+    expect(result.chaseStartsAt).toBeNull();
+    expect(mockLogger.error).toHaveBeenCalled();
+  });
+
+  /*
+    The collision the cooldown is supposed to prevent, end to end. An admin
+    re-sent by hand ten minutes ago, which wrote the day-N stamp only because
+    the pre-arrival window had not opened yet. It has now, and the final stamp
+    is still unset - reading the stamps alone, this tick would send the
+    near-identical last-chance email inside the hour.
+  */
+  it("will not chase on top of a manual send from the last hour", async () => {
+    mockPrisma.booking.findMany.mockResolvedValue([
+      booking({
+        checkIn: new Date("2026-10-12T00:00:00.000Z"),
+        checkOut: new Date("2026-10-14T00:00:00.000Z"),
+        payment: {
+          transactions: [{ createdAt: new Date("2026-10-05T00:00:00.000Z") }],
+          additionalReminderSentAt: new Date(NOW.getTime() - 10 * 60_000),
+        },
+      }),
+    ]);
+
+    const result = await sendAdditionalPaymentReminders();
+
+    expect(mockSendAdditionalPaymentReminderEmail).not.toHaveBeenCalled();
+    expect(mockPrisma.payment.updateMany).not.toHaveBeenCalled();
+    expect(result.skippedBookingIds).toEqual(["booking-1"]);
+  });
+
+  it("fences the cooldown into the claim as well as the decision", async () => {
+    mockPrisma.booking.findMany.mockResolvedValue([booking()]);
+
+    await sendAdditionalPaymentReminders();
+
+    const where = mockPrisma.payment.updateMany.mock.calls[0][0].where;
+    const cutoff = new Date(NOW.getTime() - 60 * 60_000);
+    for (const field of [
+      "additionalReminderSentAt",
+      "additionalFinalReminderSentAt",
+    ]) {
+      expect(where.AND).toContainEqual({
+        OR: [{ [field]: null }, { [field]: { lte: cutoff } }],
+      });
+    }
   });
 
   it("records a transport failure without pretending the email went out", async () => {

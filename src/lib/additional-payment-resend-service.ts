@@ -42,8 +42,12 @@ import { buildAdditionalOwedPaymentWhere } from "@/lib/unpaid-finished-stays";
  *  4. **Only a send that actually went out reads as sent.** The mailer RETURNS
  *     rather than throws when it withholds (suppressed address, walk-in
  *     placeholder address, the switch flipping on after the check above), so the
- *     outcome is inspected: anything other than "sent" gives the stamps back
- *     where nothing will replay them and answers with what really happened.
+ *     outcome is inspected: anything other than "sent" gives the stamps back and
+ *     answers with what really happened. The single exception — an UNREADABLE
+ *     switch — keeps the stamps because the mailer left a FAILED EmailLog row
+ *     that the retry job replays; the reply says so rather than inviting a
+ *     retry the cooldown would then refuse. Same rule, same exception, as the
+ *     cron (src/lib/cron-additional-payment-reminders.ts).
  */
 
 export type ResendAdditionalPaymentEmailResult =
@@ -198,6 +202,11 @@ export async function resendAdditionalPaymentEmail(params: {
     episodeStartedAt,
     reminderSentAt: payment.additionalReminderSentAt,
     finalReminderSentAt: payment.additionalFinalReminderSentAt,
+    // The first-deploy guard is about the cron mailing a backlog in bulk. This
+    // is one admin deciding to contact one member, which the guard's own
+    // documentation names as the way a pre-cutover delta IS chased, so the
+    // manual path is not subject to it.
+    chaseStartsAt: new Date(0),
   });
   const closesFinalReminder = standsInFor === "final";
   const stamps = closesFinalReminder
@@ -467,7 +476,12 @@ function describeUntransmittedResend(outcome: EmailSendOutcome): string {
     case "withheld_for_booking":
       return outcome.reason === "booking_no_emails"
         ? 'This booking has the "No emails" switch turned on, so nothing was sent. Turn it off first if the member should hear from us.'
-        : "We could not confirm this booking's email settings, so the message was held back rather than sent. Please try again shortly.";
+        : // Deliberately NOT "try again shortly": this is the one path that
+          // keeps the reminder stamp, because the message is queued as a failed
+          // send that the retry job replays by itself. Advising a retry would
+          // send the admin straight into the hour's cooldown for a message that
+          // is already on its way.
+          "We could not confirm this booking's email settings, so the message was held back and queued to be sent automatically once they can be read. Do not re-send it by hand — that is blocked for the next hour so the member cannot receive two copies.";
     case "suppressed":
       return "This member's email address is blocked after a bounce or spam complaint, so nothing was sent. Contact them another way, or clear the suppression first.";
     case "skipped_placeholder_recipient":

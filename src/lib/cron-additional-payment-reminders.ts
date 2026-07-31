@@ -1,6 +1,7 @@
 import {
   ADDITIONAL_PAYMENT_FINAL_REMINDER_DAYS_BEFORE_CHECK_IN,
   ADDITIONAL_PAYMENT_REMINDER_DAYS,
+  ADDITIONAL_PAYMENT_RESEND_COOLDOWN_MINUTES,
   additionalPaymentEpisodeStartedAt,
   isAdditionalPaymentOwed,
   resolveAdditionalPaymentChase,
@@ -9,7 +10,10 @@ import {
 import { readBookingNoEmails } from "@/lib/booking-email-suppression";
 import { getTodayDateOnly } from "@/lib/date-only";
 import { sendAdditionalPaymentReminderEmail } from "@/lib/email";
+import { getActiveEmailSuppression } from "@/lib/email-suppression";
+import type { GeneralCronJobName } from "@/lib/general-cron-runner";
 import logger from "@/lib/logger";
+import { isPlaceholderContactEmail } from "@/lib/placeholder-contact-email";
 import { prisma } from "@/lib/prisma";
 import {
   buildAdditionalOwedPaymentWhere,
@@ -35,15 +39,29 @@ import {
  * modification landing in that window would be emailed at its old amount while
  * its new, larger delta was stamped as already chased.
  *
- * Honours the per-booking "No emails" switch explicitly rather than letting the
- * mailer withhold the message: withholding would still burn the stamp, so a
- * booking that was silenced during the reminder window would never be chased
- * once the switch came off. Skipping leaves the stamp unset and the reminder due.
+ * Checks up front, BEFORE claiming, every reason this member cannot be reached:
+ * the per-booking "No emails" switch, a walk-in placeholder address, and an
+ * active bounce/complaint suppression. Letting the mailer withhold instead would
+ * burn the stamp on a message nobody received, so a booking silenced (or an
+ * address suppressed) during the reminder window would never be chased once the
+ * switch came off or the suppression was cleared. Skipping leaves the stamp
+ * unset and the reminder due, and costs one cheap read per candidate — the same
+ * shape as the pre-check `cron-email-retry` already does.
+ *
+ * ONE RULE ABOUT STAMPS, shared with the manual re-send
+ * (src/lib/additional-payment-resend-service.ts): a stamp is only ever spent on
+ * a message that actually went out, or one that something else will replay. Any
+ * other non-`sent` outcome hands the stamps straight back.
  */
 
 export interface AdditionalPaymentReminderResult {
   reminderDays: number;
   finalReminderDaysBeforeCheckIn: number;
+  /**
+   * The first-deploy cutover this pass used, or null when this pass WAS the
+   * first run and therefore established it (and so sent nothing).
+   */
+  chaseStartsAt: Date | null;
   /** Booking ids emailed, split by which reminder went out. */
   initialSentBookingIds: string[];
   finalSentBookingIds: string[];
@@ -57,16 +75,25 @@ export async function sendAdditionalPaymentReminders(): Promise<AdditionalPaymen
   const now = new Date();
   const today = getTodayDateOnly();
 
+  const chaseStartsAt = await resolveAdditionalPaymentChaseStartedAt();
+
   const result: AdditionalPaymentReminderResult = {
     reminderDays: ADDITIONAL_PAYMENT_REMINDER_DAYS,
     finalReminderDaysBeforeCheckIn:
       ADDITIONAL_PAYMENT_FINAL_REMINDER_DAYS_BEFORE_CHECK_IN,
+    chaseStartsAt,
     initialSentBookingIds: [],
     finalSentBookingIds: [],
     skippedBookingIds: [],
     suppressedBookingIds: [],
     failedBookingIds: [],
   };
+
+  // This pass IS the cutover (or we could not read it). Either way, emailing
+  // now would be the bulk mailing the guard exists to prevent.
+  if (!chaseStartsAt) {
+    return result;
+  }
 
   const bookings = await prisma.booking.findMany({
     where: {
@@ -97,7 +124,12 @@ export async function sendAdditionalPaymentReminders(): Promise<AdditionalPaymen
       continue;
     }
 
-    const dueOnRead = resolveChaseFor({ booking: found, now, today });
+    const dueOnRead = resolveChaseFor({
+      booking: found,
+      now,
+      today,
+      chaseStartsAt,
+    });
     if (!dueOnRead) {
       result.skippedBookingIds.push(found.id);
       continue;
@@ -117,6 +149,11 @@ export async function sendAdditionalPaymentReminders(): Promise<AdditionalPaymen
       continue;
     }
     if (silenced) {
+      result.suppressedBookingIds.push(found.id);
+      continue;
+    }
+
+    if (!(await canReceiveChaseEmail(found.member.email, found.id))) {
       result.suppressedBookingIds.push(found.id);
       continue;
     }
@@ -152,7 +189,7 @@ export async function sendAdditionalPaymentReminders(): Promise<AdditionalPaymen
         }
       }
 
-      const due = resolveChaseFor({ booking, now, today });
+      const due = resolveChaseFor({ booking, now, today, chaseStartsAt });
       if (!due) break;
 
       claim = await claimAdditionalPaymentReminder({ ...due, now });
@@ -182,23 +219,27 @@ export async function sendAdditionalPaymentReminders(): Promise<AdditionalPaymen
           The mailer RETURNS rather than throws when nothing was transmitted —
           a suppressed (bounced/complained) address, a walk-in placeholder
           `.invalid` address, or the per-booking "No emails" switch flipping on
-          between our own check above and the send. Treating that as a send
+          between our own checks above and the send. Treating that as a send
           would leave the stamp burned and this obligation never chased again,
           which is the opposite of what the stamp is for.
 
-          The stamp is given back only when the withholding is expected to lift
-          by itself: the switch being ON is a deliberate, reversible operator
-          choice, so the reminder must still be due once it comes off. The
-          others are kept, because re-attempting every three hours cannot help —
-          a dead or placeholder address never accepts mail, and the
-          unreadable-switch case leaves a FAILED EmailLog the retry cron
-          replays, so restoring would risk a second copy. Either way the delta
-          stays in the admin queues and the panel's re-send button.
+          ONE rule, identical to the manual re-send's: the stamp is handed back
+          unless something else will replay the message. The single exception is
+          an UNREADABLE "No emails" switch, which leaves a FAILED EmailLog row
+          that the email retry cron picks up (and re-checks the switch before
+          replaying) — restoring there would risk the member getting two copies.
+
+          Every other case gets its stamp back because every one of them can be
+          fixed by a person: the switch is turned off again, a suppression is
+          cleared, a real address replaces the walk-in placeholder. This does
+          not put the job into a three-hourly bounce loop, because the checks
+          above skip an unreachable recipient BEFORE the claim; reaching here at
+          all means the state changed under this very pass.
         */
-        const reversible =
+        const replayable =
           outcome.status === "withheld_for_booking" &&
-          outcome.reason === "booking_no_emails";
-        if (reversible) {
+          outcome.reason === "booking_flag_unreadable";
+        if (!replayable) {
           await restoreAdditionalPaymentStamps({ claim, now });
         }
         logger.warn(
@@ -206,7 +247,7 @@ export async function sendAdditionalPaymentReminders(): Promise<AdditionalPaymen
             bookingId: booking.id,
             job: "additionalPaymentReminders",
             outcome: outcome.status,
-            stampRestored: reversible,
+            stampRestored: !replayable,
           },
           "Additional-payment reminder was not transmitted",
         );
@@ -232,6 +273,100 @@ export async function sendAdditionalPaymentReminders(): Promise<AdditionalPaymen
   }
 
   return result;
+}
+
+/**
+ * The cron's own name in `CronJobRun`. Typed as the runner's own job-name union
+ * (a type-only import, so no runtime cycle with the module that calls this one)
+ * so renaming the job in the runner without renaming it here fails to compile
+ * rather than silently resetting the cutover below.
+ */
+const CHASE_JOB_NAME: GeneralCronJobName = "additional-payment-reminders";
+
+/**
+ * When automatic chasing began ON THIS DEPLOYMENT — the first-deploy guard,
+ * derived rather than hand-written.
+ *
+ * The problem with a constant: it has to be set to a date somebody predicts, and
+ * nothing enforces the prediction. Pinned to the migration date it is wrong the
+ * moment the deploy slips, and then every obligation raised in the gap is
+ * backlog the first pass mails at once — precisely the failure the guard exists
+ * to prevent. "Remember to raise it before releasing" is not a control.
+ *
+ * So the cutover is a fact rather than a plan: the FIRST time this job ran here.
+ * The runner records a `CronJobRun` row for every pass, success or failure, so:
+ *
+ *  - no row at all ⇒ this pass is the first. It sends nothing and the row it is
+ *    about to write becomes the cutover, so the pre-existing backlog is behind
+ *    it by construction — whenever the deploy actually happens;
+ *  - a row exists ⇒ its `startedAt` is the cutover, forever, with no human in
+ *    the loop.
+ *
+ * Run rows are pruned after 90 days, which can only move the cutover FORWARD to
+ * the oldest surviving run — still months behind any obligation this job chases
+ * (they are chased three days after they are raised), so the pruning cannot
+ * resurrect the backlog or silence a live obligation.
+ *
+ * A read failure returns null, and the caller then sends nothing this pass: not
+ * knowing where the cutover is must never mean "email everyone".
+ */
+async function resolveAdditionalPaymentChaseStartedAt(): Promise<Date | null> {
+  try {
+    const firstRun = await prisma.cronJobRun.findFirst({
+      where: { jobName: CHASE_JOB_NAME },
+      orderBy: { startedAt: "asc" },
+      select: { startedAt: true },
+    });
+    return firstRun?.startedAt ?? null;
+  } catch (err) {
+    logger.error(
+      { err, job: "additionalPaymentReminders" },
+      "Could not read the first-deploy cutover for the additional-payment chase; sending nothing this pass",
+    );
+    return null;
+  }
+}
+
+/**
+ * Can this member actually be reached, before anything is claimed?
+ *
+ * A walk-in placeholder `.invalid` address and an active bounce/complaint
+ * suppression both mean the mailer will withhold. Finding that out AFTER the
+ * claim would mean handing the stamp back on every pass and manufacturing a
+ * bounce row each time; finding it out first costs one indexed read and leaves
+ * the reminder cleanly due for whenever the address is fixed or the suppression
+ * cleared. A suppression read that fails is treated as "cannot reach", the same
+ * fail-closed direction as the "No emails" switch above.
+ */
+async function canReceiveChaseEmail(
+  email: string,
+  bookingId: string,
+): Promise<boolean> {
+  if (isPlaceholderContactEmail(email)) {
+    logger.info(
+      { bookingId, job: "additionalPaymentReminders" },
+      "Skipped an additional-payment reminder to a walk-in placeholder address",
+    );
+    return false;
+  }
+
+  try {
+    const suppression = await getActiveEmailSuppression(email);
+    if (suppression) {
+      logger.warn(
+        { bookingId, job: "additionalPaymentReminders" },
+        "Skipped an additional-payment reminder to a suppressed address",
+      );
+      return false;
+    }
+    return true;
+  } catch (err) {
+    logger.error(
+      { err, bookingId, job: "additionalPaymentReminders" },
+      "Could not check the member's email suppression state; skipping the additional-payment reminder",
+    );
+    return false;
+  }
 }
 
 /**
@@ -285,6 +420,7 @@ function resolveChaseFor(params: {
   booking: NonNullable<ChaseBooking>;
   now: Date;
   today: Date;
+  chaseStartsAt: Date;
 }): DueAdditionalPaymentReminder | null {
   const payment = params.booking.payment;
   if (!payment) return null;
@@ -303,6 +439,7 @@ function resolveChaseFor(params: {
     episodeStartedAt,
     reminderSentAt: payment.additionalReminderSentAt,
     finalReminderSentAt: payment.additionalFinalReminderSentAt,
+    chaseStartsAt: params.chaseStartsAt,
   });
   if (!kind) return null;
 
@@ -355,14 +492,17 @@ async function restoreAdditionalPaymentStamps(params: {
  * Returns null when another runner (or an admin's manual re-send) got there
  * first, or when the delta moved under us.
  *
- * The WHERE pins THREE things the read decided on, not just the stamp:
+ * The WHERE pins FOUR things the read decided on, not just the stamp:
  *  - the owed test in full, booking lifecycle status included, so a
  *    cancellation landing in the window cannot be emailed about;
  *  - the exact `additionalAmountCents`, so an email can never quote an amount
  *    the member no longer owes;
  *  - that no ADDITIONAL transaction newer than this episode exists, so a second
  *    upward modification starts a fresh chase instead of inheriting a stamp
- *    that would suppress its first reminder for good.
+ *    that would suppress its first reminder for good;
+ *  - the cooldown, on BOTH stamps, so an admin's manual re-send landing in the
+ *    read→claim window cannot be followed by this email minutes later. The read
+ *    already refuses inside the cooldown; this is the same test where it counts.
  *
  * The final reminder stamps BOTH columns: once the member has been told inside
  * the pre-arrival window, the gentler day-N nudge has nothing left to say, and
@@ -389,6 +529,15 @@ async function claimAdditionalPaymentReminder(
     ],
   });
 
+  const cooldownCutoff = new Date(
+    params.now.getTime() - ADDITIONAL_PAYMENT_RESEND_COOLDOWN_MINUTES * 60_000,
+  );
+  const outsideCooldown = (
+    field: "additionalReminderSentAt" | "additionalFinalReminderSentAt",
+  ) => ({
+    OR: [{ [field]: null }, { [field]: { lte: cooldownCutoff } }],
+  });
+
   const claimed = await prisma.payment.updateMany({
     where: {
       id: params.paymentId,
@@ -408,6 +557,8 @@ async function claimAdditionalPaymentReminder(
             ? "additionalFinalReminderSentAt"
             : "additionalReminderSentAt",
         ),
+        outsideCooldown("additionalReminderSentAt"),
+        outsideCooldown("additionalFinalReminderSentAt"),
       ],
     },
     data:

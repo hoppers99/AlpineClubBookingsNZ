@@ -18,7 +18,10 @@ import { BookingNotesEditor } from "@/components/booking-notes-editor";
 import { BookingEditor, type BookingEditorData } from "@/components/booking-editor";
 import { AdditionalPaymentCard } from "@/components/additional-payment-card";
 import { BookingAdditionalPaymentPanel } from "@/components/admin/booking-additional-payment-panel";
-import { additionalPaymentEpisodeStartedAt } from "@/lib/additional-payment-chase";
+import {
+  additionalPaymentEpisodeStartedAt,
+  isAdditionalPayableBookingStatus,
+} from "@/lib/additional-payment-chase";
 import { ConfirmDraftButton } from "@/components/confirm-draft-button";
 import { AdminBookingToolsCard } from "@/components/admin/admin-booking-tools-card";
 import { BookingBedAllocationPanel } from "@/components/admin/booking-bed-allocation-panel";
@@ -1764,10 +1767,18 @@ export default async function BookingDetailPage({
 
       {/* Additional payment required after a modification that increased the
           price. Member-personal payment (Stripe card entry) — owner-only so a
-          non-owner admin/officer never sees the member's pay controls (#1303). */}
+          non-owner admin/officer never sees the member's pay controls (#1303).
+
+          The lifecycle check is load-bearing, not tidiness (#2350): cancelling a
+          booking marks the additional intent FAILED and leaves the amount alone,
+          so an amount-and-status-only condition kept showing the owner of a
+          CANCELLED booking a "pay this extra" card — and the secret route behind
+          it would still hand out a confirmable client secret. Same predicate the
+          route now uses, so the card and the money agree. */}
       {booking.payment &&
         isBookingOwner &&
         !isDeleted &&
+        isAdditionalPayableBookingStatus(booking.status) &&
         booking.payment.additionalAmountCents > 0 &&
         booking.payment.additionalPaymentStatus !== "SUCCEEDED" && (
           <AdditionalPaymentCard

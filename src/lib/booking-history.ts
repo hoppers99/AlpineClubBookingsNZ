@@ -438,10 +438,21 @@ export function buildBookingHistoryItems({
   // writes its stamps to this row every time it chases the member, and dating
   // the entry from the row's last touch would march it up the timeline on every
   // nudge, claiming the price changed when nothing about the booking did.
+  //
+  // The status test matches the owed predicate's uncollected half rather than
+  // the literal string "PENDING": a legacy row written before the column was
+  // populated carries a null status, and the owed test — every admin queue, the
+  // finance panel, the reports figure and the chase cron — counts it. Testing
+  // for "PENDING" alone left exactly those bookings with no timeline entry for
+  // the moment their price went up. FAILED is excluded only because it has its
+  // own, more specific entry immediately below. Note this is deliberately NOT
+  // gated on the booking's lifecycle: the timeline is a record of what happened,
+  // and the price DID go up even if the booking was later cancelled.
   if (
     payment &&
     payment.additionalAmountCents > 0 &&
-    payment.additionalPaymentStatus === "PENDING"
+    payment.additionalPaymentStatus !== "SUCCEEDED" &&
+    payment.additionalPaymentStatus !== "FAILED"
   ) {
     items.push({
       id: "payment-additional-pending",

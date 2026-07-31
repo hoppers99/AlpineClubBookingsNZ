@@ -240,10 +240,16 @@ export async function GET(request: NextRequest) {
     // Scoped by the SHARED owed predicate, which narrows this further than the
     // revenue figure beside it: `activeBookings` is everything except CANCELLED
     // and BUMPED, so it also holds DRAFT / PENDING / PAYMENT_PENDING /
-    // WAITLISTED / AWAITING_REVIEW bookings whose delta is not a collectable
-    // obligation. Using the predicate keeps this number equal to the one the
-    // dashboard card, the sidebar badge, the bookings list and the chase cron
-    // all report.
+    // WAITLISTED / AWAITING_REVIEW bookings.
+    //
+    // The narrowing is NOT a claim that those deltas are uncollectable — a
+    // PAYMENT_PENDING booking's delta plainly is, and the member can still pay
+    // it. It is the double-count rule: the owed predicate excludes
+    // PAYMENT_PENDING precisely so this figure can sit beside the payment-owed
+    // queue, which already counts the whole of every PAYMENT_PENDING booking,
+    // without counting the same money twice (src/lib/unpaid-finished-stays.ts).
+    // Using the predicate also keeps this number equal to the one the dashboard
+    // card, the sidebar badge, the bookings list and the chase cron all report.
     const outstandingAdditional = activeBookings.reduce(
       (acc, b) => {
         if (!isAdditionalPaymentOwed({ bookingStatus: b.status, payment: b.payment }))

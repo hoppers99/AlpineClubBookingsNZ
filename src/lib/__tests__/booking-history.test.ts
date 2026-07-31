@@ -180,6 +180,26 @@ describe("buildBookingHistoryItems", () => {
         ),
       ).toBeUndefined();
     });
+
+    /*
+      A legacy row written before `additionalPaymentStatus` was populated carries
+      a null status, and the owed predicate — every admin queue, the finance
+      panel, the reports figure and the chase cron — counts it as owing. Matching
+      the literal string "PENDING" left exactly those bookings with no timeline
+      entry for the moment their price went up, which is the gap this entry
+      exists to close.
+    */
+    it("records a legacy null-status request the owed predicate counts", () => {
+      const item = build(null).find(
+        (entry) => entry.id === "payment-additional-pending",
+      );
+
+      expect(item).toMatchObject({
+        title: "Additional payment requested",
+        amountDisplay: "$210.00",
+        tone: "warning",
+      });
+    });
   });
 
   it("renders a #1992 duplicate-capture auto-refund with honest copy when supplied (admin view, #2008)", () => {

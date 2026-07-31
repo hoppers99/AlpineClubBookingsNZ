@@ -551,28 +551,44 @@ function getPaymentStatusKey(
   return booking.payment?.status ?? "NONE";
 }
 
+/**
+ * Which bucket of the additional-payment split does this booking belong in?
+ *
+ * PENDING and FAILED mean "still owed", and they are gated on the SAME
+ * `isAdditionalPaymentOwed` predicate as `outstandingAdditionalCents` /
+ * `outstandingAdditionalBookings` below — because the finance panel renders the
+ * three side by side as a split and its total. Without the gate they measured
+ * different populations: the metrics window includes PENDING and
+ * PAYMENT_PENDING bookings, and a PAYMENT_PENDING booking can legitimately
+ * carry a delta (adding a guest to a booking with an issued Xero invoice raises
+ * one), so "Awaiting payment 3 / Payment failed 0 / Total outstanding across 1
+ * booking" was a panel disagreeing with itself. Legacy null-status rows read as
+ * PENDING for the same reason — the owed test counts them, so the split must.
+ *
+ * SUCCEEDED stays ungated: it is a fact about the money, not about the queue,
+ * and it is not part of the outstanding split. Everything else — including an
+ * uncollected delta on a booking the owed test excludes — is NONE, meaning "not
+ * in this queue", which is exactly what the total says about it too.
+ */
 function getAdditionalPaymentStatusKey(
   booking: BookingMetricsRecord
 ): FinanceAdditionalPaymentStatusKey {
-  if (!booking.payment?.additionalPaymentStatus) {
-    // A legacy row written before the status column was populated still carries
-    // a real uncollected delta, and the owed test counts it. Reading it as NONE
-    // let the panel show "Awaiting 0, Failed 0" beside a non-zero outstanding
-    // total — the split contradicting its own sum. It is awaiting payment.
-    return (booking.payment?.additionalAmountCents ?? 0) > 0
-      ? "PENDING"
-      : "NONE";
-  }
-
-  if (booking.payment.additionalPaymentStatus === "PENDING") {
-    return "PENDING";
-  }
-
-  if (booking.payment.additionalPaymentStatus === "SUCCEEDED") {
+  if (booking.payment?.additionalPaymentStatus === "SUCCEEDED") {
     return "SUCCEEDED";
   }
 
-  return "FAILED";
+  if (
+    !isAdditionalPaymentOwed({
+      bookingStatus: booking.status,
+      payment: booking.payment,
+    })
+  ) {
+    return "NONE";
+  }
+
+  return booking.payment?.additionalPaymentStatus === "FAILED"
+    ? "FAILED"
+    : "PENDING";
 }
 
 function summarizePayments(

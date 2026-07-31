@@ -1944,12 +1944,10 @@ helpers so the surfaces can never drift):
   (`src/lib/additional-payment-chase.ts`), which takes the booking status as a
   REQUIRED argument for exactly this reason: cancelling a booking leaves
   `additionalAmountCents` and `additionalPaymentStatus` untouched, so an
-  amount-only test reads a cancelled booking as still owing. Member-facing
-  surfaces (member dashboard / booking detail) show the member their own
-  outstanding amount over a wider lifecycle set, but never a cancelled booking,
-  so admin and member never disagree about a live obligation; `PAYMENT_PENDING` is
-  deliberately excluded so the two queue counts can be summed without
-  double-counting a booking. Deep link:
+  amount-only test reads a cancelled booking as still owing. `PAYMENT_PENDING`
+  is deliberately excluded so the two queue counts can be summed without
+  double-counting a booking — a narrowing for counting, NOT a claim that such a
+  delta is uncollectable (see "Who may pay one" below). Deep link:
   `/admin/bookings?additionalOwed=owed&checkOutTo=<today>` via the bookings
   list's `additionalOwed` filter (AND-composed, so explicit status/date
   filters in the same URL still narrow).
@@ -1979,6 +1977,24 @@ admin surface showed one. Six rules now hold:
   amount-only test would show cancelled bookings as owing and would email their
   members a payment demand. It takes the status as a required argument so a
   caller cannot forget it.
+- **Who may PAY one.** The member-facing surfaces use a second, deliberately
+  wider list, `ADDITIONAL_PAYABLE_BOOKING_STATUSES` — the owed list plus
+  `PAYMENT_PENDING`, which the owed list drops only to keep the two admin queue
+  counts summable. Both surfaces that can move money gate on it: the booking
+  page's `AdditionalPaymentCard` and
+  `GET /api/bookings/[id]/additional-payment-secret`. The member dashboard's
+  owed total is scoped instead by its own query (`ACTIVE_BOOKING_STATUSES` +
+  `COMPLETED`), wider again. **What every one of them excludes is CANCELLED and
+  BUMPED**, and that is the invariant: a member is never shown, and can never
+  complete, a card payment for a booking the club has stopped counting.
+  Enforcement is not cosmetic — cancellation marks the additional intent
+  `FAILED` without zeroing the amount, and the cancel path asks Stripe to cancel
+  only an intent that was still *outstanding*, so an intent that had already
+  failed (a declined card) stays confirmable at Stripe. Before this gate the
+  owner of a cancelled booking could open the booking, be offered "pay this
+  extra", fetch a live client secret and complete the charge; the late-capture
+  backstop (#1350) auto-refunded and alerted, but the member had still been
+  charged for a booking that no longer existed.
 - **What the member is told.** While the stay is still ahead, the member is
   emailed at most twice per obligation: `ADDITIONAL_PAYMENT_REMINDER_DAYS`
   (3) days after the extra was raised, and
@@ -1986,15 +2002,28 @@ admin surface showed one. Six rules now hold:
   check-in. The pre-arrival reminder also names the amount when one is owing.
   Nothing is ever auto-cancelled or auto-expired, and the chase stops the
   moment `checkOut <= today` - a finished stay belongs to the queue above.
-- **Nothing raised before the chase existed is chased.**
-  `ADDITIONAL_PAYMENT_CHASE_STARTS_AT` is the instant automatic chasing began
-  (the chase-stamp migration's date). An obligation whose episode started before
-  it is never emailed about by the cron: on first deploy every pre-existing
+- **Nothing raised before the chase existed is chased, and the cutover is a
+  fact rather than a plan.** An obligation whose episode started before the
+  cutover is never emailed about by the cron: on first deploy every pre-existing
   delta is already past the day-3 threshold, so without this the first pass
   would mail the whole backlog at once, and legacy rows with no ADDITIONAL
   transaction would date the demand from the payment row's creation rather than
   the day the price changed. Those deltas stay on every admin surface and can
-  still be chased by hand.
+  still be chased by hand — and the exclusion is per EPISODE, so a later upward
+  change (or a member retrying a failed charge) is chased normally.
+
+  The cutover is **derived, not hand-written**: it is the `startedAt` of the
+  FIRST `CronJobRun` row for `additional-payment-reminders`
+  (`resolveAdditionalPaymentChaseStartedAt`). If there is no such row, this pass
+  is the first, so it sends nothing and the row it writes becomes the cutover —
+  whenever the deploy actually happens. A hand-edited constant pinned to a
+  migration date was the previous design and it was enforced by nothing: had the
+  deploy slipped past it, every obligation raised in the gap would have been
+  backlog mailed on the first pass, which is the exact failure the guard exists
+  to prevent. Run rows are pruned after 90 days, which can only move the cutover
+  forward to the oldest surviving run — still months behind anything this job
+  chases three days after it is raised. A read failure sends nothing that pass:
+  not knowing where the cutover is must never mean "email everyone".
 - **What makes it idempotent.** Two nullable stamps on `Payment`,
   `additionalReminderSentAt` and `additionalFinalReminderSentAt`, written by a
   guarded `updateMany` BEFORE each send, so a cron rerun (or two runners
@@ -2020,23 +2049,42 @@ admin surface showed one. Six rules now hold:
   when that is the last-chance one it closes BOTH stamps, exactly as the cron's
   own final branch does. Writing only the day-N stamp made the cooldown
   one-directional: an admin re-send inside the pre-arrival window was followed
-  by the cron's near-identical email at the next three-hourly tick. An automatic
-  nudge inside `ADDITIONAL_PAYMENT_RESEND_COOLDOWN_MINUTES` (60) refuses a manual
-  one with a 429. On a send failure the stamps are given back, so a failed
-  re-send never silently disarms the automatic chase.
-- **Only a transmitted message counts as sent.** `sendEmail` RETURNS rather than
-  throws when it withholds a message (a suppressed address, a walk-in
-  placeholder address, the "No emails" switch flipping on after the check), so
-  both senders inspect the outcome. The manual re-send answers with what really
-  happened instead of a success, and both hand the stamps back wherever nothing
-  will replay the message - the exception being an unreadable "No emails" switch,
-  which leaves a FAILED `EmailLog` the retry cron replays, so restoring there
-  would risk a second copy.
-- **Silence is refused, not swallowed.** A booking with the "No emails" switch
-  on is skipped by the cron with no stamp burned (so the reminder is still due
-  once the switch comes off) and refused outright by the manual re-send with an
-  explanation - an admin standing at the screen must not read a silent withhold
-  as a successful send. Both fail CLOSED if the switch cannot be read.
+  by the cron's near-identical email at the next three-hourly tick.
+
+  `ADDITIONAL_PAYMENT_RESEND_COOLDOWN_MINUTES` (60) is honoured by BOTH senders,
+  in both directions: an automatic nudge inside the window refuses a manual one
+  with a 429, and a manual one inside the window makes the cron read "not due"
+  (in its decision AND in its claim's WHERE). Stamps alone were not enough — a
+  manual send late on the NZ day before the last-chance window opens writes only
+  the day-N stamp, and the next tick after NZ midnight would have found the
+  final reminder unstamped and sent it minutes later. The cost is that a due
+  reminder can slip to the following tick, three hours, not a lost email. On a
+  send failure the stamps are given back, so a failed re-send never silently
+  disarms the automatic chase.
+- **Only a transmitted message counts as sent, and a stamp is only ever spent on
+  a message that went out or one that will be replayed.** `sendEmail` RETURNS
+  rather than throws when it withholds a message (a suppressed address, a
+  walk-in placeholder address, the "No emails" switch flipping on after the
+  check), so both senders inspect the outcome. The manual re-send answers with
+  what really happened instead of a success. Both then apply the SAME rule with
+  the SAME single exception: the stamps go back, unless the withhold was an
+  UNREADABLE "No emails" switch, which leaves a `FAILED` `EmailLog` row the
+  retry cron replays (re-checking the switch first) — restoring there would risk
+  the member getting two copies, so the 503 reply says the message is queued and
+  tells the admin not to re-send rather than inviting a retry the cooldown would
+  refuse.
+- **Silence is refused, not swallowed — and unreachability is checked before
+  anything is claimed.** A booking with the "No emails" switch on is skipped by
+  the cron with no stamp burned (so the reminder is still due once the switch
+  comes off) and refused outright by the manual re-send with an explanation - an
+  admin standing at the screen must not read a silent withhold as a successful
+  send. Both fail CLOSED if the switch cannot be read. The cron additionally
+  checks the recipient BEFORE claiming - a walk-in placeholder `.invalid`
+  address, or an active bounce/complaint suppression - so an unreachable member
+  costs one skipped pass instead of a burned stamp and a manufactured bounce row
+  every three hours, and the reminder stays cleanly due for whenever the address
+  is fixed or the suppression cleared. That pre-check is what makes the shared
+  stamp rule above affordable in a job that runs eight times a day.
 
 Three side doors into the finished-unpaid state are closed at the door
 (owner decisions 2026-07-11, #1723):

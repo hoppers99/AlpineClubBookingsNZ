@@ -574,6 +574,110 @@ describe("finance-booking-metrics", () => {
     ).toMatchObject({ PENDING: 1, NONE: 0 });
   });
 
+  /*
+    #2350 round 2. The finance panel renders "Awaiting payment" and "Payment
+    failed" from this breakdown and "Total outstanding" from
+    outstandingAdditionalBookings, side by side, as a split and its total. They
+    have to measure the SAME population.
+
+    They did not: the total is gated on the owed predicate (booking lifecycle
+    included) while the breakdown counted any uncollected delta, and the metrics
+    window legitimately includes PENDING and PAYMENT_PENDING bookings — which
+    can genuinely carry a delta (adding a guest to a booking with an issued Xero
+    invoice raises one). So a panel could read "Awaiting 2, Failed 1" above
+    "across 1 booking".
+  */
+  it("keeps the additional-payment split summing to its own total", async () => {
+    mockPrisma.booking.findMany.mockResolvedValue([
+      // Owed: counts in both the split and the total.
+      {
+        id: "booking-owed-pending",
+        checkIn: new Date("2026-04-20T00:00:00.000Z"),
+        checkOut: new Date("2026-04-21T00:00:00.000Z"),
+        status: BookingStatus.PAID,
+        finalPriceCents: 30_000,
+        guests: [{ id: "g-1" }],
+        payment: {
+          status: PaymentStatus.SUCCEEDED,
+          amountCents: 9_000,
+          refundedAmountCents: 0,
+          creditAppliedCents: 0,
+          changeFeeCents: 0,
+          additionalAmountCents: 21_000,
+          additionalPaymentStatus: "PENDING",
+        },
+      },
+      // Owed, failed charge: same, in the FAILED half.
+      {
+        id: "booking-owed-failed",
+        checkIn: new Date("2026-04-20T00:00:00.000Z"),
+        checkOut: new Date("2026-04-21T00:00:00.000Z"),
+        status: BookingStatus.CONFIRMED,
+        finalPriceCents: 30_000,
+        guests: [{ id: "g-2" }],
+        payment: {
+          status: PaymentStatus.SUCCEEDED,
+          amountCents: 9_000,
+          refundedAmountCents: 0,
+          creditAppliedCents: 0,
+          changeFeeCents: 0,
+          additionalAmountCents: 4_000,
+          additionalPaymentStatus: "FAILED",
+        },
+      },
+      // A real, uncollected delta on a booking the owed predicate excludes for
+      // counting reasons. In NEITHER the split nor the total.
+      {
+        id: "booking-payment-pending-extra",
+        checkIn: new Date("2026-04-20T00:00:00.000Z"),
+        checkOut: new Date("2026-04-21T00:00:00.000Z"),
+        status: BookingStatus.PAYMENT_PENDING,
+        finalPriceCents: 30_000,
+        guests: [{ id: "g-3" }],
+        payment: {
+          status: PaymentStatus.PENDING,
+          amountCents: 0,
+          refundedAmountCents: 0,
+          creditAppliedCents: 0,
+          changeFeeCents: 0,
+          additionalAmountCents: 5_000,
+          additionalPaymentStatus: "PENDING",
+        },
+      },
+      // Legacy null status on a PENDING booking: likewise out of both.
+      {
+        id: "booking-pending-legacy-extra",
+        checkIn: new Date("2026-04-20T00:00:00.000Z"),
+        checkOut: new Date("2026-04-21T00:00:00.000Z"),
+        status: BookingStatus.PENDING,
+        finalPriceCents: 30_000,
+        guests: [{ id: "g-4" }],
+        payment: {
+          status: PaymentStatus.PENDING,
+          amountCents: 0,
+          refundedAmountCents: 0,
+          creditAppliedCents: 0,
+          changeFeeCents: 0,
+          additionalAmountCents: 6_000,
+          additionalPaymentStatus: null,
+        },
+      },
+    ]);
+
+    const metrics = await getFinanceBookingMetrics({
+      forward: { from: "2026-04-20", to: "2026-04-24", asOfDate: "2026-04-19" },
+    });
+
+    const breakdown =
+      metrics.paymentSummary.additionalPaymentStatusBreakdown;
+    expect(breakdown.PENDING).toBe(1);
+    expect(breakdown.FAILED).toBe(1);
+    expect(breakdown.PENDING + breakdown.FAILED).toBe(
+      metrics.paymentSummary.outstandingAdditionalBookings,
+    );
+    expect(metrics.paymentSummary.outstandingAdditionalCents).toBe(25_000);
+  });
+
   it("rejects an empty query", async () => {
     await expect(getFinanceBookingMetrics({})).rejects.toThrow(
       "At least one finance booking metrics section is required"

@@ -397,6 +397,31 @@ describe("resendAdditionalPaymentEmail", () => {
     );
   });
 
+  /*
+    #2350 round 2. This is the ONE outcome that keeps the stamps, because the
+    mailer left a FAILED EmailLog row the retry cron replays. The reply used to
+    end "Please try again shortly" — advice the very next click would answer with
+    a 429 for the rest of the hour, for a message that was already on its way. The
+    copy and the behaviour have to say the same thing.
+  */
+  it("tells the admin the held-back message is queued rather than inviting a retry", async () => {
+    mockSendAdditionalPaymentReminderEmail.mockResolvedValue({
+      status: "withheld_for_booking",
+      emailLogId: "log-1",
+      bookingId: "booking-1",
+      reason: "booking_flag_unreadable",
+    });
+
+    const result = await resend();
+    const error = result.ok === false ? result.error : "";
+
+    expect(result).toMatchObject({ ok: false, status: 503 });
+    expect(error).toContain("automatically");
+    expect(error).not.toContain("try again");
+    // One write only: the claim. The stamps deliberately stay spent.
+    expect(mockPrisma.payment.updateMany).toHaveBeenCalledTimes(1);
+  });
+
   it("gives the stamp back when the send fails, so the automatic chase survives", async () => {
     mockSendAdditionalPaymentReminderEmail.mockRejectedValue(
       new Error("SES unavailable"),

@@ -62,6 +62,7 @@ describe("general cron runner", () => {
         sendAdditionalPaymentReminders: vi.fn(async () => ({
           reminderDays: 3,
           finalReminderDaysBeforeCheckIn: 2,
+          chaseStartsAt: new Date("2026-08-01T00:00:00.000Z"),
           initialSentBookingIds: ["booking-9"],
           finalSentBookingIds: [],
           skippedBookingIds: [],
@@ -225,6 +226,7 @@ describe("general cron runner", () => {
     const sendAdditionalPaymentReminders = vi.fn(async () => ({
       reminderDays: 3,
       finalReminderDaysBeforeCheckIn: 2,
+      chaseStartsAt: new Date("2026-08-01T00:00:00.000Z"),
       initialSentBookingIds: [],
       finalSentBookingIds: [],
       skippedBookingIds: [],

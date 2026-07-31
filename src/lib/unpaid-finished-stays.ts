@@ -54,11 +54,26 @@ export function buildUnpaidFinishedStaysHref(todayKey: string): string {
  * filter choices.
  *
  * `isAdditionalPaymentOwed` (src/lib/additional-payment-chase.ts) is the exact
- * in-memory twin, sharing this status list. The member-facing surfaces (member
- * dashboard, booking detail, additional-payment-secret) show a member their own
- * outstanding amount over a WIDER lifecycle set — but never a cancelled booking,
- * so no member is shown an obligation the club has stopped counting, and no
- * admin surface is shown one it has.
+ * in-memory twin, sharing this status list.
+ *
+ * The member-facing surfaces use a DIFFERENT, wider list — exactly one status
+ * wider — and the difference is deliberate:
+ *
+ *  - the two surfaces that let a member PAY (the booking-page card and
+ *    /api/bookings/[id]/additional-payment-secret) gate on
+ *    `ADDITIONAL_PAYABLE_BOOKING_STATUSES`, which is this list plus
+ *    PAYMENT_PENDING. PAYMENT_PENDING is missing here only so this queue's count
+ *    can be summed with the unpaid-finished-stays count above without counting a
+ *    booking twice; the money on such a booking is genuinely collectable, so
+ *    hiding the member's own pay button for a counting reason would strand it;
+ *  - the member dashboard's owed total is scoped by its own query
+ *    (ACTIVE_BOOKING_STATUSES + COMPLETED), which is wider again but likewise
+ *    excludes CANCELLED and BUMPED.
+ *
+ * What all of them agree on is the part that decides whether money can move: a
+ * CANCELLED or BUMPED booking is in NO list, member-facing or admin. That is
+ * what stops a member being shown — or being able to complete — a payment for a
+ * booking the club has stopped counting.
  */
 export function buildAdditionalOwedWhere(): Prisma.BookingWhereInput {
   return {

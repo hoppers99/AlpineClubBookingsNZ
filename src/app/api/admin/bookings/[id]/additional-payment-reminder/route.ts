@@ -22,7 +22,10 @@ import { requireAdmin } from "@/lib/session-guards";
  * owed / the booking is not in a collectable state / it is silenced or deleted /
  * the amount changed under them, 422 the mailer withheld the message (a
  * suppressed or placeholder address), 429 the member was already emailed inside
- * the cooldown, 502 the mail transport failed and the stamp was handed back.
+ * the cooldown, 502 the mail transport failed and the stamp was handed back, and
+ * 503 the "No emails" switch could not be read — our own uncertainty rather than
+ * a fact about this booking, so the message was held back and queued for the
+ * retry job instead of being sent or discarded.
  */
 export async function POST(
   request: NextRequest,

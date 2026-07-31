@@ -36,38 +36,18 @@ export const ADDITIONAL_PAYMENT_FINAL_REMINDER_DAYS_BEFORE_CHECK_IN = 2;
 
 /**
  * How long an admin must wait before re-sending the payment request by hand.
- * Shared by the auto reminders, so an automatic nudge and a manual one can never
- * reach the member inside the same hour.
+ *
+ * BOTH senders consult it, in both directions: the manual re-send refuses inside
+ * the window, and the cron treats the window as "not due yet" as well as reading
+ * the episode stamps. Stamps alone were not enough — a manual send late on the
+ * NZ day before the last-chance window opens writes only the day-N stamp, and
+ * the next three-hourly tick after NZ midnight would have found the final
+ * reminder unstamped and sent it minutes later. So an automatic nudge and a
+ * manual one cannot reach the member inside the same hour; the cost is that a
+ * genuinely due reminder can slip to the next tick, which is three hours, not a
+ * lost email.
  */
 export const ADDITIONAL_PAYMENT_RESEND_COOLDOWN_MINUTES = 60;
-
-/**
- * When the automatic chase started existing (#2350).
- *
- * On the very first deploy every delta that is already outstanding has been
- * outstanding for far longer than the day-3 threshold, so without this the first
- * cron pass would email the entire historical backlog at once — and for legacy
- * rows with no ADDITIONAL transaction to date the obligation from, the email's
- * "Requested on" line would show the payment row's creation date rather than the
- * day the price actually changed. Neither is a message the club would choose to
- * send.
- *
- * So the automatic chase covers obligations raised from here on: an episode that
- * began before this instant is never emailed about by the cron. Nothing is
- * hidden — the delta still shows on the booking page panel, the bookings list,
- * the dashboard card and the sidebar badge, and an admin can still re-send the
- * request by hand from the booking, which is a person choosing to make contact
- * rather than a robot doing it in bulk.
- *
- * Set to the date of the migration that added the chase stamps
- * (prisma/migrations/20260801120000_add_additional_payment_reminder_stamps).
- * If the deploy slips well past that date, raise this to the actual deploy day
- * before releasing; lowering it (or setting it to the epoch) deliberately opts
- * into chasing the backlog.
- */
-export const ADDITIONAL_PAYMENT_CHASE_STARTS_AT = new Date(
-  "2026-08-01T00:00:00.000Z",
-);
 
 /**
  * Booking lifecycle statuses whose upward-modification delta is still worth
@@ -95,6 +75,52 @@ export function isAdditionalOwedBookingStatus(
   return (
     status != null &&
     (ADDITIONAL_OWED_BOOKING_STATUSES as readonly string[]).includes(status)
+  );
+}
+
+/**
+ * Booking lifecycle statuses in which a MEMBER may still pay an outstanding
+ * upward-modification delta by card.
+ *
+ * Deliberately ONE status wider than the owed list above, and the extra one is
+ * `PAYMENT_PENDING`. That is not a disagreement about whether the money is
+ * collectable — it plainly is, and a PAYMENT_PENDING booking can genuinely carry
+ * a delta (adding a guest to a booking with an issued Xero invoice raises one,
+ * src/app/api/bookings/[id]/guests/route.ts). The admin queues exclude it purely
+ * so their counts can be summed with the unpaid-finished-stays queue, which
+ * already counts every PAYMENT_PENDING booking, without counting one booking
+ * twice (see src/lib/unpaid-finished-stays.ts). Hiding the member's own pay
+ * button for a counting reason would strand a real obligation.
+ *
+ * What the two lists agree on completely is the part that matters for money:
+ * CANCELLED and BUMPED are in neither. Cancellation marks the additional intent
+ * FAILED without zeroing `additionalAmountCents` and without always cancelling
+ * the Stripe intent (`hasOutstandingAdditionalPaymentIntent` in
+ * src/lib/booking-cancel.ts skips an intent that is ALREADY FAILED — a declined
+ * card leaves the intent confirmable at Stripe), so an amount-and-status-only
+ * gate let a member open a cancelled booking, be shown "pay this extra", fetch
+ * the client secret and complete the charge. The late-capture backstop (#1350)
+ * auto-refunds and alerts, but the member was still charged for a booking that
+ * no longer exists. This list is the front door that gate is built from.
+ */
+export const ADDITIONAL_PAYABLE_BOOKING_STATUSES = [
+  ...ADDITIONAL_OWED_BOOKING_STATUSES,
+  "PAYMENT_PENDING",
+] as const;
+
+export type AdditionalPayableBookingStatus =
+  (typeof ADDITIONAL_PAYABLE_BOOKING_STATUSES)[number];
+
+/**
+ * Is this booking in a lifecycle state where the MEMBER may still be shown, and
+ * allowed to complete, a card payment for an outstanding addition?
+ */
+export function isAdditionalPayableBookingStatus(
+  status: string | null | undefined,
+): status is AdditionalPayableBookingStatus {
+  return (
+    status != null &&
+    (ADDITIONAL_PAYABLE_BOOKING_STATUSES as readonly string[]).includes(status)
   );
 }
 
@@ -200,10 +226,20 @@ export interface AdditionalPaymentChaseInput {
   reminderSentAt: Date | null;
   finalReminderSentAt: Date | null;
   /**
-   * First-deploy guard; defaults to ADDITIONAL_PAYMENT_CHASE_STARTS_AT.
-   * Injectable so the rule can be tested without depending on the calendar.
+   * First-deploy guard: the instant automatic chasing began on THIS deployment.
+   *
+   * REQUIRED, and deliberately not defaulted to a constant in this file. A
+   * hand-edited "raise this before you release" date is enforced by nothing: if
+   * the deploy slips past it, every obligation raised in the gap is backlog that
+   * the first pass mails at once — the exact failure the guard exists to
+   * prevent. The cron derives it from a fact that is true at deploy time (the
+   * first recorded run of the job, see
+   * `resolveAdditionalPaymentChaseStartedAt` in
+   * src/lib/cron-additional-payment-reminders.ts); the manual re-send passes the
+   * epoch, because a person choosing to make contact is not the bulk mailing
+   * this guard is about.
    */
-  chaseStartsAt?: Date;
+  chaseStartsAt: Date;
 }
 
 /**
@@ -220,17 +256,36 @@ export interface AdditionalPaymentChaseInput {
  * nudge has nothing left to add, and sending two emails in one cron pass would be
  * exactly the noise the stamps exist to prevent.
  *
- * Obligations raised before the chase existed are never emailed about — see
- * ADDITIONAL_PAYMENT_CHASE_STARTS_AT for why the first deploy would otherwise
- * mail the whole backlog at once.
+ * An obligation whose episode began before `chaseStartsAt` is never emailed
+ * about: on the first deploy every already-outstanding delta is long past the
+ * day-3 threshold, so without the guard the first pass would mail the whole
+ * backlog at once. The exclusion is per EPISODE, not permanent — a later upward
+ * change (or a member retrying a failed charge) starts a fresh episode after the
+ * cutover and is chased normally.
+ *
+ * The cooldown is honoured here too, so the cron cannot land a reminder on top
+ * of an admin's manual send: without it, a manual send late on the NZ day before
+ * the pre-arrival window opens writes only the day-N stamp, leaving the next
+ * tick free to send the near-identical last-chance email minutes later.
  */
 export function resolveAdditionalPaymentChase(
   input: AdditionalPaymentChaseInput,
 ): AdditionalPaymentReminderKind | null {
   if (input.checkOut.getTime() <= input.today.getTime()) return null;
 
-  const chaseStartsAt = input.chaseStartsAt ?? ADDITIONAL_PAYMENT_CHASE_STARTS_AT;
-  if (input.episodeStartedAt.getTime() < chaseStartsAt.getTime()) return null;
+  if (input.episodeStartedAt.getTime() < input.chaseStartsAt.getTime()) {
+    return null;
+  }
+
+  if (
+    isWithinAdditionalPaymentResendCooldown({
+      now: input.now,
+      reminderSentAt: input.reminderSentAt,
+      finalReminderSentAt: input.finalReminderSentAt,
+    })
+  ) {
+    return null;
+  }
 
   const finalWindowStart =
     input.checkIn.getTime() -
@@ -256,9 +311,11 @@ export function resolveAdditionalPaymentChase(
 }
 
 /**
- * Has the member been emailed about this delta within the manual re-send
- * cooldown? Checks BOTH stamps, so an automatic reminder that has just gone out
- * blocks an admin's re-send just as another re-send would.
+ * Has the member been emailed about this delta within the re-send cooldown?
+ * Checks BOTH stamps, so an automatic reminder that has just gone out blocks an
+ * admin's re-send just as another re-send would — and, via
+ * `resolveAdditionalPaymentChase` above, an admin's re-send blocks the cron's
+ * next tick in exactly the same way.
  */
 export function isWithinAdditionalPaymentResendCooldown(params: {
   now: Date;
