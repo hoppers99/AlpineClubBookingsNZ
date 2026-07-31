@@ -20,6 +20,7 @@ import {
   saveXeroTokens,
 } from "@/lib/xero-token-store";
 import { getOperationalXeroRedirectUri } from "@/lib/xero-config";
+import { XERO_OAUTH_CALLBACK_NO_TENANT_MESSAGE } from "@/lib/xero-oauth-callback-messages";
 
 const MOCK_BASE_PATH = "/api/testing/xero-mock";
 
@@ -211,9 +212,7 @@ export async function handleMockXeroCallback(
   const connections = (await connRes.json()) as Array<{ tenantId: string }>;
   const tenantId = connections[0]?.tenantId ?? null;
   if (!tenantId) {
-    throw new Error(
-      "Xero did not return an organisation to connect. Please reconnect and choose the club organisation in Xero.",
-    );
+    throw new Error(XERO_OAUTH_CALLBACK_NO_TENANT_MESSAGE);
   }
 
   await saveXeroTokens({
