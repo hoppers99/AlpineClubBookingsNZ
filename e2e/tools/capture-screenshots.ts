@@ -33,9 +33,18 @@
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
-import { chromium, type Browser, type BrowserContext } from "@playwright/test";
+import {
+  chromium,
+  type Browser,
+  type BrowserContext,
+  type Page,
+} from "@playwright/test";
 import { loginPersona, storageStatePath } from "../helpers/auth";
-import { E2E_ADMIN, WAITLISTER } from "../helpers/fixtures";
+import {
+  DEMO_BOOKING_WINDOWS,
+  E2E_ADMIN,
+  WAITLISTER,
+} from "../helpers/fixtures";
 
 type Capture = {
   /** Stable filename stem and CLI selector, e.g. "admin-dashboard". */
@@ -56,6 +65,12 @@ type Capture = {
   persona?: "admin" | "member";
   /** Optional text to wait for before shooting, to avoid loading-state shots. */
   waitForText?: string;
+  /**
+   * Optional deterministic in-page interaction performed after load settles
+   * and before the screenshot. It must not persist data: previews may pick up
+   * a seeded drag, while writes belong in E2E tests rather than docs capture.
+   */
+  prepare?: (page: Page) => Promise<void>;
 };
 
 // The named set. Admin entries are the hub/landing pages an operator guide most
@@ -65,6 +80,13 @@ const CAPTURES: Capture[] = [
   { name: "admin-members", route: "/admin/members", area: "admin" },
   { name: "admin-bookings", route: "/admin/bookings", area: "admin" },
   { name: "admin-bed-allocation", route: "/admin/bed-allocation", area: "admin" },
+  {
+    name: "admin-bed-allocation-snap-preview",
+    route: `/admin/bed-allocation?from=${DEMO_BOOKING_WINDOWS.daveConfirmed.checkIn}&to=${DEMO_BOOKING_WINDOWS.daveConfirmed.checkOut}`,
+    area: "admin",
+    waitForText: "Dave Davis",
+    prepare: prepareBedAllocationSnapPreview,
+  },
   { name: "admin-waitlist", route: "/admin/waitlist", area: "admin" },
   { name: "admin-reports", route: "/admin/reports", area: "admin" },
   { name: "admin-setup", route: "/admin/setup", area: "admin" },
@@ -221,6 +243,54 @@ const HIDE_OVERLAYS_CSS =
 const BASE_URL = process.env.E2E_BASE_URL ?? "http://localhost:3001";
 const IMAGES_ROOT = path.resolve(path.join(import.meta.dirname, "..", "..", "docs", "images"));
 
+/**
+ * #2366 screenshot AC: Dave's past CONFIRMED demo booking is seeded with three
+ * existing allocations on its exact relative fixture nights. Pick up the first
+ * chip and hover A4 on the checkout column, which is horizontally different
+ * and has no allocation. The screenshot therefore captures the REAL pointer
+ * preview stating that the original seeded lodge nights are snapped/kept.
+ *
+ * The pointer remains down until `shoot` closes the page, so this is preview
+ * only: no PATCH is emitted and the reusable demo fixture is never changed.
+ */
+async function prepareBedAllocationSnapPreview(page: Page): Promise<void> {
+  const fixture = DEMO_BOOKING_WINDOWS.daveConfirmed;
+  const dragHandle = page
+    .getByRole("button", {
+      name: /Drag Dave Davis to another bed; original lodge night .* will be kept/,
+    })
+    .first();
+  const targetRow = page
+    .getByRole("row")
+    .filter({ has: page.getByText("A4", { exact: true }) });
+  const targetCell = targetRow.locator(
+    `td[data-stay-date="${fixture.checkOut}"]`,
+  );
+  await dragHandle.waitFor({ state: "visible", timeout: 15_000 });
+  await targetCell.waitFor({ state: "visible", timeout: 15_000 });
+
+  const [from, to] = await Promise.all([
+    dragHandle.boundingBox(),
+    targetCell.boundingBox(),
+  ]);
+  if (!from || !to) {
+    throw new Error(
+      "Could not resolve the seeded bed-allocation drag-preview geometry",
+    );
+  }
+  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, {
+    steps: 12,
+  });
+  await page
+    .getByText(
+      "Dave Davis to Bunk Room A / A4, snapped to original lodge nights",
+      { exact: false },
+    )
+    .waitFor({ state: "visible", timeout: 10_000 });
+}
+
 function outputPath(capture: Capture): string {
   return path.join(IMAGES_ROOT, capture.area, `${capture.name}.png`);
 }
@@ -298,6 +368,9 @@ async function shoot(context: BrowserContext, capture: Capture): Promise<void> {
       .waitFor({ state: "hidden", timeout: 15_000 })
       .catch(() => undefined);
     await page.waitForTimeout(800);
+    if (capture.prepare) {
+      await capture.prepare(page);
+    }
     // Hide the floating "Report issue" widget so it never overlaps captured
     // content (see HIDE_OVERLAYS_CSS). addStyleTag injects into the live page
     // just before the shot; it does not modify the app source.
