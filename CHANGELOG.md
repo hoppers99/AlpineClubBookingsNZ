@@ -4,6 +4,67 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **A member can now find and add another club member as a guest, and is told
+  plainly what that commits the other person to (#2308).** The booking wizard's
+  Guests step gains a **+ Add Member Guest** button beside the existing
+  non-member one, and it opens a find box inline underneath the Guests heading —
+  not a pop-up. One box takes either an exact email address or, where a club has
+  deliberately switched name search on, a name that narrows as you type and picks
+  itself when only one person is left. A household sharing one address produces a
+  short pick-list; two members with the same name and age group look identical on
+  purpose, and the box points at the email address rather than inventing a
+  distinguishing detail the booker never had. A found member's full name and age
+  group show straight away, and nothing else about them is ever shown — no
+  email, no town, no photo, no membership type.
+
+  Out of the box the membership list is not browsable: a member needs the other
+  member's exact address, which they either have or have to go and ask for. The
+  name-search setting ships **off** and is a per-club decision, and the admin
+  card says in as many words what turning it on costs — your membership list
+  becomes browsable to anyone who can start a booking. Under-18s stay out of that
+  list unless a club separately opts them in. Every lookup in either mode is
+  speed-limited against the member who typed it (not their internet address, so
+  switching network gains nothing) and written to the audit log, which means
+  anyone who can read that log will see the addresses and names members typed.
+  With the feature switched off, neither find address exists at all — they answer
+  as if the page were never built, rather than admitting the club has the feature
+  and disabled it.
+
+  While somebody is still deciding, the review step now states all four
+  consequences plainly, before the money and never behind a "find out more" link:
+  the bed is held and for how long, a refusal reprices the booking, **the person
+  added can see the whole booking including the other guests' names before they
+  decide**, and **their agreement covers the booking however the dates later
+  change**, with taking themselves off subject to the usual limits once it is
+  priced or paid. The wizard's own waiting labels name the person — "Waiting for
+  Sam to approve", "Sam approved", "Sam will be told" — while the booking page
+  keeps the wording it already had; both come out of one shared function so the
+  two cannot drift apart. The admin settings card's "not in use yet" notice has
+  been removed, because it no longer is.
+
+- **Adding another member is harder to abuse as a way of tracking them
+  (#2388).** A single refusal already said nothing — "This member can't be added
+  to this booking right now", whatever the real reason — but somebody patient
+  could try date after date and read the answer out of the pattern. Three things
+  now sit behind that sentence. Adding a member from outside your own family
+  group is speed-limited per person, so a run of attempts across many dates is
+  slowed to something useless while an ordinary family booking is not slowed at
+  all. The "no such member" answer has stopped being the fast one, and two
+  refusals that used to escape the neutral wording altogether — "linked member is
+  inactive or not found" and the age-exempt-account refusal — now read exactly
+  like every other one for a member outside your family, while a member adding
+  their own child still gets the detailed, actionable message. And repeated
+  refusals against the same person are recorded where an admin can find them,
+  flagged, naming both members.
+
+  That last one is deliberately a record and **never a block**. Somebody trying
+  five weekends to find one that suits a friend produces exactly the same pattern
+  as somebody probing, and only a person who knows both of them can tell the
+  difference — so the system writes it down and leaves the judgement to a club
+  officer. The remaining limit is stated honestly rather than papered over: a
+  patient member who stays inside the daily cap can still work out which nights
+  another member is booked.
+
 - **Clubs can safely record a trusted induction history when moving an
   established membership onto the digital register (#2361).** A new
   dry-run-first operator command classifies every active real-member
