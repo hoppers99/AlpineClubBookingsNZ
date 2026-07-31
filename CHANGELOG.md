@@ -53,6 +53,22 @@ All notable public reference-release changes should be recorded here.
   in their own file, 26 by a verified vouching parent — 5 of those through the
   wizard frame), and **43** across 23 files deliberately keeping their own
   reason.
+  **Review hardening in the same change.** A "no thanks" that the system cannot
+  carry out — an already-paid booking whose refund-or-credit choice only the club
+  can make, or a booking the member is the only guest on — now leaves the member
+  exactly where they were, on the booking and on the club's list, instead of
+  half-removing them. The person who made the booking is told what actually
+  happened: a decline is reported as a decline rather than as "did not answer in
+  time", a lapse is dated by the day the request really ran out, and a
+  paid-booking refusal says so plainly instead of "this booking is in a state the
+  system cannot change on its own". Nobody in a family can answer for a member who
+  has a login of their own — that member decides for themselves — and when an
+  adult does answer for a member who has no login, that member and the rest of the
+  household are now emailed to say who answered and what they said. The consent
+  request and the consent card no longer promise that the held bed is always
+  released when a request lapses, because occasionally it cannot be. A member who
+  has been asked but has not answered is also no longer shown the lodge door code,
+  and an officer can no longer hand-write a bed for one.
   We also fixed an unrelated bug we found next door while doing this: the
   **check-in reminder** email joined every guest's first names together and then
   every guest's last names, so the guest list read `Ada, Bob, Cleo Lovelace,
