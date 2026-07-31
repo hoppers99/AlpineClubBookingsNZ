@@ -184,9 +184,9 @@ covers **every** repaired message, including lines with no `{{token}}` in them
 that no other check on that screen can see. It clears when an admin opens the
 message and presses **Save Template**, which is the acknowledgement.
 
-Ask an admin to walk that list after the upgrade. Nothing is urgent, but a
-message that used to be conditional is now unconditional, and only a person can
-say whether the remaining wording still reads correctly.
+Ask an admin to walk that list after the upgrade. It is not an emergency, but it
+is not cosmetic either: a line that used to apply sometimes now applies always,
+and only a person can say whether the remaining wording still reads correctly.
 
 ### Post-upgrade action: check the email templates screen
 
