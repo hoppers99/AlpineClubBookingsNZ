@@ -117,6 +117,40 @@ and stored as integer cents; dates are NZ date-only lodge nights.
    applied filters and the row count only — never the redemption rows
    themselves); ordinary paginated browsing of the report is not audited.
 
+### What happens when a booking is edited and the code has run out
+
+A promotion's usage limits are enforced again every time a booking is repriced —
+a date change, guests added or removed, or an edit made from the booking's Edit
+panel. Between the day the booking was made and the day it is edited, other
+members may have used the code up.
+
+When that happens the club's rule is deliberately generous, and it is worth
+knowing so you can answer a member who asks:
+
+- **The edit always goes through.** Nobody is ever blocked from changing their
+  dates because somebody else used a promo code.
+- **Everyone who was already getting the discount keeps it.** It is never taken
+  back, and the member is never billed the difference for a change of dates.
+- **Anyone the edit newly adds is priced at the normal rate** if the code has no
+  room left for them. Guests are covered in the order they appear on the
+  booking — first come, first served.
+- **The member is told at the moment of the edit**, before they save, in one
+  sentence naming who is covered and who is not, and stating that the total on
+  screen already reflects it. The same sentence goes into their booking-modified
+  email and onto the booking's own history, so nobody has to reconstruct it
+  later. The redemptions report shows exactly who benefited.
+
+Two consequences to expect:
+
+- If you **lower a limit** on a code members are already using, the bookings
+  that already have the discount keep it. **Benefits given** can therefore sit
+  above the new limit for a while. That is correct, not a fault — the club
+  honours what it already promised — and the figure comes back under the limit
+  as those bookings pass. No new member is given the code while it is over.
+- If a code is completely used up and nobody on the booking was benefiting from
+  it, the edit removes the code from the booking rather than pretending it still
+  applies. Nobody loses anything, because nobody had anything.
+
 ## Settings reference
 
 | Setting | What it controls | Default | Notes / constraints |
@@ -160,6 +194,8 @@ That is the intended correction, not a fault.
 | Xero item/account fields are plain text boxes | Your role has no finance access, or Xero data failed to load | Enter the codes manually, or ask a finance admin — the code still works |
 | Delete became Archive | The code has redemptions and its history must be kept | Use Archive; **Restore** it later from the Archived section |
 | A code won't apply to a booking | It is inactive, expired, capped out, or restricted to other members/lodges/dates | Check the Active flag, date windows, usage caps, and any member/lodge restriction |
+| A member says one guest on their booking got the discount and another did not | The code ran out of uses partway through their edit; everyone who already had it keeps it and new people are priced normally | Nothing to do — see [What happens when a booking is edited and the code has run out](#what-happens-when-a-booking-is-edited-and-the-code-has-run-out); the redemptions report shows who benefited |
+| **Benefits given** sits above the limit after you lowered it | Members who already had the discount keep it; the club does not bill back a promise already made | Nothing to do — it comes back under the limit as those bookings pass, and no new member is given the code meanwhile |
 | No promo codes appear | None have been created (the demo seed ships none) | Click **Add Promo Code** to create one |
 
 ## Related links
