@@ -146,10 +146,17 @@ export interface MemberGuestConsentExceptionRow {
 }
 
 /**
- * The two columns, per D-15's four reasons (plus the honest fallback). The
+ * The two columns, per D-15's four reasons plus the two fallbacks. The
  * LAST_GUEST and QUOTE_PRICED sentences are the mockup's table copy verbatim;
- * the other three restate `describeConsentBlockedRemedy`'s wording split into
- * the same why/fix shape.
+ * BOOKING_STATUS, STAY_NOT_FUTURE and OTHER restate
+ * `describeConsentBlockedRemedy`'s wording split into the same why/fix shape;
+ * NO_LONGER_BLOCKED is composed in the same voice for the case only the live
+ * re-derivation can find (see `LiveConsentExceptionReason`).
+ *
+ * Every pair is pinned word for word by the tests, both ways round. Two of
+ * these sentences swapped would read perfectly and send an operator to
+ * re-quote a booking whose real problem is its status, so "the copy is
+ * present" is not a strong enough assertion to protect them.
  */
 export function describeConsentExceptionColumns(params: {
   reason: LiveConsentExceptionReason;
