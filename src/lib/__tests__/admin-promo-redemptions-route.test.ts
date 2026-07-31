@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
     promoRedemption: {
       aggregate: vi.fn(),
       groupBy: vi.fn(),
+      count: vi.fn(),
       findMany: vi.fn(),
     },
     // Distinct members who actually benefited (#2299): the cap progress
@@ -167,7 +168,11 @@ function seedHappyPath(codeOverride: Record<string, unknown> = {}) {
   mocks.prisma.promoCode.findUnique.mockResolvedValue({ ...PROMO_CODE, ...codeOverride });
   // Promise.all order: aggregate(all), groupBy(all),
   // allocation.groupBy(beneficial unique members), aggregate(filtered),
-  // groupBy(filtered), findMany(orderedForCode), findMany(rows).
+  // groupBy(filtered), count(benefit-free all), count(benefit-free filtered),
+  // findMany(orderedForCode), findMany(rows).
+  mocks.prisma.promoRedemption.count
+    .mockResolvedValueOnce(0)
+    .mockResolvedValueOnce(0);
   mocks.prisma.promoRedemption.aggregate
     .mockResolvedValueOnce({
       _count: { _all: 3 },
@@ -196,7 +201,13 @@ function seedDivergentTotals() {
   mocks.prisma.promoCode.findUnique.mockResolvedValue(PROMO_CODE);
   // Promise.all order: aggregate(all), groupBy(all),
   // allocation.groupBy(beneficial unique members), aggregate(filtered),
-  // groupBy(filtered), findMany(orderedForCode), findMany(rows).
+  // groupBy(filtered), count(benefit-free all), count(benefit-free filtered),
+  // findMany(orderedForCode), findMany(rows).
+  // Two of the three all-time applications gave nobody anything; one of them is
+  // inside the filter. Counted, never derived by subtraction.
+  mocks.prisma.promoRedemption.count
+    .mockResolvedValueOnce(2)
+    .mockResolvedValueOnce(1);
   mocks.prisma.promoRedemption.aggregate
     .mockResolvedValueOnce({
       _count: { _all: 3 },
@@ -262,12 +273,14 @@ describe("GET /api/admin/promo-codes/[id]/redemptions", () => {
       uniqueMembers: 2,
       discountCents: 8500,
       freeNightsUsed: 1,
+      benefitFreeRedemptions: 0,
     });
     expect(body.totals.filtered).toEqual({
       redemptions: 3,
       uniqueMembers: 2,
       discountCents: 8500,
       freeNightsUsed: 1,
+      benefitFreeRedemptions: 0,
     });
     expect(body.code.caps.maxRedemptionsTotal).toBe(10);
     expect(body.pagination.total).toBe(3);
@@ -395,12 +408,16 @@ describe("GET /api/admin/promo-codes/[id]/redemptions", () => {
       uniqueMembers: 2,
       discountCents: 8500,
       freeNightsUsed: 4,
+      // Counted server-side, not derived: subtracting the beneficiary counter
+      // (currentRedemptions = 3) from the application count would say 0 here.
+      benefitFreeRedemptions: 2,
     });
     expect(body.totals.filtered).toEqual({
       redemptions: 1,
       uniqueMembers: 1,
       discountCents: 1000,
       freeNightsUsed: 1,
+      benefitFreeRedemptions: 1,
     });
     // pagination.total tracks the filtered count, not the all-time count.
     expect(body.pagination.total).toBe(1);

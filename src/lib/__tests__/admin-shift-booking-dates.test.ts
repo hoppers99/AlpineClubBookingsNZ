@@ -117,6 +117,9 @@ vi.mock("@/lib/promo", () => ({
   // #2299: the promo path row-locks each PromoCode it may charge or
   // refund before reading or writing any usage cap.
   lockPromoCodeRowsForUpdate: vi.fn(),
+  lockAndRefreshPromoCodeUsage: vi.fn(
+    async (_tx: unknown, promoCode: unknown) => promoCode
+  ),
   validateAndCalculatePromoDiscount: vi.fn(),
 }));
 vi.mock("@/lib/logger", () => ({

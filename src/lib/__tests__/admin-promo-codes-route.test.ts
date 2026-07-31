@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => {
         update: vi.fn(),
         delete: vi.fn(),
       },
+      promoRedemption: { groupBy: vi.fn() },
       $transaction: vi.fn(async (callback: (innerTx: typeof tx) => unknown) => callback(tx)),
     },
   };
@@ -299,8 +300,11 @@ describe("admin promo code routes - zero-benefit redemptions (#2299)", () => {
     mocks.prisma.promoCode.findMany.mockResolvedValue([
       {
         id: "pc-1",
-        code: "CAP80",
-        currentRedemptions: 1,
+        code: "WINTER20",
+        // Three applications; ONE of them benefited two members, the other two
+        // benefited nobody. So the units genuinely differ: 2 beneficiary rows
+        // against 3 applications, of which 2 gave nothing.
+        currentRedemptions: 2,
         allocations: [
           {
             id: "alloc-1",
@@ -309,11 +313,21 @@ describe("admin promo code routes - zero-benefit redemptions (#2299)", () => {
             memberId: "member-1",
             createdAt: new Date("2026-07-01T00:00:00Z"),
           },
+          {
+            id: "alloc-2",
+            discountCents: 1500,
+            priceAdjustmentCents: -1500,
+            memberId: "member-2",
+            createdAt: new Date("2026-07-01T00:00:00Z"),
+          },
         ],
         _count: { redemptions: 3 },
         lodges: [],
         assignments: [],
       },
+    ]);
+    mocks.prisma.promoRedemption.groupBy.mockResolvedValue([
+      { promoCodeId: "pc-1", _count: { _all: 2 } },
     ]);
 
     const response = await GET(
@@ -334,9 +348,53 @@ describe("admin promo code routes - zero-benefit redemptions (#2299)", () => {
       })
     );
     // ...while the operator still sees that the code was applied three times.
-    expect(body[0].redemptions).toHaveLength(1);
+    expect(body[0].redemptions).toHaveLength(2);
     expect(body[0].totalRedemptionCount).toBe(3);
     expect(body[0]._count).toBeUndefined();
+
+    // The benefit-free figure is COUNTED, never derived. The old subtraction
+    // (3 applications - 2 beneficiary rows) would have said 1, and would have
+    // hidden the line entirely on a code with more beneficiaries than
+    // applications.
+    expect(body[0].benefitFreeRedemptionCount).toBe(2);
+    expect(mocks.prisma.promoRedemption.groupBy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        by: ["promoCodeId"],
+        where: expect.objectContaining({
+          allocations: { none: BENEFICIAL_PROMO_ALLOCATION_FILTER },
+        }),
+      })
+    );
+  });
+
+  it("reports zero benefit-free applications for a code with no such rows", async () => {
+    mocks.prisma.promoCode.findMany.mockResolvedValue([
+      {
+        id: "pc-2",
+        code: "CLEAN",
+        currentRedemptions: 1,
+        allocations: [
+          {
+            id: "alloc-9",
+            discountCents: 500,
+            priceAdjustmentCents: -500,
+            memberId: "member-9",
+            createdAt: new Date("2026-07-01T00:00:00Z"),
+          },
+        ],
+        _count: { redemptions: 1 },
+        lodges: [],
+        assignments: [],
+      },
+    ]);
+    // groupBy returns no row at all for a code with nothing to report.
+    mocks.prisma.promoRedemption.groupBy.mockResolvedValue([]);
+
+    const response = await GET(
+      new NextRequest("http://localhost/api/admin/promo-codes")
+    );
+    const body = await response.json();
+    expect(body[0].benefitFreeRedemptionCount).toBe(0);
   });
 
   it("archives (never hard-deletes) a code whose only application gave no benefit", async () => {
@@ -344,7 +402,7 @@ describe("admin promo code routes - zero-benefit redemptions (#2299)", () => {
     // allocations here would offer a delete the database then refuses.
     mocks.prisma.promoCode.findUnique.mockResolvedValue({
       id: "pc-1",
-      code: "CAP80",
+      code: "WINTER20",
       internal: false,
       _count: { redemptions: 1 },
     });

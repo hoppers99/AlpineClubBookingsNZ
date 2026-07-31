@@ -254,6 +254,157 @@ describe("zero-benefit applications produce no allocation row", () => {
       })
     ).toBe(false);
   });
+
+  // DECIDED, #2299: a SET_PRICE application whose per-guest adjustments net to
+  // exactly zero counts as NO use. In SET_PRICE mode every night is re-priced,
+  // so increases and decreases can cancel; the member's total is byte-identical
+  // with and without the code, so under the owner's "any price effect" rule
+  // there is no effect. The accepted consequence — such a stay can carry the
+  // code indefinitely — costs nothing, because it gives nothing.
+  it("counts a SET_PRICE stay whose nights cancel out as no use", () => {
+    const promo: PromoCodeInput = {
+      type: "FIXED_NIGHTLY_PRICE",
+      fixedNightlyPriceCents: 3000,
+      fixedNightlyMode: "SET_PRICE",
+    };
+    // $50 night comes DOWN to $30, $10 night goes UP to $30: -2000 + 2000 = 0.
+    const result = calculatePromoDiscountForGuestRates(promo, 6000, "member-1", [
+      { memberId: "member-1", isMember: true, perNightRates: [5000, 1000] },
+    ]);
+
+    expect(result.priceAdjustmentCents).toBe(0);
+    expect(result.discountCents).toBe(0);
+    // The guest WAS re-priced, so pricing still counts them as eligible...
+    expect(result.eligibleGuestCount).toBe(1);
+    // ...but no allowance is consumed.
+    expect(result.allocations).toEqual([]);
+    // The application is still recorded as an audit row (decision 3).
+    expect(shouldPersistPromoRedemption(result)).toBe(true);
+  });
+
+  it("counts a SET_PRICE member whose two guest rows cancel each other as no use", () => {
+    const promo: PromoCodeInput = {
+      type: "FIXED_NIGHTLY_PRICE",
+      fixedNightlyPriceCents: 3000,
+      fixedNightlyMode: "SET_PRICE",
+    };
+    // The same member owns both rows, so their two adjustments are summed into
+    // one allocation before the benefit test sees them.
+    const result = calculatePromoDiscountForGuestRates(promo, 6000, "member-1", [
+      { memberId: "member-1", isMember: true, perNightRates: [5000] },
+      { memberId: "member-1", isMember: true, perNightRates: [1000] },
+    ]);
+
+    expect(result.priceAdjustmentCents).toBe(0);
+    expect(result.allocations).toEqual([]);
+  });
+
+  it("still counts a SET_PRICE stay that only RAISES the price as a real use", () => {
+    const promo: PromoCodeInput = {
+      type: "FIXED_NIGHTLY_PRICE",
+      fixedNightlyPriceCents: 3000,
+      fixedNightlyMode: "SET_PRICE",
+    };
+    const result = calculatePromoDiscountForGuestRates(promo, 2000, "member-1", [
+      { memberId: "member-1", isMember: true, perNightRates: [1000, 1000] },
+    ]);
+
+    expect(result.discountCents).toBe(0);
+    expect(result.priceAdjustmentCents).toBe(4000);
+    expect(result.allocations).toEqual([
+      {
+        memberId: "member-1",
+        discountCents: 0,
+        priceAdjustmentCents: 4000,
+        freeNightsUsed: 0,
+      },
+    ]);
+  });
+});
+
+// The assigned-member path returns BEFORE normalizeAllocations, so the in-memory
+// allocation list it hands back is NOT benefit-filtered: pricing deliberately
+// emits a zero entry for a SET_PRICE guest whose rate already equals the fixed
+// price (`includeWhenZero`, src/lib/policies/pricing.ts). The filter is applied
+// at WRITE time instead. Both halves are pinned here, end to end.
+describe("assigned-member path: unfiltered in memory, filtered at write time", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const assignedSetPricePromo: PromoCodeInput = {
+    type: "FIXED_NIGHTLY_PRICE",
+    fixedNightlyPriceCents: 3000,
+    fixedNightlyMode: "SET_PRICE",
+  };
+
+  it("hands back a zero allocation for a guest whose rate already equals the fixed price", () => {
+    const result = calculatePromoDiscountForGuestRates(
+      assignedSetPricePromo,
+      11000,
+      "booker-1",
+      [
+        // Benefits: $50 night down to $30.
+        { memberId: "member-a", isMember: true, perNightRates: [5000] },
+        // Benefits from nothing: already at the fixed price.
+        { memberId: "member-b", isMember: true, perNightRates: [3000, 3000] },
+      ],
+      ["member-a", "member-b"]
+    );
+
+    // TRAP for future callers: member-b is present with a zero entry.
+    // (Ordered by descending guest total, so member-b's two $30 nights sort
+    // first.)
+    expect(result.allocations).toEqual([
+      {
+        memberId: "member-b",
+        discountCents: 0,
+        priceAdjustmentCents: 0,
+        freeNightsUsed: 0,
+      },
+      {
+        memberId: "member-a",
+        discountCents: 2000,
+        priceAdjustmentCents: -2000,
+        freeNightsUsed: 0,
+      },
+    ]);
+    expect(result.allocations.filter(isBeneficialPromoAllocation)).toHaveLength(1);
+  });
+
+  it("writes only the beneficial one, so member-b keeps their allowance", async () => {
+    const result = calculatePromoDiscountForGuestRates(
+      assignedSetPricePromo,
+      11000,
+      "booker-1",
+      [
+        { memberId: "member-a", isMember: true, perNightRates: [5000] },
+        { memberId: "member-b", isMember: true, perNightRates: [3000, 3000] },
+      ],
+      ["member-a", "member-b"]
+    );
+
+    const { tx, createdAllocations, counterUpdates } = makeTx();
+    await redeemPromoCode(
+      asTx(tx),
+      "promo-1",
+      "booking-1",
+      "booker-1",
+      result.discountCents,
+      result.priceAdjustmentCents,
+      result.freeNightsUsed,
+      result.eligibleGuestCount,
+      result.allocations
+    );
+
+    expect(createdAllocations.map((a) => a.memberId)).toEqual(["member-a"]);
+    expect(counterUpdates).toEqual([
+      {
+        where: { id: "promo-1" },
+        data: { currentRedemptions: { increment: 1 } },
+      },
+    ]);
+  });
 });
 
 // --- The persistence layer ---------------------------------------------------
@@ -271,12 +422,12 @@ describe("redeemPromoCode consumes a cap slot only for a real benefit", () => {
     expect(tx.promoRedemption.create).toHaveBeenCalledTimes(1);
     expect(tx.promoRedemptionAllocation.createMany).not.toHaveBeenCalled();
     expect(createdAllocations).toEqual([]);
-    expect(counterUpdates).toEqual([
-      {
-        where: { id: "promo-1" },
-        data: { currentRedemptions: { increment: 0 } },
-      },
-    ]);
+    // Not "increment: 0" — the promo code row is not written AT ALL. Writing it
+    // would bump `updatedAt` and make an application that consumed nothing look
+    // like an admin edit of the code; both sibling counter writers guard the
+    // same way, and the repair migration avoids `updatedAt` for the same reason.
+    expect(counterUpdates).toEqual([]);
+    expect(tx.promoCode.update).not.toHaveBeenCalled();
   });
 
   it("takes exactly one slot for a beneficial application", async () => {
@@ -355,6 +506,47 @@ describe("the allocation-sync triggers cannot resurrect a zero-benefit row", () 
       calls.indexOf("promoRedemption.create")
     );
     expect(calls).not.toContain("allocation.createMany");
+  });
+
+  it("deletes the trigger's row BEFORE writing its own beneficial rows", async () => {
+    // The delete is scoped by promoRedemptionId, so it takes out EVERY row for
+    // the redemption. Sequenced after the createMany it would silently wipe the
+    // beneficial set this call just wrote — the same failure class the ordering
+    // above guards, in the opposite direction.
+    const { tx, calls, createdAllocations } = makeTx();
+
+    await redeemPromoCode(asTx(tx), "promo-1", "booking-1", "member-1", 2000, -2000, 0, 1);
+
+    expect(createdAllocations).toHaveLength(1);
+    expect(calls.indexOf("allocation.deleteMany")).toBeLessThan(
+      calls.indexOf("allocation.createMany")
+    );
+    expect(calls.indexOf("allocation.deleteMany")).toBeGreaterThan(
+      calls.indexOf("promoRedemption.create")
+    );
+  });
+
+  it("deletes before creating on a reprice too", async () => {
+    const { tx, calls, createdAllocations } = makeTx({ existingAllocationCount: 1 });
+
+    await replacePromoRedemptionAllocations(
+      asTx(tx),
+      {
+        id: "redemption-1",
+        promoCodeId: "promo-1",
+        bookingId: "booking-1",
+        memberId: "member-1",
+      },
+      2000,
+      -2000,
+      0,
+      1
+    );
+
+    expect(createdAllocations).toHaveLength(1);
+    expect(calls.indexOf("allocation.deleteMany")).toBeLessThan(
+      calls.indexOf("allocation.createMany")
+    );
   });
 
   it("deletes the trigger's row AFTER updating the redemption on a reprice", async () => {
@@ -634,7 +826,13 @@ describe("member-facing status is benefit-gated", () => {
         createdAt: new Date("2026-07-01T00:00:00Z"),
         promoCode: {
           id: "promo-1",
-          code: "CAP80",
+          // A SET_PRICE code, NOT a never-biting CAP_ONLY one. A cap that never
+          // bites produces no eligible guest at all, so it wrote neither an
+          // allocation nor a redemption even before #2299 and never burned
+          // anyone's use; the cases that did burn one are a percentage or
+          // fixed amount over already-free nights, and a SET_PRICE code whose
+          // price already equals what the member pays.
+          code: "FLAT80",
           description: null,
           type: "FIXED_NIGHTLY_PRICE",
           percentOff: null,
@@ -642,7 +840,7 @@ describe("member-facing status is benefit-gated", () => {
           freeNightsPerIndividual: null,
           lifetimeFreeNightsCap: null,
           fixedNightlyPriceCents: 8000,
-          fixedNightlyMode: "CAP_ONLY",
+          fixedNightlyMode: "SET_PRICE",
           active: true,
           archivedAt: null,
           validFrom: null,
@@ -746,6 +944,15 @@ describe("zero-benefit repair migration", () => {
     expect(repairSql).toContain(
       'AND "PromoCode"."currentRedemptions" <> COALESCE(counted."allocationCount", 0)'
     );
+  });
+
+  it("tells the operator to re-run it after a blue/green drain", () => {
+    // The drift an old colour can leave behind does NOT self-heal on its own —
+    // only if that booking happens to be repriced or removed later. The
+    // migration file has to say so, because the migration will not re-run
+    // itself.
+    expect(repairSql).toMatch(/OPERATOR STEP/);
+    expect(repairSql).toMatch(/RE-RUN BOTH STATEMENTS BELOW ONCE/);
   });
 
   it("makes no schema change and writes no session clock", () => {
