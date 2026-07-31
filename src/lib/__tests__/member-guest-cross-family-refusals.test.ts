@@ -46,6 +46,7 @@ import {
   assertLinkedBookingMembersCanBeBooked,
   BookingGuestProfileRequiredError,
   BookingGuestValidationError,
+  resolveLinkedBookingMembersWithBoundary,
   type LinkedBookingMember,
 } from "@/lib/booking-guests";
 import { findUnpaidMemberGuests } from "@/lib/booking-member-guest-subscriptions";
@@ -359,5 +360,184 @@ describe("the three refusals are indistinguishable", () => {
     expect(profileRefusal.status).toBe(conflictRefusal.status);
     // And the message says nothing at all about which invariant refused.
     expect(profileRefusal.message).toBe(MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4. The two refusals that used to ESCAPE the collapse entirely (#2388, MG3 #2308)
+// ---------------------------------------------------------------------------
+//
+// D-8's collapse was applied to the three refusals MG2 knew about. Two more
+// answered a cross-family probe in their own words, with their own status, and
+// needed no stopwatch at all to tell apart from the neutral one:
+//
+//   * "Linked member is inactive or not found" (400) — a straight existence
+//     oracle. Try an id; the status alone said whether an active member was
+//     behind it.
+//   * "This account is age-exempt (N/A)…" (400) — said the target is an
+//     organisation or school account rather than a person.
+//
+// Equalising response TIMING would have been pointless while either of these
+// stood, because the body already gave the answer away. Both now collapse for a
+// beyond-family id on a member-initiated path, and both keep their detailed,
+// actionable form for a family-scope target and for an admin on-behalf path.
+describe("D-8 leak 4 — resolution refusals no longer escape the collapse", () => {
+  const OUTSIDER_2 = "m-outsider-2";
+
+  function resolveDb(rows: Array<{ id: string; ageTier: string }>) {
+    return {
+      familyGroupMember: {
+        findMany: async ({ where }: { where: Record<string, unknown> }) => {
+          // The booker's own family group contains the booker and CHILD.
+          if ((where as { memberId?: string }).memberId === BOOKER) {
+            return [{ familyGroupId: "fg-1" }];
+          }
+          if ((where as { familyGroupId?: { in: string[] } }).familyGroupId) {
+            return [{ memberId: BOOKER }, { memberId: CHILD }];
+          }
+          return [];
+        },
+      },
+      member: {
+        findMany: async () =>
+          rows.map((row) => ({
+            id: row.id,
+            ageTier: row.ageTier,
+            active: true,
+            canLogin: true,
+            firstName: "Dana",
+            lastName: "Doe",
+            profileCompletedAt: CHECK_IN,
+            detailsConfirmedAt: CHECK_IN,
+            detailsConfirmedByMemberId: null,
+            onboardingConfirmedAt: CHECK_IN,
+          })),
+      },
+    } as unknown as Parameters<typeof resolveLinkedBookingMembersWithBoundary>[0];
+  }
+
+  it("collapses 'inactive or not found' to the neutral refusal for a beyond-family id", async () => {
+    const error = await resolveLinkedBookingMembersWithBoundary(
+      // The member query returns nothing: the id names nobody active.
+      resolveDb([]),
+      BOOKER,
+      [OUTSIDER],
+      { memberGuestWideningEnabled: true },
+    ).catch((err: unknown) => err);
+
+    const refusal = error as BookingGuestValidationError;
+    expect(refusal).toBeInstanceOf(BookingGuestValidationError);
+    expect(refusal.message).toBe(MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE);
+    expect(refusal.status).toBe(403);
+    // The old body and the old status are both gone.
+    expect(refusal.message).not.toContain("inactive or not found");
+    expect(refusal.status).not.toBe(400);
+  });
+
+  it("collapses the age-exempt refusal for a beyond-family id", async () => {
+    const error = await resolveLinkedBookingMembersWithBoundary(
+      resolveDb([{ id: OUTSIDER, ageTier: "NOT_APPLICABLE" }]),
+      BOOKER,
+      [OUTSIDER],
+      { memberGuestWideningEnabled: true },
+    ).catch((err: unknown) => err);
+
+    const refusal = error as BookingGuestValidationError;
+    expect(refusal.message).toBe(MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE);
+    expect(refusal.status).toBe(403);
+    expect(refusal.message).not.toMatch(/age-exempt/i);
+  });
+
+  it("makes the two indistinguishable from each other AND from the profile-gate refusal", async () => {
+    // The whole point of a collapse: not that each refusal stops naming the
+    // member, but that a caller holding one cannot tell WHICH refusal it was.
+    const notFound = (await resolveLinkedBookingMembersWithBoundary(
+      resolveDb([]),
+      BOOKER,
+      [OUTSIDER],
+      { memberGuestWideningEnabled: true },
+    ).catch((err: unknown) => err)) as BookingGuestValidationError;
+
+    const ageExempt = (await resolveLinkedBookingMembersWithBoundary(
+      resolveDb([{ id: OUTSIDER, ageTier: "NOT_APPLICABLE" }]),
+      BOOKER,
+      [OUTSIDER],
+      { memberGuestWideningEnabled: true },
+    ).catch((err: unknown) => err)) as BookingGuestValidationError;
+
+    const profileGate = (await assertLinkedBookingMembersCanBeBooked(
+      profileGateDb(),
+      new Map([[OUTSIDER, incompleteMember(OUTSIDER)]]),
+      BOOKER,
+      { crossFamilyMemberIds: [OUTSIDER] },
+    ).catch((err: unknown) => err)) as BookingGuestValidationError;
+
+    for (const refusal of [ageExempt, profileGate]) {
+      expect(refusal.message).toBe(notFound.message);
+      expect(refusal.status).toBe(notFound.status);
+    }
+  });
+
+  it("keeps the detailed refusal for a FAMILY-scope id — a booker adding their own child is told why", async () => {
+    const error = await resolveLinkedBookingMembersWithBoundary(
+      resolveDb([]),
+      BOOKER,
+      [CHILD],
+      { memberGuestWideningEnabled: true },
+    ).catch((err: unknown) => err);
+
+    const refusal = error as BookingGuestValidationError;
+    expect(refusal.message).toBe("Linked member is inactive or not found");
+    expect(refusal.status).toBe(400);
+    expect(refusal.crossFamilyMemberIds).toBeUndefined();
+  });
+
+  it("keeps the detailed refusal on an admin on-behalf path", async () => {
+    // An officer is entitled to know the id is wrong, and hiding it from them
+    // would only produce support tickets.
+    const error = await resolveLinkedBookingMembersWithBoundary(
+      resolveDb([]),
+      BOOKER,
+      [OUTSIDER],
+      { skipAuthorization: true, memberGuestWideningEnabled: true },
+    ).catch((err: unknown) => err);
+
+    expect((error as BookingGuestValidationError).message).toBe(
+      "Linked member is inactive or not found",
+    );
+  });
+
+  it("tags every collapsed refusal with the targets it was about, for the audit trail", async () => {
+    // #2388: the route writes one audit row per refused target and must not have
+    // to recompute the family boundary to find out who they were.
+    const notFound = (await resolveLinkedBookingMembersWithBoundary(
+      resolveDb([]),
+      BOOKER,
+      [OUTSIDER],
+      { memberGuestWideningEnabled: true },
+    ).catch((err: unknown) => err)) as BookingGuestValidationError;
+    expect(notFound.crossFamilyMemberIds).toEqual([OUTSIDER]);
+
+    const profileGate = (await assertLinkedBookingMembersCanBeBooked(
+      profileGateDb(),
+      new Map([
+        [OUTSIDER, incompleteMember(OUTSIDER)],
+        [OUTSIDER_2, incompleteMember(OUTSIDER_2)],
+      ]),
+      BOOKER,
+      { crossFamilyMemberIds: [OUTSIDER, OUTSIDER_2] },
+    ).catch((err: unknown) => err)) as BookingGuestValidationError;
+    expect(profileGate.crossFamilyMemberIds).toEqual([OUTSIDER, OUTSIDER_2]);
+  });
+
+  it("still resolves a beyond-family member normally when nothing is wrong with them", async () => {
+    const { members, boundary } = await resolveLinkedBookingMembersWithBoundary(
+      resolveDb([{ id: OUTSIDER, ageTier: "ADULT" }]),
+      BOOKER,
+      [OUTSIDER],
+      { memberGuestWideningEnabled: true },
+    );
+    expect(members.has(OUTSIDER)).toBe(true);
+    expect(boundary.beyondFamilyMemberIds).toEqual([OUTSIDER]);
   });
 });

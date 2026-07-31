@@ -4,6 +4,7 @@ import {
   checkRateLimitInMemory as checkRateLimit,
   getClientIp,
   applyRateLimit,
+  applyMemberScopedRateLimit,
   rateLimiters,
   _testStore,
   type RateLimitConfig,
@@ -357,5 +358,79 @@ describe("degraded-mode policy for auth-sensitive limiters (#1142)", () => {
       .sort();
 
     expect(marked).toEqual(expected);
+  });
+});
+
+// MG3 (#2308) / #2388 — the authenticated-surface limiter.
+//
+// `applyRateLimit` keys on the client IP alone, which is wrong for an
+// authenticated enumeration surface in BOTH directions: one household behind a
+// NAT shares a budget, and one member can rotate addresses for a fresh one.
+// These tests pin that both keys are consulted, that they are namespaced, and
+// that the IP is checked first.
+describe("applyMemberScopedRateLimit (#2308)", () => {
+  const config: RateLimitConfig = {
+    id: "member-scoped-test",
+    limit: 2,
+    windowSeconds: 60,
+  };
+
+  beforeEach(() => {
+    _testStore.clear();
+    mockQueryRaw.mockReset();
+    // Reject the shared store so the deterministic per-process limiter runs;
+    // the two-key behaviour under test is identical either way.
+    mockQueryRaw.mockRejectedValue(new Error("connection refused"));
+  });
+
+  function request(ip: string) {
+    return new Request("https://club.example/api/members/guest-candidates/search", {
+      headers: { "x-forwarded-for": ip },
+    });
+  }
+
+  it("spends the MEMBER budget even when the address keeps changing", async () => {
+    // The same member from four different addresses. Per-IP limiting alone would
+    // wave all of them through; this is the hole that matters for enumeration.
+    const results = [];
+    for (const ip of ["198.51.100.1", "198.51.100.2", "198.51.100.3", "198.51.100.4"]) {
+      results.push(
+        await applyMemberScopedRateLimit(config, request(ip), "m-prober"),
+      );
+    }
+    expect(results.filter((result) => result === null).length).toBeGreaterThanOrEqual(1);
+    expect(results[results.length - 1]?.status).toBe(429);
+  });
+
+  it("spends the IP budget even when the member keeps changing", async () => {
+    const results = [];
+    for (const memberId of ["m-1", "m-2", "m-3", "m-4"]) {
+      results.push(
+        await applyMemberScopedRateLimit(config, request("203.0.113.9"), memberId),
+      );
+    }
+    expect(results[results.length - 1]?.status).toBe(429);
+  });
+
+  it("namespaces the two keys so a member id cannot collide with an address", async () => {
+    // A member whose id is literally another caller's IP string must not share
+    // that caller's budget.
+    await applyMemberScopedRateLimit(config, request("203.0.113.10"), "203.0.113.10");
+    const keys = [..._testStore.keys()];
+    expect(keys).toContain(`${config.id}:ip:203.0.113.10`);
+    expect(keys).toContain(`${config.id}:member:203.0.113.10`);
+  });
+
+  it("returns a 429 carrying the standard rate-limit headers", async () => {
+    const spend = async () =>
+      applyMemberScopedRateLimit(config, request("203.0.113.11"), "m-x");
+    await spend();
+    await spend();
+    // The per-process fallback runs at a quarter of the limit for authSensitive
+    // configs only; this config is not, so the third call is the one refused.
+    const denied = (await spend()) ?? (await spend());
+    expect(denied?.status).toBe(429);
+    expect(denied?.headers.get("Retry-After")).toBeTruthy();
+    expect(denied?.headers.get("X-RateLimit-Remaining")).toBe("0");
   });
 });
