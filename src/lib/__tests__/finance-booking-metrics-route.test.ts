@@ -153,6 +153,8 @@ describe("finance booking metrics route", () => {
         },
         capturedPrimaryCents: 12000,
         capturedAdditionalCents: 0,
+        outstandingAdditionalCents: 0,
+        outstandingAdditionalBookings: 0,
         refundedCents: 0,
         netCollectedCents: 12000,
         creditAppliedCents: 0,

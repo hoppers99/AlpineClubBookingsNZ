@@ -30,11 +30,19 @@ and stored as integer cents; dates are NZ date-only lodge nights.
 ### Review existing codes
 
 1. Go to **Admin → Rates & Policies → Promo Codes**. Each active code is a card
-   showing the code, its type badge, its benefit, redemptions, unique members,
-   and validity, plus **Deactivate**, **Edit**, and **Delete**/**Archive**
-   actions.
+   showing the code, its type badge, its benefit, **Benefits given** (how many
+   times the code has actually changed someone's price — counted once per member
+   per booking, which is what the total-uses limit counts), **Members who
+   benefited**, and validity, plus **Deactivate**, **Edit**, and
+   **Delete**/**Archive** actions. Underneath the benefits figure the card always
+   says how many bookings the code has been applied to, and how many of those
+   applications gave nobody anything — a useful hint that a code is
+   misconfigured for the stays people are actually booking.
 
    ![Promo Codes page: active code cards (FLAT50, STAY3GET1, MATE20, WINTER15) with type badges, benefit summaries, and an Add Promo Code button](../images/admin/admin-promo-codes.png)
+
+   > The screenshot predates the label change and still shows the older
+   > "Redemptions" / "Unique members" wording; it needs a manual refresh.
 
 2. Open the **Archived Promo Codes** section at the bottom to see and restore
    archived codes.
@@ -52,6 +60,17 @@ and stored as integer cents; dates are NZ date-only lodge nights.
      used either as a set price or a cap.
 4. Set any **Usage limits** (guests per booking, unique members, uses per
    member, total redemptions — leave blank for no limit) and any date windows.
+   Only an application that actually delivered a benefit — money off, a price
+   change in either direction, or a subsidised night — counts toward these
+   limits. If a member applies the code and it works out to exactly nothing for
+   their booking (a percentage or fixed amount off nights that are already free,
+   or a fixed nightly price that happens to equal what they already pay), the
+   application is still recorded in the redemptions report but uses up none of
+   their allowance, and none of the code's.
+
+   Note that a fixed nightly price used as a **cap** that never bites is a
+   different case: the code simply does not apply to that booking at all, so
+   nothing is recorded for it either way.
 5. Set the flags — **Members only**, **Member guests only**, **Active** — and,
    if you use Xero, the optional item/account codes. Optionally restrict the
    code to specific lodges (multi-lodge) or assign it to specific members.
@@ -68,9 +87,21 @@ and stored as integer cents; dates are NZ date-only lodge nights.
 1. Click **Redemptions** on any code (active, archived, or an internal
    work-party code) to open its redemption report. This view is available to
    view-only bookings admins as well — it changes nothing.
-2. The tiles at the top summarise **total redemptions** (with progress toward
-   the total-redemptions cap when one is set), **unique members**, **total
-   discounted** (the summed discount), and **free nights used**.
+2. The tiles at the top come in two groups, and each tile says which it belongs
+   to. **Applications**, **Members who applied it**, **Total discounted** and
+   **Free nights used** count applications of the code and follow the filter you
+   have set. **Benefits given** and **Members who benefited** are the two the
+   usage limits are enforced against: they count only applications that changed
+   someone's price, they are always all-time whatever the filter, and they are
+   the tiles that carry a progress bar toward a cap.
+
+   This report deliberately lists *every* application of the code, including any
+   that delivered no benefit. Those rows are tagged **No benefit** in the member
+   column, and the Applications tile tells you how many there are in total. Do
+   not read a `$0.00` discount as "no benefit" on its own — a fixed nightly
+   price set *above* a guest's normal rate raises their price, which is a real
+   use with no discount; those rows show the price increase underneath the
+   discount figure.
 3. Filter by **redeemed date range** (quick presets or custom dates) and, on a
    multi-lodge site, by **lodge**. The tiles and table recompute for the filter;
    the tiles also show the all-time figure alongside the filtered one.
@@ -95,7 +126,7 @@ and stored as integer cents; dates are NZ date-only lodge nights.
 | Percentage / Amount / Free nights / Fixed nightly price | The discount value | — | Percent 1–100; money in dollars stored as cents |
 | Fixed nightly mode | Set everyone to this price, or use as a cap | Cap only | Fixed-price type only |
 | Max nightly value covered | Cap the discount applied to any one night | unlimited | Percentage and Free Nights only |
-| Usage limits | Guests/booking, unique members, uses/member, total redemptions | unlimited | Blank = no limit |
+| Usage limits | Guests/booking, unique members, uses/member, total redemptions | unlimited | Blank = no limit; only applications that gave a benefit count |
 | Valid From / Until, Check-in From / Until | When the code and eligible stays apply | none | NZ date-only |
 | Members only / Member guests only | Restrict who the code applies to | off | — |
 | Active | Whether the code can be used now | on | — |
@@ -103,11 +134,29 @@ and stored as integer cents; dates are NZ date-only lodge nights.
 | Restrict to Lodges | Limit redemption to chosen lodges | all lodges | Multi-lodge only |
 | Assign to Specific Members | Limit use to named members, with a scope choice | none | Own-nights-only or whole booking |
 
+## After upgrading to this release
+
+Usage limits used to count *any* application of a code, even one that gave the
+member nothing. They now count only applications that actually changed someone's
+price, and a one-off repair runs during the upgrade to remove the historical
+benefit-free entries.
+
+So the first time you open this page after upgrading, expect the **Benefits
+given** figure on some cards — and the matching progress bar on the redemptions
+report — to be **lower than it was**, sometimes noticeably. Nothing has been
+deleted from the history: every application is still listed on the redemptions
+report, tagged **No benefit** where that is what it was. A code that looked
+exhausted may become usable again, and a member who was told "you have already
+used this promo code" for an application that did nothing for them can use it.
+That is the intended correction, not a fault.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
 | The page is read-only | Your admin role is view-only for bookings | Ask a full admin for bookings edit access |
+| **Benefits given** dropped after the upgrade | Benefit-free applications no longer count toward the limits, and the historical ones were cleared | Nothing to do — see [After upgrading to this release](#after-upgrading-to-this-release) |
+| A row shows a `$0.00` discount but counts as a use | A fixed nightly price set *above* the guest's normal rate raises their price, which is still a use | Check the price change shown under the discount figure on the redemptions report |
 | Xero item/account fields are plain text boxes | Your role has no finance access, or Xero data failed to load | Enter the codes manually, or ask a finance admin — the code still works |
 | Delete became Archive | The code has redemptions and its history must be kept | Use Archive; **Restore** it later from the Archived section |
 | A code won't apply to a booking | It is inactive, expired, capped out, or restricted to other members/lodges/dates | Check the Active flag, date windows, usage caps, and any member/lodge restriction |

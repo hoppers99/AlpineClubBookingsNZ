@@ -66,6 +66,40 @@ All notable public reference-release changes should be recorded here.
   question of the same rule, so the invoice the approval excuses is always
   exactly the invoice it is about to clear.
 
+- **The public site no longer advertises guest bookings (#2421).** The
+  signed-out help corpus previously answered "Can I stay without being a
+  member?" with "Yes", and the sign-in page carried a *Request a booking
+  without an account* link. Whether a club hosts non-members is the club's own
+  policy — often only as a guest accompanied by a member, if at all — and
+  advertising open guest bookings can read as commercial accommodation. Every
+  public string now defers to the club's own FAQ, rules, or policy pages, and
+  the sign-in-page link is gone (the school-group link is unchanged). The
+  request form itself still works exactly as before, by direct URL: it is now
+  excluded from search engines via a route-level `noindex` (`robots.txt`
+  deliberately does *not* disallow it, so crawlers can fetch the page and see
+  the noindex), no page a visitor can browse to links to it, and admins copy
+  its link from a new **Guest request form link (unlisted)** field on the
+  **Public Requests** tab of Booking Requests — visible to view-only admins,
+  since sharing a link is not a booking write. The one other way in is
+  unchanged: the *Book these dates again* button on a tokenised payment link
+  the club itself emails to a past requester.
+- **Bed moves now stay on the guest's original lodge nights (#2366).** Dragging
+  an existing allocation chip across date columns now chooses only the
+  destination bed: the preview and keyboard announcement show the original NZ
+  night that will be kept. The first visible chip still moves all of that
+  guest's visible allocated nights together, while later chips move one night.
+  A drop explicitly says **No change** and creates no audit entry only when
+  every represented row already uses that bed; mixed-bed proxy rows still
+  converge on it. Bucket removal names and removes only the dragged night,
+  unbooked single-night targets are refused locally, and drag-end feedback says
+  a valid request is saving instead of announcing success before the server.
+  Cancelled drags do nothing.
+  Grouped moves are all-or-nothing, and the bed changes, shared-double partner
+  promotions and audit records now commit in one global-then-destination-lodge
+  locked transaction instead of the browser creating a target night and then
+  trying to delete the original. The shared global lock also prevents a
+  concurrent cancellation from pruning and then having the move resurrect an
+  allocation.
 - **Recording a cash payment now asks about any extra still owing (#2397).**
   When a booking is priced up after it was made — someone adds a guest, say —
   the increase is tracked separately as an "additional payment" the member is
@@ -104,6 +138,30 @@ All notable public reference-release changes should be recorded here.
   more than one reason applies, the most specific one is shown — a payment that
   has already had money refunded says so, and says to resolve the refund first —
   and it is the same sentence before you click as after.
+
+- **The Whakapapa conditions widget survives the source page changing, and now
+  shows the trails.** The public widget is scraped from an external report page
+  whose style names carry a build hash that changes every time that site
+  redeploys — and each time it did, a section quietly went blank (road status was
+  broken this way when this work started). The scraper now matches on the stable
+  parts of the page rather than those rotating hashes, so a routine upstream
+  rebuild no longer breaks it. A new **Trails** section joins road status, lifts,
+  facilities, food & drink and conditions: trails are grouped by sub-area (small
+  neighbouring areas share a line to save space) and each shows its run
+  difficulty as the standard ski symbol — green circle, blue square, black
+  diamond, red diamond — with a matching key, plus whether it is groomed and its
+  size. The status badges gained **On Hold** (yellow) alongside Open, Closed and
+  Coming Soon, and an **Unknown** state renders grey. Operators get a new
+  **Source & selectors** panel on *Admin → Mountain Conditions*: set the report
+  URL (locked to whakapapa.com / snow.nz so it can never be pointed at an
+  internal address), and, only if a deeper page change defeats the defaults,
+  override the per-section element selectors — with a **Preview** that fetches
+  and parses without saving, and a save that refuses a malformed selector up
+  front (naming the field) instead of storing one that would throw on every
+  later scrape. The built-in selector set is seeded into the database, and the
+  whole configuration can be **exported and imported as a JSON file** so one
+  site's known-good settings can be handed to another rather than re-entered by
+  hand.
 
 - **A cancellation is no longer approved while the member's Xero contact still
   has money owing (#2392).** Approving a cancellation archives that member's
@@ -147,6 +205,117 @@ All notable public reference-release changes should be recorded here.
   after. Finally, because the Xero archive itself happens later on the sync
   queue rather than at the moment of approval, it asks the same question again
   just before it runs and holds off if the answer has changed since.
+
+- **A promo code that turned out to be worth nothing no longer uses up
+  someone's one permitted go at it (#2299).** Until now the system counted a
+  promo code as "used" the moment it was applied to a booking with eligible
+  guests, whether or not it actually took anything off the price. That is
+  easier to hit than it sounds and needs no bug anywhere: a percentage-off or
+  money-off code does nothing on nights that are already free (young children,
+  a zero-dollar stay — 20% of nothing is nothing), and a "fixed price per
+  night" code set to price everyone at, say, $30 does nothing for a member
+  already paying exactly $30. The member got no money off and was then told,
+  for ever, "You have already used this promo code". The empty use also counted
+  toward the code's total-redemptions limit and took up one of its
+  unique-member places, so a code could look exhausted when nobody had
+  benefited from it at all.
+
+  A use now means the member actually got something — money off, a change to
+  what they pay, or a subsidised night. All three limits (uses per member,
+  total redemptions, unique members) count only those, matching how the
+  lifetime free-nights allowance has always worked. The application is still
+  recorded and still appears in the code's redemptions report, so an operator
+  can see that a code is being applied fruitlessly — usually the sign that it
+  is set up wrong for the stays people are booking. The promo code card now
+  says exactly that: **Benefits given** (counted once per member, per booking —
+  which is what the total-uses limit counts), and underneath it, always, how
+  many bookings the code has been applied to and how many of those gave nobody
+  anything. The redemptions report has been reorganised to match: four tiles
+  count applications and follow whatever filter you set, two count benefits and
+  carry the cap progress, each says which it is, and any application that gave
+  no benefit is tagged in the table so you can find it. A fixed nightly price
+  set *above* someone's normal rate raises what they pay — a real use with no
+  discount — so those rows now show the price increase alongside the $0
+  discount rather than looking like an empty application.
+
+  If a booking is later edited so its promo benefit disappears, the allowance it
+  was holding is handed back at the same moment, so nobody is left paying full
+  price while still counted as having used the code. Two edge cases were fixed
+  along the way: a booking holding a code's last remaining use no longer loses
+  its discount — and get billed the discount back — merely for shifting its
+  dates or adding a guest; and all four ways of editing a booking now take the
+  same lock on the promo code before checking its limits, so two people editing
+  different bookings at the same moment cannot both take the last use.
+
+  One deliberate line: if a fixed-nightly code re-prices someone's nights and
+  the increases and decreases cancel out to exactly nothing, that counts as no
+  use. Their total is identical with and without the code, so the code can go on
+  being applied to such a stay — which costs nothing, because it gives nothing.
+
+  Existing sites are repaired on upgrade: benefit-free records stop counting
+  immediately, the dead rows are cleared out, and each code's redemption total
+  is recalculated from what is left. Expect the benefits figure on some codes to
+  drop the first time you look — that is the correction, not a loss. Nothing in
+  the redemptions report or its CSV is removed; only what counts as a use
+  changes.
+
+- **Money still owed after a booking change is now visible everywhere, and the
+  member is actually asked for it (#2350).** When a change pushed a confirmed
+  booking's price up — an admin adding a non-member guest, say — the difference
+  became an "additional payment" the member had to make from their own booking
+  page. Nothing chased them for it, no admin screen showed it, and the revenue
+  report counted it as money in the bank. It could sit there indefinitely, and
+  did.
+
+  The bookings list now says when the money is short: such a row reads **Partly
+  paid** with an amber **"$210.00 due"** beside it. The booking's own status chip
+  still reads Paid,
+  which is right — the stay is confirmed; it is the money that is short. Opening
+  the booking gives any admin an **Additional payment outstanding** panel with
+  the amount, when the change was made and how long ago, whether the last
+  attempt to charge the card failed, and when the member was last emailed. It is
+  read-only on purpose: nothing here takes, waives or zeroes the money, because
+  collecting it belongs to the member's own card or to an ordinary booking
+  change. The booking's timeline gains the entry that was missing too — it
+  recorded an extra payment succeeding and failing, but never its being asked
+  for in the first place.
+
+  The member is now chased while it still matters: a few days after the change,
+  and once more shortly before check-in, with the pre-arrival message naming the
+  amount as well. An admin can send the same message on demand with **Resend
+  payment request email**, which takes the place of whichever automatic reminder
+  was coming rather than adding to it. Automatic and manual sends share one
+  clock, so a member emailed within the last hour — by an officer, or by the
+  reminder — is not chased twice over, and every re-send is audited. A booking
+  with the **No emails** switch on is refused with an explanation rather than
+  silently swallowed, and a message the mail system withholds (a bounced address,
+  a member with no real address on file) is reported as not sent rather than
+  counted as sent. Only confirmed, paid and completed bookings are chased at all
+  — cancelling a booking ends the club's claim on the difference, and no screen
+  calls it outstanding afterwards. **A cancelled booking no longer offers the
+  member a way to pay it, either:** the pay-the-extra card and the card form
+  behind it were still being shown on a cancelled booking, and because
+  cancelling does not always close the card charge at the payment provider, a
+  member could complete a payment for a stay that no longer existed. (The system
+  refunded it automatically and alerted the club, but the member had still been
+  charged.) Both now check the booking's state before offering anything. Changes
+  made before this shipped are shown but never emailed about automatically, so
+  going live does not mail the backlog — and that cut-off is now taken from the
+  moment the reminders first ran on the club's own system rather than a date
+  written into the code in advance, so it stays right however long the release
+  takes.
+  Nothing is ever auto-cancelled or expired over an unpaid addition,
+  and the chasing stops once the stay is over: from then on it is a
+  conversation, which is what the dashboard card is for.
+
+  That dashboard card and its sidebar badge stopped being finished-stays-only.
+  They now count upcoming stays too — the half that can still be chased — shown
+  as "3 upcoming, 1 finished" behind one link to the owed filter. And the money
+  is honest on the finance surfaces: the reports page's revenue figure keeps its
+  meaning but is labelled **Booked Revenue**, with **Outstanding Additions**
+  beside it (in the CSV as well, along with the subtraction), and the finance
+  dashboard finally renders the additional-payment split it had been quietly
+  computing all along.
 
 - **Clubs can safely record a trusted induction history when moving an
   established membership onto the digital register (#2361).** A new
@@ -252,7 +421,7 @@ All notable public reference-release changes should be recorded here.
   is stuck and what actually fixes it (cancel the booking, add another guest,
   re-quote the request), never a dead-end "ask the club".
   The published banner-coverage figures were re-measured with the new settings
-  card: **297** gated admin controls, **250** of them covered by a banner (224
+  card: **299** gated admin controls, **252** of them covered by a banner (226
   in their own file, 26 by a verified vouching parent — 5 of those through the
   wizard frame), and **47** across 25 files deliberately keeping their own
   reason.
@@ -753,8 +922,8 @@ All notable public reference-release changes should be recorded here.
   added its three, once more when #2286's Release/Change bed controls landed,
   again when the cash / off-Xero payment feature, #2262, landed its four
   per-button-reason controls, and again with #2307's Member guests settings
-  card): **297**
-  gated admin controls, **250** of them covered by a banner (224 in their own
+  card): **299**
+  gated admin controls, **252** of them covered by a banner (226 in their own
   file, 26 by a verified vouching parent — 5 of those through the wizard frame),
   and **47** across 25 files deliberately keeping their own reason.
 - **Choosing to use your account credit and then saving the booking as a draft

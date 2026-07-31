@@ -279,6 +279,28 @@ export const IB_WINDOW = relMondayWindow(56);
 export const PAID_CANCEL_BOOKING_ID = "e2e-paid-cancel";
 export const PAID_CANCEL_WINDOW = relWindow(300, 2);
 
+// --- Outstanding additional payment fixture (#2350) ----------------------
+// A future-dated PAID booking owned by Nadia whose price was pushed up after it
+// was paid, leaving an uncollected additional payment — the exact state
+// e2e/additional-payment-chase.spec.ts exercises. Seeded directly rather than
+// produced by an admin edit, because raising a real one mints a Stripe
+// PaymentIntent and the additional-payment specs must run whether or not
+// Stripe test keys are configured.
+//
+// Deeper into the Summer season than PAID_CANCEL_WINDOW so the two never
+// overlap (a member-night conflict would block neither, but keeping seeded
+// windows disjoint is the house rule), and far past every other fixture, so no
+// other spec sees this booking. It is the ONLY seeded booking with an
+// uncollected addition — the demo PAID booking's addition is SUCCEEDED — so the
+// admin list filtered to "still owing" shows exactly this one row.
+//
+// The addition is raised at seed time, i.e. today, so it is younger than the
+// three-day reminder threshold: the reminder cron cannot email about it during
+// a run and steal the cooldown the spec's manual re-send depends on.
+export const ADDITIONAL_OWED_BOOKING_ID = "e2e-additional-owed";
+export const ADDITIONAL_OWED_WINDOW = relWindow(320, 2);
+export const ADDITIONAL_OWED_AMOUNT_CENTS = 21_000;
+
 // --- Membership application fixture (e2e/membership-application.spec.ts) --
 // A PENDING_NOMINATORS application whose two nomination tokens have KNOWN raw
 // values (their SHA-256 is stored, matching src/lib/action-tokens.ts), so the

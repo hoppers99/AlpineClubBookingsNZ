@@ -1,0 +1,43 @@
+-- #2350: chase stamps for an OUTSTANDING additional payment (the upward
+-- modification delta recorded on Payment.additionalAmountCents while
+-- Payment.additionalPaymentStatus is still PENDING or FAILED).
+--
+-- Two nullable timestamps, one per reminder in the chase sequence: the "a few
+-- days after it was raised" nudge (which an admin's manual re-send also
+-- stamps) and the one-off nudge shortly before check-in. They exist so the
+-- reminder cron is idempotent — a rerun in the same window claims nothing and
+-- therefore sends nothing — the same job preArrivalReminderSentAt does for the
+-- pre-arrival cron.
+--
+-- Blue/green EXPAND migration (see docs/BLUE_GREEN_MIGRATION_SAFETY.tsv). This
+-- touches "Payment", which IS in HOT_TABLE_SQL_REGEX, so it carries its own
+-- ledger row and lock-impact plan:
+--  * ONE ALTER TABLE with two ADD COLUMNs, both nullable with NO default, so
+--    each is a PostgreSQL catalog-only add: no table rewrite, no row scan, no
+--    backfill. The statement takes a brief ACCESS EXCLUSIVE lock on "Payment"
+--    for the catalog write only;
+--  * no enum change, no index, no constraint, no foreign key, no DROP, no
+--    RENAME, no ALTER COLUMN TYPE / SET NOT NULL, no backfill DML, no
+--    session-clock DML, and no Xero/Stripe/SES/provider call in-migration.
+--
+-- Every existing row is left NULL, which is exactly the "nobody has been
+-- chased about this delta yet" state the new code reads, so there is no data
+-- migration to get wrong.
+--
+-- Old-colour compatible in BOTH directions. Forward: the previously deployed
+-- Prisma client has no additionalReminderSentAt / additionalFinalReminderSentAt
+-- fields, never selects or writes them, and no old-colour behaviour depends on
+-- them. Reverse: a stamp written by the NEW colour during the
+-- migrate -> cutover drain is a timestamp the old colour simply ignores; the
+-- worst case is that the old colour cannot see that a reminder already went
+-- out, and it has no reminder of its own to send, so nothing double-sends.
+--
+-- Forward-only expand (no automated rollback needed): dropping the columns on
+-- rollback discards only the record of which reminders were sent, so the chase
+-- sequence would restart from the beginning for any still-owing delta. Run in
+-- the normal deploy window; the metadata-only ADD COLUMNs take a brief lock on
+-- "Payment", so let the deploy guard stop on lock timeout.
+
+-- AlterTable
+ALTER TABLE "Payment" ADD COLUMN     "additionalFinalReminderSentAt" TIMESTAMP(3),
+ADD COLUMN     "additionalReminderSentAt" TIMESTAMP(3);

@@ -70,7 +70,7 @@ choose your password. Follow it, set your password, and you are taken to sign in
 1. Go to **Log In** (`/login`) and sign in with your email and the password you
    set.
 
-   ![The member sign-in page showing email and password fields, a Forgot password link, and links to apply for membership or request a booking without an account](../images/public/public-login.png)
+   <!-- Screenshot public-login.png removed pending recapture without the guest-booking link (#2429); restore the embed when regenerated. -->
 
 2. If the club requires two-factor authentication, you are guided to set it up on
    first sign-in — see [Managing your account](your-account.md#two-factor-authentication-2fa).

@@ -36,9 +36,10 @@ date-only lodge nights, interpreted in the club time zone.
 
 ### Read the figures
 
-1. The top cards show **Total Bookings**, **Total Revenue**, **Total Guests**,
-   and **Avg Occupancy** for the range. The second row shows member stats
-   (Active, Paid-Up, Unpaid, Overdue, New) for the current season.
+1. The top cards show **Total Bookings**, **Booked Revenue**, **Outstanding
+   Additions**, **Total Guests**, and **Avg Occupancy** for the range. The
+   second row shows member stats (Active, Paid-Up, Unpaid, Overdue, New) for
+   the current season.
 2. The charts show **Occupancy Rate**, **Revenue by Day/Week/Month** (the
    granularity is chosen automatically from the range length), **Booking Trends
    (by week)**, **Member vs Non-Member Guests**, and **Booking Status
@@ -67,9 +68,14 @@ This page is read-only. Its controls:
 | CSV | Download the figures as CSV | — | Filename `tac-report-<date>.csv` |
 | Download PDF | Generate a printable PDF | — | Falls back to the browser print dialog on error; always rendered light-on-white regardless of your theme |
 
-Notes: **Total Revenue** excludes cancelled and bumped bookings; the member
-stat cards always use the current season's data (shown in the print header);
-occupancy is sampled to keep long ranges readable.
+Notes: **Booked Revenue** is what the club priced, whether or not the money has
+arrived; it excludes cancelled and bumped bookings. **Outstanding Additions** is
+the part of that figure still owing because a booking change raised the price
+after payment and the extra was never collected — it sits *inside* Booked
+Revenue, so subtract it to see what has actually been collected. (Both figures,
+and the subtraction, are in the CSV.) The member stat cards always use the
+current season's data (shown in the print header); occupancy is sampled to keep
+long ranges readable.
 
 ## Troubleshooting
 
@@ -80,6 +86,7 @@ occupancy is sampled to keep long ranges readable.
 | A chart says "No … data for this period" | There is no matching data in the range | Widen the range or change the Deleted / Lodge filter |
 | Occupancy shows 0% | No bed-nights were occupied in the range, or capacity is unset | Check the range and the lodge's capacity setup |
 | Revenue looks low | Cancelled and bumped bookings are excluded by design | Compare against the [Payments](payments.md) ledger for the full picture |
+| Revenue looks higher than the bank | Booked Revenue counts money that was priced but may not have arrived | Read **Outstanding Additions** beside it, and chase those bookings from [Bookings](bookings.md#chase-money-still-owed-after-a-booking-change) |
 
 ## Related links
 

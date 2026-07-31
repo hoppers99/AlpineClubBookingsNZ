@@ -52,6 +52,7 @@ import {
   listBedAllocationRooms,
   manuallyAllocateBed,
   manuallyAllocateBedForNights,
+  moveBedAllocationsSameDate,
   parseBedAllocationDateRange,
   updateBedAllocationBed,
 } from "@/lib/admin-bed-allocation";
@@ -1007,6 +1008,347 @@ describe("manuallyAllocateBedForNights", () => {
       delete prismaMock.bookingGuest;
       delete prismaMock.lodgeBed;
     }
+  });
+});
+
+describe("same-date allocation moves (#2366)", () => {
+  function sourceRow(
+    overrides: Partial<{
+      id: string;
+      bedId: string;
+      stayDate: Date;
+    }> = {},
+  ) {
+    return {
+      id: overrides.id ?? "allocation-1",
+      bookingId: "booking-1",
+      bookingGuestId: "guest-1",
+      roomId: "room-1",
+      bedId: overrides.bedId ?? "bed-1",
+      stayDate: overrides.stayDate ?? parseDateOnly("2026-07-01"),
+      source: "AUTO",
+      approvedAt: parseDateOnly("2026-06-01"),
+      approvedByMemberId: "admin-old",
+      isSecondOccupant: false,
+      bedType: "SINGLE",
+    };
+  }
+
+  function buildMoveTx(input: {
+    sources: ReturnType<typeof sourceRow>[];
+    destinationBedId?: string;
+    targetOccupants?: (stayDate: Date) => unknown[];
+    custodianHolds?: unknown[];
+    promotedPartner?: ReturnType<typeof sourceRow> | null;
+  }) {
+    const destinationBedId = input.destinationBedId ?? "bed-2";
+    const findMany = vi.fn(
+      async (args: {
+        where: {
+          id?: { in: string[] };
+          stayDate?: Date;
+        };
+      }) => {
+        if (args.where.id) {
+          return input.sources.filter((row) =>
+            args.where.id!.in.includes(row.id),
+          );
+        }
+        return input.targetOccupants?.(args.where.stayDate!) ?? [];
+      },
+    );
+    const upsert = vi.fn(
+      async (args: {
+        where: {
+          bookingGuestId_stayDate: {
+            bookingGuestId: string;
+            stayDate: Date;
+          };
+        };
+        update: Record<string, unknown>;
+      }) => {
+        const source = input.sources.find(
+          (row) =>
+            row.bookingGuestId ===
+              args.where.bookingGuestId_stayDate.bookingGuestId &&
+            row.stayDate.getTime() ===
+              args.where.bookingGuestId_stayDate.stayDate.getTime(),
+        )!;
+        return {
+          ...source,
+          ...args.update,
+          roomId: "room-2",
+          bedId: destinationBedId,
+          stayDate: source.stayDate,
+        };
+      },
+    );
+    const update = vi.fn(
+      async ({ data }: { data: Record<string, unknown> }) => ({
+        ...input.promotedPartner,
+        ...data,
+      }),
+    );
+
+    return {
+      $executeRaw: vi.fn().mockResolvedValue(1),
+      bookingGuest: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: "guest-1",
+          bookingId: "booking-1",
+          memberId: null,
+          consentStatus: null,
+          stayStart: parseDateOnly("2026-07-01"),
+          stayEnd: parseDateOnly("2026-07-04"),
+          nights: input.sources.map((row) => ({ stayDate: row.stayDate })),
+          booking: {
+            id: "booking-1",
+            status: "CONFIRMED",
+            deletedAt: null,
+            wholeLodgeHold: false,
+            lodgeId: "lodge-1",
+          },
+        }),
+      },
+      lodgeBed: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: destinationBedId,
+          roomId: "room-2",
+          active: true,
+          bedType: "SINGLE",
+          room: { id: "room-2", lodgeId: "lodge-1", active: true },
+        }),
+      },
+      hutLeaderAssignment: {
+        findMany: vi.fn().mockResolvedValue(input.custodianHolds ?? []),
+      },
+      member: { findMany: vi.fn().mockResolvedValue([]) },
+      memberPartnerLink: { findUnique: vi.fn().mockResolvedValue(null) },
+      bedAllocation: {
+        findMany,
+        findUnique: vi.fn(
+          async (args: {
+            where: {
+              bookingGuestId_stayDate: {
+                bookingGuestId: string;
+                stayDate: Date;
+              };
+            };
+          }) =>
+            input.sources.find(
+              (row) =>
+                row.bookingGuestId ===
+                  args.where.bookingGuestId_stayDate.bookingGuestId &&
+                row.stayDate.getTime() ===
+                  args.where.bookingGuestId_stayDate.stayDate.getTime(),
+            ) ?? null,
+        ),
+        findFirst: vi.fn().mockResolvedValue(input.promotedPartner ?? null),
+        update,
+        upsert,
+      },
+      auditLog: { create: vi.fn().mockResolvedValue({}) },
+    };
+  }
+
+  async function withMoveTransaction<T>(
+    tx: ReturnType<typeof buildMoveTx>,
+    run: () => Promise<T>,
+  ) {
+    const prismaMock = prisma as unknown as {
+      $transaction?: unknown;
+      lodgeBed: { findUnique: ReturnType<typeof vi.fn> };
+    };
+    const originalLodgeBed = prismaMock.lodgeBed;
+    prismaMock.lodgeBed = {
+      findUnique: vi.fn().mockResolvedValue({ room: { lodgeId: "lodge-1" } }),
+    };
+    prismaMock.$transaction = vi.fn(
+      async (callback: (client: typeof tx) => Promise<T>) => callback(tx),
+    );
+    try {
+      return await run();
+    } finally {
+      delete prismaMock.$transaction;
+      prismaMock.lodgeBed = originalLodgeBed;
+    }
+  }
+
+  it("takes global then destination-lodge locks before re-reading and keeps the persisted original night", async () => {
+    const tx = buildMoveTx({ sources: [sourceRow()] });
+
+    const result = await withMoveTransaction(tx, () =>
+      moveBedAllocationsSameDate({
+        allocationIds: ["allocation-1"],
+        bedId: "bed-2",
+        actorMemberId: "admin-1",
+      }),
+    );
+
+    expect(result.noop).toBe(false);
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(2);
+    expect(tx.$executeRaw.mock.invocationCallOrder[1]).toBeLessThan(
+      tx.bedAllocation.findMany.mock.invocationCallOrder[0],
+    );
+    expect(tx.bedAllocation.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          bookingGuestId_stayDate: {
+            bookingGuestId: "guest-1",
+            stayDate: parseDateOnly("2026-07-01"),
+          },
+        },
+      }),
+    );
+    expect(tx.auditLog.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("is a server-side no-op with no write or audit when the normalized bed/date is unchanged", async () => {
+    const tx = buildMoveTx({
+      sources: [sourceRow({ bedId: "bed-1" })],
+      destinationBedId: "bed-1",
+    });
+
+    const result = await withMoveTransaction(tx, () =>
+      moveBedAllocationsSameDate({
+        allocationIds: ["allocation-1"],
+        bedId: "bed-1",
+        actorMemberId: "admin-1",
+      }),
+    );
+
+    expect(result).toEqual({
+      allocations: [],
+      promotedPartners: [],
+      noop: true,
+    });
+    expect(tx.bedAllocation.upsert).not.toHaveBeenCalled();
+    expect(tx.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it("rolls an existing-allocation bulk move back as one conflict and writes no audit", async () => {
+    const sources = [
+      sourceRow(),
+      sourceRow({
+        id: "allocation-2",
+        stayDate: parseDateOnly("2026-07-02"),
+      }),
+    ];
+    const tx = buildMoveTx({
+      sources,
+      targetOccupants: (stayDate) =>
+        stayDate.getTime() === parseDateOnly("2026-07-02").getTime()
+          ? [
+              {
+                isSecondOccupant: false,
+                bookingGuest: {
+                  memberId: null,
+                  booking: { status: "CONFIRMED" },
+                },
+              },
+            ]
+          : [],
+    });
+
+    await expect(
+      withMoveTransaction(tx, () =>
+        moveBedAllocationsSameDate({
+          allocationIds: ["allocation-1", "allocation-2"],
+          bedId: "bed-2",
+          actorMemberId: "admin-1",
+        }),
+      ),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining("No allocations were moved"),
+    });
+    expect(tx.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it("commits shared-double promotion and both audit rows in the move transaction", async () => {
+    const partner = {
+      ...sourceRow({ id: "allocation-partner", bedId: "bed-1" }),
+      bookingId: "booking-2",
+      bookingGuestId: "guest-2",
+      isSecondOccupant: true,
+      bedType: "DOUBLE",
+    };
+    const tx = buildMoveTx({
+      sources: [
+        {
+          ...sourceRow({ bedId: "bed-1" }),
+          isSecondOccupant: false,
+          bedType: "DOUBLE",
+        },
+      ],
+      promotedPartner: partner,
+    });
+
+    const result = await withMoveTransaction(tx, () =>
+      moveBedAllocationsSameDate({
+        allocationIds: ["allocation-1"],
+        bedId: "bed-2",
+        actorMemberId: "admin-1",
+      }),
+    );
+
+    expect(result.promotedPartners).toHaveLength(1);
+    expect(tx.bedAllocation.update).toHaveBeenCalledWith({
+      where: { id: "allocation-partner" },
+      data: { isSecondOccupant: false },
+    });
+    expect(tx.auditLog.create).toHaveBeenCalledTimes(2);
+    expect(tx.auditLog.create).toHaveBeenLastCalledWith({
+      data: expect.objectContaining({
+        action: "BED_ALLOCATION_PARTNER_PROMOTED",
+        targetId: "booking-2",
+        metadata: expect.objectContaining({
+          allocationId: "allocation-partner",
+          bookingGuestId: "guest-2",
+          movedAllocationId: "allocation-1",
+          movedBookingId: "booking-1",
+          movedBookingGuestId: "guest-1",
+        }),
+      }),
+    });
+  });
+
+  it("keeps the custodian guard inside the locked move transaction and audits nothing on refusal", async () => {
+    const tx = buildMoveTx({
+      sources: [sourceRow()],
+      custodianHolds: [
+        {
+          id: "assignment-1",
+          memberId: "custodian-1",
+          lodgeId: "lodge-1",
+          bedId: "bed-2",
+          startDate: parseDateOnly("2026-07-01"),
+          endDate: parseDateOnly("2026-07-01"),
+          member: {
+            firstName: "Casey",
+            lastName: "Custodian",
+            ageTier: "ADULT",
+          },
+          bed: {
+            id: "bed-2",
+            name: "Bed Two",
+            roomId: "room-2",
+            room: { id: "room-2", name: "Room Two" },
+          },
+        },
+      ],
+    });
+
+    await expect(
+      withMoveTransaction(tx, () =>
+        moveBedAllocationsSameDate({
+          allocationIds: ["allocation-1"],
+          bedId: "bed-2",
+          actorMemberId: "admin-1",
+        }),
+      ),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(tx.auditLog.create).not.toHaveBeenCalled();
   });
 });
 

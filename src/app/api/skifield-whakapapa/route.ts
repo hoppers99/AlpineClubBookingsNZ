@@ -3,7 +3,9 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import {
   coerceWhakapapaCurlData,
+  coerceWhakapapaSourceConfig,
   emptyWhakapapaCurlData,
+  resolveWhakapapaSelectors,
 } from "@/lib/whakapapa-report";
 import { fetchWhakapapaCurlData } from "@/lib/whakapapa-report.server";
 import { applyRateLimit, rateLimiters } from "@/lib/rate-limit";
@@ -18,6 +20,7 @@ const PUBLIC_CACHE_CONTROL = "public, max-age=300, stale-while-revalidate=1800";
 type WhakapapaReportCacheRecord = {
   source: string;
   payload: Prisma.JsonValue;
+  config: Prisma.JsonValue;
   fetchedAt: Date;
   frozenUntil: Date | null;
 };
@@ -80,7 +83,11 @@ export async function GET(request: Request) {
   }
 
   try {
-    const curlData = await fetchWhakapapaCurlData();
+    const storedConfig = coerceWhakapapaSourceConfig(existing?.config);
+    const curlData = await fetchWhakapapaCurlData({
+      sourceUrl: storedConfig.sourceUrl,
+      selectors: resolveWhakapapaSelectors(storedConfig.selectorOverrides),
+    });
 
     // Section visibility is admin-controlled config that lives in the cached
     // payload, so carry it across upstream refreshes instead of resetting it.

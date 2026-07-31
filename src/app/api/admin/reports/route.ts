@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { resolveOptionalActiveLodgeId } from "@/lib/lodges";
 import { z } from "zod";
 import { BookingStatus, SubscriptionStatus } from "@prisma/client";
+import { isAdditionalPaymentOwed } from "@/lib/additional-payment-chase";
 import { getOccupiedBedsForNight } from "@/lib/capacity";
 import { resolveMetricsCapacityAndScope } from "@/lib/finance-booking-metrics";
 import { eachDayOfInterval, format } from "date-fns";
@@ -227,7 +228,39 @@ export async function GET(request: NextRequest) {
     const activeBookings = bookings.filter(
       (b) => b.status !== BookingStatus.CANCELLED && b.status !== BookingStatus.BUMPED
     );
+    // What the club BOOKED, not what it collected: the sum of every active
+    // booking's final price, whether or not the money has arrived. #2350 named
+    // the figure honestly rather than changing it, and added the shortfall
+    // beside it.
     const totalRevenueCents = activeBookings.reduce((sum, b) => sum + b.finalPriceCents, 0);
+    // #2350: upward changes whose extra was never collected. Counted separately
+    // — it is already inside totalRevenueCents (finalPriceCents includes the
+    // increase), so subtracting this from that is what "collected" looks like.
+    //
+    // Scoped by the SHARED owed predicate, which narrows this further than the
+    // revenue figure beside it: `activeBookings` is everything except CANCELLED
+    // and BUMPED, so it also holds DRAFT / PENDING / PAYMENT_PENDING /
+    // WAITLISTED / AWAITING_REVIEW bookings.
+    //
+    // The narrowing is NOT a claim that those deltas are uncollectable — a
+    // PAYMENT_PENDING booking's delta plainly is, and the member can still pay
+    // it. It is the double-count rule: the owed predicate excludes
+    // PAYMENT_PENDING precisely so this figure can sit beside the payment-owed
+    // queue, which already counts the whole of every PAYMENT_PENDING booking,
+    // without counting the same money twice (src/lib/unpaid-finished-stays.ts).
+    // Using the predicate also keeps this number equal to the one the dashboard
+    // card, the sidebar badge, the bookings list and the chase cron all report.
+    const outstandingAdditional = activeBookings.reduce(
+      (acc, b) => {
+        if (!isAdditionalPaymentOwed({ bookingStatus: b.status, payment: b.payment }))
+          return acc;
+        return {
+          bookings: acc.bookings + 1,
+          cents: acc.cents + (b.payment?.additionalAmountCents ?? 0),
+        };
+      },
+      { bookings: 0, cents: 0 }
+    );
     const totalGuests = activeBookings.reduce((sum, b) => sum + b.guests.length, 0);
     const avgOccupancy =
       occupancyByDate.length > 0
@@ -251,6 +284,10 @@ export async function GET(request: NextRequest) {
       summary: {
         totalBookings: activeBookings.length,
         totalRevenueCents,
+        // #2350: booked-versus-collected, so an admin reading the revenue figure
+        // can see how much of it is still owing.
+        outstandingAdditionalCents: outstandingAdditional.cents,
+        outstandingAdditionalBookings: outstandingAdditional.bookings,
         totalGuests,
         avgOccupancyRate: avgOccupancy,
         memberGuests,
