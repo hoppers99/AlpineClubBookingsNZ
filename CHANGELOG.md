@@ -4,6 +4,19 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Clubs can safely record a trusted induction history when moving an
+  established membership onto the digital register (#2361).** A new
+  dry-run-first operator command classifies every active member across the
+  configured Infant, Child, Youth, and Adult tiers, reports `N/A` separately,
+  and preserves anyone who already has a completed induction of any kind.
+  Apply needs a Full Admin actor, one New Zealand baseline date, stable source
+  provenance, and exact club and database confirmations. It refuses to run
+  over an open induction, locks out concurrent induction writes, and commits
+  all completed New Member baseline rows with one audit event or none at all.
+  The records are explicit Admin Overrides with no invented signers, sign-offs,
+  emails, or hut-leader eligibility; an identical rerun is a no-op. The new
+  operator runbook documents rehearsal, review, verification, and recovery.
+
 - **Admins can now cancel the membership of a member who has no login of
   their own (#2354).** Opening such a member's admin page used to show no
   **Request Cancellation** action at all — not greyed out, simply absent —

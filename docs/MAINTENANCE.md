@@ -180,6 +180,32 @@ extraction over expanding this table casually.
 
 ## Operational Repair Tools
 
+### Record a trusted legacy induction baseline (#2361)
+
+`npm run induction:baseline` is a one-off, dry-run-first maintenance command
+for a committee-authorised legacy New Member induction baseline. It never
+belongs in normal setup or deployment flows. A dry run requires the Full Admin
+actor member ID, one New Zealand date-only baseline date, and a stable
+provenance note:
+
+```bash
+npm run induction:baseline -- \
+  --actor-member-id <full-admin-member-id> \
+  --baseline-date <YYYY-MM-DD> \
+  --provenance-note "<authorised historical source>"
+```
+
+Apply additionally requires `--apply` plus exact club-name, parsed database
+host, and parsed database-name confirmations from the reviewed report. It
+preserves all existing induction rows, blocks on every eligible Draft or In
+Progress workflow, and commits the new rows and audit event atomically under a
+PostgreSQL table lock. See the full
+[trusted legacy induction baseline runbook](INDUCTION_BASELINE_RUNBOOK.md)
+before using it. Do not expose `DATABASE_URL` or credentials in an operator
+report.
+
+### Reconcile booking and Xero records
+
 `scripts/xero-booking-repair.ts` is a targeted booking/Xero reconciliation
 helper. Keep it out of normal setup and deployment flows. Use it only when an
 operator needs to inspect or repair known booking-payment/Xero mismatches after

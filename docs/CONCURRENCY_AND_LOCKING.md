@@ -5,9 +5,10 @@ lodge, double-restoring a member's credit, two people holding the same night,
 two runners generating one roster, a settle racing a reap. The primary
 cross-row mechanisms here are **PostgreSQL transaction-scoped advisory locks**
 (`pg_advisory_xact_lock(...)`): they are held for the life of the enclosing
-transaction and released automatically on commit or rollback. Two narrow
-`SELECT ... FOR UPDATE` protocols also exist and are inventoried below. All
-writers additionally follow the status-guarded-claim rule described below.
+transaction and released automatically on commit or rollback. Narrow
+`SELECT ... FOR UPDATE` protocols and one maintenance-only table-lock protocol
+also exist and are inventoried below. All writers additionally follow the
+status-guarded-claim rule described below.
 
 This doc maps **which locks exist, what each one protects, how they interact,
 and the ordering every writer must follow**. Read it before changing any lock
@@ -223,7 +224,33 @@ contend with the cluster or each other. The legacy Xero member-contact key is an
 explicit exception: retain it only for its two current counterpart writers and
 do not use unnamespaced `hashtext(<id>)` for new lock families.
 
-### Narrow row-lock protocols
+### Narrow row- and table-lock protocols
+
+- **Trusted legacy induction baseline** —
+  `src/lib/induction-baseline.ts` (`runInductionBaseline`, #2361): apply takes
+  `LOCK TABLE "MemberInduction" IN SHARE ROW EXCLUSIVE MODE` as the **first
+  database statement** in its Serializable transaction. The mode conflicts
+  with the `ROW EXCLUSIVE` lock PostgreSQL takes for every insert, update, or
+  delete on `MemberInduction`, including cascade deletes, so the command first
+  waits for existing induction DML and then makes every new induction writer
+  wait until apply commits. It re-reads the complete active-member population
+  and all of their induction rows only after that lock, refuses the entire
+  apply if any eligible member has a `DRAFT` or `IN_PROGRESS` row, and performs
+  its `createMany` plus audit write in the same transaction. Dry run never
+  takes the lock and never writes.
+
+  This is deliberately a table lock rather than a new advisory-lock family:
+  existing writers in `src/lib/induction.ts`, application approval, member
+  lifecycle/merge cascade paths, and admin induction routes need no retrofit
+  to participate. PostgreSQL makes their ordinary
+  `MemberInduction` DML contend automatically. The baseline transaction takes
+  no application advisory lock and mutates no `Member` or template row, so it
+  cannot invert the global -> lodge -> member advisory order. Foreign-key
+  checks can still wait on a concurrent member lifecycle transaction; if
+  PostgreSQL detects a deadlock or the transaction times out, the whole apply
+  rolls back and the operator starts again from a fresh dry run. Do not move
+  validation reads before the table lock or weaken the lock mode: either
+  change would reopen a plan/apply race.
 
 - `booking-create-promo.ts` locks the selected `PromoCode` row with `FOR UPDATE`
   before validating and consuming its use count. Booking creation has already

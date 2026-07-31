@@ -1,0 +1,226 @@
+import { describe, expect, it } from "vitest";
+import {
+  assertDatabaseTargetConfirmation,
+  formatInductionBaselineReport,
+  InductionBaselineCliError,
+  parseInductionBaselineArgs,
+  parseSafeDatabaseTarget,
+  safeInductionBaselineJson,
+} from "@/lib/induction-baseline-cli";
+import type { InductionBaselineReport } from "@/lib/induction-baseline";
+
+const REQUIRED_ARGS = [
+  "--actor-member-id",
+  "admin-1",
+  "--baseline-date",
+  "2024-06-30",
+  "--provenance-note",
+  "Committee minute 2024-07",
+];
+
+const REPORT: InductionBaselineReport = {
+  mode: "dry-run",
+  clubName: "Example Alpine Club",
+  actorMemberId: "admin-1",
+  baselineDate: "2024-06-30",
+  provenance: "Trusted legacy induction baseline: Committee minute 2024-07",
+  template: {
+    id: "template-1",
+    name: "Club induction",
+    version: "legacy-v1",
+  },
+  configuredAgeTiers: [
+    { tier: "CHILD", label: "Child" },
+    { tier: "ADULT", label: "Adult" },
+  ],
+  tierCounts: [
+    {
+      tier: "CHILD",
+      label: "Child",
+      eligiblePopulation: 1,
+      toCreate: 1,
+      alreadyCompleted: 0,
+      openWorkflow: 0,
+    },
+    {
+      tier: "ADULT",
+      label: "Adult",
+      eligiblePopulation: 1,
+      toCreate: 0,
+      alreadyCompleted: 1,
+      openWorkflow: 0,
+    },
+  ],
+  counts: {
+    eligiblePopulation: 2,
+    toCreate: 1,
+    alreadyCompleted: 1,
+    openWorkflow: 0,
+    notApplicable: 1,
+  },
+  toCreate: [
+    { memberId: "child-1", ageTier: "CHILD", existingInductions: [] },
+  ],
+  alreadyCompleted: [
+    {
+      memberId: "adult-1",
+      ageTier: "ADULT",
+      existingInductions: [
+        { id: "induction-1", kind: "RE_INDUCTION", status: "COMPLETED" },
+      ],
+    },
+  ],
+  openWorkflows: [],
+  notApplicable: [
+    { memberId: "org-1", ageTier: "NOT_APPLICABLE" },
+  ],
+  appliedCount: 0,
+};
+
+describe("induction baseline CLI", () => {
+  it("defaults to dry-run and does not require destructive confirmations", () => {
+    expect(parseInductionBaselineArgs(REQUIRED_ARGS)).toMatchObject({
+      apply: false,
+      actorMemberId: "admin-1",
+      baselineDate: "2024-06-30",
+      provenanceNote: "Committee minute 2024-07",
+    });
+  });
+
+  it("requires every exact confirmation with --apply", () => {
+    expect(() =>
+      parseInductionBaselineArgs(["--apply", ...REQUIRED_ARGS]),
+    ).toThrow("--confirm-club-name is required with --apply.");
+
+    const parsed = parseInductionBaselineArgs([
+      "--apply",
+      ...REQUIRED_ARGS,
+      "--confirm-club-name",
+      "Example Alpine Club",
+      "--confirm-db-host",
+      "db.internal:5432",
+      "--confirm-db-name",
+      "club_bookings",
+    ]);
+    expect(parsed).toMatchObject({
+      apply: true,
+      confirmClubName: "Example Alpine Club",
+      confirmDatabaseHost: "db.internal:5432",
+      confirmDatabaseName: "club_bookings",
+    });
+  });
+
+  it("rejects conflicting modes and unknown arguments", () => {
+    expect(() =>
+      parseInductionBaselineArgs([
+        "--apply",
+        "--dry-run",
+        ...REQUIRED_ARGS,
+      ]),
+    ).toThrow("--apply and --dry-run cannot be used together.");
+    expect(() =>
+      parseInductionBaselineArgs([...REQUIRED_ARGS, "--surprise"]),
+    ).toThrow("Unknown argument: --surprise");
+  });
+
+  it("parses only the safe target fields and never returns credentials or the raw URL", () => {
+    const raw =
+      "postgresql://example-user:example-password@db.internal:55432/club%5Fbookings?sslmode=require";
+    const target = parseSafeDatabaseTarget(raw);
+    expect(target).toEqual({
+      host: "db.internal:55432",
+      databaseName: "club_bookings",
+    });
+    expect(JSON.stringify(target)).not.toContain("example-user");
+    expect(JSON.stringify(target)).not.toContain("example-password");
+    expect(JSON.stringify(target)).not.toContain(raw);
+  });
+
+  it("requires exact parsed database host and name confirmations on apply", () => {
+    const target = {
+      host: "db.internal:55432",
+      databaseName: "club_bookings",
+    };
+    expect(() =>
+      assertDatabaseTargetConfirmation({
+        apply: true,
+        target,
+        confirmHost: "db.internal",
+        confirmDatabaseName: "club_bookings",
+      }),
+    ).toThrow("Database-host confirmation does not exactly match");
+    expect(() =>
+      assertDatabaseTargetConfirmation({
+        apply: true,
+        target,
+        confirmHost: "db.internal:55432",
+        confirmDatabaseName: "other",
+      }),
+    ).toThrow("Database-name confirmation does not exactly match");
+    expect(() =>
+      assertDatabaseTargetConfirmation({
+        apply: true,
+        target,
+        confirmHost: "db.internal:55432",
+        confirmDatabaseName: "club_bookings",
+      }),
+    ).not.toThrow();
+  });
+
+  it("formats deterministic categories and safe JSON without credentials", () => {
+    const target = {
+      host: "db.internal:55432",
+      databaseName: "club_bookings",
+    };
+    const text = formatInductionBaselineReport(REPORT, target);
+    expect(text).toContain("CREATE: 1");
+    expect(text).toContain("ALREADY_COMPLETED: 1");
+    expect(text).toContain("NOT_APPLICABLE (reported only): 1");
+    expect(text).toContain("CHILD (Child): population=1 create=1");
+    expect(text).toContain("Dry run: no changes written.");
+
+    const json = safeInductionBaselineJson(REPORT, target);
+    expect(json).toContain('"host": "db.internal:55432"');
+    expect(json).not.toContain("postgresql://");
+    expect(json).not.toContain("password");
+  });
+
+  it("does not describe a blocked apply as a no-op", () => {
+    const blocked: InductionBaselineReport = {
+      ...REPORT,
+      mode: "apply",
+      counts: { ...REPORT.counts, openWorkflow: 1 },
+      openWorkflows: [
+        {
+          memberId: "child-2",
+          ageTier: "CHILD",
+          existingInductions: [
+            {
+              id: "induction-open",
+              kind: "NEW_MEMBER",
+              status: "IN_PROGRESS",
+            },
+          ],
+        },
+      ],
+    };
+    const text = formatInductionBaselineReport(blocked, {
+      host: "db.internal:55432",
+      databaseName: "club_bookings",
+    });
+    expect(text).toContain("Apply blocked: no changes written.");
+    expect(text).not.toContain("Apply was a no-op");
+  });
+
+  it("rejects invalid database URLs without echoing their secret input", () => {
+    const secret = "not-a-url-with-secret-password";
+    let thrown: unknown;
+    try {
+      parseSafeDatabaseTarget(secret);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(InductionBaselineCliError);
+    expect((thrown as Error).message).not.toContain(secret);
+  });
+});

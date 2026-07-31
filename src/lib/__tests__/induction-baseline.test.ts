@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  INDUCTION_BASELINE_LOCK_SQL,
   INDUCTION_BASELINE_PROVENANCE_PREFIX,
   InductionBaselineBlockedError,
   InductionBaselineError,
@@ -116,7 +115,9 @@ function createFakeStore({
   const tx = {
     $executeRawUnsafe: vi.fn(async (query: string) => {
       sequence.push("lock");
-      expect(query).toBe(INDUCTION_BASELINE_LOCK_SQL);
+      expect(query).toBe(
+        'LOCK TABLE "MemberInduction" IN SHARE ROW EXCLUSIVE MODE',
+      );
       return 0;
     }),
     clubIdentitySettings: {
