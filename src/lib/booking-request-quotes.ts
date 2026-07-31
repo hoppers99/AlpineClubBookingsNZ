@@ -27,6 +27,16 @@ import {
 } from "@/lib/booking-request";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import {
+  planBookingRequestGuestConsent,
+  toPipelineGuestCreateData,
+} from "@/lib/booking-request-shared";
+import {
+  loadMemberGuestAddPolicy,
+  matchMemberGuestNotificationRows,
+  type MemberGuestAddNotificationRow,
+} from "@/lib/member-guest-add-policy";
+import type { MemberGuestAddActor } from "@/lib/member-guest-consent";
+import {
   assertNoBookingMemberNightConflicts,
   findBookingMemberNightConflicts,
   type BookingMemberNightConflict,
@@ -1211,6 +1221,14 @@ export async function holdBookingRequestSlots(input: {
   }
 
   const placeholderPasswordHash = await hash(randomBytes(32).toString("hex"), 13);
+  // MG4-D-b (#2309). Read BEFORE the transaction opens — the ordering rule in
+  // `member-guest-add-policy.ts`: a settings read under the per-lodge capacity
+  // lock is a second query held across the whole hold, for nothing.
+  const memberGuestPolicy = await loadMemberGuestAddPolicy();
+  const memberGuestActor: MemberGuestAddActor = {
+    kind: "BOOKING_REQUEST",
+    adminMemberId: input.adminMemberId,
+  };
   const linkedMembers = linkedGuestMemberMap(request.linkedGuestMembers);
   const guestPriceCents = splitPriceAcrossGuests(option.totalCents, guests.length);
   // Persist the rate-membership-type snapshot (#1930, E4, D3) on the held
@@ -1273,7 +1291,14 @@ export async function holdBookingRequestSlots(input: {
           select: { heldBookingId: true },
         });
         if (current?.heldBookingId) {
-          return { id: current.heldBookingId, reused: true };
+          // A concurrent hold already created the rows and already owes (or has
+          // already sent) their notifications: this call created nothing, so it
+          // notifies nobody. Sending here would double-mail the targets.
+          return {
+            id: current.heldBookingId,
+            reused: true,
+            memberGuestNotificationRows: [] as MemberGuestAddNotificationRow[],
+          };
         }
         throw new BookingRequestError("This booking request cannot be held", 409);
       }
@@ -1348,6 +1373,26 @@ export async function holdBookingRequestSlots(input: {
         });
       }
 
+      // MG4-D-b (#2309): the request pipeline is the LAST guest-write path that
+      // could put a member on somebody else's booking with no record and no
+      // word to them. The family boundary is computed against the held
+      // booking's owner — the non-login contact created (or mapped) just above,
+      // which is why this sits here and not beside `guestCreates`.
+      //
+      // In practice every linked member comes back BEYOND_FAMILY, because a
+      // freshly created contact is in no family group. It is computed rather
+      // than assumed for the mapped-contact case (`ownerContactMemberId`), where
+      // an Organisation contact could in principle share a family group with a
+      // linked member — and because assuming the answer is how a boundary
+      // silently stops being one.
+      const consentPlan = await planBookingRequestGuestConsent(tx, {
+        bookingOwnerMemberId: member.id,
+        guests: guestCreates,
+        actor: memberGuestActor,
+        policy: memberGuestPolicy,
+        bookingCheckIn: request.checkIn,
+      });
+
       const held = await tx.booking.create({
         data: {
           memberId: member.id,
@@ -1360,9 +1405,11 @@ export async function holdBookingRequestSlots(input: {
           hasNonMembers: true,
           notes: request.message,
           createdById: input.adminMemberId,
-          guests: { create: guestCreates },
+          guests: { create: consentPlan.guests.map(toPipelineGuestCreateData) },
         },
-        select: { id: true },
+        // The created rows' ids are needed to match the notification plan, and
+        // this is the only moment they exist in hand.
+        select: { id: true, guests: { select: { id: true, memberId: true } } },
       });
 
       await tx.bookingRequest.update({
@@ -1370,8 +1417,40 @@ export async function holdBookingRequestSlots(input: {
         data: { heldBookingId: held.id, version: { increment: 1 } },
       });
 
-      return { id: held.id, reused: false };
+      return {
+        id: held.id,
+        reused: false,
+        memberGuestNotificationRows:
+          consentPlan.entriesByMemberId.size === 0
+            ? []
+            : matchMemberGuestNotificationRows({
+                createdGuests: held.guests,
+                entriesByMemberId: consentPlan.entriesByMemberId,
+              }),
+      };
     });
+
+    // MG4-D-b (#2309), AFTER the commit and outside the capacity lock: no
+    // provider call may sit inside a booking transaction. The dispatcher is
+    // documented never to reject; the try/catch is belt and braces around an
+    // already-committed hold, which must not fail because a mail did.
+    if (booking.memberGuestNotificationRows.length > 0) {
+      const { sendMemberGuestAddNotifications } = await import(
+        "@/lib/member-guest-consent-notifications"
+      );
+      try {
+        await sendMemberGuestAddNotifications({
+          bookingId: booking.id,
+          rows: booking.memberGuestNotificationRows,
+          actor: memberGuestActor,
+        });
+      } catch (err) {
+        logger.error(
+          { err, bookingId: booking.id, bookingRequestId: request.id },
+          "Failed to dispatch member-guest add notifications for a held booking",
+        );
+      }
+    }
 
     logAudit({
       action: "booking_request.capacity_held",

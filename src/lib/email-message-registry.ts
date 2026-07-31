@@ -463,7 +463,7 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
   // the season, so requiring it would force an override to promise a figure the
   // send cannot always supply.
   "membership-payment-recorded": ["firstName", "seasonYear"],
-  // #2307 (epic #2305, MG2). The four member-guest emails. What each override
+  // #2307 (epic #2305, MG2) and #2309 (MG4). The six member-guest emails. What each override
   // may NOT drop is the part of the message that would otherwise leave the
   // member unable to act:
   //   - the ask itself, the deadline, and the link to answer on;
@@ -495,6 +495,14 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
     "answeredNote",
   ],
   "member-guest-consent-expired": ["bookerName", "checkIn", "checkOut"],
+  // MG4 (#2309). Both tokens are required because between them they are the
+  // entire message: the heading says WHAT happened and the context note says
+  // WHY and WHO — an override that dropped either would leave a member holding
+  // a stay's dates with no statement that they are no longer on it.
+  "member-guest-request-withdrawn": [
+    "withdrawnHeading",
+    "withdrawnContextNote",
+  ],
 };
 
 const TEMPLATE_TRIGGER_METADATA: Partial<
@@ -810,6 +818,14 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
     frequency:
       "Once per lapsed request, and ONLY where a request email was actually sent — nobody is told a request lapsed that they never received. Ignores the per-action notify tick and notification preferences (D-16); still withheld by the per-booking 'No emails' switch",
   },
+  // MG4 (#2309). The counterpart to member-guest-added: MG2 told a member they
+  // had a bed, and three things can take that back.
+  "member-guest-request-withdrawn": {
+    triggerSummary:
+      "A member guest came OFF a booking somebody else made — a consent request nobody had answered yet was called off, a settled member guest was taken off, or the booking-request pipeline swapped them out at approval (MG4-D-b). One template for all three; the composed opening sentence says which. NOT sent when a request simply lapses on its own — that is member-guest-consent-expired",
+    frequency:
+      "Once per member guest removed from a booking they had been told about. Ignores the per-action notify tick and the member's notification preferences (D-16); still withheld by the per-booking 'No emails' switch",
+  },
 };
 
 function titleCaseTemplateKey(key: string): string {
@@ -895,6 +911,10 @@ export function sampleValue(token: string): string {
       "Dave Ngata has added you as a guest on a lodge booking. Your place is " +
       "already held — this club does not ask first for member guests."
     );
+  }
+  if (token === "withdrawnHeading") return "You are no longer on that lodge booking";
+  if (token === "withdrawnContextNote") {
+    return "you have been taken off Dave Ngata's lodge booking, so you no longer have a place on it.";
   }
   if (token === "removalNote") {
     return "If you would rather not go, you can take yourself off the booking from your account.";
@@ -1421,6 +1441,10 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "triggeringMemberName",
   "verifyUrl",
   "windowHours",
+  // MG4 (#2309): the withdrawal notice's two composed blocks — what happened,
+  // and why plus who. Same pre-composed shape as the added notice's pair.
+  "withdrawnHeading",
+  "withdrawnContextNote",
   "xeroLinksNote",
   "xeroObjectUrl",
   "xeroInvoiceNumber",

@@ -769,6 +769,17 @@ describe("consent columns have exactly one writer", () => {
       // its own test asserts through `classifyMemberGuestConsent`.
       "src/app/(authenticated)/book/_components/member-guest-preview.tsx":
         "the wizard's pre-persistence consent prediction",
+      // --- MG4's pipeline half (#2309, MG4-D-b). The booking-request approval
+      // is the one guest write that REUSES a row rather than creating it, so it
+      // reads the old `consentStatus` to tell a preserved guest from a
+      // substituted one, and clears the column explicitly when the person on the
+      // row changes. A stale ADMIN_ASSIGNED left behind by the previous occupant
+      // would claim consent for somebody who was never asked. The columns it
+      // WRITES still come from `buildMemberGuestConsentWrite` by way of
+      // `planBookingRequestGuestConsent`; nothing here composes a shape of its
+      // own.
+      "src/lib/booking-request.ts":
+        "the held-booking guest swap reads the old consent state and clears it on substitution",
     };
 
     const mentions = productionFilesUnder("src")

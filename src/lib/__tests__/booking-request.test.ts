@@ -43,6 +43,11 @@ vi.mock("@/lib/prisma", () => ({
       update: vi.fn(),
       updateMany: vi.fn(),
     },
+    // MG4 (#2309): the pipeline computes the family boundary for its linked
+    // members against the converted booking's owner. That owner is a non-login
+    // contact in no family group, so both reads legitimately come back empty and
+    // every linked member classifies BEYOND_FAMILY — the real production shape.
+    familyGroupMember: { findMany: vi.fn().mockResolvedValue([]) },
     bookingGuest: {
       findMany: vi.fn(),
       deleteMany: vi.fn(),

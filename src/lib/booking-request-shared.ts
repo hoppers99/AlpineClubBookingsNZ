@@ -23,7 +23,15 @@ import {
   type BookingRequest,
 } from "@prisma/client";
 import { assertNoBookingMemberNightConflicts } from "@/lib/booking-member-night-conflicts";
+import { computeMemberGuestBoundary } from "@/lib/booking-guests";
 import { sendAdminOwnerSubstitutionAlert } from "@/lib/email";
+import {
+  planMemberGuestConsentWrites,
+  type MemberGuestAddPolicy,
+  type MemberGuestConsentGuestFields,
+  type MemberGuestConsentWritePlan,
+} from "@/lib/member-guest-add-policy";
+import type { MemberGuestAddActor } from "@/lib/member-guest-consent";
 import logger from "@/lib/logger";
 import {
   assertMembershipTypeBookingAllowed,
@@ -196,6 +204,105 @@ export async function buildApprovalGuestCreates(
   });
 
   return guestCreates;
+}
+
+/**
+ * MG4-D-b (#2309): decide the consent columns for a booking-request pipeline
+ * guest list, and collect the notifications the caller owes after it commits.
+ *
+ * WHY THE PIPELINE NEEDS ITS OWN ENTRY POINT AT ALL. The other five guest-write
+ * paths reach `planMemberGuestConsentWrites` through
+ * `resolveLinkedBookingMembersWithBoundary`, which resolves member records AND
+ * computes the family boundary in one call. This pipeline has already resolved
+ * its members — an officer picked them by hand at quote time and
+ * `assertLinkedMembersExist` validated them — so all it is missing is the
+ * boundary. Calling the full resolver here would re-read every member for
+ * nothing and would add an eighth entry to a census whose whole purpose is to
+ * enumerate the paths that decide whether a beyond-family member may be
+ * resolved. This path does not make that decision; the officer already did.
+ *
+ * THE BOUNDARY IS COMPUTED, NOT ASSUMED, and that is worth a sentence because
+ * the shortcut is tempting. A converted booking's owner is normally a non-login
+ * contact minted moments earlier, so every linked member is beyond-family by
+ * construction and the answer could be hard-coded. But the owner may instead be
+ * a mapped Organisation or School contact (#1255) that has existed for years and
+ * could share a family group with a linked member — and, more importantly, a
+ * hard-coded boundary is not a boundary. It costs two indexed reads.
+ *
+ * Returns the caller's guests with `memberGuestConsent` attached where it
+ * applies. Callers must strip `crossFamilyMemberGuest` (a display marker, not a
+ * column) before handing rows to Prisma.
+ */
+export async function planBookingRequestGuestConsent<
+  Guest extends { memberId?: string | null },
+>(
+  tx: Prisma.TransactionClient,
+  params: {
+    bookingOwnerMemberId: string;
+    guests: readonly Guest[];
+    actor: MemberGuestAddActor;
+    policy: MemberGuestAddPolicy;
+    bookingCheckIn: Date;
+    now?: Date;
+  }
+): Promise<MemberGuestConsentWritePlan<Guest>> {
+  if (!params.policy.wideningEnabled) {
+    // MODULE OFF — the shipped default (D-2), and the state most clubs stay in
+    // forever. `planMemberGuestConsentWrites` already returns the guests
+    // untouched in this case, so the two `FamilyGroupMember` reads below would
+    // compute a boundary nothing then consults. Skipping them keeps a
+    // non-adopting club's approval pipeline byte-for-byte the query sequence it
+    // was before MG4 — the same reasoning the owner applied to
+    // `markCrossFamilyGuestsOnBooking`'s gate.
+    //
+    // The call is still made, rather than skipped by the caller, so the module
+    // decision lives in one place and the returned shape is identical either
+    // way.
+    return planMemberGuestConsentWrites({
+      guests: params.guests,
+      boundary: { scopeByMemberId: new Map(), beyondFamilyMemberIds: [] },
+      actor: params.actor,
+      now: params.now ?? new Date(),
+      bookingCheckIn: params.bookingCheckIn,
+      policy: params.policy,
+    });
+  }
+
+  const boundary = await computeMemberGuestBoundary(
+    tx,
+    params.bookingOwnerMemberId,
+    params.guests
+      .map((guest) => guest.memberId)
+      .filter((memberId): memberId is string => Boolean(memberId))
+  );
+  return planMemberGuestConsentWrites({
+    guests: params.guests,
+    boundary,
+    actor: params.actor,
+    now: params.now ?? new Date(),
+    bookingCheckIn: params.bookingCheckIn,
+    policy: params.policy,
+  });
+}
+
+/**
+ * Strip the two MG2 planning fields off a planned guest row, leaving exactly the
+ * Prisma-writable shape plus the consent columns.
+ *
+ * `crossFamilyMemberGuest` is a D-8 DISPLAY marker that never had a column, and
+ * spreading a planned guest straight into `bookingGuest.create` would hand
+ * Prisma an unknown field. Doing the strip in one named place means the three
+ * pipeline write points cannot each forget it differently.
+ */
+export function toPipelineGuestCreateData<Guest extends object>(
+  guest: Guest & MemberGuestConsentGuestFields
+): Omit<Guest, keyof MemberGuestConsentGuestFields> {
+  const { memberGuestConsent, crossFamilyMemberGuest, ...rest } = guest;
+  void crossFamilyMemberGuest;
+  return { ...rest, ...(memberGuestConsent ?? {}) } as Omit<
+    Guest,
+    keyof MemberGuestConsentGuestFields
+  >;
 }
 
 /**

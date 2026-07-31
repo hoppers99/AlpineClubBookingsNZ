@@ -446,6 +446,10 @@ export const EMAIL_AUDIT_DEFAULTS = {
     "defaultSubject": "{{answeredHeading}} - {{CLUB_LODGE_NAME}}",
     "defaultBody": "{{answeredHeading}}\n\nHi {{firstName}}, {{answeredSentence}}\n\n{{answeredNote}}"
   },
+  "member-guest-request-withdrawn": {
+    "defaultSubject": "{{withdrawnHeading}} - {{CLUB_LODGE_NAME}}",
+    "defaultBody": "{{withdrawnHeading}}\n\nHi {{firstName}}, {{withdrawnContextNote}}\n\nLodge: {{CLUB_LODGE_NAME}}\nStay: {{checkIn}} - {{checkOut}}\n\nYou do not need to do anything. If you think this is a mistake, contact the club at {{SUPPORT_EMAIL}}."
+  },
   "member-guest-consent-expired": {
     "defaultSubject": "The request to add you to a lodge booking has lapsed",
     "defaultBody": "That request has lapsed\n\nHi {{firstName}}, the request from {{bookerName}} to add you to a booking at {{CLUB_LODGE_NAME}} on {{checkIn}} - {{checkOut}} has lapsed, and the bed that was held for you has been released.\n\nYou do not need to do anything. If you did want to come, ask {{bookerName}} to add you again."

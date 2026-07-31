@@ -306,6 +306,134 @@ function composeAddedContextNoteForDelegate(
   }
 }
 
+// ---------------------------------------------------------------------------
+// member-guest-request-withdrawn (MG4 #2309)
+// ---------------------------------------------------------------------------
+
+/**
+ * Why the member is no longer on (or no longer being asked about) the booking.
+ *
+ * THE COUNTERPART TO `MemberGuestAddedContext`, AND FOR THE SAME REASON. MG2
+ * told a member they were on somebody's booking. Three things can subsequently
+ * unsay that, and to the reader they are three different events — but they are
+ * the same email, so the difference is one composed sentence rather than three
+ * near-identical templates an admin would have to keep in step.
+ *
+ * WHY IT IS NOT CALLED "cancelled". Every one of these is somebody else's
+ * decision about the reader, and the reader did nothing wrong; the wording
+ * throughout says what happened and who to ask, and never implies the member
+ * withdrew or was rejected.
+ */
+export type MemberGuestWithdrawnContext =
+  /**
+   * A consent request that was still waiting for an answer was called off — the
+   * booker changed their plans, or an admin withdrew it. Distinct from the
+   * request LAPSING, which has its own template
+   * (`member-guest-consent-expired`): a lapse is the clock running out, this is
+   * a person deciding.
+   */
+  | "REQUEST_CANCELLED"
+  /** A settled member guest was taken off the booking by the booker or the club. */
+  | "TAKEN_OFF"
+  /**
+   * The booking-request pipeline swapped them out at approval (MG4-D-b). Its own
+   * case because the reader was never asked in the first place — they were
+   * placed on the booking by the club and are now being unplaced by the club, and
+   * "the booker changed their mind" would name somebody they never dealt with.
+   */
+  | "BOOKING_REQUEST_REPLACED";
+
+export interface MemberGuestWithdrawnCopy {
+  /** `{{withdrawnHeading}}` — the first block, and therefore the email's heading. */
+  heading: string;
+  /** `{{withdrawnContextNote}}` — the sentence that tells the three cases apart. */
+  contextNote: string;
+}
+
+/**
+ * The withdrawal notice's heading and opening sentence.
+ *
+ * Takes an audience for exactly the reason `composeMemberGuestAdded` does: under
+ * D-9 the reader is routinely a family adult rather than the guest, and "you are
+ * no longer on the booking" would then be addressed to somebody who never was.
+ */
+export function composeMemberGuestWithdrawn(params: {
+  context: MemberGuestWithdrawnContext;
+  bookerName: string;
+  audience: MemberGuestConsentAudience;
+}): MemberGuestWithdrawnCopy {
+  const { context, bookerName, audience } = params;
+
+  if (audience.kind === "TARGET") {
+    return {
+      heading:
+        context === "REQUEST_CANCELLED"
+          ? "That request has been called off"
+          : "You are no longer on that lodge booking",
+      contextNote: composeWithdrawnContextNoteForTarget(context, bookerName),
+    };
+  }
+
+  const guestName = `${audience.guest.firstName} ${audience.guest.lastName}`.trim();
+  const guestFirstName = audience.guest.firstName;
+  const whyYou =
+    ` You are being told because ${guestFirstName} does not have a login of their ` +
+    "own and you are an adult in their family group.";
+
+  return {
+    heading:
+      context === "REQUEST_CANCELLED"
+        ? `The request about ${guestName} has been called off`
+        : `${guestName} is no longer on that lodge booking`,
+    contextNote:
+      composeWithdrawnContextNoteForDelegate(context, bookerName, guestFirstName) +
+      whyYou,
+  };
+}
+
+function composeWithdrawnContextNoteForTarget(
+  context: MemberGuestWithdrawnContext,
+  bookerName: string,
+): string {
+  switch (context) {
+    case "REQUEST_CANCELLED":
+      return (
+        `${bookerName} has called off the request to add you as a guest on their ` +
+        "lodge booking, so there is nothing left for you to answer and the bed " +
+        "that was being held for you has been released."
+      );
+    case "TAKEN_OFF":
+      return `you have been taken off ${bookerName}'s lodge booking, so you no longer have a place on it.`;
+    case "BOOKING_REQUEST_REPLACED":
+      return (
+        "the club has taken you off a lodge booking created from a booking " +
+        "request, so you no longer have a place on it."
+      );
+  }
+}
+
+function composeWithdrawnContextNoteForDelegate(
+  context: MemberGuestWithdrawnContext,
+  bookerName: string,
+  guestFirstName: string,
+): string {
+  switch (context) {
+    case "REQUEST_CANCELLED":
+      return (
+        `${bookerName} has called off the request to add ${guestFirstName} as a ` +
+        "guest on their lodge booking, so there is nothing left to answer and the " +
+        "bed that was being held has been released."
+      );
+    case "TAKEN_OFF":
+      return `${guestFirstName} has been taken off ${bookerName}'s lodge booking, so they no longer have a place on it.`;
+    case "BOOKING_REQUEST_REPLACED":
+      return (
+        `the club has taken ${guestFirstName} off a lodge booking created from a ` +
+        "booking request, so they no longer have a place on it."
+      );
+  }
+}
+
 /**
  * The `{{removalNote}}` value when the member CAN take themselves off.
  *

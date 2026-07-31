@@ -3860,6 +3860,45 @@ export function memberGuestConsentExpiredTemplate(data: {
 }
 
 /**
+ * "You are no longer on that booking" — MG4 (#2309).
+ *
+ * The counterpart to `memberGuestAddedTemplate`, and it exists because MG2 told
+ * a member they had a bed. Three things can take that back — the booker calls
+ * off a request nobody has answered yet, the club takes a settled member guest
+ * off, or the booking-request pipeline swaps them out at approval — and all
+ * three leave a member holding an email that has stopped being true.
+ *
+ * NO ACTION LINK AND NO PARTY LISTING, deliberately, and neither is an oversight.
+ * There is nothing for the reader to do, and by the time this lands they are not
+ * on the booking, so a "view this booking" button would 403 and a party listing
+ * would disclose a party they are no longer part of. MG2-D-a's listing is the
+ * price of being asked to join; it is not owed to somebody who has been removed.
+ *
+ * NO MONEY either, on the same rule as the request and added notices.
+ */
+export function memberGuestRequestWithdrawnTemplate(data: {
+  firstName: string;
+  withdrawnHeading: string;
+  withdrawnContextNote: string;
+  lodgeName: string;
+  checkIn: Date;
+  checkOut: Date;
+}): string {
+  return layout(`
+    ${heading(escapeHtml(data.withdrawnHeading))}
+    ${paragraph(`Hi ${escapeHtml(data.firstName)}, ${escapeHtml(data.withdrawnContextNote)}`)}
+    ${infoTable([
+      { label: "Lodge", value: escapeHtml(data.lodgeName) },
+      {
+        label: "Stay",
+        value: `${escapeHtml(formatNZDate(data.checkIn))} - ${escapeHtml(formatNZDate(data.checkOut))}`,
+      },
+    ])}
+    ${paragraph("You do not need to do anything. If you think this is a mistake, contact the club.")}
+  `);
+}
+
+/**
  * "Someone answered for you" — after a DELEGATE answered on a member's behalf.
  *
  * The one transition nobody downstream would otherwise hear about. The booking's
