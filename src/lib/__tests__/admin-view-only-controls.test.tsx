@@ -2859,14 +2859,18 @@ describe("MemberDependentsCard view-only gating (#1997, membership)", () => {
   const props = {
     // #2282: `isAdultMember` / `memberIsArchived` are gone as props — the card
     // derives the rule from the member row itself, because age no longer gates
-    // recording parentage and only "is this record current?" remains. The
-    // fixture therefore has to be a realistic row: an `active` flag absent from
-    // it now reads as an inactive member and disables the control for a reason
-    // that has nothing to do with the permission this suite is testing.
+    // recording parentage and only "is this record current, and is it a person?"
+    // remains. The fixture therefore has to be a realistic row: an `active` flag
+    // absent from it now reads as an inactive member and disables the control
+    // for a reason that has nothing to do with the permission this suite is
+    // testing.
     member: {
       id: "m1",
       firstName: "Pat",
       lastName: "Kea",
+      role: "USER",
+      accessRoles: [],
+      canLogin: true,
       active: true,
       archivedAt: null,
       dependents: [],
@@ -3582,6 +3586,16 @@ describe("member detail cards hand their reason to the page banner (#2168)", () 
     lastName: "Kea",
     email: "pat@example.test",
     role: "MEMBER",
+    // #2282: `MemberDependentsCard` derives its own "can this member take a
+    // dependent?" rule from the member row, so the fixture has to be a
+    // realistic one. Without these, the card's control is disabled by THAT rule
+    // (an absent `active` reads as inactive) and `expect(control).toBeDisabled()`
+    // below would stop isolating the view-only permission it is testing.
+    active: true,
+    archivedAt: null,
+    canLogin: true,
+    accessRoles: [],
+    dependentEmailSource: null,
     parentLinks: [],
     dependents: [],
     subscriptions: [],
@@ -3628,8 +3642,6 @@ describe("member detail cards hand their reason to the page banner (#2168)", () 
           <MemberDependentsCard
             {...({
               member,
-              isAdultMember: true,
-              memberIsArchived: false,
               currentMemberPath: "/admin/members/m1",
               unlinkingDependentId: null,
               onOpenDependentDialog: vi.fn(),

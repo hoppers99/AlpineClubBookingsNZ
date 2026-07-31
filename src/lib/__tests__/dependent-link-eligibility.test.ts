@@ -11,6 +11,7 @@ import {
   DEPENDENT_PARENT_STATE_REASONS,
   dependentLinkBlockers,
   dependentLinkCandidateWhere,
+  dependentParentEligibleWhere,
   dependentParentStateBlocker,
   type DependentLinkCandidate,
   type DependentLinkGraphFacts,
@@ -855,61 +856,112 @@ describe("ancestorDepthWithinWhere", () => {
 });
 
 /**
- * #2282 — the PARENT-side state rule, which is all that is left of the checks on
- * the member who takes the dependant.
+ * #2282 — the PARENT-side rule, which is all that is left of the checks on the
+ * member who takes the dependent.
  *
  * The `ageTier === "ADULT"` clause that used to sit here is gone by owner
  * decision: a 16 or 17 year old can genuinely be a parent and the club could not
  * record it. This predicate is what BOTH write routes and BOTH admin controls
  * now consult, so the disabled button, the dialog's notice and the two 422
- * bodies cannot disagree about who may take a dependant.
+ * bodies cannot disagree about who may take a dependent.
  *
- * Mutation probes: delete the `archivedAt` branch and the archived cases fail
- * (an archived member reads as merely "inactive", telling the admin to
- * reactivate a record that needs restoring); delete the `active` branch and the
- * inactive case fails; re-introduce an age clause anywhere and
- * "ignores age entirely" fails.
+ * The ORGANISATION clause replaces what the ADULT clause used to exclude by
+ * accident. It is classified by ROLE and never by `ageTier`, because
+ * `NOT_APPLICABLE` is the age-EXEMPT tier and age-exempt HUMAN members carry it
+ * too (#1440, #2106) — filtering on the tier would bar real people from being
+ * recorded as parents and show them copy calling them an organisation.
+ *
+ * Mutation probes: delete the `archivedAt` branch and the archived cases fail;
+ * delete the `active` branch and the inactive case fails; delete the
+ * organisation branch and both organisation cases fail; drop `canLogin` from the
+ * token resolution, or swap the SQL clause to `ageTier`, and the parity cases
+ * fail.
  */
 describe("dependentParentStateBlocker (#2282)", () => {
+  /** An ordinary current member, whatever their age. */
+  const CURRENT = {
+    role: "USER",
+    accessRoles: ["USER"] as string[],
+    canLogin: true,
+    active: true,
+    archivedAt: null as Date | string | null,
+  };
+
   it("clears an active, non-archived member", () => {
+    expect(dependentParentStateBlocker(CURRENT)).toBeNull();
+  });
+
+  it("clears an age-exempt HUMAN account, which is not an organisation", () => {
+    // #1440/#2106: `NOT_APPLICABLE` is carried by organisations AND by
+    // age-exempt people (an admin on an age-exempt membership type, say). The
+    // predicate cannot see `ageTier` at all — that is deliberate, and the SQL
+    // parity case below is what stops the tier creeping back in — so what this
+    // pins is that an ordinary non-ORG role clears regardless of anything the
+    // tier might say.
     expect(
-      dependentParentStateBlocker({ active: true, archivedAt: null }),
+      dependentParentStateBlocker({ ...CURRENT, accessRoles: ["ADMIN"] }),
     ).toBeNull();
   });
 
-  it("ignores age entirely — parentage is recordable at any tier", () => {
-    // Age is not even in the argument type, which is the point: a re-introduced
-    // age gate cannot be written against this predicate without changing its
-    // signature, so it cannot creep back in as a quiet extra clause.
-    for (const ageTier of ["INFANT", "CHILD", "YOUTH", "ADULT"]) {
-      expect({
-        ageTier,
-        blocked: dependentParentStateBlocker({
-          active: true,
-          archivedAt: null,
-        }),
-      }).toEqual({ ageTier, blocked: null });
-    }
+  it("blocks an organisation holding the ORG access token", () => {
+    expect(
+      dependentParentStateBlocker({
+        ...CURRENT,
+        role: "SCHOOL",
+        accessRoles: ["ORG"],
+      }),
+    ).toBe("ORGANISATION");
+  });
+
+  it("blocks a NON-LOGIN school account, whose ORG token is cleared", () => {
+    // `resolveAccessRoleTokens` returns [] for `canLogin: false`, which is
+    // exactly why `isOrganisationMember` also reads the legacy role. A check
+    // written on the tokens alone would let a non-login school be a parent.
+    expect(
+      dependentParentStateBlocker({
+        ...CURRENT,
+        role: "SCHOOL",
+        accessRoles: ["ORG"],
+        canLogin: false,
+      }),
+    ).toBe("ORGANISATION");
+  });
+
+  it("says ORGANISATION before ARCHIVED or INACTIVE", () => {
+    // Order decides the sentence the admin reads, and "archive" and
+    // "reactivate" both imply that undoing the state would let them add a
+    // dependent here. For an organisation account it never would.
+    expect(
+      dependentParentStateBlocker({
+        ...CURRENT,
+        role: "SCHOOL",
+        accessRoles: [],
+        active: false,
+        archivedAt: new Date("2026-01-01"),
+      }),
+    ).toBe("ORGANISATION");
   });
 
   it("blocks an inactive member", () => {
-    expect(
-      dependentParentStateBlocker({ active: false, archivedAt: null }),
-    ).toBe("INACTIVE");
+    expect(dependentParentStateBlocker({ ...CURRENT, active: false })).toBe(
+      "INACTIVE",
+    );
   });
 
   it("blocks an archived member as ARCHIVED, not INACTIVE", () => {
     // Archiving also clears `active`, so order decides which reason the admin
-    // reads. "Reactivate them" is the wrong instruction for an archived record.
+    // reads — and archiving cannot be undone, so "reactivate them" would be the
+    // wrong instruction entirely.
     expect(
       dependentParentStateBlocker({
+        ...CURRENT,
         active: false,
         archivedAt: new Date("2026-01-01"),
       }),
     ).toBe("ARCHIVED");
     expect(
       dependentParentStateBlocker({
-        active: true,
+        ...CURRENT,
         archivedAt: new Date("2026-01-01"),
       }),
     ).toBe("ARCHIVED");
@@ -921,10 +973,48 @@ describe("dependentParentStateBlocker (#2282)", () => {
     // would drift — which is the whole failure #2254 existed to close.
     expect(
       dependentParentStateBlocker({
-        active: true,
+        ...CURRENT,
         archivedAt: "2026-01-01T00:00:00.000Z",
       }),
     ).toBe("ARCHIVED");
+  });
+
+  it("accepts already-resolved tokens as well as raw assignment rows", () => {
+    // The admin UI passes `member.accessRoles` (strings the detail API already
+    // resolved); the write routes pass `MemberAccessRole` rows. One predicate,
+    // both sides of the wire.
+    expect(
+      dependentParentStateBlocker({
+        ...CURRENT,
+        role: "SCHOOL",
+        accessRoles: [{ role: "ORG", roleDefinitionId: null }],
+      }),
+    ).toBe("ORGANISATION");
+  });
+
+  it("mirrors itself in SQL, by role and never by age tier", async () => {
+    // #2254's no-drift rule: the "Add Parent" search must offer exactly what the
+    // write route accepts. Pinned structurally so a rewrite to
+    // `{ ageTier: { not: "NOT_APPLICABLE" } }` — the shape that looks equivalent
+    // and quietly bars age-exempt PEOPLE — fails here.
+    expect(dependentParentEligibleWhere()).toEqual([
+      {
+        NOT: {
+          OR: [
+            { role: "SCHOOL" },
+            { canLogin: true, accessRoles: { some: { role: "ORG" } } },
+          ],
+        },
+      },
+      { active: true },
+      { archivedAt: null },
+    ]);
+
+    const { sql } = await compileMemberWhereToSql({
+      AND: dependentParentEligibleWhere(),
+    });
+    expect(sql).not.toContain("ageTier");
+    expect(sql).toContain("MemberAccessRole");
   });
 
   it("gives every reason a link message, a create message and an explanation", () => {
@@ -949,12 +1039,19 @@ describe("dependentParentStateBlocker (#2282)", () => {
   it("states no age rule in any of its copy", () => {
     // #2282 acceptance criterion: copy must not claim a rule the code does not
     // enforce. These strings are the ones an admin actually reads on refusal.
+    //
+    // Word-bounded (#2282 review). The first version of this pattern was a bare
+    // /age/, which matches "manage" and "message" — so a perfectly good future
+    // rewording like "restore this member to manage dependents" would have
+    // failed here for a reason that has nothing to do with the rule.
     for (const message of [
       ...Object.values(DEPENDENT_PARENT_LINK_ERRORS),
       ...Object.values(DEPENDENT_PARENT_CREATE_ERRORS),
       ...Object.values(DEPENDENT_PARENT_BLOCK_EXPLANATIONS),
     ]) {
-      expect(message).not.toMatch(/adult|age|18|youth/i);
+      expect(message).not.toMatch(
+        /\b(adult|adults|age|ages|aged|18|youth|minor|minors)\b/i,
+      );
     }
   });
 });

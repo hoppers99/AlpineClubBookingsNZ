@@ -348,9 +348,17 @@ export async function getAdminMemberDetail(params: {
     // pointer naming someone they never chose. Resolved with the same walk both
     // write paths use, so the page states exactly what the write will store
     // rather than a lookalike one-hop guess; a null `sourceId` means no ancestor
-    // in reach can receive mail, which is the 422 those writes return. It joins
-    // this Promise.all because it needs only the route param, so it adds no
-    // serial round-trip to a page that already issues seven queries.
+    // in reach can receive mail, which is the 422 those writes return.
+    //
+    // WHAT IT COSTS, stated accurately (#2282 review corrected an earlier
+    // "adds no serial round-trip" here). It joins this `Promise.all` because it
+    // needs only the route param, so it adds no round-trip to the page's own
+    // critical path — but it is a WALK, not a query: one `findMany` per
+    // generation, plus a `findUnique` for any row carrying a stored pointer,
+    // bounded by the four-generation cap. The summary read below is a further
+    // `await` AFTER this block for the uncommon case where the source is
+    // somebody else. Bounded and not an N+1, but every admin member-detail view
+    // now pays a walk that used to run only on writes.
     dependentEmailSourceResolution,
   ] = await Promise.all([
     prisma.member.findUnique({

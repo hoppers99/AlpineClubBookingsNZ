@@ -20,16 +20,30 @@ All notable public reference-release changes should be recorded here.
   a child's mail is still an adult: a dependant added under a young parent has
   their notifications routed on up to the nearest adult in the family, usually
   the young parent's own parent, and the member's page now says on screen which
-  adult that is *before* you add the dependant. If no adult in the family has a
-  real email address, adding the dependant is refused with that reason rather
-  than quietly leaving the child unreachable.
-  **Two dead ends are gone too.** "Add Dependent" used to disappear entirely on
+  adult that is *before* you add the dependant. The two "link" dialogs say it
+  too, next to the notification-recipient list — that list names *parents*, and
+  the person the mail actually reaches can be someone further up, which the
+  screen used not to mention. If no adult in the family has a real email
+  address, adding the dependant is refused with that reason rather than quietly
+  leaving the child unreachable.
+  **Organisation and school accounts are not people**, so they cannot be
+  recorded as anyone's parent — they were never offered before, and are not
+  offered now.
+  **The dead ends are gone too.** "Add Dependent" used to disappear entirely on
   a member who could not have one, teaching an admin nothing; on an inactive or
   archived member it stayed and then failed on save. It is now always shown, and
   disabled with the reason — "This member is inactive — reactivate them to add
-  dependants" — on both the *create new* and *link existing* paths. And the copy
-  that claimed only adults can manage dependants is gone, because that is no
-  longer the rule.
+  dependents" — on both the *create new* and *link existing* paths, with the
+  reason read out to screen readers alongside the control rather than merely
+  sitting beside it. Where a dependant genuinely cannot be added because no
+  adult in the family can receive club email, the dialog now says so *and*
+  points at the way that does work, instead of letting the save fail. And the
+  copy that claimed only adults can manage dependants is gone, because that is
+  no longer the rule.
+  Two smaller corrections ride along: the age-up job's "your child is becoming
+  an adult" notice now goes to the family's actual contact of record instead of
+  whoever the parent link names, and creating a member under a parent without
+  asking for inherited email no longer records them as inheriting from nobody.
 - **Recording a cash payment now asks about any extra still owing (#2397).**
   When a booking is priced up after it was made — someone adds a guest, say —
   the increase is tracked separately as an "additional payment" the member is

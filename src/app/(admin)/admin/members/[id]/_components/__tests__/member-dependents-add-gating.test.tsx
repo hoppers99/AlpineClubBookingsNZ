@@ -76,6 +76,12 @@ function buildMember(overrides: Partial<MemberDetail> = {}): MemberDetail {
     lastName: "Rangi",
     email: "tui@example.org",
     ageTier: "ADULT",
+    // #2282 review: the parent-side rule is classified by ROLE, so the fixture
+    // has to carry one. `NOT_APPLICABLE` is NOT the marker — age-exempt humans
+    // carry that tier too — which is why these three fields exist here and
+    // `ageTier` is not what any assertion below turns on.
+    role: "USER",
+    accessRoles: ["USER"],
     active: true,
     archivedAt: null,
     canLogin: true,
@@ -188,7 +194,25 @@ function renderDialog(
   return { onSubmitCreate, onSubmitLink };
 }
 
-afterEach(cleanup);
+/**
+ * The link tabs ask the server where the chosen parent's mail actually lands
+ * (`GET /api/admin/members/[id]/dependent-email-source`, the same walk the write
+ * uses). Stubbed per test; tests that select nobody never reach it.
+ */
+function mockEmailSourceResponse(body: unknown) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => ({
+      ok: true,
+      json: async () => body,
+    })) as unknown as typeof fetch,
+  );
+}
+
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 describe("MemberDependentsCard — who may be offered a dependant (#2282)", () => {
   it("offers Add Dependent on a YOUTH member", () => {
@@ -246,8 +270,64 @@ describe("MemberDependentsCard — who may be offered a dependant (#2282)", () =
       buildMember({ ageTier: "YOUTH", dependentEmailSource: null }),
     );
     expect(
-      screen.getByText(/no adult in this family has a real email address/i),
+      screen.getByText(/no adult the club can email is recorded/i),
     ).toBeInTheDocument();
+  });
+
+  it("still OFFERS the control when no adult can receive mail", () => {
+    // Deliberate, and the reason the block for this case lives on the tabs
+    // rather than on the opener: "Link existing" with "Use their own email"
+    // records the relationship without needing a contact of record at all, and
+    // linking an ADULT dependent does not inherit in the first place. Disabling
+    // the opener would remove a route that works.
+    const onOpen = renderCard(
+      buildMember({ ageTier: "YOUTH", dependentEmailSource: null }),
+    );
+    const button = screen.getByRole("button", { name: /add dependent/i });
+    expect(button).toBeEnabled();
+    fireEvent.click(button);
+    expect(onOpen).toHaveBeenCalled();
+  });
+
+  it("disables the control for an ORGANISATION account, with the reason", () => {
+    // #2282 review: the owner decision was about AGE. Dropping the ADULT clause
+    // also dropped the only thing keeping organisation and school accounts out
+    // of the parent-candidate search, and a school is not anybody's parent.
+    renderCard(
+      buildMember({
+        role: "SCHOOL",
+        accessRoles: ["ORG"],
+        ageTier: "NOT_APPLICABLE",
+      }),
+    );
+    expect(screen.getByRole("button", { name: /add dependent/i })).toBeDisabled();
+    expect(
+      screen.getByText(DEPENDENT_PARENT_BLOCK_EXPLANATIONS.ORGANISATION),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps the control for an age-exempt HUMAN on the same tier", () => {
+    // The other half of the same rule, and the reason it is classified by role:
+    // `NOT_APPLICABLE` is the age-EXEMPT tier (#1440, #2106), carried by real
+    // people as well as by organisations. A tier-based exclusion would bar them
+    // and tell them they are an organisation.
+    renderCard(
+      buildMember({ ageTier: "NOT_APPLICABLE", role: "USER", accessRoles: [] }),
+    );
+    expect(screen.getByRole("button", { name: /add dependent/i })).toBeEnabled();
+  });
+
+  it("attaches the reason to the button, not merely beside it", () => {
+    // A disabled button is out of the tab order and fires no hover event
+    // (`disabled:pointer-events-none`), so a nearby paragraph and a `title` are
+    // both unreachable. `aria-describedby` is the association that works.
+    renderCard(buildMember({ active: false }));
+    const button = screen.getByRole("button", { name: /add dependent/i });
+    const describedBy = button.getAttribute("aria-describedby");
+    expect(describedBy).toBeTruthy();
+    expect(
+      document.getElementById(describedBy as string)?.textContent,
+    ).toBe(DEPENDENT_PARENT_BLOCK_EXPLANATIONS.INACTIVE);
   });
 
   it("stays quiet about routing when the member is their own source", () => {
@@ -296,6 +376,85 @@ describe("MemberDependentDialog — both paths are gated, not one (#2282)", () =
     expect(submit).toBeEnabled();
     fireEvent.click(submit);
     expect(onSubmitCreate).toHaveBeenCalled();
+  });
+
+  it("blocks the CREATE tab when no adult in reach can receive club email", async () => {
+    // The dead end THIS issue created, and the flagship #2282 case: a YOUTH
+    // parent whose own parent is not a member. The tab always inherits, so the
+    // create route refuses every time — it used to warn and leave the button
+    // live, which is the "offered, then fails on save" shape scope item 4 was
+    // written to remove.
+    const { onSubmitCreate } = renderDialog(
+      buildMember({ ageTier: "YOUTH", dependentEmailSource: null }),
+      "create",
+    );
+    const submit = screen.getByRole("button", { name: /create dependent/i });
+    expect(submit).toBeDisabled();
+    expect(
+      screen.getByText(/no adult the club can email is recorded/i),
+    ).toBeInTheDocument();
+    // …and it names the route that does work, rather than only refusing.
+    // Scoped to the sentence's own emphasis so it cannot pass by matching the
+    // tab trigger of the same name.
+    expect(
+      screen.getByText("Link existing", { selector: "strong" }),
+    ).toBeInTheDocument();
+    fireEvent.click(submit);
+    expect(onSubmitCreate).not.toHaveBeenCalled();
+  });
+
+  it("names the real recipient on the LINK tab, not the chosen parent", async () => {
+    // The picker lists PARENTS and pre-selects the viewed member; the write
+    // walks past a parent who cannot be the contact of record and stores the
+    // nearest adult ancestor. The screen said "Tui Rangi (Primary parent)" while
+    // the stored contact was Nan Rangi, and nothing said so.
+    mockEmailSourceResponse({
+      source: {
+        id: "gran-1",
+        firstName: "Nan",
+        lastName: "Rangi",
+        email: "nan@example.org",
+      },
+    });
+    renderDialog(buildMember({ ageTier: "YOUTH" }), "link", {
+      linkNotificationParentId: "member-1",
+    });
+    expect(
+      await screen.findByText(
+        /Club notifications will go to Nan Rangi \(nan@example\.org\), not Tui Rangi/i,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /link dependent/i })).toBeEnabled();
+  });
+
+  it("blocks the LINK tab when the chosen parent reaches nobody", async () => {
+    mockEmailSourceResponse({ source: null });
+    const { onSubmitLink } = renderDialog(
+      buildMember({ ageTier: "YOUTH", dependentEmailSource: null }),
+      "link",
+      { linkNotificationParentId: "member-1" },
+    );
+    expect(
+      await screen.findByText(/cannot be routed through them/i),
+    ).toBeInTheDocument();
+    const submit = screen.getByRole("button", { name: /link dependent/i });
+    expect(submit).toBeDisabled();
+    fireEvent.click(submit);
+    expect(onSubmitLink).not.toHaveBeenCalled();
+  });
+
+  it("leaves the LINK tab usable when the admin routes nowhere", async () => {
+    // "Use their own email" needs no contact of record at all, which is why the
+    // opener stays enabled for this member — see the card suite above.
+    const { onSubmitLink } = renderDialog(
+      buildMember({ ageTier: "YOUTH", dependentEmailSource: null }),
+      "link",
+      { linkNotificationParentId: "" },
+    );
+    const submit = screen.getByRole("button", { name: /link dependent/i });
+    expect(submit).toBeEnabled();
+    fireEvent.click(submit);
+    expect(onSubmitLink).toHaveBeenCalled();
   });
 
   it("tells the admin which mailbox a created dependant will inherit", () => {

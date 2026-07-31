@@ -1244,6 +1244,60 @@ describe("POST /api/admin/members/[id]/dependents/link", () => {
       );
       expect(tx.member.update).not.toHaveBeenCalled();
     });
+
+    /**
+     * #2282 review. Dropping the ADULT clause dropped the only thing keeping
+     * organisation and school accounts out of the parent side: `NOT_APPLICABLE`
+     * is forced on them, and nothing downstream refuses them — the notification
+     * picker's "use their own email" option makes the link succeed without ever
+     * touching the adult-gated email source. So a child could be stored as a
+     * school's child. The owner's decision was about AGE, and an organisation is
+     * not an age.
+     */
+    it("refuses an ORGANISATION parent, by role and not by age tier", async () => {
+      const tx = setupTransaction([
+        makeParent({
+          role: "SCHOOL",
+          ageTier: "NOT_APPLICABLE",
+          accessRoles: [{ role: "ORG", roleDefinitionId: null }],
+        }),
+        makeMember(),
+      ]);
+
+      const res = await linkDependent({
+        memberId: "target-1",
+        inheritEmail: false,
+        disableLogin: false,
+        addToFamilyGroupIds: [],
+      });
+
+      expect(res.status).toBe(422);
+      expect((await res.json()).error).toBe(
+        DEPENDENT_PARENT_LINK_ERRORS.ORGANISATION
+      );
+      expect(tx.member.update).not.toHaveBeenCalled();
+    });
+
+    it("still ACCEPTS an age-exempt human parent on the same tier", async () => {
+      // The half a tier-based exclusion would get wrong. `NOT_APPLICABLE` is
+      // the age-EXEMPT tier (#1440, #2106) and real people carry it — an admin
+      // on an age-exempt membership type, say. They are ordinary members and
+      // may be recorded as a parent like anyone else.
+      const tx = setupTransaction([
+        makeParent({ ageTier: "NOT_APPLICABLE" }),
+        makeMember(),
+      ]);
+
+      const res = await linkDependent({
+        memberId: "target-1",
+        inheritEmail: false,
+        disableLogin: false,
+        addToFamilyGroupIds: [],
+      });
+
+      expect(res.status).toBe(200);
+      expect(tx.member.update).toHaveBeenCalled();
+    });
   });
 
   describe("admin-account guards (#1604/#1622)", () => {

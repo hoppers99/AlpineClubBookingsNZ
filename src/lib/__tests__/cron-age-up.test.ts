@@ -14,6 +14,7 @@ vi.mock("../prisma", () => ({
     member: {
       findMany: vi.fn(),
       findFirst: vi.fn(),
+      findUnique: vi.fn(),
       update: vi.fn(),
     },
     ageTierSetting: {
@@ -68,6 +69,7 @@ import { checkAgeUpMembers } from "../cron-age-up";
 
 const mockedFindMany = vi.mocked(prisma.member.findMany);
 const mockedMemberFindFirst = vi.mocked(prisma.member.findFirst);
+const mockedMemberFindUnique = vi.mocked(prisma.member.findUnique);
 const mockedUpdate = vi.mocked(prisma.member.update);
 const mockedAgeTierSettingsFindMany = vi.mocked(prisma.ageTierSetting.findMany);
 const mockedCreateToken = vi.mocked(prisma.passwordResetToken.create);
@@ -107,6 +109,7 @@ beforeEach(() => {
       })
   );
   mockedMemberFindFirst.mockResolvedValue(null);
+  mockedMemberFindUnique.mockResolvedValue(null);
   mockedAuditLogFind.mockResolvedValue(null);
   mockedAuditLogCreate.mockResolvedValue({} as any);
   mockTxMemberFindUnique.mockResolvedValue({
@@ -126,6 +129,45 @@ function dobForAge(age: number): Date {
   // Season start: 2026-04-01
   // If age 18, born on or before 2008-04-01
   return new Date(2026 - age, 3, 1); // April 1, (2026 - age)
+}
+
+/** A member row as `resolveInheritedEmailSourceId` selects one. */
+function familyRow(
+  overrides: { id: string; email: string } & Partial<{
+    ageTier: string;
+    archivedAt: Date | null;
+    inheritEmailFromId: string | null;
+    parentMemberId: string | null;
+    secondaryParentId: string | null;
+  }>,
+) {
+  return {
+    ageTier: "ADULT",
+    archivedAt: null,
+    inheritEmailFromId: null,
+    parentMemberId: null,
+    secondaryParentId: null,
+    ...overrides,
+  };
+}
+
+/**
+ * #2282: the legacy parent handoff no longer mails the raw parent link — it
+ * resolves the family's actual contact of record with `resolveInheritedEmail
+ * SourceId`, the same walk every write path uses. That walk reads through
+ * `prisma.member.findMany`, which is also the mock the candidate query uses, so
+ * these tests dispatch on the `where` shape: the walk always asks for
+ * `{ id: { in: [...] } }`, the candidate query never does.
+ */
+function mockCandidatesAndFamily(
+  candidates: unknown[],
+  family: Record<string, ReturnType<typeof familyRow>>,
+) {
+  mockedFindMany.mockImplementation((async (args: unknown) => {
+    const ids = (args as { where?: { id?: { in?: string[] } } })?.where?.id?.in;
+    if (!ids) return candidates;
+    return ids.map((id) => family[id]).filter(Boolean);
+  }) as never);
 }
 
 describe("checkAgeUpMembers", () => {
@@ -535,6 +577,91 @@ describe("checkAgeUpMembers", () => {
     expect(mockedUpdate).not.toHaveBeenCalled();
   });
 
+  /**
+   * The rest of the same in-transaction condition (#2282 review). A later
+   * mutation sweep found three conjuncts still surviving: dropping
+   * `&& parentMemberId`, `currentMember.canLogin ||`, and
+   * `currentMember.ageTier === "ADULT" ||` all left the suite green, so the
+   * clause was only a third pinned. Each case below kills exactly one.
+   */
+  function racingMember(id: string) {
+    return {
+      id,
+      email: `${id}@example.com`,
+      firstName: "Race",
+      lastName: "Case",
+      dateOfBirth: dobForAge(18),
+      parentMemberId: null,
+      inheritParentEmail: false,
+      inheritEmailFromId: null,
+      inheritEmailFrom: null,
+      parent: null,
+    };
+  }
+
+  it("abandons the upgrade when a login is enabled between the read and the write", async () => {
+    // `canLogin` is what stops the job issuing a SECOND password-reset token and
+    // invitation to a member who was given a login mid-run.
+    mockedFindMany.mockResolvedValue([racingMember("m-login")] as never);
+    mockedEmailLogFind.mockResolvedValue(null);
+    mockTxMemberFindUnique.mockResolvedValue({
+      canLogin: true,
+      ageTier: "YOUTH",
+      inheritEmailFromId: null,
+      inheritParentEmail: false,
+      parentMemberId: null,
+    });
+
+    const result = await checkAgeUpMembers();
+
+    expect(result.upgraded).toBe(0);
+    expect(mockedUpdate).not.toHaveBeenCalled();
+    expect(mockedCreateToken).not.toHaveBeenCalled();
+    expect(mockedSendEmail).not.toHaveBeenCalled();
+  });
+
+  it("abandons the upgrade when the member is already ADULT in the transaction", async () => {
+    mockedFindMany.mockResolvedValue([racingMember("m-adult")] as never);
+    mockedEmailLogFind.mockResolvedValue(null);
+    mockTxMemberFindUnique.mockResolvedValue({
+      canLogin: false,
+      ageTier: "ADULT",
+      inheritEmailFromId: null,
+      inheritParentEmail: false,
+      parentMemberId: null,
+    });
+
+    const result = await checkAgeUpMembers();
+
+    expect(result.upgraded).toBe(0);
+    expect(mockedUpdate).not.toHaveBeenCalled();
+  });
+
+  it("upgrades a member whose inheritParentEmail flag stands with no parent", async () => {
+    // The `&& parentMemberId` half. A member detached by a cancellation or a
+    // hard delete can be left carrying `inheritParentEmail: true` with no parent
+    // and no source — inheriting from nobody. There is nothing to protect, so
+    // dropping that conjunct (making the flag alone disqualifying) would strand
+    // exactly these members at YOUTH for ever.
+    mockedFindMany.mockResolvedValue([racingMember("m-stranded")] as never);
+    mockedEmailLogFind.mockResolvedValue(null);
+    mockedUpdate.mockResolvedValue({} as never);
+    mockedCreateToken.mockResolvedValue({} as never);
+    mockedSendEmail.mockResolvedValue(undefined);
+    mockTxMemberFindUnique.mockResolvedValue({
+      canLogin: false,
+      ageTier: "YOUTH",
+      inheritEmailFromId: null,
+      inheritParentEmail: true,
+      parentMemberId: null,
+    });
+
+    const result = await checkAgeUpMembers();
+
+    expect(result.upgraded).toBe(1);
+    expect(mockedUpdate).toHaveBeenCalled();
+  });
+
   it("should skip members who already received age-up email", async () => {
     const member = {
       id: "m2",
@@ -630,7 +757,12 @@ describe("checkAgeUpMembers", () => {
       },
     };
 
-    mockedFindMany.mockResolvedValue([member] as any);
+    mockCandidatesAndFamily([member], {
+      "parent-legacy": familyRow({
+        id: "parent-legacy",
+        email: "legacy-parent@example.com",
+      }),
+    });
     mockedSendHandoffEmail.mockResolvedValue(undefined);
 
     const result = await checkAgeUpMembers();
@@ -655,6 +787,111 @@ describe("checkAgeUpMembers", () => {
         }),
       }),
     });
+  });
+
+  /**
+   * #2282 review. The legacy branch mailed `member.parent.email` outright, which
+   * was only ever safe because a parent link implied an active adult — the rule
+   * this issue removed. A minor parent, an archived one, or one whose only
+   * address is a club-internal placeholder would now receive (or silently fail
+   * to receive) another member's age-up notice.
+   *
+   * Mutation probe: put `member.parent?.email` back in place of the resolved
+   * source and this test mails the 16-year-old instead of the grandparent.
+   */
+  it("routes the legacy handoff PAST a young parent to the contact of record", async () => {
+    const member = {
+      id: "m-young-parent",
+      email: "kid@example.com",
+      firstName: "Kea",
+      lastName: "Rangi",
+      dateOfBirth: dobForAge(18),
+      parentMemberId: "tui",
+      inheritParentEmail: true,
+      inheritEmailFromId: null,
+      inheritEmailFrom: null,
+      parent: {
+        id: "tui",
+        email: "tui@example.com",
+        firstName: "Tui",
+        lastName: "Rangi",
+      },
+    };
+
+    mockCandidatesAndFamily([member], {
+      tui: familyRow({
+        id: "tui",
+        email: "tui@example.com",
+        ageTier: "YOUTH",
+        parentMemberId: "nan",
+      }),
+      nan: familyRow({ id: "nan", email: "nan@example.com" }),
+    });
+    mockedMemberFindUnique.mockResolvedValue({
+      id: "nan",
+      email: "nan@example.com",
+      firstName: "Nan",
+      lastName: "Rangi",
+    } as never);
+    mockedSendHandoffEmail.mockResolvedValue(undefined);
+
+    const result = await checkAgeUpMembers();
+
+    expect(result.handoff).toBe(1);
+    expect(mockedSendHandoffEmail).toHaveBeenCalledWith(
+      "nan@example.com",
+      expect.objectContaining({ recipientName: "Nan Rangi" }),
+    );
+    expect(mockedSendHandoffEmail).not.toHaveBeenCalledWith(
+      "tui@example.com",
+      expect.anything(),
+    );
+  });
+
+  it("declines the legacy handoff when the family reaches nobody", async () => {
+    // No adult anywhere above the parent. Mailing the minor was the old
+    // behaviour; the member is left for a human instead, because the
+    // in-transaction guard then refuses the upgrade too.
+    const member = {
+      id: "m-no-source",
+      email: "kid2@example.com",
+      firstName: "Kim",
+      lastName: "Rangi",
+      dateOfBirth: dobForAge(18),
+      parentMemberId: "tui",
+      inheritParentEmail: true,
+      inheritEmailFromId: null,
+      inheritEmailFrom: null,
+      parent: {
+        id: "tui",
+        email: "tui@example.com",
+        firstName: "Tui",
+        lastName: "Rangi",
+      },
+    };
+
+    mockCandidatesAndFamily([member], {
+      tui: familyRow({
+        id: "tui",
+        email: "tui@example.com",
+        ageTier: "YOUTH",
+      }),
+    });
+    mockedEmailLogFind.mockResolvedValue(null);
+    mockTxMemberFindUnique.mockResolvedValue({
+      canLogin: false,
+      ageTier: "YOUTH",
+      inheritEmailFromId: null,
+      inheritParentEmail: true,
+      parentMemberId: "tui",
+    });
+
+    const result = await checkAgeUpMembers();
+
+    expect(mockedSendHandoffEmail).not.toHaveBeenCalled();
+    expect(result.handoff).toBe(0);
+    expect(result.upgraded).toBe(0);
+    expect(mockedUpdate).not.toHaveBeenCalled();
   });
 
   it("sends parent handoff when the youth email matches another login member", async () => {
