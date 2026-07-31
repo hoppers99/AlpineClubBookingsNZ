@@ -781,22 +781,145 @@ describe("membership cancellation request workflow", () => {
       expect(mocks.requestCreate).not.toHaveBeenCalled();
     });
 
-    it("rejects an admin request when the target is an admin role", async () => {
-      mocks.memberFindUnique.mockResolvedValue(
-        targetMember({ role: "ADMIN", accessRoles: [{ role: "ADMIN" }] }),
-      );
+    // #2383: the account classes that may be cancelled, and the two that may
+    // not. The rule used to be legacy role === "USER", which refused Full
+    // Admins and organisations while quietly accepting every scoped admin.
+    describe("which account classes may be cancelled (#2383)", () => {
+      const accepted: Array<[string, Record<string, unknown>]> = [
+        ["an ordinary member", {}],
+        [
+          "a dependant with no login",
+          { canLogin: false, accessRoles: [] },
+        ],
+        [
+          "a Full Admin",
+          { role: "ADMIN", accessRoles: [{ role: "ADMIN" }, { role: "USER" }] },
+        ],
+        // Accepted under the OLD rule too (a scoped admin stores legacy role
+        // USER): here as a regression pin that widening the rule did not
+        // narrow it anywhere, not as evidence the widening works.
+        [
+          "a scoped-role admin (Membership Officer), as before",
+          { role: "USER", accessRoles: [{ role: "ADMIN_MEMBERSHIP" }] },
+        ],
+        // The rest each require something the gate could plausibly get wrong,
+        // and each fails if it does — see the mutation notes below.
+        [
+          // Fails unless the LODGE row is judged against the whole
+          // classification rather than its mere presence (#2383 review).
+          "a Booking Officer who also runs the lodge screen",
+          {
+            role: "USER",
+            accessRoles: [{ role: "ADMIN_BOOKINGS" }, { role: "LODGE" }],
+          },
+        ],
+        [
+          // Fails unless `roleDefinitionId` is selected and read: the row's
+          // `role` is null, so dropping it leaves only the LODGE row and the
+          // record classifies as the kiosk device.
+          "a custom definition-backed role holder who also holds lodge access",
+          {
+            role: "USER",
+            accessRoles: [
+              { role: null, roleDefinitionId: "def-lodge-ops" },
+              { role: "LODGE" },
+            ],
+          },
+        ],
+        [
+          // Fails unless the legacy finance column is selected and read.
+          "a Treasurer recorded only by the legacy finance column",
+          {
+            role: "USER",
+            financeAccessLevel: "MANAGER",
+            accessRoles: [{ role: "LODGE" }],
+          },
+        ],
+        [
+          "an organisation account",
+          { role: "SCHOOL", accessRoles: [{ role: "ORG" }] },
+        ],
+      ];
 
-      await expect(
-        createAdminMembershipCancellationRequest({
+      for (const [label, overrides] of accepted) {
+        it(`accepts ${label}`, async () => {
+          mocks.memberFindUnique.mockResolvedValue(targetMember(overrides));
+
+          const result = await createAdminMembershipCancellationRequest({
+            targetMemberId: "target-1",
+            adminMemberId: "admin-1",
+            reason: "Test",
+          });
+
+          expect(result.request.id).toBe("request-2");
+          expect(mocks.requestCreate).toHaveBeenCalled();
+        });
+      }
+
+      const refused: Array<[string, Record<string, unknown>]> = [
+        ["the lodge kiosk device login", { role: "LODGE", accessRoles: [] }],
+        [
+          "a kiosk carrying only a LODGE access-role row",
+          { role: "USER", accessRoles: [{ role: "LODGE" }] },
+        ],
+        [
+          // The legacy role alone still identifies the device, even if a stray
+          // USER row is present: LODGE is the record's whole classification.
+          "a kiosk whose legacy role is LODGE and holds a USER row",
+          { role: "LODGE", accessRoles: [{ role: "USER" }] },
+        ],
+        [
+          "a booking-request guest record",
+          { role: "NON_MEMBER", canLogin: false, accessRoles: [] },
+        ],
+        [
+          "a school booking-request contact or teacher record",
+          { role: "SCHOOL", canLogin: false, accessRoles: [] },
+        ],
+      ];
+
+      for (const [label, overrides] of refused) {
+        it(`refuses ${label}`, async () => {
+          mocks.memberFindUnique.mockResolvedValue(targetMember(overrides));
+
+          await expect(
+            createAdminMembershipCancellationRequest({
+              targetMemberId: "target-1",
+              adminMemberId: "admin-1",
+              reason: "Test",
+            }),
+          ).rejects.toMatchObject({
+            message:
+              "Lodge kiosk logins and booking-request contact records hold no membership to cancel",
+            statusCode: 422,
+          } satisfies Partial<MembershipCancellationRequestError>);
+          expect(mocks.requestCreate).not.toHaveBeenCalled();
+        });
+      }
+
+      it("selects every field the eligibility rule reads", async () => {
+        // Prisma is mocked here, so the cases above would still pass if the
+        // query stopped selecting a field the rule depends on — in production
+        // the field would simply arrive undefined and the record would be
+        // misclassified as the kiosk device. Assert the query itself.
+        mocks.memberFindUnique.mockResolvedValue(targetMember());
+
+        await createAdminMembershipCancellationRequest({
           targetMemberId: "target-1",
           adminMemberId: "admin-1",
           reason: "Test",
-        }),
-      ).rejects.toMatchObject({
-        message: "Only member accounts can be cancelled",
-        statusCode: 422,
-      } satisfies Partial<MembershipCancellationRequestError>);
-      expect(mocks.requestCreate).not.toHaveBeenCalled();
+        });
+
+        const [[query]] = mocks.memberFindUnique.mock.calls as [
+          [{ select: Record<string, unknown> }],
+        ];
+        expect(query.select).toMatchObject({
+          role: true,
+          canLogin: true,
+          financeAccessLevel: true,
+          accessRoles: { select: { role: true, roleDefinitionId: true } },
+        });
+      });
     });
 
     it("rejects an admin request when an open participant already exists", async () => {

@@ -4,7 +4,7 @@ import {
   type Prisma,
 } from "@prisma/client";
 import { MEMBER_ACCESS_ROLE_SELECT } from "@/lib/access-role-definitions";
-import { memberHoldsPrivilegedRole } from "@/lib/access-roles";
+import { memberHoldsPrivilegedRole, type UserType } from "@/lib/access-roles";
 import {
   actorIsFullAdmin,
   LAST_FULL_ADMIN_GUARD_MESSAGE,
@@ -17,6 +17,7 @@ import {
   sendMembershipCancellationRejectedEmail,
 } from "@/lib/email";
 import logger from "@/lib/logger";
+import { classifyAccountRecord } from "@/lib/member-roles";
 import {
   emptyMembershipCancellationBlockerMap,
   loadMembershipCancellationBlockersByMemberId,
@@ -85,6 +86,10 @@ type AdminSerializedMembershipCancellationParticipant = {
   cancelledAtParticipant: string | null;
   reviewedBy: { id: string; name: string; email: string } | null;
   blockers: MembershipCancellationBlocker[];
+  /** True when approving this participant requires a Full Admin (#1604/#2383). */
+  holdsPrivilegedAccess: boolean;
+  /** Derived User Type, so an organisation account is visibly one. */
+  accountType: UserType;
 };
 
 export type AdminSerializedMembershipCancellationRequest = {
@@ -129,6 +134,17 @@ const cancellationParticipantMemberSelect = {
   cancelledAt: true,
   cancelledReason: true,
   cancelledViaRequestId: true,
+  // #2383: the queue must show WHAT is being cancelled, not just who. Since
+  // any account holder is now cancellable, "de-logins the Treasurer" and
+  // "closes the school's account" would otherwise look identical to an ordinary
+  // member, and a scoped Membership Officer can raise either. These are the
+  // same fields the approval-time privileged-target guard reads, so the badge
+  // and the guard cannot disagree — minus the joined definition rows, which
+  // carry a full permission matrix each and are not needed: a custom role is
+  // identified by its `roleDefinitionId` token alone.
+  role: true,
+  financeAccessLevel: true,
+  accessRoles: { select: { role: true, roleDefinitionId: true } },
 } satisfies Prisma.MemberSelect;
 
 const adminCancellationRequestInclude = {
@@ -180,6 +196,11 @@ function serializeRequest(
       cancelledAtParticipant: serializeDate(participant.cancelledAt),
       reviewedBy: serializeMember(participant.reviewedBy),
       blockers: blockersByMemberId.get(participant.memberId) ?? [],
+      // #2383: what the reviewer is actually approving. `holdsPrivilegedAccess`
+      // is the exact predicate the approval guard uses, so it is a promise:
+      // approving this participant needs a Full Admin.
+      holdsPrivilegedAccess: memberHoldsPrivilegedRole(participant.member),
+      accountType: classifyAccountRecord(participant.member),
     })),
   };
 }
@@ -292,11 +313,27 @@ function assertParticipantCanBeApproved(participant: {
   }
 }
 
+/**
+ * Separation of duties: whoever raised a cancellation may not approve it.
+ *
+ * Fails CLOSED on a missing requester (#2383 review). `requestedByMemberId` is
+ * `onDelete: SetNull`, so hard-deleting the raiser nulls it — and with the
+ * widened entry rule this guard is the only thing standing between an admin and
+ * approving their own cancellation. "We cannot tell who raised this" must
+ * therefore mean "not you", not "anyone". Rejecting the request is unaffected,
+ * so such a request is never stuck: reject it and raise it again.
+ */
 function assertCancellationApprovalIsIndependent(
   requestedByMemberId: string | null,
   adminMemberId: string,
 ) {
-  if (requestedByMemberId && requestedByMemberId === adminMemberId) {
+  if (!requestedByMemberId) {
+    throw new MembershipCancellationAdminError(
+      "The admin who raised this request is no longer on file, so it cannot be confirmed as an independent approval. Reject it and raise a new request.",
+      403,
+    );
+  }
+  if (requestedByMemberId === adminMemberId) {
     throw new MembershipCancellationAdminError(
       "Cancellation requests must be approved by a different admin.",
       403,

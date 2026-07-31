@@ -97,9 +97,21 @@ async function resolvePreview(
   if (!session?.user?.id) return "denied";
   const member = await prisma.member.findUnique({
     where: { id: session.user.id },
-    select: { id: true, accessRoles: { select: { role: true } } },
+    select: {
+      id: true,
+      active: true,
+      canLogin: true,
+      accessRoles: { select: { role: true } },
+    },
   });
-  if (!member || !hasAdminAccess(member)) return "denied";
+  // `active` is the load-bearing flag, exactly as in requireAdmin (#2383).
+  // Cancellation, archive and deletion deliberately leave the access-role rows
+  // in place and none of them invalidates the session JWT — auth() only
+  // re-stamps the token's roles from those same retained rows — so a preview
+  // grant would otherwise survive an admin's departure until their token
+  // expired. `canLogin` is selected too so hasAdminAccess resolves the
+  // login-cleared role set rather than the stored one.
+  if (!member?.active || !hasAdminAccess(member)) return "denied";
 
   if (previewDeviceId) {
     const device = await prisma.lodgeDisplayDevice.findUnique({
