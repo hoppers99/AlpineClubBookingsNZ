@@ -124,14 +124,21 @@ Notes and constraints:
   that warns you to confirm a club member is staying with the group.
 - Verified public requests only appear on this tab — never under Approvals, the
   Bookings list, or the Waitlist.
-- If a request's saved guest data cannot be read back (an old or imported row
-  with a missing name, say), the request still appears in the list — including
-  under **All** — with **Guest details need attention** above its guest badges,
-  the names shown exactly as stored, and any linked members hidden. One
-  unreadable row never hides the rest of the queue. Confirm the details with
-  the requester before approving: approving, pricing, quoting, and holding all
-  still require a valid guest list, so they refuse the request until it is
-  corrected (#2342).
+- If any of a request's saved details cannot be read back (an old or imported
+  row with a missing surname, say), the request still appears in the list —
+  including under **All** — under a **Saved details need attention** note. One
+  unreadable row never hides the rest of the queue. The note names only what
+  actually failed: the guest list (names and age groups are then shown as they
+  were saved, so treat them as a rough record), the member links (none are
+  shown), or the saved quote (its options and totals are not shown). On a
+  request that is still open, Save quote, Send quote, Hold slots and Approve
+  are turned off, and the server refuses all four plus pricing even if
+  something calls them directly, so it cannot become a booking. There is no
+  screen for repairing the saved data: check what the group wants with the
+  requester, then **Decline** the request so they can submit again, or ask
+  support to repair the stored row. On an already-converted or finalised
+  request nothing is blocked — the note is there so you know the details it
+  shows are not confirmed (#2342).
 - If your admin role is view-only for bookings, a notice explains you can view
   but not approve, reject, price, hold, or convert requests.
 
@@ -144,7 +151,7 @@ Notes and constraints:
 | A new public request is not on the Approvals tab | Public requests live only on the Public Requests tab | Switch to **Public Requests** and check the **Queue** filter |
 | Approve fails with a capacity message | The lodge is full for one or more nights | The dialog lists the full dates; free capacity or adjust the request |
 | Cannot price/approve anything | Your role is view-only for bookings | Ask a full admin for bookings edit access |
-| A request says **Guest details need attention** | Its saved guest data could not be read back, so it cannot be priced, quoted, or approved as it stands | Check the details with the requester; the request still shows what was stored |
+| A request says **Saved details need attention** and its buttons are greyed out | Some of its saved data could not be read back, so it cannot be quoted, priced, held, or approved | Confirm what the group wants with the requester, then **Decline** so they can submit again — or ask support to repair the stored row. There is no guest-edit screen |
 
 ## Related links
 

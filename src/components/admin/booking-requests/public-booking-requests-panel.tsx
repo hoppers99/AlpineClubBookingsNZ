@@ -54,7 +54,16 @@ const SCHOOL_CHILD_TIER_LABELS: Record<SchoolChildTier, string> = {
   YOUTH: "Youth",
 };
 
-/** Count a request's bulk children per tier from its guest snapshot. */
+/**
+ * Count a request's bulk children per tier from its guest snapshot.
+ *
+ * #2342: a guest whose stored `ageTier` could not be read back matches no tier
+ * and so counts as ZERO here — on a flagged row this silently under-counts the
+ * group (a 30-child request can prefill as 1). That is why the boxes it
+ * prefills, and the Approve button they feed, are disabled on a flagged row,
+ * and why `approveSchoolBookingRequest` refuses a count override on one
+ * server-side. Do not use this to derive anything a booking is priced from.
+ */
 function deriveChildCounts(
   guests: Array<{ ageTier: string }>,
 ): Record<SchoolChildTier, string> {
@@ -69,6 +78,27 @@ function deriveChildCounts(
     CHILD: String(counts.CHILD),
     YOUTH: String(counts.YOUTH),
   };
+}
+
+/**
+ * #2342: does this request carry stored data the server could not read back?
+ *
+ * True for ANY of the three per-blob flags. A row in this state cannot be
+ * quoted, priced, held or approved — every one of those routes now strict-reads
+ * the stored blobs and refuses — so the panel disables those affordances rather
+ * than offering buttons that are guaranteed to fail. Decline is deliberately
+ * NOT gated: it works end to end on a flagged row and is the intended way out.
+ */
+function storedDataNeedsAttention(request: {
+  guestDataNeedsAttention?: boolean;
+  linkedMemberDataNeedsAttention?: boolean;
+  quoteDataNeedsAttention?: boolean;
+}): boolean {
+  return Boolean(
+    request.guestDataNeedsAttention ||
+      request.linkedMemberDataNeedsAttention ||
+      request.quoteDataNeedsAttention,
+  );
 }
 
 function parseCount(value: string): number {
@@ -155,12 +185,20 @@ interface PublicBookingRequestData {
   checkIn: string;
   checkOut: string;
   guests: Array<{ firstName: string; lastName: string; ageTier: string }>;
-  // #2342: present (and always true) only when this request's stored guest data
-  // — the guest list, or the linked-member list — failed validation on the
-  // server. The names above are then shown exactly as saved rather than as
-  // validated data, and `linkedGuestMembers` comes back empty. Absent on every
-  // well-formed request.
+  // #2342: one flag per stored JSON blob, each present (and always true) only
+  // when THAT blob failed validation on the server; all three are absent on a
+  // well-formed request. Kept separate rather than OR'd into one, because the
+  // panel has to be able to say which thing is wrong — telling an officer their
+  // member links are hidden when the links parsed fine, or to distrust names
+  // that validated, is worse than saying nothing.
+  //
+  // `guests` above is then the salvaged list (names as saved, bar collapsed
+  // line breaks and a 100-character cap) rather than validated data.
   guestDataNeedsAttention?: boolean;
+  // `linkedGuestMembers` above is then empty — no half-trusted links.
+  linkedMemberDataNeedsAttention?: boolean;
+  // `latestQuote.options` below is then empty.
+  quoteDataNeedsAttention?: boolean;
   message: string | null;
   indicativePriceCents: number | null;
   priceCents: number | null;
@@ -1064,6 +1102,12 @@ export function PublicBookingRequestsPanel({
             // service layer refuses them too (booking-request-quotes.ts):
             // hiding is the UX, the 409 is the guarantee.
             const memberWholeLodge = isMemberWholeLodgeRequest(request);
+            // #2342: same shape as the line above — the acting affordances are
+            // disabled below AND the routes refuse; the disable is the UX, the
+            // 409 is the guarantee. Decline stays enabled: it is the one action
+            // that works end to end on a flagged row.
+            const dataNeedsAttention = storedDataNeedsAttention(request);
+            const actionsBlocked = isActioning || dataNeedsAttention;
 
             return (
               <Card
@@ -1158,17 +1202,72 @@ export function PublicBookingRequestsPanel({
                     </div>
                   ) : null}
 
-                  {/* #2342: one historical request with an unreadable guest
-                      list used to 500 the whole page. It now renders, flagged,
-                      with its names shown exactly as stored. */}
-                  {request.guestDataNeedsAttention ? (
-                    <p className="text-sm text-warning-11">
-                      Guest details need attention: some of this request&rsquo;s
-                      saved guest data could not be read back. The names below
-                      are shown exactly as they were stored, and any linked
-                      members are not shown. Check the details with the
-                      requester before you approve it.
-                    </p>
+                  {/* #2342: one row with an unreadable stored blob used to 500
+                      the whole page. It now renders, flagged, and the copy
+                      names ONLY the blob that actually failed — an OR'd flag
+                      described both failures whichever had happened. The
+                      bordered warning box is this panel's idiom for a data
+                      warning that changes what the officer should do (the
+                      soft-cap hint, the link-conflict advisory, the requester
+                      response); a bare warning paragraph is for passive status
+                      lines like "waiting for the requester to verify". */}
+                  {dataNeedsAttention ? (
+                    <div
+                      className="rounded-md border border-warning-6 bg-warning-3 p-3 text-sm text-warning-11"
+                      role="status"
+                    >
+                      {/* Heading states the fact only. What follows from it
+                          depends on the request's status, so the consequence
+                          lives in the status-aware paragraph below rather than
+                          here, where it would be wrong on a finalised row. */}
+                      <p className="font-medium">
+                        Saved details need attention
+                      </p>
+                      <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                        {request.guestDataNeedsAttention ? (
+                          <li>
+                            The saved guest list could not be read back. The
+                            names and age groups below are shown as they were
+                            saved, so treat them as a rough record rather than
+                            confirmed details.
+                          </li>
+                        ) : null}
+                        {request.linkedMemberDataNeedsAttention ? (
+                          <li>
+                            The saved member links could not be read back, so no
+                            linked members are shown for this request.
+                          </li>
+                        ) : null}
+                        {request.quoteDataNeedsAttention ? (
+                          <li>
+                            The saved quote could not be read back, so its
+                            options and totals are not shown.
+                          </li>
+                        ) : null}
+                      </ul>
+                      {/* The remedy depends on whether this request is still
+                          open. The row that found this bug was CONVERTED, and
+                          telling an officer to Decline a finalised request —
+                          or that buttons it is not shown are turned off —
+                          would be wrong on both counts. */}
+                      {LINKING_EDITOR_STATUSES.has(request.status) ? (
+                        <p className="mt-1">
+                          Quoting, pricing, holding and approving are turned off
+                          for this request and will be refused if attempted —
+                          there is no screen for repairing the saved data. Check
+                          what the group actually wants with the requester, then
+                          either <strong>Decline</strong> it so they can submit
+                          again, or ask support to repair the stored row.
+                        </p>
+                      ) : (
+                        <p className="mt-1">
+                          No decision is open on this request at its current
+                          status, so nothing is blocked. If these details matter
+                          — for the booking it became, or before it moves on —
+                          ask support to repair the stored row.
+                        </p>
+                      )}
+                    </div>
                   ) : null}
 
                   <div className="flex flex-wrap gap-1 text-sm">
@@ -1325,6 +1424,14 @@ export function PublicBookingRequestsPanel({
                                   type="number"
                                   min="0"
                                   className="w-24"
+                                  // #2342: these boxes are PREFILLED from the
+                                  // guest list, and on a flagged row that list
+                                  // is the salvaged one, in which an unreadable
+                                  // age tier counts as zero. Approving from
+                                  // them would invoice a 30-child group for
+                                  // two. The server refuses the override on
+                                  // such a row too.
+                                  disabled={actionsBlocked}
                                   value={childCountValues(request)[tier]}
                                   onChange={(event) =>
                                     setCountInputs((prev) => {
@@ -1366,6 +1473,7 @@ export function PublicBookingRequestsPanel({
                         <div className="space-y-1">
                           <Label htmlFor={`pricing-mode-${request.id}`}>Pricing mode</Label>
                           <Select
+                            disabled={actionsBlocked}
                             value={pricingModes[request.id] ?? "OVERALL_TOTAL"}
                             onValueChange={(value) =>
                               setPricingModes((prev) => ({
@@ -1400,6 +1508,7 @@ export function PublicBookingRequestsPanel({
                                       min="0"
                                       step="0.01"
                                       className="w-32"
+                                      disabled={actionsBlocked}
                                       value={optionTotalInputValue(request, optionId)}
                                       onChange={(event) =>
                                         setPriceInputs((prev) => ({
@@ -1432,6 +1541,7 @@ export function PublicBookingRequestsPanel({
                                           min="0"
                                           step="0.01"
                                           className="w-32"
+                                          disabled={actionsBlocked}
                                           value={rateInputs[key] ?? ""}
                                           onChange={(event) =>
                                             setRateInputs((prev) => ({
@@ -1527,6 +1637,7 @@ export function PublicBookingRequestsPanel({
                                 </div>
                                 <Input
                                   value={memberQueries[key] ?? ""}
+                                  disabled={actionsBlocked}
                                   onChange={(event) =>
                                     setMemberQueries((prev) => ({
                                       ...prev,
@@ -1536,10 +1647,17 @@ export function PublicBookingRequestsPanel({
                                   placeholder="Search member"
                                 />
                                 <div className="flex flex-wrap gap-2">
+                                  {/* #2342: linking is staged locally and only
+                                      persisted by "Save quote", which the
+                                      server now refuses on a flagged row — so
+                                      leaving these live would let an officer
+                                      spend time on links that can never be
+                                      saved. */}
                                   <Button
                                     type="button"
                                     size="sm"
                                     variant="outline"
+                                    disabled={actionsBlocked}
                                     onClick={() => handleMemberSearch(request.id, guestIndex)}
                                   >
                                     Search
@@ -1549,6 +1667,7 @@ export function PublicBookingRequestsPanel({
                                       type="button"
                                       size="sm"
                                       variant="ghost"
+                                      disabled={actionsBlocked}
                                       onClick={() => handleUnlinkMember(request, guestIndex)}
                                     >
                                       Unlink
@@ -1563,6 +1682,7 @@ export function PublicBookingRequestsPanel({
                                         type="button"
                                         size="sm"
                                         variant="secondary"
+                                        disabled={actionsBlocked}
                                         onClick={() =>
                                           handleLinkMember(request, guestIndex, member)
                                         }
@@ -1600,7 +1720,7 @@ export function PublicBookingRequestsPanel({
                               [request.id]: value,
                             }))
                           }
-                          disabled={isActioning}
+                          disabled={actionsBlocked}
                         />
                       ) : null}
 
@@ -1646,14 +1766,14 @@ export function PublicBookingRequestsPanel({
                           size="sm"
                           variant="outline"
                           onClick={() => handleCreateQuote(request)}
-                          disabled={isActioning}
+                          disabled={actionsBlocked}
                         >
                           Save quote
                         </Button>
                         <Button
                           size="sm"
                           onClick={() => handleSendQuote(request)}
-                          disabled={isActioning || !request.latestQuote}
+                          disabled={actionsBlocked || !request.latestQuote}
                         >
                           Send quote
                         </Button>
@@ -1673,7 +1793,7 @@ export function PublicBookingRequestsPanel({
                             size="sm"
                             variant="outline"
                             onClick={() => handleHoldSlots(request)}
-                            disabled={isActioning || Boolean(request.heldBookingId)}
+                            disabled={actionsBlocked || Boolean(request.heldBookingId)}
                           >
                             {request.heldBookingId ? "Slots held" : "Hold slots"}
                           </Button>
@@ -1691,7 +1811,7 @@ export function PublicBookingRequestsPanel({
                           variant={memberWholeLodge ? "default" : "outline"}
                           onClick={() => handleApprove(request)}
                           disabled={
-                            isActioning ||
+                            actionsBlocked ||
                             (!memberWholeLodge &&
                               request.type !== "SCHOOL" &&
                               request.status !== "PRICED")
@@ -1712,6 +1832,17 @@ export function PublicBookingRequestsPanel({
                           Decline
                         </Button>
                       </div>
+                      {/* #2342: stated again beside the disabled buttons, since
+                          the warning box above is several blocks up the card
+                          and a disabled button's `title` never fires here
+                          (buttonVariants sets disabled:pointer-events-none). */}
+                      {dataNeedsAttention ? (
+                        <p className="text-xs text-warning-11">
+                          Quoting, holding and approving are turned off because
+                          this request&rsquo;s saved details could not be read —
+                          see the note above. Decline is still available.
+                        </p>
+                      ) : null}
                       {memberWholeLodge ? (
                         <p className="text-xs text-muted-foreground">
                           Approving confirms the booking, charges the priced

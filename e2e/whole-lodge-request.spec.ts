@@ -129,7 +129,9 @@ let ibSettingsBefore: {
  * `parseBookingRequestGuests` rejects an empty name, so serialising the page
  * threw. That pre-existing defect was found by this spec, filed as #2342, and
  * fixed there: admin reads are now tolerant (the row renders flagged) and the
- * seed gives the school children surnames.
+ * seed gives the school children surnames. `ALL` now has its own end-to-end
+ * guard below ("the officer queue's All filter survives the whole seeded
+ * database"); this helper stays narrow because it only wants the member rows.
  */
 async function listMemberOriginRequests(admin: APIRequestContext) {
   const response = await admin.get(
@@ -678,6 +680,56 @@ test("the member sees no availability, price or capacity hint on the request for
   expect(content).not.toMatch(/\$\d/);
 
   await page.close();
+});
+
+test("the officer queue's All filter survives the whole seeded database (#2342)", async () => {
+  // The regression this spec found and #2342 fixed, guarded end to end against
+  // the real seeded Postgres rather than a mocked row: `status=ALL` widens past
+  // the QUEUE statuses and pulls in every historical request, including the
+  // CONVERTED school group. One row whose stored guests, member links, or saved
+  // quote fail their schema used to throw while serialising the page, so the
+  // officer got a 500 and NONE of the queue — the whole point of the fix is
+  // that a bad row costs one row.
+  const response = await adminContext.request.get(
+    "/api/admin/booking-requests?status=ALL&pageSize=100",
+  );
+  expect(
+    response.ok(),
+    `GET /api/admin/booking-requests?status=ALL returned ${response.status()}: ${await response.text()}`,
+  ).toBe(true);
+
+  const body = (await response.json()) as {
+    data: Array<{
+      id: string;
+      status: string;
+      guests: unknown[];
+      guestDataNeedsAttention?: boolean;
+      linkedMemberDataNeedsAttention?: boolean;
+      quoteDataNeedsAttention?: boolean;
+    }>;
+    total: number;
+  };
+  // ALL must be a SUPERSET of the narrower filter this spec otherwise uses —
+  // otherwise a 200 could be an empty page hiding the same failure.
+  expect(body.data.length).toBeGreaterThan(0);
+  expect(body.total).toBeGreaterThanOrEqual(body.data.length);
+  const verifiedOnly = await listMemberOriginRequests(adminContext.request);
+  for (const row of verifiedOnly) {
+    expect(body.data.some((candidate) => candidate.id === row.id)).toBe(true);
+  }
+  // The seed itself is clean (its school children now carry surnames), so no
+  // seeded row should be flagged. This is the assertion that would have caught
+  // the original defect: before the fix the request above never returned at all.
+  for (const row of body.data) {
+    expect(
+      Boolean(
+        row.guestDataNeedsAttention ||
+          row.linkedMemberDataNeedsAttention ||
+          row.quoteDataNeedsAttention,
+      ),
+      `seeded request ${row.id} (${row.status}) came back flagged`,
+    ).toBe(false);
+  }
 });
 
 test("the officer sees the member badges and the admin-only availability strip, and approving holds the lodge", async () => {

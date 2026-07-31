@@ -9,14 +9,23 @@ All notable public reference-release changes should be recorded here.
   server error on any database holding a request whose saved guest list could
   not be read back — a missing surname was enough, and the demo seed shipped
   exactly such a row. Every request on the page disappeared behind that one bad
-  row. Admin reads are now tolerant: a request whose stored guest data fails
-  validation — its guest list, or the member links on it — renders in the list
-  and in its own per-request payload with **Guest details need attention**, the
-  names shown exactly as stored and any links hidden, so one odd row costs one
-  odd-looking row. Nothing about a well-formed request changed. Writing and converting stay strict — submitting, pricing, quoting,
-  holding, and approving all still refuse an empty name, so a flagged request
-  cannot become a booking until it is corrected. The demo seed's school
-  children now carry surnames, matching what the real school form writes.
+  row. Admin reads are now tolerant across all three saved blobs a request
+  carries — its guest list, its member links, and its latest quote — so a row
+  that fails validation renders in the list and in its own per-request payload
+  under a **Saved details need attention** note instead of erroring the page.
+  The note names only what actually failed, and shows the salvaged guest names
+  as they were saved (line breaks collapsed, over-long values trimmed) rather
+  than as confirmed details. Nothing about a well-formed request changed.
+  Acting on such a request is refused rather than merely discouraged: Save
+  quote, Send quote, Hold slots and Approve are turned off in the panel, and
+  the server refuses quoting, pricing, holding and approving — including a
+  school approval that supplies its own group numbers, which previously skipped
+  the saved guest list altogether and could have invoiced a large group as a
+  handful of people. Saving a quote no longer overwrites the stored member
+  links with what the page happens to be displaying. Declining still works, and
+  is the way out; the refusals now read as plain English rather than as a
+  server error. The demo seed's school children now carry surnames, matching
+  what the real school form writes.
 
 - **The finance dashboard was counting a paid price increase twice, and now
   counts it once (#2408).** When a booking's price goes up after it was made —

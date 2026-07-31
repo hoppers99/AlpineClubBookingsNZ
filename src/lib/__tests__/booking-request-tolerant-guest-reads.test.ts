@@ -9,11 +9,17 @@
  * entire view.
  *
  * The contract these tests pin:
- *   - a malformed row renders (flagged, names as stored) in the LIST payload
- *     and in the per-request DETAIL payload, instead of throwing;
+ *   - a malformed row renders (flagged, names shown as saved) in the LIST
+ *     payload and in the shared per-request serialiser, instead of throwing;
+ *   - each stored blob is flagged SEPARATELY, so a payload never claims a
+ *     failure that did not happen;
  *   - a well-formed row's payload is unchanged, flag and all (there is no flag);
  *   - WRITES still reject an empty name, and the strict reader every
  *     conversion/approval path uses still throws on a malformed stored row.
+ *
+ * The mirror half — that every ACTING path refuses a flagged row, with the
+ * plain-English message an officer sees — lives in
+ * `booking-request-malformed-stored-data.test.ts`.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
@@ -62,6 +68,15 @@ vi.mock("@/lib/logger", () => ({
 }));
 vi.mock("@/lib/booking-request-quotes", () => ({
   parseBookingRequestQuoteOptions: vi.fn(() => []),
+  // The list route reads a row's latest quote through the tolerant reader
+  // (#2342). No row in this file carries a quote, so the stub is never called;
+  // the real reader's tolerance is exercised in
+  // `booking-request-malformed-stored-data.test.ts`, which imports the module
+  // for real.
+  readBookingRequestQuoteOptionsForDisplay: vi.fn(() => ({
+    options: [],
+    needsAttention: false,
+  })),
 }));
 
 const guards = vi.hoisted(() => ({ requireAdmin: vi.fn() }));
@@ -79,6 +94,7 @@ import {
   parseBookingRequestGuests,
   readBookingRequestGuestsForDisplay,
   serializeBookingRequestForAdmin,
+  UNREADABLE_STORED_GUESTS_MESSAGE,
 } from "@/lib/booking-request";
 import { prisma } from "@/lib/prisma";
 import { GET as listRequests } from "@/app/api/admin/booking-requests/route";
@@ -155,8 +171,14 @@ function row(overrides: Record<string, unknown> = {}): BookingRequest & {
   } as unknown as BookingRequest & { lodge?: { name: string } | null };
 }
 
-const badRow = () =>
-  row({ id: "req-bad", type: "SCHOOL", status: "CONVERTED", guests: MALFORMED_GUESTS });
+const badRow = (overrides: Record<string, unknown> = {}) =>
+  row({
+    id: "req-bad",
+    type: "SCHOOL",
+    status: "CONVERTED",
+    guests: MALFORMED_GUESTS,
+    ...overrides,
+  });
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -175,7 +197,7 @@ describe("readBookingRequestGuestsForDisplay (#2342)", () => {
     expect(display.guests).toEqual(parseBookingRequestGuests(HEALTHY_GUESTS));
   });
 
-  it("keeps the stored names and flags the row when the list fails the schema", () => {
+  it("shows the stored names as saved and flags the row when the list fails the schema", () => {
     const display = readBookingRequestGuestsForDisplay(MALFORMED_GUESTS);
 
     expect(display.needsAttention).toBe(true);
@@ -213,6 +235,21 @@ describe("readBookingRequestGuestsForDisplay (#2342)", () => {
     expect(display.needsAttention).toBe(true);
     expect(display.guests[0].firstName).toBe("Eve Bcc: attacker@example.com");
   });
+
+  it("caps salvaged text at nameField's 100 characters", () => {
+    // A blob that skipped the schema can hold a name of any length, and the
+    // queue renders it into a badge. Full parity with the persistence-time
+    // cleanup: collapse CR/LF, then cap at 100 (#2342).
+    const display = readBookingRequestGuestsForDisplay([
+      { firstName: "x".repeat(400), lastName: "", ageTier: "ADULT" },
+    ]);
+
+    expect(display.needsAttention).toBe(true);
+    expect(display.guests[0].firstName).toHaveLength(100);
+    // Length and emptiness are NOT re-validated — the point is to show what is
+    // stored — so the empty surname survives as an empty cell.
+    expect(display.guests[0].lastName).toBe("");
+  });
 });
 
 describe("serializeBookingRequestForAdmin (#2342)", () => {
@@ -223,15 +260,20 @@ describe("serializeBookingRequestForAdmin (#2342)", () => {
     expect("guestDataNeedsAttention" in serialized).toBe(false);
   });
 
-  it("flags — and does not throw on — an unreadable linked-member list", () => {
+  it("flags ONLY the links — not the guests — on an unreadable linked-member list", () => {
     // The other stored JSON blob this payload parses, and the other way one bad
     // row could 500 the queue. It falls back to NO links: a guest index or
     // member id we cannot trust is worse than none.
+    //
+    // The two flags are separate on purpose (#2342 review finding D): with one
+    // OR'd flag this payload also claimed the GUEST list was unreadable, and
+    // the panel then told the officer to distrust names that had validated.
     const serialized = serializeBookingRequestForAdmin(
       row({ linkedGuestMembers: [{ guestIndex: -1, memberId: "" }] }),
     );
 
-    expect(serialized).toMatchObject({ guestDataNeedsAttention: true });
+    expect(serialized).toMatchObject({ linkedMemberDataNeedsAttention: true });
+    expect("guestDataNeedsAttention" in serialized).toBe(false);
     expect(serialized.linkedGuestMembers).toEqual([]);
     // The guest list itself was fine, so it is still served in full.
     expect(serialized.guests).toEqual(HEALTHY_GUESTS);
@@ -243,20 +285,36 @@ describe("serializeBookingRequestForAdmin (#2342)", () => {
     );
 
     expect("guestDataNeedsAttention" in serialized).toBe(false);
+    expect("linkedMemberDataNeedsAttention" in serialized).toBe(false);
     expect(serialized.linkedGuestMembers).toEqual([
       { guestIndex: 0, memberId: "mem-1" },
     ]);
   });
 
-  it("serialises a malformed row instead of throwing", () => {
+  it("serialises a malformed row instead of throwing, flagging only the guests", () => {
     const serialized = serializeBookingRequestForAdmin(badRow());
 
     expect(serialized).toMatchObject({ id: "req-bad", guestDataNeedsAttention: true });
+    // Its links parsed fine (there are none), so the payload does not claim
+    // otherwise — the panel would say "no linked members are shown" over a row
+    // that has nothing to hide.
+    expect("linkedMemberDataNeedsAttention" in serialized).toBe(false);
     expect(serialized.guests).toHaveLength(3);
     expect(serialized.guests[1]).toEqual({
       firstName: "School Child 1",
       lastName: "",
       ageTier: "YOUTH",
+    });
+  });
+
+  it("flags both blobs when both are unreadable", () => {
+    const serialized = serializeBookingRequestForAdmin(
+      badRow({ linkedGuestMembers: [{ guestIndex: -1, memberId: "" }] }),
+    );
+
+    expect(serialized).toMatchObject({
+      guestDataNeedsAttention: true,
+      linkedMemberDataNeedsAttention: true,
     });
   });
 });
@@ -286,18 +344,22 @@ describe("GET /api/admin/booking-requests — the list path (#2342)", () => {
 });
 
 describe("POST /api/admin/booking-requests/[id]/price — the detail path (#2342)", () => {
-  it("returns the per-request payload for a malformed row with the attention flag", async () => {
-    db.bookingRequest.findUnique.mockResolvedValue(badRow());
-    db.bookingRequest.updateMany.mockResolvedValue({ count: 1 });
-
-    const res = await priceRequest(
-      new NextRequest("http://localhost/api/admin/booking-requests/req-bad/price", {
+  async function callPrice(id: string) {
+    return priceRequest(
+      new NextRequest(`http://localhost/api/admin/booking-requests/${id}/price`, {
         method: "POST",
         body: JSON.stringify({ priceCents: 36000 }),
         headers: { "content-type": "application/json" },
       }),
-      { params: Promise.resolve({ id: "req-bad" }) },
+      { params: Promise.resolve({ id }) },
     );
+  }
+
+  it("returns the tolerant per-request payload for a well-formed row", async () => {
+    db.bookingRequest.findUnique.mockResolvedValue(row());
+    db.bookingRequest.updateMany.mockResolvedValue({ count: 1 });
+
+    const res = await callPrice("req-good");
 
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
@@ -305,8 +367,26 @@ describe("POST /api/admin/booking-requests/[id]/price — the detail path (#2342
       guestDataNeedsAttention?: boolean;
       guests: unknown[];
     };
-    expect(body).toMatchObject({ id: "req-bad", guestDataNeedsAttention: true });
-    expect(body.guests).toHaveLength(3);
+    expect(body).toMatchObject({ id: "req-good" });
+    expect(body.guestDataNeedsAttention).toBeUndefined();
+  });
+
+  it("refuses a flagged row with a clean 409, and stamps no price", async () => {
+    // This route reads no guests of its own — it only stamps priceCents — so it
+    // used to 200 on a row every other admin action refuses. It is also what
+    // arms Approve for a GENERAL request, and the price it stamps is later
+    // split across the strictly-parsed guest list, so it now refuses too and
+    // docs/guides/booking-requests.md can say so without qualification.
+    db.bookingRequest.findUnique.mockResolvedValue(badRow());
+    db.bookingRequest.updateMany.mockResolvedValue({ count: 1 });
+
+    const res = await callPrice("req-bad");
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe(UNREADABLE_STORED_GUESTS_MESSAGE);
+    expect(body.error).not.toMatch(/invalid|schema/i);
+    expect(db.bookingRequest.updateMany).not.toHaveBeenCalled();
   });
 });
 
@@ -344,8 +424,21 @@ describe("writes and conversions stay strict (#2342)", () => {
     // approveBookingRequest, the school approval, and every quote/pricing path
     // read through this function. A row the admin queue merely DISPLAYS must
     // never become booking guests.
-    expect(() => parseBookingRequestGuests(MALFORMED_GUESTS)).toThrowError(
-      /Stored booking request guests are invalid/,
-    );
+    //
+    // The message is the officer-facing one and the status is 409 (#2342): this
+    // string is rendered verbatim by the admin panel, and an unreadable stored
+    // blob is an expected data condition rather than a server fault. The old
+    // "Stored booking request guests are invalid" / 500 pair was neither.
+    const err = (() => {
+      try {
+        parseBookingRequestGuests(MALFORMED_GUESTS);
+        return null;
+      } catch (caught) {
+        return caught as Error & { status?: number };
+      }
+    })();
+
+    expect(err?.message).toBe(UNREADABLE_STORED_GUESTS_MESSAGE);
+    expect(err?.status).toBe(409);
   });
 });
