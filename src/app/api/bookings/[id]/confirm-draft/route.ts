@@ -16,6 +16,10 @@ import { sendBookingConfirmedEmail } from "@/lib/email";
 import logger from "@/lib/logger";
 import { requireActiveSessionUser } from "@/lib/session-guards";
 import {
+  handleMemberGuestAddRefusal,
+  startMemberGuestRefusalClock,
+} from "@/lib/member-guest-probe-guard";
+import {
   assertMembershipTypeBookingAllowed,
   getMembershipTypeBookingPolicyErrorBody,
   MembershipTypeBookingPolicyError,
@@ -38,6 +42,10 @@ export async function POST(
     return inactiveResponse;
   }
   const isAdmin = hasAdminAccess(session.user);
+  // Finding 2 (privacy re-review of MG3 #2308): confirming a draft re-checks the
+  // booking's STORED guests, which can raise the collapsed refusal about a
+  // cross-family member guest added weeks ago.
+  const memberGuestRefusalStartedAt = startMemberGuestRefusalClock();
 
   const { id } = await params;
 
@@ -92,6 +100,21 @@ export async function POST(
     });
   } catch (err) {
     if (err instanceof MembershipTypeBookingPolicyError) {
+      // Finding 2 (privacy re-review of MG3 #2308). This route is a member-facing
+      // surface that can now answer D-8's collapsed refusal, so it owes the same
+      // three mitigations as the six add paths: the throttle unit, the audit row
+      // naming actor and target, and the timing floor. Collapsed-but-uncounted is
+      // the exact gap finding H2 closed on `bookings/modify`. A no-op for every
+      // other membership-type block.
+      await handleMemberGuestAddRefusal({
+        request,
+        actorMemberId: session.user.id,
+        error: err,
+        route: "bookings/confirm-draft",
+        startedAt: memberGuestRefusalStartedAt,
+        throttle: "CHARGE_NOW",
+        skipAuthorization: isAdmin,
+      });
       return NextResponse.json(
         getMembershipTypeBookingPolicyErrorBody(err),
         { status: err.status },

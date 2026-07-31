@@ -24,6 +24,10 @@ import {
   drainSupersededPrimaryIntents,
   executeBookingModificationRefund,
 } from "@/lib/booking-modification-settlement";
+import {
+  handleMemberGuestAddRefusal,
+  startMemberGuestRefusalClock,
+} from "@/lib/member-guest-probe-guard";
 import { authorizationRoleFromAccessRoles } from "@/lib/access-roles";
 import { bookingManagementAuthorizationRole } from "@/lib/admin-permissions";
 import type { BookingModificationSettlementMethod } from "@/lib/booking-modify";
@@ -32,6 +36,10 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string; guestId: string }> }
 ) {
+  // Finding 2 (privacy re-review of MG3 #2308): removing a guest re-checks the
+  // REMAINING party, which can raise the collapsed refusal about a cross-family
+  // member guest still on the booking.
+  const memberGuestRefusalStartedAt = startMemberGuestRefusalClock();
   const session = await auth();
   if (!session) {
     return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
@@ -297,6 +305,22 @@ export async function DELETE(
     });
   } catch (err) {
     if (err instanceof MembershipTypeBookingPolicyError) {
+      // Finding 2 (privacy re-review of MG3 #2308). This route is a member-facing
+      // surface that can now answer D-8's collapsed refusal, so it owes the same
+      // three mitigations as the six add paths: the throttle unit, the audit row
+      // naming actor and target, and the timing floor. Collapsed-but-uncounted is
+      // the exact gap finding H2 closed on `bookings/modify`. A no-op for every
+      // other membership-type block.
+      await handleMemberGuestAddRefusal({
+        request,
+        actorMemberId: session.user.id,
+        error: err,
+        route: "bookings/guest-remove",
+        startedAt: memberGuestRefusalStartedAt,
+        throttle: "CHARGE_NOW",
+        skipAuthorization:
+          authorizationRoleFromAccessRoles(session.user) === "ADMIN",
+      });
       return NextResponse.json(
         getMembershipTypeBookingPolicyErrorBody(err),
         { status: err.status },

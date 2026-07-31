@@ -473,7 +473,17 @@ export async function removeBookingGuestInTransaction({
     // Finding 2 (privacy re-review of MG3 #2308): a member removing a guest must
     // not be told the NAME and membership category of a beyond-family member
     // still on the booking; an admin doing the same is entitled to both.
-    skipAuthorization: actorRole === "ADMIN",
+    //
+    // A CONSENT-AUTHORITY removal is exempt as well, and for a different reason
+    // than the admin one. It is a decline, an expiry sweep or a delegate answer:
+    // the acting party is the member being taken OFF the booking, or the cron,
+    // and the refusal message is carried back as the operator-visible reason a
+    // PENDING row could not be released (D-15's exception list). Collapsing it
+    // would blank that reason for the person who has to act on it while
+    // disclosing nothing to anybody new — the target can already see the whole
+    // booking and its other guests, which is exactly what D-11 tells them before
+    // they agree.
+    skipAuthorization: actorRole === "ADMIN" || Boolean(consentAuthority),
   });
 
   const groupDiscountSetting = await tx.groupDiscountSetting.findUnique({
