@@ -695,6 +695,32 @@ Future reviews and issues should cite this file when proposing changes.
   `PAYMENT_PENDING` — a saved draft that landed in `AWAITING_REVIEW` and a
   booking the confirmed-create path parked there via `blockForReview` alike.
   Holding for review suppresses the SPEND, never the member's request.
+- The EDIT path may write the election too (#2266), and only onto the statuses
+  whose election a consumer will later honour: `DRAFT`, `AWAITING_REVIEW`, and
+  `PAYMENT_PENDING` (`resolveCreditElectionUpdate`, evaluated against the
+  POST-lifecycle status of the edit). `PENDING` is deliberately refused even
+  though members can edit PENDING bookings — `charge-saved-method` requires
+  `PENDING` and consumes no election, so "no election-bearing booking is ever
+  in PENDING" must stay true; the hold release lands the booking in
+  `PAYMENT_PENDING`, where the member can elect. A positive election is also
+  refused once money is captured or when the booking is organiser-settled; an
+  explicit `0` clears; an edit that settles the booking at $0 drops the
+  now-moot request silently (the confirm-draft posture). The edit stores the
+  RAW requested cents exactly as draft-create does — clamping stays at the
+  consumer. A modification that carries ONLY a credit election is
+  price-preserving by construction: it takes the identity-only echo (no pricing
+  engine, no capacity check) so a season-rate change can never reprice an
+  untouched booking, and it sends no change-notification email.
+- Members may edit their OWN drafts (#2266) — that is what the dashboard's
+  Resume button has always implied. A draft edit moves no money and claims no
+  capacity: no change fee (`calculateModificationChangeFee` returns 0 for
+  `DRAFT`), no `nonMemberHoldUntil` stamp (`applyLifecycleTransitions` skips
+  the hold rail for `DRAFT`), no settlement — the pay step / $0 confirm-draft
+  enforce capacity and holds when the draft becomes real. `DRAFT` therefore
+  joins `MEMBER_FUTURE_EDIT_STATUSES` but stays OUT of the (now frozen)
+  active-edit-lifecycle set, so admin draft edits keep skipping lifecycle
+  rules byte-for-byte as before. A member draft edit still gets the wizard's
+  over-capacity CHECK (#1767 parity) at quote and apply.
 - The election is consumed by a guarded CLAIM, not a read-then-write (#2265):
   the column is moved from the exact amount that was read to NULL with an
   `updateMany` matching the booking id, `PAYMENT_PENDING` and that amount, in
@@ -1969,10 +1995,19 @@ edit path — including single-guest self-removal, which is never blocked for a
 written justification — flags the booking (`adminReviewStatus: PENDING`, with
 an automatic note on the removal path) so it lands in the admin review queue.
 Review parking moves a booking to AWAITING_REVIEW only from the pre-payment
-statuses (PENDING/PAYMENT_PENDING); a paid or confirmed booking is flagged in
-place, and approving it clears the review without re-opening the payment
-lifecycle. Rejection cancels through the shared cancellation flow, which
-refunds captured payments per the policy.
+statuses (DRAFT/PENDING/PAYMENT_PENDING — DRAFT parks in create parity, #2266,
+with `draftExpiresAt` nulled so the 72-hour expiry cannot sweep a booking out
+from under its reviewer); a paid or confirmed booking is flagged in place, and
+approving it clears the review without re-opening the payment lifecycle.
+Rejection cancels through the shared cancellation flow, which refunds captured
+payments per the policy (a legacy DRAFT-status queue entry — pre-#2266 rows
+only — is cancelled directly by the review route with a guarded
+DRAFT → CANCELLED flip, since a draft holds no capacity and has no payment).
+The invariant is also **enforced at the doors, not only at the writers**
+(#2266): `confirm-draft` and `create-payment-intent`'s DRAFT arm both refuse
+(409) any booking with `requiresAdminReview` and a non-APPROVED
+`adminReviewStatus`, so even a writer bug that leaves a review-flagged DRAFT
+behind cannot let a minors-only booking reach PAID with its review pending.
 
 Because a paid minors-only booking is deliberately **not** parked to
 AWAITING_REVIEW (Option A / F27, issue #1372 — parking a paid booking would
