@@ -9,7 +9,13 @@ import {
   kickQueuedXeroOutboxOperationsIfConnected,
 } from "@/lib/xero-operation-outbox";
 import { sendEmail } from "@/lib/email";
-import { refundRequestResolvedTemplate } from "@/lib/email-templates";
+import {
+  refundRequestApprovedTemplate,
+  refundRequestDeclinedTemplate,
+} from "@/lib/email-templates";
+import {
+  composeOptionalEmailLine,
+} from "@/lib/email-message-notes";
 import logger from "@/lib/logger";
 import { getRemainingRefundableCents } from "@/lib/booking-payment-state";
 import {
@@ -286,9 +292,8 @@ export async function PUT(
       sendEmail({
         to: memberEmail,
         subject: `Refund Appeal Approved — ${CLUB_BOOKINGS_NAME}`,
-        html: refundRequestResolvedTemplate({
+        html: refundRequestApprovedTemplate({
           firstName: refundRequest.member.firstName,
-          status: "APPROVED",
           amountCents: approvedAmountCents,
           adminNotes: adminNotes ?? null,
           checkIn: booking.checkIn,
@@ -297,17 +302,22 @@ export async function PUT(
         // Member-facing and booking-scoped: the per-booking "No emails"
         // switch withholds it (#2258).
         bookingContext: { bookingId: booking.id },
-        templateName: "refund-request-resolved",
+        templateName: "refund-request-approved",
         templateData: {
           firstName: refundRequest.member.firstName,
-          status: "APPROVED",
+          // #2321: {{status}} is gone — the template name carries the
+          // outcome, and a flat body could never have branched on it.
           amount: formatCents(approvedAmountCents),
           adminNotes: adminNotes ?? "",
+          // #2268: pre-composed optional line — the flat body has no
+          // conditional syntax, so a resolution with no admin note must not
+          // print a bare "Notes:" heading over nothing.
+          adminNotesLine: composeOptionalEmailLine("Notes", adminNotes),
           checkIn: formatNZDate(booking.checkIn),
           checkOut: formatNZDate(booking.checkOut),
         },
       }).catch((err) =>
-        logger.error({ err }, "Failed to send refund appeal resolved email")
+        logger.error({ err }, "Failed to send refund appeal approved email")
       );
     }
   } else {
@@ -361,10 +371,8 @@ export async function PUT(
       sendEmail({
         to: memberEmail,
         subject: `Refund Appeal Update — ${CLUB_BOOKINGS_NAME}`,
-        html: refundRequestResolvedTemplate({
+        html: refundRequestDeclinedTemplate({
           firstName: refundRequest.member.firstName,
-          status: "REJECTED",
-          amountCents: null,
           adminNotes: adminNotes ?? null,
           checkIn: booking.checkIn,
           checkOut: booking.checkOut,
@@ -372,17 +380,22 @@ export async function PUT(
         // Member-facing and booking-scoped: the per-booking "No emails"
         // switch withholds it (#2258).
         bookingContext: { bookingId: booking.id },
-        templateName: "refund-request-resolved",
+        templateName: "refund-request-declined",
         templateData: {
           firstName: refundRequest.member.firstName,
-          status: "REJECTED",
-          amount: "",
+          // #2321: NO amount is supplied on a decline — there is no refund
+          // to state. The token is not in this template's allowed set
+          // either, so an override that reaches for {{amount}} is refused
+          // at save time rather than rendering an empty figure into
+          // "A refund of  will be processed".
           adminNotes: adminNotes ?? "",
+          // #2268: pre-composed optional line (see the approved branch).
+          adminNotesLine: composeOptionalEmailLine("Notes", adminNotes),
           checkIn: formatNZDate(booking.checkIn),
           checkOut: formatNZDate(booking.checkOut),
         },
       }).catch((err) =>
-        logger.error({ err }, "Failed to send refund appeal resolved email")
+        logger.error({ err }, "Failed to send refund appeal declined email")
       );
     }
   }
