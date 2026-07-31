@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
 import {
   AdminViewOnlySectionBanner,
   ViewOnlyActionButton,
@@ -537,6 +538,10 @@ export default function MemberApplicationsPage() {
               {option.label}
             </Button>
           ))}
+          <DatasetResetButton
+            disabled={filter === "PENDING_ADMIN"}
+            onReset={() => setFilter("PENDING_ADMIN")}
+          />
         </div>
       </div>
 

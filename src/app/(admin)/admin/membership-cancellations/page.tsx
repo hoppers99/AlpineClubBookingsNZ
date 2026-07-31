@@ -6,6 +6,7 @@ import { useSession } from "next-auth/react";
 import { Archive, CheckCircle2, RefreshCw, XCircle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
 import {
   AdminViewOnlySectionBanner,
   ViewOnlyActionButton,
@@ -562,6 +563,10 @@ export default function MembershipCancellationsPage() {
               ))}
             </SelectContent>
           </Select>
+          <DatasetResetButton
+            disabled={filter === "REQUESTED"}
+            onReset={() => setFilter("REQUESTED")}
+          />
           <Button
             variant="outline"
             size="icon"
