@@ -1599,7 +1599,7 @@ export async function markBookingPaymentSucceeded({
  * literal on either side would silently strand the member's election, which is
  * precisely the failure the restoration exists to prevent.
  */
-export const MANUAL_MARK_PAID_AUDIT_ACTION =
+const MANUAL_MARK_PAID_AUDIT_ACTION =
   "booking-payment.manual-payment.mark-paid";
 
 /**
