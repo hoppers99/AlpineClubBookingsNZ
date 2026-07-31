@@ -29,6 +29,31 @@ All notable public reference-release changes should be recorded here.
   this changes nothing at all for a club already running. The site opens within
   about fifteen seconds of the setup being saved.
 
+  Reviewing this work turned up four further problems, all fixed here. An
+  unlaunched club was still naming its pages: the page titles and summaries that
+  browsers and search engines read are assembled separately from the page itself,
+  so they were still being sent even though the page was not — enough for a
+  stranger to list every page an unfinished site had, including ones the club had
+  written but deliberately not published. Every public page now gives the same
+  neutral "site setup in progress" title until the club opens, whether the page
+  exists or not.
+
+  A club's optional custom styling could also be crafted to break out of the
+  styling block and run as page code, because the check that removes the
+  dangerous sequence only looked once and a carefully split sequence reassembled
+  itself behind it. It now repeats until nothing is left to find. This one
+  predates the change — the ordinary website had the same exposure — so it is
+  fixed for every page that uses custom styling, not just the new one.
+
+  A handful of addresses that merely began with a reserved word (`/apiary`,
+  `/logo.pngs`) were skipping the check entirely and still answering as though
+  the site were open; they no longer do, and as a side effect they now receive
+  the same browser-security headers as every other page. And a brief database
+  interruption on a long-running club could make the site claim it was still
+  being set up, then leave that claim in visitors' browsers for a minute — the
+  club's own pages now tell the difference between "not set up" and "could not
+  check".
+
 - **A web address that does not exist is now told "not found" honestly, so
   search engines and monitoring are no longer assured a dead address is fine
   (#2405).** Every reply carries a hidden status line that people never see but
