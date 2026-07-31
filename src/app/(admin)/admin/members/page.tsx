@@ -58,7 +58,8 @@ export default function MembersPage() {
     sortDir,
     filters,
     setFilter,
-    clearFilters,
+    resetDataset,
+    isDatasetDefault,
     activeFilterCount,
     toggleSort,
     buildMembersSearchParams,
@@ -366,12 +367,12 @@ export default function MembersPage() {
       <MemberFilterToolbar
         search={search}
         filters={filters}
-        activeFilterCount={activeFilterCount}
         xeroFeatures={xeroFeatures}
         xeroContactGroupsList={xeroContactGroupsList}
         onSearchChange={setSearch}
         onSetFilter={setFilter}
-        onClearFilters={clearFilters}
+        resetDisabled={isDatasetDefault}
+        onReset={resetDataset}
       />
 
       {canEditMembership && (

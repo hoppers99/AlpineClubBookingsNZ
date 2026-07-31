@@ -8,7 +8,6 @@ import { format, subMonths } from "date-fns";
 import { todayDateOnlyForTimeZone } from "@/lib/date-only";
 import { Alert } from "@/components/ui/alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import {
   ADMIN_VIEW_ONLY_ACTION_REASON,
   useAdminAreaEditAccess,
@@ -38,7 +37,6 @@ import {
   BarChart2,
   ExternalLink,
   FileText,
-  X,
   Landmark,
   Receipt,
   CheckCircle2,
@@ -62,6 +60,7 @@ import {
   AdminFilterBar,
   type AdminFilterChip,
 } from "@/components/admin/admin-filter-bar";
+import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
 import { SortHeader } from "@/components/admin/sort-header";
 import { Pagination } from "@/components/admin/admin-pagination";
 import { StatusChip } from "@/components/ui/status-chip";
@@ -130,6 +129,24 @@ function parsePageParam(value: string | null) {
   const page = Number(value);
   return Number.isInteger(page) && page > 0 ? page : 1;
 }
+
+const PAYMENTS_DATASET_QUERY_KEYS = [
+  "status",
+  "source",
+  "xeroState",
+  "settlement",
+  "lastUpdatedFrom",
+  "lastUpdatedTo",
+  "checkInFrom",
+  "checkInTo",
+  "search",
+  "amountExact",
+  "amountMin",
+  "amountMax",
+  "sortBy",
+  "sortDir",
+  "page",
+] as const;
 
 function getSortBy(value: string | null): PaymentSortBy {
   return paymentSortColumns.has(value as PaymentSortBy)
@@ -369,7 +386,8 @@ export default function PaymentsPage() {
   const [loading, setLoading] = useState(false);
 
   const buildPaymentsSearchParams = useCallback(() => {
-    const params = new URLSearchParams();
+    const params = new URLSearchParams(searchParams.toString());
+    for (const key of PAYMENTS_DATASET_QUERY_KEYS) params.delete(key);
     if (status !== "all") params.set("status", status);
     if (source !== "all") params.set("source", source);
     if (xeroState !== "all") params.set("xeroState", xeroState);
@@ -402,6 +420,7 @@ export default function PaymentsPage() {
     sortBy,
     sortDir,
     page,
+    searchParams,
   ]);
 
   const paymentsQuery = buildPaymentsSearchParams().toString();
@@ -497,13 +516,30 @@ export default function PaymentsPage() {
     setPage(1);
   }
 
-  function clearFilters() {
+  const isDatasetDefault =
+    status === "all" &&
+    source === "all" &&
+    xeroState === "all" &&
+    settlement === "all" &&
+    lastUpdatedFrom === defaultLastUpdatedFrom &&
+    lastUpdatedTo === clubToday &&
+    checkInFrom === "" &&
+    checkInTo === "" &&
+    search === "" &&
+    amountExact === "" &&
+    amountMin === "" &&
+    amountMax === "" &&
+    sortBy === "lastUpdated" &&
+    sortDir === "desc" &&
+    page === 1;
+
+  function resetDataset() {
     setStatus("all");
     setSource("all");
     setXeroState("all");
     setSettlement("all");
-    setLastUpdatedFrom("");
-    setLastUpdatedTo("");
+    setLastUpdatedFrom(defaultLastUpdatedFrom);
+    setLastUpdatedTo(clubToday);
     setCheckInFrom("");
     setCheckInTo("");
     setSearch("");
@@ -739,10 +775,7 @@ export default function PaymentsPage() {
           </>
         }
         actions={
-          <Button onClick={clearFilters} variant="outline" size="sm">
-            <X className="mr-1 h-4 w-4" />
-            Clear
-          </Button>
+          <DatasetResetButton disabled={isDatasetDefault} onReset={resetDataset} />
         }
         advanced={
           <>

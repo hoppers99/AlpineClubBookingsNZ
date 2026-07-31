@@ -5,6 +5,15 @@ import { useRouter, useSearchParams } from "next/navigation"
 import type { Filters } from "../_types"
 import { emptyFilters, getInitialLifecycleStatus } from "../_utils"
 
+const MEMBERS_DATASET_QUERY_KEYS = [
+  "q",
+  "page",
+  "sortBy",
+  "sortDir",
+  "active",
+  ...Object.keys(emptyFilters),
+] as const
+
 export function useMembersQueryState() {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -38,7 +47,8 @@ export function useMembersQueryState() {
   }, [search])
 
   const buildMembersSearchParams = useCallback(() => {
-    const params = new URLSearchParams()
+    const params = new URLSearchParams(searchParams.toString())
+    for (const key of MEMBERS_DATASET_QUERY_KEYS) params.delete(key)
     if (debouncedSearch) params.set("q", debouncedSearch)
     if (page > 1) params.set("page", String(page))
     if (sortBy !== "name") params.set("sortBy", sortBy)
@@ -47,7 +57,7 @@ export function useMembersQueryState() {
       if (value) params.set(key, value)
     })
     return params
-  }, [debouncedSearch, filters, page, sortBy, sortDir])
+  }, [debouncedSearch, filters, page, searchParams, sortBy, sortDir])
 
   const buildMembersListPath = useCallback(() => {
     const params = buildMembersSearchParams()
@@ -64,8 +74,12 @@ export function useMembersQueryState() {
     setPage(1)
   }, [])
 
-  const clearFilters = useCallback(() => {
+  const resetDataset = useCallback(() => {
+    setSearch("")
+    setDebouncedSearch("")
     setFilters(emptyFilters)
+    setSortBy("name")
+    setSortDir("asc")
     setPage(1)
   }, [])
 
@@ -102,7 +116,14 @@ export function useMembersQueryState() {
     sortDir,
     filters,
     setFilter,
-    clearFilters,
+    resetDataset,
+    isDatasetDefault:
+      search === "" &&
+      debouncedSearch === "" &&
+      page === 1 &&
+      sortBy === "name" &&
+      sortDir === "asc" &&
+      Object.values(filters).every((value) => value === ""),
     activeFilterCount: Object.values(filters).filter(Boolean).length,
     toggleSort,
     buildMembersSearchParams,

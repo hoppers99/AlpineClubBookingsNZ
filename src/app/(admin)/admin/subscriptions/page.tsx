@@ -36,6 +36,7 @@ import {
   AdminFilterBar,
   type AdminFilterChip,
 } from "@/components/admin/admin-filter-bar";
+import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
 import { SortHeader } from "@/components/admin/sort-header";
 import { Pagination } from "@/components/admin/admin-pagination";
 import { StatusChip } from "@/components/ui/status-chip";
@@ -70,6 +71,15 @@ function getSeasonYear(date: Date): number {
 
 const currentYear = getSeasonYear(new Date());
 const yearOptions = Array.from({ length: 5 }, (_, i) => currentYear - 2 + i);
+
+const SUBSCRIPTIONS_DATASET_QUERY_KEYS = [
+  "status",
+  "ageTier",
+  "xeroContactGroup",
+  "sortBy",
+  "sortDir",
+  "page",
+] as const;
 
 
 interface Subscription {
@@ -325,7 +335,8 @@ export default function SubscriptionsPage() {
   }, []);
 
   const buildSubscriptionsSearchParams = useCallback(() => {
-    const params = new URLSearchParams();
+    const params = new URLSearchParams(searchParams.toString());
+    for (const key of SUBSCRIPTIONS_DATASET_QUERY_KEYS) params.delete(key);
     params.set("seasonYear", String(seasonYear));
     if (status !== "all") params.set("status", status);
     if (ageTier !== "all") params.set("ageTier", ageTier);
@@ -334,7 +345,7 @@ export default function SubscriptionsPage() {
     if (sortDir !== getDefaultSortDir(sortBy)) params.set("sortDir", sortDir);
     if (page > 1) params.set("page", String(page));
     return params;
-  }, [seasonYear, status, ageTier, xeroContactGroup, sortBy, sortDir, page]);
+  }, [seasonYear, status, ageTier, xeroContactGroup, sortBy, sortDir, page, searchParams]);
 
   const subscriptionsQuery = buildSubscriptionsSearchParams().toString();
   const currentSubscriptionsPath = subscriptionsQuery
@@ -381,6 +392,23 @@ export default function SubscriptionsPage() {
 
     setSortBy(column);
     setSortDir(getDefaultSortDir(column));
+  }
+
+  const isDatasetDefault =
+    status === "all" &&
+    ageTier === "all" &&
+    xeroContactGroup === "all" &&
+    sortBy === "member" &&
+    sortDir === getDefaultSortDir("member") &&
+    page === 1;
+
+  function resetDataset() {
+    setStatus("all");
+    setAgeTier("all");
+    setXeroContactGroup("all");
+    setSortBy("member");
+    setSortDir(getDefaultSortDir("member"));
+    setPage(1);
   }
 
   // Thin wrapper over the shared admin SortHeader (#1805): callback mode with the
@@ -466,6 +494,9 @@ export default function SubscriptionsPage() {
       <AdminFilterBar
         idPrefix="subscriptions-filters"
         chips={filterChips}
+        actions={
+          <DatasetResetButton disabled={isDatasetDefault} onReset={resetDataset} />
+        }
         primary={
           <>
             <div>
