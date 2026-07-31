@@ -452,18 +452,19 @@ async function prepareManualSettlement(
         409
       );
     }
-    // #2397: the read-time twin of the fenced write's status clause. Without
-    // it, a booking whose card capture stranded before its status promotion
-    // (the #1418 confirm-pending-guests / cron-confirm-pending incident state:
-    // booking still CONFIRMED or PAYMENT_PENDING, payment already SUCCEEDED)
-    // passed every read guard, opened the whole dialog — including #2397's own
-    // "does the cash cover the extra?" question, since an upward modification
-    // in that window is exactly what records an uncollected delta — and then
-    // failed at the fence with "changed while you were recording it", which was
-    // false and would repeat on every retry. Refuse where the truth is known.
-    if (!isManualSettleFromPaymentStatus(payment.status)) {
-      throw new ManualBookingPaymentError(MANUAL_CAPTURED_PAYMENT_REFUSAL, 409);
-    }
+    // THE ORDER OF THE THREE REFUSALS BELOW IS DELIBERATE AND SHARED (#2397).
+    // `getBookingManualPaymentState` (src/lib/manual-booking-payment-state.ts)
+    // applies the same three in the same order, so a booking that trips more
+    // than one is given the SAME sentence before the click and after it —
+    // refund history, then already-captured, then Xero evidence. Refund history
+    // goes first because it is the most specific truth available: a fully
+    // REFUNDED payment is also a captured one, and "already carries refund
+    // history" names a remedy ("resolve the refund first") that the captured
+    // message can only gesture at. Xero goes last so the cheap in-memory
+    // refusals settle it without the three lookups `assertNoXeroInvoiceEvidence`
+    // costs inside this locked transaction. Any change here must be made in
+    // both files.
+    //
     // L7 (#2262): a manually settled payment carries NO prior refund history.
     // Money already handed back through the ledger cannot be reconciled with a
     // cash settlement recorded over the top of it — the reversal's fences and
@@ -475,6 +476,18 @@ async function prepareManualSettlement(
         "This booking's payment already carries refund history — it cannot be recorded as a manual settlement. Cancel and rebook, or resolve the refund first.",
         409
       );
+    }
+    // #2397: the read-time twin of the fenced write's status clause. Without
+    // it, a booking whose card capture stranded before its status promotion
+    // (the #1418 confirm-pending-guests / cron-confirm-pending incident state:
+    // booking still CONFIRMED or PAYMENT_PENDING, payment already SUCCEEDED)
+    // passed every read guard, opened the whole dialog — including #2397's own
+    // "does the cash cover the extra?" question, since an upward modification
+    // in that window is exactly what records an uncollected delta — and then
+    // failed at the fence with "changed while you were recording it", which was
+    // false and would repeat on every retry. Refuse where the truth is known.
+    if (!isManualSettleFromPaymentStatus(payment.status)) {
+      throw new ManualBookingPaymentError(MANUAL_CAPTURED_PAYMENT_REFUSAL, 409);
     }
     await assertNoXeroInvoiceEvidence(tx, payment);
   }
@@ -642,12 +655,29 @@ async function prepareManualSettlement(
   //     the absence of Xero evidence as WHERE clauses, so a concurrent writer
   //     that moved any of them yields count 0 -> 409 instead of a write whose
   //     third term is stale. That is the real runtime net.
-  //  3. AFTER THE FACT. `auditIbAppliedCreditStrands`
+  //  3. AFTER THE FACT, AND ONLY NARROWLY. `auditIbAppliedCreditStrands`
   //     (src/lib/ib-hold-clearing-audit.ts) recomputes
   //     `amountCents + creditAppliedCents - finalPriceCents` over COMMITTED
-  //     data and now reports the uncollected addition beside it, so a residual
-  //     that is not exactly the uncollected delta is visible to an operator.
-  //     That check can fire, because it is not reading back its own writes.
+  //     data and now reports the uncollected addition beside it, so where it
+  //     DOES report, a residual that is not exactly the uncollected delta is
+  //     visible to an operator. It is the only one of the three that can fire
+  //     at all, because it is not reading back its own writes.
+  //
+  //     It is NOT a general after-the-fact net for this settle, and nothing
+  //     later should be built on the assumption that it is. Its enumeration is
+  //     narrow on three counts:
+  //       * it reports a payment only when that booking still carries
+  //         UN-ALLOCATED applied credit — `deriveIbAppliedCreditStrandFinding`
+  //         returns null on `ledgerAppliedCents <= 0`, and the ledger sum counts
+  //         BOOKING_APPLIED rows with `xeroCreditNoteId: null` only. An ordinary
+  //         "not covered" cash settlement on a booking with no applied credit
+  //         therefore produces NO finding, and its residual is never printed;
+  //       * it scans INTERNET_BANKING payments only; and
+  //       * it is an operator-run script (scripts/audit-ib-hold-clearing.ts),
+  //         not a scheduled job or an alert — nothing fires unless somebody runs
+  //         it and reads the output.
+  //     So (1) and (2) are what actually keep this settle honest; (3) is a
+  //     reading aid for the credit-strand population it already enumerates.
 
   return {
     /** `finalPriceCents - credit`: everything the booking still owes. */
@@ -669,7 +699,6 @@ async function prepareManualSettlement(
     additionalPaymentIntentId: payment?.additionalPaymentIntentId ?? null,
   };
 }
-
 
 /**
  * B5 (#2262) Stripe-intent hygiene for a manual settlement. Any Stripe intent
@@ -1450,7 +1479,6 @@ async function settleBookingPaymentInTransaction(
           409
         );
       }
-
     }
 
     // Status-guarded PAID claim (#1881, defense in depth alongside lock(1)):

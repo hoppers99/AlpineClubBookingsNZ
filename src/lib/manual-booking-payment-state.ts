@@ -26,7 +26,6 @@ const PAYABLE_STATUSES: BookingStatus[] = [
   BookingStatus.DRAFT,
 ];
 
-
 export async function getBookingManualPaymentState(
   bookingId: string
 ): Promise<BookingManualPaymentState | null> {
@@ -119,6 +118,14 @@ export async function getBookingManualPaymentState(
     }
   }
 
+  // #2397: the three PAYMENT-level refusals in this chain — refund history,
+  // then already-captured, then Xero evidence — are ordered EXACTLY as
+  // `prepareManualSettlement` (src/lib/payment-reconciliation.ts) orders them,
+  // so a booking that trips more than one is told the same thing before the
+  // click and after it. The reasons for that order are recorded there; change
+  // both files together. (The booking-level reasons above are this page's own:
+  // a manually settled booking is PAID, and naming the manual settlement is
+  // more useful to an admin than "already paid".)
   let markPaidBlockedReason: string | null = null;
   if (manuallyMarkedPaidAt) {
     markPaidBlockedReason =
@@ -130,9 +137,9 @@ export async function getBookingManualPaymentState(
   } else if (booking.organiserSettled) {
     markPaidBlockedReason =
       "This booking was settled as part of a group booking — record the payment against the group settlement instead.";
-  } else if (xeroBlocked) {
+  } else if ((payment?.refundedAmountCents ?? 0) !== 0) {
     markPaidBlockedReason =
-      "This booking has a Xero invoice (or one on its way) — record the payment against the invoice in Xero instead.";
+      "This booking's payment already carries refund history — it cannot be recorded as a manual settlement. Cancel and rebook, or resolve the refund first.";
   } else if (payment && !isManualSettleFromPaymentStatus(payment.status)) {
     // #2397: the advisory twin of `prepareManualSettlement`'s captured-payment
     // refusal. A card capture that stranded before its status promotion (#1418)
@@ -143,9 +150,9 @@ export async function getBookingManualPaymentState(
     // every answer with a message that said the booking had changed when
     // nothing had.
     markPaidBlockedReason = MANUAL_CAPTURED_PAYMENT_REFUSAL;
-  } else if ((payment?.refundedAmountCents ?? 0) !== 0) {
+  } else if (xeroBlocked) {
     markPaidBlockedReason =
-      "This booking's payment already carries refund history — it cannot be recorded as a manual settlement. Cancel and rebook, or resolve the refund first.";
+      "This booking has a Xero invoice (or one on its way) — record the payment against the invoice in Xero instead.";
   } else if (amountOwingCents <= 0) {
     markPaidBlockedReason =
       "This booking has nothing owing — use Force confirm / Confirm pending guests instead.";

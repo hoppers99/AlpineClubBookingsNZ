@@ -1949,6 +1949,46 @@ describe("#2397 — an outstanding extra, and the admin's answer about it", () =
       );
     });
 
+    it("F4 — NEVER spares a PRIMARY intent, however the addition pointer got there", async () => {
+      // The OTHER half of the two-part spare predicate, and the half that
+      // matters most. If `additionalPaymentIntentId` ever names the PRIMARY
+      // intent — a legacy row, a hand repair, a future writer's mistake —
+      // matching on the id alone would leave the primary card door live on a
+      // booking whose cash the club has just recorded, i.e. a door to a SECOND
+      // payment for money already in hand. The `kind === ADDITIONAL` clause is
+      // the only thing that stops it; nothing downstream re-checks.
+      mocks.paymentFindUnique.mockResolvedValue(
+        paymentRow({
+          additionalAmountCents: EXTRA_CENTS,
+          additionalPaymentStatus: "PENDING",
+          additionalPaymentIntentId: "pi_primary",
+        })
+      );
+      mocks.paymentTransactionFindMany.mockResolvedValue([
+        {
+          id: "txn-primary",
+          kind: PaymentTransactionKind.PRIMARY,
+          stripePaymentIntentId: "pi_primary",
+          amountCents: 10000,
+        },
+      ]);
+
+      const result = await settleUncovered();
+
+      expect(result.outstandingIntentIds).toEqual(["pi_primary"]);
+      expect(result.sparedAdditionalPaymentIntentId).toBeNull();
+      // Disarmed durably in-transaction AND cancelled at Stripe after commit,
+      // exactly as it would be without the pointer.
+      expect(
+        mocks.enqueuePaymentIntentCancellationRecovery
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({ paymentIntentId: "pi_primary" })
+      );
+      expect(mocks.cancelPaymentIntentIfCancellable).toHaveBeenCalledWith(
+        "pi_primary"
+      );
+    });
+
     it("REFUSES when the extra is the whole amount owing — there is nothing left to record", async () => {
       // Recording $0 would flip the booking to PAID for no money.
       primeOutstandingExtra({ additionalAmountCents: 10000 });

@@ -126,6 +126,19 @@ export type ManualBookingAdditionalOutcome = {
    * has to be told that, because "we will keep asking" is a very different
    * instruction from "they can pay it online tonight". Always false on a
    * reversal and on the covered answer, where there is nothing left to pay.
+   *
+   * DELIBERATELY CONSERVATIVE, and it can under-promise. It is derived from the
+   * intent the settlement actually SPARED, which exists only when a live
+   * PENDING/PROCESSING ADDITIONAL `PaymentTransaction` row pointed at
+   * `Payment.additionalPaymentIntentId`. A legacy or hand-repaired payment that
+   * carries the pointer with no such local row is told "the club will be in
+   * touch" even though `/api/bookings/[id]/additional-payment-secret` reads the
+   * pointer alone and their pay card would still open. That way round is the
+   * safe one: the failure is an extra phone call, whereas claiming a pay door
+   * that this settle has just cancelled sends the member to a dead intent and
+   * leaves the club chasing money nobody can send. Do not "fix" this by reading
+   * the pointer directly unless something first proves the intent is still live
+   * at Stripe.
    */
   payableOnline: boolean;
 };
@@ -297,7 +310,10 @@ export async function applyManualBookingPayment(
                     amountCents: settlement.uncollectedAdditionalCents,
                     // #2397 F4: true only when the settlement actually left the
                     // addition's card intent armed, so the email never sends
-                    // the member to a pay door that will not open.
+                    // the member to a pay door that will not open. Conservative
+                    // by design — see `payableOnline` on
+                    // ManualBookingAdditionalOutcome for the legacy shape where
+                    // it under-promises, and why that is the right way round.
                     payableOnline:
                       settlement.sparedAdditionalPaymentIntentId !== null,
                   },

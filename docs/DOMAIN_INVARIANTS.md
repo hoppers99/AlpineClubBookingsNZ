@@ -844,6 +844,14 @@ Future reviews and issues should cite this file when proposing changes.
     question, and refused every answer with "changed while you were recording
     it", which was untrue and repeated on every retry. The admin booking page's
     advisory state applies the same rule, so the action is not offered at all.
+    The three payment-level refusals are also checked in the SAME ORDER on both
+    surfaces — refund history, then already-captured, then Xero evidence — so a
+    booking that trips more than one is given the same sentence before the click
+    and after it. Refund history leads because it is the most specific truth
+    (a fully REFUNDED payment is a captured one too, and only the refund message
+    names the remedy); Xero trails because the cheap in-memory refusals should
+    settle it without the extra lookups `assertNoXeroInvoiceEvidence` costs
+    inside the locked transaction.
     **Reachability, stated plainly.** With that read-time refusal in place, no
     production path is known that presents the coverage question on a settle
     that can COMPLETE, other than the reverse-then-re-settle loop and legacy
@@ -876,17 +884,29 @@ Future reviews and issues should cite this file when proposing changes.
     `payment.updateMany` re-asserts the outstanding delta (on BOTH answers, not
     only the covered one), the settle-from status, the zero refund history and
     the absence of Xero evidence as WHERE clauses, so a concurrent writer that
-    moved any of them yields count 0 → 409; and (3) AFTER THE FACT —
+    moved any of them yields count 0 → 409; and (3) AFTER THE FACT, NARROWLY —
     `auditIbAppliedCreditStrands` recomputes
     `amountCents + creditAppliedCents - finalPriceCents` over committed data and
-    reports the uncollected addition beside it, so a residual that is not
-    exactly the uncollected delta is visible to an operator. Only (3) is a check
-    that can actually fire, because it is not reading back its own writes.
-    A NEGATIVE `mirrorInvariantDeltaCents` in that audit is therefore not
+    reports the uncollected addition beside it, so where it reports at all, a
+    residual that is not exactly the uncollected delta is visible to an
+    operator. Only (3) is a check that can actually fire, because it is not
+    reading back its own writes.
+    **(3) is not a safety net for this settle, and must not be relied on as
+    one.** It enumerates a payment only when the booking still carries
+    UN-ALLOCATED applied credit (`deriveIbAppliedCreditStrandFinding` returns
+    null on `ledgerAppliedCents <= 0`, and the ledger sum counts
+    `BOOKING_APPLIED` rows with `xeroCreditNoteId: null` only), it scans
+    INTERNET_BANKING payments only, and it is an operator-run script
+    (`scripts/audit-ib-hold-clearing.ts`), not a scheduled job or an alert. An
+    ordinary "not covered" cash settlement on a booking with no applied credit
+    therefore produces no finding at all and its residual is never printed.
+    Construction and the fence are what keep this settle honest; the audit is a
+    reading aid for the credit-strand population it already lists.
+    Within that population, a NEGATIVE `mirrorInvariantDeltaCents` is not
     automatically drift: equal-and-opposite to the payment's uncollected
-    addition means the generalised mirror holds. That audit scans
-    INTERNET_BANKING payments only, so a card-settled booking never appears in
-    it at all; the two shapes that legitimately produce the residual there are a
+    addition means the generalised mirror holds. Because that audit scans
+    INTERNET_BANKING payments only, a card-settled booking never appears in it
+    at all; the two shapes that legitimately produce the residual there are a
     Xero-invoiced pay-on-account booking whose later addition was invoiced but
     never paid, and this #2397 "not covered" cash settlement.
     Either answer is recorded on the mark-paid audit row BOTH ways — together

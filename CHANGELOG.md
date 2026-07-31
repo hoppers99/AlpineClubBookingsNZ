@@ -38,8 +38,10 @@ All notable public reference-release changes should be recorded here.
   booking total, what has been paid and what is still owing, and how to pay the
   rest. Separately, a booking whose card payment has already taken money can no
   longer be offered the cash-payment button at all: it now says why, instead of
-  refusing every attempt with a message about the booking having changed.
-
+  refusing every attempt with a message about the booking having changed. Where
+  more than one reason applies, the most specific one is shown — a payment that
+  has already had money refunded says so, and says to resolve the refund first —
+  and it is the same sentence before you click as after.
 
 - **Clubs can safely record a trusted induction history when moving an
   established membership onto the digital register (#2361).** A new

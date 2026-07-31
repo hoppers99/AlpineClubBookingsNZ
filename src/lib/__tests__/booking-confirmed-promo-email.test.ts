@@ -300,6 +300,42 @@ describe("booking-confirmed promo summary (#2267)", () => {
     expect(html).toContain("You can pay it from your booking page.");
   });
 
+  it("splits the booking's PRICE, not the cash, when account credit paid part of a partly-paid settle (#2397)", async () => {
+    // A $200.00 booking with $50.00 of account credit applied and a $30.00
+    // addition the cash did not cover: the club took $120.00 in cash. The three
+    // rows are derived from the PRICE and what is still owing, so "Paid" is
+    // $170.00 — the $120.00 of cash plus the $50.00 of credit, which really did
+    // pay for part of the stay. That matches the convention the ordinary
+    // confirmation has always used (a credit-paid booking's "Total Paid" is the
+    // whole price too), and it keeps the arithmetic the member can check —
+    // Paid = Booking Total − Still Owing — true whether or not credit was
+    // involved. Reporting the $120.00 of cash instead would read as though the
+    // club were still owed the credit the member had already spent.
+    const { templateData, html } = await captureConfirmedTemplateData(20000, {
+      outstandingBalance: { amountCents: 3000, payableOnline: true },
+    });
+
+    expect(templateData.paymentOutcome).toBe(
+      "Booking Total: $200.00\nPaid: $170.00\nStill Owing: $30.00\n\n" +
+        "Your payment of $170.00 has been recorded and your booking is confirmed. " +
+        "$30.00 is still owing from a later change to this booking. " +
+        "You can pay it from your booking page.",
+    );
+    expect(templateData.totalPaid).toBe("$170.00");
+    expect(templateData.totalDue).toBe("$30.00");
+
+    const rendered = renderDefaultBody("booking-confirmed", templateData);
+    expect(rendered).toContain(
+      "Booking Total: $200.00\nPaid: $170.00\nStill Owing: $30.00",
+    );
+    expectCleanBody(rendered);
+
+    // Drift guard: the hand-built HTML splits it the same way.
+    expect(html).toContain(">Paid</td>");
+    expect(html).toContain(">$170.00</td>");
+    expect(html).toContain(">$30.00</td>");
+  });
+
   it("points a partly-paid member at the club, not a pay door, when no card instrument survives (#2397)", async () => {
     const { templateData, html } = await captureConfirmedTemplateData(12100, {
       outstandingBalance: { amountCents: 2100, payableOnline: false },
