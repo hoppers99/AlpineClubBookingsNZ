@@ -297,7 +297,13 @@ export default function MembershipCancellationsPage() {
     return `${parts.join(" and ")} awaiting review`;
   }, [archiveData?.pendingCount, data?.pendingCount]);
 
-  const loadRequests = useCallback(async () => {
+  /**
+   * Reload the cancellation queue. Returns the failure message when the reload
+   * itself failed, and null when it succeeded — because a caller that is about
+   * to set an error of its own has to know it is overwriting one (#2392 review,
+   * residual 5).
+   */
+  const loadRequests = useCallback(async (): Promise<string | null> => {
     setLoading(true);
     setError("");
 
@@ -311,12 +317,14 @@ export default function MembershipCancellationsPage() {
         throw new Error(body.error || "Could not load cancellation requests.");
       }
       setData(body);
+      return null;
     } catch (err) {
-      setError(
+      const failure =
         err instanceof Error
           ? err.message
-          : "Could not load cancellation requests.",
-      );
+          : "Could not load cancellation requests.";
+      setError(failure);
+      return failure;
     } finally {
       setLoading(false);
     }
@@ -450,8 +458,17 @@ export default function MembershipCancellationsPage() {
       // all. Reloading first means the banner and the participant's panel agree,
       // and the participant's panel is where the whole list lives. loadRequests
       // clears the error as it starts, so the refusal is set afterwards.
-      await loadRequests();
-      setError(failure);
+      //
+      // If the reload ALSO failed, saying only the refusal would leave the admin
+      // reading a stale queue that looks freshly loaded — the one thing the
+      // reload was added to prevent — so both are said, in that order (#2392
+      // review, residual 5).
+      const reloadFailure = await loadRequests();
+      setError(
+        reloadFailure
+          ? `${failure} The review queue below could not be reloaded either, so it may be out of date: ${reloadFailure}`
+          : failure,
+      );
     } finally {
       setSubmittingId(null);
     }

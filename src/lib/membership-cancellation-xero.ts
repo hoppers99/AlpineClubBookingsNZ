@@ -782,6 +782,14 @@ export async function syncXeroMembershipCancellationContact(params: {
   const groupsToAdd = cancelledGroups.filter(
     (group) => !groupsAfterRemoval.has(group.id) || removedGroupIds.includes(group.id),
   );
+  // Decided once, from the settings read above, and re-used by the unpaid-
+  // invoice re-check and the archive call below. An admin who switches archiving
+  // OFF in the sub-second window between that read and those two steps does not
+  // stop this run: it proceeds under the setting that was in force when it was
+  // read. Accepted deliberately — the operation is idempotent, the same click a
+  // moment earlier would have archived anyway, and un-archiving a contact in
+  // Xero is a one-click undo — but stated rather than left to be rediscovered
+  // (#2392 review).
   const shouldArchive =
     settings.xeroArchiveContactsOnCancellation &&
     contact.contactStatus !== Contact.ContactStatusEnum.ARCHIVED;

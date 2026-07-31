@@ -6,7 +6,9 @@ import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
 import {
   describeMembershipCancellationBlocker,
   describeUnpaidInvoiceBlockerParts,
+  isBookingBlocker,
   isUnpaidInvoiceBlocker,
+  MEMBERSHIP_CANCELLATION_BLOCKER_DETAIL_SEPARATOR,
   membershipCancellationBlockerHeading,
   membershipCancellationBlockerHint,
   type MembershipCancellationBlocker,
@@ -80,9 +82,31 @@ function BlockerLine({ blocker }: { blocker: MembershipCancellationBlocker }) {
       ) : (
         <span className="font-medium">{label}</span>
       )}
-      {` — ${detail}`}
+      {/* The separator is the server's, imported rather than retyped, so this
+          line and the refusal message cannot drift apart (#2392 review). */}
+      {`${MEMBERSHIP_CANCELLATION_BLOCKER_DETAIL_SEPARATOR}${detail}`}
     </>
   );
+}
+
+/**
+ * The "…and N more" line, worded for what is ACTUALLY overflowing.
+ *
+ * "on this contact" is true of invoices and false of bookings, and the panel
+ * lists both: a participant with twenty-five future bookings would otherwise be
+ * told their five hidden bookings are on a Xero contact (#2392 review,
+ * residual 1). The Xero contact link is offered only when hidden INVOICES are
+ * what the reviewer would find there.
+ */
+function describeOverflow(hidden: MembershipCancellationBlocker[]): string {
+  const invoices = hidden.filter(isUnpaidInvoiceBlocker).length;
+  if (invoices === hidden.length) {
+    return `…and ${hidden.length} more on this contact.`;
+  }
+  if (hidden.every(isBookingBlocker)) {
+    return `…and ${hidden.length} more future bookings or guest appearances.`;
+  }
+  return `…and ${hidden.length} more not shown here.`;
 }
 
 export function MembershipCancellationBlockerNotice({
@@ -96,9 +120,10 @@ export function MembershipCancellationBlockerNotice({
 
   const hint = membershipCancellationBlockerHint(blockers);
   const shown = blockers.slice(0, PANEL_BLOCKER_LIMIT);
-  const remaining = blockers.length - shown.length;
+  const hidden = blockers.slice(PANEL_BLOCKER_LIMIT);
+  // "See them all in Xero" is only an answer when what is hidden is IN Xero.
   const contactUrl =
-    blockers.find(isUnpaidInvoiceBlocker)?.xeroContactUrl ?? null;
+    hidden.find(isUnpaidInvoiceBlocker)?.xeroContactUrl ?? null;
 
   return (
     <div className="mt-3 rounded-md border border-warning-6 bg-warning-3 p-3 text-sm text-warning-11">
@@ -115,9 +140,9 @@ export function MembershipCancellationBlockerNotice({
               </li>
             ))}
           </ul>
-          {remaining > 0 && (
+          {hidden.length > 0 && (
             <p className="mt-1">
-              …and {remaining} more on this contact.
+              {describeOverflow(hidden)}
               {contactUrl && (
                 <>
                   {" "}

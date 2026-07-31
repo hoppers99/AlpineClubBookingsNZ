@@ -574,6 +574,20 @@ export async function loadMembershipCancellationInvoiceBlockersByMemberId(
 
   // The invoice this approval will itself credit, per member — see the module
   // note: counting it would deadlock the ordinary unpaid-subscription case.
+  //
+  // The season is read from NOW, which matters for the archive-time re-check in
+  // `membership-cancellation-xero.ts`: an outbox operation still draining after
+  // a season rollover asks about the NEW season, so a previous season's
+  // subscription invoice would no longer be excluded here. That cannot deadlock
+  // the archive in practice, because by then the credit note has already been
+  // raised — the archive is not even attempted until
+  // `isMembershipCancellationCreditNoteSettled` says so — and it is raised for
+  // the invoice's full `amountDue`, which takes the invoice to PAID in Xero and
+  // out of the open-invoice read this check performs. The exclusion is therefore
+  // only load-bearing at APPROVAL time, when the credit note has not been raised
+  // yet and the season cannot have moved. Written down because that safety
+  // depends on another module's behaviour, not on anything visible here
+  // (#2392 review).
   const seasonYear = getSeasonYear(new Date(options.nowMs ?? Date.now()));
   const selfCreditedSubscriptions = await prisma.memberSubscription.findMany({
     where: {

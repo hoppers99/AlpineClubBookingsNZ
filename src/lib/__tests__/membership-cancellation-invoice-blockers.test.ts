@@ -791,6 +791,49 @@ describe("membership cancellation unpaid-invoice blockers", () => {
       expect(membershipCancellationInvoiceCheckCacheSizeForTests()).toBe(1);
     });
 
+    // #2392 review (residual 3): the TTL sweep alone cannot bound the memo — a
+    // busy process checks contacts faster than they expire — so there is a hard
+    // ceiling that drops the whole map. Only the expiry half was covered.
+    it("drops the whole memo once it passes its size ceiling, expired or not", async () => {
+      const manyMembers = Array.from({ length: 501 }, (_, index) => ({
+        id: `member-${index}`,
+        xeroContactId: `contact-${index}`,
+      }));
+      mocks.memberFindMany.mockResolvedValue(manyMembers);
+      respondWithInvoices([]);
+      await loadMembershipCancellationInvoiceBlockersByMemberId(
+        manyMembers.map((member) => member.id),
+        { nowMs: NOW_MS },
+      );
+      expect(membershipCancellationInvoiceCheckCacheSizeForTests()).toBe(501);
+
+      // One second later: every one of those entries is still well inside its
+      // 60s TTL, so the expiry sweep would keep all 501. The ceiling clears them
+      // anyway, leaving only the contact this call fetched.
+      mocks.memberFindMany.mockResolvedValue([
+        { id: "member-new", xeroContactId: "contact-new" },
+      ]);
+      respondWithInvoices([]);
+      await loadMembershipCancellationInvoiceBlockersByMemberId(["member-new"], {
+        nowMs: NOW_MS + 1_000,
+      });
+
+      expect(membershipCancellationInvoiceCheckCacheSizeForTests()).toBe(1);
+
+      // And the dropped entries are genuinely gone: an evicted contact is read
+      // from Xero again rather than answered from a memo that no longer holds it.
+      mocks.getInvoices.mockClear();
+      mocks.memberFindMany.mockResolvedValue([
+        { id: "member-0", xeroContactId: "contact-0" },
+      ]);
+      respondWithInvoices([]);
+      await loadMembershipCancellationInvoiceBlockersByMemberId(["member-0"], {
+        nowMs: NOW_MS + 2_000,
+      });
+
+      expect(mocks.getInvoices).toHaveBeenCalledTimes(1);
+    });
+
     it("is bypassed when the caller asks for a fresh answer", async () => {
       respondWithInvoices([invoice({ invoiceID: "inv-1", amountDue: 10 })]);
       await loadMembershipCancellationInvoiceBlockersByMemberId(["member-1"], {

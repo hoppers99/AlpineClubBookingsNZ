@@ -4,10 +4,12 @@ import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { MembershipCancellationBlockerNotice } from "@/components/admin/membership-cancellation-blocker-notice";
-import type {
-  MembershipCancellationBlocker,
-  MembershipCancellationUnpaidInvoiceBlocker,
+import {
+  describeMembershipCancellationBlocker,
+  type MembershipCancellationBlocker,
+  type MembershipCancellationUnpaidInvoiceBlocker,
 } from "@/lib/membership-cancellation-blocker-messages";
+import { formatNZDate } from "@/lib/nzst-date";
 
 /**
  * The panel a reviewer actually reads before pressing Approve (#2392). Until
@@ -43,6 +45,25 @@ const ownedBooking: MembershipCancellationBlocker = {
   checkIn: "2099-01-01T00:00:00.000Z",
   checkOut: "2099-01-03T00:00:00.000Z",
 };
+
+function ownedBookings(count: number): MembershipCancellationBlocker[] {
+  return Array.from({ length: count }, (_, index) => ({
+    ...ownedBooking,
+    bookingId: `booking-${index}`,
+  }));
+}
+
+function unpaidInvoices(
+  count: number,
+  prefix = "inv",
+): MembershipCancellationBlocker[] {
+  return Array.from({ length: count }, (_, index) =>
+    unpaidInvoice({
+      invoiceId: `${prefix}-${index}`,
+      invoiceNumber: `INV-${prefix}-${index}`,
+    }),
+  );
+}
 
 describe("the cancellation review queue's blocker panel", () => {
   it("shows nothing at all when nothing is blocking", () => {
@@ -95,6 +116,68 @@ describe("the cancellation review queue's blocker panel", () => {
     );
   });
 
+  /**
+   * The panel renders the invoice line in two pieces — a linked label and a
+   * plain-text detail — while the server writes it as one sentence. The two must
+   * read identically, separator included: the whole point of the shared module
+   * is that the reviewer sees on screen exactly what the 409 would say. The
+   * wording test next door only ever compared the server to itself (#2392
+   * review, residual 2).
+   */
+  describe("says exactly what the server would say", () => {
+    it("matches the server's sentence for an invoice with no due date", () => {
+      const blocker = unpaidInvoice({ dueDate: null });
+      render(
+        <MembershipCancellationBlockerNotice
+          blockers={[blocker]}
+          returnTo={RETURN_TO}
+        />,
+      );
+
+      expect(screen.getByRole("listitem").textContent).toBe(
+        describeMembershipCancellationBlocker(blocker),
+      );
+    });
+
+    it("matches it for a dated invoice too, in the club's date format", () => {
+      const blocker = unpaidInvoice();
+      render(
+        <MembershipCancellationBlockerNotice
+          blockers={[blocker]}
+          returnTo={RETURN_TO}
+        />,
+      );
+
+      // Only the date formatting is the panel's own; every other character,
+      // including the separator between label and detail, comes from the server.
+      expect(screen.getByRole("listitem").textContent).toBe(
+        describeMembershipCancellationBlocker(blocker, {
+          formatDate: (value) => formatNZDate(new Date(value)),
+        }),
+      );
+    });
+
+    it("matches it for a bill, where the label is the Xero id", () => {
+      const blocker = unpaidInvoice({
+        invoiceId: "bill-guid-9",
+        invoiceNumber: null,
+        direction: "payable",
+        xeroUrl: null,
+        dueDate: null,
+      });
+      render(
+        <MembershipCancellationBlockerNotice
+          blockers={[blocker]}
+          returnTo={RETURN_TO}
+        />,
+      );
+
+      expect(screen.getByRole("listitem").textContent).toBe(
+        describeMembershipCancellationBlocker(blocker),
+      );
+    });
+  });
+
   it("stops listing after twenty rows and points at the contact for the rest", () => {
     render(
       <MembershipCancellationBlockerNotice
@@ -115,6 +198,66 @@ describe("the cancellation review queue's blocker panel", () => {
         .getByRole("link", { name: "Open the contact in Xero" })
         .getAttribute("href"),
     ).toBe("https://go.xero.com/Contacts/View/contact-1");
+  });
+
+  /**
+   * "…on this contact" is a statement about Xero. Said over hidden BOOKINGS it is
+   * simply false, and the same twenty-row cap applies to a member with a long
+   * run of future stays (#2392 review, residual 1).
+   */
+  describe("the overflow line follows what is actually overflowing", () => {
+    it("names bookings when bookings are what is hidden", () => {
+      render(
+        <MembershipCancellationBlockerNotice
+          blockers={ownedBookings(25)}
+          returnTo={RETURN_TO}
+        />,
+      );
+
+      expect(
+        screen.getByText(/and 5 more future bookings or guest appearances/),
+      ).toBeTruthy();
+      expect(screen.queryByText(/on this contact/)).toBeNull();
+      // Nothing hidden is in Xero, so there is nothing to open there.
+      expect(
+        screen.queryByRole("link", { name: "Open the contact in Xero" }),
+      ).toBeNull();
+    });
+
+    it("stays neutral when the hidden rows are a mix", () => {
+      render(
+        <MembershipCancellationBlockerNotice
+          blockers={[
+            ...unpaidInvoices(10),
+            ...ownedBookings(15),
+            ...unpaidInvoices(5, "later"),
+          ]}
+          returnTo={RETURN_TO}
+        />,
+      );
+
+      expect(screen.getByText(/and 10 more not shown here/)).toBeTruthy();
+      // Some of the hidden rows ARE invoices, so the contact link still helps.
+      expect(
+        screen.getByRole("link", { name: "Open the contact in Xero" }),
+      ).toBeTruthy();
+    });
+
+    it("does not offer the contact link when only bookings are hidden", () => {
+      render(
+        <MembershipCancellationBlockerNotice
+          blockers={[...unpaidInvoices(5), ...ownedBookings(20)]}
+          returnTo={RETURN_TO}
+        />,
+      );
+
+      expect(
+        screen.getByText(/and 5 more future bookings or guest appearances/),
+      ).toBeTruthy();
+      expect(
+        screen.queryByRole("link", { name: "Open the contact in Xero" }),
+      ).toBeNull();
+    });
   });
 
   it("gives the escape hatch a link, not just a name", () => {

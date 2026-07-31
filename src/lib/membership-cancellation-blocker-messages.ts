@@ -167,13 +167,27 @@ type DescribeBlockerOptions = { formatDate?: (value: string) => string };
 const defaultFormatDate = (value: string) => value.slice(0, 10);
 
 /**
+ * What joins an invoice line's label to its detail.
+ *
+ * Exported because BOTH sides of the split sentence need it: the server joins
+ * `label` and `detail` with it below, and the review queue's panel renders the
+ * label as a hyperlink and then emits this same separator before the detail. A
+ * literal copied into the component would let the rendered line drift from the
+ * refusal message with nothing failing, which is precisely the drift this module
+ * exists to prevent (#2392 review, residual 2).
+ */
+export const MEMBERSHIP_CANCELLATION_BLOCKER_DETAIL_SEPARATOR = " — ";
+
+/**
  * The unpaid-invoice line, split at the point a link belongs.
  *
  * The review queue renders `label` as a hyperlink to `href` and `detail` as
- * plain text; the server joins the two into one sentence. Splitting here rather
- * than rebuilding the sentence in the client is what keeps the one-source-of-
- * truth promise this module exists for — the panel and the 409 cannot drift
- * apart (#2392 review, H1).
+ * plain text, rejoining them with
+ * {@link MEMBERSHIP_CANCELLATION_BLOCKER_DETAIL_SEPARATOR}; the server joins the
+ * two into one sentence with the same constant. Splitting here rather than
+ * rebuilding the sentence in the client is what keeps the one-source-of-truth
+ * promise this module exists for — the panel and the 409 cannot drift apart
+ * (#2392 review, H1).
  */
 export function describeUnpaidInvoiceBlockerParts(
   blocker: MembershipCancellationUnpaidInvoiceBlocker,
@@ -220,7 +234,7 @@ export function describeMembershipCancellationBlocker(
       blocker,
       options,
     );
-    return `${label} — ${detail}`;
+    return `${label}${MEMBERSHIP_CANCELLATION_BLOCKER_DETAIL_SEPARATOR}${detail}`;
   }
 
   return describeInvoiceCheckUnavailable(blocker.reason);
