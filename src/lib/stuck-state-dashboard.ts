@@ -13,6 +13,10 @@ import { getUnassignedHutLeaderDates } from "@/lib/hut-leader-coverage";
 import { countUnconfirmedSchoolAttendeeLists } from "@/lib/school-attendee-confirmation";
 import { loadHutLeaderLookaheadDays } from "@/lib/lodge-settings";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
+import {
+  MANUAL_SETTLEMENT_CONFLICT_EVENT_REASON,
+  MANUAL_SETTLEMENT_REVERSAL_EVENT_REASON,
+} from "@/lib/manual-settlement-reversal-event";
 import { MAX_PAYMENT_RECOVERY_ATTEMPTS } from "@/lib/payment-recovery-constants";
 import { prisma } from "@/lib/prisma";
 import {
@@ -790,7 +794,32 @@ async function getPaymentCounts(
           none: { type: "REFUND_BOOKING_MODIFICATION" },
         },
         events: {
-          none: { type: "CANCELLED" },
+          // #2262 — the two manual-settlement admin markers are stored as
+          // CANCELLED events (reversal / reciprocal-fence conflict) but cancel
+          // nothing, so they must not count as "the cancel wrote its
+          // narrative event" here: a genuinely crashed cancel on a booking
+          // that once hit a marker would otherwise be invisible. The DB-level
+          // twin of booking-narrative's isManualSettlementMarkerEvent
+          // exclusion, keyed on the markers' constant `reason` strings (the
+          // snapshot discriminator is not expressible in this relation
+          // filter). The OR keeps a NULL-reason genuine cancel event counted —
+          // a bare notIn would drop NULL rows under SQL three-valued logic.
+          // #2008's duplicate-capture marker does NOT share this shape (it is
+          // a REFUNDED event), so it needs no exclusion here.
+          none: {
+            type: "CANCELLED",
+            OR: [
+              { reason: null },
+              {
+                reason: {
+                  notIn: [
+                    MANUAL_SETTLEMENT_REVERSAL_EVENT_REASON,
+                    MANUAL_SETTLEMENT_CONFLICT_EVENT_REASON,
+                  ],
+                },
+              },
+            ],
+          },
         },
       },
     }),

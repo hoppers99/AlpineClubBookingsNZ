@@ -7,7 +7,7 @@ import {
   daysUntilDate,
   loadCancellationPolicy,
 } from "./cancellation";
-import { sendBookingCancelledEmail } from "./email";
+import { sendAdminManualRefundTaskAlert, sendBookingCancelledEmail } from "./email";
 import { logAudit } from "./audit";
 import { recordBookingEvent } from "./booking-events";
 import { BookingEventType, BookingStatus, type Prisma } from "@prisma/client";
@@ -80,10 +80,14 @@ interface CancelBookingResult {
   success: boolean;
   refundAmountCents: number;
   refundPercentage: number;
-  refundMethod: "card" | "credit";
+  // B5 (#2262): "manual" — the booking was settled in cash / by an off-Xero
+  // bank transfer, so no card refund was planned and no account credit was
+  // minted; a durable hand-back task was raised instead and its id is returned.
+  refundMethod: "card" | "credit" | "manual";
   creditAmountCents?: number;
   creditRestoredCents?: number;
   stripeRefundId?: string;
+  manualRefundTaskId?: string;
   message: string;
 }
 
@@ -1376,7 +1380,34 @@ async function performBookingCancellation(
     // Credit-path ledger writes, ATOMIC with the claim (fixes hazard #3):
     // consumed refundable value and the credit entry commit together with the
     // status flip, so a crash can never leave one without the other.
-    if (refundMethod === "credit" && refundAmountCents > 0) {
+    // B5 (#2262): a CASH / off-Xero settlement is handed back by a person, not
+    // by Stripe and not as account credit. Disposition is keyed on the
+    // payment's manual PROVENANCE, never on its source — a genuine
+    // Xero-reconciled internet-banking payment still credits as before.
+    //
+    // Deliberately NOT applyLocalRefundAllocation here: the ledger must not
+    // claim money was returned before it was. The allocation is written when
+    // the task is COMPLETED. Deliberately NOT createCancellationCredit either:
+    // minting credit alongside a cash payout is a double refund. The policy
+    // MATH is unchanged — refundMethod is already coerced to "credit" for an
+    // internet-banking payment above, which is the owner-decided tier (28 Jul).
+    const manualDisposition = Boolean(payment.manuallyMarkedPaidAt);
+    let manualRefundTaskId: string | null = null;
+    if (manualDisposition && refundAmountCents > 0) {
+      const task = await tx.manualRefundTask.create({
+        data: {
+          bookingId,
+          paymentId: payment.id,
+          amountCents: refundAmountCents,
+          reason: `Booking ${bookingId} cancelled — cash/manual settlement, refund by hand (${refundPercentage}% under the policy in effect at the time).`.slice(
+            0,
+            500
+          ),
+        },
+        select: { id: true },
+      });
+      manualRefundTaskId = task.id;
+    } else if (refundMethod === "credit" && refundAmountCents > 0) {
       await applyLocalRefundAllocation({
         paymentId: payment.id,
         amountCents: refundAmountCents,
@@ -1438,6 +1469,8 @@ async function performBookingCancellation(
       shouldFailAdditionalPayment,
       cardRefundPlan,
       plannedCardRefundCents,
+      manualDisposition,
+      manualRefundTaskId,
     };
   });
 
@@ -1463,6 +1496,8 @@ async function performBookingCancellation(
     shouldFailAdditionalPayment,
     cardRefundPlan,
     plannedCardRefundCents,
+    manualDisposition,
+    manualRefundTaskId,
   } = claim;
   const paymentId = payment.id;
 
@@ -1502,6 +1537,97 @@ async function performBookingCancellation(
         "Failed to cancel additional payment intent after cancellation claim committed"
       );
     }
+  }
+
+  // ── B5 (#2262) manual branch: a cash / off-Xero settlement handed back ──
+  // The durable ManualRefundTask committed in tx1. Nothing here touches Xero
+  // (this feature never does), nothing mints member credit, and no Stripe
+  // refund is planned — a cash settlement has no card slice to plan against.
+  if (manualDisposition && refundAmountCents > 0) {
+    await cleanupPromoRedemption(bookingId);
+
+    logBookingCancellationAudit({
+      booking: fresh,
+      bookingId,
+      sessionUserId,
+      details:
+        payment.changeFeeCents > 0
+          ? `Manual refund task for ${refundPercentage}% of ${refundableBaseCents} cents (excluding ${payment.changeFeeCents} cents change fee) = ${refundAmountCents} cents`
+          : `Manual refund task for ${refundPercentage}% = ${refundAmountCents} cents`,
+      ipAddress,
+      metadata: {
+        refundMethod: "manual",
+        refundAmountCents,
+        refundPercentage,
+        refundableBaseCents,
+        changeFeeCents: payment.changeFeeCents,
+        creditRestoredCents,
+        manualRefundTaskId,
+        ...notifyAuditFields,
+      },
+    });
+
+    await recordCancellationEvent({
+      bookingId,
+      actorMemberId: sessionUserId,
+      policySummary: `Cancelled ${days} day(s) before check-in: ${refundPercentage}% refund under the policy in effect at the time, to be paid back by the club by hand (cash / off-Xero settlement).`,
+      refundMethod: "manual",
+      refundPercentage,
+      paidAmountCents,
+      settledAmountCents: refundAmountCents,
+      changeFeeCents: payment.changeFeeCents,
+    });
+
+    // Deliberately NO BookingEventType.REFUNDED here: nothing has been refunded
+    // yet. That event is written when the hand-back task is COMPLETED, which is
+    // also when the ledger allocation is applied.
+
+    if (notifyMember) {
+      sendBookingCancelledEmail(
+        { bookingId: fresh.id },
+        fresh.member.email,
+        fresh.member.firstName,
+        fresh.checkIn,
+        fresh.checkOut,
+        refundAmountCents,
+        "manual",
+        creditRestoredCents,
+        fresh.lodgeId
+      ).catch((err) => logger.error({ err, bookingId }, "Failed to send cancellation email"));
+    }
+
+    // Admin audience, so exempt from the per-booking "No emails" switch (#2258
+    // rule 2): the switch silences the MEMBER, and somebody still has to be
+    // told there is cash to hand back.
+    sendAdminManualRefundTaskAlert({
+      memberName: `${fresh.member.firstName} ${fresh.member.lastName}`,
+      checkIn: fresh.checkIn,
+      checkOut: fresh.checkOut,
+      refundAmountCents,
+      bookingId,
+      reason: `Cash/manual settlement cancelled ${days} day(s) before check-in (${refundPercentage}% under the policy in effect at the time).`,
+    }).catch((err) =>
+      logger.error(
+        { err, bookingId, manualRefundTaskId },
+        "Failed to alert admins about a manual refund task"
+      )
+    );
+
+    processWaitlistForDates({ checkIn: fresh.checkIn, checkOut: fresh.checkOut, lodgeId: fresh.lodgeId })
+      .catch((err) => logger.error({ err, bookingId }, "Failed to process waitlist after manual-refund cancellation"));
+
+    return {
+      status: 200,
+      data: {
+        success: true,
+        refundAmountCents,
+        refundPercentage,
+        refundMethod: "manual",
+        creditRestoredCents: creditRestoredCents || undefined,
+        manualRefundTaskId: manualRefundTaskId ?? undefined,
+        message: `Booking cancelled. This booking was settled in cash, so a manual refund task for $${(refundAmountCents / 100).toFixed(2)} has been raised for an admin to pay back by hand.`,
+      },
+    };
   }
 
   // ── Credit branch: ledger writes already happened in tx1 ──────────
@@ -1940,7 +2066,7 @@ async function recordCancellationEvent(params: {
   bookingId: string;
   actorMemberId: string;
   policySummary: string;
-  refundMethod: "card" | "credit";
+  refundMethod: "card" | "credit" | "manual";
   refundPercentage: number;
   paidAmountCents: number;
   settledAmountCents: number;

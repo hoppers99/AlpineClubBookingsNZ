@@ -7,6 +7,9 @@ import {
   schoolAttendeeConfirmationTemplate,
   splitGuestPaymentLinkTemplate,
 } from "../email-templates";
+import {
+  composeOptionalEmailLine,
+} from "../email-message-notes";
 import { CLUB_NAME } from "@/config/club-identity";
 import {
   formatNZDate,
@@ -264,6 +267,9 @@ export async function sendBookingRequestDeclinedEmail(params: {
       checkIn: formatNZDate(params.checkIn),
       checkOut: formatNZDate(params.checkOut),
       reason: params.reason ?? "",
+      // #2268: pre-composed optional line — a decline with no note must not
+      // print a dangling "Note:".
+      reasonNote: composeOptionalEmailLine("Note", params.reason),
     },
   });
 }
@@ -351,7 +357,10 @@ export async function sendSchoolAttendeeConfirmationEmail(params: {
       // Registered defaultBody references {{token}} for the confirm link, so an
       // admin override can render it (the hardcoded sender builds the link in HTML).
       token: params.token,
-      schoolName: params.schoolName ?? "",
+      // #2268: the same fallback the hand-built HTML uses, applied here so the
+      // flat body's "{{schoolName}}'s stay" is never orphaned as "'s stay"
+      // when the booking records no school name.
+      schoolName: params.schoolName ?? "your school group",
       checkIn: formatNZDate(params.checkIn),
       checkOut: formatNZDate(params.checkOut),
       guestCount: params.guestCount,

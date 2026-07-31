@@ -37,6 +37,10 @@ vi.mock("@/lib/audit", () => ({
   logAudit: mocks.logAudit,
 }));
 
+vi.mock("@/lib/bed-allocation-lifecycle", () => ({
+  reconcileBedAllocationsForBooking: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("@/lib/logger", () => ({
   default: {
     error: vi.fn(),
@@ -256,6 +260,64 @@ describe("PATCH /api/admin/bookings/[id]/review", () => {
       "card",
     );
     expect(mocks.sendRejectedEmail).toHaveBeenCalled();
+  });
+
+  it("rejects a legacy DRAFT-status queue entry without 500ing (#2266)", async () => {
+    // Pre-#2266 rows only: a member draft edit that tripped the no-adult rule
+    // used to write adminReviewStatus PENDING while the booking stayed DRAFT.
+    // cancelBooking rightly refuses DRAFT, so the route must cancel the draft
+    // directly (guarded DRAFT -> CANCELLED) instead of recording-then-500ing.
+    mocks.bookingFindUnique.mockResolvedValue({
+      id: "b1",
+      memberId: "m1",
+      adminReviewStatus: "PENDING",
+      status: "DRAFT",
+      member: { email: "member@example.com", firstName: "Alex" },
+      checkIn: new Date("2026-07-01"),
+      checkOut: new Date("2026-07-03"),
+    });
+    // First updateMany: the review claim; second: the DRAFT -> CANCELLED flip.
+    mocks.bookingUpdateMany.mockResolvedValue({ count: 1 });
+
+    const res = await PATCH(
+      makeRequest({ status: "REJECTED", adminNotes: "No adult attending." }),
+      { params },
+    );
+    expect(res.status).toBe(200);
+
+    expect(mocks.cancelBooking).not.toHaveBeenCalled();
+    const flipArgs = mocks.bookingUpdateMany.mock.calls[1][0];
+    expect(flipArgs.where).toMatchObject({ id: "b1", status: "DRAFT" });
+    expect(flipArgs.data).toMatchObject({
+      status: "CANCELLED",
+      draftExpiresAt: null,
+    });
+    expect(mocks.sendRejectedEmail).toHaveBeenCalled();
+    expect(mocks.logAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "booking.review.reject" }),
+    );
+  });
+
+  it("409s (not 500s) when the legacy DRAFT vanished before the cancel flip (#2266)", async () => {
+    mocks.bookingFindUnique.mockResolvedValue({
+      id: "b1",
+      memberId: "m1",
+      adminReviewStatus: "PENDING",
+      status: "DRAFT",
+      member: { email: "member@example.com", firstName: "Alex" },
+      checkIn: new Date("2026-07-01"),
+      checkOut: new Date("2026-07-03"),
+    });
+    mocks.bookingUpdateMany
+      .mockResolvedValueOnce({ count: 1 }) // review claim
+      .mockResolvedValueOnce({ count: 0 }); // draft moved concurrently
+
+    const res = await PATCH(
+      makeRequest({ status: "REJECTED", adminNotes: "No adult attending." }),
+      { params },
+    );
+    expect(res.status).toBe(409);
+    expect(mocks.cancelBooking).not.toHaveBeenCalled();
   });
 
   it("returns 409 if another admin already claimed the review (race)", async () => {

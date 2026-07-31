@@ -58,6 +58,20 @@ class PaymentIntentConflictError extends Error {
   }
 }
 
+/**
+ * Defence in depth (#2266): a DRAFT carrying an unresolved admin review must
+ * not become payable here. The writers park review-flagged drafts to
+ * AWAITING_REVIEW (booking-create and the modify path alike), so this state
+ * should not exist — but the no-adult review rule is a child-safety gate, so
+ * the pay door checks it too rather than trusting every writer forever.
+ */
+class PaymentIntentReviewPendingError extends Error {
+  constructor() {
+    super("This booking needs admin review before it can be paid.");
+    this.name = "PaymentIntentReviewPendingError";
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
     const session = await auth();
@@ -208,6 +222,18 @@ export async function POST(request: NextRequest) {
               // final capacity claim.
               if (freshBooking.status !== BookingStatus.DRAFT) {
                 throw new PaymentIntentConflictError();
+              }
+
+              // #2266: the review invariant, CHECKED, not just stated — a
+              // review-flagged booking is created in (or edit-parked to)
+              // AWAITING_REVIEW and only an admin approval releases it toward
+              // payment, so a DRAFT with an unresolved review must never
+              // advance. Fail closed on any non-APPROVED review state.
+              if (
+                freshBooking.requiresAdminReview &&
+                freshBooking.adminReviewStatus !== "APPROVED"
+              ) {
+                throw new PaymentIntentReviewPendingError();
               }
 
               const capacity = await checkCapacityForGuestRanges(
@@ -689,7 +715,8 @@ export async function POST(request: NextRequest) {
     // the client (#1888).
     if (
       error instanceof PaymentIntentCapacityError ||
-      error instanceof PaymentIntentConflictError
+      error instanceof PaymentIntentConflictError ||
+      error instanceof PaymentIntentReviewPendingError
     ) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }

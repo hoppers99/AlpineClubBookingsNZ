@@ -125,6 +125,13 @@ export function EmailMessageSettingsPanel() {
   const [previewHtml, setPreviewHtml] = useState("");
   const [previewSubject, setPreviewSubject] = useState("");
   const [staleOverrideCount, setStaleOverrideCount] = useState(0);
+  // #2268 review (MED-1): template names whose SAVED override still carries a
+  // pre-sweep "[only when …]" authoring note — literal text every send of that
+  // override delivers to its recipient. Save now refuses the junk, but only
+  // this banner tells an admin which existing rows still need re-authoring.
+  const [bracketAnnotationTemplates, setBracketAnnotationTemplates] = useState<
+    string[]
+  >([]);
   const [loading, setLoading] = useState(true);
   const [savingSettings, setSavingSettings] = useState(false);
   const [savingTemplate, setSavingTemplate] = useState(false);
@@ -161,6 +168,17 @@ export function EmailMessageSettingsPanel() {
       setSettings(settingsBody.settings);
       setTemplates(nextTemplates);
       setStaleOverrideCount(templatesBody.staleOverrideCount ?? 0);
+      setBracketAnnotationTemplates(
+        Array.isArray(templatesBody.bracketAnnotationOverrides)
+          ? (
+              templatesBody.bracketAnnotationOverrides as Array<{
+                templateName?: string;
+              }>
+            )
+              .map((entry) => entry?.templateName)
+              .filter((name): name is string => Boolean(name))
+          : [],
+      );
       const firstTemplate = selectedTemplate || nextTemplates[0]?.key || "";
       setSelectedTemplate(firstTemplate);
       const selected = nextTemplates.find((template) => template.key === firstTemplate);
@@ -341,6 +359,22 @@ export function EmailMessageSettingsPanel() {
           {staleOverrideCount === 1 ? "" : "s"} need database cleanup.
         </div>
       ) : null}
+      {bracketAnnotationTemplates.length > 0 ? (
+        <div className="rounded-md border border-warning-6 bg-warning-3 p-3 text-sm text-warning-11">
+          {bracketAnnotationTemplates.length === 1
+            ? "A saved template override still contains"
+            : `${bracketAnnotationTemplates.length} saved template overrides still contain`}{" "}
+          square-bracketed authoring notes (like &ldquo;[only when a door code
+          is set]&rdquo;) from the old built-in wording. Emails render tokens
+          and nothing else, so these notes are sent to recipients word for
+          word. Open each template, remove the bracketed text, and save (or
+          reset it to the corrected default):{" "}
+          <span className="font-medium">
+            {bracketAnnotationTemplates.join(", ")}
+          </span>
+          .
+        </div>
+      ) : null}
       <section className="space-y-4">
         <div className="grid gap-4 md:grid-cols-2">
           {settingFields.map((field) => (
@@ -433,6 +467,22 @@ export function EmailMessageSettingsPanel() {
                 required: currentTemplate.requiredTokens.includes(token),
               }))}
             />
+            {/* #2268: the guidance that used to live inside the default bodies
+                as "[only when ...]" notes — which the engine could not act on,
+                so it printed them to members. Stated once, here, where an
+                operator actually sees it. */}
+            <p className="text-muted-foreground text-xs">
+              Tokens are substituted as-is — there is no &quot;only if&quot;.
+              A value that does not apply to a particular send renders as
+              nothing, so writing your own label in front of it (for example
+              <code className="mx-1">Door code: {"{{doorCode}}"}</code>) leaves
+              a bare label on every email where it is missing. Tokens ending in
+              <code className="mx-1">Note</code> or
+              <code className="mx-1">Line</code> already contain the whole line,
+              label included: put one on a line of its own and it disappears
+              cleanly when there is nothing to say. Never write notes to
+              yourself into the body — they are sent to the recipient verbatim.
+            </p>
             {requirementSentence ? (
               <p className="text-xs text-muted-foreground">
                 {requirementSentence}

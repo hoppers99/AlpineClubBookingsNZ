@@ -12,6 +12,7 @@ import {
   getSensitiveEmailSubjectTokens,
   getEmailTemplateDefinition,
 } from "@/lib/email-message-registry";
+import { findBracketAnnotations } from "@/lib/email-message-token-contract";
 import { prisma } from "@/lib/prisma";
 
 type EmailTemplateValue = string | number | boolean | null | undefined;
@@ -42,11 +43,13 @@ interface EmailTemplateValidationIssue {
     | "sensitive_subject_token"
     | "subject_line_break"
     | "raw_html"
-    | "unsafe_link";
+    | "unsafe_link"
+    | "bracket_annotation";
   field?: "subject" | "bodyText";
   message: string;
   tokens?: string[];
   links?: string[];
+  annotations?: string[];
 }
 
 export interface EmailTemplateValidationResult {
@@ -58,6 +61,7 @@ export interface EmailTemplateValidationResult {
   signPrefixedTokens: string[];
   sensitiveSubjectTokens: string[];
   unsafeLinks: string[];
+  bracketAnnotations: string[];
 }
 
 // #2267: these tokens render their own sign — "-$30.00" for a discount,
@@ -294,6 +298,32 @@ export function validateEmailTemplateContent({
     });
   }
 
+  // #2268 review (MED-1): the sweep cleaned the SHIPPED defaults of the
+  // "[only when …]" authoring notes, but an override a club saved from the old
+  // editor text still carries them and would keep sending them to recipients as
+  // literal text forever. Guard 1's detector runs here at save time too, so the
+  // junk cannot be (re-)saved. This BLOCKS the save, matching how the validator
+  // treats every other contract violation (an unknown token blocks; so does
+  // this) — the fix is one edit away, and a warn would let the same text keep
+  // reaching members. Same rationale as guard 1: token braces are the only
+  // legitimate markup, so anything square-bracketed is an authoring note the
+  // render path can only print verbatim.
+  const bracketFindings = findBracketAnnotations({
+    [templateName]: { defaultSubject: subject, defaultBody: bodyText },
+  });
+  const bracketAnnotations = bracketFindings.flatMap(
+    (finding) => finding.detail.split(" | "),
+  );
+  for (const finding of bracketFindings) {
+    issues.push({
+      code: "bracket_annotation",
+      field: finding.field === "defaultSubject" ? "subject" : "bodyText",
+      message:
+        "Remove the square-bracketed note — emails render tokens and nothing else, so text like \"[only when a door code is set]\" is sent to the recipient word for word. If a line should appear only sometimes, use its pre-composed {{...Note}} token, which renders the whole line or nothing at all",
+      annotations: finding.detail.split(" | "),
+    });
+  }
+
   return {
     valid: issues.length === 0,
     issues,
@@ -303,6 +333,7 @@ export function validateEmailTemplateContent({
     signPrefixedTokens,
     sensitiveSubjectTokens,
     unsafeLinks,
+    bracketAnnotations,
   };
 }
 
