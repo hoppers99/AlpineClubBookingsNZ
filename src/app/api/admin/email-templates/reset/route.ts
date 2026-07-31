@@ -66,10 +66,11 @@ export async function POST(request: NextRequest) {
   //
   // "In full" therefore has ONE honest caveat, and the editor and the guide
   // both state it rather than leaving it as a surprise: the key-value redaction
-  // still fires on template text shaped like a secret, so the shipped
-  // password-reset body's "?token={{token}}" is archived as "token=[REDACTED]".
-  // That is the redaction earning its keep, not a defect — but it means a club
-  // restoring such a line retypes that fragment.
+  // still fires on template text shaped like `password: value`, and it takes
+  // the whole LINE, not a fragment. The shipped password-reset body's "Reset
+  // Password: {{BASE_URL}}/reset-password?token={{token}}" is archived as
+  // "Reset Password=[REDACTED]". That is the redaction earning its keep, not a
+  // defect — but a club restoring that message retypes that one line.
   const before = await prisma.emailTemplateOverride.findUnique({
     where: { templateName: parsed.data.templateName },
   });

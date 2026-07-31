@@ -1248,13 +1248,19 @@ describe("admin email message APIs", () => {
     expect(metadata.deletedOverride.bodyText).toBe("[REDACTED]");
   });
 
-  it("masks a token= fragment even in the wording it archives, and says so", async () => {
-    // The one honest caveat on "in full", pinned so it cannot surprise anybody:
-    // the key-value redaction still fires on template text shaped like a
-    // secret, and the SHIPPED password-reset body is exactly that shape. The
-    // confirmation dialog and docs/guides/email-messages.md both state it.
+  it("masks a secret-shaped line even in the wording it archives, and says so", async () => {
+    // The one honest caveat on "in full", pinned so it cannot surprise anybody
+    // — and pinned at its REAL width, which is a whole line rather than a
+    // fragment. The key-value redaction fires on template text shaped like
+    // `password: value`, and the SHIPPED password-reset body is exactly that
+    // shape ("Reset Password: {{BASE_URL}}/reset-password?token={{token}}"), so
+    // the entire link line archives as "Reset Password=[REDACTED]". The
+    // confirmation dialog and docs/guides/email-messages.md both say so, with
+    // this same example.
     const passwordResetDefault = getEmailTemplateDefinition("password-reset")!;
-    expect(passwordResetDefault.defaultBody).toContain("token={{token}}");
+    expect(passwordResetDefault.defaultBody).toContain(
+      "Reset Password: {{BASE_URL}}/reset-password?token={{token}}",
+    );
 
     mocks.emailTemplateOverrideFindUnique.mockResolvedValue({
       id: "override-1",
@@ -1273,10 +1279,17 @@ describe("admin email message APIs", () => {
     );
 
     const metadata = mocks.auditLogCreate.mock.calls.at(-1)?.[0].data.metadata;
-    expect(metadata.deletedOverride.bodyText).toContain("token=[REDACTED]");
-    // Everything around it is kept, so the archive is still worth having.
+    expect(metadata.deletedOverride.bodyText).toContain(
+      "Reset Password=[REDACTED]",
+    );
+    expect(metadata.deletedOverride.bodyText).not.toContain("{{token}}");
+    // Every other line is kept, so the archive is still worth having — the
+    // caveat is one masked line, not a masked copy.
     expect(metadata.deletedOverride.bodyText).toContain(
       "You requested a password reset",
+    );
+    expect(metadata.deletedOverride.bodyText).toContain(
+      "Your password will remain unchanged.",
     );
   });
 

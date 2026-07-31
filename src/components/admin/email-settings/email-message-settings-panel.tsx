@@ -527,7 +527,7 @@ export function EmailMessageSettingsPanel() {
     const confirmed = await confirm({
       title: `Replace your wording for “${currentTemplate.label}”?`,
       description:
-        "This deletes your saved subject and body for this message and goes back to the built-in wording. Your subject and body are written to the audit log in full first — only text that looks like a password, token or card number is masked there — but it cannot be undone from here, and reading that copy back needs someone with database access. If you only want to compare, close this and use Show differences instead.",
+        "This deletes your saved subject and body for this message and goes back to the built-in wording. Your subject and body are written to the audit log in full first — apart from any line that reads like it carries a password, token or card number, which is masked there — but it cannot be undone from here, and reading that copy back needs someone with database access. If you only want to compare, close this and use Show differences instead.",
       confirmLabel: "Replace with the built-in wording",
       destructive: true,
     });

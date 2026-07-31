@@ -160,10 +160,12 @@ unsaved edits — save first if you want to compare what you have just typed. An
 **Restore Default deletes your wording outright**: it asks you to confirm, and
 after that the only copy is the one written to the audit log — your subject and
 body in full, not an extract — which needs someone with database access to read
-back. One caveat on "in full": the audit log masks anything shaped like a
-secret, so a line such as `?token={{token}}` is stored as `token=[REDACTED]` and
-would have to be retyped. If you are unsure, copy your wording somewhere safe
-first.
+back. One caveat on "in full": the audit log masks any **line** that reads like
+it carries a password, token or card number, so the built-in password-reset
+line `Reset Password: {{BASE_URL}}/reset-password?token={{token}}` is stored as
+`Reset Password=[REDACTED]` and would have to be retyped. Every other line is
+kept exactly as you wrote it. If you are unsure, copy your wording somewhere
+safe first.
 
 For the same reason, **each template covers exactly one outcome.** Where a
 message could go two ways there are two templates to edit, not one with a
