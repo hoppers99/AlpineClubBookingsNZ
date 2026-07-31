@@ -674,7 +674,7 @@ export function EmailMessageSettingsPanel() {
         currentTemplate.staleContent &&
         (currentTemplate.staleContent.differsFromDefault ||
           currentTemplate.staleContent.reasons.length > 0) ? (
-          <div className="space-y-3 rounded-md border border-border bg-muted/40 p-3 text-sm">
+          <div className="space-y-3 rounded-md border border-border bg-muted p-3 text-sm">
             {/* A reason always implies a difference today (the built-in wording
                 cannot itself carry a bracket note or a retired token), but the
                 two are rendered independently so a future rule that does not
