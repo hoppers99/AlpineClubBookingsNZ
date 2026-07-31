@@ -25,6 +25,8 @@ function notice(
     invoiceNumber: "INV-0042",
     xeroUrl: "https://go.xero.com/AccountsReceivable/View.aspx?InvoiceID=inv-1",
     sharedWith: [{ memberId: "member-2", name: "Bob Smith" }],
+    blocksApproval: false,
+    route: "cancel_others_first",
     ...overrides,
   };
 }
@@ -63,8 +65,49 @@ describe("the shared-invoice notice wording", () => {
     expect(message).toContain("invoice INV-0042");
     expect(message).toContain("Bob Smith");
     expect(message).toContain("no Xero credit note");
+    expect(message).toContain("the approval itself goes ahead");
     expect(message).toContain("raise that credit note yourself in Xero");
     expect(message).toContain("approve them first");
+  });
+
+  // #2400 (review F2). The family invoice is raised to the charge RECIPIENT's
+  // Xero contact, so the commonest shape — a parent leaving while the children
+  // stay — is REFUSED, not merely uncredited. The old wording said "The invoice
+  // is left exactly as it is" and then the Approve button 409'd.
+  it("says the approval will be refused when the invoice is one of the blockers", () => {
+    const message = buildMembershipCancellationSharedInvoiceMessage(
+      notice({ blocksApproval: true }),
+    );
+
+    expect(message).toContain("approval is refused until this invoice is paid");
+    expect(message).not.toContain("the approval itself goes ahead");
+  });
+
+  // #2400 (review F4). Email-inheriting children resolve to their parent's Xero
+  // contact, so every member the invoice covers is refused at once and there is
+  // no first move. Telling the reviewer to "approve them first" sends them round
+  // a loop they will try on every member before giving up.
+  it("does not send the reviewer round a loop when the family shares one Xero contact", () => {
+    const message = buildMembershipCancellationSharedInvoiceMessage(
+      notice({ blocksApproval: true, route: "shared_xero_contact" }),
+    );
+
+    expect(message).not.toContain("approve them first");
+    expect(message).toContain("Approving the others first will not help here");
+    expect(message).toContain("Settle, credit or void the invoice in Xero");
+  });
+
+  // The same sentence is unfollowable when the members holding the invoice open
+  // were DEACTIVATED rather than cancelled: an inactive membership cannot be
+  // approved for cancellation at all.
+  it("does not advise approving members who cannot be approved", () => {
+    const message = buildMembershipCancellationSharedInvoiceMessage(
+      notice({ route: "remaining_not_cancellable" }),
+    );
+
+    expect(message).not.toContain("approve them first");
+    expect(message).toContain("There is nobody to approve first");
+    expect(message).toContain("deactivated rather than cancelled");
   });
 });
 
@@ -83,6 +126,20 @@ describe("the panel the reviewer reads", () => {
     );
     expect(link.getAttribute("target")).toBe("_blank");
     expect(screen.getByText(/Bob Smith/)).toBeTruthy();
+  });
+
+  it("heads the panel with the refusal when the invoice is blocking the approval", () => {
+    render(
+      <MembershipCancellationSharedInvoiceNotice
+        notice={notice({ blocksApproval: true })}
+      />,
+    );
+
+    expect(
+      screen.getByText(
+        "This cancellation credits nothing, and the invoice it leaves behind is blocking the approval.",
+      ),
+    ).toBeTruthy();
   });
 
   it("shows nothing when the cancellation will credit the invoice in full", () => {

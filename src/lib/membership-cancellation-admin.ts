@@ -20,6 +20,7 @@ import logger from "@/lib/logger";
 import { classifyAccountRecord } from "@/lib/member-roles";
 import {
   buildMembershipCancellationApprovalBlockedMessage,
+  buildMembershipCancellationSharedInvoiceMessage,
   type MembershipCancellationSharedInvoiceNotice,
 } from "@/lib/membership-cancellation-blocker-messages";
 import {
@@ -27,7 +28,11 @@ import {
   loadMembershipCancellationBlockersByMemberId,
   type MembershipCancellationBlocker,
 } from "@/lib/membership-cancellation-blockers";
-import { loadMembershipCancellationSharedInvoiceNoticesByMemberId } from "@/lib/membership-cancellation-subscription-credit";
+import {
+  buildMembershipCancellationSharedInvoiceNotices,
+  buildSharedInvoiceNotice,
+  loadMembershipCancellationSubscriptionCreditPlansByMemberId,
+} from "@/lib/membership-cancellation-subscription-credit";
 import {
   EMPTY_ORPHANED_FAMILY_LINKS,
   readFamilyLinkOrphans,
@@ -93,8 +98,15 @@ type AdminSerializedMembershipCancellationParticipant = {
   blockers: MembershipCancellationBlocker[];
   /**
    * #2400: set when this member's subscription invoice also covers other members
-   * who are staying, so approving raises no Xero credit note. Not a blocker —
-   * approval still goes ahead — but the reviewer is told before they press it.
+   * who are staying, so this cancellation credits nothing against it.
+   *
+   * Not itself a blocker — it adds no reason to refuse — but it does not promise
+   * the approval will go through either. The family's invoice is raised to the
+   * charge RECIPIENT's Xero contact, so when the recipient is the one leaving
+   * that uncredited balance sits on a contact the approval would archive and the
+   * unpaid-invoice blocker refuses it outright. `notice.blocksApproval` says
+   * which of the two this participant is, and the wording follows it (#2400
+   * review, F2).
    */
   sharedInvoiceNotice: MembershipCancellationSharedInvoiceNotice | null;
   /** True when approving this participant requires a Full Admin (#1604/#2383). */
@@ -491,15 +503,27 @@ export async function getAdminMembershipCancellationRequests({
       )
       .map((participant) => participant.memberId),
   );
-  // #2400: the shared-invoice notice reads only local records — no Xero call —
-  // so it costs the queue nothing beyond two indexed reads.
-  const [blockersByMemberId, sharedInvoiceNoticesByMemberId] =
-    await Promise.all([
-      loadMembershipCancellationBlockersByMemberId(participantMemberIds),
-      loadMembershipCancellationSharedInvoiceNoticesByMemberId(
-        participantMemberIds,
-      ),
-    ]);
+  // #2400: the shared-invoice notice reads only local records — no Xero call.
+  // The credit plans are loaded ONCE for the page and handed to both consumers:
+  // the blocker check needs them to decide its exclusion, and the notice is
+  // built from the same plans plus the blockers, so the plan read (an `in` list
+  // over MemberSubscription.xeroInvoiceId) happens once per page load rather
+  // than twice (#2400 review, F8). The notice is built last because it has to
+  // know whether the approval will actually be refused over that same invoice.
+  const creditPlansByMemberId =
+    await loadMembershipCancellationSubscriptionCreditPlansByMemberId(
+      participantMemberIds,
+    );
+  const blockersByMemberId = await loadMembershipCancellationBlockersByMemberId(
+    participantMemberIds,
+    prisma,
+    { creditPlansByMemberId },
+  );
+  const sharedInvoiceNoticesByMemberId =
+    buildMembershipCancellationSharedInvoiceNotices(
+      creditPlansByMemberId,
+      blockersByMemberId,
+    );
 
   return {
     requests: requests.map((request) =>
@@ -537,6 +561,15 @@ export async function reviewMembershipCancellationParticipant({
   const participant = await loadParticipantForReview(requestId, participantId);
   assertRequestCanBeReviewed(participant.request);
 
+  // #2400: what this approval will (or will not) do to a shared family invoice.
+  // Filled on the approve path only, and read twice — once to give the refusal
+  // its real route out (F5), once to record in the audit trail that a credit
+  // note was deliberately NOT raised, so "why was there no credit note for the
+  // Smiths?" is answerable from the audit rather than only from a Xero
+  // sync-operation payload (F7).
+  let sharedInvoiceNotice: MembershipCancellationSharedInvoiceNotice | null =
+    null;
+
   if (action === "approve") {
     assertCancellationApprovalIsIndependent(
       participant.request.requestedByMemberId,
@@ -547,19 +580,33 @@ export async function reviewMembershipCancellationParticipant({
     // answer, never the review queue's short-lived memo — approving archives the
     // member's Xero contact, so a stale "nothing owing" must not be able to let
     // one through.
+    const creditPlansByMemberId =
+      await loadMembershipCancellationSubscriptionCreditPlansByMemberId([
+        participant.memberId,
+      ]);
     const blockersByMemberId =
       await loadMembershipCancellationBlockersByMemberId(
         [participant.memberId],
         prisma,
-        { freshInvoiceCheck: true },
+        { freshInvoiceCheck: true, creditPlansByMemberId },
       );
     const blockers = blockersByMemberId.get(participant.memberId) ?? [];
+    const creditPlan = creditPlansByMemberId.get(participant.memberId) ?? null;
+    sharedInvoiceNotice =
+      creditPlan && !creditPlan.creditsInFull
+        ? buildSharedInvoiceNotice(creditPlan, blockers)
+        : null;
     if (blockers.length > 0) {
       // The refusal has to be actionable — it names the invoices and says how to
       // clear them — so the audit record and the message the approver sees are
-      // the same sentence, built once.
-      const blockedMessage =
-        buildMembershipCancellationApprovalBlockedMessage(blockers);
+      // the same sentence, built once. Where one of those invoices is the
+      // family's own, the generic "pay, credit or void it" is not the real route
+      // out, so the shared-invoice explanation goes in too and an API caller
+      // reads exactly what the review queue shows (#2400 review, F5).
+      const blockedMessage = buildMembershipCancellationApprovalBlockedMessage(
+        blockers,
+        sharedInvoiceNotice,
+      );
 
       await createAuditLog({
         action: "membership_cancellation.approval_blocked",
@@ -577,6 +624,7 @@ export async function reviewMembershipCancellationParticipant({
         metadata: {
           blockers,
           blockerTypes: [...new Set(blockers.map((blocker) => blocker.type))],
+          ...(sharedInvoiceNotice ? { sharedInvoiceNotice } : {}),
         },
         ipAddress,
       });
@@ -726,6 +774,29 @@ export async function reviewMembershipCancellationParticipant({
             ),
             detachedEmailInheritorIds:
               orphanedByCancellation.emailInheritors.map((member) => member.id),
+            // #2400 (review F7): a cancellation that deliberately credits
+            // NOTHING leaves no other durable trace on the member's own record —
+            // the skip is recorded on a Xero sync-operation payload, which is
+            // not where anyone looks a year later. Recorded here in the words
+            // the reviewer was shown, with the invoice and the members it still
+            // covers, so "why was there no credit note for the Smiths?" is
+            // answerable from the audit trail.
+            ...(sharedInvoiceNotice
+              ? {
+                  sharedInvoiceUncredited: {
+                    invoiceId: sharedInvoiceNotice.invoiceId,
+                    invoiceNumber: sharedInvoiceNotice.invoiceNumber,
+                    sharedWithMemberIds: sharedInvoiceNotice.sharedWith.map(
+                      (member) => member.memberId,
+                    ),
+                    route: sharedInvoiceNotice.route,
+                    summary:
+                      buildMembershipCancellationSharedInvoiceMessage(
+                        sharedInvoiceNotice,
+                      ),
+                  },
+                }
+              : {}),
             ...notifyAuditFields,
           },
           ipAddress,
@@ -818,14 +889,22 @@ export async function reviewMembershipCancellationParticipant({
   // #2400: reloaded with the blockers, because approving one family member
   // changes the answer for the others — the one just cancelled no longer keeps
   // the shared invoice alive, so the next reviewer sees the notice disappear at
-  // the moment the last leaver's approval would credit the invoice in full.
-  const [blockersByMemberId, sharedInvoiceNoticesByMemberId] =
-    await Promise.all([
-      loadMembershipCancellationBlockersByMemberId(stillReviewableMemberIds),
-      loadMembershipCancellationSharedInvoiceNoticesByMemberId(
-        stillReviewableMemberIds,
-      ),
-    ]);
+  // the moment the last leaver's approval would credit the invoice in full. Same
+  // one-read-then-share shape as the queue page.
+  const reloadedCreditPlansByMemberId =
+    await loadMembershipCancellationSubscriptionCreditPlansByMemberId(
+      stillReviewableMemberIds,
+    );
+  const blockersByMemberId = await loadMembershipCancellationBlockersByMemberId(
+    stillReviewableMemberIds,
+    prisma,
+    { creditPlansByMemberId: reloadedCreditPlansByMemberId },
+  );
+  const sharedInvoiceNoticesByMemberId =
+    buildMembershipCancellationSharedInvoiceNotices(
+      reloadedCreditPlansByMemberId,
+      blockersByMemberId,
+    );
 
   return {
     request: serializeRequest(

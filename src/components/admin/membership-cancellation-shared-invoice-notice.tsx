@@ -17,11 +17,15 @@ import {
  * policy says unpaid subscriptions are credited, needs saying out loud — so the
  * reviewer reads it here, before they approve, with the invoice linked.
  *
- * Deliberately informational rather than a blocker: the club is still owed that
- * money by the members who remain, so there is nothing to resolve and nothing to
- * refuse. Where the invoice sits on THIS member's own Xero contact, the unpaid
- * invoice blocker refuses the approval independently — because approving would
- * archive a contact with a real balance on it.
+ * Deliberately not a blocker — it adds no reason to refuse — but it does NOT
+ * promise the approval will go through. The family's invoice is raised to the
+ * charge RECIPIENT's Xero contact, so in the commonest shape (a parent leaving
+ * while the children stay) that uncredited balance sits on a contact the
+ * approval would archive, and the unpaid-invoice blocker refuses the approval
+ * outright. `notice.blocksApproval` says which of the two this is, and both the
+ * heading here and the sentence built in `membership-cancellation-blocker-
+ * messages.ts` follow it, so the panel never tells a reviewer to press a button
+ * that is going to bounce (#2400 review, F2).
  */
 export function MembershipCancellationSharedInvoiceNotice({
   notice,
@@ -39,7 +43,9 @@ export function MembershipCancellationSharedInvoiceNotice({
         <Info className="mt-0.5 h-4 w-4 shrink-0" />
         <div>
           <p className="font-medium">
-            No Xero credit note will be raised for this cancellation.
+            {notice.blocksApproval
+              ? "This cancellation credits nothing, and the invoice it leaves behind is blocking the approval."
+              : "No Xero credit note will be raised for this cancellation."}
           </p>
           <p className="mt-1">
             {before}

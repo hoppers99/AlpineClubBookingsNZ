@@ -268,9 +268,20 @@ function listInvoiceBlockers(
  * The whole refusal, in the words the approver needs: what is in the way, and
  * what to do about it. Every branch ends with a route forward — a refusal an
  * approver cannot clear is a trap, not a safeguard (#2392).
+ *
+ * `sharedInvoice` is the one route the generic invoice sentence cannot supply.
+ * When the balance in the way is the FAMILY's own subscription invoice, "pay,
+ * credit or void it" is technically true and practically useless: the club is
+ * owed that money by the members who are staying, and the real answer is to
+ * cancel the rest of the family first (or, where they all share one Xero
+ * contact, to settle it deliberately). An API caller — or an admin pressing
+ * Approve from a stale render — gets the same words the review queue shows, and
+ * so does the `membership_cancellation.approval_blocked` audit entry (#2400
+ * review, F5).
  */
 export function buildMembershipCancellationApprovalBlockedMessage(
   blockers: readonly MembershipCancellationBlocker[],
+  sharedInvoice?: MembershipCancellationSharedInvoiceNotice | null,
 ): string {
   const sentences: string[] = [];
 
@@ -287,6 +298,14 @@ export function buildMembershipCancellationApprovalBlockedMessage(
         invoiceBlockers,
       )}. Approving would archive that contact in Xero, so each one must be paid, credited with an allocated credit note, or voided in Xero first — then approve again. If the club is not collecting them, void or credit them in Xero; alternatively turn off ${MEMBERSHIP_CANCELLATION_ARCHIVE_SETTING_LABEL} in the Membership Cancellation settings, which stops the archive and lifts this check. Every one of them is listed beside this participant in the review queue, each linked into Xero.`,
     );
+  }
+
+  // Said AFTER the generic invoice sentence, because it narrows it: one of the
+  // invoices just listed is the family's own, and its route out is a different
+  // one. Only emitted when that invoice is genuinely among the blockers —
+  // `blocksApproval` is derived from this same blocker list.
+  if (sharedInvoice?.blocksApproval) {
+    sentences.push(buildMembershipCancellationSharedInvoiceMessage(sharedInvoice));
   }
 
   const unavailable = blockers.find(isInvoiceCheckUnavailableBlocker);
@@ -311,11 +330,19 @@ export function buildMembershipCancellationApprovalBlockedMessage(
  * OTHER members who are staying — so the cancellation will raise no credit note
  * against it (#2400).
  *
- * Not a blocker. Nothing about it stops the approval: the invoice is simply left
- * alone, which is the right outcome when the club is still owed for the members
- * who remain. It is here so the reviewer is told BEFORE they approve, because a
- * cancellation that quietly changes — or, as it used to, quietly wipes — what a
- * different member owes deserves to be visible.
+ * Not itself a blocker, and it is deliberately not modelled as one: it does not
+ * add a reason to refuse, it explains one. Whether the approval goes through is
+ * a SEPARATE question, and often the answer is no. The family's invoice is
+ * raised to the charge RECIPIENT's Xero contact, so when the recipient is the
+ * one leaving — a parent cancelling while the children stay, the commonest shape
+ * there is — that invoice is a live balance sitting on a contact the approval
+ * would archive, and the unpaid-invoice blocker refuses the approval outright.
+ * `blocksApproval` records which of the two it is, so the panel and the refusal
+ * never promise an approval that will bounce (#2400 review, F2).
+ *
+ * Either way the reviewer is told BEFORE they approve, because a cancellation
+ * that quietly changes — or, as it used to, quietly wipes — what a different
+ * member owes deserves to be visible.
  */
 export type MembershipCancellationSharedInvoiceNotice = {
   invoiceId: string;
@@ -324,7 +351,38 @@ export type MembershipCancellationSharedInvoiceNotice = {
   xeroUrl: string;
   /** The other members this invoice still covers, named. Never empty. */
   sharedWith: Array<{ memberId: string; name: string }>;
+  /**
+   * True when this same invoice is one of the member's unpaid-invoice blockers,
+   * i.e. approving will be REFUSED over it rather than simply leaving it alone.
+   */
+  blocksApproval: boolean;
+  /** What the reviewer should actually do about it. */
+  route: MembershipCancellationSharedInvoiceRoute;
 };
+
+/**
+ * The way forward for a shared invoice — and the two cases where the obvious
+ * advice is not one the reviewer can follow (#2400 review, F4).
+ */
+export type MembershipCancellationSharedInvoiceRoute =
+  /**
+   * At least one member the invoice still covers can be cancelled first, and
+   * doing so eventually leaves the last leaver to credit it in full.
+   */
+  | "cancel_others_first"
+  /**
+   * Every member who could be cancelled first is billed to the SAME Xero contact
+   * as this one, so each of them meets the identical refusal over the identical
+   * invoice. There is no first move; the invoice has to be settled in Xero (or
+   * the archive setting turned off).
+   */
+  | "shared_xero_contact"
+  /**
+   * The members keeping the invoice alive are deactivated rather than cancelled.
+   * A deactivated membership cannot be approved for cancellation, so there is
+   * nothing to approve first — they hold the invoice open by design.
+   */
+  | "remaining_not_cancellable";
 
 /** Members named in the notice before it summarises the rest. */
 const SHARED_INVOICE_NAMES_IN_MESSAGE = 5;
@@ -355,10 +413,36 @@ export function sharedInvoiceLabel(
 }
 
 /**
+ * The way out, per route. Every branch ends somewhere the reviewer can actually
+ * go — which is the whole point of splitting the routes: the obvious advice
+ * ("cancel the rest of the family first") is a closed loop when they all share
+ * one Xero contact, and impossible when the members holding the invoice open are
+ * deactivated rather than cancelled (#2400 review, F4).
+ */
+function describeSharedInvoiceRoute(
+  route: MembershipCancellationSharedInvoiceRoute,
+): string {
+  switch (route) {
+    case "cancel_others_first":
+      return "If the rest of the family is leaving too, approve them first — the last cancellation on this invoice credits it in full, and any refusal over it clears by itself.";
+    case "shared_xero_contact":
+      return `Approving the others first will not help here: every one of them is billed to this same Xero contact, so each of them is refused over this same invoice. Settle, credit or void the invoice in Xero to clear all of them at once — or turn off ${MEMBERSHIP_CANCELLATION_ARCHIVE_SETTING_LABEL} in the Membership Cancellation settings, which stops the archive and lifts the check for the whole family.`;
+    case "remaining_not_cancellable":
+      return `There is nobody to approve first: the members this invoice still covers are deactivated rather than cancelled, and a deactivated membership cannot be approved for cancellation at all. They hold this invoice open by design, so settle, credit or void it in Xero — or turn off ${MEMBERSHIP_CANCELLATION_ARCHIVE_SETTING_LABEL} in the Membership Cancellation settings.`;
+  }
+}
+
+/**
  * The whole explanation, split where the invoice link belongs — the same
  * label/detail shape the unpaid-invoice line uses, and for the same reason: the
  * panel hyperlinks the label and the server logs one sentence, and neither can
  * drift from the other.
+ *
+ * The middle of it turns on `blocksApproval`, because the two outcomes are
+ * genuinely different and the reviewer is about to act on whichever one is true:
+ * either the approval goes through and simply leaves the invoice alone, or it is
+ * refused over that invoice and the reviewer needs the precondition BEFORE they
+ * press Approve, not as an afterthought (#2400 review, F2).
  */
 export function describeMembershipCancellationSharedInvoiceParts(
   notice: MembershipCancellationSharedInvoiceNotice,
@@ -366,16 +450,25 @@ export function describeMembershipCancellationSharedInvoiceParts(
   const names = formatMemberNameList(
     notice.sharedWith.map((member) => member.name),
   );
+  const outcome = notice.blocksApproval
+    ? "They are staying, so this cancellation credits nothing against it: crediting the invoice would wipe their share of the bill as well, and the club is still owed it. That balance sits on this member's own Xero contact, and approving would archive that contact — so approval is refused until this invoice is paid, credited with an allocated credit note, or voided in Xero. It is listed in the blockers above, linked into Xero."
+    : "They are staying, so approving raises no Xero credit note: crediting this invoice would wipe their share of the bill as well, and the club is still owed it. The invoice is left exactly as it is, and the approval itself goes ahead.";
 
   return {
     before: "This member's membership was billed on ",
     label: sharedInvoiceLabel(notice),
     href: notice.xeroUrl,
-    after: `, which also covers ${names}. They are staying, so approving raises no Xero credit note: crediting this invoice would wipe their share of the bill as well, and the club is still owed it. The invoice is left exactly as it is. If this member is owed something back, raise that credit note yourself in Xero. If the rest of the family is leaving too, approve them first — the last cancellation on this invoice credits it in full.`,
+    after: `, which also covers ${names}. ${outcome} ${describeSharedInvoiceRoute(
+      notice.route,
+    )} If this member is owed something back, raise that credit note yourself in Xero.`,
   };
 }
 
-/** The same explanation as one sentence, for the server's logs and records. */
+/**
+ * The same explanation as one sentence, for the server's records: the approval
+ * refusal an API caller receives, its audit entry, and the audit entry written
+ * when an approval goes through having deliberately credited nothing.
+ */
 export function buildMembershipCancellationSharedInvoiceMessage(
   notice: MembershipCancellationSharedInvoiceNotice,
 ): string {

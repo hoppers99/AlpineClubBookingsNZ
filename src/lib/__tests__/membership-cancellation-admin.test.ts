@@ -43,7 +43,7 @@ const mocks = vi.hoisted(() => {
     // #2392: the unpaid-Xero-invoice half of the blocker set. Stubbed to
     // "nothing owing" by default; the tests that care drive it directly.
     loadInvoiceBlockers: vi.fn(),
-    loadSharedInvoiceNotices: vi.fn(),
+    loadCreditPlans: vi.fn(),
   };
 });
 
@@ -89,11 +89,15 @@ vi.mock("@/lib/membership-cancellation-invoice-blockers", () => ({
   loadMembershipCancellationInvoiceBlockersByMemberId: mocks.loadInvoiceBlockers,
 }));
 
-// #2400: the advisory that says approving will raise no credit note because the
-// invoice covers members who are staying. Not a blocker — it never refuses.
-vi.mock("@/lib/membership-cancellation-subscription-credit", () => ({
-  loadMembershipCancellationSharedInvoiceNoticesByMemberId:
-    mocks.loadSharedInvoiceNotices,
+// #2400: what this cancellation will (or will not) credit. Only the DATABASE
+// read is stubbed — the notice builders stay real, so these tests exercise the
+// same wording and the same blocks-approval decision the review queue renders.
+vi.mock("@/lib/membership-cancellation-subscription-credit", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/lib/membership-cancellation-subscription-credit")
+  >()),
+  loadMembershipCancellationSubscriptionCreditPlansByMemberId:
+    mocks.loadCreditPlans,
 }));
 
 vi.mock("@/lib/logger", () => ({
@@ -108,6 +112,7 @@ import {
   LAST_FULL_ADMIN_GUARD_MESSAGE,
   PRIVILEGED_TARGET_GUARD_MESSAGE,
 } from "@/lib/admin-account-guards";
+import type { MembershipCancellationSubscriptionCreditPlan } from "@/lib/membership-cancellation-subscription-credit";
 
 const ADMIN_ACCESS_ROLES = [
   { role: "ADMIN", roleDefinitionId: null, roleDefinition: null },
@@ -126,6 +131,51 @@ function member(overrides: Record<string, unknown> = {}) {
     cancelledReason: null,
     cancelledViaRequestId: null,
     ...overrides,
+  };
+}
+
+/**
+ * #2400: a credit plan whose invoice still covers a member who is staying, so
+ * the cancellation credits nothing against it.
+ */
+function sharedCreditPlan(
+  overrides: Partial<MembershipCancellationSubscriptionCreditPlan> = {},
+): MembershipCancellationSubscriptionCreditPlan {
+  return {
+    memberId: "member-1",
+    subscriptionId: "sub-1",
+    invoiceId: "inv-1",
+    invoiceNumber: "INV-0042",
+    xeroUrl: "https://go.xero.com/AccountsReceivable/View.aspx?InvoiceID=inv-1",
+    memberXeroContactId: "contact-1",
+    sharedWith: [
+      {
+        memberId: "member-2",
+        name: "Bob Smith",
+        active: true,
+        xeroContactId: "contact-2",
+      },
+    ],
+    creditsInFull: false,
+    creditOperationSettled: false,
+    excusesUnpaidInvoiceBlocker: false,
+    ...overrides,
+  };
+}
+
+/** The same invoice, seen from the unpaid-invoice blocker's side. */
+function unpaidInvoiceBlocker(invoiceId = "inv-1") {
+  return {
+    type: "unpaid_invoice" as const,
+    invoiceId,
+    invoiceNumber: "INV-0042",
+    invoiceStatus: "AUTHORISED",
+    direction: "receivable" as const,
+    amountDueCents: 60000,
+    currency: "NZD",
+    dueDate: null,
+    xeroUrl: null,
+    xeroContactUrl: null,
   };
 }
 
@@ -197,7 +247,7 @@ describe("membership cancellation admin review", () => {
       async (memberIds: readonly string[]) =>
         new Map(memberIds.map((memberId) => [memberId, []])),
     );
-    mocks.loadSharedInvoiceNotices.mockImplementation(
+    mocks.loadCreditPlans.mockImplementation(
       async (memberIds: readonly string[]) =>
         new Map(memberIds.map((memberId) => [memberId, null])),
     );
@@ -588,9 +638,10 @@ describe("membership cancellation admin review", () => {
       adminMemberId: "admin-1",
     });
 
-    expect(mocks.loadInvoiceBlockers).toHaveBeenCalledWith(["member-1"], {
-      fresh: true,
-    });
+    expect(mocks.loadInvoiceBlockers).toHaveBeenCalledWith(
+      ["member-1"],
+      expect.objectContaining({ fresh: true }),
+    );
   });
 
   // The old assertion here was near-vacuous: the reject path DOES reach the
@@ -654,8 +705,8 @@ describe("membership cancellation admin review", () => {
   });
 
   // #2400: the reviewer is told, before they approve, that a shared family
-  // invoice means no credit note will be raised. It must never REFUSE — the club
-  // is still owed that money by the members who remain.
+  // invoice means no credit note will be raised. It is not itself a blocker —
+  // the club is still owed that money by the members who remain.
   it("hands the reviewer the shared-invoice notice without blocking anything", async () => {
     mocks.tx.membershipCancellationRequestParticipant.findMany.mockResolvedValue([
       { status: "REQUESTED" },
@@ -663,14 +714,8 @@ describe("membership cancellation admin review", () => {
     mocks.requestFindUnique.mockResolvedValue(
       adminRequest({ status: "REQUESTED" }),
     );
-    const notice = {
-      invoiceId: "inv-1",
-      invoiceNumber: "INV-0042",
-      xeroUrl: "https://go.xero.com/AccountsReceivable/View.aspx?InvoiceID=inv-1",
-      sharedWith: [{ memberId: "member-2", name: "Bob Smith" }],
-    };
-    mocks.loadSharedInvoiceNotices.mockResolvedValue(
-      new Map([["member-1", notice]]),
+    mocks.loadCreditPlans.mockResolvedValue(
+      new Map([["member-1", sharedCreditPlan()]]),
     );
 
     const result = await reviewMembershipCancellationParticipant({
@@ -680,13 +725,88 @@ describe("membership cancellation admin review", () => {
       adminMemberId: "admin-1",
     });
 
-    expect(result.request.participants[0].sharedInvoiceNotice).toEqual(notice);
+    expect(result.request.participants[0].sharedInvoiceNotice).toMatchObject({
+      invoiceId: "inv-1",
+      invoiceNumber: "INV-0042",
+      sharedWith: [{ memberId: "member-2", name: "Bob Smith" }],
+      blocksApproval: false,
+      route: "cancel_others_first",
+    });
     expect(mocks.createAuditLog).not.toHaveBeenCalledWith(
       expect.objectContaining({
         action: "membership_cancellation.approval_blocked",
       }),
     );
     expect(mocks.queueCancellationXeroOperations).toHaveBeenCalled();
+  });
+
+  // #2400 (review F7): the skip is otherwise recorded only on a Xero
+  // sync-operation payload, which is not where anyone looks a year later.
+  it("records in the audit trail that a credit note was deliberately not raised", async () => {
+    mocks.loadCreditPlans.mockResolvedValue(
+      new Map([["member-1", sharedCreditPlan()]]),
+    );
+
+    await reviewMembershipCancellationParticipant({
+      requestId: "request-1",
+      participantId: "participant-1",
+      action: "approve",
+      adminMemberId: "admin-1",
+    });
+
+    expect(mocks.createAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "membership_cancellation.participant_cancelled",
+        metadata: expect.objectContaining({
+          sharedInvoiceUncredited: expect.objectContaining({
+            invoiceId: "inv-1",
+            invoiceNumber: "INV-0042",
+            sharedWithMemberIds: ["member-2"],
+            summary: expect.stringContaining("also covers Bob Smith"),
+          }),
+        }),
+      }),
+      expect.anything(),
+    );
+  });
+
+  // #2400 (review F5): an API caller — or an admin approving from a stale
+  // render — used to get only the generic "pay, credit or void it", which is
+  // useless advice for a family invoice the club is still owed.
+  it("tells a refused approver that the invoice in the way is the family's own", async () => {
+    mocks.loadCreditPlans.mockResolvedValue(
+      new Map([["member-1", sharedCreditPlan()]]),
+    );
+    mocks.loadInvoiceBlockers.mockResolvedValue(
+      new Map([["member-1", [unpaidInvoiceBlocker()]]]),
+    );
+
+    await expect(
+      reviewMembershipCancellationParticipant({
+        requestId: "request-1",
+        participantId: "participant-1",
+        action: "approve",
+        adminMemberId: "admin-1",
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      message: expect.stringContaining(
+        "If the rest of the family is leaving too, approve them first",
+      ),
+    } satisfies Partial<MembershipCancellationAdminError>);
+
+    expect(mocks.createAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "membership_cancellation.approval_blocked",
+        details: expect.stringContaining("which also covers Bob Smith"),
+        metadata: expect.objectContaining({
+          sharedInvoiceNotice: expect.objectContaining({
+            invoiceId: "inv-1",
+            blocksApproval: true,
+          }),
+        }),
+      }),
+    );
   });
 
   it("serializes no notice when the cancellation will credit the invoice in full", async () => {
