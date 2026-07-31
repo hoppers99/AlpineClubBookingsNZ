@@ -379,6 +379,33 @@ export function describeMemberGuestConsentBadge(params: {
 // Date labels — NZ lodge dates, in the shapes the mockups draw
 // ---------------------------------------------------------------------------
 
+/**
+ * "Tama Kaur" — or "Tama Kaur (age 9)" for a guest the club treats as a child.
+ *
+ * A guest row is allowed to carry an EMPTY last name: a member with one name, a
+ * row an admin left half-filled, a legacy import. The delegate page used to
+ * build the whole string — age suffix and all — and trim the result, and
+ * `.trim()` only tidies the ENDS, so such a row rendered as "Tama  (age 9)":
+ * two spaces, in a page heading. The name is therefore composed and tidied
+ * FIRST, and only then does the age go on the end. Collapsing the whitespace
+ * run rather than trimming it also covers a surname that is blank instead of
+ * empty. It lives here beside the other label shapes so both consent pages
+ * compose a name the same way.
+ *
+ * The age is shown only for a minor: it is there so the person answering knows
+ * a child is being put on a booking, and an adult's age is nobody's business.
+ */
+export function formatConsentGuestName(guest: {
+  firstName: string;
+  lastName: string;
+  ageYears: number | null;
+}): string {
+  const fullName = `${guest.firstName} ${guest.lastName}`.replace(/\s+/g, " ").trim();
+  return guest.ageYears !== null && guest.ageYears < 18
+    ? `${fullName} (age ${guest.ageYears})`
+    : fullName;
+}
+
 /** "7 Aug" — the badge / inline-sentence shape. */
 export function formatConsentShortDate(date: Date): string {
   return date.toLocaleDateString("en-NZ", {

@@ -5,6 +5,8 @@
 // once: a number that does not match what the click reveals, an active state
 // only a sighted user can perceive, and a list whose React keys collide. All
 // three are asserted here, on the real page's rendered output.
+import { readFileSync } from "fs";
+import path from "path";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -195,26 +197,30 @@ describe("the Admin › Bookings consent chips (#2307, MG2-M-3)", () => {
     expect(html).not.toContain('aria-current="true"');
   });
 
-  it("keys the exception rows by guest id, so two guests of the same name do not collide", async () => {
+  it("renders every stuck row even when two guests share a name", async () => {
     // Two brothers called Sam Kaur on one booking is unusual but entirely
-    // legal, and a duplicate React key makes React reuse the wrong row.
+    // legal. React's server renderer does not police duplicate keys, so this
+    // asserts what it CAN see — both rows survive — and the assertion below
+    // pins the key expression itself.
     vi.mocked(listMemberGuestConsentExceptions).mockResolvedValue([
       exceptionRow({ guestId: "bg-1" }),
       exceptionRow({ guestId: "bg-2" }),
     ]);
-    const warnings: unknown[] = [];
-    const spy = vi
-      .spyOn(console, "error")
-      .mockImplementation((...args: unknown[]) => {
-        warnings.push(args[0]);
-      });
 
     const html = await renderPage({ consentState: "attention" });
-    spy.mockRestore();
 
     expect(html).toContain("2 stuck consent rows");
-    expect(
-      warnings.filter((warning) => String(warning).includes("same key")),
-    ).toEqual([]);
+    expect(html.split("Sam Kaur").length - 1).toBe(2);
+  });
+
+  it("keys those rows by the guest row's own id", () => {
+    // A React key is invisible in rendered output, so the contract is asserted
+    // over the source: keying on the guest's NAME makes two same-named guests
+    // on one booking collide, and React then reuses the wrong row.
+    const source = readFileSync(
+      path.resolve(process.cwd(), "src/app/(admin)/admin/bookings/page.tsx"),
+      "utf8",
+    );
+    expect(source).toContain("<TableRow key={row.guestId}>");
   });
 });

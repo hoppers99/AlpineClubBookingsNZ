@@ -22,6 +22,7 @@ import {
   describeConsentNightsCount,
   describeMemberGuestConsentBadge,
   formatConsentFullDate,
+  formatConsentGuestName,
   formatConsentNightsLabel,
   formatConsentShortDate,
   formatConsentStayLabel,
@@ -536,6 +537,31 @@ describe("the date and count labels", () => {
     expect(
       formatConsentNightsLabel([CHECK_IN, parseDateOnly("2026-08-09")]),
     ).toBe("Sat 8 Aug, Sun 9 Aug");
+  });
+
+  it("composes a guest's name without a hole where a missing surname was", () => {
+    expect(
+      formatConsentGuestName({ firstName: "Tama", lastName: "Kaur", ageYears: 9 }),
+    ).toBe("Tama Kaur (age 9)");
+    // An adult's age is nobody's business; the age is there so the person
+    // answering knows when a CHILD is being put on a booking.
+    expect(
+      formatConsentGuestName({ firstName: "Tama", lastName: "Kaur", ageYears: 41 }),
+    ).toBe("Tama Kaur");
+    expect(
+      formatConsentGuestName({ firstName: "Tama", lastName: "Kaur", ageYears: null }),
+    ).toBe("Tama Kaur");
+    // The row that broke it: a member with one name and a known age rendered
+    // as "Tama  (age 9)" — two spaces, in the page's own heading.
+    expect(
+      formatConsentGuestName({ firstName: "Tama", lastName: "", ageYears: 9 }),
+    ).toBe("Tama (age 9)");
+    expect(
+      formatConsentGuestName({ firstName: "Tama", lastName: "  ", ageYears: null }),
+    ).toBe("Tama");
+    expect(
+      formatConsentGuestName({ firstName: "", lastName: "Kaur", ageYears: null }),
+    ).toBe("Kaur");
   });
 
   it("spells small night counts in words, as the mockup's intro sentence does", () => {

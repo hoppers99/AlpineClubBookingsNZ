@@ -8,6 +8,7 @@ import { loadEmailMessageSettingsForLodge } from "@/lib/email-message-settings";
 import {
   describeConsentDeclineRefusal,
   formatConsentFullDate,
+  formatConsentGuestName,
   formatConsentNightsLabel,
   formatConsentStayLabel,
 } from "@/lib/member-guest-consent-card";
@@ -145,18 +146,9 @@ async function DelegateAskCard({
   // The booking's own lodge identity, the same source the emails use.
   const emailSettings = await loadEmailMessageSettingsForLodge(facts.lodgeId);
 
-  // A guest row is allowed to carry an empty last name (a single-name member,
-  // or a row an admin left half-filled). `.trim()` only tidies the ENDS, so
-  // "Tama" with no surname and a known age rendered as "Tama  (age 9)" — two
-  // spaces, in the page's own heading. Collapsing the run fixes every such gap
-  // at once rather than special-casing the surname.
-  const guestFullName = `${facts.guest.firstName} ${facts.guest.lastName}`
-    .replace(/\s+/g, " ")
-    .trim();
-  const guestHeadingName =
-    facts.guest.ageYears !== null && facts.guest.ageYears < 18
-      ? `${guestFullName} (age ${facts.guest.ageYears})`
-      : guestFullName;
+  // Composed by the shared label helper, which also handles the guest rows
+  // that legitimately carry no last name — see its own note.
+  const guestHeadingName = formatConsentGuestName(facts.guest);
 
   return (
     <MemberGuestDelegateConsentCard
