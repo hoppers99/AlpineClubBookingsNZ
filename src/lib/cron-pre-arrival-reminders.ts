@@ -6,6 +6,7 @@ import {
 } from "@/lib/date-only";
 import { sendPreArrivalReminderEmail } from "@/lib/email";
 import logger from "@/lib/logger";
+import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent";
 import { prisma } from "@/lib/prisma";
 
 const PRE_ARRIVAL_REMINDER_DAYS = 3;
@@ -44,7 +45,14 @@ export async function sendPreArrivalReminders(): Promise<PreArrivalReminderResul
     },
     include: {
       member: true,
-      guests: true,
+      // Owner decision D-12 (#2307): the reminder tells a member how many
+      // guests are arriving, so it counts the guests who will actually be
+      // there. A member guest whose consent is still PENDING holds a bed under
+      // D-4 but is not operationally present, and an inflated "Guests: 4" in an
+      // email is the club telling the booker something untrue. Filtering the
+      // include is what fixes `guests.length` below — the count has no separate
+      // query of its own.
+      guests: { where: { ...OPERATIONALLY_PRESENT_GUEST_WHERE } },
     },
     orderBy: [{ checkIn: "asc" }, { createdAt: "asc" }],
   });

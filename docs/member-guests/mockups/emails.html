@@ -1,0 +1,224 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Member guests — the four emails (MG2 #2307)</title>
+<style>
+  :root { --bg:#eef2f4; --panel:#fff; --panel2:#f6f9fa; --ink:#102329; --muted:#516670; --line:#dce5e9; --accent:#0e6e78; --accent-ink:#0a545c; --warn:#8a5a00; --warn-bg:#fff6e2; --warn-line:#e8cf9a; --radius:14px; --maxw:960px; }
+  @media (prefers-color-scheme: dark){ :root{ --bg:#08171c; --panel:#0f242b; --panel2:#0c1e24; --ink:#e8f4f6; --muted:#8fb0b8; --line:#213840; --accent:#3fb9cb; --accent-ink:#6fd2e0; --warn:#f0c674; --warn-bg:#2b2313; --warn-line:#5a4a20; } }
+  :root[data-theme="light"]{ --bg:#eef2f4; --panel:#fff; --panel2:#f6f9fa; --ink:#102329; --muted:#516670; --line:#dce5e9; --accent:#0e6e78; --accent-ink:#0a545c; --warn:#8a5a00; --warn-bg:#fff6e2; --warn-line:#e8cf9a; }
+  :root[data-theme="dark"]{ --bg:#08171c; --panel:#0f242b; --panel2:#0c1e24; --ink:#e8f4f6; --muted:#8fb0b8; --line:#213840; --accent:#3fb9cb; --accent-ink:#6fd2e0; --warn:#f0c674; --warn-bg:#2b2313; --warn-line:#5a4a20; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; line-height:1.55; }
+  .wrap { max-width:var(--maxw); margin:0 auto; padding: clamp(22px,5vw,52px) clamp(16px,4vw,34px) 80px; }
+  .eyebrow { font-size:12px; letter-spacing:.18em; text-transform:uppercase; color:var(--accent-ink); font-weight:700; margin:0 0 10px; }
+  h1 { font-size:clamp(26px,5vw,40px); line-height:1.05; margin:0 0 12px; letter-spacing:-.025em; font-weight:800; }
+  .lede { font-size:clamp(15px,2.2vw,18px); color:var(--muted); max-width:66ch; margin:0 0 8px; }
+  h2 { font-size:clamp(18px,2.6vw,23px); margin:clamp(32px,6vw,48px) 0 4px; letter-spacing:-.01em; }
+  .sub { margin:0 0 14px; color:var(--muted); font-size:14.5px; max-width:72ch; }
+  .rule { height:2px; background:linear-gradient(to right, var(--accent), transparent 65%); border-radius:2px; margin:0 0 18px; opacity:.5; }
+  .note { background:var(--panel2); border:1px solid var(--line); border-left:3px solid var(--accent); border-radius:10px; padding:12px 15px; font-size:13.5px; color:var(--muted); margin:14px 0; }
+  .note b { color:var(--ink); }
+  .warn { background:var(--warn-bg); border:1px solid var(--warn-line); color:var(--warn); border-radius:10px; padding:12px 15px; font-size:13.5px; margin:14px 0; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; } @media (max-width:820px){ .grid { grid-template-columns:1fr; } }
+  .mail { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); overflow:hidden; }
+  .mail .hdr { background:var(--panel2); border-bottom:1px solid var(--line); padding:11px 16px; font-size:13px; color:var(--muted); }
+  .mail .hdr b { color:var(--ink); }
+  .mail .body { padding:18px 20px; }
+  .mail h3 { margin:0 0 12px; font-size:19px; letter-spacing:-.01em; }
+  .mail p { margin:0 0 11px; font-size:14.5px; }
+  .mail p:last-child { margin-bottom:0; }
+  table.info { border-collapse:collapse; width:100%; margin:0 0 14px; font-size:14px; }
+  table.info td { padding:6px 0; border-bottom:1px solid var(--line); vertical-align:top; }
+  table.info td:first-child { color:var(--muted); width:42%; }
+  table.info td:last-child { font-weight:600; }
+  ul.party { margin:0 0 14px; padding:0 0 0 18px; font-size:14px; }
+  .btn { display:inline-block; background:var(--accent); color:#fff; text-decoration:none; font-weight:700; font-size:14px; padding:10px 18px; border-radius:9px; }
+  pre { background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:14px 16px; overflow-x:auto; font-size:12.5px; line-height:1.6; margin:0; white-space:pre-wrap; word-break:break-word; }
+  .flat { margin-top:12px; }
+  .flat summary { cursor:pointer; font-size:13px; font-weight:650; color:var(--accent-ink); margin-bottom:8px; }
+  code { background:var(--panel2); border:1px solid var(--line); border-radius:6px; padding:1px 6px; font-size:12.5px; }
+  .foot { margin-top:44px; padding-top:16px; border-top:1px solid var(--line); font-size:13px; color:var(--muted); }
+  .tokens { font-size:13.5px; color:var(--muted); }
+  .tokens li { margin-bottom:5px; } .tokens b { color:var(--ink); }
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">Alpine Sports Club · epic #2305 · MG2 (#2307)</p>
+  <h1>Member guests — the four emails</h1>
+  <p class="lede">Mock data. Each block shows the HTML email as a member receives it, and (behind the toggle) the exact plain default body an admin can edit at <b>Admin › Email messages</b>.</p>
+
+  <div class="note"><b>Four in MG2, five across the epic.</b> One <code>member-guest-added</code> template covers notify-only mode, admin adds and pipeline rows, distinguished by a single server-composed sentence — so an admin has one place to edit, not three. The fifth (a withdrawal notice) belongs to MG4.</div>
+  <div class="warn"><b>Being asked is not a preference.</b> Owner decision <b>D-16</b>: these emails ignore the per-action "notify the member" tick and ignore the member's own notification-category preferences — a member who muted a category would otherwise never be asked and would silently expire off the booking N days later. They <em>are</em> withheld by the per-booking <b>No emails</b> switch, and each withheld send is recorded on the booking's withheld list.</div>
+
+  <!-- =============== T1 =============== -->
+  <h2>1 · Consent request — to the member being added (or their delegate)</h2>
+  <p class="sub">Template key <code>member-guest-consent-request</code>. Sent when the club asks first (the shipped default, D-3). Carries the <b>full party listing</b> per owner decision <b>MG2-D-a</b> — names, and no money anywhere.</p>
+  <div class="rule"></div>
+  <div class="mail">
+    <div class="hdr">To <b>priya.kaur@example.nz</b> · Subject <b>Dave Ngata would like to add you to a lodge booking</b></div>
+    <div class="body">
+      <h3>Can Dave Ngata add you to this booking?</h3>
+      <p>Hi Priya, <b>Dave Ngata</b> has put you down as a guest on a lodge booking. Nothing is settled until you answer — a bed is held for you in the meantime.</p>
+      <table class="info">
+        <tr><td>Lodge</td><td>Silverpeak Lodge</td></tr>
+        <tr><td>Stay</td><td>Sat 8 Aug – Mon 10 Aug 2026</td></tr>
+        <tr><td>Your nights</td><td>Sat 8 Aug, Sun 9 Aug (2 nights)</td></tr>
+        <tr><td>Booked by</td><td>Dave Ngata</td></tr>
+        <tr><td>Please answer by</td><td>Fri 7 Aug 2026</td></tr>
+      </table>
+      <p style="margin-bottom:6px"><b>Everyone on this booking</b></p>
+      <ul class="party"><li>Dave Ngata</li><li>Marama Ngata</li><li>Ari Ngata</li><li>Priya Kaur</li></ul>
+      <p>If you do not answer by <b>Fri 7 Aug 2026</b>, the request lapses on its own, the bed is released, and Dave is told. You do not have to do anything to decline.</p>
+      <p><a class="btn" href="#">Answer this request</a></p>
+      <p style="font-size:13px;color:var(--muted)">If you were not expecting this, you can safely ignore it — you will not be added.</p>
+    </div>
+  </div>
+  <details class="flat"><summary>Editable default body (what an admin sees)</summary><pre>Can {{bookerName}} add you to this booking?
+
+Hi {{firstName}}, {{bookerName}} has put you down as a guest on a lodge booking. Nothing is settled until you answer - a bed is held for you in the meantime.
+
+Lodge: {{CLUB_LODGE_NAME}}
+Stay: {{checkIn}} - {{checkOut}}
+Your nights: {{guestNightsLabel}}
+Booked by: {{bookerName}}
+Please answer by: {{consentExpiresAt}}
+
+{{partyListNote}}
+
+If you do not answer by {{consentExpiresAt}}, the request lapses on its own, the bed is released, and {{bookerName}} is told. You do not have to do anything to decline.
+
+Answer this request: {{consentUrl}}
+
+If you were not expecting this, you can safely ignore it - you will not be added.</pre></details>
+
+  <!-- =============== T2 =============== -->
+  <h2>2 · Added to a booking — to the member, when nobody was asked</h2>
+  <p class="sub">Template key <code>member-guest-added</code>. One template, three situations, told apart by one composed sentence (<code>{{addedContextNote}}</code>): the club runs notify-only; an admin added you; or the row came from an approved booking request. MG4 reuses it unchanged.</p>
+  <div class="rule"></div>
+  <div class="grid">
+    <div class="mail">
+      <div class="hdr">Variant A — notify-only club</div>
+      <div class="body">
+        <h3>You have been added to a lodge booking</h3>
+        <p>Hi Hana, <b>Dave Ngata</b> has added you as a guest on a lodge booking. Your place is already held — this club does not ask first for member guests.</p>
+        <table class="info">
+          <tr><td>Lodge</td><td>Silverpeak Lodge</td></tr>
+          <tr><td>Stay</td><td>Sat 8 Aug – Mon 10 Aug 2026</td></tr>
+          <tr><td>Your nights</td><td>Sat 8 Aug, Sun 9 Aug (2 nights)</td></tr>
+        </table>
+        <p>If you would rather not go, you can take yourself off the booking from your account.</p>
+        <p><a class="btn" href="#">View this booking</a></p>
+      </div>
+    </div>
+    <div class="mail">
+      <div class="hdr">Variant B — an admin added you, and removal is blocked</div>
+      <div class="body">
+        <h3>You have been added to a lodge booking</h3>
+        <p>Hi Rewi, the club has added you as a guest on a lodge booking on behalf of <b>Dave Ngata</b>.</p>
+        <table class="info">
+          <tr><td>Lodge</td><td>Silverpeak Lodge</td></tr>
+          <tr><td>Stay</td><td>Sat 8 Aug – Mon 10 Aug 2026</td></tr>
+          <tr><td>Your nights</td><td>Sat 8 Aug, Sun 9 Aug (2 nights)</td></tr>
+        </table>
+        <p>This booking was priced by hand, so guests cannot be taken off it from your account. Only the club can take you off — it will re-quote the request.</p>
+        <p><a class="btn" href="#">View this booking</a></p>
+      </div>
+    </div>
+  </div>
+  <div class="note"><b>The removal sentence is computed, not boilerplate.</b> It runs the same rule the booking page runs, so the email never promises a "take yourself off" link the server would refuse — the D-14 traps and the mail copy cannot drift apart.</div>
+  <details class="flat"><summary>Editable default body</summary><pre>You have been added to a lodge booking
+
+Hi {{firstName}}, {{addedContextNote}}
+
+Lodge: {{CLUB_LODGE_NAME}}
+Stay: {{checkIn}} - {{checkOut}}
+Your nights: {{guestNightsLabel}}
+
+{{partyListNote}}
+
+{{removalNote}}
+
+View this booking: {{BASE_URL}}/bookings</pre></details>
+
+  <!-- =============== T3 =============== -->
+  <h2>3 · What the member decided — to the person who made the booking</h2>
+  <p class="sub">Template key <code>member-guest-consent-outcome</code>. One template covers approved, declined, expired, and "expired but still on the booking", because the outcome and its consequence are both composed server-side.</p>
+  <div class="rule"></div>
+  <div class="grid">
+    <div class="mail">
+      <div class="hdr">Variant A — approved</div>
+      <div class="body">
+        <h3>Priya Kaur has accepted</h3>
+        <p>Hi Dave, <b>Priya Kaur</b> has accepted your invitation and is confirmed on your booking at Silverpeak Lodge, 8–10 Aug 2026.</p>
+        <p>Nothing has changed on your booking — the bed that was being held for Priya is now theirs.</p>
+        <p><a class="btn" href="#">View this booking</a></p>
+      </div>
+    </div>
+    <div class="mail">
+      <div class="hdr">Variant B — declined, with money returned as credit</div>
+      <div class="body">
+        <h3>Priya Kaur has declined</h3>
+        <p>Hi Dave, <b>Priya Kaur</b> has declined and has been taken off your booking at Silverpeak Lodge, 8–10 Aug 2026.</p>
+        <p>Your booking has been repriced. NZ$48.00 has been added to your account credit and will come off your next booking.</p>
+        <p><a class="btn" href="#">View this booking</a></p>
+      </div>
+    </div>
+    <div class="mail">
+      <div class="hdr">Variant C — the request lapsed</div>
+      <div class="body">
+        <h3>Priya Kaur did not answer in time</h3>
+        <p>Hi Dave, your request to add <b>Priya Kaur</b> lapsed on Fri 7 Aug 2026 with no answer, and Priya has been taken off your booking at Silverpeak Lodge, 8–10 Aug 2026.</p>
+        <p>Your booking has been repriced. NZ$48.00 has been added to your account credit and will come off your next booking.</p>
+        <p><a class="btn" href="#">View this booking</a></p>
+      </div>
+    </div>
+    <div class="mail">
+      <div class="hdr">Variant D — lapsed, but the club must act</div>
+      <div class="body">
+        <h3>Priya Kaur did not answer in time</h3>
+        <p>Hi Dave, your request to add <b>Priya Kaur</b> lapsed on Fri 7 Aug 2026 with no answer.</p>
+        <p>Priya is still on the booking, because this booking was priced by hand and only the club can change it — the club will re-quote the request. The club has been told and will be in touch.</p>
+        <p><a class="btn" href="#">View this booking</a></p>
+      </div>
+    </div>
+  </div>
+  <div class="note"><b>Variant D is the honest one, and it is required.</b> Owner decision <b>D-15</b> lets the sweep settle money as account credit so an ordinary paid booking always expires cleanly — but a booking that is quote-priced, has only this one guest, is in a status that forbids changes, or has already started genuinely cannot be changed automatically. Those land on an admin exception list, and this email names the real remedy rather than a dead-end "ask the club".</div>
+  <details class="flat"><summary>Editable default body</summary><pre>{{outcomeHeading}}
+
+Hi {{firstName}}, {{outcomeSentence}}
+
+{{consequenceNote}}
+
+View this booking: {{BASE_URL}}/bookings/{{bookingId}}</pre></details>
+
+  <!-- =============== T4 =============== -->
+  <h2>4 · The request lapsed — to the member who was asked</h2>
+  <p class="sub">Template key <code>member-guest-consent-expired</code>. Sent only to someone who was actually asked, so nobody is told a request lapsed that they never received.</p>
+  <div class="rule"></div>
+  <div class="mail">
+    <div class="hdr">To <b>priya.kaur@example.nz</b> · Subject <b>The request to add you to a lodge booking has lapsed</b></div>
+    <div class="body">
+      <h3>That request has lapsed</h3>
+      <p>Hi Priya, the request from <b>Dave Ngata</b> to add you to a booking at Silverpeak Lodge on 8–10 Aug 2026 has lapsed, and the bed that was held for you has been released.</p>
+      <p>You do not need to do anything. If you did want to come, ask Dave to add you again.</p>
+    </div>
+  </div>
+  <details class="flat"><summary>Editable default body</summary><pre>That request has lapsed
+
+Hi {{firstName}}, the request from {{bookerName}} to add you to a booking at {{CLUB_LODGE_NAME}} on {{checkIn}} - {{checkOut}} has lapsed, and the bed that was held for you has been released.
+
+You do not need to do anything. If you did want to come, ask {{bookerName}} to add you again.</pre></details>
+
+  <!-- =============== conventions =============== -->
+  <h2>5 · Two things worth knowing about editing these</h2>
+  <div class="rule"></div>
+  <ul class="tokens">
+    <li><b>The party listing is one block, not a row per guest.</b> The email templating has no loops, so the whole "Everyone on this booking" block — heading included — is built by the server and dropped in as a single value. An admin can move the block or leave it out; they cannot reformat it guest by guest. That would need a template-engine change.</li>
+    <li><b>The consent link never goes in a subject line.</b> It is classed as sensitive, and two separate checks refuse to render it into a subject.</li>
+  </ul>
+
+  <h2>6 · A bug we found next door, and are fixing here</h2>
+  <div class="rule"></div>
+  <p class="sub">The existing <b>check-in reminder</b> email's guest list is broken today: it joins all the first names together and then all the last names together, so a real member receives <code>Ada, Bob, Cleo Lovelace, Smith, Jones</code>. MG2 already edits that email (to stop it naming a guest whose consent is still pending), so the join is fixed in the same change rather than carried.</p>
+
+  <p class="foot">Mock data. Copy is the real proposed copy — mark it up if it is wrong.</p>
+</div>

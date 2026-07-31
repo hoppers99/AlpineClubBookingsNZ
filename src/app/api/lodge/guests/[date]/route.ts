@@ -6,6 +6,7 @@ import {
   parseDateOnly,
 } from "@/lib/date-only";
 import { lodgeNullTolerantScope } from "@/lib/lodges";
+import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent";
 import { formatXeroPhone } from "@/lib/phone";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
@@ -80,6 +81,14 @@ export async function GET(
         some: {
           stayStart: { lte: date },
           stayEnd: isLodgeListScope ? { gte: date } : { gt: date },
+          // Owner decision D-12 (#2307): a member guest whose consent is still
+          // PENDING (or was DECLINED / EXPIRED and survived its removal) holds
+          // a bed under D-4 but is NOT operationally present, so they never
+          // appear on the kiosk arrivals list. This `some` and the
+          // `include.guests.where` below must BOTH carry the predicate: filter
+          // only the include and a booking whose sole overlapping guest is
+          // pending still matches here, then renders as an empty card.
+          ...OPERATIONALLY_PRESENT_GUEST_WHERE,
         },
       },
       // #1422: the guest list (the check-in roster staff read) INCLUDES a
@@ -95,6 +104,9 @@ export async function GET(
         where: {
           stayStart: { lte: date },
           stayEnd: isLodgeListScope ? { gte: date } : { gt: date },
+          // D-12 (#2307), the other half of the pair: keep the unconsented
+          // guest out of the rendered card as well as out of the booking match.
+          ...OPERATIONALLY_PRESENT_GUEST_WHERE,
         },
         include: {
           member: {

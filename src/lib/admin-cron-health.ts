@@ -362,6 +362,21 @@ export function getAdminCronJobDefinitions(
     ),
     defineCronJob(
       {
+        // "+ Add Member Guest" (#2307, epic #2305). Listed unconditionally, like
+        // every other optional-module cron: the job itself reports SKIPPED while
+        // the memberGuests module is off, and an operator seeing the row is how
+        // they know the pending-hold expiry is (or is not) running.
+        jobName: "member-guest-consent-expiry",
+        label: "Member-guest consent expiry",
+        schedule: "30 4 * * *",
+        timezone: nzTimezone,
+        expectedLocalTime: "04:30 NZT/NZDT daily",
+        staleAfterMinutes: DAILY_STALE_AFTER_MINUTES,
+      },
+      globalDisabledReason
+    ),
+    defineCronJob(
+      {
         jobName: "pending-deadline-alerts",
         label: "Pending deadline alerts",
         schedule: "0 8 * * *",

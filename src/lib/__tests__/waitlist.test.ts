@@ -13,7 +13,9 @@ import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
 // loaded host can alone exceed the per-test timeout.
 beforeAll(async () => {
   await import("@/lib/waitlist");
-});
+  // 30s, not the 10s default: #2307 grew this graph again (the member-guest
+  // policy/consent modules now sit on the booking paths waitlist reaches).
+}, 30_000);
 
 // ─── Mocks ───
 

@@ -462,6 +462,76 @@ describe("admin email message APIs", () => {
     ]);
   });
 
+  it("names saved overrides that still use a token their template no longer offers", async () => {
+    // #2307 review (M2). A token a template stopped supplying renders as
+    // NOTHING — there is no conditional syntax and no error — so an override
+    // written against an older default keeps sending with a hole in it. The
+    // live example: the check-in reminder's guest list moved from
+    // {{guestFirstName}} {{guestLastName}} on one line to a one-per-line
+    // {{guestName}}, and a club holding the old pair would have emailed a
+    // reminder that listed nobody at all. The sender keeps supplying the old
+    // pair so those overrides still render correctly; this banner is how the
+    // admin learns to move off them.
+    mocks.emailTemplateOverrideFindMany.mockResolvedValue([
+      {
+        // Current wording: not flagged.
+        templateName: "password-reset",
+        subject: "Reset your password",
+        bodyText: "Reset here {{BASE_URL}}/reset-password?token={{token}}",
+        updatedAt: new Date("2026-05-23T00:00:00.000Z"),
+        updatedByMemberId: "admin-1",
+      },
+      {
+        templateName: "checkin-reminder",
+        subject: "Check-in Reminder",
+        bodyText: [
+          "Hi {{firstName}}.",
+          "",
+          "Guest list:",
+          "",
+          "{{guestFirstName}} {{guestLastName}}",
+        ].join("\n"),
+        updatedAt: new Date("2026-05-23T00:00:00.000Z"),
+        updatedByMemberId: "admin-1",
+      },
+    ]);
+
+    const response = await getEmailTemplates();
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.retiredTokenOverrides).toEqual([
+      {
+        templateName: "checkin-reminder",
+        tokens: ["guestFirstName", "guestLastName"],
+      },
+    ]);
+  });
+
+  it("does not flag an override that uses the token the template now offers", async () => {
+    // The contrast case, so the test above is a statement about RETIRED tokens
+    // rather than about the banner firing for every override.
+    mocks.emailTemplateOverrideFindMany.mockResolvedValue([
+      {
+        templateName: "checkin-reminder",
+        subject: "Check-in Reminder",
+        bodyText: [
+          "Hi {{firstName}}.",
+          "",
+          "Guest list:",
+          "",
+          "{{guestName}}",
+        ].join("\n"),
+        updatedAt: new Date("2026-05-23T00:00:00.000Z"),
+        updatedByMemberId: "admin-1",
+      },
+    ]);
+
+    const response = await getEmailTemplates();
+    const body = await response.json();
+    expect(body.retiredTokenOverrides).toEqual([]);
+  });
+
   it("refuses to save an override that still carries a bracket authoring note", async () => {
     const response = await putEmailTemplate(
       request("/api/admin/email-templates", {
