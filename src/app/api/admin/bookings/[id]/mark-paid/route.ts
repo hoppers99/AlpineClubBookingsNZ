@@ -75,13 +75,24 @@ function additionalNote(
   if (direction === "unpaid") {
     return ` The ${amount} extra that settlement covered is owing again.`;
   }
-  return additional.settled
-    ? ` The ${amount} extra owing on this booking was recorded as settled too, so the member will not be asked for it again.`
-    : // #2397 (owner decision, 31 Jul 2026): naming the RECORDED figure matters
-      // most here. This is the branch where the club deliberately books less
-      // than the booking is worth, and the person who just took the cash has to
-      // see that the two figures are meant to differ.
-      ` Only ${formatCents(additional.recordedAmountCents)} was recorded as received: the ${amount} extra was left unpaid, so the member will still be asked for it.`;
+  if (additional.settled) {
+    return ` The ${amount} extra owing on this booking was recorded as settled too, so the member will not be asked for it again.`;
+  }
+  // #2397 (owner decision, 31 Jul 2026): naming the RECORDED figure matters
+  // most here. This is the branch where the club deliberately books less than
+  // the booking is worth, and the person who just took the cash has to see that
+  // the two figures are meant to differ.
+  //
+  // #2397 F4: and they have to be told HOW the club gets the rest. Chasing a
+  // member for money they have no way to send is the worst available outcome,
+  // so the settlement leaves the addition's card door open where one exists and
+  // this sentence says which of the two situations they are in.
+  return (
+    ` Only ${formatCents(additional.recordedAmountCents)} was recorded as received: the ${amount} extra was left unpaid, so the member will still be asked for it.` +
+    (additional.payableOnline
+      ? ` They can pay it themselves from their booking page.`
+      : ` They have no card payment set up for it, so someone will need to contact them to collect it.`)
+  );
 }
 
 /**

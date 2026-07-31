@@ -2,6 +2,10 @@ import "server-only";
 
 import { BookingStatus, PaymentSource, PaymentStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import {
+  isManualSettleFromPaymentStatus,
+  MANUAL_CAPTURED_PAYMENT_REFUSAL,
+} from "@/lib/booking-payment-state";
 import { isAdditionalAmountUncollected } from "@/lib/unpaid-finished-stays";
 import type { BookingManualPaymentState } from "@/components/admin/booking-manual-payment-controls";
 
@@ -22,6 +26,7 @@ const PAYABLE_STATUSES: BookingStatus[] = [
   BookingStatus.DRAFT,
 ];
 
+
 export async function getBookingManualPaymentState(
   bookingId: string
 ): Promise<BookingManualPaymentState | null> {
@@ -40,6 +45,10 @@ export async function getBookingManualPaymentState(
       payment: {
         select: {
           id: true,
+          // #2397: a payment that has already taken money cannot also be
+          // recorded as cash. Restated here rather than imported, like every
+          // other guard in this advisory module — see the header note.
+          status: true,
           // #2397: the upward-modification delta and whether it was ever
           // collected. Advisory, like everything else here — the settle
           // re-derives it under the locks and 409s on a mismatch — but the
@@ -124,6 +133,19 @@ export async function getBookingManualPaymentState(
   } else if (xeroBlocked) {
     markPaidBlockedReason =
       "This booking has a Xero invoice (or one on its way) — record the payment against the invoice in Xero instead.";
+  } else if (payment && !isManualSettleFromPaymentStatus(payment.status)) {
+    // #2397: the advisory twin of `prepareManualSettlement`'s captured-payment
+    // refusal. A card capture that stranded before its status promotion (#1418)
+    // leaves a payable booking holding a SUCCEEDED payment — and an upward
+    // modification in that window is the one non-circular way a booking here
+    // acquires an uncollected extra. Without this the whole dialog opened,
+    // asked the admin whether the cash covered that extra, and then refused
+    // every answer with a message that said the booking had changed when
+    // nothing had.
+    markPaidBlockedReason = MANUAL_CAPTURED_PAYMENT_REFUSAL;
+  } else if ((payment?.refundedAmountCents ?? 0) !== 0) {
+    markPaidBlockedReason =
+      "This booking's payment already carries refund history — it cannot be recorded as a manual settlement. Cancel and rebook, or resolve the refund first.";
   } else if (amountOwingCents <= 0) {
     markPaidBlockedReason =
       "This booking has nothing owing — use Force confirm / Confirm pending guests instead.";

@@ -807,6 +807,55 @@ Future reviews and issues should cite this file when proposing changes.
     PAID. Downstream this is a strengthening, not a loosening: the cancellation
     refund basis (`paidAmountCents = amountCents - refunded`) and every captured
     figure now follow the cash the club actually holds.
+    A "not covered" settle must also leave a WAY TO COLLECT the extra it leaves
+    owing. The settlement's blanket Stripe-intent cancellation therefore SPARES
+    exactly one intent — the payment's current `additionalPaymentIntentId`, and
+    only when the answer was "not covered" — because that instrument is the
+    member's only self-service door to the extra
+    (`/api/bookings/[id]/additional-payment-secret` hands back precisely that
+    id, and neither it nor the booking page's pay card gates on booking status,
+    so both keep working on the now-PAID booking). Capturing it is
+    ledger-correct: `reconcilePaymentAggregates` sums the captured rows, so
+    `Payment.amountCents` becomes cash + addition = `finalPriceCents` and the
+    generalised mirror below closes with a zero third term. Superseded addition
+    intents are still cancelled (they are doors to a figure nobody is owed), and
+    the "covered" answer still cancels the addition's intent, because there the
+    extra is paid and a live intent would be a door to a SECOND payment. The
+    admin's receipt and the member's confirmation both state which of the two
+    situations applies, so nobody is chased for money they cannot send.
+    **The member's confirmation must agree with the admin's receipt.** A "not
+    covered" settle sends the ordinary booking-confirmed message with the
+    balance stated: the money rows become Booking Total / Paid / Still Owing and
+    the alert box says the payment was recorded, names what is still owing, and
+    says whether it can be paid from the booking page or the club will be in
+    touch. "Total Paid: <whole price>" plus "Payment has been processed
+    successfully" would tell the member the opposite of what the same HTTP
+    response tells the admin.
+    **A payment that has already taken money is refused at READ time**, not only
+    at the fenced write. The settle-from statuses are PENDING / PROCESSING /
+    FAILED (a declined or expired card attempt is exactly what an admin remedies
+    with cash); SUCCEEDED and the refunded variants are refused with a message
+    that says so. Without the read-time half, the one production shape that puts
+    an uncollected extra on a payable booking — a card capture stranded before
+    its status promotion (#1418: `confirm-pending-guests` and
+    `cron-confirm-pending` both commit the SUCCEEDED ledger row in their own
+    transaction and deliberately leave the booking CONFIRMED when the promotion
+    then fails) — opened the whole dialog, asked the admin the coverage
+    question, and refused every answer with "changed while you were recording
+    it", which was untrue and repeated on every retry. The admin booking page's
+    advisory state applies the same rule, so the action is not offered at all.
+    **Reachability, stated plainly.** With that read-time refusal in place, no
+    production path is known that presents the coverage question on a settle
+    that can COMPLETE, other than the reverse-then-re-settle loop and legacy
+    pre-ledger rows. Every writer of `additionalAmountCents` requires the
+    payment to be captured at the moment the delta is recorded
+    (`applyPaymentAdjustments` arm (a) needs `hasCapturedPayment`; arm (b) needs
+    an issued Xero invoice, which this settle refuses outright and which nothing
+    ever clears), and a captured payment is not a legal settle-from. The
+    question and both its branches are therefore correctness insurance for the
+    reversal loop, for legacy data, and against a future writer that records a
+    delta earlier — not a live hazard. Treat this paragraph as the thing to
+    re-check if either the settle-from status set or the delta writers change.
   - **The ledger mirror, generalised (#2397).**
     `amountCents + creditAppliedCents = finalPriceCents` is only the special
     case where nothing is left owing; it cannot hold on a partially settled
@@ -815,8 +864,31 @@ Future reviews and issues should cite this file when proposing changes.
     the card path rather than diverging from it — is
     `amountCents + creditAppliedCents + (uncollected addition) = finalPriceCents`:
     every cent of the price is collected, paid with credit, or still owed. The
-    manual settle asserts exactly this before it writes, and the covered answer
-    reduces it to the original mirror with the third term at 0.
+    covered answer reduces it to the original mirror with the third term at 0.
+    This is NOT enforced by a runtime assertion inside the settle, and it cannot
+    be: the settled figure is *defined* as `finalPriceCents - credit -
+    uncollected`, so any in-transaction check reduces to `finalPrice ===
+    finalPrice`, and re-reading the values after the writes only returns what
+    the same locals just wrote. What enforces it, in order, is (1) CONSTRUCTION
+    — the PRIMARY and ADDITIONAL rows are a split of one figure, and that figure
+    is what `Payment.amountCents` is set to, so the reconciler's own derivation
+    reproduces it rather than inflating it; (2) THE FENCE — the fenced
+    `payment.updateMany` re-asserts the outstanding delta (on BOTH answers, not
+    only the covered one), the settle-from status, the zero refund history and
+    the absence of Xero evidence as WHERE clauses, so a concurrent writer that
+    moved any of them yields count 0 → 409; and (3) AFTER THE FACT —
+    `auditIbAppliedCreditStrands` recomputes
+    `amountCents + creditAppliedCents - finalPriceCents` over committed data and
+    reports the uncollected addition beside it, so a residual that is not
+    exactly the uncollected delta is visible to an operator. Only (3) is a check
+    that can actually fire, because it is not reading back its own writes.
+    A NEGATIVE `mirrorInvariantDeltaCents` in that audit is therefore not
+    automatically drift: equal-and-opposite to the payment's uncollected
+    addition means the generalised mirror holds. That audit scans
+    INTERNET_BANKING payments only, so a card-settled booking never appears in
+    it at all; the two shapes that legitimately produce the residual there are a
+    Xero-invoiced pay-on-account booking whose later addition was invoiced but
+    never paid, and this #2397 "not covered" cash settlement.
     Either answer is recorded on the mark-paid audit row BOTH ways — together
     with the settled figure actually written, the amount owing, and what was
     deliberately left uncollected, so a later reader can reconstruct which

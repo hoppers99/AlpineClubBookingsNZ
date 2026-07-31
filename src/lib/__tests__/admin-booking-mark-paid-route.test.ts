@@ -375,6 +375,7 @@ describe("POST /api/admin/bookings/[id]/mark-paid — the outstanding extra (#23
         outstandingCents: 2100,
         settled: true,
         recordedAmountCents: 12100,
+        payableOnline: false,
       },
     });
     const settled = await POST(
@@ -408,6 +409,7 @@ describe("POST /api/admin/bookings/[id]/mark-paid — the outstanding extra (#23
         outstandingCents: 2100,
         settled: false,
         recordedAmountCents: 10000,
+        payableOnline: true,
       },
     });
     const unsettled = await POST(
@@ -430,5 +432,47 @@ describe("POST /api/admin/bookings/[id]/mark-paid — the outstanding extra (#23
     expect(unsettledMessage).toMatch(
       /Only \$100\.00 was recorded as received/,
     );
+    // #2397 F4: chasing a member for money they cannot send is the worst
+    // available outcome, so the toast says which of the two situations applies.
+    expect(unsettledMessage).toMatch(
+      /They can pay it themselves from their booking page/,
+    );
+  });
+
+  it("tells the admin to make contact when no card door survives for the extra", async () => {
+    mocks.applyManualBookingPayment.mockResolvedValue({
+      bookingId: "booking-1",
+      paymentId: "payment-1",
+      direction: "paid",
+      memberNotified: false,
+      receipt: "not_requested",
+      amountCents: 10000,
+      bookingStatus: "PAID",
+      creditElectionCents: null,
+      additional: {
+        outstandingCents: 2100,
+        settled: false,
+        recordedAmountCents: 10000,
+        payableOnline: false,
+      },
+    });
+
+    const response = await POST(
+      makeRequest({
+        direction: "paid",
+        confirmed: true,
+        notifyMember: false,
+        expectedAmountCents: 12100,
+        additionalCoverage: {
+          covered: false,
+          expectedAdditionalAmountCents: 2100,
+        },
+      }),
+      { params },
+    );
+
+    const message = (await response.json()).message as string;
+    expect(message).toMatch(/someone will need to contact them to collect it/);
+    expect(message).not.toMatch(/pay it themselves/);
   });
 });

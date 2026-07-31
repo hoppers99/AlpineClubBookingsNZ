@@ -118,6 +118,16 @@ export type ManualBookingAdditionalOutcome = {
    * was actually handed over.
    */
   recordedAmountCents: number;
+  /**
+   * #2397 F4: on an extra left owing, whether the member can pay it themselves
+   * from their booking page — i.e. whether the settlement left the addition's
+   * card intent armed instead of cancelling it. False means the only route to
+   * the money is the club contacting them, and the admin standing at the till
+   * has to be told that, because "we will keep asking" is a very different
+   * instruction from "they can pay it online tonight". Always false on a
+   * reversal and on the covered answer, where there is nothing left to pay.
+   */
+  payableOnline: boolean;
 };
 
 export type ApplyManualBookingPaymentResult = {
@@ -190,6 +200,10 @@ export async function applyManualBookingPayment(
               outstandingCents: reversal.restoredAdditionalAmountCents,
               settled: false,
               recordedAmountCents: reversal.reversedAmountCents,
+              // A reversal un-records the whole settlement; the booking is
+              // unpaid again and the member's ordinary pay door governs, so
+              // there is no partial-balance instrument to point at.
+              payableOnline: false,
             }
           : null,
     };
@@ -253,6 +267,19 @@ export async function applyManualBookingPayment(
         });
         // The SAME message the Xero-inbound settle sends, so a cash-settled
         // member reads exactly what a bank-transfer-settled member reads.
+        //
+        // #2397 F1: EXCEPT when the club knowingly took less than the booking
+        // is worth. `finalPriceCents` is still the booking's price — it is what
+        // the promo rows and the "Booking Total" line are derived from — but
+        // the settled figure and the price now DIVERGE, and the default
+        // confirmation would say "Total Paid: <whole price>. Payment has been
+        // processed successfully." while the admin's own receipt says only part
+        // of it was recorded and the member will still be asked for the rest.
+        // The same HTTP response cannot say both. Passing the balance switches
+        // the money rows to Booking Total / Paid / Still Owing and replaces the
+        // success box with what actually happens next — which is the very
+        // contradiction #2397 exists to remove, stated to the member rather
+        // than only to the admin.
         const outcome = await sendBookingConfirmedEmail(
           { bookingId: input.bookingId },
           recipient.member.email,
@@ -264,6 +291,18 @@ export async function applyManualBookingPayment(
           {
             lodgeId: recipient.lodgeId,
             ...(provisionalGuests ? { provisionalGuests } : {}),
+            ...(settlement.uncollectedAdditionalCents > 0
+              ? {
+                  outstandingBalance: {
+                    amountCents: settlement.uncollectedAdditionalCents,
+                    // #2397 F4: true only when the settlement actually left the
+                    // addition's card intent armed, so the email never sends
+                    // the member to a pay door that will not open.
+                    payableOnline:
+                      settlement.sparedAdditionalPaymentIntentId !== null,
+                  },
+                }
+              : {}),
             ...(recipient.promoRedemption?.promoCode
               ? {
                   discountCents: recipient.discountCents,
@@ -309,6 +348,7 @@ export async function applyManualBookingPayment(
             outstandingCents: settlement.outstandingAdditionalCents,
             settled: settlement.settledAdditionalAmountCents > 0,
             recordedAmountCents: settlement.effectiveAmountCents,
+            payableOnline: settlement.sparedAdditionalPaymentIntentId !== null,
           }
         : null,
   };

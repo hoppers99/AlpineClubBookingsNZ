@@ -92,10 +92,44 @@ have answered, because your answer changes it:
   rightly still asked for the rest. If the whole amount owing *is* the addition,
   there is nothing left to record and the action is refused.
 
+**How the member pays an addition you said the cash did not cover.** Recording a
+cash payment normally cancels any card payment the member still had open for the
+booking, so they cannot accidentally pay twice for money you already hold. The
+one exception is the card payment for the addition itself: if you answer **No**,
+that one is deliberately left open, because the club is still asking for it and
+that is the member's own way to send it. They can pay it from their booking page
+exactly as they could before, and once they do, the booking's books balance on
+their own — nothing further for you to record.
+
+Some additions have no card payment set up (an older booking, or one where the
+card step never got as far as being created). The confirmation on screen tells
+you which situation you are in: either "they can pay it themselves from their
+booking page", or "someone will need to contact them to collect it". If it is
+the second, contact them — there is no other door. If you would rather undo the
+whole thing and start again, **Reverse manual payment** puts the booking and the
+addition back exactly as they were.
+
 Either way the confirmation on screen repeats which it was and names the figure
-that was recorded. If the extra changes while your screen is open, or one
-appears that was not on your screen when you opened the dialog, the recording is
-refused rather than guessed and you are asked to refresh.
+that was recorded. The member's confirmation email says the same thing: instead
+of "Total Paid" it shows the booking total, what has been paid, and what is
+still owing, and it tells them how to pay the rest. If the extra changes while
+your screen is open, or one appears that was not on your screen when you opened
+the dialog, the recording is refused rather than guessed and you are asked to
+refresh.
+
+**If the extra is bigger than the whole amount owing.** This can happen when a
+change fee was charged: the fee is added to the recorded addition but not to the
+booking's price, so the addition is no longer a slice of what the booking owes.
+Neither answer can be recorded honestly, so the action is refused. Ask the member
+to pay the addition from their booking page, or correct the booking's price, and
+then record the payment.
+
+**If the booking's payment has already taken money.** A booking whose card
+payment succeeded but whose status never caught up cannot also be recorded as a
+cash payment — the card money is already in the ledger and recording cash over
+the top of it would misstate the books. The button is not offered, and the
+reason says so. Check the payment (and whether a refund is owed) before
+recording anything.
 
 **When the member had asked to use their account credit.** If they ticked "use
 my credit" and saved the booking as a draft, and that credit was never applied,

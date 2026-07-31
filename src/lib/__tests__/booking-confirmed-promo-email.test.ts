@@ -116,6 +116,9 @@ async function captureConfirmedTemplateData(
     doorCode?: string | null;
     // #2263: a CONFIRMED-but-unpaid send (member whole-lodge approval).
     paymentDue?: { reference: string; invoiceEmailed: boolean };
+    // #2397: a settled send for LESS than the booking is worth (a cash
+    // settlement the admin said did not cover an uncollected price increase).
+    outstandingBalance?: { amountCents: number; payableOnline: boolean };
   },
 ): Promise<{ templateData: EmailTemplateData; html: string }> {
   if (options && "doorCode" in options) {
@@ -256,6 +259,57 @@ describe("booking-confirmed promo summary (#2267)", () => {
     expect(templateData.paymentOutcome).not.toContain(
       "The club will send you an invoice for it.",
     );
+  });
+
+  it("renders a partly-paid settle as Booking Total / Paid / Still Owing, never the processed line (#2397)", async () => {
+    // A $121.00 booking settled in cash for $100.00 because the admin said the
+    // money did not cover the $21.00 addition. "Total Paid: $121.00 — Payment
+    // has been processed successfully" would be false on both counts, and would
+    // contradict the receipt the same request gave the admin.
+    const { templateData, html } = await captureConfirmedTemplateData(12100, {
+      outstandingBalance: { amountCents: 2100, payableOnline: true },
+    });
+
+    expect(templateData.paymentOutcome).toBe(
+      "Booking Total: $121.00\nPaid: $100.00\nStill Owing: $21.00\n\n" +
+        "Your payment of $100.00 has been recorded and your booking is confirmed. " +
+        "$21.00 is still owing from a later change to this booking. " +
+        "You can pay it from your booking page.",
+    );
+    // Both per-piece tokens carry a figure here, and neither is the price.
+    expect(templateData.totalPaid).toBe("$100.00");
+    expect(templateData.totalDue).toBe("$21.00");
+    // No internet-banking reference exists on this path.
+    expect(templateData.paymentDueNote).toBe("");
+    expect(templateData.paymentReference).toBe("");
+
+    const rendered = renderDefaultBody("booking-confirmed", templateData);
+    expect(rendered).toContain(
+      "Booking Total: $121.00\nPaid: $100.00\nStill Owing: $21.00",
+    );
+    expect(rendered).not.toContain("Total Paid");
+    expect(rendered).not.toContain("Payment has been processed");
+    expectCleanBody(rendered);
+
+    // Drift guard: the hand-built HTML tells the identical money story.
+    expect(html).toContain(">Booking Total</td>");
+    expect(html).toContain(">Still Owing</td>");
+    expect(html).toContain(">$21.00</td>");
+    expect(html).not.toContain(">Total Paid</td>");
+    expect(html).not.toContain("Payment has been processed successfully");
+    expect(html).toContain("You can pay it from your booking page.");
+  });
+
+  it("points a partly-paid member at the club, not a pay door, when no card instrument survives (#2397)", async () => {
+    const { templateData, html } = await captureConfirmedTemplateData(12100, {
+      outstandingBalance: { amountCents: 2100, payableOnline: false },
+    });
+
+    expect(templateData.paymentOutcome).toContain(
+      "The club will be in touch to arrange it.",
+    );
+    expect(templateData.paymentOutcome).not.toContain("your booking page");
+    expect(html).toContain("The club will be in touch to arrange it.");
   });
 
   it("renders the whole door-code line when the lodge has a code", async () => {

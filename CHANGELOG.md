@@ -27,6 +27,19 @@ All notable public reference-release changes should be recorded here.
   payment gives back exactly what it recorded, putting a covered addition back
   to owing.
 
+  If you answer **no**, the member is left a way to pay. Recording a cash
+  payment normally closes any card payment the member still had open, so they
+  cannot pay twice for money the club already holds; the card payment for the
+  addition itself is now the one exception, because that money is still being
+  asked for. The member can settle it from their own booking page exactly as
+  before, and the confirmation on screen tells you whether they can — or whether
+  someone will need to contact them instead. Their confirmation email says the
+  same thing: rather than claiming the booking was paid in full, it shows the
+  booking total, what has been paid and what is still owing, and how to pay the
+  rest. Separately, a booking whose card payment has already taken money can no
+  longer be offered the cash-payment button at all: it now says why, instead of
+  refusing every attempt with a message about the booking having changed.
+
 - **Adding another club member as a guest (#2306, #2307).** Until now a member
   could only put people from their own family group on a booking. There is now a
   new **Add another member as a guest** switch on **Admin → Modules**, off by

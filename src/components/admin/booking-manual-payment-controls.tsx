@@ -376,7 +376,10 @@ export function BookingManualPaymentControls({
                         The booking is marked paid, but the{" "}
                         {formatCents(outstandingAdditionalCents)} addition stays
                         recorded as owing and the club will keep asking the
-                        member for it.
+                        member for it. If the member has a card payment set up
+                        for that addition it is left open, so they can pay it
+                        from their own booking page; you will be told which
+                        applies once the payment is recorded.
                       </span>
                     </label>
                   </fieldset>

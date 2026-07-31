@@ -918,13 +918,25 @@ NOT covered (owner decision, 31 Jul 2026 — record what was handed over):
     ADDITIONAL row.
 ```
 
-The generalised ledger mirror the settle asserts before writing, and which holds
-for both answers (and already held for a card-settled booking carrying an
-uncollected addition):
+The generalised ledger mirror, which holds for both answers (and already held
+for a card-settled booking carrying an uncollected addition):
 
 ```text
 amountCents + creditAppliedCents + (uncollected addition) = finalPriceCents
 ```
+
+It is not asserted at runtime inside the settle — the settled figure is defined
+as the left-hand side, so any in-transaction check is a tautology. It is upheld
+by construction (the two rows are a split of one figure), by the fenced write's
+WHERE clauses, and after the fact by `auditIbAppliedCreditStrands`; see
+`docs/DOMAIN_INVARIANTS.md` for the full statement.
+
+Stripe-intent hygiene differs by answer. Both answers enqueue a durable
+CANCEL_PAYMENT_INTENT for every live Stripe intent on the payment, EXCEPT that
+a NOT-covered answer spares the payment's current `additionalPaymentIntentId`:
+that extra is still owed, and that intent is the member's only self-service way
+to pay it. Superseded addition intents are still cancelled, and the covered
+answer cancels the addition's intent like any other.
 
 On the reversal, the reversed amount is the figure that was written. A covered
 extra goes back to owing: the ADDITIONAL row SUCCEEDED -> FAILED (reason
@@ -936,7 +948,10 @@ restore.
 Refused (409, nothing written) when the booking is already PAID, is not in a
 payable status, participates in a group settlement, has ANY Xero invoice
 evidence including a queued mint, carries any refund history
-(`refundedAmountCents > 0`), owes nothing, no longer fits the lodge, when
+(`refundedAmountCents > 0`), is in a payment status OUTSIDE
+PENDING/PROCESSING/FAILED — i.e. has already taken money, refused at read time
+since #2397 with a message that says so rather than at the fence with
+"changed while you were recording it" — owes nothing, no longer fits the lodge, when
 the amount owing moved since the admin's dialog rendered, or (#2397) when the
 outstanding extra moved, appeared, or vanished since it did — including when an
 answer arrives for an extra that no longer exists, when an extra exists and no

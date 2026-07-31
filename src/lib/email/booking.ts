@@ -72,6 +72,17 @@ export async function sendBookingConfirmedEmail(
       reference: string;
       invoiceEmailed: boolean;
     };
+    // #2397: the booking IS settled, but for less than it is worth — an admin
+    // recorded a cash / off-Xero payment and said it did not cover an
+    // uncollected price increase, so the club will still ask for the rest.
+    // Passing this is what stops the confirmation telling the member they paid
+    // in full while the admin's own receipt says the opposite. See
+    // `bookingConfirmedTemplate` for the field meanings; `paymentDue` (nothing
+    // paid at all) wins if both are supplied.
+    outstandingBalance?: {
+      amountCents: number;
+      payableOnline: boolean;
+    };
   },
 ) {
   const settings = await loadEmailMessageSettingsForLodge(options?.lodgeId);
@@ -143,9 +154,24 @@ export async function sendBookingConfirmedEmail(
   // "Payment has been processed successfully" for money that has not moved.
   // The legacy per-piece tokens (totalPaid, totalDue, paymentDueNote,
   // paymentReference) stay supplied for overrides that build their own lines.
+  // #2397: the third money outcome — settled, but for LESS than the booking is
+  // worth. Same convention again: complete lines, then the composed sentence,
+  // byte-identical to what the FILE template renders.
+  const outstandingBalance = paymentDue ? undefined : options?.outstandingBalance;
+  const outstandingPaidCents = outstandingBalance
+    ? totalCents - outstandingBalance.amountCents
+    : 0;
+  const outstandingBalanceNote = outstandingBalance
+    ? `Your payment of ${formatMoneyCents(outstandingPaidCents)} has been recorded and your booking is confirmed. ${formatMoneyCents(outstandingBalance.amountCents)} is still owing from a later change to this booking.` +
+      (outstandingBalance.payableOnline
+        ? " You can pay it from your booking page."
+        : " The club will be in touch to arrange it.")
+    : "";
   const paymentOutcome = paymentDue
     ? `Total Due: ${formatMoneyCents(totalCents)}\n\n${paymentDueNote}`
-    : `Total Paid: ${formatMoneyCents(totalCents)}\n\nPayment has been processed successfully.`;
+    : outstandingBalance
+      ? `Booking Total: ${formatMoneyCents(totalCents)}\nPaid: ${formatMoneyCents(outstandingPaidCents)}\nStill Owing: ${formatMoneyCents(outstandingBalance.amountCents)}\n\n${outstandingBalanceNote}`
+      : `Total Paid: ${formatMoneyCents(totalCents)}\n\nPayment has been processed successfully.`;
   // #2262: the outcome is RETURNED so a caller that promised the admin a
   // receipt can report honestly what became of it (queued vs withheld vs
   // failed) instead of turning a decision into a delivery claim. Existing
@@ -193,10 +219,21 @@ export async function sendBookingConfirmedEmail(
         promoAdjustmentCents !== 0
           ? `${promoAdjustmentPrefix}${formatMoneyCents(Math.abs(promoAdjustmentCents))}`
           : "",
-      // Exactly one of these carries a figure: an unpaid confirmation must not
-      // render a "Total Paid" line at all (#2263).
-      totalPaid: paymentDue ? "" : formatMoneyCents(totalCents),
-      totalDue: paymentDue ? formatMoneyCents(totalCents) : "",
+      // An unpaid confirmation must not render a "Total Paid" line at all
+      // (#2263). #2397 adds the third case: a PARTLY paid confirmation carries
+      // BOTH, because both are true — {{totalPaid}} is what the club actually
+      // has (cash plus any credit applied) and {{totalDue}} is what is still
+      // owed, never the whole price.
+      totalPaid: paymentDue
+        ? ""
+        : formatMoneyCents(
+            outstandingBalance ? outstandingPaidCents : totalCents,
+          ),
+      totalDue: paymentDue
+        ? formatMoneyCents(totalCents)
+        : outstandingBalance
+          ? formatMoneyCents(outstandingBalance.amountCents)
+          : "",
       total: formatMoneyCents(totalCents),
       paymentOutcome,
       paymentDueNote,

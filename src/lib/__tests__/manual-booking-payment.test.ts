@@ -220,6 +220,10 @@ function bookingRow(overrides: Record<string, unknown> = {}) {
 function paymentRow(overrides: Record<string, unknown> = {}) {
   return {
     id: "payment-1",
+    // #2397: an unsettled payment — the ordinary settle-from shape. A payment
+    // that has already taken money (SUCCEEDED / refunded) is refused at read
+    // time now, not only at the fence.
+    status: "PENDING",
     xeroInvoiceId: null,
     xeroRefundCreditNoteId: null,
     manuallyMarkedPaidAt: null,
@@ -606,6 +610,44 @@ describe("#2262 guard 2 — Xero refusals", () => {
       })
     );
   });
+
+  it("refuses a payment that has already taken money, at READ time and with the truth", async () => {
+    // #2397. A card capture that stranded before its status promotion (#1418:
+    // confirm-pending-guests / cron-confirm-pending both commit the SUCCEEDED
+    // ledger row in their own transaction and DELIBERATELY leave the booking
+    // CONFIRMED when the promotion then fails) is the one production shape
+    // where a payable booking holds a captured payment — and an upward
+    // modification in that window is the only non-circular way such a booking
+    // acquires an uncollected extra. Before this guard the whole dialog opened,
+    // asked the admin whether the cash covered that extra, and then refused
+    // every answer at the fence with "changed while you were recording it" —
+    // which was false, and repeated on every retry.
+    mocks.paymentFindUnique.mockResolvedValue(
+      paymentRow({ status: "SUCCEEDED" })
+    );
+
+    await expect(settle()).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining("already taken money"),
+    });
+    expect(mocks.paymentUpdateMany).not.toHaveBeenCalled();
+    expect(mocks.bookingUpdateMany).not.toHaveBeenCalled();
+  });
+
+  it.each(["PENDING", "PROCESSING", "FAILED"])(
+    "still settles from the ordinary unsettled shape %s (a declined card is exactly what cash remedies)",
+    async (status) => {
+      mocks.paymentFindUnique.mockResolvedValue(paymentRow({ status }));
+
+      await expect(settle()).resolves.toMatchObject({ bookingId: "booking-1" });
+      // The fenced write asserts the SAME list, so the two can never drift.
+      expect(mocks.paymentUpdateMany.mock.calls[0][0]).toMatchObject({
+        where: expect.objectContaining({
+          status: { in: ["PENDING", "PROCESSING", "FAILED"] },
+        }),
+      });
+    }
+  );
 
   it("refuses a booking settled as part of a group booking", async () => {
     mocks.bookingFindUnique.mockImplementation(async (args: { select?: unknown }) =>
@@ -1629,6 +1671,35 @@ describe("#2397 — an outstanding extra, and the admin's answer about it", () =
       expect(result.settledAdditionalAmountCents).toBe(EXTRA_CENTS);
     });
 
+    it("F4 — still cancels the addition's intent, because the cash already covered it", async () => {
+      // The spare is for the NOT-covered answer only. Here the extra is settled,
+      // so a live addition intent is a door to a second payment for money the
+      // club already holds — exactly what the blanket cancel exists to stop.
+      mocks.paymentFindUnique.mockResolvedValue(
+        paymentRow({
+          additionalAmountCents: EXTRA_CENTS,
+          additionalPaymentStatus: "PENDING",
+          additionalPaymentIntentId: "pi_additional",
+        })
+      );
+      mocks.paymentTransactionFindMany.mockResolvedValue([
+        {
+          id: "txn-additional",
+          kind: PaymentTransactionKind.ADDITIONAL,
+          stripePaymentIntentId: "pi_additional",
+          amountCents: EXTRA_CENTS,
+        },
+      ]);
+
+      const result = await settleCovered();
+
+      expect(result.outstandingIntentIds).toEqual(["pi_additional"]);
+      expect(result.sparedAdditionalPaymentIntentId).toBeNull();
+      expect(mocks.cancelPaymentIntentIfCancellable).toHaveBeenCalledWith(
+        "pi_additional"
+      );
+    });
+
     it("409s when the extra moved since the dialog rendered, writing nothing", async () => {
       await expect(
         settle({
@@ -1686,8 +1757,19 @@ describe("#2397 — an outstanding extra, and the admin's answer about it", () =
       expect(additionalMintUpdateCall()).toBeUndefined();
       expect(additionalMintCreateCall()).toBeUndefined();
       const fenced = fencedPaymentWrite();
+      // Nothing claims the extra was collected...
       expect(fenced.data).not.toHaveProperty("additionalPaymentStatus");
-      expect(fenced.where).not.toHaveProperty("additionalAmountCents");
+      // ...but the write is STILL fenced on the extra it reasoned about (F2).
+      // The not-covered answer derives the figure it records by SUBTRACTING
+      // that extra, so a card capture landing between the read and this write
+      // must refuse here rather than record cash + card as cash alone.
+      expect(fenced.where).toMatchObject({
+        additionalAmountCents: EXTRA_CENTS,
+        OR: [
+          { additionalPaymentStatus: null },
+          { additionalPaymentStatus: { not: "SUCCEEDED" } },
+        ],
+      });
       expect(
         isAdditionalAmountUncollected({
           additionalAmountCents: EXTRA_CENTS,
@@ -1761,6 +1843,109 @@ describe("#2397 — an outstanding extra, and the admin's answer about it", () =
           }),
         }),
         tx
+      );
+    });
+
+    it("F2 — REFUSES when a card capture settles the extra between the read and the write", async () => {
+      // The additional-capture writer takes NO advisory lock (the confirm route
+      // and the Stripe webhook both go straight to
+      // markPaymentIntentTransactionSucceeded), so under read-committed a
+      // capture can commit between the locked read above and the fenced write.
+      // Without the fence clause on THIS branch the club would end up holding
+      // cash + card while `amountCents` recorded only the cash — the delta
+      // under-recorded, the exact inverse of the owner's rule. The fence
+      // matching nothing is what turns that into a 409.
+      mocks.paymentUpdateMany.mockResolvedValue({ count: 0 });
+
+      await expect(settleUncovered()).rejects.toMatchObject({
+        status: 409,
+        message: expect.stringContaining("changed while you were recording it"),
+      });
+      // The clause that makes the race LOSABLE at all: without it the WHERE
+      // says nothing about the delta, the captured row matches, and the settle
+      // commits $100 as the whole of a $121 booking the club now holds $121 for.
+      expect(fencedPaymentWrite().where).toMatchObject({
+        additionalAmountCents: EXTRA_CENTS,
+        OR: [
+          { additionalPaymentStatus: null },
+          { additionalPaymentStatus: { not: "SUCCEEDED" } },
+        ],
+      });
+      // The booking is never claimed PAID on a lost fence.
+      expect(mocks.bookingUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("F4 — spares the addition's own live card intent, so the money it chases can still be paid", async () => {
+      // Cancelling this intent left the club chasing a member who had no way to
+      // send the money: the booking page still renders the pay card, but the
+      // secret route would hand back a cancelled intent. Everything else is
+      // still disarmed — a live PRIMARY intent is a door to a SECOND payment
+      // for cash the club already holds.
+      mocks.paymentFindUnique.mockResolvedValue(
+        paymentRow({
+          additionalAmountCents: EXTRA_CENTS,
+          additionalPaymentStatus: "PENDING",
+          additionalPaymentIntentId: "pi_additional",
+        })
+      );
+      mocks.paymentTransactionFindMany.mockResolvedValue([
+        {
+          id: "txn-primary",
+          kind: PaymentTransactionKind.PRIMARY,
+          stripePaymentIntentId: "pi_primary",
+          amountCents: 10000,
+        },
+        {
+          id: "txn-additional",
+          kind: PaymentTransactionKind.ADDITIONAL,
+          stripePaymentIntentId: "pi_additional",
+          amountCents: EXTRA_CENTS,
+        },
+      ]);
+
+      const result = await settleUncovered();
+
+      expect(result.outstandingIntentIds).toEqual(["pi_primary"]);
+      expect(result.sparedAdditionalPaymentIntentId).toBe("pi_additional");
+      expect(mocks.cancelPaymentIntentIfCancellable).toHaveBeenCalledTimes(1);
+      expect(mocks.cancelPaymentIntentIfCancellable).toHaveBeenCalledWith(
+        "pi_primary"
+      );
+      expect(mocks.enqueuePaymentIntentCancellationRecovery).not.toHaveBeenCalledWith(
+        expect.objectContaining({ paymentIntentId: "pi_additional" })
+      );
+    });
+
+    it("F4 — spares only the CURRENT addition pointer, never a superseded one", async () => {
+      // A superseded addition intent is a live door to a figure nobody is owed
+      // any more, so it must still be disarmed.
+      mocks.paymentFindUnique.mockResolvedValue(
+        paymentRow({
+          additionalAmountCents: EXTRA_CENTS,
+          additionalPaymentStatus: "PENDING",
+          additionalPaymentIntentId: "pi_additional_current",
+        })
+      );
+      mocks.paymentTransactionFindMany.mockResolvedValue([
+        {
+          id: "txn-additional-old",
+          kind: PaymentTransactionKind.ADDITIONAL,
+          stripePaymentIntentId: "pi_additional_stale",
+          amountCents: 900,
+        },
+        {
+          id: "txn-additional-current",
+          kind: PaymentTransactionKind.ADDITIONAL,
+          stripePaymentIntentId: "pi_additional_current",
+          amountCents: EXTRA_CENTS,
+        },
+      ]);
+
+      const result = await settleUncovered();
+
+      expect(result.outstandingIntentIds).toEqual(["pi_additional_stale"]);
+      expect(result.sparedAdditionalPaymentIntentId).toBe(
+        "pi_additional_current"
       );
     });
 
