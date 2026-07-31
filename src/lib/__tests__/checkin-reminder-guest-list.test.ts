@@ -74,10 +74,11 @@ describe("check-in reminder guest list (#2307)", () => {
     );
 
     // The bug, stated so it cannot come back quietly: no surname may ever end up
-    // on a line of its own, and the two split tokens are gone entirely.
+    // on a line of its own, and neither legacy token may ever again carry a
+    // comma-joined list of one name part.
     expect(call.templateData.guestName).not.toContain("Ada, Bob");
-    expect(call.templateData).not.toHaveProperty("guestFirstName");
-    expect(call.templateData).not.toHaveProperty("guestLastName");
+    expect(call.templateData.guestFirstName).not.toContain("Ada, Bob");
+    expect(call.templateData.guestLastName).not.toContain("Lovelace, Smith");
     expect(call.templateData.guestCount).toBe(3);
   });
 
@@ -131,6 +132,154 @@ describe("check-in reminder guest list (#2307)", () => {
     );
     expect(sendEmailMock.mock.calls[0][0].templateData.guestName).toBe("");
     expect(sendEmailMock.mock.calls[0][0].templateData.guestCount).toBe(0);
+  });
+
+  // --- back-compatibility for a body saved BEFORE the fix ------------------
+  //
+  // Nothing rewrites a club's stored override, so any club that had customised
+  // this message still holds the old "{{guestFirstName}} {{guestLastName}}"
+  // pair. renderTemplateString substitutes an unsupplied token with an empty
+  // string, so had the fix simply dropped the pair, those clubs would have
+  // started sending a check-in reminder that names NOBODY — a worse failure
+  // than the misattribution it replaced, and a silent one.
+
+  it("still names every guest in a body saved with the OLD pair of tokens", async () => {
+    const { sendCheckinReminderEmail } = await import("../email/booking");
+    await sendCheckinReminderEmail(
+      { bookingId: "bk_test" },
+      "member@example.org",
+      "Sam",
+      CHECK_IN,
+      CHECK_OUT,
+      GUESTS,
+      [],
+    );
+    const { templateData } = sendEmailMock.mock.calls[0][0];
+
+    const { renderTemplateString } = await import("../email-message-renderer");
+    // The pre-fix default body, verbatim, which is what a club's saved override
+    // was customised from.
+    const savedOverrideBody =
+      "Check-in Reminder\n\nHi {{firstName}}, your lodge stay begins tomorrow!\n\n" +
+      "Guest list:\n\n{{guestFirstName}} {{guestLastName}}\n\nSee you there.";
+
+    const rendered = renderTemplateString(savedOverrideBody, templateData);
+
+    for (const guest of GUESTS) {
+      expect(rendered).toContain(`${guest.firstName} ${guest.lastName}`);
+    }
+    // One guest per line, and no surname stranded on a line of its own.
+    expect(rendered).toContain("Ada Lovelace\nBob Smith\nCleo Jones");
+    expect(rendered).not.toContain("Ada, Bob");
+    expect(rendered).not.toContain("Lovelace, Smith");
+    expect(rendered).not.toContain("{{");
+  });
+
+  it("leaves no dangling space or empty block once the body is laid out", async () => {
+    // The literal space the saved body puts BETWEEN the two tokens is what makes
+    // the mapping (list, empty) safe rather than merely correct-ish:
+    // plainTextEmailTemplate trims every blank-line-separated block, so that
+    // space disappears at the end of the last line, and a booking with no guests
+    // collapses the whole block away instead of leaving a stray blank paragraph.
+    const { sendCheckinReminderEmail } = await import("../email/booking");
+    const { renderTemplateString } = await import("../email-message-renderer");
+    const { plainTextEmailTemplate } = await import("../email-templates");
+    const savedOverrideBody =
+      "Check-in Reminder\n\nGuest list:\n\n{{guestFirstName}} {{guestLastName}}\n\nSee you there.";
+
+    await sendCheckinReminderEmail(
+      { bookingId: "bk_test" },
+      "member@example.org",
+      "Sam",
+      CHECK_IN,
+      CHECK_OUT,
+      GUESTS,
+      [],
+    );
+    const withGuests = plainTextEmailTemplate(
+      renderTemplateString(
+        savedOverrideBody,
+        sendEmailMock.mock.calls[0][0].templateData,
+      ),
+    );
+    expect(withGuests).toContain("Cleo Jones</div>");
+
+    sendEmailMock.mockClear();
+    await sendCheckinReminderEmail(
+      { bookingId: "bk_test" },
+      "member@example.org",
+      "Sam",
+      CHECK_IN,
+      CHECK_OUT,
+      [],
+      [],
+    );
+    const withNoGuests = plainTextEmailTemplate(
+      renderTemplateString(
+        savedOverrideBody,
+        sendEmailMock.mock.calls[0][0].templateData,
+      ),
+    );
+    // "Guest list:" and "See you there." survive; the empty list block does not
+    // become a paragraph containing a single space.
+    expect(withNoGuests).toContain("Guest list:");
+    expect(withNoGuests).toContain("See you there.");
+    expect(withNoGuests).not.toMatch(/>\s+<\/div>/);
+  });
+
+  it("keeps a body that uses ONE of the old tokens truthful", async () => {
+    const { sendCheckinReminderEmail } = await import("../email/booking");
+    const { renderTemplateString } = await import("../email-message-renderer");
+    await sendCheckinReminderEmail(
+      { bookingId: "bk_test" },
+      "member@example.org",
+      "Sam",
+      CHECK_IN,
+      CHECK_OUT,
+      GUESTS,
+      [],
+    );
+    const { templateData } = sendEmailMock.mock.calls[0][0];
+
+    // {{guestFirstName}} alone still names everybody, in full.
+    expect(renderTemplateString("{{guestFirstName}}", templateData)).toBe(
+      "Ada Lovelace\nBob Smith\nCleo Jones",
+    );
+    // {{guestLastName}} alone shows NOBODY rather than a bare list of surnames.
+    // A surname-only list is precisely how the original bug misattributed
+    // people, so an empty render is the only truthful answer available.
+    expect(renderTemplateString("{{guestLastName}}", templateData)).toBe("");
+  });
+
+  it("tells an admin who re-opens the editor that the old tokens have gone", async () => {
+    // The flagging half. A club whose override still holds the legacy pair gets
+    // a correct email from the mapping above, but the body is stale and should
+    // move to {{guestName}}. Each template's allowedTokens are derived from its
+    // DEFAULT body, so the moment the default stopped using the pair they left
+    // this template's allowed set — and the save-time validator that #2267 built
+    // now names them precisely when the admin next saves.
+    //
+    // This is the whole of the flagging available in the repo today: there is no
+    // proactive "your saved override uses a retired token" banner on the admin
+    // panel. Its only stale-override notice counts overrides whose TEMPLATE KEY
+    // no longer exists, which this is not.
+    const { validateEmailTemplateContent } = await import(
+      "../email-message-renderer"
+    );
+    const result = validateEmailTemplateContent({
+      templateName: "checkin-reminder",
+      subject: "Check-in Reminder",
+      bodyText: "Guest list:\n\n{{guestFirstName}} {{guestLastName}}",
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.disallowedTokens.sort()).toEqual([
+      "guestFirstName",
+      "guestLastName",
+    ]);
+    // Not "unknown": both are still globally approved tokens, so the admin is
+    // told they are not allowed HERE rather than that they are gibberish.
+    expect(result.unknownTokens).toEqual([]);
   });
 
   it("renders the registry default body as one guest per line", async () => {

@@ -454,6 +454,12 @@ export async function sendCheckinReminderEmail(
   // Booking's lodge (multi-lodge phase 8): see sendBookingConfirmedEmail.
   lodgeId?: string | null,
 ) {
+  // One "First Last" per line — see the token comments below for why the same
+  // string is handed to three tokens.
+  const guestList = guests
+    .map((guest) => `${guest.firstName} ${guest.lastName}`.trim())
+    .join("\n");
+
   await sendEmail({
     to: email,
     subject: `Check-in Reminder - ${EMAIL_DEFAULT_LODGE_NAME}`,
@@ -472,9 +478,32 @@ export async function sendCheckinReminderEmail(
       // guest's surname attached to somebody else. One newline-joined
       // "First Last" per guest is what the HTML template has always rendered as
       // a <li> list, so the audit trail and the delivered mail now agree.
-      guestName: guests
-        .map((guest) => `${guest.firstName} ${guest.lastName}`.trim())
-        .join("\n"),
+      guestName: guestList,
+      // BACK-COMPATIBILITY for a club that SAVED an override of this body before
+      // the fix above. Their stored text still says
+      // "{{guestFirstName}} {{guestLastName}}", and a token nobody supplies
+      // renders as an empty string — so dropping the pair outright would have
+      // sent those clubs a reminder that names NOBODY, which is worse than the
+      // bug it replaced.
+      //
+      // THE MAPPING, and why it is this one. {{guestFirstName}} carries the same
+      // full "First Last" per-guest list as {{guestName}}, and
+      // {{guestLastName}} is deliberately empty:
+      //   - the saved pair "{{guestFirstName}} {{guestLastName}}" renders the
+      //     correct one-guest-per-line list, with the literal space between the
+      //     two tokens left trailing at the end of the last line — invisible,
+      //     because plainTextEmailTemplate trims every blank-line-separated
+      //     block, and because an empty guest list makes the whole block trim to
+      //     nothing and drop out rather than leaving a stray blank line;
+      //   - a body using {{guestFirstName}} alone still names everybody;
+      //   - a body using {{guestLastName}} alone renders nothing. Surnames on
+      //     their own cannot be shown truthfully — a bare list of surnames is
+      //     how the original bug misattributed them — so this shows nobody
+      //     rather than somebody wrong.
+      // What it can NEVER do, which was the whole point of the fix, is put one
+      // guest's surname next to another guest's first name.
+      guestFirstName: guestList,
+      guestLastName: "",
       choreName: chores.map((chore) => chore.name).join(", "),
       choreDescription: chores
         .map((chore) => chore.description ?? "")
