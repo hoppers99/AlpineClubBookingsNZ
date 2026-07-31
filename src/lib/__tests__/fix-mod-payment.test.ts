@@ -10,7 +10,7 @@
  * - additional-payment-secret endpoint: returns clientSecret for pending additional PI
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
 
 // --- Mocks ---
@@ -253,6 +253,21 @@ function makeSession() {
   return { user: { id: "m1", role: "MEMBER", accessRoles: [{ role: "USER" }], email: "alice@test.com" } };
 }
 
+/**
+ * The bookings below run 2026-08-01 onward and every scenario edits a stay that
+ * has NOT started — the "future" edit mode these routes serve. Left on the real
+ * clock the suite quietly changed meaning once the NZ calendar date reached the
+ * fixture check-in: getBookingEditPolicy then classifies the same booking as
+ * "in-progress" and the routes correctly answer 400 ("Use the full booking edit
+ * flow ..."), so the payment/refund assertions never ran. Pin the clock so the
+ * scenario under test stays the intended one; the in-progress edit path has its
+ * own deliberate coverage in batch-modify-payment.test.ts.
+ *
+ * Only `Date` is faked — real timers still run, so awaited promises resolve
+ * normally. Booking dates are untouched, so every money assertion is unchanged.
+ */
+const FIXED_NOW = new Date("2026-07-15T00:00:00.000Z"); // NZ 2026-07-15 12:00
+
 function makeBooking(overrides: Record<string, unknown> = {}) {
   return {
     id: "bk1",
@@ -378,6 +393,8 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
 }
 
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(FIXED_NOW);
   mockQueueSupersededAdditionalIntentCancellations.mockResolvedValue([]);
   mockQueueSupersededPrimaryIntentCancellations.mockResolvedValue([]);
   mockUpsertPaymentIntentTransaction.mockResolvedValue({});
@@ -394,6 +411,10 @@ beforeEach(() => {
   });
   mockMarkPaymentIntentTransactionSucceeded.mockResolvedValue({});
   mockMarkPaymentIntentTransactionFailed.mockResolvedValue({});
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 // ============================================================================
@@ -1395,15 +1416,30 @@ describe("GET /api/bookings/[id]/additional-payment-secret", () => {
     expect(res.status).toBe(401);
   });
 
+  /** A live, payable booking unless a test says otherwise. */
+  function additionalPaymentRow(overrides: Record<string, unknown> = {}) {
+    const { booking, ...rest } = overrides as {
+      booking?: Record<string, unknown>;
+    } & Record<string, unknown>;
+    return {
+      id: "p1",
+      additionalPaymentIntentId: "pi_additional",
+      additionalPaymentStatus: "PENDING",
+      additionalAmountCents: 3000,
+      ...rest,
+      booking: { memberId: "m1", status: "PAID", deletedAt: null, ...(booking ?? {}) },
+    };
+  }
+
   it("returns 404 if no pending additional payment", async () => {
     mockedAuth.mockResolvedValue(makeSession() as any);
-    mockPaymentFindUnique.mockResolvedValue({
-      id: "p1",
-      additionalPaymentIntentId: null,
-      additionalPaymentStatus: null,
-      additionalAmountCents: 0,
-      booking: { memberId: "m1" },
-    });
+    mockPaymentFindUnique.mockResolvedValue(
+      additionalPaymentRow({
+        additionalPaymentIntentId: null,
+        additionalPaymentStatus: null,
+        additionalAmountCents: 0,
+      })
+    );
 
     const req = new NextRequest("http://localhost/api/bookings/bk1/additional-payment-secret");
     const res = await GET(req, { params: Promise.resolve({ id: "bk1" }) });
@@ -1412,13 +1448,9 @@ describe("GET /api/bookings/[id]/additional-payment-secret", () => {
 
   it("returns 404 if additional payment already SUCCEEDED", async () => {
     mockedAuth.mockResolvedValue(makeSession() as any);
-    mockPaymentFindUnique.mockResolvedValue({
-      id: "p1",
-      additionalPaymentIntentId: "pi_additional",
-      additionalPaymentStatus: "SUCCEEDED",
-      additionalAmountCents: 3000,
-      booking: { memberId: "m1" },
-    });
+    mockPaymentFindUnique.mockResolvedValue(
+      additionalPaymentRow({ additionalPaymentStatus: "SUCCEEDED" })
+    );
 
     const req = new NextRequest("http://localhost/api/bookings/bk1/additional-payment-secret");
     const res = await GET(req, { params: Promise.resolve({ id: "bk1" }) });
@@ -1427,13 +1459,7 @@ describe("GET /api/bookings/[id]/additional-payment-secret", () => {
 
   it("returns clientSecret and amountCents for pending additional payment", async () => {
     mockedAuth.mockResolvedValue(makeSession() as any);
-    mockPaymentFindUnique.mockResolvedValue({
-      id: "p1",
-      additionalPaymentIntentId: "pi_additional",
-      additionalPaymentStatus: "PENDING",
-      additionalAmountCents: 3000,
-      booking: { memberId: "m1" },
-    });
+    mockPaymentFindUnique.mockResolvedValue(additionalPaymentRow());
     mockedGetPaymentIntent.mockResolvedValue({
       client_secret: "pi_additional_secret_xyz",
     } as any);
@@ -1447,15 +1473,71 @@ describe("GET /api/bookings/[id]/additional-payment-secret", () => {
     expect(data.amountCents).toBe(3000);
   });
 
+  /*
+    #2350. Cancelling a booking marks the additional intent FAILED and leaves
+    `additionalAmountCents` alone, and the cancel path only asks Stripe to cancel
+    an intent that was still OUTSTANDING — an intent that had already failed (a
+    declined card) is left confirmable. So an intent-id-and-status gate handed
+    the owner of a cancelled booking a live client secret they could confirm with
+    a different card, and the member was charged for a booking that no longer
+    existed. Stripe is never even asked here now.
+  */
+  it("refuses the secret for a booking whose lifecycle cannot collect it", async () => {
+    for (const status of ["CANCELLED", "BUMPED", "DRAFT", "WAITLISTED"]) {
+      mockedGetPaymentIntent.mockClear();
+      mockedAuth.mockResolvedValue(makeSession() as any);
+      mockPaymentFindUnique.mockResolvedValue(
+        additionalPaymentRow({
+          additionalPaymentStatus: "FAILED",
+          booking: { status },
+        })
+      );
+
+      const req = new NextRequest("http://localhost/api/bookings/bk1/additional-payment-secret");
+      const res = await GET(req, { params: Promise.resolve({ id: "bk1" }) });
+      expect(res.status).toBe(404);
+      expect(mockedGetPaymentIntent).not.toHaveBeenCalled();
+    }
+  });
+
+  it("refuses the secret for a soft-deleted booking", async () => {
+    mockedGetPaymentIntent.mockClear();
+    mockedAuth.mockResolvedValue(makeSession() as any);
+    mockPaymentFindUnique.mockResolvedValue(
+      additionalPaymentRow({ booking: { deletedAt: new Date() } })
+    );
+
+    const req = new NextRequest("http://localhost/api/bookings/bk1/additional-payment-secret");
+    const res = await GET(req, { params: Promise.resolve({ id: "bk1" }) });
+    expect(res.status).toBe(404);
+    expect(mockedGetPaymentIntent).not.toHaveBeenCalled();
+  });
+
+  /*
+    PAYMENT_PENDING is deliberately IN the payable list even though the admin
+    owed queues drop it: they drop it only so their counts can be summed with the
+    unpaid-finished-stays queue without double-counting, and a PAYMENT_PENDING
+    booking can genuinely carry a delta (adding a guest to a booking with an
+    issued Xero invoice raises one). Hiding the member's own pay button for a
+    counting reason would strand real money.
+  */
+  it("still serves a PAYMENT_PENDING booking, which the admin queues exclude", async () => {
+    mockedAuth.mockResolvedValue(makeSession() as any);
+    mockPaymentFindUnique.mockResolvedValue(
+      additionalPaymentRow({ booking: { status: "PAYMENT_PENDING" } })
+    );
+    mockedGetPaymentIntent.mockResolvedValue({
+      client_secret: "pi_additional_secret_xyz",
+    } as any);
+
+    const req = new NextRequest("http://localhost/api/bookings/bk1/additional-payment-secret");
+    const res = await GET(req, { params: Promise.resolve({ id: "bk1" }) });
+    expect(res.status).toBe(200);
+  });
+
   it("returns 403 for a different member trying to access", async () => {
     mockedAuth.mockResolvedValue({ user: { id: "other-member", role: "MEMBER", accessRoles: [{ role: "USER" }] } } as any);
-    mockPaymentFindUnique.mockResolvedValue({
-      id: "p1",
-      additionalPaymentIntentId: "pi_additional",
-      additionalPaymentStatus: "PENDING",
-      additionalAmountCents: 3000,
-      booking: { memberId: "m1" }, // belongs to m1, not other-member
-    });
+    mockPaymentFindUnique.mockResolvedValue(additionalPaymentRow());
 
     const req = new NextRequest("http://localhost/api/bookings/bk1/additional-payment-secret");
     const res = await GET(req, { params: Promise.resolve({ id: "bk1" }) });
