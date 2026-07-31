@@ -41,7 +41,9 @@ import { auth } from "@/lib/auth";
 import { hasAdminAreaAccess } from "@/lib/admin-permissions";
 import { APP_TIME_ZONE } from "@/config/operational";
 import {
+  AlertTriangle,
   CalendarX2,
+  CircleDollarSign,
   CreditCard,
   Eye,
   Landmark,
@@ -88,6 +90,32 @@ function paymentChip(source: AdminBookingRow["operational"]["paymentSource"]): {
     default:
       return { tone: "neutral", icon: MinusCircle, label: "No payment" };
   }
+}
+
+/**
+ * How much of the booking's money has actually arrived (#2350).
+ *
+ * A booking modified upwards after it was paid keeps its PAID lifecycle status —
+ * correctly, the stay is confirmed — while the extra sits uncollected on the
+ * payment row. Before this the list showed nothing at all, so the outstanding
+ * amount was invisible everywhere. The booking status chip beside this one is
+ * deliberately left alone; this reports SETTLEMENT, not lifecycle.
+ *
+ * Returns null whenever settlement and lifecycle agree — including the fully
+ * settled case. A booking whose money has all arrived already carries a "Paid"
+ * status chip in the column beside this one, and a second identical chip on
+ * every paid row is the exact noise this function exists to avoid; the only
+ * thing worth saying here is the disagreement.
+ */
+function paymentSettlementChip(booking: AdminBookingRow): {
+  tone: ChipTone;
+  icon: LucideIcon;
+  label: string;
+} | null {
+  if (booking.operational.outstandingAdditionalCents > 0) {
+    return { tone: "warning", icon: CircleDollarSign, label: "Partly paid" };
+  }
+  return null;
 }
 
 export default async function AdminBookingsPage({
@@ -409,6 +437,9 @@ export default async function AdminBookingsPage({
               {bookings.map((booking) => {
                 const nonMemberGuestCount = booking.guests.filter((guest) => !guest.isMember).length;
                 const payment = paymentChip(booking.operational.paymentSource);
+                const settlement = paymentSettlementChip(booking);
+                const outstandingAdditionalCents =
+                  booking.operational.outstandingAdditionalCents;
                 const nights = nightsBetween(booking.checkIn, booking.checkOut);
 
                 return (
@@ -478,9 +509,21 @@ export default async function AdminBookingsPage({
                       ) : null}
                     </TableCell>
                     <TableCell>
-                      <MiniChip tone={payment.tone} icon={payment.icon}>
-                        {payment.label}
-                      </MiniChip>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <MiniChip tone={payment.tone} icon={payment.icon}>
+                          {payment.label}
+                        </MiniChip>
+                        {settlement ? (
+                          <MiniChip tone={settlement.tone} icon={settlement.icon}>
+                            {settlement.label}
+                          </MiniChip>
+                        ) : null}
+                        {outstandingAdditionalCents > 0 ? (
+                          <MiniChip tone="warning" icon={AlertTriangle}>
+                            {formatCents(outstandingAdditionalCents)} due
+                          </MiniChip>
+                        ) : null}
+                      </div>
                     </TableCell>
                   </TableRow>
                 );

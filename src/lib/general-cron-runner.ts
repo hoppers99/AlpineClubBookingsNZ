@@ -1,4 +1,5 @@
 import { purgeExpiredBookingRequests } from "@/lib/booking-request";
+import { sendAdditionalPaymentReminders } from "@/lib/cron-additional-payment-reminders";
 import { confirmPendingBookings } from "@/lib/cron-confirm-pending";
 import {
   recordCronJobRunSafe,
@@ -11,6 +12,7 @@ import { sendSchoolAttendeeConfirmationPrompts } from "@/lib/school-attendee-con
 import { reportCronError } from "@/lib/observability-bridge";
 
 const GENERAL_CRON_JOB_NAMES = [
+  "additional-payment-reminders",
   "confirm-pending",
   "group-settlement-reaper",
   "pre-arrival-reminders",
@@ -22,6 +24,9 @@ const GENERAL_CRON_JOB_NAMES = [
 export type GeneralCronJobName = (typeof GENERAL_CRON_JOB_NAMES)[number];
 
 export interface GeneralCronCycleResult {
+  additionalPaymentReminders: Awaited<
+    ReturnType<typeof sendAdditionalPaymentReminders>
+  > | null;
   confirmPending: Awaited<ReturnType<typeof confirmPendingBookings>> | null;
   groupSettlementReap: Awaited<ReturnType<typeof reapStaleGroupSettlements>> | null;
   preArrivalReminders: Awaited<ReturnType<typeof sendPreArrivalReminders>> | null;
@@ -44,6 +49,7 @@ type GeneralCronTask<T> = {
 export interface GeneralCronRunnerDependencies {
   recordCronRun?: (input: RecordCronJobRunInput) => Promise<void> | void;
   tasks?: Partial<{
+    sendAdditionalPaymentReminders: typeof sendAdditionalPaymentReminders;
     confirmPendingBookings: typeof confirmPendingBookings;
     reapStaleGroupSettlements: typeof reapStaleGroupSettlements;
     sendPreArrivalReminders: typeof sendPreArrivalReminders;
@@ -122,6 +128,7 @@ export async function runGeneralCronCycle(
   const recordCronRun = dependencies.recordCronRun ?? recordCronJobRunSafe;
   const taskDependencies = dependencies.tasks ?? {};
   const result: GeneralCronCycleResult = {
+    additionalPaymentReminders: null,
     confirmPending: null,
     groupSettlementReap: null,
     preArrivalReminders: null,
@@ -131,6 +138,14 @@ export async function runGeneralCronCycle(
   };
   const failures: Array<{ jobName: GeneralCronJobName; message: string }> = [];
   const tasks: GeneralCronTask<unknown>[] = [
+    {
+      jobName: "additional-payment-reminders",
+      resultKey: "additionalPaymentReminders",
+      failureMessage: "Additional payment reminder cron error",
+      work:
+        taskDependencies.sendAdditionalPaymentReminders ??
+        sendAdditionalPaymentReminders,
+    },
     {
       jobName: "confirm-pending",
       resultKey: "confirmPending",

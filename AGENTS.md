@@ -353,6 +353,15 @@ At the successful end of a meaningful piece of work:
      with full evidence and wait.
 4. Merge eligible PRs with a merge commit (never squash, rebase-merge, or
    force-push). A linked issue may close only when its PR is eligible and merged.
+   **Once a PR is eligible and only waiting on CI, arm
+   `gh pr merge <n> --auto --merge` rather than polling.** It lands the instant
+   the checks pass, closing the window in which `main` can move underneath and
+   force another conflict-resolve plus a full CI cycle. Polling for green and
+   merging by hand reliably loses that race when several sessions are active.
+   Note that another session may also merge a PR you built the moment the owner
+   approves it — so post the §5 close-out comment on the linked issue as soon as
+   you see it merged, whoever merged it, rather than assuming you will be the one
+   to do it.
 5. Close the linked issue at merge time (owner directive, 30 Jul 2026) with a
    plain-English close-out comment on the issue: what shipped, the delivering
    PR, what the review rounds found and how it was fixed (a sentence or two),
@@ -432,6 +441,22 @@ handed an epic-with-children or asked to run several related issues at once.
   stacked topical commits (schema / lib / callers / UI / tests / docs), **never
   push, never touch GitHub**, and run only lint + typecheck + targeted tests
   locally (CI arbitrates the full suite).
+- **Brief from the owner's decision, read verbatim — never from your memory of
+  it.** Before writing an implementor brief, read the decision comment itself
+  (`gh issue view <n> --json comments -q '.comments[].body'`) and quote its
+  operative sentences into the brief. Checking that a decision **exists** is not
+  reading it, and inferring a remedy from the issue *title* is how you end up
+  building the option the owner rejected — that happened on #2400 (31 Jul 2026),
+  where the brief asked for a per-member share split the owner had explicitly
+  turned down. Context compaction makes this worse: what survives is a summary of
+  a decision, which feels like knowing it. **Treat any decision you did not read
+  in the current context as unread.**
+- **Every brief states that the issue's binding decision governs, and that where
+  the brief and the issue disagree the issue wins.** That line is what let the
+  #2400 implementor override a wrong brief and build the right thing. No review
+  lens can catch this class — a reviewer checks the diff against the brief, and
+  it is the brief that is wrong — so the implementor's authority to contradict
+  the orchestrator is the only defence there is.
 - **Review subagents** attack the diff before the PR opens. **The orchestrator
   chooses the review angle and how many reviewers per issue, scaled to risk:**
   - Critical issues (money, schema/migrations, auth/security, Xero/Stripe, booking
@@ -453,6 +478,27 @@ handed an epic-with-children or asked to run several related issues at once.
   two adversarial reviewers already covered costs a full review cycle and rarely
   catches what the fix subagent missed; current models also self-verify their own
   work, so instructing them to re-verify mostly buys redundancy.
+- **Two different things are both called "verifying the fix". Keep them apart —
+  conflating them is what turns a wave into a treadmill.**
+  - **verify-fix (§5): targeted, in-lane, always do it.** Confirm each fix does
+    what it claims and broke no neighbour: re-run the touched and adjacent
+    suites, mutation-test each new guard, re-read the changed hunks. Cheap,
+    bounded, and it is what catches the "fixes introduce new problems" class.
+  - **A fresh adversarial lens over the diff: expensive, and NOT the default.**
+    Reserve it for a security blocker, or for code the fix round **newly wrote
+    that no lens has seen** — a fix that widens scope onto a different route or
+    module. Scope that pass to the new code only, never the whole diff. If the
+    fix round only changed lines the reviewers already read, stop.
+- **A fix report's "what I did not verify" list is not a work queue.** Every
+  honest report ends with one, because the brief asks for it — so treating each
+  caveat as an open loop never terminates. Each item is resolved, or written into
+  the PR as a stated limit with its reasoning. It does not spawn another agent.
+- **Price the delay, because someone pays it.** Every hour a PR sits unready,
+  `main` moves under it: a `CHANGELOG.md` conflict at minimum, and on a schema
+  lane a migration-timestamp collision that fails `Migration drift check` and
+  `verify` together — each costing a re-resolve plus a full CI cycle. Optimise
+  **time-to-ready**, and get sibling PRs ready in the same window rather than
+  serially, since each merge re-conflicts every branch still open behind it.
 
 ### 4. Model selection
 
@@ -513,7 +559,11 @@ CI-green → evidence**.
   - **Fixes introduce new problems more often than expected.** In one wave, three
     separate fixes each created a fresh defect — including a security regression
     that dropped a header on error responses. The verify-fix pass above is what
-    caught every one; run it even when the fix looks obviously correct.
+    caught every one; run it even when the fix looks obviously correct. **This
+    means the targeted, in-lane verify-fix of §3 — re-run the touched and
+    adjacent suites, mutation-test each new guard, re-read the changed hunks. It
+    does not mean a fresh adversarial lens over the diff**, which §3 reserves for
+    a security blocker or for code the fix round newly wrote.
 - **Housekeeping that bites parallel lanes.** Every branch adds a `CHANGELOG.md`
   entry at the top of `## Unreleased`, so concurrent lanes reliably conflict
   there — resolve by keeping **both** entries with an ordinary merge commit, never
@@ -540,6 +590,18 @@ CI-green → evidence**.
   remain. A PR goes ready/merge-ready — and waits for approval — only once every
   residual has been dealt with. That is how complete, high-quality code ships
   (owner directive, 30 Jul 2026).
+- **What is and is not a residual — this loop must terminate.** A residual is
+  **known, achievable work**: a defect, a gap, a fix you could make now. It is
+  **not** every limit an honest report names. "Not exercised against a live
+  Postgres", "no screen reader was used", "reasoned but not measured" are
+  **stated limits** — write them in the PR with their reasoning and move on.
+  Treating them as residuals never terminates, because a truthful report always
+  produces more of them, and each extra loop is paid for in `main`-drift
+  conflicts and CI cycles (§5). When in doubt ask: *is there a change I could
+  make right now that removes this?* If no, it is a stated limit, not a residual.
+- **"Re-review the delta" above means review the newly-written lines**, not a
+  fresh pass over the whole diff, and it is only warranted when the iteration
+  widened scope into code no lens has read (§3).
 - **Never** leave a residual merely noted in the PR body. A written "Residual
   Risks" entry that describes a known, achievable fix is a deferral, not a
   disclosure — make the fix instead. A **refuted change is not a fenced-off
