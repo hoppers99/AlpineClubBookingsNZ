@@ -17,10 +17,16 @@ All notable public reference-release changes should be recorded here.
   than on the original problem, and the error finally reported was the clean-up
   mess rather than the cause. Tests that permanently change something now put it
   back before each attempt, and each attempt books different nights, so a repeat
-  run starts from where the first one did. Groups of tests that used to be
-  chained together end to end have also been unchained down to the pairs that
-  genuinely depend on each other, so one test's bad luck can no longer drag its
-  neighbours down with it.
+  run starts from where the first one did. Where a test genuinely has to re-use
+  or move the booking an earlier test made, and so cannot simply pick different
+  nights, it clears that booking before every attempt instead. Groups of tests
+  that used to be chained together end to end have also been unchained down to
+  the pairs that genuinely depend on each other, so one test's bad luck can no
+  longer drag its neighbours down with it. Relatedly, the tests reach a booking's
+  dates by paging forward through the booking calendar a month at a time: that
+  walk now has room for the furthest dates a repeat run can ask for, and says so
+  plainly if it ever runs out, instead of quietly stopping on the wrong month and
+  failing later on a day it was never showing.
 
   The second: the pages that stream in progressively briefly contain each piece
   of text twice — once in the version being delivered and once in the version

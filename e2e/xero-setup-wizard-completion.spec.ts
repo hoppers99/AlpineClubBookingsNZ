@@ -72,6 +72,16 @@ test("operator completes the whole Xero wizard including verified webhooks", asy
   await page
     .getByRole("button", { name: /(save|replace) credentials/i })
     .click();
+  // Assert on what THIS save changed, not on standing state (#2302). "Both
+  // credentials stored" renders whenever a pair is stored, and the beforeAll
+  // reset deliberately leaves the pair in place — so from attempt 1 onwards that
+  // badge is already on screen before the click and would pass even if the save
+  // silently failed. The success banner is written only by a save that returned
+  // OK, so it holds the assertion honest on every attempt; the badge is still
+  // checked afterwards for the stored-pair state the next step depends on.
+  await expect(
+    page.getByRole("status").getByText(/Credentials saved/i),
+  ).toBeVisible();
   await expect(page.getByText(/Both credentials stored/i)).toBeVisible();
   await page.getByRole("button", { name: "Continue" }).click();
 

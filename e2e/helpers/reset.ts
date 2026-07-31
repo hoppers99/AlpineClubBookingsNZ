@@ -25,80 +25,167 @@ import { expect, type APIRequestContext } from "@playwright/test";
  * See docs/E2E_PLAYWRIGHT.md → "Retry idempotency".
  */
 
-// Booking statuses `POST /api/bookings/<id>/cancel` accepts AND
-// `GET /api/admin/bookings` can filter on (its VALID_STATUSES set has no
-// AWAITING_REVIEW, so a leftover in that state is not reachable here — no spec
-// creates one).
-const CANCELLABLE_STATUS_FILTER = [
+// Booking statuses this helper clears, all of which `GET /api/admin/bookings`
+// can filter on:
+//  - the six `POST /api/bookings/<id>/cancel` accepts, and
+//  - DRAFT, which cancel REFUSES (it is not in CANCELLABLE_BOOKING_STATUSES,
+//    src/lib/booking-cancel.ts) but which does hold a member night while
+//    unexpired — it is in MEMBER_NIGHT_CONFLICT_BOOKING_STATUSES. A leftover
+//    draft is exactly what an on-behalf/wizard attempt that died before payment
+//    leaves behind, so it is cleared through the product's own admin delete
+//    (`DELETE /api/bookings/<id>` hard-deletes a draft for an ADMIN actor —
+//    src/lib/booking-delete.ts) rather than silently missed.
+//
+// Known blind spots, none of them reachable from the specs that call this today,
+// all of them now VISIBLE rather than silent (the post-condition below re-lists
+// and fails if anything it can see survives):
+//  - AWAITING_REVIEW: cancellable, but absent from the list route's
+//    VALID_STATUSES, so it cannot be listed here at all. Whole-lodge requests are
+//    the only source and that spec does its own cleanup.
+//  - COMPLETED: holds a member night and is listable, but nothing can cancel it.
+//    Only the completion sweep produces it, and CRON_ENABLED is off in the E2E
+//    stack.
+//  - Ownership: the list route reports `memberName` for the booking OWNER only
+//    (it returns no guest names), so a leftover where this member is a GUEST on
+//    someone else's booking cannot be matched. Every caller here books the
+//    member as the owner.
+const CLEARABLE_STATUSES = [
+  "DRAFT",
   "PENDING",
   "PAYMENT_PENDING",
   "CONFIRMED",
   "PAID",
   "WAITLISTED",
   "WAITLIST_OFFERED",
-].join(",");
+] as const;
+const CLEARABLE_STATUS_FILTER = CLEARABLE_STATUSES.join(",");
 
-/**
- * Cancels every live booking a named member owns that checks in on `checkIn`,
- * and returns how many it cancelled (0 on a clean first attempt).
- *
- * CANCELLED is outside `MEMBER_NIGHT_CONFLICT_BOOKING_STATUSES`
- * (src/lib/booking-member-night-conflicts.ts) and outside the capacity-holding
- * set, so cancelling is enough to restore the pre-attempt invariant — the
- * booking need not be deleted (and, not being a DRAFT, could not be).
- *
- * Driven entirely through the admin API the product already exposes: no direct
- * database access is introduced into the Playwright process, and no test-only
- * endpoint is added.
- *
- * @param adminRequest an ADMIN-authenticated request context (full admin: the
- *   cancel route's `notifyMember` opt-out is booking-management-admin only).
- */
-export async function cancelMemberBookingsOnDate(
+type ListedBooking = {
+  id: string;
+  memberName: string;
+  checkIn: string;
+  status: string;
+  deletedAt: string | null;
+};
+
+async function listLeftovers(
   adminRequest: APIRequestContext,
-  { memberName, checkIn }: { memberName: string; checkIn: string },
-): Promise<number> {
-  const calendarMonth = checkIn.slice(0, 7);
+  { memberName, calendarMonth, checkIns }: {
+    memberName: string;
+    calendarMonth: string;
+    checkIns: readonly string[];
+  },
+): Promise<ListedBooking[]> {
   const listed = await adminRequest.get(
-    `/api/admin/bookings?calendarMonth=${calendarMonth}&status=${CANCELLABLE_STATUS_FILTER}`,
+    `/api/admin/bookings?calendarMonth=${calendarMonth}&status=${CLEARABLE_STATUS_FILTER}`,
   );
   expect(
     listed.ok(),
     `GET /api/admin/bookings?calendarMonth=${calendarMonth} (${listed.status()})`,
   ).toBeTruthy();
 
-  const body = (await listed.json()) as {
-    bookings: Array<{
-      id: string;
-      memberName: string;
-      checkIn: string;
-      status: string;
-      deletedAt: string | null;
-    }>;
-  };
-
-  const leftovers = body.bookings.filter(
+  const body = (await listed.json()) as { bookings: ListedBooking[] };
+  return body.bookings.filter(
     (booking) =>
       booking.memberName === memberName &&
-      booking.checkIn === checkIn &&
+      checkIns.includes(booking.checkIn) &&
       !booking.deletedAt,
   );
+}
 
-  for (const booking of leftovers) {
-    // Credit, not card: these bookings are never paid, so no provider call is
-    // made either way, and `credit` needs no Stripe intent to exist.
-    const cancelled = await adminRequest.post(
-      `/api/bookings/${booking.id}/cancel`,
-      { data: { refundMethod: "credit", notifyMember: false } },
+/**
+ * Clears every live booking a named member OWNS that checks in on one of the
+ * given dates, and returns how many it cleared (0 on a clean first attempt).
+ *
+ * CANCELLED is outside `MEMBER_NIGHT_CONFLICT_BOOKING_STATUSES`
+ * (src/lib/booking-member-night-conflicts.ts) and outside the capacity-holding
+ * set, so cancelling restores the pre-attempt invariant for every status the
+ * cancel route accepts; a DRAFT, which it refuses, is hard-deleted instead.
+ *
+ * Both effects are then VERIFIED: the same query is re-run and must come back
+ * empty. A silent no-op — a filter that no longer matches the response shape, a
+ * status nothing here can clear — would otherwise degrade into exactly the
+ * retry pollution this helper exists to prevent, and would do it invisibly.
+ *
+ * Driven entirely through the admin API the product already exposes: no direct
+ * database access is introduced into the Playwright process, and no test-only
+ * endpoint is added.
+ *
+ * @param adminRequest an ADMIN-authenticated request context. Full admin, for
+ *   three reasons: the cancel route's `notifyMember` opt-out is
+ *   booking-management-admin only; the started-stay block (#2029) is waived for
+ *   ADMIN, which a leftover shifted into the past needs; and only an admin may
+ *   delete another member's draft.
+ * @param checkIn one check-in date, or several (a spec whose booking MOVES can
+ *   leave it on any of the dates it moves through).
+ */
+export async function cancelMemberBookingsOnDate(
+  adminRequest: APIRequestContext,
+  {
+    memberName,
+    checkIn,
+  }: { memberName: string; checkIn: string | readonly string[] },
+): Promise<number> {
+  const checkIns = typeof checkIn === "string" ? [checkIn] : [...checkIn];
+  const months = [...new Set(checkIns.map((date) => date.slice(0, 7)))];
+
+  let cleared = 0;
+  for (const calendarMonth of months) {
+    const monthCheckIns = checkIns.filter((date) =>
+      date.startsWith(calendarMonth),
     );
+    const leftovers = await listLeftovers(adminRequest, {
+      memberName,
+      calendarMonth,
+      checkIns: monthCheckIns,
+    });
+    if (leftovers.length === 0) continue;
+
+    for (const booking of leftovers) {
+      if (booking.status === "DRAFT") {
+        const deleted = await adminRequest.delete(`/api/bookings/${booking.id}`);
+        expect(
+          deleted.ok(),
+          `delete leftover DRAFT booking ${booking.id} on ${booking.checkIn} ` +
+            `(${deleted.status()}): ${await deleted.text()}`,
+        ).toBeTruthy();
+        continue;
+      }
+      // Credit, not card: none of these leftovers has a captured payment, so no
+      // provider call is made either way, and `credit` needs no Stripe intent to
+      // exist. Note this is NOT necessarily the no-payment fast flip — only
+      // WAITLISTED/WAITLIST_OFFERED/AWAITING_REVIEW are in
+      // NO_PAYMENT_CANCELLABLE_STATUSES, so a leftover that reached CONFIRMED
+      // (e.g. via admin force-confirm) takes the general cancel path. With
+      // nothing captured that path still moves no money and calls no provider.
+      const cancelled = await adminRequest.post(
+        `/api/bookings/${booking.id}/cancel`,
+        { data: { refundMethod: "credit", notifyMember: false } },
+      );
+      expect(
+        cancelled.ok(),
+        `cancel leftover ${booking.status} booking ${booking.id} on ` +
+          `${booking.checkIn} (${cancelled.status()}): ${await cancelled.text()}`,
+      ).toBeTruthy();
+    }
+    cleared += leftovers.length;
+
+    // Post-condition: the leftovers really are gone, not merely "the request
+    // returned 200".
+    const surviving = await listLeftovers(adminRequest, {
+      memberName,
+      calendarMonth,
+      checkIns: monthCheckIns,
+    });
     expect(
-      cancelled.ok(),
-      `cancel leftover ${booking.status} booking ${booking.id} on ${checkIn} ` +
-        `(${cancelled.status()}): ${await cancelled.text()}`,
-    ).toBeTruthy();
+      surviving.map((booking) => `${booking.status} ${booking.id} on ${booking.checkIn}`),
+      `leftover bookings for ${memberName} survived the reset on ` +
+        `${monthCheckIns.join(", ")} — this attempt would run against a dirty ` +
+        `database (see docs/E2E_PLAYWRIGHT.md → "Retry idempotency")`,
+    ).toEqual([]);
   }
 
-  return leftovers.length;
+  return cleared;
 }
 
 /**

@@ -351,10 +351,12 @@ is still surfaced unchanged, and the whole module stays production-inert.
 
 Five specs flaked on `main` over the last week of July 2026
 (`waitlist`, `xero-setup-wizard`, `stripe-payment`, `bed-allocation`,
-plus the `#21` cross-lodge case). **Every one of them shared one of the two
-mechanisms below**, and in four of the five a *single* transient failure was
+plus the `#21` cross-lodge case). **Every one of them shared one of the first
+two mechanisms below**, and in four of the five a *single* transient failure was
 turned into three by the retry policy. Neither mechanism is a "timing" problem,
 so neither is fixed by a longer timeout, an extra retry, or a `waitForTimeout`.
+The third invariant — no fixed dates — is the standing rule that stops a further
+class from joining them.
 
 ### 1. Retries re-run against the database the failed attempt left behind
 
@@ -393,6 +395,23 @@ Four rules follow, and a new spec must satisfy all four:
   own previous attempt created. Attempt 0 is byte-identical to `stayWindow(index)`.
   Prefer this to `stayWindow(index)` in any test that creates a booking. Keep
   base indices unique per spec, as before.
+
+  **It is unusable in two shapes, and then the reset is the tool instead:** a
+  window held in a `const` at module scope has no `testInfo` to read `retry`
+  from, and a test that must act on the window a PREVIOUS test booked has to keep
+  that window rather than take its own. `booking.spec.ts` (test 2 re-books test
+  1's window to prove the member-night lock) and `admin-override-dates.spec.ts`
+  (later tests shift the booking test 1 made) are both, so each clears its
+  leftover in an idempotent group `beforeAll` via `cancelMemberBookingsOnDate`
+  instead — including, for the override spec, every date the booking is moved
+  through.
+
+  Those retry bands cost calendar navigation: a spec reaches its dates by
+  clicking the wizard calendar's "Next ›" one month at a time, bounded by
+  `MAX_MONTH_HOPS` in `e2e/helpers/booking.ts`. Base 0–15 × attempt 0–2 needs at
+  most 14 hops on any run date and the bound is 24, so nothing in range can run
+  out — and if a future base or stride does, `selectCalendarDay` now fails on the
+  month it could not reach rather than timing out on a day button.
 - **Restore shared state in `afterAll`, never at the end of the test body.**
   `xero-setup-wizard-completion.spec.ts` used to disconnect Xero and rewind the
   wizard on its last line; when it failed earlier it stranded the sibling spec on

@@ -123,6 +123,15 @@ const MOCK_FETCH_RETRY_DELAY_MS = 150;
  * attempt: every caller here treats a non-2xx as a real fixture/gating failure
  * and must keep failing loudly rather than being masked by a retry.
  *
+ * A rejected `fetch` is NOT proof the request never arrived: ECONNREFUSED means
+ * it did not, but ECONNRESET / socket hang up can land after the handler already
+ * ran, so a retry can genuinely repeat a served request. Safe for every caller
+ * here: the reads are idempotent by nature, and the one POST with a side effect
+ * — the intent-to-receive ping, which drives the real webhook route — records
+ * its marker through `recordXeroWebhookValidation`, a single-row upsert keyed on
+ * the provider (src/lib/xero-webhook-validation.ts), so a repeat rewrites the
+ * same row rather than accumulating anything.
+ *
  * Test-only by construction, like the rest of this module: nothing calls it
  * unless `XERO_MOCK_API_ORIGIN` is set, which no real deployment ever sets.
  *
