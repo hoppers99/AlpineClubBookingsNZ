@@ -33,6 +33,75 @@ Future reviews and issues should cite this file when proposing changes.
   (the composition heuristic is removed). Fee changes affect future resolution
   only.
 - Do not introduce floating point money arithmetic.
+- **A promo "use" means the member actually got something (#2299).** A
+  `PromoRedemptionAllocation` row exists only where the application delivered a
+  benefit — `discountCents > 0`, `priceAdjustmentCents ≠ 0`, or
+  `freeNightsUsed > 0` (a price-RAISING fixed-nightly application counts: the
+  member's price genuinely changed). All three usage caps count those rows and
+  nothing else: uses per member, unique members, and total redemptions via the
+  denormalised `PromoCode.currentRedemptions`. The single write-time choke point
+  is `normalizeAllocations` in `src/lib/promo.ts`; every cap query additionally
+  applies `BENEFICIAL_PROMO_ALLOCATION_FILTER` so a legacy all-zero row cannot
+  occupy a slot. Two corollaries: (a) `currentRedemptions` is always the RAW
+  count of a code's allocation rows, so `redeemPromoCode`,
+  `replacePromoRedemptionAllocations` and `deletePromoRedemptionAndAdjustCount`
+  must measure their delta against the raw row count, never a filtered one; and
+  (b) a reprice that destroys a booking's promo benefit RELEASES the slot it
+  held, in the same transaction that removes the benefit — a member holds
+  exactly as many slots as they hold benefits, at every instant. The
+  `PromoRedemption` row is never benefit-gated: it persists for any application
+  with eligible guests and is the audit and reporting trail, which is why the
+  archive-or-delete decision for a promo code counts redemptions, not
+  allocations (`PromoRedemption.promoCodeId` is `onDelete: Restrict`).
+  **Statement order in the two redemption writers is load-bearing**, because the
+  `PromoRedemption_sync_allocation_insert` / `..._update` triggers
+  (`20260527120000_add_promo_redemption_allocations`) upsert a booker allocation
+  row straight from the redemption's own scalars on every `PromoRedemption`
+  write — they exist so an old blue/green colour that writes only
+  `PromoRedemption` still records an allocation. For a zero-benefit application
+  that row is all-zero, so the allocation `deleteMany` must stay AFTER the
+  redemption create/update (or the database silently puts back the row this
+  invariant removes), and `replacePromoRedemptionAllocations` must count the
+  existing rows BEFORE its update (or it counts the trigger's transient row and
+  skews the counter delta).
+  - **Reading `currentRedemptions` for a cap check requires the row lock, and a
+    read under it.** Every path that may write the counter for an existing
+    booking — `booking-modify-plan.ts`, the add-guests route,
+    `booking-date-modification-service.ts`,
+    `booking-guest-removal-service.ts` — takes the `FOR UPDATE` promo row lock
+    before its first cap read, and re-reads the counter under that lock, because
+    the `PromoCode` snapshot it carries was loaded with the booking, before the
+    locks. All four reprice call sites do that re-read through
+    `lockAndRefreshPromoCodeUsage` (including `booking-modify-plan.ts` on its
+    no-swap reprice branch; its swap branch re-reads the whole promo row under
+    the same lock instead), and each must then validate against the object the
+    wrapper RETURNS — validating the snapshot that went in reopens the race. See
+    `docs/CONCURRENCY_AND_LOCKING.md` → "Narrow row-lock protocols".
+  - **A cap check that excludes a booking must exclude it from
+    `currentRedemptions` too.** The counter includes the rows the excluded
+    booking holds right now, and unlike every other cap it cannot be filtered by
+    a `where`. So `excludeBookingId` is paired with an explicit raw count of
+    that booking's own allocation rows, subtracted before the total-redemptions
+    cap is applied. Omitting it makes a booking holding a code's last slot fail
+    its OWN reprice, silently drop the discount, and bill the member the
+    discount back for a date change.
+  - **TRAP: the in-memory `PromoDiscountResult.allocations` is NOT
+    benefit-filtered on the assigned-member path.** `policies/pricing.ts`
+    deliberately emits a zero entry for a `SET_PRICE` guest whose rate already
+    equals the fixed price (`includeWhenZero`), and
+    `calculatePromoDiscountForGuestRates` returns the assigned-member result
+    before `normalizeAllocations` runs. The filter is applied at WRITE time
+    instead, inside `redeemPromoCode` / `replacePromoRedemptionAllocations`.
+    Anything that reads that in-memory list as "who benefited" must apply
+    `isBeneficialPromoAllocation` itself.
+  - **A `SET_PRICE` application whose per-guest adjustments net to exactly zero
+    counts as no use** (deliberate; #2299). In `SET_PRICE` mode every night is
+    re-priced, so a fixed price of $30 against nights of $50 and $10 nets to
+    zero, as does one member owning two guest rows that cancel. The member's
+    total is byte-identical with and without the code, so under the "any price
+    effect" rule there is no effect, and it consumes nothing. The accepted
+    consequence is that such a stay can carry the code indefinitely — which
+    costs nothing, because it gives nothing.
 - Refunds, credits, discounts, Stripe amounts, Xero invoice amounts, and
   membership fees must reconcile back to cent-based ledger records.
 - Admin adjustments need audit, approval, and a visible business reason.
@@ -639,6 +708,27 @@ Future reviews and issues should cite this file when proposing changes.
   The same three paths (single-night/drag placements, `source: "AUTO"`
   suggestions, and move re-drafts) are why draft rows persist under #2251's
   auto-approve, and why a confirmation affordance stays meaningful.
+- **Existing allocation moves preserve their lodge nights and commit atomically
+  (#2366):** an existing-chip drag selects a destination bed only. The hovered
+  column is presentation input, never a target date; the server accepts
+  allocation ids and re-reads each persisted `stayDate` under global booking
+  `lock(1)` followed by the destination lodge's capacity lock. The shared
+  global key makes cancellation's allocation prune and the move mutually
+  exclusive, so a move can never resurrect a row after cancellation. A
+  first-visible chip proxies for that guest's currently
+  visible allocated nights, while a later chip represents only its own night.
+  Every selected row keeps its original NZ date. A same-bed normalized move is a
+  no-op at both client and service boundaries, with no request from the normal
+  client and no audit even if another client calls the route directly.
+  Multi-night existing-allocation moves are all-or-nothing: one destination
+  conflict, inactive bed/room, lodge mismatch, status/guest-date failure,
+  custodian hold or invalid double-bed share rolls back every row. The row
+  updates, any second-occupant promotions, and all corresponding audit entries
+  live in the same transaction. Each promotion audit identifies both the
+  promoted row/guest and the causal moved allocation/guest. This does not
+  change bucket-to-board placement,
+  whose existing bulk path continues to report and skip individual conflicting
+  nights while placing the rest.
 - **A range assignment writes all or nothing, and records itself once (#2251):**
   `assignBedRange` scans, writes and audits inside one transaction. If any
   requested night is blocked, NOTHING is written and the caller receives a
@@ -671,8 +761,10 @@ Future reviews and issues should cite this file when proposing changes.
   will be written, so a partial result is never one click from a warning. The
   31-night `MAX_BED_ALLOCATION_RANGE_NIGHTS` bounds
   the board's READ window, not this write: lodge capacity is the active bed
-  count and never reads `BedAllocation` rows, and no capacity or advisory lock
-  is taken on any allocation write path. The separate write bound
+  count and never reads `BedAllocation` rows. Placement paths nevertheless take
+  the destination lodge's capacity lock because custodian holds share the bed
+  inventory (#2286); existing-allocation moves follow destination-key read →
+  lock → authoritative re-read. The separate write bound
   (`MAX_BED_ALLOCATION_ASSIGN_RANGE_NIGHTS`, 366) exists only to keep one
   transaction finite, and is **refused at, never silently truncated to** — as is
   every board window the admin types.

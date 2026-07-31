@@ -1,9 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
-import { Archive, AlertTriangle, CheckCircle2, RefreshCw, XCircle } from "lucide-react";
+import { Archive, CheckCircle2, RefreshCw, XCircle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -35,8 +35,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { MembershipCancellationBlockerNotice } from "@/components/admin/membership-cancellation-blocker-notice";
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
-import { formatNZDate, formatNZDateTime } from "@/lib/nzst-date";
+import type { MembershipCancellationBlocker } from "@/lib/membership-cancellation-blocker-messages";
+import { formatNZDateTime } from "@/lib/nzst-date";
 import { cn } from "@/lib/utils";
 
 type RequestFilter =
@@ -68,14 +70,10 @@ function pickDetachedLinks(value: OrphanedLinks | undefined): OrphanedLinks | nu
     : null;
 }
 
-type Blocker = {
-  type: "owned_booking" | "guest_appearance";
-  bookingId: string;
-  bookingStatus: string;
-  checkIn: string;
-  checkOut: string;
-  guestAppearanceId?: string;
-};
+// #2392: the blocker shapes and their wording are shared with the server, so
+// the panel below says exactly what the server would say if Approve were
+// pressed — including the unpaid-Xero-invoice refusal and how to clear it.
+type Blocker = MembershipCancellationBlocker;
 
 type CancellationParticipant = {
   id: string;
@@ -173,10 +171,6 @@ function formatDateTime(value: string | null) {
   return formatNZDateTime(new Date(value));
 }
 
-function formatDateOnly(value: string) {
-  return formatNZDate(new Date(value));
-}
-
 function requestStatusLabel(status: string) {
   switch (status) {
     case "REQUESTED":
@@ -236,14 +230,6 @@ function statusBadge(status: string) {
   );
 }
 
-function blockerText(blocker: Blocker) {
-  const prefix =
-    blocker.type === "owned_booking" ? "Owned booking" : "Guest appearance";
-  return `${prefix} ${blocker.bookingId} (${blocker.bookingStatus}) from ${formatDateOnly(
-    blocker.checkIn,
-  )} to ${formatDateOnly(blocker.checkOut)}`;
-}
-
 function canApprove(participant: CancellationParticipant) {
   return participant.status === "REQUESTED" && Boolean(participant.confirmedAt);
 }
@@ -273,6 +259,7 @@ export default function MembershipCancellationsPage() {
     null,
   );
   const [error, setError] = useState("");
+  const errorRef = useRef<HTMLDivElement | null>(null);
   const [message, setMessage] = useState("");
   // #2255: survives the reload that follows an approval, and is cleared at the
   // start of the next review, so it always describes the most recent action.
@@ -310,7 +297,13 @@ export default function MembershipCancellationsPage() {
     return `${parts.join(" and ")} awaiting review`;
   }, [archiveData?.pendingCount, data?.pendingCount]);
 
-  const loadRequests = useCallback(async () => {
+  /**
+   * Reload the cancellation queue. Returns the failure message when the reload
+   * itself failed, and null when it succeeded — because a caller that is about
+   * to set an error of its own has to know it is overwriting one (#2392 review,
+   * residual 5).
+   */
+  const loadRequests = useCallback(async (): Promise<string | null> => {
     setLoading(true);
     setError("");
 
@@ -324,12 +317,14 @@ export default function MembershipCancellationsPage() {
         throw new Error(body.error || "Could not load cancellation requests.");
       }
       setData(body);
+      return null;
     } catch (err) {
-      setError(
+      const failure =
         err instanceof Error
           ? err.message
-          : "Could not load cancellation requests.",
-      );
+          : "Could not load cancellation requests.";
+      setError(failure);
+      return failure;
     } finally {
       setLoading(false);
     }
@@ -372,6 +367,17 @@ export default function MembershipCancellationsPage() {
   useEffect(() => {
     loadArchiveRequests();
   }, [loadArchiveRequests]);
+
+  // Bring a refusal into view and under the cursor. `scrollIntoView` is guarded
+  // because jsdom does not implement it.
+  useEffect(() => {
+    const node = errorRef.current;
+    if (!error || !node) return;
+    node.focus();
+    if (typeof node.scrollIntoView === "function") {
+      node.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [error]);
 
   // #1787: open the notify-choice dialog for a given cancellation-review action.
   function openNotifyChoice(
@@ -444,10 +450,24 @@ export default function MembershipCancellationsPage() {
       setOrphanedLinks(pickDetachedLinks(body.orphanedLinks));
       await loadRequests();
     } catch (err) {
+      const failure =
+        err instanceof Error ? err.message : "Could not review participant.";
+      // #2392 (review M6): a refusal is a statement about the queue, not just
+      // about this click — most often "Xero says money is owing" on a row whose
+      // own panel was loaded before the invoice was raised, or shows nothing at
+      // all. Reloading first means the banner and the participant's panel agree,
+      // and the participant's panel is where the whole list lives. loadRequests
+      // clears the error as it starts, so the refusal is set afterwards.
+      //
+      // If the reload ALSO failed, saying only the refusal would leave the admin
+      // reading a stale queue that looks freshly loaded — the one thing the
+      // reload was added to prevent — so both are said, in that order (#2392
+      // review, residual 5).
+      const reloadFailure = await loadRequests();
       setError(
-        err instanceof Error
-          ? err.message
-          : "Could not review participant.",
+        reloadFailure
+          ? `${failure} The review queue below could not be reloaded either, so it may be out of date: ${reloadFailure}`
+          : failure,
       );
     } finally {
       setSubmittingId(null);
@@ -559,11 +579,23 @@ export default function MembershipCancellationsPage() {
         </div>
       </div>
 
-      {error && (
-        <div className="rounded-md border border-danger-6 bg-danger-3 px-4 py-3 text-sm text-danger-11">
-          {error}
-        </div>
-      )}
+      {/* #2392 (review M6): a refusal can be several sentences long and, on a
+          full queue, render well above the button that was just pressed. The
+          live region is mounted permanently and only its CONTENT is gated —
+          same reason as the family-links region below — and the message itself
+          takes focus so a keyboard or screen-reader user lands on it instead of
+          hunting for it. */}
+      <div role="alert">
+        {error && (
+          <div
+            ref={errorRef}
+            tabIndex={-1}
+            className="rounded-md border border-danger-6 bg-danger-3 px-4 py-3 text-sm text-danger-11 outline-none"
+          >
+            {error}
+          </div>
+        )}
+      </div>
       {message && (
         <div className="rounded-md border border-success-6 bg-success-3 px-4 py-3 text-sm text-success-11">
           {message}
@@ -896,27 +928,10 @@ export default function MembershipCancellationsPage() {
                             </div>
                           </div>
 
-                          {participant.blockers.length > 0 && (
-                            <div className="mt-3 rounded-md border border-warning-6 bg-warning-3 p-3 text-sm text-warning-11">
-                              <div className="flex gap-2">
-                                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-                                <div>
-                                  <p className="font-medium">
-                                    Resolve these bookings before approval.
-                                  </p>
-                                  <ul className="mt-1 list-disc space-y-1 pl-5">
-                                    {participant.blockers.map((blocker) => (
-                                      <li
-                                        key={`${blocker.type}-${blocker.bookingId}-${blocker.guestAppearanceId ?? "owner"}`}
-                                      >
-                                        {blockerText(blocker)}
-                                      </li>
-                                    ))}
-                                  </ul>
-                                </div>
-                              </div>
-                            </div>
-                          )}
+                          <MembershipCancellationBlockerNotice
+                            blockers={participant.blockers}
+                            returnTo={currentPath}
+                          />
 
                           {(canApprove(participant) || canReject(participant)) && (
                             <div className="mt-4 space-y-3">
