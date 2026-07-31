@@ -269,7 +269,7 @@ describe("selector-defaults seed migration", () => {
   const SEED_SQL = readFileSync(
     path.join(
       process.cwd(),
-      "prisma/migrations/20260730170000_seed_whakapapa_selector_defaults/migration.sql",
+      "prisma/migrations/20260731130100_seed_whakapapa_selector_defaults/migration.sql",
     ),
     "utf8",
   );

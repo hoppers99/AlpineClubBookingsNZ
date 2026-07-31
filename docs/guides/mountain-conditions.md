@@ -83,31 +83,29 @@ Under **Advanced: element selectors**:
   hand. An off-allowlist URL in the file is ignored (the current URL is kept);
   unknown fields are dropped.
 
-Need an up-to-date file? Email the LWTC Admin at admin@lwtc.org.nz.
-
 ## Settings reference
 
-| Setting | What it controls | Default | Notes / constraints |
-| --- | --- | --- | --- |
-| Update from upstream | Pulls the latest Snow.nz feed now | — | Refreshes immediately; does not freeze |
-| Section visibility (Road Status / Lifts / Facilities / Food & Drink / Mountain Conditions / Trails) | Which articles show on the public widget | All on | Unticked sections are hidden from visitors |
-| Raw JSON payload | The stored conditions content | Upstream feed | Must be valid JSON; saving freezes auto-refresh for 12 hours |
-| Report URL | The page the scraper fetches | `https://www.whakapapa.com/report` | Must be https on whakapapa.com / snow.nz |
-| Element selectors (Advanced) | Per-section overrides used to locate content on the source page | Built-in hash-agnostic defaults | Blank = use default; test with **Preview** before saving |
-| Import / Export selectors (Advanced) | Transfer the URL + full selector set between sites as a JSON file | Defaults seeded into the DB | Export reads the DB; Import writes to the DB. Contact admin@lwtc.org.nz for a file |
-| `skifieldConditions` module | Whether this page and the public widget exist at all | On | Toggled at **Admin → Modules**; off hides both |
+| Setting                                                                                             | What it controls                                                  | Default                            | Notes / constraints                                          |
+| --------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- | ---------------------------------- | ------------------------------------------------------------ |
+| Update from upstream                                                                                | Pulls the latest Snow.nz feed now                                 | —                                  | Refreshes immediately; does not freeze                       |
+| Section visibility (Road Status / Lifts / Facilities / Food & Drink / Mountain Conditions / Trails) | Which articles show on the public widget                          | All on                             | Unticked sections are hidden from visitors                   |
+| Raw JSON payload                                                                                    | The stored conditions content                                     | Upstream feed                      | Must be valid JSON; saving freezes auto-refresh for 12 hours |
+| Report URL                                                                                          | The page the scraper fetches                                      | `https://www.whakapapa.com/report` | Must be https on whakapapa.com / snow.nz                     |
+| Element selectors (Advanced)                                                                        | Per-section overrides used to locate content on the source page   | Built-in hash-agnostic defaults    | Blank = use default; test with **Preview** before saving     |
+| Import / Export selectors (Advanced)                                                                | Transfer the URL + full selector set between sites as a JSON file | Defaults seeded into the DB        | Export reads the DB; Import writes to the DB.                |
+| `skifieldConditions` module                                                                         | Whether this page and the public widget exist at all              | On                                 | Toggled at **Admin → Modules**; off hides both               |
 
 ## Troubleshooting
 
-| Symptom | Likely cause | Fix |
-| --- | --- | --- |
-| The page 404s or the card is missing | The `skifieldConditions` module is off | Enable it at **Admin → Modules** |
-| My edits were overwritten | Auto-refresh replaced them | Save via the Raw JSON editor — that freezes upstream updates for 12 hours |
-| A section still shows publicly after unticking | Visibility wasn't saved | Click **Save visibility** after changing the checkboxes |
-| A whole section is empty after an upstream change | The scraper can't locate it | Use **Preview** in **Source & selectors** to test, override the affected selector, then **Save configuration** |
-| The report URL is rejected | It's not https or not on whakapapa.com / snow.nz | Enter an https URL on an allowed host |
-| Save is rejected | The Raw JSON is malformed | Fix the JSON syntax and save again |
-| Everything is read-only | Your admin role can view but not edit under the content area | Ask a full admin for content edit access |
+| Symptom                                           | Likely cause                                                 | Fix                                                                                                            |
+| ------------------------------------------------- | ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| The page 404s or the card is missing              | The `skifieldConditions` module is off                       | Enable it at **Admin → Modules**                                                                               |
+| My edits were overwritten                         | Auto-refresh replaced them                                   | Save via the Raw JSON editor — that freezes upstream updates for 12 hours                                      |
+| A section still shows publicly after unticking    | Visibility wasn't saved                                      | Click **Save visibility** after changing the checkboxes                                                        |
+| A whole section is empty after an upstream change | The scraper can't locate it                                  | Use **Preview** in **Source & selectors** to test, override the affected selector, then **Save configuration** |
+| The report URL is rejected                        | It's not https or not on whakapapa.com / snow.nz             | Enter an https URL on an allowed host                                                                          |
+| Save is rejected                                  | The Raw JSON is malformed                                    | Fix the JSON syntax and save again                                                                             |
+| Everything is read-only                           | Your admin role can view but not edit under the content area | Ask a full admin for content edit access                                                                       |
 
 ## Related links
 

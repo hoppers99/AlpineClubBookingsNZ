@@ -330,7 +330,9 @@ export function MountainConditionsPanel() {
       const response = await fetch("/api/admin/mountain-conditions");
       const body = (await response.json()) as ApiResponse;
       if (!response.ok) {
-        throw new Error(body.error || "Failed to read the stored configuration");
+        throw new Error(
+          body.error || "Failed to read the stored configuration",
+        );
       }
 
       const config = body.record?.config ?? emptyWhakapapaSourceConfig();
@@ -385,7 +387,9 @@ export function MountainConditionsPanel() {
 
       // Persist the FULL set (imported values, with defaults filling any gap),
       // so importing writes the complete selector vocabulary to the database.
-      const fullSelectors = resolveWhakapapaSelectors(coerced.selectorOverrides);
+      const fullSelectors = resolveWhakapapaSelectors(
+        coerced.selectorOverrides,
+      );
       // Only take the file's URL when it explicitly carries a valid one; a
       // selectors-only file keeps the currently stored Report URL.
       const rawUrl =
@@ -420,9 +424,7 @@ export function MountainConditionsPanel() {
     }
   }
 
-  function handleImportFileChange(
-    event: React.ChangeEvent<HTMLInputElement>,
-  ) {
+  function handleImportFileChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     // Reset so selecting the same file again still fires onChange.
     event.target.value = "";
@@ -682,10 +684,11 @@ export function MountainConditionsPanel() {
         <CardHeader>
           <CardTitle>Source &amp; selectors</CardTitle>
           <CardDescription>
-            The report URL the site scrapes, plus optional selector overrides for
-            when the upstream page structure changes. Leave a selector blank to
-            use the built-in default. Use <b>Preview</b> to test before saving —
-            nothing is stored until you click <b>Save configuration</b>.
+            The report URL the site scrapes, plus optional selector overrides
+            for when the upstream page structure changes. Leave a selector blank
+            to use the built-in default. Use <b>Preview</b> to test before
+            saving — nothing is stored until you click <b>Save configuration</b>
+            .
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -788,21 +791,11 @@ export function MountainConditionsPanel() {
                     />
                   </div>
                   <p className="mt-2 text-xs text-muted-foreground">
-                    Export reads the stored Report URL and full selector set from
-                    the database and saves them to a JSON file. Import loads such
-                    a file and <b>saves it to the database</b>, so another
-                    site&rsquo;s admin does not have to re-enter the values by
-                    hand.
-                  </p>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Need an up-to-date file? Contact the LWTC Admin at{" "}
-                    <a
-                      href="mailto:admin@lwtc.org.nz"
-                      className="font-medium underline"
-                    >
-                      admin@lwtc.org.nz
-                    </a>
-                    .
+                    Export reads the stored Report URL and full selector set
+                    from the database and saves them to a JSON file. Import
+                    loads such a file and <b>saves it to the database</b>, so
+                    another site&rsquo;s admin does not have to re-enter the
+                    values by hand.
                   </p>
                 </div>
               </>
@@ -901,20 +894,20 @@ export function MountainConditionsPanel() {
               sets the report URL the site scrapes (locked to whakapapa.com /
               snow.nz) and, under <b>Advanced</b>, optional selector overrides
               for when the upstream page structure changes. Blank selectors use
-              the built-in defaults, which already ignore the rotating style-name
-              suffixes. <b>Preview</b> tests the current URL and selectors
-              without saving; <b>Save configuration</b> stores them separately
-              from the cached data, so an upstream refresh never wipes them.
+              the built-in defaults, which already ignore the rotating
+              style-name suffixes. <b>Preview</b> tests the current URL and
+              selectors without saving; <b>Save configuration</b> stores them
+              separately from the cached data, so an upstream refresh never
+              wipes them.
             </p>
             <p>
               Under <b>Advanced</b>, <i>Export selectors</i> reads the stored
               URL and the full selector set from the database and downloads them
               as a JSON file, and <i>Import selectors</i> loads such a file and
               saves it straight to the database — so another site&rsquo;s admin
-              can reuse a known-good configuration instead of re-entering it. The
-              built-in defaults are seeded into the database, so a fresh site
-              already has the complete set. Email the LWTC Admin at
-              admin@lwtc.org.nz for an up-to-date file.
+              can reuse a known-good configuration instead of re-entering it.
+              The built-in defaults are seeded into the database, so a fresh
+              site already has the complete set.
             </p>
           </div>
         </DialogContent>
