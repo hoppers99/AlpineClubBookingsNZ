@@ -17,11 +17,14 @@ import {
 } from "@/lib/xero-contact-sync";
 import { getXeroApiErrorInfo } from "@/lib/xero-api-errors";
 import logger from "@/lib/logger";
-import { isPrismaUniqueConstraintError } from "@/lib/prisma-errors";
 import {
   copyStreetAddressToPostal,
   POSTAL_ADDRESS_FIELDS,
 } from "@/lib/member-address";
+import {
+  isLoginEmailUniqueConflict,
+  MEMBER_LOGIN_EMAIL_TAKEN_MESSAGE,
+} from "@/lib/member-email";
 import { validateInheritEmailSource } from "@/lib/member-email-inheritance";
 import { buildParentLinks } from "@/lib/member-parent-links";
 import { OPERATIONAL_STAY_BOOKING_STATUSES } from "@/lib/booking-status";
@@ -703,70 +706,6 @@ export async function getAdminMemberDetail(params: {
   });
 }
 
-const MEMBER_EMAIL_TAKEN_MESSAGE = "A member with this email already exists";
-
-/**
- * Names the unique constraint a P2002 failed on, lowercased, or null when the
- * database gave nothing identifiable.
- *
- * Two shapes are read, because the repository has lived with both. Prisma 7
- * reaches Postgres through the `pg` driver adapter, which parses the
- * `Key (col, …)` detail of SQLSTATE 23505 into `constraint: { fields: [...] }`
- * and renders it into the error message as ``fields: (`email`)`` — so a raw
- * partial index such as `Member_email_login_unique` reports its COLUMN rather
- * than its index name, and `meta.target` is not populated at all. The
- * engine-era `meta.target` (a field-name array or a constraint-name string,
- * per `isJoinCodeCollision` in `src/lib/group-booking.ts`) is still read first,
- * so this keeps working if the adapter is ever dropped.
- */
-function describeUniqueConstraintTarget(error: unknown): string | null {
-  const target = (error as { meta?: { target?: unknown } } | null)?.meta?.target;
-  const targets = (Array.isArray(target) ? target : [target]).filter(
-    (entry): entry is string => typeof entry === "string" && entry.length > 0,
-  );
-  if (targets.length > 0) {
-    return targets.join(" ").toLowerCase();
-  }
-
-  const message = error instanceof Error ? error.message : "";
-  const fields = message.match(/fields: \(([^)]*)\)/i)?.[1];
-  if (fields) {
-    return fields.toLowerCase();
-  }
-  const index = message.match(/constraint: `([^`]*)`/i)?.[1];
-  if (index) {
-    return index.toLowerCase();
-  }
-  return null;
-}
-
-/**
- * Does this failure mean "the login email is already taken"? (#2385)
- *
- * The member update below runs inside a transaction whose only reachable
- * unique constraint is `Member_email_login_unique` — the manual partial index
- * (`WHERE "canLogin" = true`) that keeps one login-capable member per address.
- * Nothing else in that transaction can raise a P2002: the member row's other
- * unique columns (`googleSub`, `xeroContactId`) are never written on this path,
- * the access-role rows are deleted and re-created with `skipDuplicates`, the
- * partner-share sweep only reads and deletes, and `AuditLog` has no unique
- * constraint at all.
- *
- * So a P2002 that names nothing identifiable is still reported as the email
- * clash — that is the only collision this write can produce, and staying silent
- * would put back the opaque failure #2385 exists to remove. But when Postgres
- * DOES name a different constraint (a column added to this update later, say),
- * do not claim the email is taken: fall through to the generic failure rather
- * than sending the admin to fix an address that is not the problem.
- */
-function isLoginEmailUniqueConflict(error: unknown): boolean {
-  if (!isPrismaUniqueConstraintError(error)) {
-    return false;
-  }
-  const target = describeUniqueConstraintTarget(error);
-  return target === null || target.includes("email");
-}
-
 export async function updateAdminMember(params: {
   id: string;
   currentAdminMemberId: string;
@@ -906,21 +845,28 @@ export async function updateAdminMember(params: {
 
   // Check login-email uniqueness whenever this edit claims the address as a
   // login identity — either by changing the email of a login-capable member, or
-  // by switching login ON (#2385). The second case used to be missed: the
+  // by switching login ON (#2385). The second case used to be missed here: the
   // Account & Access form posts canLogin/active/roles and NO email
   // (`buildAccountPayload`, src/lib/admin-member-edit-groups.ts), so a
   // canLogin false → true save short-circuited a guard that required a
-  // *changed* email, and the collision surfaced as an opaque database failure
-  // instead of the friendly 409. An already-login-capable member re-saving an
-  // unchanged email still skips the query: they already hold the address.
+  // *changed* email and went on to attempt the write. The admin still got the
+  // 409 — the partial unique index rejected it and the catch at the end of this
+  // function translated that P2002 — so this is not a fix for a silent failure;
+  // it stops a save that cannot succeed from being attempted at all, and lets
+  // that catch be narrowed to email collisions only. An already-login-capable
+  // member re-saving an unchanged email still skips the query: they already
+  // hold the address.
   const effectiveCanLogin =
     data.canLogin !== undefined ? data.canLogin : existing.canLogin;
+  // Normalised exactly as the write below stores it (`updateData.email`), so
+  // the value checked here is the value the unique index will see.
+  const requestedEmail = data.email?.toLowerCase().trim();
   const emailIsChanging = Boolean(
-    data.email && data.email.toLowerCase() !== existing.email,
+    requestedEmail && requestedEmail !== existing.email,
   );
   const enablesLogin = effectiveCanLogin && !existing.canLogin;
   if (effectiveCanLogin && (emailIsChanging || enablesLogin)) {
-    const loginEmail = (data.email ?? existing.email).toLowerCase();
+    const loginEmail = requestedEmail ?? existing.email;
     const emailTaken = await prisma.member.findFirst({
       where: {
         email: loginEmail,
@@ -929,7 +875,10 @@ export async function updateAdminMember(params: {
       },
     });
     if (emailTaken) {
-      return jsonResult({ error: MEMBER_EMAIL_TAKEN_MESSAGE }, { status: 409 });
+      return jsonResult(
+        { error: MEMBER_LOGIN_EMAIL_TAKEN_MESSAGE },
+        { status: 409 },
+      );
     }
   }
 
@@ -1504,9 +1453,15 @@ export async function updateAdminMember(params: {
     // `Member_email_login_unique` is what actually makes two login-capable
     // members on one address impossible; this only translates its rejection
     // into the same 409 the pre-check returns, so the loser of the race gets
-    // the same explanation rather than a 500.
+    // the same explanation rather than a 500. Narrowed from "any P2002 here
+    // means the email is taken" (#2385): a collision on some other unique
+    // column now falls through to the generic failure below rather than sending
+    // the admin off to fix an address that is fine.
     if (isLoginEmailUniqueConflict(error)) {
-      return jsonResult({ error: MEMBER_EMAIL_TAKEN_MESSAGE }, { status: 409 });
+      return jsonResult(
+        { error: MEMBER_LOGIN_EMAIL_TAKEN_MESSAGE },
+        { status: 409 },
+      );
     }
 
     logger.error({ err: error, memberId: id }, "Failed to update member");
