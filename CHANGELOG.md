@@ -4,6 +4,27 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Clubs can safely record a trusted induction history when moving an
+  established membership onto the digital register (#2361).** A new
+  dry-run-first operator command classifies every active real-member
+  (`USER`/`ADMIN`) record across the configured Infant, Child, Youth, and Adult
+  tiers, includes non-login dependants, excludes operational and non-member
+  contacts, reports an in-scope `N/A` separately, and preserves anyone who
+  already has a completed induction of any kind. Apply needs a login-enabled
+  Full Admin actor, one New Zealand baseline date, stable source provenance,
+  and exact club, database, and reviewed SHA-256 plan-digest confirmations.
+  Apply rebuilds the complete safe plan under its table lock and rejects stale
+  digests before blocker, no-op, or write handling. It refuses to run
+  over an open induction, locks direct induction-table writes during apply, and
+  commits all completed New Member baseline rows with one audit event or none
+  at all. The runbook requires a short member-population, induction, and
+  configuration, group-join member-creation, and actor-access freeze from the
+  final dry run through post-apply verification because the table lock does not
+  freeze those inputs.
+  The records are explicit Admin Overrides with no invented signers, sign-offs,
+  emails, or hut-leader eligibility; a fresh post-apply dry-run digest permits
+  an identical no-op rerun while the stale pre-apply digest fails closed. The new
+  operator runbook documents rehearsal, review, verification, and recovery.
 - **The browser test suite stopped crying wolf (#2302).** Over three days five
   different browser tests went red on code that was perfectly fine, each costing
   someone an investigation and one of them turning the main branch red for the
@@ -41,8 +62,6 @@ All notable public reference-release changes should be recorded here.
   test. That call now retries. The testing guide gains a "Flake invariants"
   section so a future test cannot quietly reintroduce any of this. No part of
   this touches the running club site.
-
-
 
 - **Adding another club member as a guest (#2306, #2307).** Until now a member
   could only put people from their own family group on a booking. There is now a
