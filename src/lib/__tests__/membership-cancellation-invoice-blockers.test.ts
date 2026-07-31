@@ -9,6 +9,13 @@ const mocks = vi.hoisted(() => ({
   callXeroApi: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
+/** 100 invoices is a full Xero page, so the loader asks for another. */
+function fullPage(prefix: string, contactID?: string) {
+  return Array.from({ length: 100 }, (_, index) =>
+    invoice({ invoiceID: `${prefix}-${index}`, amountDue: 1, contactID }),
+  );
+}
+
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     member: { findMany: mocks.memberFindMany },
@@ -17,7 +24,10 @@ vi.mock("@/lib/prisma", () => ({
 }));
 
 vi.mock("@/lib/membership-cancellation-settings", () => ({
-  loadMembershipCancellationSettings: mocks.loadMembershipCancellationSettings,
+  // The gate reads the STRICT loader: a failed settings read must not read as
+  // "archiving is off" (#2392 review, NEW-1).
+  loadMembershipCancellationSettingsStrict:
+    mocks.loadMembershipCancellationSettings,
 }));
 
 vi.mock("@/lib/xero-api-client", () => ({
@@ -31,10 +41,12 @@ vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 
+import { buildMembershipCancellationApprovalBlockedMessage } from "@/lib/membership-cancellation-blocker-messages";
 import {
   classifyMembershipCancellationInvoiceCheckFailure,
   loadMembershipCancellationInvoiceBlockersByMemberId,
   MEMBERSHIP_CANCELLATION_OPEN_INVOICE_STATUSES,
+  membershipCancellationInvoiceCheckCacheSizeForTests,
   resetMembershipCancellationInvoiceBlockerCacheForTests,
 } from "@/lib/membership-cancellation-invoice-blockers";
 import { getSeasonYear } from "@/lib/utils";
@@ -326,6 +338,59 @@ describe("membership cancellation unpaid-invoice blockers", () => {
     ).toEqual(["INV-0101", "INV-0102"]);
   });
 
+  // #2392 review (L12): the organisation case was covered at the loader and at
+  // the approval guard, but never joined up — nobody asserted what the approver
+  // of a school account actually reads when they press Approve.
+  it("turns an organisation's Xero invoices into the refusal its approver reads", async () => {
+    mocks.memberFindMany.mockResolvedValue([
+      { id: "school-1", xeroContactId: "contact-school" },
+    ]);
+    respondWithInvoices([
+      invoice({
+        invoiceID: "inv-a",
+        invoiceNumber: "INV-0101",
+        amountDue: 250,
+        dueDate: "2026-05-31",
+        contactID: "contact-school",
+      }),
+      invoice({
+        // Xero leaves bills unnumbered routinely; this is the row that used to
+        // be unactionable, named only by a GUID nobody can search for.
+        invoiceID: "bill-guid-9",
+        invoiceNumber: null,
+        type: "ACCPAY",
+        amountDue: 60,
+        dueDate: "2026-06-15",
+        contactID: "contact-school",
+      }),
+    ]);
+
+    const blockers = await loadMembershipCancellationInvoiceBlockersByMemberId(
+      ["school-1"],
+      { nowMs: NOW_MS },
+    );
+    const message = buildMembershipCancellationApprovalBlockedMessage(
+      blockers.get("school-1") ?? [],
+    );
+
+    expect(message).toContain("INV-0101 (NZD 250.00)");
+    expect(message).toContain("(no number, Xero id bill-guid-9) (NZD 60.00)");
+    expect(message).toContain(
+      "paid, credited with an allocated credit note, or voided in Xero",
+    );
+    expect(message).toContain("listed beside this participant");
+    // The unnumbered bill has no invoice-view URL, so its way into Xero is the
+    // contact page — which is exactly why every row carries one.
+    expect(
+      blockers.get("school-1")?.map((blocker) =>
+        blocker.type === "unpaid_invoice" ? blocker.xeroContactUrl : null,
+      ),
+    ).toEqual([
+      expect.stringContaining("contact-school"),
+      expect.stringContaining("contact-school"),
+    ]);
+  });
+
   it("matches contacts case-insensitively", async () => {
     mocks.memberFindMany.mockResolvedValue([
       { id: "member-1", xeroContactId: "CONTACT-1" },
@@ -343,10 +408,9 @@ describe("membership cancellation unpaid-invoice blockers", () => {
   });
 
   it("pages through Xero until a short page", async () => {
-    const fullPage = Array.from({ length: 100 }, (_, index) =>
-      invoice({ invoiceID: `page1-${index}`, amountDue: 1 }),
-    );
-    respondWithInvoices(fullPage, [invoice({ invoiceID: "page2-0", amountDue: 1 })]);
+    respondWithInvoices(fullPage("page1"), [
+      invoice({ invoiceID: "page2-0", amountDue: 1 }),
+    ]);
 
     const blockers = await loadMembershipCancellationInvoiceBlockersByMemberId(
       ["member-1"],
@@ -355,6 +419,135 @@ describe("membership cancellation unpaid-invoice blockers", () => {
 
     expect(mocks.getInvoices).toHaveBeenCalledTimes(2);
     expect(blockers.get("member-1")).toHaveLength(101);
+  });
+
+  // #2392 review (M4/NEW-3): the review queue's page size goes up to 100
+  // requests, each with several participants, so an unchunked contactIDs list
+  // is a few hundred GUIDs in one query string.
+  describe("batching contact ids", () => {
+    function membersWithContacts(count: number) {
+      return Array.from({ length: count }, (_, index) => ({
+        id: `member-${index}`,
+        xeroContactId: `contact-${index}`,
+      }));
+    }
+
+    it("never asks Xero about more than 40 contacts in one call", async () => {
+      const members = membersWithContacts(95);
+      mocks.memberFindMany.mockResolvedValue(members);
+
+      await loadMembershipCancellationInvoiceBlockersByMemberId(
+        members.map((member) => member.id),
+        { nowMs: NOW_MS },
+      );
+
+      expect(mocks.getInvoices).toHaveBeenCalledTimes(3);
+      const batches = mocks.getInvoices.mock.calls.map((call) => call[6]);
+      expect(batches.map((batch: string[]) => batch.length)).toEqual([
+        40, 40, 15,
+      ]);
+      // Every contact is asked about exactly once, across the batches.
+      expect(new Set(batches.flat()).size).toBe(95);
+    });
+
+    it("still answers for every member once the batches are stitched back together", async () => {
+      const members = membersWithContacts(45);
+      mocks.memberFindMany.mockResolvedValue(members);
+      let call = 0;
+      mocks.getInvoices.mockImplementation(async () => {
+        call += 1;
+        return call === 2
+          ? {
+              body: {
+                invoices: [
+                  invoice({
+                    invoiceID: "inv-late",
+                    invoiceNumber: "INV-LATE",
+                    amountDue: 5,
+                    contactID: "contact-44",
+                  }),
+                ],
+              },
+            }
+          : { body: { invoices: [] } };
+      });
+
+      const blockers = await loadMembershipCancellationInvoiceBlockersByMemberId(
+        members.map((member) => member.id),
+        { nowMs: NOW_MS },
+      );
+
+      expect(blockers.get("member-44")).toHaveLength(1);
+      expect(blockers.get("member-0")).toEqual([]);
+    });
+  });
+
+  // #2392 review (M5/NEW-2): Xero orders the batch DueDate ASC across every
+  // contact in it, so one high-volume contact can eat the whole page budget and
+  // leave a different member with an empty bucket. An empty bucket renders as
+  // "no blockers" and enables Approve, which is precisely the promise this
+  // feature makes — that a reviewer finds out BEFORE they press it.
+  describe("when the read is truncated", () => {
+    it("reports an unknown answer rather than a clean one", async () => {
+      respondWithInvoices(
+        fullPage("p1"),
+        fullPage("p2"),
+        fullPage("p3"),
+        fullPage("p4"),
+        fullPage("p5"),
+        fullPage("p6"),
+      );
+
+      const blockers = await loadMembershipCancellationInvoiceBlockersByMemberId(
+        ["member-1"],
+        { nowMs: NOW_MS },
+      );
+
+      expect(mocks.getInvoices).toHaveBeenCalledTimes(5);
+      expect(blockers.get("member-1")).toEqual([
+        { type: "invoice_check_unavailable", reason: "too_many_invoices" },
+      ]);
+    });
+
+    it("never leaves a quiet contact in the same batch looking clear", async () => {
+      mocks.memberFindMany.mockResolvedValue([
+        { id: "busy-org", xeroContactId: "contact-busy" },
+        { id: "quiet-member", xeroContactId: "contact-quiet" },
+      ]);
+      // Every row belongs to the busy contact; the quiet one's invoices, if it
+      // has any, are past the cap and were never seen.
+      respondWithInvoices(
+        ...Array.from({ length: 6 }, (_, page) =>
+          fullPage(`p${page}`, "contact-busy"),
+        ),
+      );
+
+      const blockers = await loadMembershipCancellationInvoiceBlockersByMemberId(
+        ["busy-org", "quiet-member"],
+        { nowMs: NOW_MS },
+      );
+
+      expect(blockers.get("quiet-member")).toEqual([
+        { type: "invoice_check_unavailable", reason: "too_many_invoices" },
+      ]);
+    });
+
+    it("does not memoise the truncated answer", async () => {
+      respondWithInvoices(
+        ...Array.from({ length: 6 }, (_, page) => fullPage(`p${page}`)),
+      );
+      await loadMembershipCancellationInvoiceBlockersByMemberId(["member-1"], {
+        nowMs: NOW_MS,
+      });
+
+      respondWithInvoices([]);
+      const blockers = await loadMembershipCancellationInvoiceBlockersByMemberId(
+        ["member-1"],
+        { nowMs: NOW_MS },
+      );
+
+      expect(blockers.get("member-1")).toEqual([]);
+    });
   });
 
   describe("when the check cannot run at all", () => {
@@ -482,6 +675,55 @@ describe("membership cancellation unpaid-invoice blockers", () => {
       ).toBe("unavailable");
     });
 
+    // #2392 review (M3): a stale contact id returns 400 forever. Reporting that
+    // as "try again in a few minutes" is a refusal with no route forward.
+    it("separates Xero refusing the request from Xero being unreachable", () => {
+      expect(
+        classifyMembershipCancellationInvoiceCheckFailure({
+          response: { statusCode: 400 },
+        }),
+      ).toBe("invalid_request");
+      expect(
+        classifyMembershipCancellationInvoiceCheckFailure({
+          response: { statusCode: 404 },
+        }),
+      ).toBe("invalid_request");
+    });
+
+    it("blocks with reason 'invalid_request' when Xero rejects the contact id", async () => {
+      mocks.getInvoices.mockRejectedValue({ response: { statusCode: 400 } });
+
+      const blockers = await loadMembershipCancellationInvoiceBlockersByMemberId(
+        ["member-1"],
+        { nowMs: NOW_MS },
+      );
+
+      expect(blockers.get("member-1")).toEqual([
+        { type: "invoice_check_unavailable", reason: "invalid_request" },
+      ]);
+    });
+
+    // #2392 review (NEW-1b): the defaults have archiving OFF, so a settings read
+    // that quietly degraded would skip the check on the strength of a database
+    // blip — while the archive, an outbox operation drained minutes later, reads
+    // the setting again and succeeds.
+    it("still runs the check when the archive setting could not be read", async () => {
+      mocks.loadMembershipCancellationSettings.mockRejectedValue(
+        new Error("database unavailable"),
+      );
+      respondWithInvoices([
+        invoice({ invoiceID: "inv-1", invoiceNumber: "INV-1", amountDue: 40 }),
+      ]);
+
+      const blockers = await loadMembershipCancellationInvoiceBlockersByMemberId(
+        ["member-1"],
+        { nowMs: NOW_MS },
+      );
+
+      expect(mocks.getAuthenticatedXeroClient).toHaveBeenCalled();
+      expect(blockers.get("member-1")).toHaveLength(1);
+    });
+
     it("never caches a failure", async () => {
       mocks.getInvoices.mockRejectedValueOnce(new Error("socket hang up"));
       await loadMembershipCancellationInvoiceBlockersByMemberId(["member-1"], {
@@ -522,6 +764,31 @@ describe("membership cancellation unpaid-invoice blockers", () => {
       });
 
       expect(mocks.getInvoices).toHaveBeenCalledTimes(2);
+    });
+
+    // #2392 review (LOW-6): a process-lifetime Map with one entry per contact
+    // ever checked, each holding up to a page of blocker objects.
+    it("drops expired entries instead of holding them for the life of the process", async () => {
+      mocks.memberFindMany.mockResolvedValue([
+        { id: "member-1", xeroContactId: "contact-1" },
+      ]);
+      respondWithInvoices([invoice({ invoiceID: "inv-1", amountDue: 10 })]);
+      await loadMembershipCancellationInvoiceBlockersByMemberId(["member-1"], {
+        nowMs: NOW_MS,
+      });
+      expect(membershipCancellationInvoiceCheckCacheSizeForTests()).toBe(1);
+
+      mocks.memberFindMany.mockResolvedValue([
+        { id: "member-2", xeroContactId: "contact-2" },
+      ]);
+      respondWithInvoices([]);
+      await loadMembershipCancellationInvoiceBlockersByMemberId(["member-2"], {
+        nowMs: NOW_MS + 600_000,
+      });
+
+      // contact-1's entry expired ten minutes ago and is gone, rather than
+      // accumulating alongside contact-2's.
+      expect(membershipCancellationInvoiceCheckCacheSizeForTests()).toBe(1);
     });
 
     it("is bypassed when the caller asks for a fresh answer", async () => {

@@ -64,11 +64,30 @@
  *    archives anything — the contact and every invoice on it stay exactly as
  *    they are — so there is nothing to protect and blocking would be pure
  *    friction. It also means a Xero outage cannot stop cancellations at a club
- *    that chose not to archive.
+ *    that chose not to archive. The setting is read through
+ *    `loadMembershipCancellationSettingsStrict`, so a failed read is an unknown
+ *    (check runs) rather than a silent "off" (check skipped).
  * 2. The member actually has a linked Xero contact. With none,
  *    `syncXeroMembershipCancellationContact` skips with
  *    `member_has_no_xero_contact` and no Xero object is touched, so a club that
  *    does not use Xero is never blocked and never triggers a Xero call.
+ *
+ * Neither gate is the last word, because the archive is an OUTBOX operation
+ * drained later: a club can approve with archiving off and switch it on
+ * afterwards, and the queued operation would then archive a contact this check
+ * never ran for. `syncXeroMembershipCancellationContact` therefore re-runs this
+ * same check immediately before it archives, and defers rather than archives if
+ * anything is owing (#2392 review, NEW-1). This module is the gate an admin
+ * sees; that one is the gate that actually protects the ledger.
+ *
+ * ## One known hole, stated rather than papered over
+ *
+ * The read passes `includeArchived: false`, matching every other Xero read in
+ * the app. A contact that is ALREADY archived in Xero and still carries open
+ * invoices therefore reports nothing owing and approves. Nothing new is archived
+ * in that case — the contact is archived already — so no ledger state changes
+ * that was not already true; but it does mean the promise "you will be told
+ * about open invoices before you approve" has this one exception.
  *
  * ## Fail-safe: an unknown answer BLOCKS
  *
@@ -82,13 +101,14 @@
  * by whoever chases the debt. During a Xero outage the archive would fail and
  * sit in the outbox anyway, so waiting costs the club almost nothing.
  *
- * "Disconnected" and "temporarily unreachable" get different words because they
- * need different actions: a disconnected Xero needs an admin to reconnect it
- * (or to turn the archive setting off, which lifts the check honestly, since it
- * really does mean no contact will be archived), whereas an unreachable Xero
- * just needs another try in a few minutes. Either way the approver is never
- * stranded: turning the setting off is always an available, admin-controlled
- * route forward.
+ * Each failure gets its own words because each needs a different action: a
+ * disconnected Xero needs reconnecting, an unreachable one needs another try in
+ * a few minutes, a rejected request means the stored contact is gone and will
+ * never come back on its own, and a truncated read means the contact has more
+ * open invoices than the check can list. Every one of those messages also names
+ * the escape hatch — turning the archive setting off — because a refusal whose
+ * only advice is "wait" is the cancellation-held-hostage the owner chose
+ * "block" specifically to avoid (#2392 review, H2/M3).
  */
 
 import type { Invoice } from "xero-node";
@@ -106,7 +126,7 @@ import type {
   MembershipCancellationInvoiceCheckUnavailableReason,
   MembershipCancellationUnpaidInvoiceBlocker,
 } from "@/lib/membership-cancellation-blocker-messages";
-import { loadMembershipCancellationSettings } from "@/lib/membership-cancellation-settings";
+import { loadMembershipCancellationSettingsStrict } from "@/lib/membership-cancellation-settings";
 import { prisma } from "@/lib/prisma";
 import { getSeasonYear } from "@/lib/utils";
 import {
@@ -133,8 +153,37 @@ const XERO_PAGE_SIZE = 100;
  * A contact with more than this many open invoices is emphatically blocked
  * already; the cap only stops a pathological contact from walking Xero forever
  * while an admin waits on a page render.
+ *
+ * That reasoning is per CONTACT, and it only holds because a batch that hits the
+ * cap is treated as an UNKNOWN answer rather than a clean one — see
+ * `fetchOpenInvoicePages`. Xero orders the batch `DueDate ASC` across every
+ * contact in it, so one high-volume contact can otherwise consume all 500 rows
+ * and leave a different member with an empty bucket that reads as "nothing
+ * owing" (#2392 review, M5).
  */
 const MAX_INVOICE_PAGES = 5;
+
+/**
+ * Contact ids per `getInvoices` call. The repo already settled on 50 for the
+ * same kind of id-list read (`xero-contact-cache.ts`), and this one is stricter
+ * because the review queue's page size goes up to 100 REQUESTS, each of which
+ * can carry several participants: a few hundred GUIDs comma-joined into one
+ * query string is untested ground against Xero's URL-length limits, and it fails
+ * in a self-disguising way — the whole queue reports "Xero could not be
+ * reached" while single-member approvals keep working (#2392 review, M4).
+ */
+const XERO_CONTACT_ID_BATCH_SIZE = 40;
+
+/**
+ * Contacts held in the memo at once. Entries are pruned when they expire, but a
+ * long-lived process that checks thousands of contacts should not grow a map
+ * forever; past this many the memo is simply dropped and refilled.
+ */
+const INVOICE_CHECK_CACHE_MAX_ENTRIES = 500;
+
+/** An `unknown` answer dressed as an empty one is the one thing this must never return. */
+const INVOICE_CHECK_TRUNCATED_ERROR_NAME =
+  "MembershipCancellationInvoiceCheckTruncatedError";
 
 /**
  * The review queue re-reads this on every page load, filter change and refresh.
@@ -164,6 +213,11 @@ export function resetMembershipCancellationInvoiceBlockerCacheForTests(): void {
   invoiceCheckCache.clear();
 }
 
+/** test seam — the memo is bounded, and that is only checkable from outside. */
+export function membershipCancellationInvoiceCheckCacheSizeForTests(): number {
+  return invoiceCheckCache.size;
+}
+
 export interface MembershipCancellationInvoiceBlockerOptions {
   /** Bypass and refresh the memo. The approval guard always sets this. */
   fresh?: boolean;
@@ -189,6 +243,9 @@ export function classifyMembershipCancellationInvoiceCheckFailure(
     ) {
       return "disconnected";
     }
+    if (error.name === INVOICE_CHECK_TRUNCATED_ERROR_NAME) {
+      return "too_many_invoices";
+    }
   }
 
   const statusCode = getXeroErrorStatusCode(error);
@@ -197,6 +254,14 @@ export function classifyMembershipCancellationInvoiceCheckFailure(
   }
   if (statusCode === 429) {
     return "rate_limited";
+  }
+  // 400 and 404 are Xero rejecting the REQUEST, not failing to serve it: the
+  // usual cause is a stored contact id that has since been merged or deleted
+  // there. Retrying an unchanged request cannot help, so it must not be reported
+  // as "try again in a few minutes" — that is an approval with no route forward
+  // (#2392 review, M3).
+  if (statusCode === 400 || statusCode === 404) {
+    return "invalid_request";
   }
 
   return "unavailable";
@@ -278,9 +343,73 @@ function compareInvoiceBlockers(
 }
 
 /**
+ * One batch of contact ids, paged. Throws on any Xero failure — and treats
+ * hitting the page cap as a failure too, because the alternative is returning
+ * a truncated list that is indistinguishable from a complete one.
+ */
+async function fetchOpenInvoicePages(
+  xero: Awaited<ReturnType<typeof getAuthenticatedXeroClient>>["xero"],
+  tenantId: string,
+  contactIds: readonly string[],
+  batchLabel: string,
+): Promise<Invoice[]> {
+  const invoices: Invoice[] = [];
+
+  for (let page = 1; page <= MAX_INVOICE_PAGES; page += 1) {
+    const response = await callXeroApi(
+      () =>
+        xero.accountingApi.getInvoices(
+          tenantId,
+          undefined, // ifModifiedSince
+          undefined, // where — statuses below are the whole filter
+          "DueDate ASC", // order
+          undefined, // iDs
+          undefined, // invoiceNumbers
+          [...contactIds], // contactIDs
+          [...MEMBERSHIP_CANCELLATION_OPEN_INVOICE_STATUSES], // statuses
+          page,
+          false, // includeArchived
+          false, // createdByMyApp
+          undefined, // unitdp
+          false, // summaryOnly
+          XERO_PAGE_SIZE,
+        ),
+      {
+        operation: "getInvoices",
+        resourceType: "INVOICE",
+        workflow: "membershipCancellationInvoiceBlockers",
+        context: `membershipCancellationInvoiceBlockers(${batchLabel}, page ${page})`,
+        // An admin is waiting on this, and a slow answer is worse than a
+        // "try again" they can act on: fail fast into the unavailable branch
+        // rather than sitting in callXeroApi's default two-minute rate-limit
+        // wait while the review queue hangs.
+        maxRetries: 1,
+        maxWaitSec: 15,
+      },
+    );
+
+    const pageInvoices = response.body.invoices ?? [];
+    invoices.push(...pageInvoices);
+    if (pageInvoices.length < XERO_PAGE_SIZE) {
+      return invoices;
+    }
+  }
+
+  // Ran out of pages with Xero still offering more. Whatever we hold is a
+  // prefix of the contacts' invoices in due-date order, so a contact further
+  // down the batch may well owe money and show none of it. "We could not find
+  // out" is the honest answer, and this module's rule is that it blocks.
+  const truncated = new Error(
+    `Membership cancellation unpaid-invoice check hit its ${MAX_INVOICE_PAGES}-page cap for ${contactIds.length} Xero contact(s) (${batchLabel}); the result is incomplete and cannot be reported as "nothing owing".`,
+  );
+  truncated.name = INVOICE_CHECK_TRUNCATED_ERROR_NAME;
+  throw truncated;
+}
+
+/**
  * Fetch open invoices for a batch of Xero contacts. Throws on any Xero failure;
- * the caller classifies it. One batched call covers the whole review queue page,
- * because Xero's getInvoices takes a list of contact ids.
+ * the caller classifies it. Contact ids are chunked so the review queue's page
+ * of requests cannot build one enormous query string.
  */
 async function loadOpenInvoicesByContactKey(
   contactIds: readonly string[],
@@ -312,44 +441,23 @@ async function loadOpenInvoicesByContactKey(
   const { xero, tenantId } = await getAuthenticatedXeroClient();
   const invoices: Invoice[] = [];
 
-  for (let page = 1; page <= MAX_INVOICE_PAGES; page += 1) {
-    const response = await callXeroApi(
-      () =>
-        xero.accountingApi.getInvoices(
-          tenantId,
-          undefined, // ifModifiedSince
-          undefined, // where — statuses below are the whole filter
-          "DueDate ASC", // order
-          undefined, // iDs
-          undefined, // invoiceNumbers
-          contactIdsToFetch, // contactIDs
-          [...MEMBERSHIP_CANCELLATION_OPEN_INVOICE_STATUSES], // statuses
-          page,
-          false, // includeArchived
-          false, // createdByMyApp
-          undefined, // unitdp
-          false, // summaryOnly
-          XERO_PAGE_SIZE,
-        ),
-      {
-        operation: "getInvoices",
-        resourceType: "INVOICE",
-        workflow: "membershipCancellationInvoiceBlockers",
-        context: `membershipCancellationInvoiceBlockers(page ${page})`,
-        // An admin is waiting on this, and a slow answer is worse than a
-        // "try again" they can act on: fail fast into the unavailable branch
-        // rather than sitting in callXeroApi's default two-minute rate-limit
-        // wait while the review queue hangs.
-        maxRetries: 1,
-        maxWaitSec: 15,
-      },
+  for (
+    let index = 0;
+    index < contactIdsToFetch.length;
+    index += XERO_CONTACT_ID_BATCH_SIZE
+  ) {
+    const batch = contactIdsToFetch.slice(
+      index,
+      index + XERO_CONTACT_ID_BATCH_SIZE,
     );
-
-    const pageInvoices = response.body.invoices ?? [];
-    invoices.push(...pageInvoices);
-    if (pageInvoices.length < XERO_PAGE_SIZE) {
-      break;
-    }
+    invoices.push(
+      ...(await fetchOpenInvoicePages(
+        xero,
+        tenantId,
+        batch,
+        `batch ${Math.floor(index / XERO_CONTACT_ID_BATCH_SIZE) + 1}`,
+      )),
+    );
   }
 
   const fetched = new Map<
@@ -371,6 +479,8 @@ async function loadOpenInvoicesByContactKey(
     }
   }
 
+  pruneInvoiceCheckCache(nowMs);
+
   const expiresAtMs = nowMs + INVOICE_CHECK_CACHE_TTL_MS;
   for (const [key, blockers] of fetched) {
     blockers.sort(compareInvoiceBlockers);
@@ -379,6 +489,23 @@ async function loadOpenInvoicesByContactKey(
   }
 
   return byContactKey;
+}
+
+/**
+ * Keep the memo bounded. Expired entries are dead weight the TTL check alone
+ * never removes, and a long-lived process should not accumulate one entry per
+ * contact ever checked; past the ceiling the whole memo is dropped, which costs
+ * one round of Xero reads and nothing else.
+ */
+function pruneInvoiceCheckCache(nowMs: number): void {
+  for (const [key, entry] of invoiceCheckCache) {
+    if (entry.expiresAtMs <= nowMs) {
+      invoiceCheckCache.delete(key);
+    }
+  }
+  if (invoiceCheckCache.size > INVOICE_CHECK_CACHE_MAX_ENTRIES) {
+    invoiceCheckCache.clear();
+  }
 }
 
 /**
@@ -403,14 +530,28 @@ export async function loadMembershipCancellationInvoiceBlockersByMemberId(
   // which is also what keeps a Xero outage from blocking a club that has
   // deliberately turned archiving off.
   //
-  // `loadMembershipCancellationSettings` falls back to the defaults (archiving
-  // OFF) if its own read fails, so a database blip skips this check — but the
-  // archive itself re-reads the same setting through the same loader when the
-  // outbox operation runs, so a failure window that hides the check also hides
-  // the archive. Both halves read one source of truth, which is what keeps them
-  // from disagreeing.
-  const settings = await loadMembershipCancellationSettings();
-  if (!settings.xeroArchiveContactsOnCancellation) {
+  // The setting is read STRICTLY here. The ordinary loader swallows a failed
+  // read and returns the defaults, whose archive flag is OFF — which would tell
+  // this gate "nothing will be archived, skip the check" on the strength of a
+  // database blip, while the archive itself is an outbox operation drained
+  // minutes later off a read that succeeds. A module whose doctrine is "an
+  // unknown answer blocks" must not fail open on the very condition that
+  // decides whether it runs, so an unreadable setting is treated as archiving
+  // ON: the check then runs and answers truthfully, blocking only if money is
+  // actually owing (#2392 review, NEW-1).
+  let archiveContactsOnCancellation: boolean;
+  try {
+    archiveContactsOnCancellation = (
+      await loadMembershipCancellationSettingsStrict()
+    ).xeroArchiveContactsOnCancellation;
+  } catch (error) {
+    logger.warn(
+      { err: error },
+      "Membership cancellation settings could not be read; assuming Xero contact archiving is ON so the unpaid-invoice check still runs",
+    );
+    archiveContactsOnCancellation = true;
+  }
+  if (!archiveContactsOnCancellation) {
     return blockersByMemberId;
   }
 

@@ -123,6 +123,14 @@ async function loadBookingBlockersByMemberId(
  * - unpaid Xero invoices on the member's contact, which approval would archive
  *   (#2392 — see `membership-cancellation-invoice-blockers.ts` for what counts
  *   as unpaid, when the check runs at all, and why an unknown answer blocks).
+ *
+ * `db` reaches the BOOKING half only. The invoice half deliberately reads
+ * through the global client, because it also calls Xero, and this repo's rule is
+ * that external provider calls stay outside database transactions — handing it a
+ * `tx` would invite exactly the long-transaction-around-a-network-call shape
+ * that rule exists to prevent. So `db` is "which client sees the local rows",
+ * not a whole-function isolation guarantee; no caller passes a `tx` today, and
+ * one that wants to should read the invoice half separately (#2392 review).
  */
 export async function loadMembershipCancellationBlockersByMemberId(
   memberIds: readonly string[],
