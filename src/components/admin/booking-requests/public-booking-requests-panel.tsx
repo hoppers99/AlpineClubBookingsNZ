@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
+import { buildBookingRequestDatasetPath } from "@/lib/admin-dataset-reset-state";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
@@ -303,20 +304,15 @@ function buildPublicRequestsPath(
   status: PublicRequestFilter,
   requestId: string | null,
 ) {
-  const params = new URLSearchParams(currentSearch);
-  params.delete("status");
-  for (const [key, value] of Object.entries(fixedSearchParams)) params.set(key, value);
-
-  if (requestId) {
-    params.set("requestId", requestId);
-  }
-
-  if (status !== "QUEUE") {
-    params.set("status", status);
-  }
-
-  const query = params.toString();
-  return query ? `${basePath}?${query}` : basePath;
+  return buildBookingRequestDatasetPath({
+    basePath,
+    currentSearch,
+    fixedSearchParams,
+    status,
+    defaultStatus: "QUEUE",
+    recordKey: "requestId",
+    recordId: requestId,
+  });
 }
 
 export function PublicBookingRequestsPanel({

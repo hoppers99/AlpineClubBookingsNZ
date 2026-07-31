@@ -1,4 +1,4 @@
-import { format, subMonths } from "date-fns"
+import { endOfMonth, format, startOfMonth, subMonths } from "date-fns"
 
 export const PAYMENT_DATASET_QUERY_KEYS = [
   "status",
@@ -25,6 +25,31 @@ export const SUBSCRIPTION_DATASET_QUERY_KEYS = [
   "sortBy",
   "sortDir",
   "page",
+] as const
+
+export const XERO_OPERATIONS_DATASET_QUERY_KEYS = [
+  "opStatus",
+  "opEntityType",
+  "opLocalModel",
+  "opLocalId",
+  "opOperationType",
+  "opFailureState",
+  "opResourceId",
+  "opCreatedFrom",
+  "opCreatedTo",
+  "opPage",
+] as const
+
+export const XERO_INBOUND_DATASET_QUERY_KEYS = [
+  "inStatus",
+  "inEventCategory",
+  "inLocalModel",
+  "inLocalId",
+  "inResourceId",
+  "inEventType",
+  "inCreatedFrom",
+  "inCreatedTo",
+  "inPage",
 ] as const
 
 export function withoutDatasetQueryKeys(
@@ -65,4 +90,83 @@ export function resetSubscriptionsDatasetSearchParams(
   currentSearch: string,
 ): URLSearchParams {
   return withoutDatasetQueryKeys(currentSearch, SUBSCRIPTION_DATASET_QUERY_KEYS)
+}
+
+function resetXeroDatasetSearchParams(
+  currentSearch: string,
+  section: "operations" | "inbound",
+  keys: readonly string[],
+): URLSearchParams {
+  const params = withoutDatasetQueryKeys(currentSearch, keys)
+  params.set("section", section)
+  return params
+}
+
+export function resetXeroOperationsDatasetSearchParams(
+  currentSearch: string,
+): URLSearchParams {
+  return resetXeroDatasetSearchParams(
+    currentSearch,
+    "operations",
+    XERO_OPERATIONS_DATASET_QUERY_KEYS,
+  )
+}
+
+export function resetXeroInboundDatasetSearchParams(
+  currentSearch: string,
+): URLSearchParams {
+  return resetXeroDatasetSearchParams(
+    currentSearch,
+    "inbound",
+    XERO_INBOUND_DATASET_QUERY_KEYS,
+  )
+}
+
+export function buildBookingRequestDatasetPath({
+  basePath,
+  currentSearch,
+  fixedSearchParams,
+  status,
+  defaultStatus,
+  recordKey,
+  recordId,
+}: {
+  basePath: string
+  currentSearch: string
+  fixedSearchParams: Record<string, string>
+  status: string
+  defaultStatus: string
+  recordKey: "bookingId" | "requestId"
+  recordId: string | null
+}): string {
+  const params = new URLSearchParams(currentSearch)
+  params.delete("status")
+  for (const [key, value] of Object.entries(fixedSearchParams)) {
+    params.set(key, value)
+  }
+  if (recordId) params.set(recordKey, recordId)
+  if (status !== defaultStatus) params.set("status", status)
+
+  const query = params.toString()
+  return query ? `${basePath}?${query}` : basePath
+}
+
+export function getReportsDatasetDefaults(clubToday: string) {
+  const [year, month, day] = clubToday.split("-").map(Number)
+  const today = new Date(year, month - 1, day)
+  return {
+    from: format(startOfMonth(subMonths(today, 3)), "yyyy-MM-dd"),
+    to: format(endOfMonth(today), "yyyy-MM-dd"),
+    deleted: "hide",
+  }
+}
+
+export function resetReportsDatasetState(
+  current: { lodgeId: string },
+  clubToday: string,
+) {
+  return {
+    ...getReportsDatasetDefaults(clubToday),
+    lodgeId: current.lodgeId,
+  }
 }

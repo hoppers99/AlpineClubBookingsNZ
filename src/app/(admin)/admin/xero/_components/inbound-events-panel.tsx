@@ -11,6 +11,7 @@ import {
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { resetXeroInboundDatasetSearchParams } from "@/lib/admin-dataset-reset-state"
 import { fetchJson, postJson } from "./api"
 import {
   FilterSelect,
@@ -151,6 +152,10 @@ export function InboundEventsPanel({
     page === 1
 
   const resetDataset = () => {
+    const params = resetXeroInboundDatasetSearchParams(
+      searchParamsRef.current.toString(),
+    )
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false })
     setUrlSyncEnabled(true)
     setStatusFilter("all")
     setCategoryFilter("all")

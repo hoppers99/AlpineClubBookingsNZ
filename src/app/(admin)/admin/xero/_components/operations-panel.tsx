@@ -15,6 +15,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { redactSensitiveText } from "@/lib/redact-sensitive-json"
 import { summarizeXeroOperation } from "@/lib/xero-operation-summaries"
+import { resetXeroOperationsDatasetSearchParams } from "@/lib/admin-dataset-reset-state"
 import { fetchJson, postJson } from "./api"
 import {
   FailureStateChip,
@@ -165,6 +166,10 @@ export function OperationsPanel({
     page === 1
 
   const resetDataset = () => {
+    const params = resetXeroOperationsDatasetSearchParams(
+      searchParamsRef.current.toString(),
+    )
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false })
     setUrlSyncEnabled(true)
     setStatusFilter("all")
     setEntityFilter("all")
