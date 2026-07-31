@@ -293,6 +293,32 @@ REHEARSAL_COMPOSE=(
   --profile migrate
 )
 
+REHEARSAL_TEARDOWN_COMPLETE=false
+cleanup_induction_rehearsal() {
+  local original_status=$?
+  local cleanup_status=0
+
+  # Prevent EXIT recursion and a signal arriving during cleanup from starting a
+  # second teardown. Preserve an existing failure even if teardown also fails.
+  trap - EXIT INT TERM
+  if [ "$REHEARSAL_TEARDOWN_COMPLETE" != true ]; then
+    "${REHEARSAL_COMPOSE[@]}" down -v --remove-orphans ||
+      cleanup_status=$?
+    if [ "$cleanup_status" -ne 0 ]; then
+      printf 'Rehearsal teardown also failed with status %s; inspect only the dedicated %s Compose project.\n' \
+        "$cleanup_status" "$REHEARSAL_PROJECT_NAME" >&2
+    fi
+  fi
+
+  if [ "$original_status" -ne 0 ]; then
+    exit "$original_status"
+  fi
+  exit "$cleanup_status"
+}
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap cleanup_induction_rehearsal EXIT
+
 vi -- "$REHEARSAL_INPUT_DIR/rehearsal-dump-path"
 if [ "$(wc -l < "$REHEARSAL_INPUT_DIR/rehearsal-dump-path")" -ne 1 ]; then
   printf 'The rehearsal dump path file must contain exactly one line.\n' >&2
@@ -449,17 +475,40 @@ printf 'Trusted-baseline audit count after rehearsal: %s\n' "$REHEARSAL_AUDITS_A
   > "$REHEARSAL_EVIDENCE_DIR/audit-count.txt"
 ```
 
-After copying the evidence to the rehearsal record, discard the restored
-database and its volume. This exact project name is dedicated to the rehearsal:
+The cleanup trap removes only containers, networks, and volumes selected by the
+exact `REHEARSAL_COMPOSE` project/context above. It deliberately does not delete
+the dump, environment file, protected inputs, or evidence: an interrupted run
+may need those files for diagnosis, and evidence must be copied to the
+rehearsal record before local deletion.
+
+After copying the evidence to the rehearsal record, explicitly discard the
+restored database and its volume, verify that the dedicated project has no
+container or volume left, then disarm the fallback trap:
 
 ```bash
 "${REHEARSAL_COMPOSE[@]}" down -v --remove-orphans
+
+REHEARSAL_CONTAINERS_REMAINING="$("${REHEARSAL_COMPOSE[@]}" ps -aq)"
+REHEARSAL_VOLUMES_REMAINING="$(
+  docker volume ls -q \
+    --filter "label=com.docker.compose.project=$REHEARSAL_PROJECT_NAME"
+)"
+if [ -n "$REHEARSAL_CONTAINERS_REMAINING" ] ||
+   [ -n "$REHEARSAL_VOLUMES_REMAINING" ]; then
+  printf 'The dedicated rehearsal project still has containers or volumes; stop.\n' >&2
+  exit 1
+fi
+
+REHEARSAL_TEARDOWN_COMPLETE=true
+trap - EXIT INT TERM
 ```
 
-Securely delete the local rehearsal dump, rehearsal `.env`, and rehearsal input
-files when the evidence has been retained. A rehearsal is incomplete unless
-dry run, nonzero apply, `CREATE: 0` rerun, one audit, evidence retention, and
-teardown all succeeded.
+Only after the evidence has been retained, the explicit teardown has been
+verified, and the trap has been disarmed should the operator securely delete
+the local rehearsal dump, rehearsal `.env`, and rehearsal input files. Delete
+the local evidence directory only after its contents are confirmed in the
+rehearsal record. A rehearsal is incomplete unless dry run, nonzero apply,
+`CREATE: 0` rerun, one audit, evidence retention, and teardown all succeeded.
 
 ## 1. Run and retain the dry-run report
 
