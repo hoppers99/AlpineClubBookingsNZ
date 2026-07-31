@@ -16,6 +16,34 @@ export interface XeroCredentialFieldMeta {
   setAt: string | null;
 }
 
+/**
+ * Why the connected-organisation read did not produce a name (#2394).
+ *
+ * The first three kinds mirror `XeroOrganisationReadFailure` on the server
+ * (`src/lib/xero-organisation.ts`) — they are the three things an operator can
+ * do something DIFFERENT about: reconnect, wait, or try again now. The fourth
+ * is client-only: this site refused the read outright because the admin's role
+ * has no finance access, which no amount of retrying or waiting will change.
+ *
+ * Kept as a hand-written mirror rather than importing the server type: this
+ * module is a client component, and `xero-organisation.ts` pulls in the Xero
+ * client and Prisma. `normaliseOrgFailure` below is the one place the wire
+ * shape is trusted, so an unknown kind degrades rather than rendering nothing.
+ */
+export type XeroOrgReadErrorKind =
+  | "disconnected"
+  | "rate_limited"
+  | "unavailable"
+  | "forbidden";
+
+export interface XeroOrgReadError {
+  kind: XeroOrgReadErrorKind;
+  /** Which Xero limit was hit, for `rate_limited` (else null). */
+  rateLimit: "minute" | "day" | null;
+  /** Seconds Xero asked us to wait, when it said (else null). */
+  retryAfterSeconds: number | null;
+}
+
 export type XeroCredentialKey = "client_id" | "client_secret" | "webhook_key";
 
 export interface XeroWizardContext {
@@ -40,6 +68,21 @@ export interface XeroWizardContext {
   needsReentry: boolean;
   /** Connected organisation name for the right-org confirmation, when known. */
   orgName: string | null;
+  /**
+   * Why {@link orgName} is missing, or null while it is fine / still coming
+   * (#2394). The connect step shows the "Confirming the organisation name…"
+   * placeholder only while this is null and a read is in flight; any settled
+   * failure replaces it with an explanation and a Try again control.
+   */
+  orgError: XeroOrgReadError | null;
+  /**
+   * True while a context load — which performs the organisation read when
+   * connected — is in flight. Set for the WHOLE load rather than just the org
+   * fetch: the load starts with three parallel reads before it even knows
+   * whether Xero is connected, and a Try again button that stays idle-looking
+   * for that first round-trip reads as a dead button.
+   */
+  orgLoading: boolean;
   /** Webhook delivery URL to paste into the Xero portal ({origin}/api/webhooks/xero). */
   webhookDeliveryUrl: string;
   /**
@@ -68,7 +111,46 @@ interface StatusResponse {
 }
 interface OrgResponse {
   name?: string | null;
+  readFailure?: {
+    kind?: string;
+    rateLimit?: string | null;
+    retryAfterSeconds?: number | null;
+  } | null;
 }
+
+/** The three server kinds, as a runtime set for the wire-shape check below. */
+const SERVER_ORG_FAILURE_KINDS = new Set([
+  "disconnected",
+  "rate_limited",
+  "unavailable",
+]);
+
+/** Trust nothing off the wire: an unrecognised shape degrades to "try again". */
+function normaliseOrgFailure(
+  raw: OrgResponse["readFailure"],
+): XeroOrgReadError {
+  const kind =
+    typeof raw?.kind === "string" && SERVER_ORG_FAILURE_KINDS.has(raw.kind)
+      ? (raw.kind as XeroOrgReadErrorKind)
+      : "unavailable";
+  const rateLimit =
+    raw?.rateLimit === "minute" || raw?.rateLimit === "day"
+      ? raw.rateLimit
+      : null;
+  const retryAfterSeconds =
+    typeof raw?.retryAfterSeconds === "number" &&
+    Number.isFinite(raw.retryAfterSeconds) &&
+    raw.retryAfterSeconds > 0
+      ? Math.ceil(raw.retryAfterSeconds)
+      : null;
+  return { kind, rateLimit, retryAfterSeconds };
+}
+
+const UNAVAILABLE: XeroOrgReadError = {
+  kind: "unavailable",
+  rateLimit: null,
+  retryAfterSeconds: null,
+};
 interface WebhookStatusResponse {
   verified?: boolean;
 }
@@ -110,9 +192,12 @@ export function useXeroWizardContext(serverConfig: XeroWizardServerConfig): {
   const [connected, setConnected] = useState(false);
   const [needsReentry, setNeedsReentry] = useState(false);
   const [orgName, setOrgName] = useState<string | null>(null);
+  const [orgError, setOrgError] = useState<XeroOrgReadError | null>(null);
+  const [orgLoading, setOrgLoading] = useState(true);
   const [webhookVerified, setWebhookVerified] = useState(false);
 
   const load = useCallback(async (forceOrgRefresh = false) => {
+    setOrgLoading(true);
     try {
       const [credRes, statusRes, webhookRes] = await Promise.all([
         fetch(CREDENTIALS_ENDPOINT, { credentials: "same-origin" }),
@@ -153,9 +238,13 @@ export function useXeroWizardContext(serverConfig: XeroWizardServerConfig): {
       }
 
       // Only read the org (a Xero API call) when actually connected. An explicit
-      // refresh (post-connect return, post-credential save) forces a fresh read
-      // (?refresh=1) so a just-reconnected DIFFERENT org can never show the old
-      // cached name — belt-and-braces over the server-side cache reset (#2080 F1).
+      // refresh (post-connect return, post-credential save, the Try again
+      // control) forces a fresh read (?refresh=1) so a just-reconnected
+      // DIFFERENT org can never show the old cached name — belt-and-braces over
+      // the server-side cache reset (#2080 F1) — and so a manual retry is never
+      // answered out of the 60-second NEGATIVE cache a failure just wrote
+      // (#2394). A Try again that re-serves the failure it was pressed to clear
+      // is worse than no button at all.
       if (isConnected) {
         const orgUrl = forceOrgRefresh
           ? `${ORG_ENDPOINT}?refresh=1`
@@ -163,15 +252,51 @@ export function useXeroWizardContext(serverConfig: XeroWizardServerConfig): {
         const orgRes = await fetch(orgUrl, { credentials: "same-origin" });
         if (orgRes.ok) {
           const data = (await orgRes.json()) as OrgResponse;
-          setOrgName(data.name ?? null);
+          const name = data.name ?? null;
+          setOrgName(name);
+          if (name) {
+            // A name is a name, even one served from cache behind a failed
+            // refresh: the step's job is confirming the RIGHT org, and it can
+            // do that. Nothing to report.
+            setOrgError(null);
+          } else if (data.readFailure) {
+            setOrgError(normaliseOrgFailure(data.readFailure));
+          } else {
+            // The read genuinely succeeded and Xero reported no name at all.
+            // Vanishingly rare, but it must not fall back into an endless
+            // "Confirming…" — that is the bug this issue is about.
+            setOrgError(UNAVAILABLE);
+          }
+        } else if (orgRes.status === 401 || orgRes.status === 403) {
+          // THIS SITE refused, not Xero: the signed-in admin has no finance
+          // access. Retrying and waiting are both useless, so this is its own
+          // case rather than a mislabelled "temporarily unavailable".
+          setOrgName(null);
+          setOrgError({
+            kind: "forbidden",
+            rateLimit: null,
+            retryAfterSeconds: null,
+          });
+        } else {
+          setOrgName(null);
+          setOrgError(UNAVAILABLE);
         }
       } else {
         setOrgName(null);
+        setOrgError(null);
       }
     } catch {
-      // Leave the last-known state; the wizard degrades to "not verified".
+      // The load itself failed (offline, a dropped connection, unparseable
+      // JSON). Everything else degrades to "not verified", which still leaves
+      // the operator a control to press — but the organisation confirmation
+      // degrades to a message that never resolves, so it has to say so and
+      // offer the retry (#2394). Before this, the bare `catch {}` here meant a
+      // single blip pinned the step permanently with nothing shown and nothing
+      // logged.
+      setOrgError(UNAVAILABLE);
     } finally {
       setLoading(false);
+      setOrgLoading(false);
     }
   }, []);
 
@@ -179,9 +304,11 @@ export function useXeroWizardContext(serverConfig: XeroWizardServerConfig): {
     void load();
   }, [load]);
 
-  // A user-triggered refresh always forces a fresh org read (the only callers
-  // are post-connect and post-credential-save, where the org identity may have
-  // just changed); the initial mount load uses the cache.
+  // A user-triggered refresh always forces a fresh org read: post-connect and
+  // post-credential-save the org identity may have just changed, and the Try
+  // again control on the connect step (#2394) must escape the 60-second
+  // negative cache a failed read leaves behind. The initial mount load uses the
+  // cache, so an ordinary page load still costs no live Xero call.
   const refresh = useCallback(() => {
     void load(true);
   }, [load]);
@@ -195,6 +322,8 @@ export function useXeroWizardContext(serverConfig: XeroWizardServerConfig): {
     connected,
     needsReentry,
     orgName,
+    orgError,
+    orgLoading,
     webhookDeliveryUrl: serverConfig.webhookDeliveryUrl,
     webhooksVerifiable: serverConfig.webhooksVerifiable,
     webhookVerified,

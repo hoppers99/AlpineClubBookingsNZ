@@ -45,6 +45,8 @@ function makeContext(
     connected: false,
     needsReentry: false,
     orgName: null,
+    orgError: null,
+    orgLoading: false,
     webhookDeliveryUrl: "https://example.test/api/webhooks/xero",
     webhooksVerifiable: true,
     webhookVerified: false,
