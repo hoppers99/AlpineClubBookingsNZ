@@ -66,15 +66,17 @@ test("an admin approves a review-flagged booking then allocates a bed to its gue
   // the approvals panel defaults to the PENDING filter, where Ken's card sits.
   await page.goto("/admin/booking-approvals");
   await expect(page).toHaveURL(/\/admin\/booking-requests/);
-  await expect(page.getByText("Ken King", { exact: true }).first()).toBeVisible(
-    { timeout: 30_000 },
-  );
+  await expect(
+    page.getByText("Ken King", { exact: true }).first(),
+  ).toBeVisible({ timeout: 30_000 });
 
   // "Approve" (exact) so it never matches the "Approved" status-filter button.
   await page.getByRole("button", { name: "Approve", exact: true }).click();
   // #1790: the approve action now opens a notify-choice dialog; confirm the
   // default notify path ("Approve and email member") to complete the approval.
-  await page.getByRole("button", { name: "Approve and email member" }).click();
+  await page
+    .getByRole("button", { name: "Approve and email member" })
+    .click();
   await expect(page.getByText("Booking approved.")).toBeVisible();
 
   // ── Allocate Ken's guest to Bunk Room A / A1 via Select + Allocate ──
@@ -117,9 +119,7 @@ test("an admin approves a review-flagged booking then allocates a bed to its gue
   // ── Approve the visible draft allocations ──
   await page.getByRole("button", { name: "Approve Visible" }).click();
   await expect(page.getByText("Allocations approved")).toBeVisible();
-  await expect(
-    page.getByText("Approved", { exact: true }).first(),
-  ).toBeVisible();
+  await expect(page.getByText("Approved", { exact: true }).first()).toBeVisible();
 
   await page.close();
 });
@@ -198,198 +198,185 @@ test("existing-chip pointer and keyboard drops preserve dates, while keyboard ca
   const page = await adminContext.newPage();
   let scenarioError: unknown;
   try {
-    const moveRequests: Array<{
-      allocationIds: string[];
-      bedId: string;
-      stayDate?: string;
-    }> = [];
-    page.on("request", (request) => {
-      if (
-        request.method() === "PATCH" &&
-        new URL(request.url()).pathname ===
-          "/api/admin/bed-allocation/allocations"
-      ) {
-        moveRequests.push(
-          request.postDataJSON() as {
-            allocationIds: string[];
-            bedId: string;
-            stayDate?: string;
-          },
-        );
-      }
-    });
-    await page.goto(
-      `/admin/bed-allocation?from=${ken.checkIn}&to=${extendedTo}`,
-    );
-
-    const dragHandle = () =>
-      page
-        .getByRole("button", {
-          name: /Drag Ken King to another bed; original lodge night .* will be kept/,
-        })
-        .first();
-    const targetRow = () =>
-      page
-        .getByRole("row")
-        .filter({ has: page.getByText(destination!.name, { exact: true }) });
-    const targetCell = () =>
-      targetRow().locator(`td[data-stay-date="${ken.checkOut}"]`);
-    const preview = () =>
-      page.getByText(
-        `to ${destination!.roomName} / ${destination!.name}, snapped to original lodge night`,
-        { exact: false },
-      );
-
-    // Pointer preview + cancel: real sensor wiring, no request.
-    const from = await dragHandle().boundingBox();
-    const to = await targetCell().boundingBox();
-    expect(from).toBeTruthy();
-    expect(to).toBeTruthy();
-    await page.mouse.move(
-      from!.x + from!.width / 2,
-      from!.y + from!.height / 2,
-    );
-    await page.mouse.down();
-    await page.mouse.move(to!.x + to!.width / 2, to!.y + to!.height / 2, {
-      steps: 12,
-    });
-    await expect(preview()).toBeVisible();
-    await page.keyboard.press("Escape");
-    await page.mouse.up();
-    await expect.poll(() => moveRequests.length).toBe(0);
-
-    // Pointer success: release over the real cell, then prove the page emitted
-    // the date-free PATCH and the server persisted the original nights.
-    await page.mouse.move(
-      from!.x + from!.width / 2,
-      from!.y + from!.height / 2,
-    );
-    await page.mouse.down();
-    await page.mouse.move(to!.x + to!.width / 2, to!.y + to!.height / 2, {
-      steps: 12,
-    });
-    await expect(preview()).toBeVisible();
-    await page.mouse.up();
-    await expect(page.getByText("Visible guest nights moved")).toBeVisible({
-      timeout: 30_000,
-    });
-    expect(moveRequests).toHaveLength(1);
-    expect(moveRequests[0]).toEqual({
-      allocationIds,
-      bedId: destination!.id,
-    });
-    expect(moveRequests[0]).not.toHaveProperty("stayDate");
-
-    const readPersisted = async () => {
-      const response = await adminContext.request.get(dashboardPath);
-      expect(
-        response.ok(),
-        `read persisted board (${response.status()})`,
-      ).toBeTruthy();
-      const current = (await response.json()) as typeof payload;
-      return current.allocations
-        .filter((allocation) => allocation.guestName.includes("Ken"))
-        .sort((left, right) => left.stayDate.localeCompare(right.stayDate));
-    };
-    let persisted = await readPersisted();
-    expect(persisted.map((allocation) => allocation.stayDate)).toEqual(
-      originalDates,
-    );
-    expect(
-      persisted.every((allocation) => allocation.bedId === destination!.id),
-    ).toBe(true);
-
-    // Restore the seeded bed through the service before exercising the keyboard
-    // sensor. This keeps the fixture deterministic and prevents the successful
-    // pointer proof from deciding the keyboard source/destination geometry.
-    const restoreAfterPointer = await adminContext.request.patch(
-      "/api/admin/bed-allocation/allocations",
-      {
-        data: {
-          allocationIds: persisted.map((allocation) => allocation.id),
-          bedId: originalBedId,
+  const moveRequests: Array<{
+    allocationIds: string[];
+    bedId: string;
+    stayDate?: string;
+  }> = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "PATCH" &&
+      new URL(request.url()).pathname ===
+        "/api/admin/bed-allocation/allocations"
+    ) {
+      moveRequests.push(
+        request.postDataJSON() as {
+          allocationIds: string[];
+          bedId: string;
+          stayDate?: string;
         },
-      },
-    );
-    expect(
-      restoreAfterPointer.ok(),
-      `restore after pointer drop (${restoreAfterPointer.status()})`,
-    ).toBeTruthy();
-    await page.reload();
-    await expect(dragHandle()).toBeVisible();
-
-    async function moveKeyboardFocusToDestination() {
-      const sourceBox = await dragHandle().boundingBox();
-      const destinationBox = await targetCell().boundingBox();
-      expect(sourceBox).toBeTruthy();
-      expect(destinationBox).toBeTruthy();
-      const direction =
-        destinationBox!.y >= sourceBox!.y ? "ArrowDown" : "ArrowUp";
-      const maxSteps =
-        Math.ceil(
-          Math.abs(
-            destinationBox!.y +
-              destinationBox!.height / 2 -
-              (sourceBox!.y + sourceBox!.height / 2),
-          ) / 25,
-        ) + 4;
-      for (let step = 0; step < maxSteps; step += 1) {
-        await page.keyboard.press(direction);
-        if (
-          await preview()
-            .isVisible()
-            .catch(() => false)
-        )
-          return;
-      }
-      throw new Error(
-        `Keyboard sensor did not reach ${destination!.roomName} / ${destination!.name}`,
       );
     }
+  });
+  await page.goto(`/admin/bed-allocation?from=${ken.checkIn}&to=${extendedTo}`);
 
-    // Keyboard preview + cancel: pickup and navigation are real key events.
-    await dragHandle().focus();
-    await page.keyboard.press("Space");
-    await moveKeyboardFocusToDestination();
-    await expect(preview()).toBeVisible();
-    await page.keyboard.press("Escape");
-    await expect.poll(() => moveRequests.length).toBe(1);
-    persisted = await readPersisted();
-    expect(
-      persisted.every((allocation) => allocation.bedId === originalBedId),
-    ).toBe(true);
-
-    // Keyboard drop: the live preview is followed by a real Space drop and a
-    // second date-free PATCH. The persisted nights remain byte-for-byte equal.
-    await dragHandle().focus();
-    await page.keyboard.press("Space");
-    await moveKeyboardFocusToDestination();
-    await page.keyboard.press("Space");
-    await expect(page.getByText("Visible guest nights moved")).toBeVisible({
-      timeout: 30_000,
-    });
-    expect(moveRequests).toHaveLength(2);
-    expect(moveRequests[1]).toEqual({
-      allocationIds,
-      bedId: destination!.id,
-    });
-    expect(moveRequests[1]).not.toHaveProperty("stayDate");
-    persisted = await readPersisted();
-    expect(persisted.map((allocation) => allocation.stayDate)).toEqual(
-      originalDates,
+  const dragHandle = () =>
+    page
+    .getByRole("button", {
+      name: /Drag Ken King to another bed; original lodge night .* will be kept/,
+    })
+    .first();
+  const targetRow = () =>
+    page
+    .getByRole("row")
+    .filter({ has: page.getByText(destination!.name, { exact: true }) });
+  const targetCell = () =>
+    targetRow().locator(`td[data-stay-date="${ken.checkOut}"]`);
+  const preview = () =>
+    page.getByText(
+      `to ${destination!.roomName} / ${destination!.name}, snapped to original lodge night`,
+      { exact: false },
     );
+
+  // Pointer preview + cancel: real sensor wiring, no request.
+  const from = await dragHandle().boundingBox();
+  const to = await targetCell().boundingBox();
+  expect(from).toBeTruthy();
+  expect(to).toBeTruthy();
+  await page.mouse.move(from!.x + from!.width / 2, from!.y + from!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(to!.x + to!.width / 2, to!.y + to!.height / 2, {
+    steps: 12,
+  });
+  await expect(preview()).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.mouse.up();
+  await expect.poll(() => moveRequests.length).toBe(0);
+
+  // Pointer success: release over the real cell, then prove the page emitted
+  // the date-free PATCH and the server persisted the original nights.
+  await page.mouse.move(from!.x + from!.width / 2, from!.y + from!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(to!.x + to!.width / 2, to!.y + to!.height / 2, {
+    steps: 12,
+  });
+  await expect(preview()).toBeVisible();
+  await page.mouse.up();
+  await expect(page.getByText("Visible guest nights moved")).toBeVisible({
+    timeout: 30_000,
+  });
+  expect(moveRequests).toHaveLength(1);
+  expect(moveRequests[0]).toEqual({
+    allocationIds,
+    bedId: destination!.id,
+  });
+  expect(moveRequests[0]).not.toHaveProperty("stayDate");
+
+  const readPersisted = async () => {
+    const response = await adminContext.request.get(dashboardPath);
     expect(
-      persisted.every((allocation) => allocation.bedId === destination!.id),
-    ).toBe(true);
+      response.ok(),
+      `read persisted board (${response.status()})`,
+    ).toBeTruthy();
+    const current = (await response.json()) as typeof payload;
+    return current.allocations
+      .filter((allocation) => allocation.guestName.includes("Ken"))
+      .sort((left, right) => left.stayDate.localeCompare(right.stayDate));
+  };
+  let persisted = await readPersisted();
+  expect(persisted.map((allocation) => allocation.stayDate)).toEqual(
+    originalDates,
+  );
+  expect(
+    persisted.every(
+      (allocation) => allocation.bedId === destination!.id,
+    ),
+  ).toBe(true);
+
+  // Restore the seeded bed through the service before exercising the keyboard
+  // sensor. This keeps the fixture deterministic and prevents the successful
+  // pointer proof from deciding the keyboard source/destination geometry.
+  const restoreAfterPointer = await adminContext.request.patch(
+    "/api/admin/bed-allocation/allocations",
+    {
+      data: {
+        allocationIds,
+        bedId: originalBedId,
+      },
+    },
+  );
+  expect(
+    restoreAfterPointer.ok(),
+    `restore after pointer drop (${restoreAfterPointer.status()})`,
+  ).toBeTruthy();
+  await page.reload();
+  await expect(dragHandle()).toBeVisible();
+
+  async function moveKeyboardFocusToDestination() {
+    const sourceBox = await dragHandle().boundingBox();
+    const destinationBox = await targetCell().boundingBox();
+    expect(sourceBox).toBeTruthy();
+    expect(destinationBox).toBeTruthy();
+    const direction =
+      destinationBox!.y >= sourceBox!.y ? "ArrowDown" : "ArrowUp";
+    const maxSteps =
+      Math.ceil(
+        Math.abs(
+          destinationBox!.y +
+            destinationBox!.height / 2 -
+            (sourceBox!.y + sourceBox!.height / 2),
+        ) / 25,
+      ) + 4;
+    for (let step = 0; step < maxSteps; step += 1) {
+      await page.keyboard.press(direction);
+      if (await preview().isVisible().catch(() => false)) return;
+    }
+    throw new Error(
+      `Keyboard sensor did not reach ${destination!.roomName} / ${destination!.name}`,
+    );
+  }
+
+  // Keyboard preview + cancel: pickup and navigation are real key events.
+  await dragHandle().focus();
+  await page.keyboard.press("Space");
+  await moveKeyboardFocusToDestination();
+  await expect(preview()).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect.poll(() => moveRequests.length).toBe(1);
+  persisted = await readPersisted();
+  expect(
+    persisted.every((allocation) => allocation.bedId === originalBedId),
+  ).toBe(true);
+
+  // Keyboard drop: the live preview is followed by a real Space drop and a
+  // second date-free PATCH. The persisted nights remain byte-for-byte equal.
+  await dragHandle().focus();
+  await page.keyboard.press("Space");
+  await moveKeyboardFocusToDestination();
+  await page.keyboard.press("Space");
+  await expect(page.getByText("Visible guest nights moved")).toBeVisible({
+    timeout: 30_000,
+  });
+  expect(moveRequests).toHaveLength(2);
+  expect(moveRequests[1]).toEqual({
+    allocationIds,
+    bedId: destination!.id,
+  });
+  expect(moveRequests[1]).not.toHaveProperty("stayDate");
+  persisted = await readPersisted();
+  expect(persisted.map((allocation) => allocation.stayDate)).toEqual(
+    originalDates,
+  );
+  expect(
+    persisted.every((allocation) => allocation.bedId === destination!.id),
+  ).toBe(true);
+
   } catch (error) {
     scenarioError = error;
     throw error;
   } finally {
     const cleanupErrors: unknown[] = [];
     try {
-      // This runs even when pointer/keyboard navigation or an assertion fails.
-      // The date-free move is idempotent when the rows are already back on the
-      // seeded bed, so it is safe on a clean attempt and on a retry.
       const restored = await adminContext.request.patch(
         "/api/admin/bed-allocation/allocations",
         {
@@ -402,24 +389,19 @@ test("existing-chip pointer and keyboard drops preserve dates, while keyboard ca
       if (!restored.ok()) {
         cleanupErrors.push(
           new Error(
-            `restore bed-allocation fixture failed (${restored.status()}): ${await restored.text()}`,
+            `restore seeded bed (${restored.status()}): ${await restored.text()}`,
           ),
         );
       }
     } catch (error) {
       cleanupErrors.push(error);
     }
-
     try {
       await page.close();
     } catch (error) {
       cleanupErrors.push(error);
     }
-
     if (cleanupErrors.length > 0) {
-      // Preserve the original scenario failure when cleanup also fails. The
-      // attachment keeps the secondary failure visible in the Playwright
-      // report; if the scenario itself passed, cleanup failure becomes primary.
       if (scenarioError) {
         await testInfo
           .attach("bed-allocation-cleanup-errors", {
@@ -461,10 +443,7 @@ test("an admin confirms this booking's beds from the booking page, and the membe
   );
   expect(dashboard.ok(), `read the board (${dashboard.status()})`).toBeTruthy();
   const payload = (await dashboard.json()) as {
-    rooms: Array<{
-      active: boolean;
-      beds: Array<{ id: string; active: boolean }>;
-    }>;
+    rooms: Array<{ active: boolean; beds: Array<{ id: string; active: boolean }> }>;
     allocations: Array<{
       bookingId: string;
       bookingGuestId: string;
@@ -495,10 +474,7 @@ test("an admin confirms this booking's beds from the booking page, and the membe
       },
     },
   );
-  expect(
-    moved.ok(),
-    `move Ken to a second bed (${moved.status()})`,
-  ).toBeTruthy();
+  expect(moved.ok(), `move Ken to a second bed (${moved.status()})`).toBeTruthy();
 
   // ── Confirm from inside the booking ──
   const page = await adminContext.newPage();
@@ -533,7 +509,9 @@ test("an admin confirms this booking's beds from the booking page, and the membe
     await memberPage.goto("/bookings");
     // The whole booking card is one anchor (my-bookings-list.tsx), so target
     // the href rather than a label.
-    const firstBooking = memberPage.locator('a[href^="/bookings/"]').first();
+    const firstBooking = memberPage
+      .locator('a[href^="/bookings/"]')
+      .first();
     await expect(firstBooking).toBeVisible({ timeout: 30_000 });
     await firstBooking.click();
     await expect(memberPage).toHaveURL(/\/bookings\/[^/?]+/);

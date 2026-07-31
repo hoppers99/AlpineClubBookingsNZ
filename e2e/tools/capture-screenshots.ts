@@ -79,11 +79,7 @@ const CAPTURES: Capture[] = [
   { name: "admin-dashboard", route: "/admin/dashboard", area: "admin" },
   { name: "admin-members", route: "/admin/members", area: "admin" },
   { name: "admin-bookings", route: "/admin/bookings", area: "admin" },
-  {
-    name: "admin-bed-allocation",
-    route: "/admin/bed-allocation",
-    area: "admin",
-  },
+  { name: "admin-bed-allocation", route: "/admin/bed-allocation", area: "admin" },
   {
     name: "admin-bed-allocation-snap-preview",
     route: `/admin/bed-allocation?from=${DEMO_BOOKING_WINDOWS.daveConfirmed.checkIn}&to=${DEMO_BOOKING_WINDOWS.daveConfirmed.checkOut}`,
@@ -97,206 +93,74 @@ const CAPTURES: Capture[] = [
   { name: "public-home", route: "/", area: "public", auth: false },
   // Batch 1 (#2050): bookings & capacity operator guides.
   { name: "admin-book", route: "/admin/book", area: "admin" },
-  {
-    name: "admin-booking-requests",
-    route: "/admin/booking-requests?tab=approvals",
-    area: "admin",
-  },
-  {
-    name: "admin-booking-requests-changes",
-    route: "/admin/booking-requests?tab=changes",
-    area: "admin",
-  },
-  {
-    name: "admin-booking-requests-public",
-    route: "/admin/booking-requests?tab=public",
-    area: "admin",
-  },
-  {
-    name: "admin-bookings-setup",
-    route: "/admin/bookings-setup",
-    area: "admin",
-  },
-  {
-    name: "admin-booking-messages",
-    route: "/admin/booking-messages",
-    area: "admin",
-  },
-  {
-    name: "admin-booking-policies",
-    route: "/admin/booking-policies",
-    area: "admin",
-  },
-  {
-    name: "admin-booking-policies-cancellation",
-    route: "/admin/booking-policies/cancellation",
-    area: "admin",
-  },
-  {
-    name: "admin-booking-policies-minimum-stay",
-    route: "/admin/booking-policies/minimum-stay",
-    area: "admin",
-  },
-  {
-    name: "admin-booking-policies-group-discount",
-    route: "/admin/booking-policies/group-discount",
-    area: "admin",
-  },
-  {
-    name: "admin-booking-policies-periods",
-    route: "/admin/booking-policies/periods",
-    area: "admin",
-  },
-  {
-    name: "admin-booking-policies-public-requests",
-    route: "/admin/booking-policies/public-requests",
-    area: "admin",
-  },
+  { name: "admin-booking-requests", route: "/admin/booking-requests?tab=approvals", area: "admin" },
+  { name: "admin-booking-requests-changes", route: "/admin/booking-requests?tab=changes", area: "admin" },
+  { name: "admin-booking-requests-public", route: "/admin/booking-requests?tab=public", area: "admin" },
+  { name: "admin-bookings-setup", route: "/admin/bookings-setup", area: "admin" },
+  { name: "admin-booking-messages", route: "/admin/booking-messages", area: "admin" },
+  { name: "admin-booking-policies", route: "/admin/booking-policies", area: "admin" },
+  { name: "admin-booking-policies-cancellation", route: "/admin/booking-policies/cancellation", area: "admin" },
+  { name: "admin-booking-policies-minimum-stay", route: "/admin/booking-policies/minimum-stay", area: "admin" },
+  { name: "admin-booking-policies-group-discount", route: "/admin/booking-policies/group-discount", area: "admin" },
+  { name: "admin-booking-policies-periods", route: "/admin/booking-policies/periods", area: "admin" },
+  { name: "admin-booking-policies-public-requests", route: "/admin/booking-policies/public-requests", area: "admin" },
   { name: "admin-promo-codes", route: "/admin/promo-codes", area: "admin" },
   { name: "admin-seasons", route: "/admin/seasons", area: "admin" },
-  {
-    name: "admin-age-tier-settings",
-    route: "/admin/age-tier-settings",
-    area: "admin",
-  },
+  { name: "admin-age-tier-settings", route: "/admin/age-tier-settings", area: "admin" },
   { name: "admin-payments", route: "/admin/payments", area: "admin" },
   // Batch 2 (#2050): membership & applications operator guides.
-  {
-    name: "admin-member-applications",
-    route: "/admin/member-applications",
-    area: "admin",
-  },
+  { name: "admin-member-applications", route: "/admin/member-applications", area: "admin" },
   { name: "admin-member-fields", route: "/admin/member-fields", area: "admin" },
-  {
-    name: "admin-membership-types",
-    route: "/admin/membership-types",
-    area: "admin",
-  },
-  {
-    name: "admin-membership-setup",
-    route: "/admin/membership-setup",
-    area: "admin",
-  },
-  {
-    name: "admin-subscription-lockout",
-    route: "/admin/subscription-lockout",
-    area: "admin",
-  },
-  {
-    name: "admin-membership-cancellations",
-    route: "/admin/membership-cancellations",
-    area: "admin",
-  },
-  {
-    name: "admin-membership-cancellation",
-    route: "/admin/membership-cancellation",
-    area: "admin",
-  },
+  { name: "admin-membership-types", route: "/admin/membership-types", area: "admin" },
+  { name: "admin-membership-setup", route: "/admin/membership-setup", area: "admin" },
+  { name: "admin-subscription-lockout", route: "/admin/subscription-lockout", area: "admin" },
+  { name: "admin-membership-cancellations", route: "/admin/membership-cancellations", area: "admin" },
+  { name: "admin-membership-cancellation", route: "/admin/membership-cancellation", area: "admin" },
   { name: "admin-committee", route: "/admin/committee", area: "admin" },
   { name: "admin-family-groups", route: "/admin/family-groups", area: "admin" },
-  {
-    name: "admin-family-suggestions",
-    route: "/admin/family-suggestions",
-    area: "admin",
-  },
+  { name: "admin-family-suggestions", route: "/admin/family-suggestions", area: "admin" },
   { name: "admin-induction", route: "/admin/induction", area: "admin" },
-  {
-    name: "admin-induction-settings",
-    route: "/admin/induction/settings",
-    area: "admin",
-  },
-  {
-    name: "admin-deletion-requests",
-    route: "/admin/deletion-requests",
-    area: "admin",
-  },
+  { name: "admin-induction-settings", route: "/admin/induction/settings", area: "admin" },
+  { name: "admin-deletion-requests", route: "/admin/deletion-requests", area: "admin" },
   { name: "admin-lockers", route: "/admin/lockers", area: "admin" },
   { name: "admin-fees", route: "/admin/fees", area: "admin" },
   { name: "admin-subscriptions", route: "/admin/subscriptions", area: "admin" },
-  {
-    name: "admin-refund-requests",
-    route: "/admin/refund-requests",
-    area: "admin",
-  },
+  { name: "admin-refund-requests", route: "/admin/refund-requests", area: "admin" },
   // The next three routes are gated by the `xeroIntegration` feature flag
   // (internet-banking additionally by `internetBankingPayments`); see
   // src/config/feature-routes.ts. They 404 (blank capture) unless those modules
   // are enabled — the default demo seed leaves Xero off, so no image is committed
   // for them and their guides describe the screens in prose. Capture these only
   // against a stack with the Xero module on.
-  {
-    name: "admin-internet-banking",
-    route: "/admin/internet-banking",
-    area: "admin",
-  },
+  { name: "admin-internet-banking", route: "/admin/internet-banking", area: "admin" },
   { name: "admin-xero", route: "/admin/xero", area: "admin" },
   { name: "admin-xero-setup", route: "/admin/xero/setup", area: "admin" },
-  {
-    name: "admin-xero-member-grouping",
-    route: "/admin/xero/member-grouping",
-    area: "admin",
-  },
+  { name: "admin-xero-member-grouping", route: "/admin/xero/member-grouping", area: "admin" },
   // Batch 4 (#2050): comms, content & support-platform operator guides.
   // Content — the Site Appearance & Content hub and its sub-pages.
   { name: "admin-appearance", route: "/admin/appearance", area: "admin" },
-  {
-    name: "admin-appearance-identity",
-    route: "/admin/appearance/identity",
-    area: "admin",
-  },
+  { name: "admin-appearance-identity", route: "/admin/appearance/identity", area: "admin" },
   { name: "admin-site-style", route: "/admin/site-style", area: "admin" },
   { name: "admin-site-content", route: "/admin/site-content", area: "admin" },
   { name: "admin-page-content", route: "/admin/page-content", area: "admin" },
   { name: "admin-site-banners", route: "/admin/site-banners", area: "admin" },
   // mountain-conditions is gated by the `skifieldConditions` flag, which the
   // demo seed defaults ON (prisma/schema.prisma) — so it captures normally.
-  {
-    name: "admin-mountain-conditions",
-    route: "/admin/mountain-conditions",
-    area: "admin",
-  },
+  { name: "admin-mountain-conditions", route: "/admin/mountain-conditions", area: "admin" },
   { name: "admin-image-manager", route: "/admin/image-manager", area: "admin" },
   // Comms — the Notifications & Email hub, its sub-pages, and deliverability.
   { name: "admin-notifications", route: "/admin/notifications", area: "admin" },
-  {
-    name: "admin-notification-rules",
-    route: "/admin/notification-rules",
-    area: "admin",
-  },
-  {
-    name: "admin-notification-recipients",
-    route: "/admin/notification-recipients",
-    area: "admin",
-  },
-  {
-    name: "admin-email-messages",
-    route: "/admin/email-messages",
-    area: "admin",
-  },
-  {
-    name: "admin-email-deliverability",
-    route: "/admin/email-deliverability",
-    area: "admin",
-  },
+  { name: "admin-notification-rules", route: "/admin/notification-rules", area: "admin" },
+  { name: "admin-notification-recipients", route: "/admin/notification-recipients", area: "admin" },
+  { name: "admin-email-messages", route: "/admin/email-messages", area: "admin" },
+  { name: "admin-email-deliverability", route: "/admin/email-deliverability", area: "admin" },
   // communications is gated by the `communications` flag (default ON in the seed).
-  {
-    name: "admin-communications",
-    route: "/admin/communications",
-    area: "admin",
-  },
+  { name: "admin-communications", route: "/admin/communications", area: "admin" },
   // Support platform surfaces.
   { name: "admin-access-roles", route: "/admin/access-roles", area: "admin" },
   { name: "admin-audit-log", route: "/admin/audit-log", area: "admin" },
-  {
-    name: "admin-background-jobs",
-    route: "/admin/background-jobs",
-    area: "admin",
-  },
-  {
-    name: "admin-config-transfer",
-    route: "/admin/config-transfer",
-    area: "admin",
-  },
+  { name: "admin-background-jobs", route: "/admin/background-jobs", area: "admin" },
+  { name: "admin-config-transfer", route: "/admin/config-transfer", area: "admin" },
   { name: "admin-health", route: "/admin/health", area: "admin" },
   { name: "admin-issue-reports", route: "/admin/issue-reports", area: "admin" },
   { name: "admin-modules", route: "/admin/modules", area: "admin" },
@@ -320,30 +184,10 @@ const CAPTURES: Capture[] = [
   // (the guests/review/pay steps, the cancellation dialog) are documented in
   // prose per the STYLE_GUIDE screenshot-density rule, so they need no capture.
   { name: "public-login", route: "/login", area: "public", auth: false },
-  {
-    name: "public-join-apply",
-    route: "/join/apply",
-    area: "public",
-    auth: false,
-  },
-  {
-    name: "member-dashboard",
-    route: "/dashboard",
-    area: "public",
-    persona: "member",
-  },
-  {
-    name: "member-profile",
-    route: "/profile",
-    area: "public",
-    persona: "member",
-  },
-  {
-    name: "member-bookings",
-    route: "/bookings",
-    area: "public",
-    persona: "member",
-  },
+  { name: "public-join-apply", route: "/join/apply", area: "public", auth: false },
+  { name: "member-dashboard", route: "/dashboard", area: "public", persona: "member" },
+  { name: "member-profile", route: "/profile", area: "public", persona: "member" },
+  { name: "member-bookings", route: "/bookings", area: "public", persona: "member" },
   { name: "member-book", route: "/book", area: "public", persona: "member" },
   // Batch 3 (#2050): lodge-operations operator guides — physical-lodge day-to-day.
   // The lodge-ops sidebar section (hut leaders, roster, lodge kiosk, work parties,
@@ -358,11 +202,7 @@ const CAPTURES: Capture[] = [
   { name: "admin-hut-leaders", route: "/admin/hut-leaders", area: "admin" },
   { name: "admin-work-parties", route: "/admin/work-parties", area: "admin" },
   { name: "admin-lodge", route: "/admin/lodge", area: "admin" },
-  {
-    name: "admin-lodge-instructions",
-    route: "/admin/lodge-instructions",
-    area: "admin",
-  },
+  { name: "admin-lodge-instructions", route: "/admin/lodge-instructions", area: "admin" },
   { name: "admin-lodges", route: "/admin/lodges", area: "admin" },
   { name: "admin-rooms-beds", route: "/admin/rooms-beds", area: "admin" },
   // Batch 3 (#2050): the Lobby Display hub and its sub-pages. Gated by the
@@ -383,31 +223,11 @@ const CAPTURES: Capture[] = [
   // The visual builder page itself ships its own docs and is not part of this
   // batch-3 manifest.
   { name: "admin-display", route: "/admin/display", area: "admin" },
-  {
-    name: "admin-display-devices",
-    route: "/admin/display/devices",
-    area: "admin",
-  },
-  {
-    name: "admin-display-layouts",
-    route: "/admin/display/layouts",
-    area: "admin",
-  },
-  {
-    name: "admin-display-templates",
-    route: "/admin/display/templates",
-    area: "admin",
-  },
-  {
-    name: "admin-display-reference",
-    route: "/admin/display/reference",
-    area: "admin",
-  },
-  {
-    name: "admin-display-preview",
-    route: "/admin/display/preview",
-    area: "admin",
-  },
+  { name: "admin-display-devices", route: "/admin/display/devices", area: "admin" },
+  { name: "admin-display-layouts", route: "/admin/display/layouts", area: "admin" },
+  { name: "admin-display-templates", route: "/admin/display/templates", area: "admin" },
+  { name: "admin-display-reference", route: "/admin/display/reference", area: "admin" },
+  { name: "admin-display-preview", route: "/admin/display/preview", area: "admin" },
 ];
 
 const VIEWPORT = { width: 1280, height: 800 } as const;
@@ -421,17 +241,15 @@ const VIEWPORT = { width: 1280, height: 800 } as const;
 const HIDE_OVERLAYS_CSS =
   '[data-report-issue-ignore="true"] { display: none !important; }';
 const BASE_URL = process.env.E2E_BASE_URL ?? "http://localhost:3001";
-const IMAGES_ROOT = path.resolve(
-  path.join(import.meta.dirname, "..", "..", "docs", "images"),
-);
+const IMAGES_ROOT = path.resolve(path.join(import.meta.dirname, "..", "..", "docs", "images"));
 
 /**
  * #2366 screenshot AC: Dave's past CONFIRMED demo booking is seeded with three
  * existing allocations on its exact relative fixture nights. Pick up the first
- * chip and hover A4 on the LAST seeded night, which is a genuinely rendered
- * column and horizontally different from the first chip. The screenshot
- * therefore captures the REAL pointer preview stating that the original seeded
- * lodge nights are snapped/kept.
+ * chip and hover A4 on Dave's last seeded night, which is genuinely rendered
+ * and horizontally different from the first chip. The screenshot therefore
+ * captures the REAL pointer preview stating that the original seeded lodge
+ * nights are snapped/kept.
  *
  * The pointer remains down until `shoot` closes the page, so this is preview
  * only: no PATCH is emitted and the reusable demo fixture is never changed.
@@ -440,7 +258,7 @@ async function prepareBedAllocationSnapPreview(page: Page): Promise<void> {
   const fixture = DEMO_BOOKING_WINDOWS.daveConfirmed;
   const targetNight = fixture.nights.at(-1);
   if (!targetNight) {
-    throw new Error("Dave's seeded bed-allocation fixture has no lodge nights");
+    throw new Error("Dave's seeded booking has no lodge nights");
   }
   const dragHandle = page
     .getByRole("button", {
@@ -450,7 +268,9 @@ async function prepareBedAllocationSnapPreview(page: Page): Promise<void> {
   const targetRow = page
     .getByRole("row")
     .filter({ has: page.getByText("A4", { exact: true }) });
-  const targetCell = targetRow.locator(`td[data-stay-date="${targetNight}"]`);
+  const targetCell = targetRow.locator(
+    `td[data-stay-date="${targetNight}"]`,
+  );
   await dragHandle.waitFor({ state: "visible", timeout: 15_000 });
   await targetCell.waitFor({ state: "visible", timeout: 15_000 });
 
@@ -481,12 +301,7 @@ function outputPath(capture: Capture): string {
 }
 
 function relOut(capture: Capture): string {
-  return path
-    .relative(
-      path.resolve(import.meta.dirname, "..", ".."),
-      outputPath(capture),
-    )
-    .replace(/\\/g, "/");
+  return path.relative(path.resolve(import.meta.dirname, "..", ".."), outputPath(capture)).replace(/\\/g, "/");
 }
 
 function parseArgs(argv: string[]): { list: boolean; only: Set<string> } {
@@ -501,25 +316,17 @@ function selected(only: Set<string>): Capture[] {
   const chosen = CAPTURES.filter((c) => only.has(c.name));
   const unknown = [...only].filter((n) => !CAPTURES.some((c) => c.name === n));
   if (unknown.length > 0) {
-    throw new Error(
-      `Unknown capture name(s): ${unknown.join(", ")}. Run with --list to see valid names.`,
-    );
+    throw new Error(`Unknown capture name(s): ${unknown.join(", ")}. Run with --list to see valid names.`);
   }
   return chosen;
 }
 
 function printManifest(captures: Capture[]): void {
-  console.log(
-    `Screenshot manifest (${captures.length} entries), base URL ${BASE_URL}:\n`,
-  );
+  console.log(`Screenshot manifest (${captures.length} entries), base URL ${BASE_URL}:\n`);
   for (const c of captures) {
-    console.log(
-      `  ${c.name.padEnd(22)} ${c.route.padEnd(24)} auth=${c.auth === false ? "no " : "yes"}  ->  ${relOut(c)}`,
-    );
+    console.log(`  ${c.name.padEnd(22)} ${c.route.padEnd(24)} auth=${c.auth === false ? "no " : "yes"}  ->  ${relOut(c)}`);
   }
-  console.log(
-    `\nViewport ${VIEWPORT.width}x${VIEWPORT.height}. Output overwrites in place (stable filenames).`,
-  );
+  console.log(`\nViewport ${VIEWPORT.width}x${VIEWPORT.height}. Output overwrites in place (stable filenames).`);
 }
 
 async function shoot(context: BrowserContext, capture: Capture): Promise<void> {
@@ -536,18 +343,13 @@ async function shoot(context: BrowserContext, capture: Capture): Promise<void> {
       capture.auth === false
         ? Promise.resolve()
         : page
-            .waitForResponse((r) => r.url().includes("/api/auth/session"), {
-              timeout: 10_000,
-            })
+            .waitForResponse((r) => r.url().includes("/api/auth/session"), { timeout: 10_000 })
             .then(() => undefined)
             .catch(() => undefined);
     // Wait for the document 'load' event (deterministic), not "networkidle":
     // networkidle can hang or resolve arbitrarily on pages with long-poll /
     // streaming / analytics requests. Give it an explicit navigation timeout.
-    await page.goto(new URL(capture.route, BASE_URL).toString(), {
-      waitUntil: "load",
-      timeout: 30_000,
-    });
+    await page.goto(new URL(capture.route, BASE_URL).toString(), { waitUntil: "load", timeout: 30_000 });
     await sessionSettled;
     // Settle: let web fonts finish so text is not captured in a fallback face,
     // bounded by an explicit timeout so a stuck font load cannot block a shot.
@@ -556,10 +358,7 @@ async function shoot(context: BrowserContext, capture: Capture): Promise<void> {
       page.waitForTimeout(3_000),
     ]);
     if (capture.waitForText) {
-      await page
-        .getByText(capture.waitForText)
-        .first()
-        .waitFor({ state: "visible", timeout: 15_000 });
+      await page.getByText(capture.waitForText).first().waitFor({ state: "visible", timeout: 15_000 });
     }
     // Many admin pages render their content in a client component that fetches
     // after hydration, showing a "Loading…" sentinel until the data arrives.
@@ -599,9 +398,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  console.log(
-    `Capturing ${captures.length} screenshot(s) against ${BASE_URL} ...`,
-  );
+  console.log(`Capturing ${captures.length} screenshot(s) against ${BASE_URL} ...`);
 
   let browser: Browser | undefined;
   try {
@@ -611,39 +408,26 @@ async function main(): Promise<void> {
     // log the demo admin in (completing the two-factor gate exactly like the
     // E2E suite). This is the "reuse the seeded-app boot approach" from
     // docs/E2E_PLAYWRIGHT.md — same persona, same login path.
-    const adminNeeded = captures.some(
-      (c) => c.auth !== false && c.persona !== "member",
-    );
+    const adminNeeded = captures.some((c) => c.auth !== false && c.persona !== "member");
     let adminContext: BrowserContext | undefined;
     if (adminNeeded) {
       const statePath = storageStatePath(E2E_ADMIN.email);
       if (fs.existsSync(statePath)) {
-        adminContext = await browser.newContext({
-          baseURL: BASE_URL,
-          viewport: VIEWPORT,
-          storageState: statePath,
-        });
+        adminContext = await browser.newContext({ baseURL: BASE_URL, viewport: VIEWPORT, storageState: statePath });
       } else {
         // baseURL is REQUIRED here: loginPersona -> submitLoginForm navigates with
         // a relative page.goto("/login") (e2e/helpers/auth.ts), which throws
         // "Cannot navigate to invalid URL" unless the context resolves it against
         // baseURL. This is the path taken whenever the gitignored e2e/.auth state
         // is absent (the documented prepare -> capture flow).
-        const bootstrap = await browser.newContext({
-          baseURL: BASE_URL,
-          viewport: VIEWPORT,
-        });
+        const bootstrap = await browser.newContext({ baseURL: BASE_URL, viewport: VIEWPORT });
         const page = await bootstrap.newPage();
         await page.goto(new URL("/login", BASE_URL).toString());
         await loginPersona(page, E2E_ADMIN.email);
         // Persist so a re-run (or the E2E suite) can reuse it.
         await bootstrap.storageState({ path: statePath });
         await bootstrap.close();
-        adminContext = await browser.newContext({
-          baseURL: BASE_URL,
-          viewport: VIEWPORT,
-          storageState: statePath,
-        });
+        adminContext = await browser.newContext({ baseURL: BASE_URL, viewport: VIEWPORT, storageState: statePath });
       }
     }
 
@@ -652,50 +436,31 @@ async function main(): Promise<void> {
     // in through the same loginPersona path the admin context uses (it clears
     // whatever two-factor step the server demands). No forced password change
     // or profile gate blocks her, so she lands straight on the member surface.
-    const memberNeeded = captures.some(
-      (c) => c.auth !== false && c.persona === "member",
-    );
+    const memberNeeded = captures.some((c) => c.auth !== false && c.persona === "member");
     let memberContext: BrowserContext | undefined;
     if (memberNeeded) {
       const statePath = storageStatePath(WAITLISTER.email);
       if (fs.existsSync(statePath)) {
-        memberContext = await browser.newContext({
-          baseURL: BASE_URL,
-          viewport: VIEWPORT,
-          storageState: statePath,
-        });
+        memberContext = await browser.newContext({ baseURL: BASE_URL, viewport: VIEWPORT, storageState: statePath });
       } else {
-        const bootstrap = await browser.newContext({
-          baseURL: BASE_URL,
-          viewport: VIEWPORT,
-        });
+        const bootstrap = await browser.newContext({ baseURL: BASE_URL, viewport: VIEWPORT });
         const page = await bootstrap.newPage();
         await page.goto(new URL("/login", BASE_URL).toString());
         await loginPersona(page, WAITLISTER.email);
         await bootstrap.storageState({ path: statePath });
         await bootstrap.close();
-        memberContext = await browser.newContext({
-          baseURL: BASE_URL,
-          viewport: VIEWPORT,
-          storageState: statePath,
-        });
+        memberContext = await browser.newContext({ baseURL: BASE_URL, viewport: VIEWPORT, storageState: statePath });
       }
     }
 
-    const publicContext = await browser.newContext({
-      baseURL: BASE_URL,
-      viewport: VIEWPORT,
-    });
+    const publicContext = await browser.newContext({ baseURL: BASE_URL, viewport: VIEWPORT });
 
     for (const capture of captures) {
       let ctx: BrowserContext | undefined;
       if (capture.auth === false) ctx = publicContext;
       else if (capture.persona === "member") ctx = memberContext;
       else ctx = adminContext;
-      if (!ctx)
-        throw new Error(
-          `No ${capture.persona ?? "admin"} context available for capture "${capture.name}"`,
-        );
+      if (!ctx) throw new Error(`No ${capture.persona ?? "admin"} context available for capture "${capture.name}"`);
       await shoot(ctx, capture);
     }
 
