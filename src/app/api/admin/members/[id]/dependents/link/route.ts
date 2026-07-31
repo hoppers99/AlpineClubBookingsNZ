@@ -13,7 +13,9 @@ import { requireAdmin } from "@/lib/session-guards";
 import {
   DEPENDENT_LINK_CANDIDATE_SELECT,
   DEPENDENT_LINK_INELIGIBILITY_ERRORS,
+  DEPENDENT_PARENT_LINK_ERRORS,
   dependentLinkBlockers,
+  dependentParentStateBlocker,
 } from "@/lib/dependent-link-eligibility";
 import { prisma } from "@/lib/prisma";
 import { validateInheritEmailSource } from "@/lib/member-email-inheritance";
@@ -117,7 +119,12 @@ export async function POST(
         where: { id: parentId },
         select: {
           id: true,
-          ageTier: true,
+          // #2282: `ageTier` is deliberately no longer selected here. Nothing on
+          // this route may branch on the parent's age again — the email source
+          // is resolved and validated by `resolveInheritedEmailSourceId` /
+          // `validateInheritEmailSource`, which read the age of whoever they
+          // land on for themselves — so removing the column makes a
+          // re-introduced age gate fail to compile rather than pass review.
           active: true,
           archivedAt: true,
           // The parent's own parent columns are NOT selected: the ancestry and
@@ -133,9 +140,20 @@ export async function POST(
       if (!parent) {
         throw new LinkDependentError("Parent member not found", 404);
       }
-      if (parent.ageTier !== "ADULT" || !parent.active || parent.archivedAt) {
+      // #2282: age does NOT gate recording parentage. A 16 or 17 year old can
+      // genuinely be a parent, and refusing the link left the club recording
+      // the child as parentless or hanging them off a grandparent — both of
+      // which misstate who the parent is. `active` and `archivedAt` stay,
+      // because they are about whether the record is CURRENT, not about
+      // capacity to take responsibility. The responsibility functions keep
+      // their own adult gates further down this route (the email-inheritance
+      // source, resolved and validated below) and elsewhere; a young parent who
+      // cannot be the contact of record is the correct outcome, and the
+      // transitive resolver routes the child's mail on up to the nearest adult.
+      const parentStateBlocker = dependentParentStateBlocker(parent);
+      if (parentStateBlocker) {
         throw new LinkDependentError(
-          "Dependants can only be linked under active adult members",
+          DEPENDENT_PARENT_LINK_ERRORS[parentStateBlocker],
           422
         );
       }

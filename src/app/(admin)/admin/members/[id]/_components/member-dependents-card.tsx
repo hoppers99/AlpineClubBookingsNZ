@@ -16,12 +16,14 @@ import {
   parentLinkTypeLabel,
 } from "@/lib/admin-member-detail-helpers"
 import { formatAgeTierName } from "@/lib/use-age-tier-options"
+import {
+  DEPENDENT_PARENT_BLOCK_EXPLANATIONS,
+  dependentParentStateBlocker,
+} from "@/lib/dependent-link-eligibility"
 import type { MemberDetail } from "../_types"
 
 interface MemberDependentsCardProps extends AncestorViewOnlyBannerProps {
   member: MemberDetail
-  isAdultMember: boolean
-  memberIsArchived: boolean
   currentMemberPath: string
   unlinkingDependentId: string | null
   onOpenDependentDialog: () => void
@@ -34,8 +36,6 @@ interface MemberDependentsCardProps extends AncestorViewOnlyBannerProps {
 
 export function MemberDependentsCard({
   member,
-  isAdultMember,
-  memberIsArchived,
   currentMemberPath,
   unlinkingDependentId,
   onOpenDependentDialog,
@@ -45,24 +45,66 @@ export function MemberDependentsCard({
   ancestorRendersViewOnlyBanner = false,
 }: MemberDependentsCardProps) {
   const router = useRouter()
+  // #2282: age is no longer part of this. A young member can be recorded as a
+  // parent, so the only thing that can stop dependants being added here is the
+  // member's record not being CURRENT — and when it is not, the control is shown
+  // DISABLED WITH THE REASON rather than hidden. A vanishing button taught the
+  // admin nothing; a button that fails on save taught them even less.
+  const blockReason = dependentParentStateBlocker(member)
+  // #2282: where a dependant added here would actually receive club email.
+  // Recording parentage is age-blind; being the contact of record is not, so for
+  // a young parent this names the adult further up the family who gets the mail.
+  const emailSource = member.dependentEmailSource
+  const emailSourceIsThisMember = emailSource?.id === member.id
 
   return (
     <Card className={className}>
       <CardHeader className="flex flex-col gap-3 space-y-0 sm:flex-row sm:items-center sm:justify-between">
         <CardTitle className="text-base font-medium">Dependents</CardTitle>
-        {isAdultMember && !memberIsArchived && (
-          <ViewOnlyActionButton canEdit={canEdit} describeReason={!ancestorRendersViewOnlyBanner} variant="outline" size="sm" onClick={onOpenDependentDialog}>
+        <div className="flex flex-col items-start gap-1 sm:items-end">
+          <ViewOnlyActionButton
+            canEdit={canEdit}
+            describeReason={!ancestorRendersViewOnlyBanner}
+            variant="outline"
+            size="sm"
+            disabled={Boolean(blockReason)}
+            onClick={onOpenDependentDialog}
+          >
             <Plus className="h-4 w-4 mr-1" />
             Add Dependent
           </ViewOnlyActionButton>
-        )}
+          {blockReason && (
+            // Stated as visible text, not as a `title`: a disabled Button carries
+            // `disabled:pointer-events-none`, so a native tooltip never fires and
+            // the reason would never be readable at all.
+            <p className="text-xs text-muted-foreground">
+              {DEPENDENT_PARENT_BLOCK_EXPLANATIONS[blockReason]}
+            </p>
+          )}
+        </div>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-3">
+        {!blockReason &&
+          (emailSource ? (
+            !emailSourceIsThisMember && (
+              <p className="text-xs text-muted-foreground">
+                Club email for a dependant added here goes to{" "}
+                {emailSource.firstName} {emailSource.lastName} (
+                {emailSource.email}) — this member is not an adult with a
+                usable address of their own, so notifications route on up the
+                family.
+              </p>
+            )
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              No adult in this family has a real email address to inherit, so a
+              new dependant cannot be given an inherited contact. Record an
+              email address for an adult in the family first.
+            </p>
+          ))}
         {member.dependents.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            {isAdultMember
-              ? "No dependents linked to this member yet."
-              : "Only adult members can manage dependents."}
+            No dependents linked to this member yet.
           </p>
         ) : (
           <Table>

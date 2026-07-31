@@ -69,8 +69,14 @@ export function MemberParentLinkDialog({
       <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Link Parent</DialogTitle>
+          {/* #2282: the search no longer filters on age, and neither does the
+              write route, so the copy must not claim it does. A young member can
+              be recorded as a parent; what stays adult-only is being the contact
+              of record for the child's mail, which the dialog's own notification
+              picker and the server resolve separately. */}
           <DialogDescription>
-            Link {member.firstName} {member.lastName} under an active adult member.
+            Link {member.firstName} {member.lastName} under an active member of
+            any age. Club notifications still route to an adult.
           </DialogDescription>
         </DialogHeader>
         {error && <div className="p-2 bg-danger-3 border border-danger-6 text-danger-11 rounded text-sm">{error}</div>}
@@ -136,7 +142,7 @@ export function MemberParentLinkDialog({
               ))}
             </div>
           ) : search.trim().length >= 2 && !searching ? (
-            <p className="text-sm text-muted-foreground">No eligible active adult members found.</p>
+            <p className="text-sm text-muted-foreground">No eligible active members found.</p>
           ) : (
             <p className="text-sm text-muted-foreground">Start typing at least 2 characters to search.</p>
           )}

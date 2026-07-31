@@ -45,8 +45,10 @@ import {
 import {
   DEPENDENT_LINK_CANDIDATE_SELECT,
   DEPENDENT_LINK_INELIGIBILITY_EXPLANATIONS,
+  DEPENDENT_PARENT_CREATE_ERRORS,
   dependentLinkBlockers,
   dependentLinkCandidateWhere,
+  dependentParentStateBlocker,
   type DependentLinkIneligibleMatch,
 } from "@/lib/dependent-link-eligibility";
 import { isXeroLiveMemberGroupLookupsEnabled } from "@/lib/xero-feature-flags";
@@ -490,13 +492,20 @@ export async function listAdminMembers(
       target?.secondaryParentId,
       ...childSide.descendantIds,
     ].filter((memberId): memberId is string => Boolean(memberId));
+    // #2282: `{ ageTier: "ADULT" }` is GONE from this filter. Recording that a
+    // 16 or 17 year old is a parent is a fact about the family, and the search
+    // must offer exactly what `POST /api/admin/members/[id]/dependents/link`
+    // accepts (the #2254 no-drift rule) — that route now refuses only on
+    // active/archived. `{ archivedAt: null }` is ADDED for the same reason: the
+    // route always refused an archived parent and this search never filtered
+    // one out, so the dialog could offer a candidate the write then 422'd.
     andConditions.push(
       { id: { notIn: excludedParentIds } },
       ancestorDepthWithinWhere(
         allowedParentAncestorGenerations(childSide.descendantGenerations),
       ),
       { active: true },
-      { ageTier: "ADULT" },
+      { archivedAt: null },
     );
   }
 
@@ -1086,9 +1095,12 @@ export async function createAdminMember(
 
   const email = data.email.toLowerCase().trim();
   const requestedInheritEmailFromId = data.inheritEmailFromId?.trim() || null;
+  // #2282: `ageTier` is deliberately absent. Nothing on the create path may
+  // branch on the PARENT's age again — the email source that actually needs an
+  // adult is resolved and validated separately below — so dropping the column
+  // makes a re-introduced age gate a compile error rather than a review catch.
   let parentMember: {
     id: string;
-    ageTier: AgeTier;
     active: boolean;
     inheritEmailFromId: string | null;
     archivedAt: Date | null;
@@ -1120,7 +1132,6 @@ export async function createAdminMember(
       where: { id: data.parentMemberId },
       select: {
         id: true,
-        ageTier: true,
         active: true,
         inheritEmailFromId: true,
         archivedAt: true,
@@ -1131,13 +1142,15 @@ export async function createAdminMember(
       return jsonResult({ error: "Parent member not found" }, { status: 404 });
     }
 
-    if (
-      parentMember.ageTier !== "ADULT" ||
-      !parentMember.active ||
-      parentMember.archivedAt
-    ) {
+    // #2282: the CREATE half of the same rule change as the link route. Age no
+    // longer gates recording parentage; `active`/`archivedAt` still do, because
+    // they say whether the record is current. Keep the two paths in step — this
+    // one and the link route were the two different endpoints and two different
+    // messages behind the identical dead end.
+    const parentStateBlocker = dependentParentStateBlocker(parentMember);
+    if (parentStateBlocker) {
       return jsonResult(
-        { error: "Dependents can only be created under active adult members" },
+        { error: DEPENDENT_PARENT_CREATE_ERRORS[parentStateBlocker] },
         { status: 422 },
       );
     }

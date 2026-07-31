@@ -19,14 +19,16 @@ import {
 import { accessRoleLabelForToken } from "@/lib/access-role-definitions";
 import { useAccessRoleOptions } from "@/hooks/use-access-role-options";
 import { buildXeroContactUrl } from "@/lib/xero-links";
+import {
+  DEPENDENT_PARENT_BLOCK_EXPLANATIONS,
+  dependentParentStateBlocker,
+} from "@/lib/dependent-link-eligibility";
 import type { MemberDetail, MemberLifecycleActionRequest } from "../_types";
 
 interface MemberDetailHeaderProps {
   member: MemberDetail;
   backHref: string;
   backLabel: string;
-  isAdultMember: boolean;
-  memberIsArchived: boolean;
   pendingDeleteRequest: MemberLifecycleActionRequest | undefined;
   /** null = status still loading; no Xero UI renders until it resolves. */
   xeroConnected: boolean | null;
@@ -61,8 +63,6 @@ export function MemberDetailHeader({
   member,
   backHref,
   backLabel,
-  isAdultMember,
-  memberIsArchived,
   pendingDeleteRequest,
   xeroConnected,
   xeroOrgShortCode,
@@ -77,6 +77,9 @@ export function MemberDetailHeader({
 }: MemberDetailHeaderProps) {
   const roleOptions = useAccessRoleOptions();
   const accessRoles = member.accessRoles ?? [];
+  // #2282: the same predicate the two write routes use, so the toolbar button
+  // and the Dependents card cannot disagree with each other or with the server.
+  const addDependentBlockReason = dependentParentStateBlocker(member);
   return (
     <div>
       <div className="mb-2">
@@ -145,17 +148,28 @@ export function MemberDetailHeader({
           </div>
         </div>
         <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:shrink-0 sm:justify-end">
-          {isAdultMember && !memberIsArchived && (
+          {/* #2282: shown at all ages — parentage is recordable whatever the
+              member's age tier — and shown DISABLED WITH THE REASON when the
+              record is not current, rather than disappearing. The reason sits
+              beside the button as visible text because a disabled Button has
+              `pointer-events-none`, so a `title` tooltip would never fire. */}
+          <div className="flex flex-col items-start gap-1">
             <ViewOnlyActionButton
               canEdit={canEditMembership}
               variant="outline"
               size="sm"
+              disabled={Boolean(addDependentBlockReason)}
               onClick={onOpenDependentDialog}
             >
               <Plus className="h-4 w-4 mr-1" />
               Add Dependent
             </ViewOnlyActionButton>
-          )}
+            {addDependentBlockReason && (
+              <p className="text-xs text-muted-foreground">
+                {DEPENDENT_PARENT_BLOCK_EXPLANATIONS[addDependentBlockReason]}
+              </p>
+            )}
+          </div>
           {/* Xero actions render only once the connection status resolves to
               true: everyday actions stay visible, rare ones live in the
               overflow menu. Disconnected (or still loading) shows no Xero UI

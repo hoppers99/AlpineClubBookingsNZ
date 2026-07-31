@@ -30,6 +30,11 @@ import {
   formatMemberDateNz,
   parentLinkTypeLabel,
 } from "@/lib/admin-member-detail-helpers";
+import {
+  DEPENDENT_PARENT_CREATE_ERRORS,
+  DEPENDENT_PARENT_LINK_ERRORS,
+  dependentParentStateBlocker,
+} from "@/lib/dependent-link-eligibility";
 import type { MemberAddressValues } from "@/lib/member-address";
 import type {
   DependentDialogMode,
@@ -117,6 +122,22 @@ export function MemberDependentDialog({
   onSubmitLink,
 }: MemberDependentDialogProps) {
   const { showTitle, showGender } = useMemberFieldsSettings();
+  // #2282: the dialog states the block for ITSELF rather than trusting that the
+  // button which opened it was disabled. The two tabs are two endpoints with
+  // two messages, and gating only one would leave the identical dead end on the
+  // other — so the notice follows the active tab and the submit is disabled in
+  // both. The dialog is also its own accessibility container, so a reason shown
+  // out on the page behind it does not reach a screen reader in here.
+  const blockReason = dependentParentStateBlocker(member);
+  const blockMessage = blockReason
+    ? mode === "create"
+      ? DEPENDENT_PARENT_CREATE_ERRORS[blockReason]
+      : DEPENDENT_PARENT_LINK_ERRORS[blockReason]
+    : null;
+  // Where a created dependant's club email will actually land. Resolved by the
+  // server with the same walk the write uses, so this is a statement rather than
+  // a guess: for a young or address-less parent it names an adult further up.
+  const emailSource = member.dependentEmailSource;
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
@@ -132,6 +153,14 @@ export function MemberDependentDialog({
             {error}
           </div>
         )}
+        {blockMessage && (
+          <div
+            role="status"
+            className="rounded-md border border-warning/20 bg-warning-muted p-2 text-sm text-warning"
+          >
+            {blockMessage}
+          </div>
+        )}
         <Tabs
           value={mode}
           onValueChange={(value) => onChangeMode(value as DependentDialogMode)}
@@ -142,9 +171,15 @@ export function MemberDependentDialog({
           </TabsList>
           <TabsContent value="create" className="mt-4">
             <div className="grid gap-4 py-2">
+              {/* #2282: name the mailbox rather than saying "the parent email".
+                  Parentage is recordable at any age, but the contact of record
+                  must be an adult, so for a young parent the notifications go to
+                  an adult further up the family — and the admin should read that
+                  here, not deduce it from a stored pointer afterwards. */}
               <div className="rounded-md border border-border bg-muted p-3 text-sm text-muted-foreground">
-                This dependent will be created as a non-login member and inherit
-                notifications from the parent email.
+                {emailSource
+                  ? `This dependent will be created as a non-login member. Club notifications for them go to ${emailSource.firstName} ${emailSource.lastName} (${emailSource.email}).`
+                  : "This dependent will be created as a non-login member. No adult in this family has a real email address to inherit, so saving will be refused until one is recorded."}
               </div>
 
               {(showTitle || showGender) && (
@@ -553,7 +588,13 @@ export function MemberDependentDialog({
           </Button>
           <Button
             onClick={mode === "create" ? onSubmitCreate : onSubmitLink}
-            disabled={saving || (mode === "link" && !linkSelected)}
+            disabled={
+              saving ||
+              // #2282: both tabs, not one — the create and link paths hit
+              // different endpoints and would otherwise dead-end identically.
+              Boolean(blockReason) ||
+              (mode === "link" && !linkSelected)
+            }
           >
             {saving
               ? mode === "create"

@@ -23,7 +23,10 @@ import {
   POSTAL_ADDRESS_FIELDS,
 } from "@/lib/member-address";
 import { validateInheritEmailSource } from "@/lib/member-email-inheritance";
-import { buildParentLinks } from "@/lib/member-parent-links";
+import {
+  buildParentLinks,
+  resolveInheritedEmailSourceId,
+} from "@/lib/member-parent-links";
 import { OPERATIONAL_STAY_BOOKING_STATUSES } from "@/lib/booking-status";
 import { getAssignedPromoCodeSummariesForMember } from "@/lib/promo";
 import { getFamilyBillingMode } from "@/lib/authoritative-fees";
@@ -615,8 +618,35 @@ export async function getAdminMemberDetail(params: {
   // editable on the member detail family card (#1932, E6).
   const familyBillingMode = await getFamilyBillingMode();
 
+  // #2282: WHICH ADULT a dependant added under this member would actually reach.
+  // Parentage is now recordable at any age, but being the club's contact of
+  // record stays adult-only, so for a young parent the mail routes PAST them to
+  // the nearest usable ancestor. That answer has to be on screen BEFORE the
+  // admin adds the dependant, not discovered afterwards from a stored pointer
+  // naming someone they never chose. Resolved with the same walk both write
+  // paths use (`resolveInheritedEmailSourceId`), so the page states exactly what
+  // the write will store rather than a lookalike one-hop guess; `null` means no
+  // ancestor in reach can receive mail, which is the 422 the writes return.
+  const dependentEmailSourceId = (
+    await resolveInheritedEmailSourceId(prisma, member.id)
+  ).sourceId;
+  const dependentEmailSource = dependentEmailSourceId
+    ? dependentEmailSourceId === member.id
+      ? {
+          id: member.id,
+          firstName: member.firstName,
+          lastName: member.lastName,
+          email: member.email,
+        }
+      : await prisma.member.findUnique({
+          where: { id: dependentEmailSourceId },
+          select: { id: true, firstName: true, lastName: true, email: true },
+        })
+    : null;
+
   return jsonResult({
     ...member,
+    dependentEmailSource,
     familyBillingMode,
     accessRoles: resolveAccessRoleTokens(member),
     parentLinks: buildParentLinks(member),

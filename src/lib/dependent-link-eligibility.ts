@@ -100,6 +100,100 @@ export const DEPENDENT_LINK_INELIGIBILITY_EXPLANATIONS: Record<
 };
 
 /**
+ * PARENT-SIDE state rules (#2282).
+ *
+ * The rules above are about the CANDIDATE. These two are about the member who
+ * would become the parent, and they are the whole of what remains there:
+ *
+ *  - `active` — an inactive record is not a current member, and adding a new
+ *    dependant to one is a change to a record the club has stood down;
+ *  - `archivedAt` — an archived record is history and must not gain new links.
+ *
+ * The `ageTier === "ADULT"` clause that used to sit alongside them is GONE. A 16
+ * or 17 year old can genuinely be a parent, and the club could not record it;
+ * the owner decision on #2282 is that parentage is a FACT recorded at any age,
+ * while every RESPONSIBILITY function stays adult-gated where it already sits —
+ * being the contact of record for a dependant's mail
+ * (`validateInheritEmailSource` and `isUsableEmailSource` in
+ * `src/lib/member-parent-links.ts`), confirming another member's details, and
+ * booking on someone's behalf (`isActiveLoginAdultMember`). None of those three
+ * reads the parent link, so recording one grants none of them. Do not
+ * "re-tidy" the adult rule back into this file.
+ *
+ * Both surfaces that could dead-end on these rules use them: the two write
+ * routes for their 422 bodies, and the member detail page to disable "Add
+ * Dependent" WITH the reason rather than let the admin discover it on save.
+ * Hiding the control was the previous behaviour and taught the admin nothing.
+ */
+export const DEPENDENT_PARENT_STATE_REASONS = ["ARCHIVED", "INACTIVE"] as const;
+
+export type DependentParentStateReason =
+  (typeof DEPENDENT_PARENT_STATE_REASONS)[number];
+
+/**
+ * Why this member cannot take a dependant right now, or null if they can.
+ * ARCHIVED is checked first because archiving also clears `active`, and
+ * "archived" is the more specific and more actionable thing to tell an admin.
+ */
+export function dependentParentStateBlocker(parent: {
+  active: boolean;
+  // `string` as well as `Date` so the admin UI can pass a member straight out
+  // of the JSON detail response, where dates are already serialised. One
+  // predicate, both sides of the wire — the same reason #2254 made the search
+  // and the write route share `dependentLinkBlockers`.
+  archivedAt: Date | string | null;
+}): DependentParentStateReason | null {
+  if (parent.archivedAt) return "ARCHIVED";
+  if (!parent.active) return "INACTIVE";
+  return null;
+}
+
+/**
+ * 422 bodies for `POST /api/admin/members/[id]/dependents/link` — the LINK
+ * path. Kept separate from the create path's strings below because they are two
+ * endpoints with two contracts; a shared sentence would have to be vague about
+ * which action was refused.
+ */
+export const DEPENDENT_PARENT_LINK_ERRORS: Record<
+  DependentParentStateReason,
+  string
+> = {
+  ARCHIVED:
+    "Dependants cannot be linked under an archived member. Restore this member first.",
+  INACTIVE:
+    "Dependants can only be linked under active members. Reactivate this member first.",
+};
+
+/**
+ * 422 bodies for `POST /api/admin/members` with a `parentMemberId` — the CREATE
+ * path. Same rule, different endpoint and different verb.
+ */
+export const DEPENDENT_PARENT_CREATE_ERRORS: Record<
+  DependentParentStateReason,
+  string
+> = {
+  ARCHIVED:
+    "Dependants cannot be created under an archived member. Restore this member first.",
+  INACTIVE:
+    "Dependants can only be created under active members. Reactivate this member first.",
+};
+
+/**
+ * What the member detail page shows beside the DISABLED "Add Dependent"
+ * control. Addressed to the admin looking at the member, not to an attempted
+ * write, so it names the member's state and the way out of it.
+ */
+export const DEPENDENT_PARENT_BLOCK_EXPLANATIONS: Record<
+  DependentParentStateReason,
+  string
+> = {
+  ARCHIVED:
+    "This member is archived — restore them to add dependants.",
+  INACTIVE:
+    "This member is inactive — reactivate them to add dependants.",
+};
+
+/**
  * One member the candidate search matched on name/email but had to exclude,
  * carried in the members-list response so the dialog can explain an otherwise
  * inscrutable empty result.
