@@ -249,7 +249,7 @@ describe("patch derivation from a snapshot versus a fresh read (#2243)", () => {
   });
 
   it("names a stale familyGroupId — the patch's OTHER real FK", () => {
-    // The same class, not a photo quirk: a family admin can delete the group
+    // The same class, not a photo quirk: a club admin can delete the group
     // (SetNull) without taking the member-lifecycle lock, so the snapshot's
     // group id can name a deleted FamilyGroup row by write time.
     const master = baseMember({ id: "master", familyGroupId: null });

@@ -4,23 +4,27 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
-- **A member merge no longer fails outright when someone changes the duplicate
-  mid-merge (#2243).** Merging two member profiles runs as one long transaction,
-  and it used to work out what to copy onto the surviving record the moment that
-  transaction opened, then write it much later. A member photo can be uploaded
-  at any time without waiting for a merge to finish, so an on-behalf photo upload
-  landing in that gap left the merge writing a photo reference that had already
-  been deleted — the database refused it and the whole merge rolled back as an
-  unexplained error, with nothing in the operator's preview to hint at why. The
-  merge now works out what to copy from a fresh read taken just before it writes,
-  which covers every field it copies rather than photos alone (the duplicate's
-  family group is the other one that could fail the same way). Nothing changes
-  for an ordinary merge; where the fresh read does differ from what was previewed,
-  the affected field names are recorded in the merge's audit entry. Separately,
-  the safety net that stops a new member-referencing column being forgotten by a
-  merge now also covers columns that hold a member id without a database
-  foreign key — two calendar columns had slipped past it — and a test fails on
-  the next one.
+- **A member merge that is overtaken mid-merge now stops cleanly instead of
+  failing with an unexplained error (#2243).** Merging two member profiles runs
+  as one long transaction, and it used to work out what to copy onto the
+  surviving record the moment that transaction opened, then write it much later.
+  A member photo can be uploaded at any time without waiting for a merge to
+  finish, so an on-behalf photo upload landing in that gap left the merge writing
+  a photo reference that had already been deleted — the database refused it and
+  the whole merge rolled back as an unexplained error, with nothing in the
+  operator's preview to hint at why. The merge now re-checks what it is about to
+  copy just before it writes, covering every field it copies rather than photos
+  alone (the duplicate's family group is the other one that could fail the same
+  way), and locks both member records for that final step. If anything did change
+  in the meantime, the merge stops with a clear message naming what changed,
+  saves nothing, and asks the operator to re-run the preview — so what was
+  previewed is always exactly what gets applied. Nothing changes for an ordinary
+  merge. Two smaller corrections ride along: where a booking request was already
+  turned into a booking for the duplicate, that link now follows the surviving
+  member (it previously kept pointing at the deleted record); and the safety net
+  that stops a new member-referencing column being forgotten by a merge now also
+  covers columns that hold a member id without a database foreign key — two
+  calendar columns had slipped past it — with a test that fails on the next one.
 - **The finance dashboard was counting a paid price increase twice, and now
   counts it once (#2408).** When a booking's price goes up after it was made —
   someone adds a guest — the difference is tracked as an "additional payment".
