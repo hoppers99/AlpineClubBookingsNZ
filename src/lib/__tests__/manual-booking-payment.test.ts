@@ -144,6 +144,7 @@ import {
   reverseManualBookingPayment,
 } from "@/lib/payment-reconciliation";
 import { sendAdminPaymentFailureAlert } from "@/lib/email";
+import { isAdditionalAmountUncollected } from "@/lib/unpaid-finished-stays";
 
 const tx = {
   $executeRaw: (...args: unknown[]) => mocks.executeRaw(...args),
@@ -219,10 +220,18 @@ function bookingRow(overrides: Record<string, unknown> = {}) {
 function paymentRow(overrides: Record<string, unknown> = {}) {
   return {
     id: "payment-1",
+    // #2397: an unsettled payment — the ordinary settle-from shape. A payment
+    // that has already taken money (SUCCEEDED / refunded) is refused at read
+    // time now, not only at the fence.
+    status: "PENDING",
     xeroInvoiceId: null,
     xeroRefundCreditNoteId: null,
     manuallyMarkedPaidAt: null,
     refundedAmountCents: 0,
+    // #2397: no outstanding upward-modification delta, the overwhelmingly
+    // common shape and the one where the dialog is unchanged.
+    additionalAmountCents: 0,
+    additionalPaymentStatus: null,
     ...overrides,
   };
 }
@@ -601,6 +610,44 @@ describe("#2262 guard 2 — Xero refusals", () => {
       })
     );
   });
+
+  it("refuses a payment that has already taken money, at READ time and with the truth", async () => {
+    // #2397. A card capture that stranded before its status promotion (#1418:
+    // confirm-pending-guests / cron-confirm-pending both commit the SUCCEEDED
+    // ledger row in their own transaction and DELIBERATELY leave the booking
+    // CONFIRMED when the promotion then fails) is the one production shape
+    // where a payable booking holds a captured payment — and an upward
+    // modification in that window is the only non-circular way such a booking
+    // acquires an uncollected extra. Before this guard the whole dialog opened,
+    // asked the admin whether the cash covered that extra, and then refused
+    // every answer at the fence with "changed while you were recording it" —
+    // which was false, and repeated on every retry.
+    mocks.paymentFindUnique.mockResolvedValue(
+      paymentRow({ status: "SUCCEEDED" })
+    );
+
+    await expect(settle()).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining("already taken money"),
+    });
+    expect(mocks.paymentUpdateMany).not.toHaveBeenCalled();
+    expect(mocks.bookingUpdateMany).not.toHaveBeenCalled();
+  });
+
+  it.each(["PENDING", "PROCESSING", "FAILED"])(
+    "still settles from the ordinary unsettled shape %s (a declined card is exactly what cash remedies)",
+    async (status) => {
+      mocks.paymentFindUnique.mockResolvedValue(paymentRow({ status }));
+
+      await expect(settle()).resolves.toMatchObject({ bookingId: "booking-1" });
+      // The fenced write asserts the SAME list, so the two can never drift.
+      expect(mocks.paymentUpdateMany.mock.calls[0][0]).toMatchObject({
+        where: expect.objectContaining({
+          status: { in: ["PENDING", "PROCESSING", "FAILED"] },
+        }),
+      });
+    }
+  );
 
   it("refuses a booking settled as part of a group booking", async () => {
     mocks.bookingFindUnique.mockImplementation(async (args: { select?: unknown }) =>
@@ -1372,5 +1419,833 @@ describe("#2262 delta MED-2 — the cleared-election copy can never overstate wh
     // and look, rather than naming an amount it cannot stand behind.
     expect(alert.errorMessage).not.toContain("at most $");
     expect(alert.errorMessage).not.toContain("They now hold");
+  });
+});
+
+/**
+ * #2397 — a cash settlement on a booking that still carries an uncollected
+ * upward-modification delta.
+ *
+ * The collision this closes: `additionalAmountCents` / `additionalPaymentStatus`
+ * were only ever written by the CARD additional-payment flow, so a booking whose
+ * later price increase was settled in cash kept reading as owing — the admin
+ * list would show a "$X due" chip against a fully settled booking, and the
+ * automatic chase (#2350 / PR #2386) would email the member asking for money the
+ * club already holds.
+ *
+ * The owner's decision (31 Jul 2026) is to ASK the admin at the time, so these
+ * tests pin all three shapes: extra present and covered, extra present and not
+ * covered, and — the one that must never regress — no extra at all.
+ */
+describe("#2397 — an outstanding extra, and the admin's answer about it", () => {
+  const EXTRA_CENTS = 2100;
+
+  function primeOutstandingExtra(overrides: Record<string, unknown> = {}) {
+    mocks.paymentFindUnique.mockResolvedValue(
+      paymentRow({
+        additionalAmountCents: EXTRA_CENTS,
+        additionalPaymentStatus: "PENDING",
+        ...overrides,
+      })
+    );
+  }
+
+  /** The ADDITIONAL half of the mint, whichever call carried it. */
+  function additionalMintUpdateCall() {
+    return mocks.paymentTransactionUpdateMany.mock.calls.find(
+      (call) =>
+        (call[0] as { where?: { kind?: string } }).where?.kind ===
+        PaymentTransactionKind.ADDITIONAL
+    );
+  }
+
+  function additionalMintCreateCall() {
+    return mocks.paymentTransactionCreate.mock.calls.find(
+      (call) =>
+        (call[0] as { data?: { kind?: string } }).data?.kind ===
+        PaymentTransactionKind.ADDITIONAL
+    );
+  }
+
+  function primaryMintCreateCall() {
+    return mocks.paymentTransactionCreate.mock.calls.find(
+      (call) =>
+        (call[0] as { data?: { kind?: string } }).data?.kind ===
+        PaymentTransactionKind.PRIMARY
+    );
+  }
+
+  function fencedPaymentWrite() {
+    return mocks.paymentUpdateMany.mock.calls[0]?.[0] as {
+      where: Record<string, unknown>;
+      data: Record<string, unknown>;
+    };
+  }
+
+  describe("the extra is present and the cash covers it", () => {
+    beforeEach(() => {
+      primeOutstandingExtra();
+    });
+
+    function settleCovered() {
+      return settle({
+        additionalCoverage: {
+          covered: true,
+          expectedAdditionalAmountCents: EXTRA_CENTS,
+        },
+      });
+    }
+
+    it("SPLITS the one amount owing instead of collecting it twice", async () => {
+      // The whole point. An upward change raised `finalPriceCents` by the same
+      // delta it recorded as the extra, and this settle collects
+      // `finalPriceCents - credit` in one go — so the extra is a SLICE of the
+      // $100.00, not $21.00 on top of it. Recording both at full value would
+      // book $121.00 of cash for a $100.00 settlement and inflate every revenue
+      // figure that reads the payment ledger.
+      const result = await settleCovered();
+
+      expect(primaryMintCreateCall()?.[0]).toMatchObject({
+        data: expect.objectContaining({
+          kind: PaymentTransactionKind.PRIMARY,
+          source: PaymentSource.INTERNET_BANKING,
+          amountCents: 10000 - EXTRA_CENTS,
+          status: PaymentStatus.SUCCEEDED,
+        }),
+      });
+      expect(additionalMintCreateCall()?.[0]).toMatchObject({
+        data: expect.objectContaining({
+          kind: PaymentTransactionKind.ADDITIONAL,
+          source: PaymentSource.INTERNET_BANKING,
+          stripePaymentIntentId: null,
+          amountCents: EXTRA_CENTS,
+          status: PaymentStatus.SUCCEEDED,
+          reason: "manual_mark_paid_additional",
+        }),
+      });
+      // The two rows still sum to the one settlement amount, and the payment
+      // mirror `amountCents + creditAppliedCents = finalPriceCents` is
+      // untouched.
+      const primaryCents = (
+        primaryMintCreateCall()?.[0] as { data: { amountCents: number } }
+      ).data.amountCents;
+      const additionalCents = (
+        additionalMintCreateCall()?.[0] as { data: { amountCents: number } }
+      ).data.amountCents;
+      expect(primaryCents + additionalCents).toBe(10000);
+      expect(fencedPaymentWrite().data).toMatchObject({
+        amountCents: 10000,
+        creditAppliedCents: 2000,
+      });
+      // The whole amount owing was received, so nothing is left uncollected and
+      // the generalised mirror reduces to the original one.
+      expect(result.uncollectedAdditionalCents).toBe(0);
+      expect(result.amountOwingCents).toBe(10000);
+      expect(
+        result.effectiveAmountCents +
+          result.creditAppliedCents +
+          result.uncollectedAdditionalCents
+      ).toBe(12000);
+      expect(result.effectiveAmountCents + result.creditAppliedCents).toBe(
+        12000
+      );
+    });
+
+    it("mints the SAME primary figure the not-covered answer does", async () => {
+      // The answer decides whether an ADDITIONAL row sits beside the primary,
+      // never what the primary says was received — one subtraction serves both
+      // branches. Pinned as a literal here and in the not-covered block, so a
+      // change to either branch breaks both tests rather than silently
+      // diverging.
+      await settleCovered();
+
+      expect(primaryMintCreateCall()?.[0]).toMatchObject({
+        data: expect.objectContaining({ amountCents: 7900 }),
+      });
+    });
+
+    it("mints the ADDITIONAL row with the SAME two divergences as the PRIMARY mint", async () => {
+      await settleCovered();
+
+      // FAILED excluded (a reversal's row must not be resurrected at a stale
+      // amount), and create-unconditionally on count 0 (never adopt the
+      // member's stale STRIPE additional row and claim a card capture).
+      expect(additionalMintUpdateCall()?.[0]).toMatchObject({
+        where: expect.objectContaining({
+          paymentId: "payment-1",
+          kind: PaymentTransactionKind.ADDITIONAL,
+          source: PaymentSource.INTERNET_BANKING,
+          status: {
+            notIn: [
+              PaymentStatus.REFUNDED,
+              PaymentStatus.PARTIALLY_REFUNDED,
+              PaymentStatus.FAILED,
+            ],
+          },
+        }),
+      });
+      expect(additionalMintCreateCall()).toBeDefined();
+    });
+
+    it("does not create a second ADDITIONAL row when an existing non-FAILED one was updated", async () => {
+      mocks.paymentTransactionUpdateMany.mockResolvedValue({ count: 1 });
+
+      await settleCovered();
+
+      expect(additionalMintCreateCall()).toBeUndefined();
+    });
+
+    it("writes the settled state every consumer reads, behind a re-asserted fence", async () => {
+      await settleCovered();
+
+      const fenced = fencedPaymentWrite();
+      expect(fenced.data).toMatchObject({
+        additionalPaymentStatus: "SUCCEEDED",
+      });
+      // Re-asserted in the WHERE, like every other expressible refusal: a card
+      // additional capturing between the read and this write yields count 0 ->
+      // 409 rather than a stamp over a figure that moved.
+      expect(fenced.where).toMatchObject({
+        additionalAmountCents: EXTRA_CENTS,
+        OR: [
+          { additionalPaymentStatus: null },
+          { additionalPaymentStatus: { not: "SUCCEEDED" } },
+        ],
+      });
+    });
+
+    it("leaves the extra invisible to the owed predicate the chase consults", async () => {
+      await settleCovered();
+
+      const written = fencedPaymentWrite().data;
+      // The exact money-half test #2386's `isAdditionalPaymentOwed` is built
+      // from; the booking-status half is satisfied by this settle landing PAID.
+      expect(
+        isAdditionalAmountUncollected({
+          additionalAmountCents: EXTRA_CENTS,
+          additionalPaymentStatus: written.additionalPaymentStatus as string,
+        })
+      ).toBe(false);
+    });
+
+    it("records it in booking history as a manual settlement, not silently", async () => {
+      await settleCovered();
+
+      const historyRow = mocks.createAuditLog.mock.calls.find(
+        (call) =>
+          (call[0] as { action: string }).action ===
+          "booking-payment.manual-payment.additional-settled"
+      );
+      expect(historyRow).toBeDefined();
+      expect(historyRow?.[0]).toMatchObject({
+        entityType: "Payment",
+        targetId: "booking-1",
+        category: "payment",
+        severity: "important",
+        // JSON, because the booking-history builder parses this field.
+        details: JSON.stringify({ additionalAmountCents: EXTRA_CENTS }),
+      });
+      expect(historyRow?.[1]).toBe(tx);
+    });
+
+    it("records the answer on the mark-paid audit row and reports it to the caller", async () => {
+      const result = await settleCovered();
+
+      expect(mocks.createAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "booking-payment.manual-payment.mark-paid",
+          metadata: expect.objectContaining({
+            // The figure actually WRITTEN — here the whole amount owing.
+            effectiveAmountCents: 10000,
+            amountOwingCents: 10000,
+            outstandingAdditionalCents: EXTRA_CENTS,
+            uncollectedAdditionalCents: 0,
+            additionalCoverageAnswer: true,
+            settledAdditionalAmountCents: EXTRA_CENTS,
+            previousAdditionalPaymentStatus: "PENDING",
+          }),
+        }),
+        tx
+      );
+      expect(result.outstandingAdditionalCents).toBe(EXTRA_CENTS);
+      expect(result.settledAdditionalAmountCents).toBe(EXTRA_CENTS);
+    });
+
+    it("F4 — still cancels the addition's intent, because the cash already covered it", async () => {
+      // The spare is for the NOT-covered answer only. Here the extra is settled,
+      // so a live addition intent is a door to a second payment for money the
+      // club already holds — exactly what the blanket cancel exists to stop.
+      mocks.paymentFindUnique.mockResolvedValue(
+        paymentRow({
+          additionalAmountCents: EXTRA_CENTS,
+          additionalPaymentStatus: "PENDING",
+          additionalPaymentIntentId: "pi_additional",
+        })
+      );
+      mocks.paymentTransactionFindMany.mockResolvedValue([
+        {
+          id: "txn-additional",
+          kind: PaymentTransactionKind.ADDITIONAL,
+          stripePaymentIntentId: "pi_additional",
+          amountCents: EXTRA_CENTS,
+        },
+      ]);
+
+      const result = await settleCovered();
+
+      expect(result.outstandingIntentIds).toEqual(["pi_additional"]);
+      expect(result.sparedAdditionalPaymentIntentId).toBeNull();
+      expect(mocks.cancelPaymentIntentIfCancellable).toHaveBeenCalledWith(
+        "pi_additional"
+      );
+    });
+
+    it("409s when the extra moved since the dialog rendered, writing nothing", async () => {
+      await expect(
+        settle({
+          additionalCoverage: {
+            covered: true,
+            expectedAdditionalAmountCents: 1900,
+          },
+        })
+      ).rejects.toMatchObject({
+        status: 409,
+        message: expect.stringContaining("extra owing changed"),
+      });
+      expect(mocks.paymentUpdateMany).not.toHaveBeenCalled();
+      expect(mocks.bookingUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("409s rather than guessing when the extra is larger than the whole amount owing", async () => {
+      // Reachable: a modification CHANGE FEE is added to the recorded extra but
+      // never to `finalPriceCents`, so the extra can exceed the amount this
+      // settle collects. It cannot be a slice of it, so it is refused.
+      primeOutstandingExtra({ additionalAmountCents: 10500 });
+
+      await expect(
+        settle({
+          additionalCoverage: {
+            covered: true,
+            expectedAdditionalAmountCents: 10500,
+          },
+        })
+      ).rejects.toMatchObject({
+        status: 409,
+        message: expect.stringContaining("larger than the amount owing"),
+      });
+      expect(mocks.paymentUpdateMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("the extra is present and the cash does NOT cover it", () => {
+    beforeEach(() => {
+      primeOutstandingExtra();
+    });
+
+    function settleUncovered() {
+      return settle({
+        additionalCoverage: {
+          covered: false,
+          expectedAdditionalAmountCents: EXTRA_CENTS,
+        },
+      });
+    }
+
+    it("leaves the extra exactly as it was, so the chase continuing is correct", async () => {
+      const result = await settleUncovered();
+
+      expect(additionalMintUpdateCall()).toBeUndefined();
+      expect(additionalMintCreateCall()).toBeUndefined();
+      const fenced = fencedPaymentWrite();
+      // Nothing claims the extra was collected...
+      expect(fenced.data).not.toHaveProperty("additionalPaymentStatus");
+      // ...but the write is STILL fenced on the extra it reasoned about (F2).
+      // The not-covered answer derives the figure it records by SUBTRACTING
+      // that extra, so a card capture landing between the read and this write
+      // must refuse here rather than record cash + card as cash alone.
+      expect(fenced.where).toMatchObject({
+        additionalAmountCents: EXTRA_CENTS,
+        OR: [
+          { additionalPaymentStatus: null },
+          { additionalPaymentStatus: { not: "SUCCEEDED" } },
+        ],
+      });
+      expect(
+        isAdditionalAmountUncollected({
+          additionalAmountCents: EXTRA_CENTS,
+          additionalPaymentStatus: "PENDING",
+        })
+      ).toBe(true);
+      expect(result.settledAdditionalAmountCents).toBe(0);
+      expect(result.outstandingAdditionalCents).toBe(EXTRA_CENTS);
+      expect(result.uncollectedAdditionalCents).toBe(EXTRA_CENTS);
+    });
+
+    it("records ONLY what was handed over — the amount owed before the change", async () => {
+      // Owner decision, 31 Jul 2026. The old behaviour recorded the booking's
+      // whole worth ($100.00) AND left $21.00 owing, so the books claimed
+      // $121.00 of cash on a $121.00 booking that was still owed $21.00. Now the
+      // two figures add up.
+      const result = await settleUncovered();
+
+      expect(result.effectiveAmountCents).toBe(10000 - EXTRA_CENTS);
+      expect(result.amountOwingCents).toBe(10000);
+      expect(primaryMintCreateCall()?.[0]).toMatchObject({
+        data: expect.objectContaining({ amountCents: 10000 - EXTRA_CENTS }),
+      });
+      expect(fencedPaymentWrite().data).toMatchObject({
+        amountCents: 10000 - EXTRA_CENTS,
+        creditAppliedCents: 2000,
+      });
+    });
+
+    it("keeps the GENERALISED ledger mirror: collected + credit + still owed = the price", async () => {
+      // `amountCents + creditAppliedCents = finalPriceCents` was only ever the
+      // special case where nothing is left owing, and it cannot hold on a
+      // partially settled booking. What holds always — and what a CARD-settled
+      // booking carrying an uncollected addition already satisfied — is that
+      // every cent of the price is collected, paid with credit, or still owed.
+      const result = await settleUncovered();
+
+      expect(
+        result.effectiveAmountCents +
+          result.creditAppliedCents +
+          result.uncollectedAdditionalCents
+      ).toBe(12000);
+      // …and the settled figure plus what was left owing is the amount owing.
+      expect(
+        result.effectiveAmountCents + result.uncollectedAdditionalCents
+      ).toBe(result.amountOwingCents);
+    });
+
+    it("writes no booking-history row for an extra it did not settle", async () => {
+      await settleUncovered();
+
+      const historyRow = mocks.createAuditLog.mock.calls.find(
+        (call) =>
+          (call[0] as { action: string }).action ===
+          "booking-payment.manual-payment.additional-settled"
+      );
+      expect(historyRow).toBeUndefined();
+      // …but the answer is on the record BOTH ways, so a reader can tell "said
+      // the cash did not cover it" from "was never asked" — and the figures let
+      // them reconstruct which branch ran and what it meant.
+      expect(mocks.createAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          metadata: expect.objectContaining({
+            // The figure actually WRITTEN.
+            effectiveAmountCents: 10000 - EXTRA_CENTS,
+            amountOwingCents: 10000,
+            outstandingAdditionalCents: EXTRA_CENTS,
+            uncollectedAdditionalCents: EXTRA_CENTS,
+            additionalCoverageAnswer: false,
+            settledAdditionalAmountCents: null,
+          }),
+        }),
+        tx
+      );
+    });
+
+    it("F2 — REFUSES when a card capture settles the extra between the read and the write", async () => {
+      // The additional-capture writer takes NO advisory lock (the confirm route
+      // and the Stripe webhook both go straight to
+      // markPaymentIntentTransactionSucceeded), so under read-committed a
+      // capture can commit between the locked read above and the fenced write.
+      // Without the fence clause on THIS branch the club would end up holding
+      // cash + card while `amountCents` recorded only the cash — the delta
+      // under-recorded, the exact inverse of the owner's rule. The fence
+      // matching nothing is what turns that into a 409.
+      mocks.paymentUpdateMany.mockResolvedValue({ count: 0 });
+
+      await expect(settleUncovered()).rejects.toMatchObject({
+        status: 409,
+        message: expect.stringContaining("changed while you were recording it"),
+      });
+      // The clause that makes the race LOSABLE at all: without it the WHERE
+      // says nothing about the delta, the captured row matches, and the settle
+      // commits $100 as the whole of a $121 booking the club now holds $121 for.
+      expect(fencedPaymentWrite().where).toMatchObject({
+        additionalAmountCents: EXTRA_CENTS,
+        OR: [
+          { additionalPaymentStatus: null },
+          { additionalPaymentStatus: { not: "SUCCEEDED" } },
+        ],
+      });
+      // The booking is never claimed PAID on a lost fence.
+      expect(mocks.bookingUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("F4 — spares the addition's own live card intent, so the money it chases can still be paid", async () => {
+      // Cancelling this intent left the club chasing a member who had no way to
+      // send the money: the booking page still renders the pay card, but the
+      // secret route would hand back a cancelled intent. Everything else is
+      // still disarmed — a live PRIMARY intent is a door to a SECOND payment
+      // for cash the club already holds.
+      mocks.paymentFindUnique.mockResolvedValue(
+        paymentRow({
+          additionalAmountCents: EXTRA_CENTS,
+          additionalPaymentStatus: "PENDING",
+          additionalPaymentIntentId: "pi_additional",
+        })
+      );
+      mocks.paymentTransactionFindMany.mockResolvedValue([
+        {
+          id: "txn-primary",
+          kind: PaymentTransactionKind.PRIMARY,
+          stripePaymentIntentId: "pi_primary",
+          amountCents: 10000,
+        },
+        {
+          id: "txn-additional",
+          kind: PaymentTransactionKind.ADDITIONAL,
+          stripePaymentIntentId: "pi_additional",
+          amountCents: EXTRA_CENTS,
+        },
+      ]);
+
+      const result = await settleUncovered();
+
+      expect(result.outstandingIntentIds).toEqual(["pi_primary"]);
+      expect(result.sparedAdditionalPaymentIntentId).toBe("pi_additional");
+      expect(mocks.cancelPaymentIntentIfCancellable).toHaveBeenCalledTimes(1);
+      expect(mocks.cancelPaymentIntentIfCancellable).toHaveBeenCalledWith(
+        "pi_primary"
+      );
+      expect(mocks.enqueuePaymentIntentCancellationRecovery).not.toHaveBeenCalledWith(
+        expect.objectContaining({ paymentIntentId: "pi_additional" })
+      );
+    });
+
+    it("F4 — spares only the CURRENT addition pointer, never a superseded one", async () => {
+      // A superseded addition intent is a live door to a figure nobody is owed
+      // any more, so it must still be disarmed.
+      mocks.paymentFindUnique.mockResolvedValue(
+        paymentRow({
+          additionalAmountCents: EXTRA_CENTS,
+          additionalPaymentStatus: "PENDING",
+          additionalPaymentIntentId: "pi_additional_current",
+        })
+      );
+      mocks.paymentTransactionFindMany.mockResolvedValue([
+        {
+          id: "txn-additional-old",
+          kind: PaymentTransactionKind.ADDITIONAL,
+          stripePaymentIntentId: "pi_additional_stale",
+          amountCents: 900,
+        },
+        {
+          id: "txn-additional-current",
+          kind: PaymentTransactionKind.ADDITIONAL,
+          stripePaymentIntentId: "pi_additional_current",
+          amountCents: EXTRA_CENTS,
+        },
+      ]);
+
+      const result = await settleUncovered();
+
+      expect(result.outstandingIntentIds).toEqual(["pi_additional_stale"]);
+      expect(result.sparedAdditionalPaymentIntentId).toBe(
+        "pi_additional_current"
+      );
+    });
+
+    it("F4 — NEVER spares a PRIMARY intent, however the addition pointer got there", async () => {
+      // The OTHER half of the two-part spare predicate, and the half that
+      // matters most. If `additionalPaymentIntentId` ever names the PRIMARY
+      // intent — a legacy row, a hand repair, a future writer's mistake —
+      // matching on the id alone would leave the primary card door live on a
+      // booking whose cash the club has just recorded, i.e. a door to a SECOND
+      // payment for money already in hand. The `kind === ADDITIONAL` clause is
+      // the only thing that stops it; nothing downstream re-checks.
+      mocks.paymentFindUnique.mockResolvedValue(
+        paymentRow({
+          additionalAmountCents: EXTRA_CENTS,
+          additionalPaymentStatus: "PENDING",
+          additionalPaymentIntentId: "pi_primary",
+        })
+      );
+      mocks.paymentTransactionFindMany.mockResolvedValue([
+        {
+          id: "txn-primary",
+          kind: PaymentTransactionKind.PRIMARY,
+          stripePaymentIntentId: "pi_primary",
+          amountCents: 10000,
+        },
+      ]);
+
+      const result = await settleUncovered();
+
+      expect(result.outstandingIntentIds).toEqual(["pi_primary"]);
+      expect(result.sparedAdditionalPaymentIntentId).toBeNull();
+      // Disarmed durably in-transaction AND cancelled at Stripe after commit,
+      // exactly as it would be without the pointer.
+      expect(
+        mocks.enqueuePaymentIntentCancellationRecovery
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({ paymentIntentId: "pi_primary" })
+      );
+      expect(mocks.cancelPaymentIntentIfCancellable).toHaveBeenCalledWith(
+        "pi_primary"
+      );
+    });
+
+    it("REFUSES when the extra is the whole amount owing — there is nothing left to record", async () => {
+      // Recording $0 would flip the booking to PAID for no money.
+      primeOutstandingExtra({ additionalAmountCents: 10000 });
+
+      await expect(
+        settle({
+          additionalCoverage: {
+            covered: false,
+            expectedAdditionalAmountCents: 10000,
+          },
+        })
+      ).rejects.toMatchObject({
+        status: 409,
+        message: expect.stringContaining("nothing to record"),
+      });
+      expect(mocks.paymentUpdateMany).not.toHaveBeenCalled();
+      expect(mocks.bookingUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("409s on an extra larger than the amount owing on THIS answer too", async () => {
+      primeOutstandingExtra({ additionalAmountCents: 10500 });
+
+      await expect(
+        settle({
+          additionalCoverage: {
+            covered: false,
+            expectedAdditionalAmountCents: 10500,
+          },
+        })
+      ).rejects.toMatchObject({
+        status: 409,
+        message: expect.stringContaining("larger than the amount owing"),
+      });
+      expect(mocks.paymentUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("REFUSES when an extra exists and no answer was given, writing nothing", async () => {
+      // A stale dialog — rendered before the extra was raised — must not be
+      // able to settle only the primary and leave the member chased for money
+      // nobody asked about.
+      await expect(settle()).rejects.toMatchObject({
+        status: 409,
+        message: expect.stringContaining("not on your screen"),
+      });
+      expect(mocks.paymentUpdateMany).not.toHaveBeenCalled();
+      expect(mocks.bookingUpdateMany).not.toHaveBeenCalled();
+      expect(mocks.paymentTransactionCreate).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("the booking has NO extra — nothing about this settle changes", () => {
+    it("settles exactly as before: one PRIMARY row at the full amount, no additional columns touched", async () => {
+      const result = await settle();
+
+      expect(mocks.paymentTransactionCreate).toHaveBeenCalledTimes(1);
+      expect(primaryMintCreateCall()?.[0]).toMatchObject({
+        data: expect.objectContaining({
+          kind: PaymentTransactionKind.PRIMARY,
+          amountCents: 10000,
+        }),
+      });
+      const fenced = fencedPaymentWrite();
+      expect(fenced.data).not.toHaveProperty("additionalPaymentStatus");
+      expect(fenced.where).not.toHaveProperty("additionalAmountCents");
+      expect(fenced.where).not.toHaveProperty("OR");
+      expect(result.outstandingAdditionalCents).toBe(0);
+      expect(result.settledAdditionalAmountCents).toBe(0);
+      expect(result.uncollectedAdditionalCents).toBe(0);
+      // The settled figure is still the whole amount owing, so the original
+      // mirror is untouched on every booking without an extra.
+      expect(result.effectiveAmountCents).toBe(10000);
+      expect(result.effectiveAmountCents + result.creditAppliedCents).toBe(
+        12000
+      );
+      expect(mocks.createAuditLog).toHaveBeenCalledTimes(1);
+      expect(mocks.createAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          metadata: expect.objectContaining({
+            effectiveAmountCents: 10000,
+            amountOwingCents: 10000,
+            outstandingAdditionalCents: 0,
+            uncollectedAdditionalCents: 0,
+            // Never asked, and the record says so rather than implying a
+            // decision the admin was not offered.
+            additionalCoverageAnswer: null,
+            settledAdditionalAmountCents: null,
+          }),
+        }),
+        tx
+      );
+    });
+
+    it("409s if an answer arrives for an extra that is not there", async () => {
+      await expect(
+        settle({
+          additionalCoverage: {
+            covered: true,
+            expectedAdditionalAmountCents: EXTRA_CENTS,
+          },
+        })
+      ).rejects.toMatchObject({
+        status: 409,
+        message: expect.stringContaining("settled or removed"),
+      });
+      expect(mocks.paymentUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("treats a SUCCEEDED delta as no extra at all", async () => {
+      mocks.paymentFindUnique.mockResolvedValue(
+        paymentRow({
+          additionalAmountCents: EXTRA_CENTS,
+          additionalPaymentStatus: "SUCCEEDED",
+        })
+      );
+
+      const result = await settle();
+
+      expect(result.outstandingAdditionalCents).toBe(0);
+      expect(fencedPaymentWrite().data).not.toHaveProperty(
+        "additionalPaymentStatus"
+      );
+    });
+  });
+
+  describe("the reversal puts a covered extra back to owing", () => {
+    function primeReversalWithSettledExtra(
+      metadata: Record<string, unknown> = {
+        settledAdditionalAmountCents: EXTRA_CENTS,
+        previousAdditionalPaymentStatus: "PENDING",
+      }
+    ) {
+      mocks.bookingFindUnique.mockImplementation(
+        async (args: { select?: unknown }) =>
+          args.select
+            ? { lodgeId: "lodge-1" }
+            : {
+                ...bookingRow({ status: BookingStatus.PAID }),
+                payment: {
+                  id: "payment-1",
+                  amountCents: 10000,
+                  refundedAmountCents: 0,
+                  xeroInvoiceId: null,
+                  xeroRefundCreditNoteId: null,
+                  internetBankingHoldSlots: false,
+                  internetBankingHoldUntil: null,
+                  manuallyMarkedPaidAt: new Date("2026-07-20T00:00:00Z"),
+                  manuallyMarkedPaidPreviousStatus:
+                    BookingStatus.PAYMENT_PENDING,
+                },
+              }
+      );
+      mocks.auditLogFindFirst.mockResolvedValue({ metadata });
+    }
+
+    function reverseSettlement() {
+      return reverseManualBookingPayment({
+        bookingId: "booking-1",
+        actingAdminMemberId: ADMIN_ID,
+        note: null,
+      });
+    }
+
+    it("marks the manual ADDITIONAL row FAILED and restores the column with a GUARDED claim", async () => {
+      primeReversalWithSettledExtra();
+
+      const result = await reverseSettlement();
+
+      expect(mocks.paymentTransactionUpdateMany).toHaveBeenCalledWith({
+        where: {
+          paymentId: "payment-1",
+          kind: PaymentTransactionKind.ADDITIONAL,
+          source: PaymentSource.INTERNET_BANKING,
+          status: PaymentStatus.SUCCEEDED,
+          reason: "manual_mark_paid_additional",
+        },
+        data: {
+          status: PaymentStatus.FAILED,
+          reason: "manual_mark_paid_additional_reversed",
+        },
+      });
+      // Guarded on the exact figure and status the settle wrote, so a
+      // legitimate later settlement of the extra is never clobbered.
+      expect(mocks.paymentUpdateMany).toHaveBeenCalledWith({
+        where: {
+          id: "payment-1",
+          additionalAmountCents: EXTRA_CENTS,
+          additionalPaymentStatus: "SUCCEEDED",
+        },
+        data: { additionalPaymentStatus: "PENDING" },
+      });
+      expect(result.restoredAdditionalAmountCents).toBe(EXTRA_CENTS);
+    });
+
+    it("touches nothing when the matching settle covered no extra", async () => {
+      primeReversalWithSettledExtra({ clearedCreditElectionCents: null });
+
+      const result = await reverseSettlement();
+
+      expect(result.restoredAdditionalAmountCents).toBeNull();
+      expect(mocks.paymentTransactionUpdateMany).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            kind: PaymentTransactionKind.ADDITIONAL,
+          }),
+        })
+      );
+    });
+
+    it("un-records exactly what the NOT-covered settle recorded, not the booking's worth", async () => {
+      // The reversal gives back what its settle took. A not-covered settle wrote
+      // the reduced figure to Payment.amountCents and left the extra owing, so
+      // there is nothing to restore about the extra and the reversed amount is
+      // the reduced figure — never the booking's whole worth, which the club
+      // never held. (Payment.amountCents is the reduced 79.00 here.)
+      mocks.bookingFindUnique.mockImplementation(
+        async (args: { select?: unknown }) =>
+          args.select
+            ? { lodgeId: "lodge-1" }
+            : {
+                ...bookingRow({ status: BookingStatus.PAID }),
+                payment: {
+                  id: "payment-1",
+                  amountCents: 10000 - EXTRA_CENTS,
+                  refundedAmountCents: 0,
+                  xeroInvoiceId: null,
+                  xeroRefundCreditNoteId: null,
+                  internetBankingHoldSlots: false,
+                  internetBankingHoldUntil: null,
+                  manuallyMarkedPaidAt: new Date("2026-07-20T00:00:00Z"),
+                  manuallyMarkedPaidPreviousStatus:
+                    BookingStatus.PAYMENT_PENDING,
+                },
+              }
+      );
+      // The not-covered settle recorded no settled extra, so its metadata has
+      // no `settledAdditionalAmountCents` for the reversal to read back.
+      mocks.auditLogFindFirst.mockResolvedValue({
+        metadata: {
+          effectiveAmountCents: 10000 - EXTRA_CENTS,
+          amountOwingCents: 10000,
+          uncollectedAdditionalCents: EXTRA_CENTS,
+          settledAdditionalAmountCents: null,
+        },
+      });
+
+      const result = await reverseSettlement();
+
+      expect(result.reversedAmountCents).toBe(10000 - EXTRA_CENTS);
+      expect(result.restoredAdditionalAmountCents).toBeNull();
+      // The extra was never marked settled, so nothing about it is put back.
+      expect(mocks.paymentUpdateMany).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            additionalPaymentStatus: "SUCCEEDED",
+          }),
+        })
+      );
+    });
   });
 });
