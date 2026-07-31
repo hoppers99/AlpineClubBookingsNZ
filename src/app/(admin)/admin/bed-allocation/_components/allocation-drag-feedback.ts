@@ -1,5 +1,6 @@
 import type { Announcements } from "@dnd-kit/core";
 import { deriveActiveDragDates } from "./active-drag-dates";
+import { planAllocationMove } from "./allocation-move";
 import type {
   BedOption,
   BucketGuestGroup,
@@ -19,14 +20,19 @@ function formatNightList(stayDates: string[]) {
     : `original lodge nights ${stayDates.join(", ")}`;
 }
 
-export function describeBedAllocationDrop(input: {
+type DropFeedback =
+  | { outcome: "request"; description: string }
+  | { outcome: "noop"; description: string }
+  | { outcome: "refused"; description: string };
+
+function planBedAllocationDropFeedback(input: {
   activeData: DragData | undefined;
   overData: DropData | undefined;
   visibleAllocations: DashboardAllocation[];
   bucketGroups: BucketGuestGroup[];
   beds: BedOption[];
   singleNightMode: boolean;
-}): string | null {
+}): DropFeedback | null {
   const {
     activeData,
     overData,
@@ -43,13 +49,14 @@ export function describeBedAllocationDrop(input: {
       (item) => item.id === activeData.allocationId,
     );
     return allocation
-      ? `Remove ${allocation.guestName} from ${formatNightList(
-          deriveActiveDragDates({
-            activeDrag: activeData,
-            visibleAllocations,
-            bucketGroups,
-          }),
-        )}`
+      ? {
+          outcome: "request",
+          // Bucket removal deletes only the dragged allocation id. A
+          // first-visible chip is a proxy only for BED moves, never removal.
+          description: `Remove ${allocation.guestName} from ${formatNightList([
+            allocation.stayDate,
+          ])}`,
+        }
       : null;
   }
 
@@ -61,9 +68,18 @@ export function describeBedAllocationDrop(input: {
       (item) => item.bookingGuestId === activeData.bookingGuestId,
     );
     if (!group) return null;
-    return singleNightMode
-      ? `${group.guestName} to ${bed.label} for booked lodge night ${overData.stayDate}`
-      : `${group.guestName} to ${bed.label} for all booked lodge nights`;
+    if (singleNightMode && !group.stayDates.includes(overData.stayDate)) {
+      return {
+        outcome: "refused",
+        description: `No allocation will be made for ${group.guestName}: ${overData.stayDate} is not a booked lodge night`,
+      };
+    }
+    return {
+      outcome: "request",
+      description: singleNightMode
+        ? `${group.guestName} to ${bed.label} for booked lodge night ${overData.stayDate}`
+        : `${group.guestName} to ${bed.label} for all booked lodge nights`,
+    };
   }
 
   const allocation = visibleAllocations.find(
@@ -75,9 +91,38 @@ export function describeBedAllocationDrop(input: {
     visibleAllocations,
     bucketGroups,
   });
-  return `${allocation.guestName} to ${bed.label}, snapped to ${formatNightList(
-    originalDates,
-  )}`;
+  const movePlan = planAllocationMove({
+    allocation,
+    target: overData,
+    visibleAllocations,
+    // The drop target came from the rendered board. Include it explicitly so
+    // the planner can apply its out-of-window guard without feedback inventing
+    // a second, subtly different board-window contract.
+    visibleNights: [
+      ...new Set([
+        overData.stayDate,
+        ...visibleAllocations.map((item) => item.stayDate),
+      ]),
+    ],
+  });
+  if (movePlan.type === "noop") {
+    return {
+      outcome: "noop",
+      description: `No change for ${allocation.guestName}; the selected allocation${originalDates.length === 1 ? "" : "s"} already ${originalDates.length === 1 ? "uses" : "use"} ${bed.label}`,
+    };
+  }
+  return {
+    outcome: "request",
+    description: `${allocation.guestName} to ${bed.label}, snapped to ${formatNightList(
+      originalDates,
+    )}`,
+  };
+}
+
+export function describeBedAllocationDrop(
+  input: Parameters<typeof planBedAllocationDropFeedback>[0],
+): string | null {
+  return planBedAllocationDropFeedback(input)?.description ?? null;
 }
 
 export function createBedAllocationAnnouncements(input: {
@@ -86,8 +131,11 @@ export function createBedAllocationAnnouncements(input: {
   beds: BedOption[];
   singleNightMode: boolean;
 }): Announcements {
-  const describe = (activeData: DragData | undefined, overData?: DropData) =>
-    describeBedAllocationDrop({
+  const planFeedback = (
+    activeData: DragData | undefined,
+    overData?: DropData,
+  ) =>
+    planBedAllocationDropFeedback({
       ...input,
       activeData,
       overData,
@@ -119,18 +167,27 @@ export function createBedAllocationAnnouncements(input: {
     },
     onDragOver({ active, over }) {
       return (
-        describe(
+        planFeedback(
           active.data.current as DragData | undefined,
           over?.data.current as DropData | undefined,
-        ) ?? undefined
+        )?.description ?? undefined
       );
     },
     onDragEnd({ active, over }) {
-      const preview = describe(
+      const feedback = planFeedback(
         active.data.current as DragData | undefined,
         over?.data.current as DropData | undefined,
       );
-      return preview ? `Dropped ${preview}.` : "Drag ended with no change.";
+      if (!feedback) {
+        return "Drop refused. No allocation request was sent.";
+      }
+      if (feedback.outcome === "noop") {
+        return `${feedback.description}. No request was sent.`;
+      }
+      if (feedback.outcome === "refused") {
+        return `Drop refused. ${feedback.description}. No request was sent.`;
+      }
+      return `Requested ${feedback.description}. Saving; success or failure will be reported after the server responds.`;
     },
     onDragCancel({ active }) {
       const activeData = active.data.current as DragData | undefined;

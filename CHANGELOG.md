@@ -9,7 +9,12 @@ All notable public reference-release changes should be recorded here.
   destination bed: the preview and keyboard announcement show the original NZ
   night that will be kept. The first visible chip still moves all of that
   guest's visible allocated nights together, while later chips move one night.
-  Same-bed drops and cancelled drags do nothing and create no audit entry.
+  A drop explicitly says **No change** and creates no audit entry only when
+  every represented row already uses that bed; mixed-bed proxy rows still
+  converge on it. Bucket removal names and removes only the dragged night,
+  unbooked single-night targets are refused locally, and drag-end feedback says
+  a valid request is saving instead of announcing success before the server.
+  Cancelled drags do nothing.
   Grouped moves are all-or-nothing, and the bed changes, shared-double partner
   promotions and audit records now commit in one global-then-destination-lodge
   locked transaction instead of the browser creating a target night and then

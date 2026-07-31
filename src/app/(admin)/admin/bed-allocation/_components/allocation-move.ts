@@ -31,13 +31,6 @@ export function planAllocationMove(input: {
     return { type: "noop" };
   }
 
-  // Existing allocation drags choose a BED only. The hovered column is
-  // deliberately ignored and the move stays on the allocation's persisted
-  // lodge night (#2366), so any cell on the current bed normalises to a no-op.
-  if (target.bedId === allocation.bedId) {
-    return { type: "noop" };
-  }
-
   const guestAllocations = visibleAllocations
     .filter((item) => item.bookingGuestId === allocation.bookingGuestId)
     .sort(
@@ -47,6 +40,19 @@ export function planAllocationMove(input: {
 
   const firstAllocation = guestAllocations[0];
   const isFirstVisibleAllocation = firstAllocation?.id === allocation.id;
+  const selectedAllocations = isFirstVisibleAllocation
+    ? guestAllocations
+    : [allocation];
+
+  // Existing allocation drags choose a BED only. The hovered column is
+  // deliberately ignored and every selected row stays on its persisted lodge
+  // night (#2366). A first-visible chip is a proxy for ALL visible rows, which
+  // may currently span several beds: dropping it on the dragged row's own bed
+  // is still a real move when any later selected row uses another bed. It is a
+  // no-op only when every selected row already uses the destination.
+  if (selectedAllocations.every((item) => item.bedId === target.bedId)) {
+    return { type: "noop" };
+  }
 
   if (!isFirstVisibleAllocation) {
     return {
@@ -56,7 +62,7 @@ export function planAllocationMove(input: {
     };
   }
 
-  if (guestAllocations.length <= 1) {
+  if (selectedAllocations.length <= 1) {
     return {
       type: "single",
       allocationId: allocation.id,
@@ -66,9 +72,9 @@ export function planAllocationMove(input: {
 
   return {
     type: "bulk",
-    allocationIds: guestAllocations.map((item) => item.id),
+    allocationIds: selectedAllocations.map((item) => item.id),
     bookingGuestId: allocation.bookingGuestId,
-    stayDates: guestAllocations.map((item) => item.stayDate),
+    stayDates: selectedAllocations.map((item) => item.stayDate),
   };
 }
 

@@ -140,6 +140,55 @@ describe("planAllocationMove", () => {
       }),
     ).toEqual({ type: "noop" });
   });
+
+  it("moves later mixed-bed rows when the first-visible proxy is dropped on its own bed", () => {
+    const first = buildAllocation({
+      id: "allocation-1",
+      bedId: "bed-1",
+      stayDate: "2026-07-01",
+    });
+    const second = buildAllocation({
+      id: "allocation-2",
+      bedId: "bed-2",
+      stayDate: "2026-07-02",
+    });
+
+    expect(
+      planAllocationMove({
+        allocation: first,
+        target: { bedId: "bed-1", stayDate: "2026-07-09" },
+        visibleAllocations: [first, second],
+        visibleNights: ["2026-07-01", "2026-07-02", "2026-07-09"],
+      }),
+    ).toEqual({
+      type: "bulk",
+      allocationIds: ["allocation-1", "allocation-2"],
+      bookingGuestId: "guest-1",
+      stayDates: ["2026-07-01", "2026-07-02"],
+    });
+  });
+
+  it("treats the first-visible proxy as a no-op only when every selected row already uses the destination", () => {
+    const first = buildAllocation({
+      id: "allocation-1",
+      bedId: "bed-1",
+      stayDate: "2026-07-01",
+    });
+    const second = buildAllocation({
+      id: "allocation-2",
+      bedId: "bed-1",
+      stayDate: "2026-07-02",
+    });
+
+    expect(
+      planAllocationMove({
+        allocation: first,
+        target: { bedId: "bed-1", stayDate: "2026-07-09" },
+        visibleAllocations: [first, second],
+        visibleNights: ["2026-07-01", "2026-07-02", "2026-07-09"],
+      }),
+    ).toEqual({ type: "noop" });
+  });
 });
 
 describe("deriveActiveDragDates", () => {
@@ -299,6 +348,13 @@ describe("applyOptimisticAllocationBedMove", () => {
 describe("allocation drag feedback (#2366)", () => {
   const beds: BedOption[] = [
     {
+      id: "bed-1",
+      roomId: "room-1",
+      roomName: "Room One",
+      bedName: "Bed One",
+      label: "Room One / Bed One",
+    },
+    {
       id: "bed-2",
       roomId: "room-2",
       roomName: "Room Two",
@@ -399,6 +455,240 @@ describe("allocation drag feedback (#2366)", () => {
     );
     expect(BED_ALLOCATION_SCREEN_READER_INSTRUCTIONS.draggable).not.toContain(
       "another night",
+    );
+  });
+
+  it("describes a bucket drop as removing only the dragged allocation, not its first-visible proxy nights", () => {
+    const allocations = [
+      buildAllocation({ id: "allocation-1", stayDate: "2026-07-01" }),
+      buildAllocation({ id: "allocation-2", stayDate: "2026-07-02" }),
+    ];
+
+    expect(
+      describeBedAllocationDrop({
+        activeData: { type: "allocation", allocationId: "allocation-1" },
+        overData: { type: "bucket" },
+        visibleAllocations: allocations,
+        bucketGroups: [],
+        beds,
+        singleNightMode: false,
+      }),
+    ).toBe(
+      "Remove Example Guest from original lodge night 2026-07-01",
+    );
+  });
+
+  it("refuses single-night bucket feedback on a night the guest is not booked", () => {
+    const bucketGroups: BucketGuestGroup[] = [
+      {
+        bookingGuestId: "guest-1",
+        bookingId: "booking-1",
+        guestName: "Example Guest",
+        guestAgeTier: "ADULT",
+        memberName: "Example Member",
+        stayDates: ["2026-07-01"],
+      },
+    ];
+
+    expect(
+      describeBedAllocationDrop({
+        activeData: { type: "bucket-guest", bookingGuestId: "guest-1" },
+        overData: {
+          type: "cell",
+          bedId: "bed-2",
+          roomId: "room-2",
+          stayDate: "2026-07-02",
+        },
+        visibleAllocations: [],
+        bucketGroups,
+        beds,
+        singleNightMode: true,
+      }),
+    ).toBe(
+      "No allocation will be made for Example Guest: 2026-07-02 is not a booked lodge night",
+    );
+  });
+
+  it("describes a true same-bed proxy drop as no change", () => {
+    const allocations = [
+      buildAllocation({
+        id: "allocation-1",
+        bedId: "bed-1",
+        stayDate: "2026-07-01",
+      }),
+      buildAllocation({
+        id: "allocation-2",
+        bedId: "bed-1",
+        stayDate: "2026-07-02",
+      }),
+    ];
+
+    expect(
+      describeBedAllocationDrop({
+        activeData: { type: "allocation", allocationId: "allocation-1" },
+        overData: {
+          type: "cell",
+          bedId: "bed-1",
+          roomId: "room-1",
+          stayDate: "2026-07-09",
+        },
+        visibleAllocations: allocations,
+        bucketGroups: [],
+        beds,
+        singleNightMode: false,
+      }),
+    ).toBe(
+      "No change for Example Guest; the selected allocations already use Room One / Bed One",
+    );
+  });
+
+  it("does not call a mixed-bed first-visible proxy a no-op when later rows need moving", () => {
+    const allocations = [
+      buildAllocation({
+        id: "allocation-1",
+        bedId: "bed-1",
+        stayDate: "2026-07-01",
+      }),
+      buildAllocation({
+        id: "allocation-2",
+        bedId: "bed-2",
+        stayDate: "2026-07-02",
+      }),
+    ];
+
+    expect(
+      describeBedAllocationDrop({
+        activeData: { type: "allocation", allocationId: "allocation-1" },
+        overData: {
+          type: "cell",
+          bedId: "bed-1",
+          roomId: "room-1",
+          stayDate: "2026-07-09",
+        },
+        visibleAllocations: allocations,
+        bucketGroups: [],
+        beds,
+        singleNightMode: false,
+      }),
+    ).toBe(
+      "Example Guest to Room One / Bed One, snapped to original lodge nights 2026-07-01, 2026-07-02",
+    );
+  });
+
+  it("announces a valid drop as pending rather than claiming async success", () => {
+    const allocation = buildAllocation();
+    const announcements = createBedAllocationAnnouncements({
+      visibleAllocations: [allocation],
+      bucketGroups: [],
+      beds,
+      singleNightMode: false,
+    });
+    const active = {
+      id: "allocation:allocation-1",
+      data: {
+        current: { type: "allocation", allocationId: "allocation-1" },
+      },
+    };
+    const over = {
+      id: "cell:bed-2:2026-07-09",
+      data: {
+        current: {
+          type: "cell",
+          bedId: "bed-2",
+          roomId: "room-2",
+          stayDate: "2026-07-09",
+        },
+      },
+    };
+
+    expect(
+      announcements.onDragEnd({
+        active,
+        over,
+      } as unknown as Parameters<typeof announcements.onDragEnd>[0]),
+    ).toBe(
+      "Requested Example Guest to Room Two / Bed Two, snapped to original lodge night 2026-07-01. Saving; success or failure will be reported after the server responds.",
+    );
+  });
+
+  it("announces a same-bed drop as request-free no change", () => {
+    const allocation = buildAllocation();
+    const announcements = createBedAllocationAnnouncements({
+      visibleAllocations: [allocation],
+      bucketGroups: [],
+      beds,
+      singleNightMode: false,
+    });
+    const active = {
+      id: "allocation:allocation-1",
+      data: {
+        current: { type: "allocation", allocationId: "allocation-1" },
+      },
+    };
+    const over = {
+      id: "cell:bed-1:2026-07-09",
+      data: {
+        current: {
+          type: "cell",
+          bedId: "bed-1",
+          roomId: "room-1",
+          stayDate: "2026-07-09",
+        },
+      },
+    };
+
+    expect(
+      announcements.onDragEnd({
+        active,
+        over,
+      } as unknown as Parameters<typeof announcements.onDragEnd>[0]),
+    ).toBe(
+      "No change for Example Guest; the selected allocation already uses Room One / Bed One. No request was sent.",
+    );
+  });
+
+  it("announces an unbooked single-night drop as refused with no request", () => {
+    const bucketGroups: BucketGuestGroup[] = [
+      {
+        bookingGuestId: "guest-1",
+        bookingId: "booking-1",
+        guestName: "Example Guest",
+        guestAgeTier: "ADULT",
+        memberName: "Example Member",
+        stayDates: ["2026-07-01"],
+      },
+    ];
+    const announcements = createBedAllocationAnnouncements({
+      visibleAllocations: [],
+      bucketGroups,
+      beds,
+      singleNightMode: true,
+    });
+    const active = {
+      id: "bucket:guest-1",
+      data: {
+        current: { type: "bucket-guest", bookingGuestId: "guest-1" },
+      },
+    };
+    const over = {
+      id: "cell:bed-2:2026-07-02",
+      data: {
+        current: {
+          type: "cell",
+          bedId: "bed-2",
+          roomId: "room-2",
+          stayDate: "2026-07-02",
+        },
+      },
+    };
+
+    expect(
+      announcements.onDragEnd({
+        active,
+        over,
+      } as unknown as Parameters<typeof announcements.onDragEnd>[0]),
+    ).toBe(
+      "Drop refused. No allocation will be made for Example Guest: 2026-07-02 is not a booked lodge night. No request was sent.",
     );
   });
 });
