@@ -60,7 +60,10 @@ import {
   findCustodianBedHolds,
   findFutureCustodianHoldsForBed,
 } from "@/lib/custodian-occupancy";
-import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent";
+import {
+  OPERATIONALLY_PRESENT_GUEST_WHERE,
+  isOperationallyPresentConsent,
+} from "@/lib/member-guest-consent";
 import { prisma } from "@/lib/prisma";
 
 const BED_ALLOCATION_SETTINGS_ID = "default";
@@ -2335,6 +2338,26 @@ async function assertGuestAndBedForAllocation(input: {
   ) {
     throw new BedAllocationAdminError(
       "Booking status is not allocatable",
+      409,
+    );
+  }
+  // Owner decision D-12 (#2307), the WRITE half. Every read surface filters
+  // unconsented member guests out with OPERATIONALLY_PRESENT_GUEST_WHERE, so an
+  // officer never sees one in the awaiting-allocation queue — but the manual
+  // paths take a bookingGuestId from the request, not from the queue, so a
+  // pending guest's id supplied by hand (or left in a stale browser tab) would
+  // still write bed rows here. Those rows are exactly what
+  // `pruneAllocationsForBooking` sweeps on the next reconcile, so the officer's
+  // work would quietly disappear and the bed would look free again.
+  //
+  // Refused at the write chokepoint for the same reason as the whole-lodge hold
+  // above: it is the one place all three manual paths — single night, bulk, and
+  // the #2251 range path — pass through. `consentStatus` comes back on the
+  // `include` above and is read inside the caller's transaction, so it cannot be
+  // a stale pre-transaction snapshot.
+  if (!isOperationallyPresentConsent(guest.consentStatus)) {
+    throw new BedAllocationAdminError(
+      "This guest has not consented to being on this booking, so they cannot be given a bed yet.",
       409,
     );
   }
