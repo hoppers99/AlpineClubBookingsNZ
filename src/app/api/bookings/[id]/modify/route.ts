@@ -12,6 +12,10 @@ import {
   BookingMemberNightConflictError,
   getBookingMemberNightConflictResponse,
 } from "@/lib/booking-member-night-conflicts";
+import {
+  handleMemberGuestAddRefusal,
+  startMemberGuestRefusalClock,
+} from "@/lib/member-guest-probe-guard";
 import { modifyBookingBatch } from "@/lib/booking-batch-modification-service";
 import { adminShiftBookingDates } from "@/lib/booking-date-modification-service";
 import { BookingModifyReviewJustificationRequiredError } from "@/lib/booking-modify-validation";
@@ -111,6 +115,20 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  // #2388 / MG3 (#2308). This route is a member-facing member-guest ADD path —
+  // `addGuests` is in its schema above and any authenticated member reaches it —
+  // so it owes the same three mitigations as the quote and guest-add routes: the
+  // refusal is throttled, audited, and held to the timing floor. It carried none
+  // of them until the privacy review found it (H2).
+  //
+  // It reads a MONOTONIC clock, never the wall clock:
+  // `review-findings-contracts.test.ts` forbids a wall-clock read in this file
+  // outright — as a blunt source grep, comments included, which is exactly how
+  // this comment first failed it — because a booking-modification idempotency key
+  // built from one would mint a fresh Stripe key on every retry. See the note on
+  // `startMemberGuestRefusalClock`.
+  const startedAt = startMemberGuestRefusalClock();
+
   const session = await auth();
   if (!session) {
     return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
@@ -244,12 +262,44 @@ export async function PUT(
       );
     }
     if (err instanceof MembershipTypeBookingPolicyError) {
+      // Finding 2 (privacy re-review of MG3 #2308). The membership-type refusal
+      // is D-8's FOURTH collapsing refusal, so when it collapsed it owes the
+      // same three mitigations as its siblings — the throttle unit, the audit
+      // row naming actor and target, and the timing floor. A no-op for every
+      // other membership-type block: the handler returns immediately unless the
+      // error carries `crossFamilyMemberIds`, which only a collapsed one does.
+      await handleMemberGuestAddRefusal({
+        request,
+        actorMemberId: session.user.id,
+        error: err,
+        route: "bookings/modify",
+        startedAt,
+        throttle: "CHARGE_NOW",
+        skipAuthorization: actorRole === "ADMIN",
+      });
       return NextResponse.json(
         getMembershipTypeBookingPolicyErrorBody(err),
         { status: err.status },
       );
     }
     if (err instanceof BookingGuestValidationError) {
+      // #2388, refusal path only — the same shape `api/bookings/[id]/guests`
+      // uses, and for the same reason: this route resolves its members INSIDE
+      // `prisma.$transaction` while holding the per-lodge capacity lock, so the
+      // throttle cannot be spent on the way in without taking a second
+      // connection under that lock. Spending it here still counts every probe,
+      // and the channel #2388 describes is built out of refusals. A SUCCESSFUL
+      // cross-family add on this route is not a probe: it mutates a real booking
+      // and emails the person it added.
+      await handleMemberGuestAddRefusal({
+        request,
+        actorMemberId: session.user.id,
+        error: err,
+        route: "bookings/modify",
+        startedAt,
+        throttle: "CHARGE_NOW",
+        skipAuthorization: actorRole === "ADMIN",
+      });
       return NextResponse.json(getBookingGuestValidationErrorResponse(err), {
         status: err.status,
       });

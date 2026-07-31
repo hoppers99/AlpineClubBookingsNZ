@@ -151,6 +151,131 @@ The visible half — signed off as static mockups in `docs/member-guests/mockups
 - The consent-request email now deep-links per recipient: the target to
   `/bookings/[id]#consent`, a delegate to `/bookings/consent/[guestId]`.
 
+### Finding and adding the other member (MG3, #2308)
+
+The half a booker actually touches, signed off as
+`docs/member-guests/mockups/find-and-add.html` (31 Jul, all four questions
+answered) and built to it:
+
+- **`+ Add Member Guest`** sits in the Guests step's header row, immediately
+  before the existing `+ Add Non-Member Guest`, and only when the server says
+  the module is on (`GET /api/members/guest-candidates`). Module off and the
+  button is absent, not disabled.
+- **The find panel opens inline, underneath the Guests heading** (owner
+  sign-off answer 3) — never a dialog, because a pop-up inside a multi-step form
+  is awkward on a phone and a trap for keyboard and screen-reader users.
+- **One box takes either an email address or a name** (owner sign-off answer 2).
+  Text containing an `@` is resolved exactly by the email path; anything else
+  searches names, and only where the club turned open search on. There is no
+  mode switch. Half a typed address is treated as an email attempt and answered
+  with the same fixed "no bookable member found" sentence, rather than falling
+  through to a name search that would silently match nothing.
+- **Two routes, one privacy envelope.** `POST
+  /api/members/guest-candidates/resolve` (exact email; POST so the address never
+  reaches a URL, access log or `Referer`) and `GET
+  /api/members/guest-candidates/search?q=` (name type-ahead). Module off ⇒ both
+  **404**; open search off ⇒ the search route **404s** — never 403, because a 403
+  confirms the club has the feature and merely disabled it for you. Turning the
+  setting off makes the route vanish again immediately, with no deploy.
+- **Neither route ever evaluates eligibility.** No profile gate, no subscription
+  check, no person-night check, no already-in-your-party filter. That is what
+  stops the finder becoming an eligibility oracle: it cannot leak an answer it
+  never asks for. Every refusal happens later, at add/quote/create time, in
+  D-8's one neutral sentence. Both routes always answer **200 with the same
+  shape**; "not found", "inactive" and "no such member" are all `{ candidates: [] }`.
+- **A candidate row shows full name and age group only** (D-19) — no email, no
+  town, no photo, no membership type. Rows a booker cannot tell apart are left
+  identical on purpose and the panel points at the email address instead of
+  inventing a distinguisher. The name search caps at ten, matches prefixes only
+  (never mid-string), and reports overflow as a boolean — never "showing 10 of
+  47", which would be a free membership-size oracle.
+- **The panel's keyboard contract is one sentence, and it is the same in both
+  modes:** if there are candidates on screen, Enter chooses the highlighted one;
+  otherwise Enter runs the find. Arrows move the highlight and Escape backs out
+  (from anywhere in the panel, including once a person has been chosen and the
+  input has been replaced by their chip), returning focus to the button that
+  opened it. The combobox ARIA is likewise unconditional — the household
+  pick-list renders in the DEFAULT email mode too, so gating those attributes on
+  the open-search toggle left the list an unannounced orphan for every club. Every
+  outcome is announced, zero results included, and the results list scrolls inside
+  its own box rather than pushing the guest form down a phone screen.
+- **A name typed into the email-only box is answered, not ignored.** With open
+  search off the panel says "This club doesn't list members by name. Enter their
+  email address to find them." rather than doing nothing — the inverse of the
+  trap owner sign-off answer 2 was chosen to avoid, and it lands in the mode
+  every club gets on day one. A query under two characters is refused locally
+  with "Type at least two letters." and never reaches the server, so it spends no
+  budget and cannot be mistaken for "nobody matches".
+- **The neutral refusal renders where the booker was working.** On the Guests
+  step it appears in the find panel beneath a chip naming the person, with the
+  one honest next step the mockup drew — "If you think that's wrong, ask them
+  directly, or contact the club." From the Review step, where the panel is not
+  mounted, the same sentence goes to the page banner instead: an unpaid member
+  guest quotes cleanly and is refused only at Confirm, so routing it to a panel
+  that is not on screen made the button silently stop working.
+- **Under-18s are excluded from the name search** unless a club opts them in
+  (D-20). That sub-setting gates the type-ahead only: a minor stays directly
+  resolvable by their household email address, which is the consequence D-9
+  carries.
+- **Every query is rate-limited per acting member as well as per address, and
+  every query is audited** — including empty results, under-minimum fragments,
+  and rate-limited rejections. The resolve row stores the full address typed,
+  deliberately: probe detection needs it, and admins reading the audit log will
+  see it.
+- **Consent badges in the wizard use warmer, name-bearing wording** — "Waiting
+  for Sam to approve", "Sam approved", "Sam will be told" — while the
+  booking-detail page keeps MG2's "Waiting for consent · expires 7 Aug",
+  "Consented", "Told, not asked" (owner sign-off answer 1, taken against the
+  recommendation). Two vocabularies, ONE function: `describeMemberGuestConsentBadge`
+  gained a third audience rather than a fork, so all eight sub-states are mapped
+  for all three audiences and a new state cannot be added without deciding all
+  three. The wizard never distinguishes a delegate approval from a self
+  approval — the same privacy rule the member audience already followed.
+- **The review step states all four consequences plainly whenever anyone is
+  still waiting** (owner sign-off answer 4), never behind a disclosure link: the
+  hold and its expiry in the club's own configured days; that a decline reprices
+  the booking; that **the person added can see the whole booking, other guests'
+  names included, before they decide** (D-11 as ticked); and that **their
+  approval covers the booking however it later changes**, with removal subject to
+  the usual limits once it is priced or paid (D-13/D-14 as ticked).
+- **#2388's mitigations ride the add paths, not just the finder.**
+  Per-acting-member throttling on all SIX member-facing add paths —
+  `/api/bookings/quote`, create, guest-add, modify-quote, modify and
+  modify-dates. It is counted when the attempt INVOLVES somebody beyond the
+  booker's family, which is not quite the same as naming them: `modify-quote`
+  has a second charge point that fires when the booking merely CARRIES a
+  cross-family member guest and the request only moves the dates, because that
+  preview asks the same question about the same person and used to cost nothing
+  at all. The two share one ledger, so one attempt is one unit however many
+  charge points fire. An ordinary family booking is still never slowed, and
+  neither is a booking with no cross-family member guest on it.
+- **A response floor on every collapsed refusal**, paired with the more
+  important fix: "Linked member is inactive or not found" and the age-exempt
+  refusal used to answer a cross-family probe in their own words with their own
+  status, and now collapse to the neutral one too — as does the membership-type
+  refusal, which used to name the blocked member and their membership category
+  outright. The floor is a MINIMUM, not a budget: refusals raised late in a
+  request (the person-night guard, the unpaid-subscription check) still report
+  whatever the pricing path cost, and this map does not claim otherwise.
+- **Every collapsed refusal is audited** naming actor and target, and a run of
+  them against the same target raises a flagged row an admin can find — ONCE per
+  actor/target per 24 hours, on the crossing rather than on every refusal past
+  it, so an afternoon of ordinary re-dating does not bury the signal in
+  duplicates. **Logged, never blocked**, by the owner's explicit sub-decision,
+  because a member trying several dates for a friend is the normal case.
+- **The edit panel does not claim an add that did not happen.** A date change on
+  a booking that already carries a cross-family member guest can be refused, and
+  the shared sentence — "this member can't be added" — would be describing an
+  act the booker did not perform. On a request that adds nobody the panel says
+  "This change can't be made to this booking right now" instead. The server's
+  answer is unchanged; the client is describing its own request.
+- **The family-boundary recomputation is gated** (owner decision, 1 Aug 2026).
+  It runs on a booking-change request only when the club's member-guest module
+  is enabled, or the booking already carries a member-guest consent row — so a
+  club that never adopted the feature does not pay for it on every edit, while a
+  legacy or in-flight booking keeps its protection if the module is later
+  switched off.
+
 ## Feedback Conventions
 
 One rule for "did that work?" feedback, so the affordance is predictable on

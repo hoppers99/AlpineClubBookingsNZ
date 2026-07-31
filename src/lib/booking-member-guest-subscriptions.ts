@@ -1,10 +1,6 @@
 import type { AgeTier, SubscriptionStatus } from "@prisma/client";
 import { getAgeTierSettings } from "@/lib/age-tier";
-import { BookingGuestValidationError } from "@/lib/booking-guests";
-import {
-  MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE,
-  MEMBER_GUEST_CROSS_FAMILY_REFUSAL_STATUS,
-} from "@/lib/member-guest-refusal";
+import { memberGuestCrossFamilyRefusal } from "@/lib/booking-guests";
 import {
   isSubscriptionEnforcementActive,
   requiresPaidSubscriptionForAgeTier,
@@ -168,17 +164,19 @@ export async function findUnpaidMemberGuests(
   // rule as the person-night guard: the marker rides the guest, so the collapse
   // reaches every caller of this helper (the create route, the guest-add route,
   // and anything added later) instead of the two that remembered.
-  const refusedCrossFamily = params.guests.some(
-    (guest) =>
-      guest.crossFamilyMemberGuest === true &&
-      guest.memberId &&
-      billableUnpaidMemberIds.includes(guest.memberId),
-  );
-  if (refusedCrossFamily) {
-    throw new BookingGuestValidationError(
-      MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE,
-      MEMBER_GUEST_CROSS_FAMILY_REFUSAL_STATUS,
-    );
+  const refusedCrossFamilyMemberIds = params.guests
+    .filter(
+      (guest) =>
+        guest.crossFamilyMemberGuest === true &&
+        guest.memberId &&
+        billableUnpaidMemberIds.includes(guest.memberId),
+    )
+    .map((guest) => guest.memberId!)
+    // #2388: the refusal carries WHICH beyond-family members it was about, so the
+    // route can write one audit row per target without recomputing the boundary.
+    .filter((memberId, index, all) => all.indexOf(memberId) === index);
+  if (refusedCrossFamilyMemberIds.length > 0) {
+    throw memberGuestCrossFamilyRefusal(refusedCrossFamilyMemberIds);
   }
 
   const nameById = new Map(

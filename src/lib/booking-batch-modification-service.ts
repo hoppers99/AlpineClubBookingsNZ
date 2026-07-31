@@ -424,6 +424,8 @@ export async function modifyBookingBatch({
           normalizedAddGuests: guestPlan.normalizedAddGuests,
           removeGuestIds: input.removeGuestIds,
           guestsForPricing: guestPlan.guestsForPricing,
+          // Finding 2 (privacy re-review of MG3 #2308).
+          skipAuthorization: actor.role === "ADMIN",
           skipBookingLifecycleRules: dates.skipBookingLifecycleRules,
           // Multi-lodge: season rates are resolved for the booking's lodge.
           seasonRateData: await loadActiveSeasonRates(tx, bookingLodgeId),

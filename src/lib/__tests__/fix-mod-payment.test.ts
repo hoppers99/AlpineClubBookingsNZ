@@ -313,6 +313,28 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
     // carry no applied credit, so the aggregate nets to 0 and the clamp is a
     // no-op (never taking the ledger lock or writing a row).
     $executeRaw: vi.fn().mockResolvedValue(undefined),
+    // MG3 (#2308) C1: `markCrossFamilyGuestsOnBooking` re-derives the D-8 marker
+    // over the whole proposed party from the booker's family groups, so the date
+    // path reads these two rows before the person-night guard. This fixture is
+    // about pricing and settlement, and was written when every member-linked
+    // guest on it was the booker's own household — so that is what it says here,
+    // rather than leaving the boundary to fall out of an empty mock.
+    familyGroupMember: {
+      findMany: vi.fn().mockImplementation(async (args: {
+        where?: { familyGroupId?: unknown; memberId?: unknown };
+      }) =>
+        args?.where?.familyGroupId
+          ? [
+              booking.memberId,
+              ...booking.guests.map(
+                (guest: { memberId?: string | null }) => guest.memberId,
+              ),
+            ]
+              .filter((memberId): memberId is string => Boolean(memberId))
+              .map((memberId) => ({ memberId, familyGroupId: "fg-fixture" }))
+          : [{ memberId: booking.memberId, familyGroupId: "fg-fixture" }],
+      ),
+    },
     memberCredit: {
       aggregate: vi.fn().mockResolvedValue({ _sum: { amountCents: 0 } }),
       create: vi.fn().mockResolvedValue({}),
