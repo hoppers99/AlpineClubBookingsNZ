@@ -40,24 +40,6 @@ const HOME_UPDATE_MIGRATION_PATH = join(
   "migration.sql",
 );
 
-// Issue #2421: supersedes the #716 migration above as the authoritative writer
-// of the home hero text (the old copy read as an open invitation for anyone to
-// book). It changes headerText only — caption and title are still whatever #716
-// wrote.
-const HOME_GUEST_COPY_MIGRATION_PATH = join(
-  process.cwd(),
-  "prisma",
-  "migrations",
-  "20260801130000_update_starter_home_guest_copy",
-  "migration.sql",
-);
-
-// The hero text #716 wrote and #2421 replaced. The later migration must guard
-// its WHERE on exactly this, so a deployment whose admin has edited the hero is
-// left untouched.
-const SUPERSEDED_HOME_HEADER_TEXT =
-  "Our club lodge welcomes members and guests year-round. Book a stay, join the club, and explore New Zealand's mountains.";
-
 const FAQ_UPDATE_MIGRATION_PATH = join(
   process.cwd(),
   "prisma",
@@ -186,9 +168,8 @@ describe("starter page content backfill migration", () => {
     GENERICISE_LODGE_COPY_MIGRATION_PATH,
     "utf8",
   );
-  const homeGuestCopySql = readFileSync(HOME_GUEST_COPY_MIGRATION_PATH, "utf8");
   const allInsertSql = `${insertSql}\n${backfill404Sql}\n${policyPagesSql}`;
-  const combinedSql = `${allInsertSql}\n${updateSql}\n${faqUpdateSql}\n${privacyUpdateSql}\n${nonMemberHoldCopyUpdateSql}\n${genericiseLodgeCopySql}\n${homeGuestCopySql}`;
+  const combinedSql = `${allInsertSql}\n${updateSql}\n${faqUpdateSql}\n${privacyUpdateSql}\n${nonMemberHoldCopyUpdateSql}\n${genericiseLodgeCopySql}`;
 
   it("inserts exactly the starter pages defined for the seed", () => {
     const insertedIds = [
@@ -282,51 +263,12 @@ describe("starter home page content update migration", () => {
     }
   });
 
-  it("writes the current caption and title from starterPageContent", () => {
+  it("writes the current club-agnostic copy from starterPageContent", () => {
     const home = starterPageContent.find((page) => page.slug === "home");
     expect(home).toBeDefined();
-    for (const value of [home!.caption, home!.title]) {
+    for (const value of [home!.caption, home!.title, home!.headerText]) {
       expect(sql).toContain(sqlQuote(value));
     }
-  });
-
-  it("writes the hero text the #2421 migration supersedes", () => {
-    // #716 no longer writes the current hero (the #2421 guest-copy migration
-    // does); it must still write exactly what #2421 guards its WHERE on, so the
-    // update chain stays unbroken.
-    expect(sql).toContain(sqlQuote(SUPERSEDED_HOME_HEADER_TEXT));
-  });
-});
-
-describe("starter home guest-copy update migration (#2421)", () => {
-  const sql = readFileSync(HOME_GUEST_COPY_MIGRATION_PATH, "utf8");
-
-  it("only updates the home row, and never inserts or deletes", () => {
-    expect(sql).toMatch(/UPDATE\s+"PageContent"/);
-    expect(sql).not.toMatch(/\bDELETE\b/i);
-    expect(sql).not.toMatch(/\bINSERT\b/i);
-    expect(sql).toContain(`"slug" = ${sqlQuote("home")}`);
-  });
-
-  it("guards the update on the row still holding the #716 hero text", () => {
-    expect(sql).toContain(sqlQuote(SUPERSEDED_HOME_HEADER_TEXT));
-  });
-
-  it("writes the current hero text from starterPageContent", () => {
-    const home = starterPageContent.find((page) => page.slug === "home");
-    expect(home).toBeDefined();
-    expect(sql).toContain(sqlQuote(home!.headerText));
-
-    // SET (new value) must come before the WHERE guard (old value), so the two
-    // are not accidentally swapped.
-    const setIndex = sql.indexOf(sqlQuote(home!.headerText));
-    const whereIndex = sql.indexOf(sqlQuote(SUPERSEDED_HOME_HEADER_TEXT));
-    expect(setIndex).toBeGreaterThan(-1);
-    expect(whereIndex).toBeGreaterThan(setIndex);
-
-    // Only the hero changes: caption and title are still #716's.
-    expect(sql).not.toContain(sqlQuote(home!.caption));
-    expect(sql).not.toContain(sqlQuote(home!.title));
   });
 });
 

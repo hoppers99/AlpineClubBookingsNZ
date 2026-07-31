@@ -75,7 +75,7 @@ export const starterPageContent: StarterPageContent[] = [
     menuTitle: "",
     title: "Club Lodge",
     headerText:
-      "Our club lodge welcomes members year-round. Sign in to book a stay, or apply to join and explore New Zealand's mountains.",
+      "Our club lodge welcomes members and guests year-round. Book a stay, join the club, and explore New Zealand's mountains.",
     sortOrder: 5,
     contentHtml: `<h2>Welcome</h2>`.trim(),
   },

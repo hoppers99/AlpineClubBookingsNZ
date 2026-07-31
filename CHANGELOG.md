@@ -20,11 +20,7 @@ All notable public reference-release changes should be recorded here.
   **Public Requests** tab of Booking Requests — visible to view-only admins,
   since sharing a link is not a booking write. The one other way in is
   unchanged: the *Book these dates again* button on a tokenised payment link
-  the club itself emails to a past requester. The starter home-page hero no
-  longer says the lodge "welcomes members and guests year-round" — a guarded
-  data migration rewrites it to match the starter FAQ, which already said
-  guests come by member invitation, and a fork that has edited its own hero is
-  left untouched.
+  the club itself emails to a past requester.
 - **Bed moves now stay on the guest's original lodge nights (#2366).** Dragging
   an existing allocation chip across date columns now chooses only the
   destination bed: the preview and keyboard announcement show the original NZ
