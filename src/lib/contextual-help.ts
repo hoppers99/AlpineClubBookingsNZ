@@ -2308,6 +2308,10 @@ const ADMIN_HELP_QUESTIONS: Record<string, HelpQuestion[]> = {
       q: "What should I check before quoting?",
       a: "Recheck the requested date-only lodge nights, guest counts, and capacity before you send a quote or approval.",
     },
+    {
+      q: "How does a non-member get to the request form?",
+      a: "Only from you. The form is deliberately unlisted: no page a visitor can browse to links to it, and it is excluded from search engines. Copy the link from the Public Requests tab and send it only to a guest the club has agreed to host.",
+    },
   ],
   "/admin/bookings": [
     {

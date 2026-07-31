@@ -202,6 +202,16 @@ interface QuoteResult {
   // #1746: why a partner-shared admission was rejected (shown verbatim).
   partnerSharedReason?: string | null;
   promoStillValid: boolean;
+  // #2390: present only when a promotion's usage cap stops it reaching somebody
+  // this edit adds. The edit still saves and everyone already covered keeps
+  // their discount — the member is simply told, before they save, who is
+  // covered and who is at the normal rate.
+  promoCoverage?: {
+    promoCode: string;
+    coveredNames: string[];
+    excludedNames: string[];
+    message: string;
+  } | null;
   promoValidation: {
     valid: boolean;
     error?: string;
@@ -397,6 +407,16 @@ export function EditBookingPanel({
   // Save state
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
+  // #2390: the coverage the SAVE came back with, when it differs from what the
+  // preview showed. The preview reads the promotion's counters unlocked and the
+  // save re-reads them under the row lock, so another booking can take the last
+  // slot in between — and then the price the member gets is not the price the
+  // panel explained. Holding the panel open with the server's own sentence
+  // keeps the explanation at the moment of the edit, which is the whole point
+  // of the owner decision; without it the member first learns from the email.
+  const [savedPromoCoverage, setSavedPromoCoverage] = useState<string | null>(
+    null,
+  );
   // #2104: member-facing justification for a modification that leaves minors
   // with no adult on the booking. Shown proactively when the local predicate
   // trips, or reactively when the server returns REVIEW_JUSTIFICATION_REQUIRED.
@@ -1238,6 +1258,25 @@ export function EditBookingPanel({
       }
 
       setSaveOverCapacityNights(null);
+
+      // #2390: same shape as the stale-quote handling above, for the same
+      // reason — the preview and the apply can disagree, and the member must
+      // hear it here rather than from the invoice. Only when it differs from
+      // the sentence they already read before pressing Save; an unchanged
+      // notice is not news and should not hold the panel open.
+      const savedCoverageMessage =
+        typeof data?.promoCoverage?.message === "string"
+          ? (data.promoCoverage.message as string)
+          : null;
+      if (
+        savedCoverageMessage &&
+        savedCoverageMessage !== (quote?.promoCoverage?.message ?? null)
+      ) {
+        setSavedPromoCoverage(savedCoverageMessage);
+        router.refresh();
+        return;
+      }
+
       router.refresh();
       onDone();
     } catch {
@@ -2400,9 +2439,35 @@ export function EditBookingPanel({
                   </div>
                 )}
 
+                {/* Convention for this card (#2390 review): every advisory that
+                    appears on its own when a quote comes back — not in response
+                    to a click — carries role="status", so a screen-reader user
+                    hears it without hunting for it. That covers the
+                    minimum-stay notice above and both promo notices here. The
+                    over-capacity block is deliberately excluded: it contains
+                    the confirm checkbox the member must operate, and announcing
+                    a form control as a live status reads as noise. */}
                 {!quote.promoStillValid && promoAction.type === "keep" && booking.promo && (
-                  <div className="rounded-md bg-warning-3 p-3 text-sm text-warning-11">
+                  <div
+                    className="rounded-md bg-warning-3 p-3 text-sm text-warning-11"
+                    role="status"
+                  >
                     Your promo code &apos;{booking.promo.code}&apos; is no longer valid and will be removed.
+                  </div>
+                )}
+
+                {/* #2390: the promotion is keeping everyone who already had it
+                    and simply not reaching the people this edit adds. Said
+                    here, before Save, because a member who adds two guests and
+                    silently gets a different rate for one of them reads that as
+                    a bug. The totals above already include it. */}
+                {quote.promoCoverage && promoAction.type === "keep" && (
+                  <div
+                    className="rounded-md bg-warning-3 p-3 text-sm text-warning-11"
+                    role="status"
+                    data-testid="promo-coverage-notice"
+                  >
+                    {quote.promoCoverage.message}
                   </div>
                 )}
               </div>
@@ -2491,28 +2556,51 @@ export function EditBookingPanel({
         </div>
       )}
 
-      {/* Action buttons */}
-      <div className="flex gap-3">
-        <Button variant="outline" onClick={onDone}>
-          Cancel
-        </Button>
-        <Button
-          onClick={handleSaveClick}
-          disabled={
-            !hasChanges ||
-            saving ||
-            quoteLoading ||
-            !quote ||
-            !capacityOk ||
-            (settlementRequired && !settlementMethod)
-          }
-        >
-          {saving ? "Saving..." : "Save Changes"}
-        </Button>
-      </div>
+      {/* #2390: the save came back saying the promotion reaches fewer people
+          than the preview did — another booking took the last slot between the
+          two reads. The change IS saved, so Save is replaced by an
+          acknowledgement rather than offered again; the member reads why their
+          total differs here, at the edit, instead of on the invoice. */}
+      {savedPromoCoverage ? (
+        <div className="space-y-3">
+          <div
+            className="rounded-md bg-warning-3 p-3 text-sm text-warning-11"
+            role="status"
+            data-testid="saved-promo-coverage-notice"
+          >
+            <p className="font-medium">Your change is saved</p>
+            <p className="mt-1">{savedPromoCoverage}</p>
+          </div>
+          <div className="flex gap-3">
+            <Button onClick={onDone}>Done</Button>
+          </div>
+        </div>
+      ) : (
+        <>
+          {/* Action buttons */}
+          <div className="flex gap-3">
+            <Button variant="outline" onClick={onDone}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSaveClick}
+              disabled={
+                !hasChanges ||
+                saving ||
+                quoteLoading ||
+                !quote ||
+                !capacityOk ||
+                (settlementRequired && !settlementMethod)
+              }
+            >
+              {saving ? "Saving..." : "Save Changes"}
+            </Button>
+          </div>
 
-      {saveError && (
-        <div className="rounded-md bg-danger-3 p-3 text-sm text-danger-11">{saveError}</div>
+          {saveError && (
+            <div className="rounded-md bg-danger-3 p-3 text-sm text-danger-11">{saveError}</div>
+          )}
+        </>
       )}
 
       {/* Owner decision (#1668/#1696): the admin explicitly chooses, per edit,

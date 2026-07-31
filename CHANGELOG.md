@@ -4,6 +4,23 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **The public site no longer advertises guest bookings (#2421).** The
+  signed-out help corpus previously answered "Can I stay without being a
+  member?" with "Yes", and the sign-in page carried a *Request a booking
+  without an account* link. Whether a club hosts non-members is the club's own
+  policy — often only as a guest accompanied by a member, if at all — and
+  advertising open guest bookings can read as commercial accommodation. Every
+  public string now defers to the club's own FAQ, rules, or policy pages, and
+  the sign-in-page link is gone (the school-group link is unchanged). The
+  request form itself still works exactly as before, by direct URL: it is now
+  excluded from search engines via a route-level `noindex` (`robots.txt`
+  deliberately does *not* disallow it, so crawlers can fetch the page and see
+  the noindex), no page a visitor can browse to links to it, and admins copy
+  its link from a new **Guest request form link (unlisted)** field on the
+  **Public Requests** tab of Booking Requests — visible to view-only admins,
+  since sharing a link is not a booking write. The one other way in is
+  unchanged: the *Book these dates again* button on a tokenised payment link
+  the club itself emails to a past requester.
 - **Bed moves now stay on the guest's original lodge nights (#2366).** Dragging
   an existing allocation chip across date columns now chooses only the
   destination bed: the preview and keyboard announcement show the original NZ
@@ -21,6 +38,34 @@ All notable public reference-release changes should be recorded here.
   trying to delete the original. The shared global lock also prevents a
   concurrent cancellation from pruning and then having the move resurrect an
   allocation.
+
+- **Editing a booking no longer takes away a promo discount the club already
+  gave (#2390).** A promotion's usage limits are checked again every time a
+  booking is repriced — a date change, a guest added or removed, an edit from
+  the Edit panel. If other members had used the code up in the meantime, the
+  edit used to fail that check, and failing it stripped the promotion from the
+  booking *entirely*: everyone on it lost the discount, including the people who
+  already had it, and the member was billed the difference for changing a date.
+
+  Now the edit always goes through, everyone already benefiting keeps their
+  discount, and only people the edit newly adds are priced at the normal rate.
+  Where there is not enough room for everybody, the people who already had the
+  discount keep it and the remaining room goes to the most expensive stays
+  first, so the code is worth as much as it can be to the booking. The member is
+  told before they save, in one sentence naming who keeps it, who this edit
+  brought under it, who is not covered, and confirming that the total on screen
+  already reflects it — and that same sentence goes into their booking-modified
+  email and onto the booking's own history, so nobody has to work it out
+  afterwards. On a free-nights code, a member who already had free nights on the
+  booking keeps them even if an admin has since lowered the lifetime limit.
+
+  This also settles what happens when an admin **lowers** a limit on a code
+  members are already using: the bookings that already have the discount keep
+  it, so "Benefits given" can sit above the new limit until those stays pass.
+  That is the club honouring what it already promised, not a fault — and no new
+  member is given the code while it is over. If a code is exhausted and nobody
+  on the booking was benefiting from it, the edit removes it from the booking as
+  before; nobody loses anything, because nobody had anything.
 - **Recording a cash payment now asks about any extra still owing (#2397).**
   When a booking is priced up after it was made — someone adds a guest, say —
   the increase is tracked separately as an "additional payment" the member is
@@ -279,6 +324,33 @@ All notable public reference-release changes should be recorded here.
   green "all set" tick: it now says plainly that the name is the last one we
   saw, not a confirmation — which is what you would see if the club revoked the
   app inside Xero.
+- **A refused save no longer blames the email address when the email address is
+  not the problem, and switching a family's login holder now explains an email
+  clash (#2385).** Only one member per email address can sign in — that is why a
+  family's children can share a parent's address as long as they do not log in
+  themselves. Three changes, all about being told the truth when a save is
+  refused:
+
+  - On a member's **Account & Access** tab, ticking **Can Login** when that
+    member's address is already someone else's login is now spotted before the
+    save is attempted rather than by letting the database reject it. Admins see
+    the same message as before — "A member with this email already exists" — so
+    nothing looks different; the save simply stops earlier.
+  - What *has* changed is what a member save says when the database refuses it
+    because two records would end up sharing something that has to be unique to
+    one of them. Whatever the duplicated detail actually was, that used to be
+    reported as an email clash. Only a genuine email clash says so now;
+    anything else is reported as a general failure and recorded in the logs for
+    an administrator to look at. Nobody is sent off to fix an address that was
+    never wrong.
+  - On a family group's **Shared email & login** panel, handing the login to a
+    different adult when someone **outside that family** already signs in with
+    the address used to fail with an unexplained error. It now says "A member
+    with this email already exists", and the same message is given to whichever
+    of two admins loses a race to claim the address at the same moment.
+
+  Nothing about who is allowed to sign in has changed — the database rule that
+  permits only one login per address was always doing its job, and still is.
 
 - **Clubs can safely record a trusted induction history when moving an
   established membership onto the digital register (#2361).** A new
@@ -338,6 +410,29 @@ All notable public reference-release changes should be recorded here.
   test. That call now retries. The testing guide gains a "Flake invariants"
   section so a future test cannot quietly reintroduce any of this. No part of
   this touches the running club site.
+
+- **The "page not found" page is now always assembled fresh, closing a small
+  security-policy inconsistency (#2356).** This is a correctness and
+  future-proofing fix rather than something most visitors would have noticed. A
+  copy of the 404 page was being built once, in advance, when the software was
+  packaged — before it had any connection to your club's database — and frozen.
+  That frozen copy still carried the template's demo club name and ignored the
+  404 page you can write yourself under **Website content**, and its scripts were
+  blocked by the site's own security policy. In ordinary browsing you would not
+  have met it: a mistyped or dead web address is handled elsewhere in the site
+  and already produced a correct, live page with your own club name. The frozen
+  copy was reached only by two internal request shapes that browsers and normal
+  scanners do not use. It is now assembled on request like every other page, so
+  the inconsistency is gone rather than waiting to surface, and a check runs on
+  every build so no other page can be frozen in the same way unnoticed.
+
+- **Server-side errors are now actually reported to error monitoring (#2356).**
+  The hook that hands a server-side page error to Sentry had been written in the
+  wrong file, so the framework never found it and never called it. Nothing failed
+  visibly — errors simply went unreported through that channel. It is now wired
+  up correctly and covered by a test, so if it is ever moved again the build
+  fails instead of the reports quietly stopping. Clubs that have not configured
+  Sentry are unaffected.
 
 - **Adding another club member as a guest (#2306, #2307).** Until now a member
   could only put people from their own family group on a booking. There is now a
