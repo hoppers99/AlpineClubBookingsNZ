@@ -1,5 +1,6 @@
 "use client";
 
+import { useId } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -30,6 +31,16 @@ import {
   formatMemberDateNz,
   parentLinkTypeLabel,
 } from "@/lib/admin-member-detail-helpers";
+import {
+  DEPENDENT_PARENT_CREATE_ERRORS,
+  DEPENDENT_PARENT_LINK_ERRORS,
+  dependentParentStateBlocker,
+} from "@/lib/dependent-link-eligibility";
+import { useDependentEmailSource } from "@/hooks/use-dependent-email-source";
+import {
+  DependentNotice,
+  DependentNotificationRoutingNotice,
+} from "./dependent-notices";
 import type { MemberAddressValues } from "@/lib/member-address";
 import type {
   DependentDialogMode,
@@ -117,6 +128,73 @@ export function MemberDependentDialog({
   onSubmitLink,
 }: MemberDependentDialogProps) {
   const { showTitle, showGender } = useMemberFieldsSettings();
+  // #2282: the dialog states the block for ITSELF rather than trusting that the
+  // button which opened it was disabled. The two tabs are two endpoints with
+  // two messages, and gating only one would leave the identical dead end on the
+  // other — so the notice follows the active tab and the submit is disabled in
+  // both. The dialog is also its own accessibility container, so a reason shown
+  // out on the page behind it does not reach a screen reader in here.
+  //
+  // DEFENCE IN DEPTH, and deliberately so: both openers are already disabled
+  // whenever this reason is set, and the member cannot change while the dialog
+  // is open, so an admin does not normally meet these two sentences. They are
+  // kept because the dialog is a component anyone can render, not because
+  // `member-dependents-add-gating.test.tsx` is evidence of admin-visible
+  // behaviour — do not read that suite's two "blocks the CREATE/LINK tab" cases
+  // that way. The tab-level blocks BELOW are a different matter: those are
+  // reachable, because nothing disables the opener for them.
+  const blockReason = dependentParentStateBlocker(member);
+  const blockMessage = blockReason
+    ? mode === "create"
+      ? DEPENDENT_PARENT_CREATE_ERRORS[blockReason]
+      : DEPENDENT_PARENT_LINK_ERRORS[blockReason]
+    : null;
+  const blockMessageId = useId();
+  // Where a created dependent's club email will actually land. Resolved by the
+  // server with the same walk the write uses, so this is a statement rather than
+  // a guess: for a young or address-less parent it names an adult further up.
+  const emailSource = member.dependentEmailSource;
+  // #2282 review: the CREATE tab always sends `inheritParentEmail: true` and no
+  // explicit source, so `dependentEmailSource === null` is EXACTLY the condition
+  // `createAdminMember` 422s on. That is the flagship case of this issue — a
+  // young parent whose own parent is not a member — and it was the one path
+  // still offering a control that could only fail on save. The tab now refuses
+  // up front and names the route that does work.
+  const createBlockedByNoEmailSource = !blockReason && !emailSource;
+  const createNoticeId = useId();
+  // The LINK tab's equivalent, but conditional on what the admin picked rather
+  // than on the member: linking is legitimate here with "use their own email",
+  // and with an adult candidate it does not inherit at all. Only a selection
+  // that would resolve to nobody is refused, so the opener stays enabled.
+  const linkRouting = useDependentEmailSource(
+    linkSelected ? linkNotificationParentId : null,
+  );
+  const linkRoutingNoticeId = useId();
+  const linkBlockedByNoEmailSource =
+    linkRouting.status === "ready" && linkRouting.source === null;
+  const linkNotificationParentName = (() => {
+    if (linkNotificationParentId === member.id) {
+      return `${member.firstName} ${member.lastName}`;
+    }
+    const parent = (linkSelected?.parentLinks ?? []).find(
+      (link) => link.id === linkNotificationParentId,
+    );
+    return parent
+      ? `${parent.firstName} ${parent.lastName}`
+      : "the selected parent";
+  })();
+  const submitBlockMessageId =
+    mode === "create"
+      ? blockMessage
+        ? blockMessageId
+        : createBlockedByNoEmailSource
+          ? createNoticeId
+          : undefined
+      : blockMessage
+        ? blockMessageId
+        : linkBlockedByNoEmailSource
+          ? linkRoutingNoticeId
+          : undefined;
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
@@ -132,6 +210,13 @@ export function MemberDependentDialog({
             {error}
           </div>
         )}
+        <DependentNotice
+          id={blockMessageId}
+          tone="warning"
+          className="p-2 text-sm"
+        >
+          {blockMessage}
+        </DependentNotice>
         <Tabs
           value={mode}
           onValueChange={(value) => onChangeMode(value as DependentDialogMode)}
@@ -142,10 +227,30 @@ export function MemberDependentDialog({
           </TabsList>
           <TabsContent value="create" className="mt-4">
             <div className="grid gap-4 py-2">
-              <div className="rounded-md border border-border bg-muted p-3 text-sm text-muted-foreground">
-                This dependent will be created as a non-login member and inherit
-                notifications from the parent email.
-              </div>
+              {/* #2282: name the mailbox rather than saying "the parent email".
+                  Parentage is recordable at any age, but the contact of record
+                  must be an adult, so for a young parent the notifications go to
+                  an adult further up the family — and the admin should read that
+                  here, not deduce it from a stored pointer afterwards. */}
+              {emailSource ? (
+                <div className="rounded-md border border-border bg-muted p-3 text-sm text-muted-foreground">
+                  {`This dependent will be created as a non-login member. Club notifications for them go to ${emailSource.firstName} ${emailSource.lastName} (${emailSource.email}).`}
+                </div>
+              ) : (
+                <DependentNotice
+                  id={createNoticeId}
+                  tone="warning"
+                  className="p-3 text-sm"
+                >
+                  No adult the club can email is recorded at or above{" "}
+                  {member.firstName} {member.lastName}, and a dependent created
+                  here always inherits their contact of record — so this would
+                  be refused on save. Record an email address for an adult in
+                  the family, or add the member on their own from the Members
+                  list and then use <strong>Link existing</strong> here with{" "}
+                  <em>Use their own email</em>.
+                </DependentNotice>
+              )}
 
               {(showTitle || showGender) && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -484,6 +589,17 @@ export function MemberDependentDialog({
                           </option>
                         ))}
                       </select>
+                      {/* #2282 review: the options above name PARENTS, and the
+                          write resolves the chosen parent to the nearest adult
+                          who can actually receive mail — so the option label is
+                          not the answer. This is. */}
+                      <DependentNotificationRoutingNotice
+                        id={linkRoutingNoticeId}
+                        state={linkRouting}
+                        selectedParentId={linkNotificationParentId}
+                        selectedParentName={linkNotificationParentName}
+                        ownEmailOptionLabel={`Use ${linkSelected.firstName}'s own email`}
+                      />
                     </div>
                     <div className="flex items-start gap-2">
                       <Checkbox
@@ -553,7 +669,22 @@ export function MemberDependentDialog({
           </Button>
           <Button
             onClick={mode === "create" ? onSubmitCreate : onSubmitLink}
-            disabled={saving || (mode === "link" && !linkSelected)}
+            aria-describedby={submitBlockMessageId}
+            disabled={
+              saving ||
+              // #2282: both tabs, not one — the create and link paths hit
+              // different endpoints and would otherwise dead-end identically.
+              Boolean(blockReason) ||
+              // #2282 review: and the same is true of the OTHER dead end this
+              // change creates. A parent with no adult the club can email is
+              // refused by the create route every time and by the link route
+              // whenever the admin routes notifications through somebody, so
+              // each tab refuses exactly when its own endpoint would.
+              (mode === "create"
+                ? createBlockedByNoEmailSource
+                : linkBlockedByNoEmailSource) ||
+              (mode === "link" && !linkSelected)
+            }
           >
             {saving
               ? mode === "create"
