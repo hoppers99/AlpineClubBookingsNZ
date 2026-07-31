@@ -136,6 +136,10 @@ vi.mock("@/lib/booking-policies", () => ({
     `minimum-stay violations: ${violations.length}`,
   formatViolationMessage: () => "minimum-stay violation",
 }));
+// #2266: the quote now returns the booking owner's live credit balance.
+vi.mock("@/lib/member-credit", () => ({
+  getMemberCreditBalance: vi.fn().mockResolvedValue(0),
+}));
 vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), warn: vi.fn(), info: vi.fn() },
 }));

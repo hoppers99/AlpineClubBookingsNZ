@@ -129,6 +129,10 @@ vi.mock("@/lib/xero-organisation", async (importOriginal) => {
 vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), warn: vi.fn(), info: vi.fn() },
 }));
+// #2266: the quote now returns the booking owner's live credit balance.
+vi.mock("@/lib/member-credit", () => ({
+  getMemberCreditBalance: vi.fn().mockResolvedValue(0),
+}));
 // #2124: a member in-progress check-out extension now validates minimum-stay
 // over the whole contiguous range, so the route reaches booking-policies for
 // the member (USER) cases below. This suite is about the override/Xero-lock

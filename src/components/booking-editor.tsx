@@ -83,6 +83,21 @@ export interface BookingEditorData {
   // stay valid. Nothing on this member-facing editor renders from it — only
   // the panel's admin-only dialog reads it.
   noEmails?: boolean;
+  // #2266: the edit panel's account-credit card. Null when the booking cannot
+  // carry a credit election (settled, organiser-settled, or a status no
+  // pay-time consumer would honour) — the panel then renders no credit card.
+  // Optional so pre-existing fixtures stay valid.
+  credit?: {
+    availableCents: number;
+    electionCents: number | null;
+    appliedCents: number;
+  } | null;
+  // #2266: booking OWNER's member id, for on-behalf promo validation in the
+  // shared PromoCodeInput. Optional so pre-existing fixtures stay valid.
+  memberId?: string;
+  // #2266: the booking's lodge, so promo lodge restrictions validate against
+  // the right lodge. Optional so pre-existing fixtures stay valid.
+  lodgeId?: string | null;
 }
 
 
@@ -127,6 +142,9 @@ export function BookingEditor({
           requiresAdminReview: booking.requiresAdminReview,
           adminReviewStatus: booking.adminReviewStatus,
           noEmails: booking.noEmails,
+          credit: booking.credit,
+          memberId: booking.memberId,
+          lodgeId: booking.lodgeId,
         }}
         canAdminOverride={canAdminOverride}
         onDone={() => setEditing(false)}

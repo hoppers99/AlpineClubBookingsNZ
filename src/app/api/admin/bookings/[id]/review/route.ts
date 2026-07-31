@@ -176,33 +176,63 @@ export async function PATCH(
     );
   }
 
-  const cancelResult = await cancelBooking(
-    bookingId,
-    session.user.id,
-    "ADMIN",
-    ipAddress,
-    "card",
-  );
+  // #2266 robustness: a PENDING review can only sit on a cancellable status
+  // (parked AWAITING_REVIEW, or a flagged paid/confirmed booking) — the modify
+  // path now parks review-flagged DRAFTs to AWAITING_REVIEW, so a DRAFT queue
+  // entry should no longer be creatable. But a legacy row from before that fix
+  // (review PENDING while still DRAFT) would 500 here: cancelBooking rightly
+  // refuses DRAFT, and the review is already recorded by the claim above.
+  // Handle it directly instead — a DRAFT holds no capacity and has no payment,
+  // so a guarded DRAFT -> CANCELLED flip is the whole cancellation.
+  if (booking.status === BookingStatus.DRAFT) {
+    const cancelled = await prisma.booking.updateMany({
+      where: { id: bookingId, status: BookingStatus.DRAFT },
+      data: { status: BookingStatus.CANCELLED, draftExpiresAt: null },
+    });
+    if (cancelled.count !== 1) {
+      // A concurrent action moved the draft (expiry sweep, member delete).
+      // The rejection is recorded; surface the benign race, not a fault.
+      return NextResponse.json(
+        { error: "Review recorded, but the draft is no longer cancellable" },
+        { status: 409 },
+      );
+    }
+    await reconcileBedAllocationsForBooking({
+      bookingId,
+      previousRange: {
+        checkIn: booking.checkIn,
+        checkOut: booking.checkOut,
+      },
+    });
+  } else {
+    const cancelResult = await cancelBooking(
+      bookingId,
+      session.user.id,
+      "ADMIN",
+      ipAddress,
+      "card",
+    );
 
-  // A concurrent cancel won the single-flight claim (#1160): surface the 409
-  // rather than mislabelling it a 500. The review was already recorded and the
-  // booking is being/has been cancelled, so this is a benign race, not a fault.
-  if (cancelResult.status === 409) {
-    return NextResponse.json(
-      { error: cancelResult.error },
-      { status: 409 },
-    );
-  }
+    // A concurrent cancel won the single-flight claim (#1160): surface the 409
+    // rather than mislabelling it a 500. The review was already recorded and the
+    // booking is being/has been cancelled, so this is a benign race, not a fault.
+    if (cancelResult.status === 409) {
+      return NextResponse.json(
+        { error: cancelResult.error },
+        { status: 409 },
+      );
+    }
 
-  if ("error" in cancelResult) {
-    logger.error(
-      { bookingId, error: cancelResult.error },
-      "Failed to cancel rejected booking",
-    );
-    return NextResponse.json(
-      { error: "Review recorded but booking could not be cancelled", details: cancelResult.error },
-      { status: 500 },
-    );
+    if ("error" in cancelResult) {
+      logger.error(
+        { bookingId, error: cancelResult.error },
+        "Failed to cancel rejected booking",
+      );
+      return NextResponse.json(
+        { error: "Review recorded but booking could not be cancelled", details: cancelResult.error },
+        { status: 500 },
+      );
+    }
   }
 
   // #1790: reject always emails the member unless the admin chose not to

@@ -6,6 +6,7 @@
 
 import {
   AdminReviewStatus,
+  BookingStatus,
   type AgeTier,
   type BookingGuest,
   type Prisma,
@@ -1047,6 +1048,76 @@ function targetBookingGuestIdsForSelectedIndexes(
     .filter((id): id is string => Boolean(id));
 }
 
+/**
+ * Resolve a request's promo beneficiaries to positional indexes over the
+ * priced guest list (#2266, MED-4).
+ *
+ * EXISTING guests are bound by `bookingGuestId`, never by position: the
+ * pricing order is [remaining guests..., added guests...] as of APPLY time,
+ * so a positional index chosen at preview time would be re-bound to whatever
+ * that list happens to be when the save lands — a concurrent edit by another
+ * session between preview and save would silently redeem the discount for
+ * the wrong guest. An id that no longer resolves refuses loudly instead.
+ *
+ * TO-BE-ADDED guests have no id yet, so they alone remain positional —
+ * relative to this same request's `addGuests` array, which nothing concurrent
+ * can reorder.
+ *
+ * Shared by the apply path (applyPromoCodeChanges) and the modify-quote
+ * preview so the two can never disagree about who a code covers.
+ */
+export function resolvePromoBeneficiarySelection({
+  guestNightRates,
+  addedGuestCount,
+  promoGuestIds,
+  promoAddedGuestIndexes,
+}: {
+  /** Priced guests in apply order: remaining (with ids) then added (no ids). */
+  guestNightRates: Array<{ bookingGuestId?: string | null }>;
+  /** How many TO-BE-ADDED guests sit at the tail of guestNightRates. */
+  addedGuestCount: number;
+  promoGuestIds?: string[];
+  promoAddedGuestIndexes?: number[];
+}): number[] | undefined {
+  if (!promoGuestIds?.length && !promoAddedGuestIndexes?.length) {
+    return undefined;
+  }
+
+  const indexByGuestId = new Map<string, number>();
+  guestNightRates.forEach((guest, index) => {
+    if (guest.bookingGuestId) indexByGuestId.set(guest.bookingGuestId, index);
+  });
+
+  const selected = new Set<number>();
+  for (const guestId of promoGuestIds ?? []) {
+    const index = indexByGuestId.get(guestId);
+    if (index === undefined) {
+      throw new ApiError(
+        "A guest selected for the promo code is no longer on this booking — refresh and re-apply the code",
+        400,
+      );
+    }
+    selected.add(index);
+  }
+
+  const addedStartIndex = guestNightRates.length - addedGuestCount;
+  for (const addedIndex of promoAddedGuestIndexes ?? []) {
+    if (
+      !Number.isInteger(addedIndex) ||
+      addedIndex < 0 ||
+      addedIndex >= addedGuestCount
+    ) {
+      throw new ApiError(
+        "A guest selected for the promo code is not part of this change",
+        400,
+      );
+    }
+    selected.add(addedStartIndex + addedIndex);
+  }
+
+  return [...selected].sort((a, b) => a - b);
+}
+
 export async function applyPromoCodeChanges(
   tx: Prisma.TransactionClient,
   {
@@ -1126,7 +1197,15 @@ export async function applyPromoCodeChanges(
       {
         excludeBookingId: bookingId,
         db: tx,
-        selectedGuestIndexes: input.promoGuestIndexes,
+        // #2266 (MED-4): existing beneficiaries arrive bound by bookingGuestId
+        // and are resolved against THIS transaction's priced guest list, so a
+        // concurrent edit can never re-point the discount; stale ids 400.
+        selectedGuestIndexes: resolvePromoBeneficiarySelection({
+          guestNightRates,
+          addedGuestCount: input.addGuests?.length ?? 0,
+          promoGuestIds: input.promoGuestIds,
+          promoAddedGuestIndexes: input.promoAddedGuestIndexes,
+        }),
         lodgeId: bookingLodgeId,
       },
     );
@@ -1220,6 +1299,12 @@ export async function calculateModificationChangeFee({
   skipBookingLifecycleRules: boolean;
 }): Promise<number> {
   if (skipBookingLifecycleRules || !checkInChanged) {
+    return 0;
+  }
+  // #2266: no change fee on a DRAFT — nothing has been committed to, exactly
+  // like moving the dates in the wizard before saving. Member draft edits do
+  // not take the admin skip above, so the guard must be explicit.
+  if (booking.status === BookingStatus.DRAFT) {
     return 0;
   }
   const now = new Date();
