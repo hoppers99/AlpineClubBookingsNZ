@@ -13,6 +13,12 @@ type CoverageClient = typeof prisma | Prisma.TransactionClient;
 export interface PromoCoverageNotice {
   promoCode: string;
   coveredNames: string[];
+  /**
+   * The covered people who already had the discount before this edit — the only
+   * ones the sentence may describe that way. `coveredNames` minus these are
+   * people this edit newly brought under the code.
+   */
+  retainedNames: string[];
   excludedNames: string[];
   message: string;
 }
@@ -39,20 +45,30 @@ export function joinNames(names: string[]): string {
  */
 export function promoCapCoverageMessage(input: {
   promoCode: string;
-  coveredNames: string[];
+  /** Covered, and already had the discount before this edit. */
+  keptNames: string[];
+  /** Covered, but brought under the code by this edit. */
+  addedNames: string[];
   excludedNames: string[];
 }): string {
-  const { promoCode, coveredNames, excludedNames } = input;
-  const covered = joinNames(coveredNames);
+  const { promoCode, keptNames, addedNames, excludedNames } = input;
+  const kept = joinNames(keptNames);
+  const added = joinNames(addedNames);
   const excluded = joinNames(excludedNames);
   const isAre = excludedNames.length === 1 ? "is" : "are";
 
-  const keptClause = covered
-    ? `it stays with ${covered}, who already had it`
-    : "it stays with everyone who already had it";
+  // The two groups are named apart because "who already had it" is a claim
+  // about the past: saying it of somebody this very edit added is simply false,
+  // and a member who spots that stops trusting the rest of the sentence.
+  const coverageClauses: string[] = [];
+  if (kept) coverageClauses.push(`it stays with ${kept}, who already had it`);
+  if (added) coverageClauses.push(`${kept ? "it also covers" : "it covers"} ${added}`);
+  if (coverageClauses.length === 0) {
+    coverageClauses.push("it stays with everyone who already had it");
+  }
 
   return (
-    `Promo code ${promoCode} has reached its limit, so ${keptClause}, ` +
+    `Promo code ${promoCode} has reached its limit, so ${coverageClauses.join(", and ")}, ` +
     `and does not extend to ${excluded} — ${excluded} ${isAre} priced at the ` +
     `normal rate. The total shown already includes this.`
   );
@@ -95,14 +111,27 @@ export async function describePromoCapCoverage(
   const namesFor = (ids: string[]) =>
     ids.map((id) => nameById.get(id) ?? "").filter((name) => name.length > 0);
 
+  const retained = new Set(capCoverage.retainedMemberIds);
   const coveredNames = namesFor(capCoverage.coveredMemberIds);
+  const retainedNames = namesFor(
+    capCoverage.coveredMemberIds.filter((id) => retained.has(id))
+  );
+  const addedNames = namesFor(
+    capCoverage.coveredMemberIds.filter((id) => !retained.has(id))
+  );
   const excludedNames = namesFor(capCoverage.excludedMemberIds);
   if (excludedNames.length === 0) return null;
 
   return {
     promoCode,
     coveredNames,
+    retainedNames,
     excludedNames,
-    message: promoCapCoverageMessage({ promoCode, coveredNames, excludedNames }),
+    message: promoCapCoverageMessage({
+      promoCode,
+      keptNames: retainedNames,
+      addedNames,
+      excludedNames,
+    }),
   };
 }
