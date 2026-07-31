@@ -93,6 +93,23 @@ All notable public reference-release changes should be recorded here.
   entry an admin would want. And the descriptions of what these limits buy have
   been corrected where they overstated it — "three weeks to map a season" was
   nearer three days, and "harvesting takes weeks" was nearer two days.
+- **Bed moves now stay on the guest's original lodge nights (#2366).** Dragging
+  an existing allocation chip across date columns now chooses only the
+  destination bed: the preview and keyboard announcement show the original NZ
+  night that will be kept. The first visible chip still moves all of that
+  guest's visible allocated nights together, while later chips move one night.
+  A drop explicitly says **No change** and creates no audit entry only when
+  every represented row already uses that bed; mixed-bed proxy rows still
+  converge on it. Bucket removal names and removes only the dragged night,
+  unbooked single-night targets are refused locally, and drag-end feedback says
+  a valid request is saving instead of announcing success before the server.
+  Cancelled drags do nothing.
+  Grouped moves are all-or-nothing, and the bed changes, shared-double partner
+  promotions and audit records now commit in one global-then-destination-lodge
+  locked transaction instead of the browser creating a target night and then
+  trying to delete the original. The shared global lock also prevents a
+  concurrent cancellation from pruning and then having the move resurrect an
+  allocation.
 - **Recording a cash payment now asks about any extra still owing (#2397).**
   When a booking is priced up after it was made — someone adds a guest, say —
   the increase is tracked separately as an "additional payment" the member is
@@ -131,6 +148,126 @@ All notable public reference-release changes should be recorded here.
   more than one reason applies, the most specific one is shown — a payment that
   has already had money refunded says so, and says to resolve the refund first —
   and it is the same sentence before you click as after.
+
+- **The Whakapapa conditions widget survives the source page changing, and now
+  shows the trails.** The public widget is scraped from an external report page
+  whose style names carry a build hash that changes every time that site
+  redeploys — and each time it did, a section quietly went blank (road status was
+  broken this way when this work started). The scraper now matches on the stable
+  parts of the page rather than those rotating hashes, so a routine upstream
+  rebuild no longer breaks it. A new **Trails** section joins road status, lifts,
+  facilities, food & drink and conditions: trails are grouped by sub-area (small
+  neighbouring areas share a line to save space) and each shows its run
+  difficulty as the standard ski symbol — green circle, blue square, black
+  diamond, red diamond — with a matching key, plus whether it is groomed and its
+  size. The status badges gained **On Hold** (yellow) alongside Open, Closed and
+  Coming Soon, and an **Unknown** state renders grey. Operators get a new
+  **Source & selectors** panel on *Admin → Mountain Conditions*: set the report
+  URL (locked to whakapapa.com / snow.nz so it can never be pointed at an
+  internal address), and, only if a deeper page change defeats the defaults,
+  override the per-section element selectors — with a **Preview** that fetches
+  and parses without saving, and a save that refuses a malformed selector up
+  front (naming the field) instead of storing one that would throw on every
+  later scrape. The built-in selector set is seeded into the database, and the
+  whole configuration can be **exported and imported as a JSON file** so one
+  site's known-good settings can be handed to another rather than re-entered by
+  hand.
+
+- **A cancellation is no longer approved while the member's Xero contact still
+  has money owing (#2392).** Approving a cancellation archives that member's
+  contact in Xero, and an archived contact drops out of Xero's pickers and can
+  no longer be invoiced, credited or paid. Nothing used to check whether the
+  club was still owed anything by it — the approval only looked at future
+  bookings — so the club could quietly archive an account it was in the middle
+  of chasing. That became likelier once school and organisation accounts became
+  cancellable, because an organisation is usually the billing contact for its
+  booking invoices rather than only its own membership. The approval is now
+  refused instead, and the refusal tells the reviewer exactly what is in the way:
+  each invoice by number and the amount still owing, and that each one needs to
+  be paid, credited with an allocated credit note, or voided in Xero before the
+  cancellation can go through. Voiding is the right answer for an invoice nobody
+  intends to collect, so a cancellation is never held hostage by a debt the club
+  has already written off. "Owing" means what an accountant means by it — an
+  approved or submitted invoice with a balance left. Drafts are ignored, since
+  they have never been issued; voided, deleted and paid invoices are ignored,
+  since nothing is due; and a credit note that only partly covers an invoice
+  still counts, for whatever is left, which is the figure shown. Bills the club
+  owes the contact count too, for the same reason. The member's own unpaid
+  season subscription is deliberately not counted, because approving the
+  cancellation is what credits it — counting it would make the most ordinary
+  cancellation of all impossible to approve. (An invoice for *next* season, at a
+  club that bills early, is not credited by the cancellation and so does count;
+  void it in Xero, which is right anyway for a member who is leaving.) If Xero
+  cannot be asked at all — not connected, rate limited, unreachable, or refusing
+  the request because the member's Xero contact has been merged or deleted there
+  — the approval is refused rather than let through, because "we could not find
+  out" is not the same answer as "nothing is owing". The notice says which of
+  those it is and what to do about that particular one, including whether
+  waiting will help at all, and **every** version of it also offers the way out:
+  switching **Archive Xero contacts after cancellation approval** off means no
+  contact is archived, so the check is not needed. None of this applies to a
+  club that has that setting off already, or to a member with no Xero contact:
+  nothing is archived in either case, so nothing is checked and a Xero outage
+  cannot hold up a cancellation. The review queue shows the outstanding invoices
+  next to each participant that is ready for review — each one linked straight
+  into Xero, so a bill or an invoice Xero never numbered can still be opened in
+  one click — so a reviewer finds out before they press Approve rather than
+  after. Finally, because the Xero archive itself happens later on the sync
+  queue rather than at the moment of approval, it asks the same question again
+  just before it runs and holds off if the answer has changed since.
+
+- **A promo code that turned out to be worth nothing no longer uses up
+  someone's one permitted go at it (#2299).** Until now the system counted a
+  promo code as "used" the moment it was applied to a booking with eligible
+  guests, whether or not it actually took anything off the price. That is
+  easier to hit than it sounds and needs no bug anywhere: a percentage-off or
+  money-off code does nothing on nights that are already free (young children,
+  a zero-dollar stay — 20% of nothing is nothing), and a "fixed price per
+  night" code set to price everyone at, say, $30 does nothing for a member
+  already paying exactly $30. The member got no money off and was then told,
+  for ever, "You have already used this promo code". The empty use also counted
+  toward the code's total-redemptions limit and took up one of its
+  unique-member places, so a code could look exhausted when nobody had
+  benefited from it at all.
+
+  A use now means the member actually got something — money off, a change to
+  what they pay, or a subsidised night. All three limits (uses per member,
+  total redemptions, unique members) count only those, matching how the
+  lifetime free-nights allowance has always worked. The application is still
+  recorded and still appears in the code's redemptions report, so an operator
+  can see that a code is being applied fruitlessly — usually the sign that it
+  is set up wrong for the stays people are booking. The promo code card now
+  says exactly that: **Benefits given** (counted once per member, per booking —
+  which is what the total-uses limit counts), and underneath it, always, how
+  many bookings the code has been applied to and how many of those gave nobody
+  anything. The redemptions report has been reorganised to match: four tiles
+  count applications and follow whatever filter you set, two count benefits and
+  carry the cap progress, each says which it is, and any application that gave
+  no benefit is tagged in the table so you can find it. A fixed nightly price
+  set *above* someone's normal rate raises what they pay — a real use with no
+  discount — so those rows now show the price increase alongside the $0
+  discount rather than looking like an empty application.
+
+  If a booking is later edited so its promo benefit disappears, the allowance it
+  was holding is handed back at the same moment, so nobody is left paying full
+  price while still counted as having used the code. Two edge cases were fixed
+  along the way: a booking holding a code's last remaining use no longer loses
+  its discount — and get billed the discount back — merely for shifting its
+  dates or adding a guest; and all four ways of editing a booking now take the
+  same lock on the promo code before checking its limits, so two people editing
+  different bookings at the same moment cannot both take the last use.
+
+  One deliberate line: if a fixed-nightly code re-prices someone's nights and
+  the increases and decreases cancel out to exactly nothing, that counts as no
+  use. Their total is identical with and without the code, so the code can go on
+  being applied to such a stay — which costs nothing, because it gives nothing.
+
+  Existing sites are repaired on upgrade: benefit-free records stop counting
+  immediately, the dead rows are cleared out, and each code's redemption total
+  is recalculated from what is left. Expect the benefits figure on some codes to
+  drop the first time you look — that is the correction, not a loss. Nothing in
+  the redemptions report or its CSV is removed; only what counts as a use
+  changes.
 
 - **Clubs can safely record a trusted induction history when moving an
   established membership onto the digital register (#2361).** A new
@@ -236,7 +373,7 @@ All notable public reference-release changes should be recorded here.
   is stuck and what actually fixes it (cancel the booking, add another guest,
   re-quote the request), never a dead-end "ask the club".
   The published banner-coverage figures were re-measured with the new settings
-  card: **297** gated admin controls, **250** of them covered by a banner (224
+  card: **299** gated admin controls, **252** of them covered by a banner (226
   in their own file, 26 by a verified vouching parent — 5 of those through the
   wizard frame), and **47** across 25 files deliberately keeping their own
   reason.
@@ -737,8 +874,8 @@ All notable public reference-release changes should be recorded here.
   added its three, once more when #2286's Release/Change bed controls landed,
   again when the cash / off-Xero payment feature, #2262, landed its four
   per-button-reason controls, and again with #2307's Member guests settings
-  card): **297**
-  gated admin controls, **250** of them covered by a banner (224 in their own
+  card): **299**
+  gated admin controls, **252** of them covered by a banner (226 in their own
   file, 26 by a verified vouching parent — 5 of those through the wizard frame),
   and **47** across 25 files deliberately keeping their own reason.
 - **Choosing to use your account credit and then saving the booking as a draft

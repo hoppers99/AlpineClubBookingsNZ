@@ -54,6 +54,8 @@ import {
 import { toGroupDiscountConfig } from "@/lib/policies/booking-route-decisions";
 import {
   deletePromoRedemptionAndAdjustCount,
+  lockAndRefreshPromoCodeUsage,
+  lockPromoCodeRowsForUpdate,
   redeemPromoCode,
   replacePromoRedemptionAllocations,
   shouldPersistPromoRedemption,
@@ -1172,6 +1174,29 @@ export async function applyPromoCodeChanges(
   let promoChanged = false;
   const bookingLodgeId = booking.lodgeId ?? (await getDefaultLodgeId(tx));
 
+  // Row-lock every promo code whose usage caps this transaction may charge or
+  // refund, BEFORE the first cap read and the first counter write (#2299).
+  // Booking creation has locked its promo row for a long time; none of the four
+  // modification paths did, so two concurrent modifications could both pass a
+  // "one use left" check. (The other three now take the same lock via
+  // `lockAndRefreshPromoCodeUsage`; this one may touch TWO codes, so it uses the
+  // multi-id form.) `lockPromoCodeRowsForUpdate` sorts the ids, so the outgoing
+  // and incoming codes of a swap are always taken in the same global order and
+  // no two transactions can build a cycle.
+  const incomingPromoCodeId =
+    input.promoCode && !input.removePromoCode
+      ? (
+          await tx.promoCode.findUnique({
+            where: { code: input.promoCode.toUpperCase().trim() },
+            select: { id: true },
+          })
+        )?.id
+      : undefined;
+  await lockPromoCodeRowsForUpdate(tx, [
+    booking.promoRedemption?.promoCodeId,
+    incomingPromoCodeId,
+  ]);
+
   if (input.removePromoCode && booking.promoRedemption) {
     await deletePromoRedemptionAndAdjustCount(tx, booking.promoRedemption);
     promoRemoved = true;
@@ -1183,6 +1208,8 @@ export async function applyPromoCodeChanges(
       promoRemoved = true;
     }
 
+    // Re-read under the lock taken above, so the caps this validation sees are
+    // the caps the redemption below consumes.
     const promoCode = await tx.promoCode.findUnique({
       where: { code: input.promoCode.toUpperCase().trim() },
       include: {
@@ -1255,7 +1282,14 @@ export async function applyPromoCodeChanges(
     !promoRemoved &&
     booking.promoRedemption?.promoCode
   ) {
-    const promo = booking.promoRedemption.promoCode;
+    // The lock is already held (taken above for both codes of a possible swap),
+    // but this snapshot was loaded with the booking, BEFORE it — so re-read the
+    // usage counter under the lock. Locking and then deciding against a number
+    // read outside the lock would leave the race open (#2299).
+    const promo = await lockAndRefreshPromoCodeUsage(
+      tx,
+      booking.promoRedemption.promoCode
+    );
     const selectedGuestIndexes = selectedIndexesForStoredGuestTargets(
       booking.promoRedemption,
       guestNightRates
