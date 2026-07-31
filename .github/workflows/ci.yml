@@ -294,6 +294,16 @@ jobs:
           XERO_MEMBER_GROUPING_MIGRATION_TEST_DATABASE_URL: ${{ env.DATABASE_URL }}
         run: npx vitest run src/lib/__tests__/xero-member-grouping-migration.test.ts
 
+      # #2269 / #2418: the email-override annotation strip writes an audit row
+      # per changed row, and that half was pinned by string-matching the SQL
+      # only — neutering the INSERT kept every assertion green. Same
+      # disposable-schema pattern as the step above; the suite describe.skip's
+      # itself when the env var is absent, so this step MUST stay wired.
+      - name: Test email override annotation strip against PostgreSQL
+        env:
+          EMAIL_OVERRIDE_ANNOTATION_STRIP_TEST_DATABASE_URL: ${{ env.DATABASE_URL }}
+        run: npx vitest run src/lib/__tests__/email-message-annotation-strip.test.ts
+
       # F28 (#1888): wire the real-DB BookingGuest stay-range trigger suite so it
       # is no longer a silent no-op. It self-provisions a throwaway schema and
       # applies only the two trigger migrations, so it needs any reachable

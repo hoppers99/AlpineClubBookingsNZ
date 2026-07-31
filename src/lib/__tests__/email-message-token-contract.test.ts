@@ -8,12 +8,15 @@ import {
   sampleValue,
 } from "@/lib/email-message-registry";
 import {
+  EMPTYABLE_OVERRIDE_TOKENS,
   OPTIONAL_TEMPLATE_TOKENS,
   findBracketAnnotations,
   findDanglingDefaultLines,
   findStaleOptionalTokens,
   findUnapprovedDefaultTokens,
   findUnapprovedSuppliedTokens,
+  findUnconditionalLines,
+  findUnsupportedEmptyableTokens,
   type EmailTemplateDefaults,
 } from "@/lib/email-message-token-contract";
 import {
@@ -211,6 +214,129 @@ describe("#2268 guard 5 — the optional-token contract cannot rot", () => {
         detail: "no such registered template",
       },
     ]);
+  });
+});
+
+describe("#2269 guard 6 — the empty-able override contract cannot rot either", () => {
+  // EMPTYABLE_OVERRIDE_TOKENS is a SECOND hand-maintained token table, and its
+  // own comment used to claim it was kept "under the same discipline as
+  // OPTIONAL_TEMPLATE_TOKENS" — which guard 5 plus the registry test police,
+  // and which nothing policed here. This is the discipline it now names.
+  it("holds every shipped declaration to all three properties", () => {
+    expect(
+      findUnsupportedEmptyableTokens(
+        DEFAULTS,
+        EXTRA_TEMPLATE_TOKENS,
+        EMPTYABLE_OVERRIDE_TOKENS,
+      ),
+    ).toEqual([]);
+  });
+
+  it("fails when the sender has stopped supplying a declared token", () => {
+    // The failure that matters most: guard 4 would keep reporting the line as
+    // conditionally empty when it is now UNCONDITIONALLY empty, which is a
+    // different and worse fault that `retired_token` covers.
+    const findings = findUnsupportedEmptyableTokens(
+      {
+        "booking-confirmed": {
+          defaultSubject: "Booking Confirmed",
+          defaultBody: "Hi {{firstName}}.",
+        },
+      },
+      { "booking-confirmed": ["subtotal"] },
+      { "booking-confirmed": ["subtotal", "discount"] },
+    );
+
+    expect(findings).toEqual([
+      {
+        key: "booking-confirmed",
+        field: "defaultBody",
+        detail: "discount is not supplied by this template any more",
+      },
+    ]);
+  });
+
+  it("fails when a declared token comes back into the default body", () => {
+    // That token now belongs in OPTIONAL_TEMPLATE_TOKENS, where guard 5 keeps
+    // it honest and guard 4 holds the shipped default to rendering without it.
+    const findings = findUnsupportedEmptyableTokens(
+      {
+        "booking-confirmed": {
+          defaultSubject: "Booking Confirmed",
+          defaultBody: "Hi {{firstName}}.\n\nSubtotal: {{subtotal}}",
+        },
+      },
+      { "booking-confirmed": ["subtotal"] },
+      { "booking-confirmed": ["subtotal"] },
+    );
+
+    expect(findings).toEqual([
+      {
+        key: "booking-confirmed",
+        field: "defaultBody",
+        detail:
+          "subtotal is back in the default body — declare it in OPTIONAL_TEMPLATE_TOKENS instead",
+      },
+    ]);
+  });
+
+  it("fails on a declaration for a template that does not exist", () => {
+    expect(
+      findUnsupportedEmptyableTokens(DEFAULTS, EXTRA_TEMPLATE_TOKENS, {
+        "gone-away": ["subtotal"],
+      }),
+    ).toEqual([
+      {
+        key: "gone-away",
+        field: "defaultBody",
+        detail: "no such registered template",
+      },
+    ]);
+  });
+});
+
+describe("#2269 — the lines a removed note used to mark as conditional", () => {
+  // Guard 4 cannot see these: it renders tokens and inspects the result, so a
+  // conditional line with NO token is structurally invisible to it, and a line
+  // ending in ":" is exempt as a heading. Both of the lines below are wording
+  // this project shipped.
+  it("names a prose line that keeps its content after the strip", () => {
+    expect(
+      findUnconditionalLines(
+        "Hi Ada.\n\nPayment has been processed successfully. [only when the booking is already paid]\n\nSee you soon.",
+      ),
+    ).toEqual(["Payment has been processed successfully."]);
+  });
+
+  it("names a heading line, which guard 4 exempts by design", () => {
+    expect(
+      findUnconditionalLines("Your arrival day chores: [only when chores exist]"),
+    ).toEqual(["Your arrival day chores:"]);
+  });
+
+  it("says nothing about a note that had the whole line to itself", () => {
+    // The strip takes that line away, so nothing new is sent.
+    expect(
+      findUnconditionalLines(
+        "Door code: {{doorCode}}\n[only when a door code is set]\n\nSee you soon.",
+      ),
+    ).toEqual([]);
+  });
+
+  it("says nothing about wording that carries no shipped note at all", () => {
+    expect(
+      findUnconditionalLines(
+        "Ring the bell [whenever you arrive after 8pm].\nRing the lodge [when you are 30 minutes away].",
+      ),
+    ).toEqual([]);
+  });
+
+  it("reports each distinct line once however often it appeared", () => {
+    expect(
+      findUnconditionalLines(
+        "Open Xero object [only when xeroObjectUrl exists]\nOpen Xero object [only when xeroObjectUrl exists]",
+      ),
+    ).toEqual(["Open Xero object"]);
   });
 });
 

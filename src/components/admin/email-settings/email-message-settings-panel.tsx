@@ -64,6 +64,13 @@ interface TemplateStaleContent {
   // Lines of the saved copy that render as a bare label when a token the
   // sender can legitimately supply empty comes back empty (#2269).
   danglingLines?: string[];
+  // #2269 (second review): the built-in authoring notes the upgrade removed
+  // from THIS saved copy, and the lines they were marking as conditional.
+  // Read off the upgrade's own audit record, because the note was the marker
+  // and removing it is what left the line with no signal at all. Optional
+  // because older fixtures/responses omit them.
+  strippedAnnotations?: string[];
+  unconditionalLines?: string[];
 }
 
 interface TemplateDefinition {
@@ -188,15 +195,31 @@ function staleContentSentences(
       )}). Emails render tokens and nothing else, so these are sent to the recipient word for word.`,
     );
   }
+  if ((staleContent.strippedAnnotations ?? []).length > 0) {
+    const lines = staleContent.unconditionalLines ?? [];
+    sentences.push(
+      `An upgrade removed ${(staleContent.strippedAnnotations ?? [])
+        .map((annotation) => `“${annotation}”`)
+        .join(
+          ", ",
+        )} from your saved copy. Those were our own notes, never understood by anything, and they were being emailed to recipients word for word.${
+        lines.length > 0
+          ? ` They were also the only thing marking these lines as conditional, so please check each one still reads correctly on every send — they now go out every time: ${lines
+              .map((line) => `“${line}”`)
+              .join(", ")}.`
+          : ""
+      } Press Save Template when you are happy with the wording — that clears this note, whether or not you change anything.`,
+    );
+  }
   if ((staleContent.danglingLines ?? []).length > 0) {
     sentences.push(
-      `Some lines of your saved copy go out with nothing after the label when the value behind them is empty — for example a booking with no promo code, or one where payment is still owing. As sent, they read: ${(
+      `Some lines of your saved copy go out with nothing after the label when the value behind them is empty — for example a booking with no promo code, or one where payment is still owing. With those values empty they read: ${(
         staleContent.danglingLines ?? []
       )
         .map((line) => `“${line}”`)
         .join(
           ", ",
-        )}. A “Discount” line on a booking whose price a promo code RAISED is the same fault that caused issue #2267. Either delete these lines or replace them with the pre-composed token for this message, which renders the whole line or nothing at all.`,
+        )}. A “Discount” line on a booking whose price a promo code RAISED is the same fault that caused issue #2267. Either delete these lines or replace them with the pre-composed token for this message, which renders the whole line or nothing at all. This check is deliberately cautious: it empties every such value at once, so a line combining two values that are never both empty on a real send — an amount paid and an amount still owing, say — can be listed here when it is in fact fine. Read each line before you change it.`,
     );
   }
   if (staleContent.reasons.includes("invalid_content")) {
@@ -289,6 +312,14 @@ export function EmailMessageSettingsPanel() {
   // one form of staleness that had no signal anywhere until now.
   const [missingRequiredTokenTemplates, setMissingRequiredTokenTemplates] =
     useState<{ templateName: string; tokens: string[] }[]>([]);
+  // #2269 (second review): saved overrides the upgrade itself rewrote, and that
+  // nobody has saved since. These rows used to raise the bracket banner above;
+  // removing the bracket is what silenced it, and a conditional line with no
+  // token in it ("Payment has been processed successfully.") is invisible to
+  // every other check here. Naming them in the same place keeps the signal on a
+  // row we changed without asking, instead of quietly reducing it.
+  const [strippedAnnotationTemplates, setStrippedAnnotationTemplates] =
+    useState<string[]>([]);
   const [showDiff, setShowDiff] = useState(false);
   const { confirm, confirmDialog } = useConfirm();
   const diffRegionId = useId();
@@ -366,6 +397,17 @@ export function EmailMessageSettingsPanel() {
                 templateName: entry.templateName as string,
                 tokens: Array.isArray(entry.tokens) ? entry.tokens : [],
               }))
+          : [],
+      );
+      setStrippedAnnotationTemplates(
+        Array.isArray(templatesBody.strippedAnnotationOverrides)
+          ? (
+              templatesBody.strippedAnnotationOverrides as Array<{
+                templateName?: string;
+              }>
+            )
+              .map((entry) => entry?.templateName)
+              .filter((name): name is string => Boolean(name))
           : [],
       );
       setMissingRequiredTokenTemplates(
@@ -477,12 +519,15 @@ export function EmailMessageSettingsPanel() {
     if (!currentTemplate) return;
     // #2269 review: this deletes the club's own wording outright and there is
     // no undo in the product — the only copy afterwards is the audit row the
-    // reset route now records. One click was not enough of a gate, especially
-    // now that three separate places in this editor point at it as the remedy.
+    // reset route now records, IN FULL (the route asks the audit layer for
+    // archive mode so a long body is not clipped at 1000 characters, which is
+    // what makes the promise below true). One click was not enough of a gate,
+    // especially now that three separate places in this editor point at it as
+    // the remedy.
     const confirmed = await confirm({
       title: `Replace your wording for “${currentTemplate.label}”?`,
       description:
-        "This deletes your saved subject and body for this message and goes back to the built-in wording. It cannot be undone from here — recovering it would mean someone reading the audit log. If you only want to compare, close this and use Show differences instead.",
+        "This deletes your saved subject and body for this message and goes back to the built-in wording. Your wording is written to the audit log in full first, but it cannot be undone from here — recovering it would mean someone reading that log. If you only want to compare, close this and use Show differences instead.",
       confirmLabel: "Replace with the built-in wording",
       destructive: true,
     });
@@ -588,6 +633,27 @@ export function EmailMessageSettingsPanel() {
           reset it to the corrected default):{" "}
           <span className="font-medium">
             {bracketAnnotationTemplates
+              .map((templateName) => templateLabel(templates, templateName))
+              .join(", ")}
+          </span>
+          .
+        </div>
+      ) : null}
+      {strippedAnnotationTemplates.length > 0 ? (
+        <div className="rounded-md border border-warning-6 bg-warning-3 p-3 text-sm text-warning-11">
+          An upgrade removed our own square-bracketed notes (like &ldquo;[only
+          when the booking is already paid]&rdquo;) from{" "}
+          {strippedAnnotationTemplates.length === 1
+            ? "a saved template override"
+            : `${strippedAnnotationTemplates.length} saved template overrides`}
+          , because they were being emailed to recipients word for word. Your
+          own wording was left exactly as you wrote it, and the whole previous
+          copy is in the audit log. Those notes were also the only thing marking
+          some lines as conditional, so please open each message, check the
+          lines still read correctly on every send, and press Save Template —
+          saving clears this notice:{" "}
+          <span className="font-medium">
+            {strippedAnnotationTemplates
               .map((templateName) => templateLabel(templates, templateName))
               .join(", ")}
           </span>

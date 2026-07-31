@@ -171,6 +171,23 @@ admin who presses **Save** or **Restore Default** during the deploy window wins:
 their change stands, the repair skips that template, and no audit row claims we
 changed something we did not.
 
+**Every repaired message is named on screen afterwards, and here is why that
+matters.** The notes this repair removes were, for some lines, the only thing
+saying that the line was conditional — `Payment has been processed
+successfully. [only when the booking is already paid]` is wording this project
+shipped, and once the note is gone that sentence goes out on a booking that
+still owes money, with nothing left to hint at it. So **Admin → Email messages**
+names every message this repair touched, lists the notes it removed and quotes
+the lines that now send every time. That notice is built from the migration's
+own audit rows above — not by looking for a marker the migration deleted — so it
+covers **every** repaired message, including lines with no `{{token}}` in them
+that no other check on that screen can see. It clears when an admin opens the
+message and presses **Save Template**, which is the acknowledgement.
+
+Ask an admin to walk that list after the upgrade. Nothing is urgent, but a
+message that used to be conditional is now unconditional, and only a person can
+say whether the remaining wording still reads correctly.
+
 ### Post-upgrade action: check the email templates screen
 
 **Admin → Email messages** now tells an admin when a saved copy no longer shows

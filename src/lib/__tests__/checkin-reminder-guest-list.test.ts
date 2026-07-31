@@ -318,6 +318,30 @@ describe("check-in reminder guest list (#2307)", () => {
     expect(definition.defaultBody).not.toContain("{{guestLastName}}");
   });
 
+  it("previews the legacy pair exactly as a real send renders it (#2269 second review)", async () => {
+    // Making the pair allowed again gives {{guestLastName}} a preview sample.
+    // Left to the generic sample generator that would be a plausible surname,
+    // so an admin who NEWLY typed the token would see a name in Preview and get
+    // nothing on every send. The preview sample is empty, which is what the
+    // send supplies, so Preview and the delivered email agree — including the
+    // one arrangement that matters, the saved pair on one line.
+    const { getEmailTemplateDefinition } = await import(
+      "../email-message-registry"
+    );
+    const { renderTemplateString } = await import("../email-message-renderer");
+    const definition = getEmailTemplateDefinition("checkin-reminder");
+    if (!definition) throw new Error("missing checkin-reminder definition");
+
+    expect(definition.allowedTokens).toContain("guestLastName");
+    expect(definition.sampleData.guestLastName).toBe("");
+    expect(
+      renderTemplateString(
+        "{{guestFirstName}} {{guestLastName}}",
+        definition.sampleData,
+      ).trimEnd(),
+    ).toBe(String(definition.sampleData.guestFirstName));
+  });
+
   it("uses the already-approved guestName token, adding none of its own", async () => {
     // Deliberate constraint (#2307): a sibling lane is adding new template keys
     // to email-message-registry.ts and email-message-audit-defaults.ts, so this

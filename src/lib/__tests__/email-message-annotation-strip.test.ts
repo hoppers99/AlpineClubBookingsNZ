@@ -1,5 +1,7 @@
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { Client } from "pg";
 import { describe, expect, it } from "vitest";
 import { EMAIL_TEMPLATE_DEFINITIONS } from "@/lib/email-message-registry";
 import {
@@ -565,3 +567,356 @@ describe("#2269 migration audit trail", () => {
     expect(migrationSql).toContain(`btrim(pass6."newBody", E' \\t\\r\\n') = ''`);
   });
 });
+
+
+// ---------------------------------------------------------------------------
+// REAL-POSTGRESQL BEHAVIOUR (env-gated, disposable-schema-per-test).
+//
+// Why this exists (#2269 second review, and issue #2418, which was filed for
+// exactly this gap). Every assertion above about the audit half is
+// `expect(migrationSql).toContain(...)`: text, not behaviour. That was proven
+// insufficient by mutation — changing `) AS found ON TRUE` to
+// `) AS found ON TRUE WHERE FALSE` writes ZERO audit rows while keeping every
+// asserted fragment intact, and the whole file still passed. So the audit half
+// was pinned by string-matching only, and #2269's entire acceptance criterion —
+// "a club can see that we changed their copy, what we changed, and can restore
+// any of it" — rested on nothing executable.
+//
+// The pattern is the repo's existing one for a migration
+// (src/lib/__tests__/xero-member-grouping-migration.test.ts): point the env var
+// at a disposable database, and each test provisions its own PostgreSQL SCHEMA,
+// creates only the columns this migration touches, runs the migration's own
+// SQL, and drops the schema again. It is `describe.skip` without the variable,
+// so `npm test` never needs a live database.
+//
+//   EMAIL_OVERRIDE_ANNOTATION_STRIP_TEST_DATABASE_URL=postgres://... \
+//     npx vitest run src/lib/__tests__/email-message-annotation-strip.test.ts
+// ---------------------------------------------------------------------------
+
+const stripDatabaseUrl =
+  process.env.EMAIL_OVERRIDE_ANNOTATION_STRIP_TEST_DATABASE_URL;
+const describeWithDatabase = stripDatabaseUrl ? describe : describe.skip;
+
+function quoteIdentifier(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`;
+}
+
+// Only the columns this migration reads or writes. The real tables come from
+// earlier migrations; modelling them here keeps the test independent of whether
+// the target database has been migrated at all.
+const PRE_EXISTING_SCHEMA_SQL = `
+  CREATE TABLE "EmailTemplateOverride" (
+    "id" TEXT PRIMARY KEY,
+    "templateName" TEXT NOT NULL UNIQUE,
+    "subject" TEXT,
+    "bodyText" TEXT,
+    "updatedByMemberId" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE "AuditLog" (
+    "id" TEXT PRIMARY KEY,
+    "action" TEXT NOT NULL,
+    "memberId" TEXT,
+    "targetId" TEXT,
+    "actorMemberId" TEXT,
+    "entityType" TEXT,
+    "entityId" TEXT,
+    "category" TEXT,
+    "severity" TEXT,
+    "outcome" TEXT,
+    "summary" TEXT,
+    "metadata" JSONB,
+    "retentionClass" TEXT,
+    "expiresAt" TIMESTAMP(3),
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+`;
+
+type AuditRow = {
+  action: string;
+  targetId: string | null;
+  actorMemberId: string | null;
+  entityType: string | null;
+  entityId: string | null;
+  category: string | null;
+  severity: string | null;
+  outcome: string | null;
+  summary: string | null;
+  retentionClass: string | null;
+  metadata: {
+    templateName?: string;
+    previousOverride?: Record<string, unknown>;
+    newOverride?: Record<string, unknown>;
+    removedAnnotations?: string[];
+    source?: string;
+    issue?: number;
+  };
+  createdAt: Date;
+  expiresAt: Date | null;
+};
+
+async function withMigrationSchema(run: (client: Client) => Promise<void>) {
+  const schemaName = `email_strip_${randomUUID().replaceAll("-", "")}`;
+  const schema = quoteIdentifier(schemaName);
+  const client = new Client({ connectionString: stripDatabaseUrl });
+
+  await client.connect();
+  try {
+    await client.query(`CREATE SCHEMA ${schema}`);
+    await client.query(`SET search_path TO ${schema}`);
+    // Test fixture: hardcoded DDL in a disposable per-test schema; no user input.
+    // nosemgrep: javascript.express.db.pg-express.pg-express
+    await client.query(PRE_EXISTING_SCHEMA_SQL);
+    await run(client);
+  } finally {
+    await client.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+    await client.end();
+  }
+}
+
+async function seedOverride(
+  client: Client,
+  row: { templateName: string; subject: string | null; bodyText: string | null },
+) {
+  await client.query(
+    `INSERT INTO "EmailTemplateOverride"
+       ("id", "templateName", "subject", "bodyText", "updatedByMemberId", "createdAt", "updatedAt")
+     VALUES ($1, $2, $3, $4, 'admin-7', TIMESTAMP '2026-01-01 00:00:00', TIMESTAMP '2026-02-02 00:00:00')`,
+    [`ov-${row.templateName}`, row.templateName, row.subject, row.bodyText],
+  );
+}
+
+async function runMigration(client: Client) {
+  // Test fixture: runs the migration's own SQL against a disposable per-test
+  // schema; no user input.
+  // nosemgrep: javascript.express.db.pg-express.pg-express
+  await client.query(migrationSql);
+}
+
+async function readAudit(client: Client): Promise<AuditRow[]> {
+  const result = await client.query<AuditRow>(
+    `SELECT "action", "targetId", "actorMemberId", "entityType", "entityId",
+            "category", "severity", "outcome", "summary", "retentionClass",
+            "metadata", "createdAt", "expiresAt"
+     FROM "AuditLog" ORDER BY "entityId"`,
+  );
+  return result.rows;
+}
+
+describeWithDatabase(
+  "#2269 annotation strip — real PostgreSQL behaviour (#2418)",
+  () => {
+    // The exact wording this project shipped at 88b35fcc5, with the note padded
+    // onto a line of pure prose. That line is why the editor needed a signal
+    // derived from the audit row rather than from the deleted bracket.
+    const SHIPPED_BODY = [
+      "Hi {{firstName}}, your lodge booking has been confirmed!",
+      "",
+      "Payment has been processed successfully. [only when the booking is already paid]",
+      "",
+      "Subtotal: {{subtotal}}                  [only when discountCents > 0]",
+      "",
+      "Ring the lodge [when you are 30 minutes away].",
+    ].join("\n");
+
+    const STRIPPED_BODY = [
+      "Hi {{firstName}}, your lodge booking has been confirmed!",
+      "",
+      "Payment has been processed successfully.",
+      "",
+      "Subtotal: {{subtotal}}",
+      "",
+      "Ring the lodge [when you are 30 minutes away].",
+    ].join("\n");
+
+    it("writes exactly one audit row per changed row, and none for a row it left alone", async () => {
+      // THE MUTATION TEST. Neutering the audit INSERT (`) AS found ON TRUE
+      // WHERE FALSE`) keeps every text assertion in this file green and fails
+      // here, which is the whole point of executing the statement.
+      await withMigrationSchema(async (client) => {
+        await seedOverride(client, {
+          templateName: "booking-confirmed",
+          subject: "Booking Confirmed",
+          bodyText: SHIPPED_BODY,
+        });
+        await seedOverride(client, {
+          templateName: "chore-roster",
+          subject: "Chore Roster",
+          bodyText: "Hi {{guestName}}, nothing of ours in here.",
+        });
+
+        await runMigration(client);
+
+        const overrides = await client.query<{
+          templateName: string;
+          subject: string | null;
+          bodyText: string | null;
+          updatedAt: Date;
+        }>(
+          `SELECT "templateName", "subject", "bodyText", "updatedAt"
+           FROM "EmailTemplateOverride" ORDER BY "templateName"`,
+        );
+        expect(
+          overrides.rows.find((row) => row.templateName === "booking-confirmed")
+            ?.bodyText,
+        ).toBe(STRIPPED_BODY);
+        // The club's own bracketed wording survives byte for byte.
+        expect(
+          overrides.rows.find((row) => row.templateName === "booking-confirmed")
+            ?.bodyText,
+        ).toContain("Ring the lodge [when you are 30 minutes away].");
+        // A row carrying none of our notes is not touched at all.
+        expect(
+          overrides.rows.find((row) => row.templateName === "chore-roster")
+            ?.bodyText,
+        ).toBe("Hi {{guestName}}, nothing of ours in here.");
+
+        const audit = await readAudit(client);
+        expect(audit).toHaveLength(1);
+        expect(audit[0]).toMatchObject({
+          action: "EMAIL_TEMPLATE_OVERRIDE_UPDATED",
+          targetId: "booking-confirmed",
+          entityType: "EmailTemplateOverride",
+          entityId: "booking-confirmed",
+          category: "admin",
+          severity: "important",
+          outcome: "success",
+          retentionClass: "critical",
+          // No member did this.
+          actorMemberId: null,
+        });
+      });
+    });
+
+    it("records the previous wording verbatim, the new wording, and the notes removed in order", async () => {
+      // #2269's acceptance criterion, executed rather than asserted about.
+      await withMigrationSchema(async (client) => {
+        await seedOverride(client, {
+          templateName: "booking-confirmed",
+          subject: "Booking Confirmed [only when the booking is already paid]",
+          bodyText: SHIPPED_BODY,
+        });
+
+        await runMigration(client);
+
+        const [row] = await readAudit(client);
+        expect(row.metadata.templateName).toBe("booking-confirmed");
+        expect(row.metadata.source).toBe(
+          "migration:20260801150000_strip_email_override_bracket_annotations",
+        );
+        expect(row.metadata.issue).toBe(2269);
+        expect(row.metadata.previousOverride).toMatchObject({
+          subject: "Booking Confirmed [only when the booking is already paid]",
+          bodyText: SHIPPED_BODY,
+          updatedByMemberId: "admin-7",
+        });
+        expect(row.metadata.newOverride).toMatchObject({
+          subject: "Booking Confirmed",
+          bodyText: STRIPPED_BODY,
+        });
+        // Subject first, then body, each in the order they appeared — and never
+        // a phantom span straddling the join between the two fields.
+        expect(row.metadata.removedAnnotations).toEqual([
+          "[only when the booking is already paid]",
+          "[only when the booking is already paid]",
+          "[only when discountCents > 0]",
+        ]);
+      });
+    });
+
+    it("is idempotent: a second run changes nothing and writes no second audit row", async () => {
+      await withMigrationSchema(async (client) => {
+        await seedOverride(client, {
+          templateName: "booking-confirmed",
+          subject: "Booking Confirmed",
+          bodyText: SHIPPED_BODY,
+        });
+
+        await runMigration(client);
+        const first = await client.query<{ digest: string }>(
+          `SELECT md5(string_agg("templateName" || coalesce("bodyText", '') || "updatedAt"::text, '|' ORDER BY "templateName")) AS digest
+           FROM "EmailTemplateOverride"`,
+        );
+
+        await runMigration(client);
+        const second = await client.query<{ digest: string }>(
+          `SELECT md5(string_agg("templateName" || coalesce("bodyText", '') || "updatedAt"::text, '|' ORDER BY "templateName")) AS digest
+           FROM "EmailTemplateOverride"`,
+        );
+
+        expect(second.rows[0].digest).toBe(first.rows[0].digest);
+        expect(await readAudit(client)).toHaveLength(1);
+      });
+    });
+
+    it("normalises a value the strip empties out to NULL, not an empty string", async () => {
+      await withMigrationSchema(async (client) => {
+        await seedOverride(client, {
+          templateName: "admin-new-booking",
+          subject: "  [only when reviewReason exists]  ",
+          bodyText: "Kept.",
+        });
+
+        await runMigration(client);
+
+        const result = await client.query<{ subject: string | null }>(
+          `SELECT "subject" FROM "EmailTemplateOverride" WHERE "templateName" = 'admin-new-booking'`,
+        );
+        expect(result.rows[0].subject).toBeNull();
+      });
+    });
+
+    it("writes UTC timestamps and a 7-year retention window", async () => {
+      // The #1627/#1656 class: leaving "createdAt" to its column default writes
+      // the SESSION's local wall clock into a naive column.
+      await withMigrationSchema(async (client) => {
+        await client.query(`SET TIME ZONE 'Pacific/Auckland'`);
+        await seedOverride(client, {
+          templateName: "booking-confirmed",
+          subject: "Booking Confirmed",
+          bodyText: SHIPPED_BODY,
+        });
+
+        await runMigration(client);
+
+        const drift = await client.query<{ seconds: number; years: number }>(
+          `SELECT
+             abs(extract(epoch FROM ("createdAt" - timezone('UTC', now()))))::float8 AS seconds,
+             extract(year FROM age("expiresAt", "createdAt"))::float8 AS years
+           FROM "AuditLog"`,
+        );
+        // A session-clock write would land 12 or 13 hours out in this zone.
+        expect(drift.rows[0].seconds).toBeLessThan(120);
+        expect(drift.rows[0].years).toBe(7);
+      });
+    });
+
+    it("leaves a row a concurrent admin re-saved entirely alone", async () => {
+      // docs/UPGRADING.md promises this is safe to run with the previous app
+      // colour still serving. The UPDATE re-checks that the row still holds the
+      // wording the strip was computed from, so a Save that lands in that window
+      // wins and gets no audit row claiming we changed it. Reproduced here by
+      // rewriting the row between the seed and the migration.
+      await withMigrationSchema(async (client) => {
+        await seedOverride(client, {
+          templateName: "booking-confirmed",
+          subject: "Booking Confirmed",
+          bodyText: SHIPPED_BODY,
+        });
+        await client.query(
+          `UPDATE "EmailTemplateOverride" SET "bodyText" = 'Admin rewrote this entirely.'
+           WHERE "templateName" = 'booking-confirmed'`,
+        );
+
+        await runMigration(client);
+
+        const result = await client.query<{ bodyText: string | null }>(
+          `SELECT "bodyText" FROM "EmailTemplateOverride" WHERE "templateName" = 'booking-confirmed'`,
+        );
+        expect(result.rows[0].bodyText).toBe("Admin rewrote this entirely.");
+        expect(await readAudit(client)).toHaveLength(0);
+      });
+    });
+  },
+);

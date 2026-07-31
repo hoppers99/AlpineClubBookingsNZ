@@ -13,6 +13,7 @@ import {
   OPTIONAL_TEMPLATE_TOKENS,
   findBracketAnnotations,
   findDanglingDefaultLines,
+  findUnconditionalLines,
 } from "@/lib/email-message-token-contract";
 import { validateEmailTemplateContent } from "@/lib/email-message-renderer";
 import { prisma } from "@/lib/prisma";
@@ -48,6 +49,92 @@ async function loadOverrides() {
 
   if (!delegate) return [];
   return delegate.findMany();
+}
+
+// #2269 (second review): the migration that stripped the authoring notes this
+// project shipped out of every saved override. Its audit rows are the ONLY
+// surviving record of which lines used to be conditional, because the bracket
+// WAS the marker and the migration is what removed it.
+const ANNOTATION_STRIP_MIGRATION_SOURCE =
+  "migration:20260801150000_strip_email_override_bracket_annotations";
+
+// One row per template at most (the migration runs once and is idempotent), so
+// this is a small, bounded read; the cap is belt-and-braces against a hand-made
+// row, not an expected case.
+const ANNOTATION_STRIP_AUDIT_LIMIT = 200;
+
+interface AnnotationStripRecord {
+  createdAt: Date;
+  removedAnnotations: string[];
+  previousSubject: string | null;
+  previousBody: string | null;
+  newSubject: string | null;
+  newBody: string | null;
+}
+
+function nullableString(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+/**
+ * Read the migration's own audit rows and index them by template.
+ *
+ * Written defensively at every step. The metadata is JSON written by SQL rather
+ * than by the app's builder, an operator can hand-write an AuditLog row, and
+ * this runs on a read path an admin needs to work: anything that does not match
+ * the shape the migration writes is skipped rather than trusted.
+ */
+async function loadAnnotationStripAudit(): Promise<
+  Map<string, AnnotationStripRecord>
+> {
+  const delegate = (prisma as unknown as {
+    auditLog?: {
+      findMany?: (args: unknown) => Promise<
+        Array<{ entityId: string | null; createdAt: Date; metadata: unknown }>
+      >;
+    };
+  }).auditLog;
+  if (!delegate?.findMany) return new Map();
+
+  const rows = await delegate.findMany({
+    where: {
+      action: "EMAIL_TEMPLATE_OVERRIDE_UPDATED",
+      entityType: "EmailTemplateOverride",
+      metadata: { path: ["source"], equals: ANNOTATION_STRIP_MIGRATION_SOURCE },
+    },
+    select: { entityId: true, createdAt: true, metadata: true },
+    orderBy: { createdAt: "desc" },
+    take: ANNOTATION_STRIP_AUDIT_LIMIT,
+  });
+
+  const byTemplate = new Map<string, AnnotationStripRecord>();
+  for (const row of rows) {
+    if (!row.entityId || byTemplate.has(row.entityId)) continue;
+    const metadata = row.metadata as
+      | {
+          removedAnnotations?: unknown;
+          previousOverride?: { subject?: unknown; bodyText?: unknown };
+          newOverride?: { subject?: unknown; bodyText?: unknown };
+        }
+      | null
+      | undefined;
+    if (!metadata || typeof metadata !== "object") continue;
+    const removedAnnotations = Array.isArray(metadata.removedAnnotations)
+      ? metadata.removedAnnotations.filter(
+          (entry): entry is string => typeof entry === "string",
+        )
+      : [];
+    if (removedAnnotations.length === 0) continue;
+    byTemplate.set(row.entityId, {
+      createdAt: row.createdAt,
+      removedAnnotations,
+      previousSubject: nullableString(metadata.previousOverride?.subject),
+      previousBody: nullableString(metadata.previousOverride?.bodyText),
+      newSubject: nullableString(metadata.newOverride?.subject),
+      newBody: nullableString(metadata.newOverride?.bodyText),
+    });
+  }
+  return byTemplate;
 }
 
 function serializeOverride(override: EmailTemplateOverrideRecord) {
@@ -149,10 +236,22 @@ export async function GET() {
   //     #2267 incident word for word. This is objectively wrong output, not a
   //     matter of taste, so it belongs in `reasons` without breaching the rule
   //     that we never nag an admin about wording they chose.
-  //   invalid_content — the catch-all. `reasons` above names five of the
-  //     validator's nine issue codes; a row that trips one of the other four
+  //   stripped_annotation — this row is one the #2269 migration rewrote, and it
+  //     has not been saved since. It is NOT derived by re-detecting a marker —
+  //     the marker is what the migration deleted — but from the migration's own
+  //     audit row, which records the previous wording verbatim. It exists
+  //     because `dangling_line` above can only see a line with a TOKEN in it: a
+  //     conditional line of pure prose ("Payment has been processed
+  //     successfully. [only when the booking is already paid]") is structurally
+  //     invisible to guard 4, and before the migration the bracket itself was
+  //     the signal. Without this, stripping that line's annotation would take a
+  //     row from "bracket_annotation, with a banner" to nothing at all, and a
+  //     member who still owes $240 would read that their payment succeeded.
+  //   invalid_content — the catch-all. `reasons` above names six of the
+  //     validator's nine issue codes; a row that trips one of the other three
   //     (a sensitive token in a subject is the reachable one) cannot be
   //     re-saved and would otherwise be told nothing at all.
+  const strippedAnnotationsByTemplate = await loadAnnotationStripAudit();
   const staleContentByTemplate = new Map<
     string,
     {
@@ -164,6 +263,8 @@ export async function GET() {
       retiredTokens: string[];
       bracketAnnotations: string[];
       danglingLines: string[];
+      strippedAnnotations: string[];
+      unconditionalLines: string[];
     }
   >();
   for (const definition of EMAIL_TEMPLATE_DEFINITIONS) {
@@ -236,6 +337,41 @@ export async function GET() {
       ),
     );
 
+    // What the #2269 migration took OUT of this row, if it took anything and
+    // nobody has saved over it since.
+    //
+    // "Since" is tested two ways because either one alone has a hole. The
+    // content check ("is this still exactly what the migration wrote?") cannot
+    // see an admin who opened the template, read it, and pressed Save without
+    // changing a character — a deliberate acknowledgement that should clear the
+    // notice. The timestamp check catches that, but compares a Prisma
+    // `@updatedAt` written from the APP's clock against a `createdAt` written
+    // by the DATABASE's, so it is only reliable at the scale of a real edit
+    // (minutes and hours after the upgrade), not microseconds. Requiring BOTH
+    // to say "untouched" means either signal is enough to clear the notice,
+    // which is the safe direction: the failure mode is telling an admin
+    // something they have already dealt with, never staying silent.
+    const stripped = strippedAnnotationsByTemplate.get(definition.key);
+    const untouchedSinceStrip =
+      stripped !== undefined &&
+      (override.subject ?? null) === stripped.newSubject &&
+      (override.bodyText ?? null) === stripped.newBody &&
+      override.updatedAt.getTime() <= stripped.createdAt.getTime();
+    const strippedAnnotations =
+      untouchedSinceStrip && stripped ? stripped.removedAnnotations : [];
+    // The lines those notes were marking, read off the previous wording. A note
+    // that had a whole line to itself is not reported: the strip took the line
+    // with it, so nothing new is being sent.
+    const unconditionalLines =
+      untouchedSinceStrip && stripped
+        ? Array.from(
+            new Set([
+              ...findUnconditionalLines(stripped.previousSubject ?? ""),
+              ...findUnconditionalLines(stripped.previousBody ?? ""),
+            ]),
+          )
+        : [];
+
     const reasons = [
       validation.missingRequiredTokens.length > 0
         ? "missing_required_token"
@@ -243,6 +379,7 @@ export async function GET() {
       retiredTokens.length > 0 ? "retired_token" : null,
       validation.bracketAnnotations.length > 0 ? "bracket_annotation" : null,
       danglingLines.length > 0 ? "dangling_line" : null,
+      strippedAnnotations.length > 0 ? "stripped_annotation" : null,
       // The catch-all, last: a save this club can no longer make and no other
       // reason explains. Only raised when nothing above already covers it, so
       // the editor never says the same thing twice.
@@ -263,6 +400,8 @@ export async function GET() {
       retiredTokens,
       bracketAnnotations: validation.bracketAnnotations,
       danglingLines,
+      strippedAnnotations,
+      unconditionalLines,
     });
   }
 
@@ -291,6 +430,26 @@ export async function GET() {
   // #2269 reads the SAME computation off staleContentByTemplate rather than
   // validating a second time, so this banner and the per-template indicator can
   // never disagree about which tokens are retired.
+  // #2269 (second review): the page-level half of `stripped_annotation`.
+  //
+  // Before the migration these same rows raised the bracket banner at the top
+  // of the page, so an admin saw them without opening every template. Reporting
+  // the replacement only inside the open template would have been a strict LOSS
+  // of signal on rows we ourselves rewrote — the specific regression this
+  // banner exists to prevent — so it names them in the same place the bracket
+  // banner did.
+  //
+  // It clears the moment the template is saved (see `untouchedSinceStrip`), so
+  // reading the lines and pressing Save is a real acknowledgement rather than a
+  // notice that never goes away.
+  const strippedAnnotationOverrides = [...staleContentByTemplate.entries()]
+    .filter(([, staleContent]) => staleContent.strippedAnnotations.length > 0)
+    .map(([templateName, staleContent]) => ({
+      templateName,
+      annotations: staleContent.strippedAnnotations,
+      lines: staleContent.unconditionalLines,
+    }));
+
   const retiredTokenOverrides = [...overrideByTemplate.keys()]
     .map((templateName) => {
       const tokens = staleContentByTemplate.get(templateName)?.retiredTokens ?? [];
@@ -311,6 +470,7 @@ export async function GET() {
     staleOverrideCount: staleOverrides.length,
     staleOverrides,
     bracketAnnotationOverrides,
+    strippedAnnotationOverrides,
     retiredTokenOverrides,
     missingRequiredTokenOverrides,
   });

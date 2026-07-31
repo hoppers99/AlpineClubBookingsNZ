@@ -127,19 +127,32 @@ export const OPTIONAL_TEMPLATE_TOKENS: Record<string, readonly string[]> = {
  * tokens here is what turns guard 4 on for them, so the editor names the exact
  * broken lines instead.
  *
- * Maintained BY HAND under the same discipline as OPTIONAL_TEMPLATE_TOKENS:
- * every entry below was read off its sender in src/lib/email/booking.ts, and
- * every one of them is a literal `""` or `?? ""` on some branch.
+ * Maintained BY HAND — but NOT unpoliced (#2269 review). GUARD 6
+ * (`findUnsupportedEmptyableTokens`) below holds every entry to the three
+ * properties that make the declaration meaningful: the key is a registered
+ * template, the token is still SUPPLIED for that template (so it is in
+ * EXTRA_TEMPLATE_TOKENS, which is also what keeps it approved and gives it a
+ * preview sample), and the token is NOT in the current default body (a token
+ * that comes back into a default belongs in OPTIONAL_TEMPLATE_TOKENS, under
+ * guard 5). Every entry below was additionally read off its sender in
+ * src/lib/email/booking.ts, and every one of them is a literal `""` or `?? ""`
+ * on some branch — that last part is the half a guard cannot check, so it is
+ * the half the discipline is for.
  *
  * ONE KNOWN IMPRECISION, recorded rather than hidden: guard 4 renders every
- * declared token empty AT ONCE, and {{totalPaid}} / {{totalDue}} are two halves
- * of one story — exactly one of them is empty on any real send, never both. An
- * override that put both on the same line would be reported as dangling when it
- * is not. The trade is deliberate: "Total Paid: {{totalPaid}}" alone is the
- * line the pre-#2263 default shipped and it really does render "Total Paid:" on
- * an unpaid booking, so leaving the pair undeclared would miss a live defect to
- * avoid a hypothetical one. The report is advisory and quotes the exact
- * rendered line, so an admin can see for themselves.
+ * declared token empty AT ONCE, while {{totalPaid}} / {{totalDue}} are two
+ * halves of one money story and no real send empties both. On an unpaid
+ * confirmation {{totalPaid}} is empty; on a fully paid one {{totalDue}} is;
+ * and on a PARTLY paid one (#2397) NEITHER is, because both are true. An
+ * override that put both on one line is therefore reported as dangling when it
+ * is not. The error only ever runs that way — it over-reports, never
+ * under-reports — and the trade is deliberate: "Total Paid: {{totalPaid}}"
+ * alone is the line the pre-#2263 default shipped and it really does render
+ * "Total Paid:" on an unpaid booking, so leaving the pair undeclared would miss
+ * a live defect to avoid a cosmetic one. The report is advisory and quotes the
+ * exact rendered line, so an admin can see for themselves — and
+ * docs/guides/email-messages.md says so in the same words, because the admin
+ * reading the warning is the person who needs to know it can be over-eager.
  */
 export const EMPTYABLE_OVERRIDE_TOKENS: Record<string, readonly string[]> = {
   // sendBookingConfirmedEmail: subtotal/promoAdjustment are "" when no promo
@@ -393,6 +406,51 @@ export function stripShippedAnnotations(value: string): string {
 }
 
 /**
+ * #2269 (second review) — the lines a shipped annotation was MARKING, read off
+ * the value as it stood BEFORE the strip.
+ *
+ * Guard 4 cannot see these. It renders tokens and inspects the result, so a
+ * conditional line with NO token in it is structurally invisible to it, and
+ * `findDanglingDefaultLines` additionally exempts anything ending in `:` as a
+ * heading. Replaying every historical revision of the default modules turns up
+ * ten such lines, and they are not marginal:
+ *
+ *   "Payment has been processed successfully."   [only when the booking is already paid]
+ *   "Your arrival day chores:"                   [only when chores exist]
+ *   "This only affects your guests' provisional place — your own booking is
+ *    unaffected and remains confirmed."          [when your own linked booking is not settled: …]
+ *
+ * The first of those, rendered on a booking that still owes money, reads
+ * "Payment has been processed successfully." immediately above "Please pay
+ * $240.00 using reference ACB-1234". Before the migration the bracket itself
+ * made the editor say something ("bracket_annotation"); after it, nothing did.
+ *
+ * So the signal is derived from what the migration REMOVED rather than from
+ * re-detecting a marker we deleted: the migration records the previous wording
+ * per row in its audit metadata, and this function turns that wording back into
+ * the exact lines that are now unconditional.
+ *
+ * A line whose annotation occupied the WHOLE line is not reported — the strip
+ * takes the line with it, so nothing new is sent. Only a line that keeps
+ * content after the strip is a line that now goes out every time.
+ *
+ * Applied per line on purpose: the multi-line passes (1-4) delete whole lines
+ * and would shift the line numbering, and what an admin needs to read is what
+ * THIS line became. Passes 5 and 6 are the only ones that can fire on a lone
+ * line with content, which is exactly the case being reported.
+ */
+export function findUnconditionalLines(value: string): string[] {
+  const lines: string[] = [];
+  for (const line of value.split("\n")) {
+    if (findShippedAnnotations(line).length === 0) continue;
+    const stripped = stripShippedAnnotations(line).trimEnd();
+    if (stripped.trim() === "") continue;
+    if (!lines.includes(stripped)) lines.push(stripped);
+  }
+  return lines;
+}
+
+/**
  * GUARD 2 — every token in a shipped default must be in the APPROVED registry.
  *
  * Not circular: the approved set is a hand-maintained list in
@@ -534,6 +592,77 @@ export function findStaleOptionalTokens(
     const stale = tokens.filter((token) => !present.has(token));
     if (stale.length > 0) {
       findings.push({ key, field: "defaultBody", detail: stale.join(", ") });
+    }
+  }
+  return findings;
+}
+
+/**
+ * GUARD 6 — EMPTYABLE_OVERRIDE_TOKENS must stay a description of reality.
+ *
+ * #2269 added a SECOND hand-maintained token table, and the whole reason #2268
+ * built this module is that hand-maintained token tables rot. Guard 5 polices
+ * OPTIONAL_TEMPLATE_TOKENS; nothing policed this one, so its own comment's
+ * claim to be kept "under the same discipline" was not true (#2269 second
+ * review). This is that discipline.
+ *
+ * Three properties, each of them checkable, and each of them a way the table
+ * has a live consequence — the admin editor runs guard 4 over a SAVED override
+ * with every name declared here rendered empty:
+ *
+ *   1. the key names a REGISTERED template, or the declaration describes
+ *      nothing at all;
+ *   2. the token is still SUPPLIED for that template, which for a token that is
+ *      by construction absent from the default body means it is listed in
+ *      EXTRA_TEMPLATE_TOKENS. That listing is also what keeps the token in
+ *      `allowedTokens` (so an override using it stays re-savable) and what
+ *      gives it a preview sample. A name that falls out of there is a name the
+ *      sender has stopped supplying, and guard 4 would then be reporting a line
+ *      as conditionally-empty when it is unconditionally empty — a different,
+ *      worse fault that `retired_token` already covers;
+ *   3. the token is NOT in the current default subject or body. If a later
+ *      release puts it back, the declaration belongs in
+ *      OPTIONAL_TEMPLATE_TOKENS, where guard 5 keeps it honest and where the
+ *      shipped default itself is held to rendering cleanly without it.
+ *
+ * What no guard can check is the honest half — that the sender really can emit
+ * the value EMPTY. That stays a reading of the send site, recorded in the
+ * table's comment, and it is why the table is prose-documented per entry.
+ */
+export function findUnsupportedEmptyableTokens(
+  defaults: Record<string, EmailTemplateDefaults>,
+  extraTokens: Partial<Record<string, readonly string[]>>,
+  emptyableTokens: Record<string, readonly string[]>,
+): TemplateFinding[] {
+  const findings: TemplateFinding[] = [];
+  for (const [key, tokens] of Object.entries(emptyableTokens)) {
+    const entry = defaults[key];
+    if (!entry) {
+      findings.push({
+        key,
+        field: "defaultBody",
+        detail: "no such registered template",
+      });
+      continue;
+    }
+    const supplied = new Set(extraTokens[key] ?? []);
+    const inDefault = new Set([
+      ...extractTokens(entry.defaultSubject),
+      ...extractTokens(entry.defaultBody),
+    ]);
+    const detail: string[] = [];
+    for (const token of tokens) {
+      if (!supplied.has(token)) {
+        detail.push(`${token} is not supplied by this template any more`);
+      }
+      if (inDefault.has(token)) {
+        detail.push(
+          `${token} is back in the default body — declare it in OPTIONAL_TEMPLATE_TOKENS instead`,
+        );
+      }
+    }
+    if (detail.length > 0) {
+      findings.push({ key, field: "defaultBody", detail: detail.join(", ") });
     }
   }
   return findings;

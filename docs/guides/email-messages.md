@@ -109,16 +109,38 @@ The page handles the two situations differently, on purpose.
   information counts, so a hand-written `Discount ({{promoCode}}): -{{discount}}`
   line does satisfy this particular requirement.
 - **A line of your copy goes out with nothing after the label.** A warning names
-  the exact lines and quotes them as a member would read them. This is the
-  companion to the point above, and the same hand-written discount line is the
-  worked example: `Discount ({{promoCode}}): -{{discount}}` is fine on a booking
-  that had a discount, but on an ordinary booking it sends `Discount (): -`, and
-  on a promo code that **raised** the price it sends `Discount (PEAK): -` to a
-  member who was charged more. The old built-in wording carried a note in square
-  brackets beside those lines saying when they applied; the notes were never
-  understood by anything and are now removed, so this warning is what tells you
-  instead. The fix is to delete the line, or replace it with `{{promoSummary}}`,
-  which renders the whole explanation or nothing at all.
+  the exact lines and quotes them as a member would read them when the value
+  behind them is empty. This is the companion to the point above, and the same
+  hand-written discount line is the worked example:
+  `Discount ({{promoCode}}): -{{discount}}` is fine on a booking that had a
+  discount, but on an ordinary booking it sends `Discount (): -`, and on a promo
+  code that **raised** the price it sends `Discount (PEAK): -` to a member who
+  was charged more. The old built-in wording carried a note in square brackets
+  beside those lines saying when they applied; the notes were never understood
+  by anything and are now removed, so this warning is what tells you instead.
+  The fix is to delete the line, or replace it with `{{promoSummary}}`, which
+  renders the whole explanation or nothing at all.
+
+  This particular check is **deliberately cautious**, and it is worth knowing
+  which way it errs. It empties every value that any send could leave empty, all
+  at once. Some of those values are two halves of one story and are never both
+  empty in reality — an amount already paid and an amount still owing, for
+  instance: a booking is unpaid, or paid, or part-paid, and the part-paid case
+  fills in both. A line you wrote that puts both on one line can therefore be
+  listed here when it is perfectly fine. The check never misses a genuinely
+  broken line; it can name one that is not. Read each quoted line before you
+  change it.
+- **An upgrade removed one of our own notes from your copy.** Older built-in
+  wording carried square-bracketed notes, and a release removed them from every
+  saved copy because they were being emailed word for word. A warning names each
+  message that was changed, lists the notes removed, and quotes the lines they
+  were attached to. Those notes were sometimes the only thing marking a line as
+  conditional — `Payment has been processed successfully.` was one of ours, with
+  `[only when the booking is already paid]` beside it — so the line now sends
+  every time. Nothing about your own wording was changed, and the whole previous
+  copy is kept in the audit log. Read the quoted lines, edit anything that no
+  longer reads correctly, and press **Save Template**; saving clears the warning
+  whether or not you changed anything.
 - **Your copy simply reads differently.** That is stated as a plain fact under
   the template you have open, with no warning attached, because a customisation
   differing from the built-in wording is exactly what you asked for.
@@ -132,8 +154,9 @@ Two things to know about that comparison. It shows the copy that is currently
 **saved**, not what is in the editing boxes, and it says so when you have
 unsaved edits — save first if you want to compare what you have just typed. And
 **Restore Default deletes your wording outright**: it asks you to confirm, and
-after that the only copy is in the audit log, which needs someone with database
-access to read back. If you are unsure, copy your wording somewhere safe first.
+after that the only copy is the one written to the audit log — your subject and
+body in full, not an extract — which needs someone with database access to read
+back. If you are unsure, copy your wording somewhere safe first.
 
 For the same reason, **each template covers exactly one outcome.** Where a
 message could go two ways there are two templates to edit, not one with a

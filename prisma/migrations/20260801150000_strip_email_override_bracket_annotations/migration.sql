@@ -74,8 +74,31 @@
 -- to the admin editor's staleness computation
 -- (src/app/api/admin/email-templates/route.ts), which runs guard 4
 -- (findDanglingDefaultLines) over the SAVED override with every token the
--- sender can supply EMPTY and names the exact lines that render broken. The
--- rows this migration touches are therefore the rows that banner names.
+-- sender can supply EMPTY and names the exact lines that render broken.
+--
+-- THAT ALONE IS NOT ENOUGH, and this is the correction the second #2269 review
+-- forced. Guard 4 renders tokens and inspects the result, so a conditional line
+-- with NO TOKEN IN IT is structurally invisible to it; it also exempts a line
+-- ending in ":" as a heading. Replaying every historical revision of the
+-- default modules finds TEN such lines, among them:
+--
+--   Payment has been processed successfully.  [only when the booking is already paid]
+--   Your arrival day chores:                  [only when chores exist]
+--
+-- The first, on a booking that still owes money, reads "Payment has been
+-- processed successfully." directly above "Please pay $240.00 using reference
+-- ACB-1234". Before this migration the bracket itself raised the editor's
+-- bracket_annotation banner on that row; after it, nothing did — a STRICT LOSS
+-- of signal on a row we rewrote without asking.
+--
+-- So the editor also carries a `stripped_annotation` reason, and it is derived
+-- from what THIS MIGRATION REMOVED rather than from re-detecting a marker we
+-- deleted: it reads the audit rows written below, whose metadata records the
+-- previous wording verbatim, and names the template, the notes taken out, and
+-- the exact lines that are now unconditional. It clears when the admin saves
+-- that template. The rows this migration touches are therefore the rows that
+-- banner names — every one of them, because `removedAnnotations` is non-empty
+-- by construction for every row written here.
 --
 -- HOW THE STRIP IS DEFINED
 --

@@ -1041,6 +1041,17 @@ const TEMPLATE_SAMPLE_VALUE_OVERRIDES: Partial<
   "booking-review-rejected": {
     adminNotesLine: "Reason from admin: No adult guest is listed.\n\n",
   },
+  // #2269 second review. {{guestLastName}} is now an allowed token again (the
+  // sender still supplies the pre-#2307 pair so an old saved override keeps
+  // naming its guests), and an allowed token gets a preview sample. Left to
+  // sampleValue that sample would be a plausible surname — so an admin who
+  // NEWLY typed {{guestLastName}} would see a name in Preview and get an empty
+  // string on every real send, because sendCheckinReminderEmail supplies it
+  // DELIBERATELY EMPTY (a bare list of surnames cannot be shown truthfully; see
+  // src/lib/email/booking.ts). The preview shows what the send does.
+  "checkin-reminder": {
+    guestLastName: "",
+  },
 };
 
 export const EMAIL_TEMPLATE_DEFINITIONS: EmailTemplateDefinition[] = (

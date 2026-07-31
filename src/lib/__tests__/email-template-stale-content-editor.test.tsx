@@ -100,12 +100,18 @@ function templatesResponse({
   bodyText,
   staleContent,
   missingRequiredTokenOverrides = [],
+  strippedAnnotationOverrides = [],
 }: {
   bodyText: string;
   staleContent: Record<string, unknown>;
   missingRequiredTokenOverrides?: Array<{
     templateName: string;
     tokens: string[];
+  }>;
+  strippedAnnotationOverrides?: Array<{
+    templateName: string;
+    annotations: string[];
+    lines: string[];
   }>;
 }) {
   return {
@@ -123,6 +129,7 @@ function templatesResponse({
     ],
     staleOverrideCount: 0,
     bracketAnnotationOverrides: [],
+    strippedAnnotationOverrides,
     retiredTokenOverrides: [],
     missingRequiredTokenOverrides,
   };
@@ -276,6 +283,84 @@ describe("email template saved-copy staleness surface (#2269)", () => {
     expect(screen.getByText(/Discount \(\): -/)).toBeInTheDocument();
   });
 
+  it("says which of OUR notes the upgrade removed, and quotes the line it left behind", async () => {
+    // The regression this exists to prevent. Before the migration this row
+    // raised "bracket_annotation" and a banner; the migration removed the
+    // bracket and left a sentence of pure prose that no token-based check can
+    // see. Rendered on an unpaid booking it reads "Payment has been processed
+    // successfully." directly above "Please pay $240.00".
+    stubEmailFetches(
+      templatesResponse({
+        bodyText:
+          "Hi {{firstName}}.\n\nPayment has been processed successfully.\n\n{{paymentDueNote}}\n\n{{doorCodeNote}}",
+        staleContent: {
+          differsFromDefault: true,
+          subjectDiffersFromDefault: false,
+          bodyDiffersFromDefault: true,
+          reasons: ["stripped_annotation"],
+          missingRequiredTokens: [],
+          retiredTokens: [],
+          bracketAnnotations: [],
+          danglingLines: [],
+          strippedAnnotations: ["[only when the booking is already paid]"],
+          unconditionalLines: ["Payment has been processed successfully."],
+        },
+        strippedAnnotationOverrides: [
+          {
+            templateName: "booking-confirmed",
+            annotations: ["[only when the booking is already paid]"],
+            lines: ["Payment has been processed successfully."],
+          },
+        ],
+      }),
+    );
+    render(<EmailMessageSettingsPanel />);
+
+    // On the template the admin has open …
+    const sentence = await screen.findByText(
+      /An upgrade removed .* from your saved copy/,
+    );
+    expect(sentence).toHaveTextContent(
+      "[only when the booking is already paid]",
+    );
+    expect(sentence).toHaveTextContent("they now go out every time");
+    expect(sentence).toHaveTextContent(
+      "Payment has been processed successfully.",
+    );
+    // … and at the top of the page, where the bracket banner used to name it.
+    expect(
+      screen.getByText(/An upgrade removed our own square-bracketed notes/),
+    ).toBeInTheDocument();
+  });
+
+  it("says nothing about the upgrade for a club it never touched", async () => {
+    stubEmailFetches(
+      templatesResponse({
+        bodyText: REWORDED_BODY,
+        staleContent: {
+          differsFromDefault: true,
+          subjectDiffersFromDefault: false,
+          bodyDiffersFromDefault: true,
+          reasons: [],
+          missingRequiredTokens: [],
+          retiredTokens: [],
+          bracketAnnotations: [],
+          danglingLines: [],
+          strippedAnnotations: [],
+          unconditionalLines: [],
+        },
+      }),
+    );
+    render(<EmailMessageSettingsPanel />);
+
+    await screen.findByText(
+      /Your saved copy of this message differs from the built-in wording/,
+    );
+    expect(
+      screen.queryByText(/An upgrade removed/),
+    ).not.toBeInTheDocument();
+  });
+
   it("says the comparison describes the SAVED copy once you start editing", async () => {
     // The diff and the notes above it are computed from the stored row. An
     // admin who edits to fix a flagged problem and then opens the comparison
@@ -373,9 +458,15 @@ describe("email template saved-copy staleness surface (#2269)", () => {
         String(url).includes("/api/admin/email-templates/reset"),
       );
     expect(resetCalls()).toHaveLength(0);
-    expect(
-      await screen.findByText(/It cannot be undone from here/),
-    ).toBeInTheDocument();
+    // The dialog states BOTH halves: the audit log holds the wording in full
+    // (#2269 second review made that true rather than approximately true), and
+    // there is still no way back from this screen.
+    const dialogText = await screen.findByText(
+      /it cannot be undone from here/,
+    );
+    expect(dialogText).toHaveTextContent(
+      "written to the audit log in full first",
+    );
 
     // Backing out leaves the saved wording alone.
     fireEvent.click(screen.getByRole("button", { name: /^Cancel$/ }));
