@@ -127,6 +127,59 @@ All notable public reference-release changes should be recorded here.
   queue rather than at the moment of approval, it asks the same question again
   just before it runs and holds off if the answer has changed since.
 
+- **A promo code that turned out to be worth nothing no longer uses up
+  someone's one permitted go at it (#2299).** Until now the system counted a
+  promo code as "used" the moment it was applied to a booking with eligible
+  guests, whether or not it actually took anything off the price. That is
+  easier to hit than it sounds and needs no bug anywhere: a percentage-off or
+  money-off code does nothing on nights that are already free (young children,
+  a zero-dollar stay — 20% of nothing is nothing), and a "fixed price per
+  night" code set to price everyone at, say, $30 does nothing for a member
+  already paying exactly $30. The member got no money off and was then told,
+  for ever, "You have already used this promo code". The empty use also counted
+  toward the code's total-redemptions limit and took up one of its
+  unique-member places, so a code could look exhausted when nobody had
+  benefited from it at all.
+
+  A use now means the member actually got something — money off, a change to
+  what they pay, or a subsidised night. All three limits (uses per member,
+  total redemptions, unique members) count only those, matching how the
+  lifetime free-nights allowance has always worked. The application is still
+  recorded and still appears in the code's redemptions report, so an operator
+  can see that a code is being applied fruitlessly — usually the sign that it
+  is set up wrong for the stays people are booking. The promo code card now
+  says exactly that: **Benefits given** (counted once per member, per booking —
+  which is what the total-uses limit counts), and underneath it, always, how
+  many bookings the code has been applied to and how many of those gave nobody
+  anything. The redemptions report has been reorganised to match: four tiles
+  count applications and follow whatever filter you set, two count benefits and
+  carry the cap progress, each says which it is, and any application that gave
+  no benefit is tagged in the table so you can find it. A fixed nightly price
+  set *above* someone's normal rate raises what they pay — a real use with no
+  discount — so those rows now show the price increase alongside the $0
+  discount rather than looking like an empty application.
+
+  If a booking is later edited so its promo benefit disappears, the allowance it
+  was holding is handed back at the same moment, so nobody is left paying full
+  price while still counted as having used the code. Two edge cases were fixed
+  along the way: a booking holding a code's last remaining use no longer loses
+  its discount — and get billed the discount back — merely for shifting its
+  dates or adding a guest; and all four ways of editing a booking now take the
+  same lock on the promo code before checking its limits, so two people editing
+  different bookings at the same moment cannot both take the last use.
+
+  One deliberate line: if a fixed-nightly code re-prices someone's nights and
+  the increases and decreases cancel out to exactly nothing, that counts as no
+  use. Their total is identical with and without the code, so the code can go on
+  being applied to such a stay — which costs nothing, because it gives nothing.
+
+  Existing sites are repaired on upgrade: benefit-free records stop counting
+  immediately, the dead rows are cleared out, and each code's redemption total
+  is recalculated from what is left. Expect the benefits figure on some codes to
+  drop the first time you look — that is the correction, not a loss. Nothing in
+  the redemptions report or its CSV is removed; only what counts as a use
+  changes.
+
 - **Money still owed after a booking change is now visible everywhere, and the
   member is actually asked for it (#2350).** When a change pushed a confirmed
   booking's price up — an admin adding a non-member guest, say — the difference
