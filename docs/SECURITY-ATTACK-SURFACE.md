@@ -1037,6 +1037,100 @@ bounded by the 60-second lifetime, and affecting only anonymous visitors during
 first-time setup or a content edit — accepted rather than special-cased, since
 gating the allow list on render state would put a database read in the proxy.
 
+## Prerendered Pages And The Nonce-Only CSP - 2026-07-31
+
+Issue #2356. **A statically prerendered page can never satisfy this app's
+production CSP.** The policy is nonce-only (`script-src 'self' 'nonce-…'`,
+`src/lib/csp.ts`) and the nonce is minted per request in `src/proxy.ts`. Next
+stamps that nonce into its inline bootstrap/RSC `<script>` tags only during
+**dynamic** rendering, reading it back out of the request's own CSP header
+(`next/dist/server/app-render/app-render.js` via `get-script-nonce-from-header`).
+A route prerendered at build time was rendered once with no request, so it ships
+inline scripts with no `nonce` attribute — and the browser blocks every one of
+them, using the very header the same response carries. The page renders but never
+hydrates.
+
+This is a standing invariant, not a one-off bug. It has now been hit twice: the
+lobby TV display (fork #54) and the global 404 (#2356).
+
+- **Measured on a real build, before the fix.** `.next/server/app/_not-found.html`
+  carried 24 `<script>` tags: 17 with `src=` (fine under `script-src 'self'`) and
+  7 inline with no nonce. The emitted flight payload spells the cause out —
+  every script entry serialised as `"nonce":"$undefined"`. Confirmed at runtime
+  against the built server: a 404 response carried
+  `script-src 'self' 'nonce-…'` in its headers and a body byte-identical to that
+  prerendered file, 0 of 7 inline scripts nonced. A *dynamically* rendered
+  response in the same session had all of its inline scripts nonced, which is
+  the contrast that isolates the mechanism.
+- **Two further defects travelled with it, both from "no request, no database at
+  build time".** The 404 page's `getSanitizedPageContentByPath("/404")` failed at
+  build and was swallowed by its own `.catch(() => null)`, so the
+  admin-authored `/404` CMS page could never render for an unmatched URL — the
+  hardcoded fallback was frozen into the artefact. And the root layout's
+  `generateMetadata()` fell back to `SAFE_DEFAULT_CONFIG`, baking the template
+  placeholder club name and `http://localhost:3000` into the `<title>` and OG
+  tags every deployment served. Forcing dynamic rendering fixes all three at
+  once.
+- **The reach is wider than the app route.** Next copies a prerendered app 404
+  and global error to `server/pages/404.html` and `server/pages/500.html` and
+  registers them in `pages-manifest.json`; `base-server` serves those copies for
+  status pages that never enter the app render. Any audit of this property must
+  look at `server/pages/**` as well as `server/app/**`.
+- **The fix for the 404: `export const dynamic = "force-dynamic"` in
+  `src/app/not-found.tsx`**, the same mechanism `src/app/display/page.tsx`
+  already uses. Verified: `/_not-found` leaves `prerender-manifest.json`,
+  `_not-found.html` and `pages/404.html` are no longer emitted, and a 404
+  response keeps its 404 status with every inline script nonced.
+- **The cost is small, and was checked rather than assumed.** #2351 measured a
+  cold dynamic render at ~3.5-5 CPU-seconds, so "every 404 now costs a render"
+  deserved scrutiny — bot traffic on nonexistent URLs is real load. It turns out
+  the app was already paying it: the `(website)/[...slug]` CMS catch-all claims
+  essentially every mistyped or probed URL, reads the database, and calls
+  `notFound()`, which renders this boundary dynamically. Only the narrow set of
+  paths that bypassed the catch-all and hit the static artefact changes cost.
+- **The global error page CANNOT be fixed this way, and that is accepted.** A
+  global error boundary must be a Client Component (Next's own
+  `docs/01-app/03-api-reference/03-file-conventions/error.md`, which is also why
+  `metadata`/`generateMetadata` are unsupported there), and route segment config
+  is not read from a client module. `export const dynamic = "force-dynamic"` in
+  `src/app/global-error.tsx` was tried and measured: the build accepts it with no
+  error and no warning, and `/_global-error` prerenders exactly as before — a
+  silent no-op. So `_global-error.html`, and Next's byte-identical
+  `pages/500.html` copy, keep 6 unnonced inline scripts.
+  - Bounded, because the common case is unaffected: an error thrown *inside* an
+    app render renders `global-error.tsx` dynamically in the failing request,
+    with the nonce, so it hydrates normally. The static copy is served only for a
+    500 that escapes the app render (a proxy/middleware failure, a
+    route-resolution failure).
+  - On that copy the Sentry `useEffect` never fires, but the error has already
+    been reported server-side, so client capture there is a duplicate channel
+    rather than the only one.
+  - What was NOT accepted was a crash page whose only action is a dead button.
+    `global-error.tsx` now also renders a plain `<a href="/">`, which needs no
+    JavaScript and therefore still works on the blocked copy. Do not replace it
+    with a `<Link>` or an `onClick` handler.
+- **Enforced by `scripts/ci/check-prerendered-script-nonces.mjs`**, run in the
+  `verify` job immediately after `npm run build` (the only point where the
+  property is observable). It walks every `.html` under `server/app/**` and
+  `server/pages/**` and fails on any inline `<script>` without a non-empty
+  `nonce`. `nonce=""` counts as unnonced, because it matches no `'nonce-…'`
+  source expression and is blocked just the same. A missing build directory
+  throws rather than passing on an empty scan. The two global-error artefacts sit
+  on a closed, reason-carrying allowlist, and each allowlisted entry is itself
+  asserted to still exist and still offend — so if a future Next release starts
+  nonce-ing them, the check fails and the carve-out is deleted rather than
+  quietly outliving its reason. `scripts/ci/check-prerendered-script-nonces.test.mjs`
+  pins the rules without needing a build.
+- **Interaction with #2352.** The constant-per-deploy nonce proposed for public
+  routes would make a fixed nonce value available at build time and so would
+  dissolve this whole class — including the global error page, which nothing else
+  can reach. This fix does not conflict with it: it adds no CSP surface and no
+  new policy branch, only a per-request render for one route. If #2352 lands, the
+  `force-dynamic` here becomes a performance question rather than a correctness
+  one and can be revisited on its own merits; the CI guard above stays useful
+  either way, since it asserts the outcome (no unnonced inline script ships)
+  rather than the mechanism.
+
 ## Follow-Up Mapping
 
 - #613 - Standardize route guards: route metadata and shared active-session and

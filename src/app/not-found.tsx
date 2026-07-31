@@ -5,6 +5,33 @@ import { buildEmbeddedBody } from "@/lib/page-content-embeds";
 import { getCachedClubIdentity } from "@/lib/public-layout-config";
 import { EmbeddedPageContentParts } from "@/components/website/embedded-page-content-parts";
 
+/**
+ * Must render per-request (issue #2356), for the same reason `/display` must
+ * (`src/app/display/page.tsx`): the CSP is nonce-only in production and Next
+ * stamps the nonce into its inline bootstrap/RSC scripts only during DYNAMIC
+ * rendering, reading it from the request's own CSP header. Without this the
+ * `/_not-found` route is prerendered at build time — Next then also copies it
+ * to `pages/404.html`, which `base-server` serves for unmatched URLs — and that
+ * artefact ships seven inline `<script>` tags with no `nonce`, every one of them
+ * blocked by the very policy on the same response.
+ *
+ * It fixes two visible defects at the same time, both caused by the build-time
+ * render having no database and no request:
+ *  • `getSanitizedPageContentByPath("/404")` below failed at build and was
+ *    swallowed by its `.catch(() => null)`, so the admin-authored `/404` CMS
+ *    page could never appear — the hardcoded fallback was frozen into the HTML.
+ *  • the root layout's `generateMetadata()` fell back to `SAFE_DEFAULT_CONFIG`,
+ *    baking the template placeholder ("Example Mountain Club") and
+ *    `http://localhost:3000` into every deployment's 404 title and OG tags.
+ *
+ * Cost is small: the app's `(website)/[...slug]` catch-all already claims almost
+ * every mistyped or bot-probed URL and renders this boundary dynamically via
+ * `notFound()`, so only the narrow set of paths that previously hit the static
+ * artefact changes cost. `scripts/ci/check-prerendered-script-nonces.mjs` fails
+ * the build if a prerendered route ever ships unnonced inline scripts again.
+ */
+export const dynamic = "force-dynamic";
+
 function pageSlugFromPath(path: string) {
   return path.replace(/^\//, "") || "home";
 }

@@ -4,6 +4,22 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **The "page not found" page now shows your club's own name and your own
+  wording, instead of the template's placeholder (#2356).** Visitors who
+  followed a dead link or mistyped a web address could land on a 404 page
+  titled "Example Mountain Club" — the demo name the template ships with — no
+  matter which club the site belonged to, and the page you can write yourself
+  under **Website content** at the `/404` address was never shown to them. The
+  cause was the same in both cases: that one page was being built in advance,
+  once, at the moment the software was packaged — before it had any connection
+  to your club's database — so whatever it could see at that moment was frozen
+  into it. It is now assembled when someone actually asks for it, like every
+  other page on the site, so it reads your club name and your own 404 content.
+  The same change fixes an invisible third problem: the frozen page's scripts
+  were blocked by the site's own security policy, which would have broken
+  anything interactive added to that page in future. A check now runs on every
+  build so no other page can be frozen in the same way without it being caught.
+
 - **Admins can now cancel the membership of a member who has no login of
   their own (#2354).** Opening such a member's admin page used to show no
   **Request Cancellation** action at all — not greyed out, simply absent —

@@ -205,6 +205,14 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Must run AFTER the build: production CSP is nonce-only and Next stamps
+      # its nonce into inline bootstrap scripts only during DYNAMIC rendering,
+      # so a statically prerendered route ships scripts the browser then blocks
+      # (#2356). Only the real build output shows it, and the script fails loudly
+      # if that output is missing rather than passing on an empty scan.
+      - name: Check prerendered pages carry script nonces
+        run: node scripts/ci/check-prerendered-script-nonces.mjs
+
   migration-drift:
     name: Migration drift check
     runs-on: ubuntu-latest
