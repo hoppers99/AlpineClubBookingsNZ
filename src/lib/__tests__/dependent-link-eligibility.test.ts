@@ -5,8 +5,13 @@ import {
   DEPENDENT_LINK_INELIGIBILITY_ERRORS,
   DEPENDENT_LINK_INELIGIBILITY_EXPLANATIONS,
   DEPENDENT_LINK_INELIGIBILITY_REASONS,
+  DEPENDENT_PARENT_BLOCK_EXPLANATIONS,
+  DEPENDENT_PARENT_CREATE_ERRORS,
+  DEPENDENT_PARENT_LINK_ERRORS,
+  DEPENDENT_PARENT_STATE_REASONS,
   dependentLinkBlockers,
   dependentLinkCandidateWhere,
+  dependentParentStateBlocker,
   type DependentLinkCandidate,
   type DependentLinkGraphFacts,
 } from "@/lib/dependent-link-eligibility";
@@ -846,5 +851,110 @@ describe("ancestorDepthWithinWhere", () => {
     expect(await runWhereAgainstFixtures(ancestorDepthWithinWhere(-1))).toEqual(
       [],
     );
+  });
+});
+
+/**
+ * #2282 — the PARENT-side state rule, which is all that is left of the checks on
+ * the member who takes the dependant.
+ *
+ * The `ageTier === "ADULT"` clause that used to sit here is gone by owner
+ * decision: a 16 or 17 year old can genuinely be a parent and the club could not
+ * record it. This predicate is what BOTH write routes and BOTH admin controls
+ * now consult, so the disabled button, the dialog's notice and the two 422
+ * bodies cannot disagree about who may take a dependant.
+ *
+ * Mutation probes: delete the `archivedAt` branch and the archived cases fail
+ * (an archived member reads as merely "inactive", telling the admin to
+ * reactivate a record that needs restoring); delete the `active` branch and the
+ * inactive case fails; re-introduce an age clause anywhere and
+ * "ignores age entirely" fails.
+ */
+describe("dependentParentStateBlocker (#2282)", () => {
+  it("clears an active, non-archived member", () => {
+    expect(
+      dependentParentStateBlocker({ active: true, archivedAt: null }),
+    ).toBeNull();
+  });
+
+  it("ignores age entirely — parentage is recordable at any tier", () => {
+    // Age is not even in the argument type, which is the point: a re-introduced
+    // age gate cannot be written against this predicate without changing its
+    // signature, so it cannot creep back in as a quiet extra clause.
+    for (const ageTier of ["INFANT", "CHILD", "YOUTH", "ADULT"]) {
+      expect({
+        ageTier,
+        blocked: dependentParentStateBlocker({
+          active: true,
+          archivedAt: null,
+        }),
+      }).toEqual({ ageTier, blocked: null });
+    }
+  });
+
+  it("blocks an inactive member", () => {
+    expect(
+      dependentParentStateBlocker({ active: false, archivedAt: null }),
+    ).toBe("INACTIVE");
+  });
+
+  it("blocks an archived member as ARCHIVED, not INACTIVE", () => {
+    // Archiving also clears `active`, so order decides which reason the admin
+    // reads. "Reactivate them" is the wrong instruction for an archived record.
+    expect(
+      dependentParentStateBlocker({
+        active: false,
+        archivedAt: new Date("2026-01-01"),
+      }),
+    ).toBe("ARCHIVED");
+    expect(
+      dependentParentStateBlocker({
+        active: true,
+        archivedAt: new Date("2026-01-01"),
+      }),
+    ).toBe("ARCHIVED");
+  });
+
+  it("accepts a serialised date, so the admin UI shares one predicate", () => {
+    // The member detail page passes the JSON response straight in; if this only
+    // took `Date`, the client would need its own copy of the rule and the two
+    // would drift — which is the whole failure #2254 existed to close.
+    expect(
+      dependentParentStateBlocker({
+        active: true,
+        archivedAt: "2026-01-01T00:00:00.000Z",
+      }),
+    ).toBe("ARCHIVED");
+  });
+
+  it("gives every reason a link message, a create message and an explanation", () => {
+    // Three surfaces, one reason set. A new reason added to the union without
+    // copy for all three would fail here rather than render `undefined` at an
+    // admin.
+    for (const reason of DEPENDENT_PARENT_STATE_REASONS) {
+      expect(DEPENDENT_PARENT_LINK_ERRORS[reason]).toBeTruthy();
+      expect(DEPENDENT_PARENT_CREATE_ERRORS[reason]).toBeTruthy();
+      expect(DEPENDENT_PARENT_BLOCK_EXPLANATIONS[reason]).toBeTruthy();
+    }
+    // The two API messages are deliberately distinct: they are two endpoints
+    // with two contracts, and a shared sentence would have to be vague about
+    // which action was refused.
+    for (const reason of DEPENDENT_PARENT_STATE_REASONS) {
+      expect(DEPENDENT_PARENT_LINK_ERRORS[reason]).not.toBe(
+        DEPENDENT_PARENT_CREATE_ERRORS[reason],
+      );
+    }
+  });
+
+  it("states no age rule in any of its copy", () => {
+    // #2282 acceptance criterion: copy must not claim a rule the code does not
+    // enforce. These strings are the ones an admin actually reads on refusal.
+    for (const message of [
+      ...Object.values(DEPENDENT_PARENT_LINK_ERRORS),
+      ...Object.values(DEPENDENT_PARENT_CREATE_ERRORS),
+      ...Object.values(DEPENDENT_PARENT_BLOCK_EXPLANATIONS),
+    ]) {
+      expect(message).not.toMatch(/adult|age|18|youth/i);
+    }
   });
 });

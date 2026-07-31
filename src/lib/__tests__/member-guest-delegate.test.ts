@@ -318,6 +318,49 @@ describe("canRespondForTarget — the D-10 accept/reject matrix", () => {
     ).resolves.toBe(false);
     expect(familyGroupMemberFindMany).not.toHaveBeenCalled();
   });
+
+  /**
+   * #2282 — a young member may now be RECORDED as a parent. That must buy them
+   * nothing here, and the reason it cannot is structural rather than incidental:
+   * this resolver never reads the parent columns at all. The rule is family-group
+   * co-membership plus active-login-ADULT, and `MINOR_SIBLING` above is already
+   * refused by the age conjunct whether or not they are anyone's parent.
+   *
+   * So the #2282-specific assertion is the one below: the two member reads this
+   * path issues select `active`, `canLogin`, `ageTier` and contact fields, and
+   * NOTHING about parentage. Add `parentMemberId` / `secondaryParentId` to either
+   * select and this fails — which is the first move anyone would have to make to
+   * let a parent link widen delegation, and it should require a decision rather
+   * than sliding in as an extra select field.
+   */
+  it("decides without ever reading the parent columns (#2282)", async () => {
+    const { db, memberFindMany, memberFindUnique } = makeDb();
+
+    await expect(
+      familyAdultDelegateResolver.canRespondForTarget({
+        actorMemberId: MINOR_SIBLING,
+        targetMemberId: TARGET,
+        db,
+      }),
+    ).resolves.toBe(false);
+    await familyAdultDelegateResolver.resolveNotificationRecipients({
+      targetMemberId: TARGET,
+      db,
+    });
+
+    const selects = [
+      ...memberFindMany.mock.calls,
+      ...memberFindUnique.mock.calls,
+    ].map(([args]) => (args as { select?: Record<string, unknown> }).select);
+    expect(selects.length).toBeGreaterThan(0);
+    for (const select of selects) {
+      expect(select).toBeDefined();
+      expect(select).not.toHaveProperty("parentMemberId");
+      expect(select).not.toHaveProperty("secondaryParentId");
+      expect(select).not.toHaveProperty("parent");
+      expect(select).not.toHaveProperty("dependents");
+    }
+  });
 });
 
 describe("resolveNotificationRecipients — who is told, and who is deliberately not", () => {

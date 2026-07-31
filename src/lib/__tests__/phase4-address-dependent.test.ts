@@ -159,6 +159,7 @@ import {
   normalizeAddressValue,
   NZ_COUNTRY_NAME,
 } from "@/lib/member-address";
+import { DEPENDENT_PARENT_CREATE_ERRORS } from "@/lib/dependent-link-eligibility";
 
 const adminSession = { user: { id: "admin1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] } } as any;
 const memberSession = { user: { id: "m1", role: "MEMBER", accessRoles: [{ role: "USER" }] } } as any;
@@ -529,19 +530,146 @@ describe("Admin: Create dependent member", () => {
     }));
   });
 
-  it("rejects dependent creation under non-adult parent", async () => {
+  /**
+   * #2282: the CREATE path's half of "parentage is recordable at any age".
+   *
+   * This describe previously held "rejects dependent creation under non-adult
+   * parent". That refusal is the bug the owner decision reverses: a 16 or 17
+   * year old can genuinely be a parent, and the club could not record it. What
+   * replaces it is a pair of assertions — the record IS created, and the child's
+   * club email still lands on an adult.
+   *
+   * Mutation probes: restore `parentMember.ageTier !== "ADULT"` and the first
+   * test fails; delete `!parentMember.active` and the inactive test fails;
+   * delete `parentMember.archivedAt` and the archived test fails; delete the
+   * ADULT clause of `isUsableEmailSource` and the first test's inheritance
+   * expectation lands on the 16-year-old.
+   */
+  it("creates a dependant under a YOUNG parent, routing mail to the adult above", async () => {
     vi.mocked(auth).mockResolvedValue(adminSession);
-    vi.mocked(prisma.member.findUnique).mockResolvedValue({ id: "youth1", ageTier: "YOUTH" } as any);
+    vi.mocked(prisma.member.findFirst).mockResolvedValue(null);
+    const membersById: Record<string, any> = {
+      youth1: {
+        id: "youth1",
+        ageTier: "YOUTH",
+        active: true,
+        archivedAt: null,
+        email: "teen-parent@test.com",
+        inheritEmailFromId: null,
+        parentMemberId: "gran1",
+        secondaryParentId: null,
+      },
+      gran1: {
+        id: "gran1",
+        ageTier: "ADULT",
+        active: true,
+        archivedAt: null,
+        email: "gran@test.com",
+        inheritEmailFromId: null,
+        parentMemberId: null,
+        secondaryParentId: null,
+      },
+    };
+    vi.mocked(prisma.member.findUnique).mockImplementation((async ({
+      where,
+    }: any) => membersById[where.id] ?? null) as never);
+    vi.mocked(prisma.member.findMany).mockImplementation((async ({
+      where,
+    }: any) => {
+      // "these ids" (walking up / re-reading a level) answers from the fixture;
+      // "children of these ids" (the downward depth walk) has none here.
+      if (where?.id?.in) {
+        return (where.id.in as string[])
+          .map((id) => membersById[id])
+          .filter(Boolean);
+      }
+      return [];
+    }) as never);
+
+    const txMemberCreate = vi.fn().mockResolvedValue({
+      id: "dep3",
+      firstName: "Baby",
+      lastName: "Doe",
+      email: "gran@test.com",
+      role: "MEMBER",
+      ageTier: "INFANT",
+      active: true,
+      canLogin: false,
+      parentMemberId: "youth1",
+      inheritParentEmail: true,
+      inheritEmailFromId: "gran1",
+      xeroContactId: null,
+      joinedDate: null,
+      createdAt: new Date(),
+    });
+    vi.mocked(prisma.$transaction).mockImplementation(async (cb: any) =>
+      cb({
+        member: { create: txMemberCreate },
+        familyGroupMember: { createMany: vi.fn() },
+      }),
+    );
+
+    const res = await createMember(makePostRequest({
+      email: "gran@test.com",
+      firstName: "Baby",
+      lastName: "Doe",
+      dateOfBirth: "2025-06-15",
+      parentMemberId: "youth1",
+      inheritParentEmail: true,
+      canLogin: false,
+    }));
+
+    expect(res.status).toBe(201);
+    expect(txMemberCreate).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        parentMemberId: "youth1",
+        // NOT "youth1": recording the parentage is a fact, being the club's
+        // contact of record is a responsibility, and only the first moved.
+        inheritEmailFromId: "gran1",
+      }),
+    }));
+  });
+
+  it("rejects dependent creation under an inactive parent", async () => {
+    vi.mocked(auth).mockResolvedValue(adminSession);
+    vi.mocked(prisma.member.findUnique).mockResolvedValue({
+      id: "lapsed1",
+      active: false,
+      archivedAt: null,
+    } as any);
 
     const res = await createMember(makePostRequest({
       email: "child@test.com",
       firstName: "Child",
       lastName: "Doe",
-      parentMemberId: "youth1",
+      parentMemberId: "lapsed1",
     }));
     expect(res.status).toBe(422);
-    const body = await res.json();
-    expect(body.error).toContain("adult");
+    expect((await res.json()).error).toBe(
+      DEPENDENT_PARENT_CREATE_ERRORS.INACTIVE,
+    );
+  });
+
+  it("rejects dependent creation under an archived parent, and says so", async () => {
+    vi.mocked(auth).mockResolvedValue(adminSession);
+    vi.mocked(prisma.member.findUnique).mockResolvedValue({
+      id: "archived1",
+      active: false,
+      archivedAt: new Date("2026-01-01"),
+    } as any);
+
+    const res = await createMember(makePostRequest({
+      email: "child@test.com",
+      firstName: "Child",
+      lastName: "Doe",
+      parentMemberId: "archived1",
+    }));
+    expect(res.status).toBe(422);
+    // Archiving clears `active` too, so an order-blind check would tell the
+    // admin to reactivate a record whose real problem is that it is archived.
+    expect((await res.json()).error).toBe(
+      DEPENDENT_PARENT_CREATE_ERRORS.ARCHIVED,
+    );
   });
 
   /**

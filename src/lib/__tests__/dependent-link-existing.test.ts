@@ -27,7 +27,11 @@ import {
   LAST_FULL_ADMIN_GUARD_MESSAGE,
   PRIVILEGED_TARGET_GUARD_MESSAGE,
 } from "@/lib/admin-account-guards";
-import { dependentLinkBlockers } from "@/lib/dependent-link-eligibility";
+import {
+  DEPENDENT_PARENT_LINK_ERRORS,
+  dependentLinkBlockers,
+} from "@/lib/dependent-link-eligibility";
+import { NO_INHERITABLE_EMAIL_SOURCE_MESSAGE } from "@/lib/member-parent-links";
 
 type MockAccessRole = { role: string | null; roleDefinitionId?: string | null; roleDefinition?: unknown };
 
@@ -1039,6 +1043,205 @@ describe("POST /api/admin/members/[id]/dependents/link", () => {
       });
 
       expect((await res.json()).error).toMatch(/4 generations/i);
+      expect(tx.member.update).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * #2282: WHO MAY BE RECORDED AS A PARENT, versus who may take responsibility.
+   *
+   * The owner decision is that parentage is a FACT and is recordable at any age
+   * — a 16 or 17 year old can genuinely be a parent, and the club previously had
+   * to leave the child apparently parentless or hang them off a grandparent.
+   * What did NOT move is the responsibility side: the contact of record for the
+   * child's mail is still an adult, and this route proves it by resolving PAST
+   * the young parent.
+   *
+   * Mutation probes, three, failing differently on purpose:
+   *  - restore `parent.ageTier !== "ADULT"` to the route's guard and
+   *    "records a YOUTH member as a parent" fails;
+   *  - drop `!parent.active` and "refuses an inactive parent" fails;
+   *  - drop `parent.archivedAt` and "refuses an archived parent" fails.
+   * A fourth lives on the adult gate itself: delete `ageTier === "ADULT"` from
+   * `isUsableEmailSource` and "routes the child's mail past the young parent"
+   * fails, because the source becomes the 16-year-old.
+   */
+  describe("young parents (#2282)", () => {
+    it("records a YOUTH member as a parent", async () => {
+      const tx = setupTransaction([
+        makeParent({ ageTier: "YOUTH" }),
+        makeMember({ ageTier: "INFANT" }),
+      ]);
+
+      const res = await linkDependent({
+        memberId: "target-1",
+        inheritEmail: false,
+        disableLogin: false,
+        addToFamilyGroupIds: [],
+      });
+
+      expect(res.status).toBe(200);
+      expect(tx.member.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: "target-1" },
+          data: expect.objectContaining({
+            parent: { connect: { id: "parent-1" } },
+          }),
+        })
+      );
+    });
+
+    it("records a CHILD member as a parent too — no age floor was added", async () => {
+      // Not a realistic club record on its own, but the point of the decision is
+      // that the system stores the family as stated rather than second-guessing
+      // it, and a quietly re-introduced floor at (say) 13 would be exactly the
+      // same bug in a smaller size.
+      const tx = setupTransaction([
+        makeParent({ ageTier: "CHILD" }),
+        makeMember({ ageTier: "INFANT" }),
+      ]);
+
+      const res = await linkDependent({
+        memberId: "target-1",
+        inheritEmail: false,
+        disableLogin: false,
+        addToFamilyGroupIds: [],
+      });
+
+      expect(res.status).toBe(200);
+      expect(tx.member.update).toHaveBeenCalled();
+    });
+
+    it("routes the child's mail PAST the young parent to the adult above", async () => {
+      const tx = setupTransaction([
+        makeParent({
+          ageTier: "YOUTH",
+          email: "teen-parent@example.com",
+          parentMemberId: "grandparent-1",
+        }),
+        makeMember({
+          id: "grandparent-1",
+          ageTier: "ADULT",
+          email: "gran@example.com",
+        }),
+        makeMember({ ageTier: "INFANT" }),
+      ]);
+
+      const res = await linkDependent({
+        memberId: "target-1",
+        inheritEmail: true,
+        disableLogin: true,
+        addToFamilyGroupIds: [],
+      });
+
+      expect(res.status).toBe(200);
+      expect(tx.member.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            inheritParentEmail: true,
+            inheritEmailFrom: { connect: { id: "grandparent-1" } },
+          }),
+        })
+      );
+    });
+
+    it("refuses rather than making the young parent the contact of record", async () => {
+      // No adult above them: the email-inheritance gate holds and the link is
+      // refused outright. Storing the minor's own address, or silently storing
+      // no inheritance, are both the failure this refusal exists to prevent.
+      const tx = setupTransaction([
+        makeParent({ ageTier: "YOUTH", email: "teen-parent@example.com" }),
+        makeMember({ ageTier: "INFANT" }),
+      ]);
+
+      const res = await linkDependent({
+        memberId: "target-1",
+        inheritEmail: true,
+        disableLogin: false,
+        addToFamilyGroupIds: [],
+      });
+
+      expect(res.status).toBe(422);
+      expect((await res.json()).error).toBe(NO_INHERITABLE_EMAIL_SOURCE_MESSAGE);
+      expect(tx.member.update).not.toHaveBeenCalled();
+    });
+
+    it("refuses a young parent named EXPLICITLY as the notification recipient", async () => {
+      // The picker offers the linked parents by name, so an admin can name the
+      // 16-year-old directly. That selection resolves through the same walk, so
+      // it lands on the grandparent rather than honouring the minor.
+      const tx = setupTransaction([
+        makeParent({
+          ageTier: "YOUTH",
+          email: "teen-parent@example.com",
+          parentMemberId: "grandparent-1",
+        }),
+        makeMember({
+          id: "grandparent-1",
+          ageTier: "ADULT",
+          email: "gran@example.com",
+        }),
+        makeMember({ ageTier: "INFANT" }),
+      ]);
+
+      const res = await linkDependent({
+        memberId: "target-1",
+        inheritEmail: true,
+        inheritEmailFromId: "parent-1",
+        disableLogin: false,
+        addToFamilyGroupIds: [],
+      });
+
+      expect(res.status).toBe(200);
+      expect(tx.member.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            inheritEmailFrom: { connect: { id: "grandparent-1" } },
+          }),
+        })
+      );
+    });
+
+    it("refuses an inactive parent, naming the way out", async () => {
+      const tx = setupTransaction([
+        makeParent({ active: false }),
+        makeMember(),
+      ]);
+
+      const res = await linkDependent({
+        memberId: "target-1",
+        inheritEmail: false,
+        disableLogin: false,
+        addToFamilyGroupIds: [],
+      });
+
+      expect(res.status).toBe(422);
+      expect((await res.json()).error).toBe(
+        DEPENDENT_PARENT_LINK_ERRORS.INACTIVE
+      );
+      expect(tx.member.update).not.toHaveBeenCalled();
+    });
+
+    it("refuses an archived parent, and says ARCHIVED rather than INACTIVE", async () => {
+      // Archiving also clears `active`, so an order-blind check would tell the
+      // admin to "reactivate" a member whose actual problem is that they are
+      // archived — and reactivating an archived record is not the way out.
+      const tx = setupTransaction([
+        makeParent({ active: false, archivedAt: new Date("2026-01-01") }),
+        makeMember(),
+      ]);
+
+      const res = await linkDependent({
+        memberId: "target-1",
+        inheritEmail: false,
+        disableLogin: false,
+        addToFamilyGroupIds: [],
+      });
+
+      expect(res.status).toBe(422);
+      expect((await res.json()).error).toBe(
+        DEPENDENT_PARENT_LINK_ERRORS.ARCHIVED
+      );
       expect(tx.member.update).not.toHaveBeenCalled();
     });
   });
