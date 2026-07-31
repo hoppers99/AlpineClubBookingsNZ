@@ -4,7 +4,6 @@ import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
 import logger from "@/lib/logger";
 import { MEMBER_GUEST_MODULE_KEY } from "@/lib/member-guest-consent";
 import {
-  EMPTY_MEMBER_GUEST_CANDIDATES,
   MEMBER_GUEST_SEARCH_RESULT_CAP,
   capMemberGuestCandidates,
   memberGuestResolveAgeTiers,
@@ -253,6 +252,3 @@ export function auditMemberGuestSearch(params: {
     logger.error({ err }, "Failed to audit a member-guest name search");
   });
 }
-
-/** Re-exported so a route can answer with the frozen empty envelope. */
-export { EMPTY_MEMBER_GUEST_CANDIDATES };
