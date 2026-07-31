@@ -54,18 +54,29 @@ another completion.
 The table lock covers direct insert, update, and delete statements against
 `MemberInduction`; it does not freeze the member population or every earlier
 step of a larger workflow. Arrange an operator freeze from the start of the
-**final** dry run until apply finishes. Pause:
+**final** dry run until apply finishes. This is a freeze on every route, import,
+and background job that can change who is eligible, which tier they occupy, the
+required sign-off count, or the template the baseline will use. Pause:
 
-- membership-application approvals;
-- admin member creation and CSV import;
-- induction creation, sign-off, completion, void, and signer reassignment; and
-- membership cancellation, archive, delete, merge, and other lifecycle writes.
+- individual member edits and bulk member updates that can change `role`,
+  `active`, date of birth, or `ageTier`;
+- membership-application approvals, admin-created members, and members created
+  through family requests;
+- CSV and other member imports, including Xero member imports;
+- membership-assignment saves and roll-forward jobs that can update
+  `ageTier`;
+- archive, cancel, reactivate, delete, merge, and every other member lifecycle
+  operation;
+- induction creation, signer assignment or reassignment, sign-off, admin
+  completion or override, void, and delete; and
+- changes to club identity, age-tier settings, nomination settings, or
+  induction-template content and activation.
 
-Also defer club identity, age-tier, nomination, and induction-template settings
-changes. If the dry run finds a blocker, end the final-run attempt, resolve it,
-then start a new freeze and generate a fresh final dry run. Do not review one
-plan while those writers continue and later apply it as though the population
-were unchanged.
+Do not assume the `MemberInduction` table lock covers any of the member,
+eligibility, or configuration writers above. If the dry run finds a blocker,
+end the final-run attempt, resolve it, then start a new freeze and generate a
+fresh final dry run. Do not review one plan while those writers continue and
+later apply it as though the population and configuration were unchanged.
 
 ## 1. Run and retain the dry-run report
 

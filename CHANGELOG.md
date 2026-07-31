@@ -15,8 +15,9 @@ All notable public reference-release changes should be recorded here.
   and exact club and database confirmations. It refuses to run
   over an open induction, locks direct induction-table writes during apply, and
   commits all completed New Member baseline rows with one audit event or none
-  at all. The runbook requires a short wider membership-write freeze around the
-  final dry run and apply because the table lock does not freeze that population.
+  at all. The runbook requires a short member-population, induction, and
+  configuration-write freeze around the final dry run and apply because the
+  table lock does not freeze those inputs.
   The records are explicit Admin Overrides with no invented signers, sign-offs,
   emails, or hut-leader eligibility; an identical rerun is a no-op. The new
   operator runbook documents rehearsal, review, verification, and recovery.
