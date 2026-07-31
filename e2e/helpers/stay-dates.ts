@@ -133,10 +133,21 @@ export function stayWindow(index: number): StayWindow {
 // Chosen to exceed every base index in use (the highest is 12), so
 // `stayWindowForAttempt` maps attempt 0/1/2 of every spec onto three mutually
 // disjoint bands of Mondays that can never overlap another spec's band either.
-// The seeded seasons cover roughly 75 usable Mondays from the first window
-// (winter runs to +239 days, summer from +270 to +599 — see SEEDED_SEASONS), so
-// the highest index this can produce (12 + 2×16 = 44) stays comfortably inside
-// them; stayWindow still throws loudly if a run date ever changes that.
+//
+// Two ceilings bound this stride, and BOTH must be re-checked before it (or a
+// base index) is raised:
+//  - Seeded seasons. They cover roughly 75 usable Mondays from the first window
+//    (winter runs to +239 days, summer from +270 to +599 — see SEEDED_SEASONS),
+//    so the highest index this can produce (12 + 2×16 = 44) stays comfortably
+//    inside them; stayWindow still throws loudly if a run date ever changes that.
+//  - Calendar month hops. A spec reaches these dates by clicking the booking
+//    calendar's "Next ›" one month at a time, bounded by MAX_MONTH_HOPS in
+//    e2e/helpers/booking.ts. Every base 0–15 × attempt 0–2 (stay index 0–47)
+//    costs at most 14 hops, swept over 400 consecutive run dates; MAX_MONTH_HOPS
+//    is 24. This ceiling was missed when the stride was first chosen: the old
+//    bound of 12 hops was already the exact worst case of the windows in use and
+//    one short of base 9 attempt 2, and it failed as a timeout on the day button
+//    rather than on the navigation.
 const RETRY_WINDOW_STRIDE = 16;
 
 // The stay window for a given ATTEMPT of a test.
