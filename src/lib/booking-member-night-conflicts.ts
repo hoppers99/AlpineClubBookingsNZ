@@ -10,6 +10,11 @@ import {
 } from "@/lib/booking-guest-stay-ranges";
 import { evaluateGuestSelfRemoval } from "@/lib/booking-guest-self-removal";
 import { buildBookingMemberNightConflictMessage } from "@/lib/booking-member-night-conflict-messages";
+import { BookingGuestValidationError } from "@/lib/booking-guests";
+import {
+  MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE,
+  MEMBER_GUEST_CROSS_FAMILY_REFUSAL_STATUS,
+} from "@/lib/member-guest-refusal";
 
 const BOOKING_MEMBER_NIGHT_CONFLICT_CODE =
   "BOOKING_MEMBER_NIGHT_CONFLICT";
@@ -78,6 +83,25 @@ type ConflictDb =
 
 type ConflictGuestInput = GuestStayRange & {
   memberId?: string | null;
+  /**
+   * This guest is a member being added from OUTSIDE the booker's family group,
+   * and has not consented yet ("+ Add Member Guest", epic #2305, MG2 #2307,
+   * owner decision **D-8**).
+   *
+   * WHY THE MARKER RIDES THE GUEST AND NOT AN OPTION ON THE CALL. The add paths
+   * hand the same guest objects to a pre-flight advisory check at the route, to
+   * the authoritative in-transaction guard inside `booking-create.ts` /
+   * `booking-modify-plan.ts`, and to the pricing engine in between. A separate
+   * `crossFamilyMemberIds` parameter would have had to be threaded through every
+   * one of those layers, and the one that got missed would be the one that
+   * answered a stranger's occupancy in full detail. Marking the GUEST means the
+   * marker arrives wherever the guest arrives, and a layer that knows nothing
+   * about member guests still carries it correctly.
+   *
+   * Absent/false is the pre-MG2 behaviour and the behaviour of every non-widened
+   * caller: nothing about the conflict payload changes.
+   */
+  crossFamilyMemberGuest?: boolean | null;
 };
 
 /**
@@ -202,6 +226,15 @@ export async function findBookingMemberNightConflicts(
   const memberIds = [...requested.keys()];
   if (memberIds.length === 0) return [];
 
+  // D-8 (MG2 #2307): the member ids this request is adding from beyond the
+  // booker's family group. A conflict on one of these is refused NEUTRALLY —
+  // see the throw below.
+  const crossFamilyMemberIds = new Set(
+    guests
+      .filter((guest) => guest.crossFamilyMemberGuest === true && guest.memberId)
+      .map((guest) => guest.memberId as string),
+  );
+
   const today = normalizeDateOnlyForTimeZone(new Date());
   const existingGuests = await db.bookingGuest.findMany({
     where: {
@@ -255,6 +288,35 @@ export async function findBookingMemberNightConflicts(
       ),
     );
     if (conflictingNights.length === 0) continue;
+
+    // D-8 (MG2 #2307) — a cross-family member guest's clash is refused without
+    // saying anything about them, and this function THROWS rather than returning
+    // a row.
+    //
+    // Throwing from a `find*` is unusual, so here is why it is right. The
+    // #2250 payload is already entitlement-gated for everything about the OTHER
+    // booking, but its always-present fields — the member's name and the exact
+    // intersection with the requested nights — were justified by "the requester
+    // already knows this: they chose the member and the dates". That justification
+    // held while a guest could only ever be the booker's own family. It does not
+    // hold for a stranger: `conflictingNights` is that stranger's occupancy, and a
+    // side-effect-free `POST /api/bookings/quote` would hand it over on request.
+    // There is no honest row to return here — the request must be refused and
+    // nothing may be said about why — and every caller that sets the marker
+    // already maps `BookingGuestValidationError` to a response, including the two
+    // in-transaction guards (the throw rolls the transaction back, which is the
+    // correct outcome for a refusal).
+    //
+    // Like the profile gate's collapse, a cross-family clash wins over a
+    // family-scope one in the same request: reporting the family clash in full
+    // while staying silent about the stranger would let a caller read the same
+    // oracle one member at a time.
+    if (crossFamilyMemberIds.has(guest.memberId)) {
+      throw new BookingGuestValidationError(
+        MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE,
+        MEMBER_GUEST_CROSS_FAMILY_REFUSAL_STATUS,
+      );
+    }
 
     const isOwnBooking = guest.booking.memberId === actorMemberId;
     const isSelfGuest = guest.memberId === actorMemberId;

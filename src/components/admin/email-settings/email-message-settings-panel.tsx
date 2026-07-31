@@ -132,6 +132,15 @@ export function EmailMessageSettingsPanel() {
   const [bracketAnnotationTemplates, setBracketAnnotationTemplates] = useState<
     string[]
   >([]);
+  // #2307 review (M2): saved overrides that still reference a token their
+  // template no longer supplies. A missing token renders as NOTHING, so such an
+  // override keeps sending with a hole in it — the check-in reminder's old
+  // {{guestFirstName}}/{{guestLastName}} pair would have listed no guests at
+  // all. Save-time validation refuses them; only this banner tells an admin
+  // which stored rows are already affected.
+  const [retiredTokenTemplates, setRetiredTokenTemplates] = useState<
+    { templateName: string; tokens: string[] }[]
+  >([]);
   const [loading, setLoading] = useState(true);
   const [savingSettings, setSavingSettings] = useState(false);
   const [savingTemplate, setSavingTemplate] = useState(false);
@@ -177,6 +186,21 @@ export function EmailMessageSettingsPanel() {
             )
               .map((entry) => entry?.templateName)
               .filter((name): name is string => Boolean(name))
+          : [],
+      );
+      setRetiredTokenTemplates(
+        Array.isArray(templatesBody.retiredTokenOverrides)
+          ? (
+              templatesBody.retiredTokenOverrides as Array<{
+                templateName?: string;
+                tokens?: string[];
+              }>
+            )
+              .filter((entry) => Boolean(entry?.templateName))
+              .map((entry) => ({
+                templateName: entry.templateName as string,
+                tokens: Array.isArray(entry.tokens) ? entry.tokens : [],
+              }))
           : [],
       );
       const firstTemplate = selectedTemplate || nextTemplates[0]?.key || "";
@@ -371,6 +395,23 @@ export function EmailMessageSettingsPanel() {
           reset it to the corrected default):{" "}
           <span className="font-medium">
             {bracketAnnotationTemplates.join(", ")}
+          </span>
+          .
+        </div>
+      ) : null}
+      {retiredTokenTemplates.length > 0 ? (
+        <div className="rounded-md border border-warning-6 bg-warning-3 p-3 text-sm text-warning-11">
+          {retiredTokenTemplates.length === 1
+            ? "A saved template override still uses"
+            : `${retiredTokenTemplates.length} saved template overrides still use`}{" "}
+          a token that template no longer offers. A token that is not supplied
+          renders as nothing at all, so the line it sits on can go out empty.
+          Open each one, swap the old token for the chips now shown, and save
+          (or reset it to the current default):{" "}
+          <span className="font-medium">
+            {retiredTokenTemplates
+              .map((entry) => `${entry.templateName} (${entry.tokens.join(", ")})`)
+              .join("; ")}
           </span>
           .
         </div>

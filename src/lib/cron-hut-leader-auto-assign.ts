@@ -5,6 +5,7 @@ import { getTodayDateOnly } from "@/lib/date-only";
 import { getDefaultLodgeId } from "./lodges";
 import { loadHutLeaderLookaheadDays } from "./lodge-settings";
 import { loadEffectiveModuleFlags } from "./module-settings";
+import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent";
 import logger from "./logger";
 
 /**
@@ -56,6 +57,7 @@ export async function autoAssignHutLeaders(): Promise<{
             memberId: { not: null },
             stayStart: { lte: day },
             stayEnd: { gt: day },
+            ...OPERATIONALLY_PRESENT_GUEST_WHERE,
           },
         },
       },
@@ -68,6 +70,15 @@ export async function autoAssignHutLeaders(): Promise<{
             memberId: { not: null },
             stayStart: { lte: day },
             stayEnd: { gt: day },
+            // Owner decision D-12 (#2307): a member whose own consent to being
+            // added as a guest has not been given is not operationally present,
+            // and must never be auto-made hut leader off the back of that row.
+            // BOTH sites matter: the `some` decides whether the booking is
+            // considered at all, and this `where` decides who is counted — and
+            // this job only assigns when there is EXACTLY ONE adult member, so
+            // an unconsented row left in either place would silently change the
+            // outcome for the consented member standing next to them.
+            ...OPERATIONALLY_PRESENT_GUEST_WHERE,
           },
           select: {
             memberId: true,

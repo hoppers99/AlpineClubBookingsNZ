@@ -3,6 +3,7 @@ import { checkLodgeAuth, kioskLodgeAuthErrorResponse, resolveKioskLodgeId } from
 import { addDaysDateOnly, parseDateOnly } from "@/lib/date-only";
 import { getBookingGuestDisplayAgeTier } from "@/lib/booking-guests";
 import { lodgeNullTolerantScope } from "@/lib/lodges";
+import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 import {
@@ -87,6 +88,7 @@ export async function POST(
           some: {
             stayStart: { lte: date },
             stayEnd: { gt: date },
+            ...OPERATIONALLY_PRESENT_GUEST_WHERE,
           },
         },
         // Don't roster a booking blocked by a pending admin review (#1372 /
@@ -99,6 +101,11 @@ export async function POST(
           where: {
             stayStart: { lte: date },
             stayEnd: { gt: date },
+            // Owner decision D-12 (#2307): the kiosk keeps its own copy of the
+            // admin roster query (`getGuestsForDate` in admin-roster-service.ts),
+            // so the same exclusion has to be applied here independently or a
+            // guest kept off the admin roster still gets a chore from the kiosk.
+            ...OPERATIONALLY_PRESENT_GUEST_WHERE,
           },
           include: {
             member: {

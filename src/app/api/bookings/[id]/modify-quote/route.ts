@@ -42,8 +42,13 @@ import {
   BookingGuestValidationError,
   getBookingGuestValidationErrorResponse,
   normalizeBookingGuestInputs,
-  resolveLinkedBookingMembers,
+  resolveLinkedBookingMembersWithBoundary,
 } from "@/lib/booking-guests";
+import {
+  loadMemberGuestAddPolicy,
+  markCrossFamilyMemberGuests,
+  type MemberGuestConsentGuestFields,
+} from "@/lib/member-guest-add-policy";
 import { findUnpaidMemberGuestNames } from "@/lib/booking-member-guest-subscriptions";
 import { nameField } from "@/lib/zod-helpers";
 import {
@@ -172,7 +177,7 @@ type StayRangeInput = {
   nights?: ReadonlyArray<string> | null;
 };
 
-type NormalizedAddGuest = {
+type NormalizedAddGuest = MemberGuestConsentGuestFields & {
   firstName: string;
   lastName: string;
   ageTier: AgeTier;
@@ -546,13 +551,22 @@ export async function POST(
     });
   }
 
+  // "+ Add Member Guest" (epic #2305, MG2 #2307). A PREVIEW: it writes no rows, so
+  // it plans no consent and notifies nobody, but it must resolve a cross-family
+  // member or the quote it shows disagrees with what the apply path will charge.
+  const memberGuestPolicy = await loadMemberGuestAddPolicy();
+
   try {
-    const linkedMembers = await resolveLinkedBookingMembers(
-      prisma,
-      booking.memberId,
-      (addGuests ?? []).map((guest) => guest.memberId),
-      { skipAuthorization: isAdmin }
-    );
+    const { members: linkedMembers, boundary } =
+      await resolveLinkedBookingMembersWithBoundary(
+        prisma,
+        booking.memberId,
+        (addGuests ?? []).map((guest) => guest.memberId),
+        {
+          skipAuthorization: isAdmin,
+          memberGuestWideningEnabled: memberGuestPolicy.wideningEnabled,
+        }
+      );
     await assertLinkedBookingMembersCanBeBooked(
       prisma,
       linkedMembers,
@@ -560,15 +574,20 @@ export async function POST(
       {
         actorRole,
         onBehalfOfMemberId: isAdmin ? booking.memberId : null,
+        // D-8: neutral refusal for a blocked cross-family member.
+        crossFamilyMemberIds: boundary.beyondFamilyMemberIds,
       }
     );
     normalizedAddGuests = addGuests
-      ? normalizeBookingGuestInputs(addGuests, linkedMembers).map((guest, index) => ({
-          ...guest,
-          stayStart: addGuests[index]?.stayStart ?? null,
-          stayEnd: addGuests[index]?.stayEnd ?? null,
-          nights: addGuests[index]?.nights ?? null,
-        }))
+      ? markCrossFamilyMemberGuests(
+          normalizeBookingGuestInputs(addGuests, linkedMembers).map((guest, index) => ({
+            ...guest,
+            stayStart: addGuests[index]?.stayStart ?? null,
+            stayEnd: addGuests[index]?.stayEnd ?? null,
+            nights: addGuests[index]?.nights ?? null,
+          })),
+          boundary,
+        )
       : undefined;
   } catch (error) {
     if (error instanceof BookingGuestValidationError) {
@@ -791,6 +810,10 @@ export async function POST(
       stayStart: g.stayStart,
       stayEnd: g.stayEnd,
       nights: g.nights,
+      // D-8 (MG2 #2307): this list is rebuilt field by field, so the marker has
+      // to be carried across explicitly or the person-night guard below would
+      // answer a cross-family member's occupancy in full detail.
+      crossFamilyMemberGuest: g.crossFamilyMemberGuest,
     })),
   ];
 
@@ -806,14 +829,29 @@ export async function POST(
     );
   }
 
-  const memberNightConflicts = await findBookingMemberNightConflicts(prisma, {
-    actorMemberId: session.user.id,
-    actorRole,
-    checkIn: newCheckIn,
-    checkOut: newCheckOut,
-    guests: guestsForPricing,
-    excludeBookingId: booking.id,
-  });
+  // D-8: a clash on a cross-family guest being ADDED refuses neutrally rather
+  // than returning that member's already-booked nights. Guests already ON the
+  // booking are not marked — they are not being added, and the booker can already
+  // see who is on their own booking.
+  let memberNightConflicts;
+  try {
+    memberNightConflicts = await findBookingMemberNightConflicts(prisma, {
+      actorMemberId: session.user.id,
+      actorRole,
+      checkIn: newCheckIn,
+      checkOut: newCheckOut,
+      guests: guestsForPricing,
+      excludeBookingId: booking.id,
+    });
+  } catch (error) {
+    if (error instanceof BookingGuestValidationError) {
+      return NextResponse.json(
+        getBookingGuestValidationErrorResponse(error),
+        { status: error.status },
+      );
+    }
+    throw error;
+  }
   if (memberNightConflicts.length > 0) {
     return NextResponse.json(
       getBookingMemberNightConflictResponse(memberNightConflicts),
@@ -838,11 +876,24 @@ export async function POST(
   }
 
   if (!isAdmin) {
-    const unpaidMemberGuests = await findUnpaidMemberGuestNames(prisma, {
-      bookingMemberId: booking.memberId,
-      checkIn: isInProgressEdit && editableFrom ? editableFrom : newCheckIn,
-      guests: normalizedAddGuests ?? [],
-    });
+    // D-8: throws the neutral refusal for a cross-family guest rather than
+    // previewing their name and subscription status.
+    let unpaidMemberGuests;
+    try {
+      unpaidMemberGuests = await findUnpaidMemberGuestNames(prisma, {
+        bookingMemberId: booking.memberId,
+        checkIn: isInProgressEdit && editableFrom ? editableFrom : newCheckIn,
+        guests: normalizedAddGuests ?? [],
+      });
+    } catch (error) {
+      if (error instanceof BookingGuestValidationError) {
+        return NextResponse.json(
+          getBookingGuestValidationErrorResponse(error),
+          { status: error.status },
+        );
+      }
+      throw error;
+    }
 
     if (unpaidMemberGuests.length > 0) {
       return NextResponse.json(

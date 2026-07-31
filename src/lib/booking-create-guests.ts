@@ -132,6 +132,14 @@ export function buildGuestCreateData(
       stayEnd,
       priceCents: priced.priceCents,
       rateMembershipTypeId: priced.rateMembershipTypeId ?? null,
+      // Member-guest consent ("+ Add Member Guest", epic #2305, MG2 #2307). The
+      // five columns arrive already decided by `buildMemberGuestConsentWrite` —
+      // the single writer of the eight-shape table — so this layer persists them
+      // and takes no view on what they should be. SPREAD ONLY WHEN PRESENT: a
+      // family-scope or non-member guest carries nothing, and spreading five
+      // explicit nulls instead would write the same values through a different
+      // code path for every booking the club has ever made, for no gain.
+      ...(g.memberGuestConsent ?? {}),
       nights: {
         create: nightDates.map((stayDate, k) => ({
           stayDate,
