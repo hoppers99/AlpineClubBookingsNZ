@@ -233,10 +233,11 @@ test("existing-chip pointer and keyboard drops preserve dates, while keyboard ca
     const targetCell = () =>
       targetRow().locator(`td[data-stay-date="${ken.checkOut}"]`);
     const preview = () =>
-      page.getByText(
-        `to ${destination!.roomName} / ${destination!.name}, snapped to original lodge night`,
-        { exact: false },
-      );
+      page
+        .getByTestId("bed-allocation-drag-feedback")
+        .filter({
+          hasText: `to ${destination!.roomName} / ${destination!.name}, snapped to original lodge night`,
+        });
 
     // Pointer preview + cancel: real sensor wiring, no request.
     await targetCell().scrollIntoViewIfNeeded();

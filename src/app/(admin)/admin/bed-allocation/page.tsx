@@ -1503,7 +1503,10 @@ export default function AdminBedAllocationPage() {
 
           <DragOverlay>
             {activeDragLabel ? (
-              <div className="rounded-md border bg-card px-3 py-2 text-sm font-medium text-card-foreground shadow-lg">
+              <div
+                data-testid="bed-allocation-drag-feedback"
+                className="rounded-md border bg-card px-3 py-2 text-sm font-medium text-card-foreground shadow-lg"
+              >
                 <div>{activeDragLabel}</div>
                 {activeDropPreview ? (
                   <div className="mt-1 text-xs font-normal text-muted-foreground">

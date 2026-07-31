@@ -344,10 +344,10 @@ async function prepareBedAllocationSnapPreview(page: Page): Promise<void> {
     steps: 12,
   });
   await page
-    .getByText(
-      "Dave Davis to Bunk Room A / A4, snapped to original lodge nights",
-      { exact: false },
-    )
+    .getByTestId("bed-allocation-drag-feedback")
+    .filter({
+      hasText: "Dave Davis to Bunk Room A / A4, snapped to original lodge nights",
+    })
     .waitFor({ state: "visible", timeout: 10_000 });
 }
 
