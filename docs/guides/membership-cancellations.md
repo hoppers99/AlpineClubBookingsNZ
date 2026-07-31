@@ -70,11 +70,17 @@ allocated Xero credit note.
    A second blue notice appears beside a participant whose membership was billed
    on a **shared family invoice** that other members are still covered by. It
    says plainly that approving will raise **no** credit note, names who is
-   staying, and links the invoice into Xero. Nothing is blocked by it — the club
-   is still owed that invoice by the members who remain — but if something is
-   genuinely owed back to the leaver, raise that credit note in Xero yourself.
-   If the whole family is going, approve the others first: the last cancellation
-   on that invoice credits it in full. See
+   staying, and links the invoice into Xero. It also tells you which of two
+   things is about to happen, because it is not always the same one: either the
+   approval simply goes through and leaves that invoice alone, or — when the
+   invoice sits on this member's own Xero contact, which is the usual case for
+   whoever the family is billed to — **the approval is refused over it**, because
+   approving would archive a contact with a live balance behind it. The notice
+   ends with the way forward for this particular family: approve the others
+   first where that works, and where it cannot (the whole family shares one Xero
+   contact, or the members holding the invoice open are deactivated rather than
+   cancelled) it says so and points at Xero instead. If something is genuinely
+   owed back to the leaver, raise that credit note in Xero yourself. See
    [shared family invoices](../CANCELLATIONS.md#shared-family-invoices).
 3. Click **Approve** or **Reject**. A dialog asks whether to email the member —
    the request is processed either way and your choice is recorded in the audit
@@ -166,7 +172,8 @@ approval (checkbox).
 | Approve/Reject is disabled on an archive | You raised it — the two-admin rule needs a different reviewer | Ask another admin to review it |
 | A refund didn't happen on cancellation | Paid subscriptions are not refunded; unpaid/overdue invoices are cleared with a credit note | This is by policy — see [`CANCELLATIONS.md`](../CANCELLATIONS.md#refund-policy) |
 | No credit note was raised, and the blue notice said a shared invoice was involved | The member's membership was billed on one invoice covering a whole family or billing group, and other members it covers are staying. Crediting it would wipe their share of the bill too, so nothing is credited automatically | Nothing is wrong: the invoice stands and the club is still owed it by the members who remain. If money genuinely is due back to the leaver, open the invoice from the link in that notice and raise the credit note in Xero yourself. See [shared family invoices](../CANCELLATIONS.md#shared-family-invoices) |
-| **Approve** is refused over the family's own subscription invoice | Approving would archive that member's Xero contact, and this cancellation will not credit that invoice because other members it covers are staying — so the balance is real and stays behind the archived contact | Cancel the other family members first: the last one approved credits the invoice in full and the refusal clears by itself. Otherwise settle, credit or void the invoice in Xero, or switch **Archive Xero contacts after cancellation approval** off |
+| **Approve** is refused over the family's own subscription invoice | Approving would archive that member's Xero contact, and this cancellation will not credit that invoice because other members it covers are staying — so the balance is real and stays behind the archived contact | Read the blue notice beside the participant: it names the way out for this particular family, and there are three. Usually it is "approve the other family members first" — the last one approved credits the invoice in full and the refusal clears by itself. But where the whole family shares one Xero contact (children who inherit a parent's email address do), every one of them is refused over the same invoice and approving them in any order gets nowhere; and where the members holding it open were *deactivated* rather than cancelled, there is nothing to approve for them at all. In those two cases — and any time you would rather not wait — settle, credit or void the invoice in Xero, or switch **Archive Xero contacts after cancellation approval** off |
+| No credit note was raised for the **last** member of a family to leave | Their season subscription was already **paid**, and paid subscriptions are never refunded automatically — so that last cancellation credited nothing either, and the family invoice keeps its balance | Nothing is broken and nothing is hidden: the club receives an admin alert naming that invoice, and the archive refusal keeps the Xero contact open behind it. Open the invoice in Xero and take the payment, credit it, or void it, whichever is right |
 
 ## Related links
 

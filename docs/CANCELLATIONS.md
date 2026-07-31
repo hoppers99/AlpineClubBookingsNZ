@@ -173,10 +173,20 @@ invoice only when the leaver is the last member it covers who is still with the
 club — see [Shared family invoices](#shared-family-invoices). While anyone else
 it covers is staying, nothing is credited, so the invoice is a real balance and
 it is **not** excused: it blocks the approval like any other. That is the rule in
-one line: **this check excuses an invoice if and only if the approval is about to
-credit its full balance.** Otherwise approving would archive a Xero contact with
-money still owing behind it, which is the exact harm the refusal exists to
-prevent.
+one line: **this check excuses an invoice if and only if the approval is still
+about to credit its full balance.** Otherwise approving would archive a Xero
+contact with money still owing behind it, which is the exact harm the refusal
+exists to prevent.
+
+"Still" carries as much weight as "in full". The credit note gets **one** run: it
+completes even when it deliberately raises nothing, and it is never tried again.
+So once a whole family has been cancelled, "would this cancellation credit the
+invoice in full?" answers yes again for every one of them — although each of
+their credit notes already ran and skipped while the others were still members.
+The archive check runs at exactly that moment, so it reads what the credit note
+actually **did**, not what it would do if it ran now. An invoice whose credit
+note has already been and gone is never excused again, and the contact is not
+archived over it.
 
 That exclusion covers the **current** season only, which is the same season the
 approval credits. A club that raises next season's subscription invoices early
@@ -325,19 +335,50 @@ refusal clears by itself.
 Where the whole family shares **one** Xero contact — which happens when children
 inherit a parent's email address — every one of them is refused at once, because
 each is blocked by the same shared invoice sitting on the contact they all use.
-That is not a bug to work around: the club is owed that invoice, and the way
-through is to settle, credit or void it in Xero, or to switch **Archive Xero
-contacts after cancellation approval** off, exactly as the refusal says.
+"Cancel the others first" is then no way out at all, and the notice says so
+instead of sending the reviewer round a loop: the club is owed that invoice, and
+the way through is to settle, credit or void it in Xero, or to switch **Archive
+Xero contacts after cancellation approval** off. The refusal itself says the same
+thing, so an admin who presses Approve from a stale page — or a script calling
+the API — gets the real route out and not just "pay, credit or void it".
+
+Two other cases are worth knowing about, because the obvious advice does not
+apply to either:
+
+- **The members holding the invoice open are deactivated rather than
+  cancelled.** A deactivated membership cannot be approved for cancellation at
+  all, so there is nobody to approve first. They keep the invoice alive by
+  design; settle it in Xero if the club is not collecting it.
+- **The last member out has a PAID subscription.** Paid subscriptions are never
+  auto-refunded, so that last cancellation credits nothing either and the
+  invoice keeps its balance. Nothing is lost and nothing is hidden: an admin
+  alert names the invoice and says it will not be credited automatically, and
+  the archive refusal still holds the Xero contact open behind it.
+
+### Only one cancellation ever credits an invoice
+
+Approving a family in quick succession used to be able to raise **two**
+full-balance credit notes for one invoice — two cancellations reaching the
+"nobody else is covered" state at the same moment, in overlapping background
+runs. Xero would accept both notes, allocate one, and reject the other as an
+over-allocation, leaving unallocated credit sitting on the family's contact.
+The right to credit an invoice is now claimed once, in the database, before any
+Xero call: whichever cancellation gets there first raises the note, and the
+other raises nothing at all and records why.
 
 ### What decides who an invoice still covers
 
 Two records say who a subscription invoice covers: the invoice link stamped on
 each member's season subscription, and the charge's coverage claims. They are
-written together and normally agree; they can disagree after a re-bill or on
-records old enough to predate coverage claims. Both are counted, because an
-uncertain answer must never be the licence to wipe a balance — the worst
-over-counting can do is decline to credit something automatically, which an
-admin can put right in Xero, while under-counting destroys revenue silently.
+written together and normally agree, and there are two shapes where one of them
+is the only record there is — a member who was already paid up when the family's
+invoice was raised (coverage claim only, because the app never overwrites a paid
+subscription) and records old enough to predate coverage claims (invoice link
+only). Both are therefore counted, because an uncertain answer must never be the
+licence to wipe a balance: under-counting destroys revenue silently, which is
+the whole defect. Over-counting is not free either — where the invoice sits on
+the leaver's own Xero contact it also blocks the approval — but that is a
+refusal an admin can clear in Xero, and the silent loss was not.
 
 A member stops keeping an invoice alive once **they** have been cancelled. A
 member who is merely deactivated still counts: their season is still billed on

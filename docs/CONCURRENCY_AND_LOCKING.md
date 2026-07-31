@@ -630,6 +630,56 @@ credit spend engine, which takes the same key. The orphan-heal repair
 (`orphaned-applied-credit-backfill.ts`) also takes the per-member credit ledger
 lock and re-derives an "already restored?" predicate.
 
+## Membership cancellation credit notes: one per INVOICE, structurally (#2400)
+
+`createXeroMembershipCancellationCreditNote`
+(`membership-cancellation-xero.ts`) credits a subscription invoice's **whole**
+remaining balance, and since #2400 it does so only when the leaving member is
+the last member that invoice still covers. A family invoice covers several
+members, so several different cancellations can each reach that state — and the
+outbox's claim is **per operation**, not per invoice. Two overlapping drains
+(the approval kick is unawaited, and the reviewer is told to approve a whole
+family in a burst) could therefore run two siblings' credit notes at once, both
+read an empty covered set, both read the same `amountDue`, and both create a
+full-balance credit note. Xero cannot dedupe them: the idempotency key is built
+from the *subscription*, so the two keys differ. One allocation lands and the
+other is rejected as an over-allocation, leaving unallocated credit on the
+family's contact.
+
+The single-flight is a **unique-key claim, not a lock**, following the #1636
+credit-restore precedent above: before any Xero call the writer inserts one
+`XeroObjectLink` row keyed on the invoice —
+`(localModel "MembershipCancellationSubscriptionInvoice", localId <invoiceId>,
+xeroObjectType "INVOICE", xeroObjectId <invoiceId>, role
+"MEMBERSHIP_CANCELLATION_CREDIT_INVOICE_CLAIM")` — through
+`createMany({ skipDuplicates: true })`, i.e. `INSERT ... ON CONFLICT DO
+NOTHING`, so the second inserter matches zero rows. The row's metadata records
+which subscription holds the claim, so a **retry of the same subscription**
+proceeds (and Xero's own idempotency key, identical across that subscription's
+retries, dedupes the credit note); a **different** subscription runs no side
+effect at all and completes SUCCEEDED with
+`skipped: invoice_credit_claimed_by_other_cancellation`.
+
+An advisory lock was rejected deliberately, and this is the reasoning to keep:
+the side effect being serialised is a sequence of Xero API calls, and
+`pg_advisory_xact_lock` is transaction-scoped, so covering them would mean
+holding a transaction open across provider calls — the shape AGENTS.md's
+concurrency checklist forbids. No new advisory-lock family is introduced, no
+existing key changes, and the claim commits before the first provider call, so
+nothing here composes with the booking/capacity/credit cluster.
+
+The claim is taken **only** on the branch that is about to credit (nobody else
+covered). A cancellation that skips because other covered members are staying
+must NOT claim, or it would fence the sibling who will legitimately credit the
+invoice later.
+
+Losing the claim is conservative in the right direction: if the winner
+ultimately fails, the invoice simply keeps its balance, and the #2392
+archive re-check then refuses to archive the contact over it — that re-check
+reads the credit operation's **recorded outcome**, not a recomputed "would this
+credit?", precisely so a one-shot operation that already skipped can never
+excuse the invoice again.
+
 ## Rules of thumb when working here
 
 - **Adding a capacity claim?** Take `acquireLodgeCapacityLock(tx, lodgeId)` on
@@ -652,5 +702,11 @@ lock and re-derives an "already restored?" predicate.
   (settle/reap/fail/refund/organiser-cancel) must stay on `lock(1)` so they all
   serialise; only the per-child capacity *claim* (`commitChildrenToConfirmed`)
   uses per-lodge locks.
+- **Serialising a sequence of PROVIDER calls?** Do not reach for an advisory
+  lock — it is transaction-scoped, and holding a transaction open across a
+  provider call is forbidden. Take a durable claim that commits first: a unique
+  key where one exists (credit restore #1636, the membership-cancellation
+  invoice credit #2400) or a status-guarded `updateMany`. A lost claim runs no
+  side effect.
 - **Composing two locks in one transaction?** Global `lock(1)` before any
   per-lodge lock; multiple same-family locks in sorted key order.

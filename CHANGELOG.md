@@ -29,11 +29,33 @@ All notable public reference-release changes should be recorded here.
   nobody else the invoice covers is with the club any more. The member who holds
   the family's Xero contact normally has to go last: while the others are still
   members, their share of that invoice is real money owing, so the check
-  introduced with #2392 rightly refuses to archive that contact over it. Cancel
-  the rest of the family first and that refusal clears by itself. Where a whole
-  family shares a single Xero contact — which happens when children inherit a
-  parent's email address — all of them are held until the invoice is settled,
-  credited or voided in Xero, and the refusal says so.
+  introduced with #2392 rightly refuses to archive that contact over it, and the
+  notice beside them says plainly that the approval will be refused rather than
+  simply go through. Cancel the rest of the family first and that refusal clears
+  by itself. Where a whole family shares a single Xero contact — which happens
+  when children inherit a parent's email address — approving them in any order
+  gets nowhere, because every one of them is refused over the same invoice; the
+  notice says that too, instead of sending you round the loop, and points at
+  settling, crediting or voiding the invoice in Xero. So does the refusal
+  itself, so an admin approving from a stale page gets the real answer and not
+  just "pay, credit or void it". The same goes for members who were deactivated
+  rather than cancelled: there is no cancellation to approve for them, and they
+  keep the invoice open by design.
+
+  Two quieter fixes travel with it. Approving a family in a burst could raise
+  **two** full-balance credit notes for one invoice, when two of the approvals
+  reached the "nobody else is covered" moment together in overlapping background
+  runs — Xero accepted both, allocated one, and left the other sitting on the
+  family's contact as unallocated credit anyone could spend. The right to credit
+  an invoice is now claimed once before anything is sent to Xero, so the second
+  cancellation raises nothing and records why. And a family whose last member out
+  had already **paid** their own subscription used to leave the invoice with its
+  full balance and say nothing at all — the cancellation credited nothing, and
+  the archive check would later wave the invoice through as "about to be
+  credited" when its credit note had already been and gone, archiving the Xero
+  contact over live money. The check now reads what the credit note actually did,
+  never what it would do if it ran again, and an admin alert names any invoice a
+  cancellation walks away from with nobody left to pay it.
 
   That check moved with this change, and had to. It deliberately ignores the
   member's own subscription invoice, on the grounds that the cancellation is
