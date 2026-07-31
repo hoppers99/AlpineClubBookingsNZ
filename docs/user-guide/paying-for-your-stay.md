@@ -68,6 +68,13 @@ taken there and then — your balance stays free while the booking is only a
 draft, so nothing is tied up in a booking you might never make. What you asked
 for is remembered, and it is applied when you come back and pay.
 
+You can also make or change that choice while **editing** a booking that has
+not been paid yet — the edit screen's **Account credit** card shows your
+balance and remembers your tick exactly the same way (see
+[Changing or cancelling a booking](changing-or-cancelling-a-booking.md)). The
+booking page then reminds you: *"Your $X credit choice is saved and will be
+applied when you confirm."*
+
 Because time passes in between, what you asked for is not always still
 available. Your balance may have gone on another booking, or the booking itself
 may have been repriced. The club applies **as much of your election as it still

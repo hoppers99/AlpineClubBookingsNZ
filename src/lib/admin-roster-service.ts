@@ -10,6 +10,7 @@ import { addDaysDateOnly, formatDateOnly } from "@/lib/date-only"
 import { getActiveGuestsForNight, getGuestStayEnd, getGuestStayStart } from "@/lib/booking-guest-stay-ranges"
 import { validateRosterAllocationsForDate } from "@/lib/lodge-date-scoping"
 import { lodgeNullTolerantScope } from "@/lib/lodges"
+import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent"
 import { z } from "zod"
 import logger from "@/lib/logger"
 import { logAudit } from "@/lib/audit"
@@ -62,6 +63,7 @@ async function getGuestsForDate(date: Date, lodgeId: string): Promise<GuestInput
         some: {
           stayStart: { lte: date },
           stayEnd: { gt: date },
+          ...OPERATIONALLY_PRESENT_GUEST_WHERE,
         },
       },
     },
@@ -70,6 +72,13 @@ async function getGuestsForDate(date: Date, lodgeId: string): Promise<GuestInput
         where: {
           stayStart: { lte: date },
           stayEnd: { gt: date },
+          // Owner decision D-12 (#2307): this one query is the choke point for
+          // the whole admin roster — chore allocation, the roster email
+          // fan-out, and GuestChoreToken minting all read the list it returns.
+          // A guest whose member consent is still PENDING holds a bed (D-4) but
+          // is not operationally present, so they are never given a chore, never
+          // emailed a roster, and never issued a chore token.
+          ...OPERATIONALLY_PRESENT_GUEST_WHERE,
         },
         include: {
           member: {

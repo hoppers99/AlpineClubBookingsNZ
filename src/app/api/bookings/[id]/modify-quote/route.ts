@@ -42,8 +42,13 @@ import {
   BookingGuestValidationError,
   getBookingGuestValidationErrorResponse,
   normalizeBookingGuestInputs,
-  resolveLinkedBookingMembers,
+  resolveLinkedBookingMembersWithBoundary,
 } from "@/lib/booking-guests";
+import {
+  loadMemberGuestAddPolicy,
+  markCrossFamilyMemberGuests,
+  type MemberGuestConsentGuestFields,
+} from "@/lib/member-guest-add-policy";
 import { findUnpaidMemberGuestNames } from "@/lib/booking-member-guest-subscriptions";
 import { nameField } from "@/lib/zod-helpers";
 import {
@@ -63,6 +68,7 @@ import {
   isQuotePricedBooking,
   QUOTE_PRICED_EDIT_BLOCK_MESSAGE,
   resolvePartnerSharedCapacity,
+  resolvePromoBeneficiarySelection,
 } from "@/lib/booking-modify";
 import {
   buildInProgressGuestRangePlan,
@@ -81,6 +87,7 @@ import {
   findBookingMemberNightConflicts,
   getBookingMemberNightConflictResponse,
 } from "@/lib/booking-member-night-conflicts";
+import { getMemberCreditBalance } from "@/lib/member-credit";
 import logger from "@/lib/logger";
 
 const modifyQuoteSchema = z.object({
@@ -121,7 +128,19 @@ const modifyQuoteSchema = z.object({
     )
     .optional(),
   promoCode: z.string().optional(),
+  // #2266 (MED-4): beneficiaries for guest-targeted promo codes, mirroring the
+  // apply route — EXISTING guests bind by bookingGuestId (a stale id refuses
+  // loudly instead of re-pointing the discount), and positional indexes exist
+  // only for TO-BE-ADDED guests within this request, relative to addGuests.
+  promoGuestIds: z.array(z.string().min(1)).max(200).optional(),
+  promoAddedGuestIndexes: z.array(z.number().int().min(0)).max(200).optional(),
   removePromoCode: z.boolean().optional(),
+  // #2266: the member's credit election, mirroring the create quote/create
+  // routes. The preview never moves money — the apply route stores the election
+  // on the booking (Booking.creditElectionCents, #2265) and the pay step
+  // consumes it — so the preview only has to keep the request price-preserving
+  // when credit is the ONLY change.
+  applyCreditCents: z.number().int().min(0).max(100_000_000).optional(),
   // Admin-only date override (issue #1668). The preview mirrors apply exactly.
   adminOverride: z.boolean().optional(),
   pricingMode: z.enum(["shift", "recalculate"]).optional(),
@@ -145,6 +164,8 @@ const OVERRIDE_DATE_ONLY_QUOTE_FIELDS = [
   "guestStayRanges",
   "guestUpdates",
   "promoCode",
+  "promoGuestIds",
+  "promoAddedGuestIndexes",
   "removePromoCode",
   // #1746: partner-shared flags ride guest changes, never a date override.
   "partnerSharedGuests",
@@ -156,7 +177,7 @@ type StayRangeInput = {
   nights?: ReadonlyArray<string> | null;
 };
 
-type NormalizedAddGuest = {
+type NormalizedAddGuest = MemberGuestConsentGuestFields & {
   firstName: string;
   lastName: string;
   ageTier: AgeTier;
@@ -251,8 +272,13 @@ export async function POST(
   const booking = await prisma.booking.findUnique({
     where: { id: bookingId },
     include: {
-      // Per-night sets (issue #713): preserve unedited guests' gaps in the quote.
-      guests: { include: { nights: { select: { stayDate: true, priceCents: true } } } },
+      // Per-night sets (issue #713): preserve unedited guests' gaps in the
+      // quote. Deterministic order (#2266 MED-4): must match the apply path's
+      // fetch so preview and apply price and target the same guest order.
+      guests: {
+        include: { nights: { select: { stayDate: true, priceCents: true } } },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      },
       payment: true,
       promoRedemption: {
         include: {
@@ -302,7 +328,10 @@ export async function POST(
     guestStayRanges,
     guestUpdates,
     promoCode: newPromoCode,
+    promoGuestIds,
+    promoAddedGuestIndexes,
     removePromoCode,
+    applyCreditCents,
     pricingMode,
     confirmOverCapacity,
   } = parsed.data;
@@ -348,10 +377,13 @@ export async function POST(
   }
   if (
     adminOverride &&
-    OVERRIDE_DATE_ONLY_QUOTE_FIELDS.some((field) => {
+    (OVERRIDE_DATE_ONLY_QUOTE_FIELDS.some((field) => {
       const value = parsed.data[field];
       return Array.isArray(value) ? value.length > 0 : Boolean(value);
-    })
+    }) ||
+      // #2266: checked explicitly — `Boolean(0)` is false, so a credit
+      // election of 0 cents would otherwise slip past the date-only contract.
+      applyCreditCents !== undefined)
   ) {
     return NextResponse.json(
       { error: "Admin override edits change dates only" },
@@ -441,13 +473,28 @@ export async function POST(
   );
   const requestIsIdentityOnly =
     !requestedStructuralChange && Boolean(guestUpdates?.length);
+  // #2266: a credit election with nothing structural is price-preserving by the
+  // same argument as an identity-only name fix — the apply route only writes
+  // Booking.creditElectionCents (#2265) and touches neither price nor capacity,
+  // so the preview must echo the stored money rather than reprice at current
+  // rates (a season-rate change would otherwise surface a phantom price diff).
+  const requestIsCreditElectionOnly =
+    !requestedStructuralChange &&
+    !guestUpdates?.length &&
+    applyCreditCents !== undefined;
   const quotePriced = await isQuotePricedBooking(prisma, bookingId);
-  if (!requestIsIdentityOnly && quotePriced) {
+  if (!requestIsIdentityOnly && !requestIsCreditElectionOnly && quotePriced) {
     return NextResponse.json(
       { error: QUOTE_PRICED_EDIT_BLOCK_MESSAGE },
       { status: 400 },
     );
   }
+
+  // #2266: the member's live credit balance rides every non-shift preview, the
+  // same field the create-flow quote returns (api/bookings/quote/route.ts) —
+  // the edit panel's credit card keys off it. The BOOKING OWNER's balance, not
+  // the actor's: an admin editing on behalf must see the member's credit.
+  const availableCreditCents = await getMemberCreditBalance(booking.memberId);
 
   let normalizedAddGuests: NormalizedAddGuest[] | undefined = addGuests;
   let guestNameUpdates: ReturnType<typeof resolveGuestNameUpdates> = [];
@@ -471,9 +518,11 @@ export async function POST(
 
   // Identity-only preview (#1099): a name fix never reprices, so the quote is
   // the stored state with zero deltas — no pricing engine, no capacity check,
-  // safe for quoted and legacy bookings alike.
-  if (requestIsIdentityOnly) {
+  // safe for quoted and legacy bookings alike. #2266 routes a credit-only
+  // election through the same echo for the same reason.
+  if (requestIsIdentityOnly || requestIsCreditElectionOnly) {
     return NextResponse.json({
+      availableCreditCents,
       newTotalPriceCents: booking.totalPriceCents,
       newDiscountCents: booking.discountCents,
       newPromoAdjustmentCents: booking.promoAdjustmentCents,
@@ -502,13 +551,22 @@ export async function POST(
     });
   }
 
+  // "+ Add Member Guest" (epic #2305, MG2 #2307). A PREVIEW: it writes no rows, so
+  // it plans no consent and notifies nobody, but it must resolve a cross-family
+  // member or the quote it shows disagrees with what the apply path will charge.
+  const memberGuestPolicy = await loadMemberGuestAddPolicy();
+
   try {
-    const linkedMembers = await resolveLinkedBookingMembers(
-      prisma,
-      booking.memberId,
-      (addGuests ?? []).map((guest) => guest.memberId),
-      { skipAuthorization: isAdmin }
-    );
+    const { members: linkedMembers, boundary } =
+      await resolveLinkedBookingMembersWithBoundary(
+        prisma,
+        booking.memberId,
+        (addGuests ?? []).map((guest) => guest.memberId),
+        {
+          skipAuthorization: isAdmin,
+          memberGuestWideningEnabled: memberGuestPolicy.wideningEnabled,
+        }
+      );
     await assertLinkedBookingMembersCanBeBooked(
       prisma,
       linkedMembers,
@@ -516,15 +574,20 @@ export async function POST(
       {
         actorRole,
         onBehalfOfMemberId: isAdmin ? booking.memberId : null,
+        // D-8: neutral refusal for a blocked cross-family member.
+        crossFamilyMemberIds: boundary.beyondFamilyMemberIds,
       }
     );
     normalizedAddGuests = addGuests
-      ? normalizeBookingGuestInputs(addGuests, linkedMembers).map((guest, index) => ({
-          ...guest,
-          stayStart: addGuests[index]?.stayStart ?? null,
-          stayEnd: addGuests[index]?.stayEnd ?? null,
-          nights: addGuests[index]?.nights ?? null,
-        }))
+      ? markCrossFamilyMemberGuests(
+          normalizeBookingGuestInputs(addGuests, linkedMembers).map((guest, index) => ({
+            ...guest,
+            stayStart: addGuests[index]?.stayStart ?? null,
+            stayEnd: addGuests[index]?.stayEnd ?? null,
+            nights: addGuests[index]?.nights ?? null,
+          })),
+          boundary,
+        )
       : undefined;
   } catch (error) {
     if (error instanceof BookingGuestValidationError) {
@@ -747,6 +810,10 @@ export async function POST(
       stayStart: g.stayStart,
       stayEnd: g.stayEnd,
       nights: g.nights,
+      // D-8 (MG2 #2307): this list is rebuilt field by field, so the marker has
+      // to be carried across explicitly or the person-night guard below would
+      // answer a cross-family member's occupancy in full detail.
+      crossFamilyMemberGuest: g.crossFamilyMemberGuest,
     })),
   ];
 
@@ -762,14 +829,29 @@ export async function POST(
     );
   }
 
-  const memberNightConflicts = await findBookingMemberNightConflicts(prisma, {
-    actorMemberId: session.user.id,
-    actorRole,
-    checkIn: newCheckIn,
-    checkOut: newCheckOut,
-    guests: guestsForPricing,
-    excludeBookingId: booking.id,
-  });
+  // D-8: a clash on a cross-family guest being ADDED refuses neutrally rather
+  // than returning that member's already-booked nights. Guests already ON the
+  // booking are not marked — they are not being added, and the booker can already
+  // see who is on their own booking.
+  let memberNightConflicts;
+  try {
+    memberNightConflicts = await findBookingMemberNightConflicts(prisma, {
+      actorMemberId: session.user.id,
+      actorRole,
+      checkIn: newCheckIn,
+      checkOut: newCheckOut,
+      guests: guestsForPricing,
+      excludeBookingId: booking.id,
+    });
+  } catch (error) {
+    if (error instanceof BookingGuestValidationError) {
+      return NextResponse.json(
+        getBookingGuestValidationErrorResponse(error),
+        { status: error.status },
+      );
+    }
+    throw error;
+  }
   if (memberNightConflicts.length > 0) {
     return NextResponse.json(
       getBookingMemberNightConflictResponse(memberNightConflicts),
@@ -794,11 +876,24 @@ export async function POST(
   }
 
   if (!isAdmin) {
-    const unpaidMemberGuests = await findUnpaidMemberGuestNames(prisma, {
-      bookingMemberId: booking.memberId,
-      checkIn: isInProgressEdit && editableFrom ? editableFrom : newCheckIn,
-      guests: normalizedAddGuests ?? [],
-    });
+    // D-8: throws the neutral refusal for a cross-family guest rather than
+    // previewing their name and subscription status.
+    let unpaidMemberGuests;
+    try {
+      unpaidMemberGuests = await findUnpaidMemberGuestNames(prisma, {
+        bookingMemberId: booking.memberId,
+        checkIn: isInProgressEdit && editableFrom ? editableFrom : newCheckIn,
+        guests: normalizedAddGuests ?? [],
+      });
+    } catch (error) {
+      if (error instanceof BookingGuestValidationError) {
+        return NextResponse.json(
+          getBookingGuestValidationErrorResponse(error),
+          { status: error.status },
+        );
+      }
+      throw error;
+    }
 
     if (unpaidMemberGuests.length > 0) {
       return NextResponse.json(
@@ -1097,7 +1192,15 @@ export async function POST(
   const checkInChanged =
     newCheckIn.getTime() !== new Date(booking.checkIn).getTime();
 
-  if (!skipBookingLifecycleRules && checkInChanged && !isInProgressEdit) {
+  // #2266: no change fee on a DRAFT — nothing has been committed to, exactly
+  // like fiddling with dates in the wizard before saving. Mirrors the
+  // calculateModificationChangeFee guard on the apply path.
+  if (
+    !skipBookingLifecycleRules &&
+    checkInChanged &&
+    !isInProgressEdit &&
+    booking.status !== "DRAFT"
+  ) {
     const now = new Date();
     const policy = await loadCancellationPolicy(booking.checkIn, bookingLodgeId);
     const feeResult = calculateChangeFee({
@@ -1217,12 +1320,36 @@ export async function POST(
     newPromoAdjustmentCents = 0;
     promoValidation = null;
   } else if (newPromoCode) {
-    // User wants to apply a new promo code
+    // User wants to apply a new promo code. #2266 (MED-4): beneficiaries ride
+    // along bound the same way the apply route (applyPromoCodeChanges)
+    // resolves them — existing guests by bookingGuestId, added guests by
+    // request-local index — so preview and apply can never disagree about who
+    // the code covers, and a stale id 400s here exactly as it would on save.
+    const quoteGuestNightRates = getGuestNightRates();
+    let quoteSelectedGuestIndexes: number[] | undefined;
+    try {
+      quoteSelectedGuestIndexes = resolvePromoBeneficiarySelection({
+        guestNightRates: quoteGuestNightRates,
+        addedGuestCount: normalizedAddGuestsWithRanges?.length ?? 0,
+        promoGuestIds,
+        promoAddedGuestIndexes,
+      });
+    } catch (error) {
+      if (error instanceof ApiError) {
+        return NextResponse.json(
+          { error: error.message },
+          { status: error.status },
+        );
+      }
+      throw error;
+    }
     const validation = await validatePromoCodeFull(newPromoCode, {
       totalPriceCents: newTotalPriceCents,
       memberId: booking.memberId,
-      guests: getGuestNightRates(),
-    }, bookingId, bookingLodgeId);
+      guests: quoteGuestNightRates,
+    }, bookingId, bookingLodgeId, {
+      selectedGuestIndexes: quoteSelectedGuestIndexes,
+    });
 
     if (validation.valid) {
       newDiscountCents = validation.discountCents ?? 0;
@@ -1234,6 +1361,11 @@ export async function POST(
         promoAdjustmentCents: validation.promoAdjustmentCents ?? 0,
       };
     } else {
+      // A guest-targeted code that still needs a selection surfaces here as
+      // its plain error text. The panel does not re-open guest selection from
+      // the quote (INFO-9): PromoCodeInput owns selection via
+      // /api/promo-codes/validate, and the panel resets an applied code
+      // whenever the guest set changes, so the member re-selects there.
       promoValidation = {
         valid: false,
         error: validation.error,
@@ -1313,6 +1445,9 @@ export async function POST(
     changeFeeCents,
     netChargeCents,
     settlementOptions,
+    // #2266: create-flow parity (api/bookings/quote/route.ts) — the member's
+    // live balance so the edit panel can offer credit against the new price.
+    availableCreditCents,
     capacityAvailable: capacity.available,
     minimumStayValid: minimumStayViolations.length === 0,
     minimumStayViolations,

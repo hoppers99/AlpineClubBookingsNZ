@@ -796,18 +796,18 @@ Booking Policies sections (#2142) and is now the **default across the admin
 tree** (#2160, extended by #2168 and #2324) — not a claim that nothing is left.
 Measured
 on the current tree by `view-only-banner-contract.test.ts`, which asserts these
-figures rather than trusting a hand count: **79 components render a banner, and
-250 of the 293 `ViewOnlyActionButton` call sites opt out** of the per-button
+figures rather than trusting a hand count: **80 components render a banner, and
+252 of the 299 `ViewOnlyActionButton` call sites opt out** of the per-button
 reason. (Earlier revisions of this page published 76/232/264/211 — those were
 upstream-historical and had drifted; the numbers here are the ones the contract
-test currently pins, which is the only authority.) Those 250 split by WHICH rule
-covers them: **224** pass the literal
+test currently pins, which is the only authority.) Those 252 split by WHICH rule
+covers them: **226** pass the literal
 `describeReason={false}` and are covered by a banner in the same file, and **26**
 pass `describeReason={!ancestorRendersViewOnlyBanner}` and are covered by a
 verified vouching parent — 21 by a parent's own JSX render site (#2168), 5 by the
 guided-setup shell (#2324); see *Vouching for a child's coverage* and *Vouching
 through the wizard shell* below. The
-remaining **43 controls across 23 files deliberately keep the per-button
+remaining **47 controls across 25 files deliberately keep the per-button
 default** (`describeReason` left at `true`), in three shapes:
 
 - **Controls inside a dialog, sheet, popover, or dropdown menu.** These live in
@@ -821,7 +821,7 @@ default** (`describeReason` left at `true`), in three shapes:
   the booking capacity/exclusive hold controls, the family-group login-holder
   and request-review sub-sections, and the non-member contact form). Nothing
   local proves an ancestor renders a banner above them, so the reason stays on
-  the control. (30 controls across 18 files.) Nine of those 30 sit inside a
+  the control. (34 controls across 20 files.) Nine of those 34 sit inside a
   setup wizard and are **scope** exceptions rather than indirection ones: each is
   gated on a permission NARROWER than the banner its shell renders, so an admin
   who has the wizard's area but not that narrower one meets no banner at all.
@@ -833,11 +833,15 @@ default** (`describeReason` left at `true`), in three shapes:
   an exception since #2249 and stays one for the same reason; #2324 moved its
   three lodge-gated siblings out of this bucket and into the vouched one. Before
   those, the per-booking "No emails" switch (#2259), dropped into the Admin tools
-  card's layout beside the capacity and exclusive holds. Read that
+  card's layout beside the capacity and exclusive holds. Newest are the
+  cash / off-Xero payment feature's four controls (#2262): Record and Reverse
+  manual payment, a leaf dropped into that same Admin tools card, and the
+  manual-refund-task queue's Mark-paid-back and Dismiss pair, a card on the
+  Payments page with no banner of its own. Read that
   bucket as the
   REMAINDER — everything that is neither a member detail card nor one of the
-  four dialog-only files — rather than as a claim that all 30 are leaves. Ten of
-  the eighteen files are (18 controls); six are the wizard step files just
+  four dialog-only files — rather than as a claim that all 34 are leaves. Twelve
+  of the twenty files are (22 controls); six are the wizard step files just
   described (9 controls); and the last two, `page-content-panel.tsx`
   and `site-banners-panel.tsx`, are full banner-bearing panels whose last 3
   controls sit inside their own edit/create `Dialog`, so those 3 are really the
@@ -2085,7 +2089,7 @@ flowchart TD
     Leader --> Q15["Every 15 min<br/>payment-recovery, xero-outbox,<br/>xero-operation-replay, xero-inbound-reconcile"]
     Leader --> Q30["Every 30 min<br/>waitlist-processor, email-retry"]
     Leader --> Q3h["Every 3 h<br/>confirm-pending, pre-arrival-reminders,<br/>purge-booking-requests, quote-expiry-reminders,<br/>school-attendee-confirmations, group-settlement-reaper"]
-    Leader --> Daily["Daily<br/>complete-bookings, data-pruning, draft-cleanup,<br/>age-up, capacity-warnings, admin-digest,<br/>credit-reconciliation, hut-leader-auto-assign,<br/>checkin-reminders, pending-deadline-alerts,<br/>nomination-reminders, finance-daily-sync,<br/>xero-membership-refresh, xero-link-backfill,<br/>xero-link-cleanup, xero-reconciliation-report"]
+    Leader --> Daily["Daily<br/>complete-bookings, data-pruning, draft-cleanup,<br/>age-up, capacity-warnings, admin-digest,<br/>credit-reconciliation, hut-leader-auto-assign,<br/>checkin-reminders, pending-deadline-alerts,<br/>member-guest-consent-expiry,<br/>nomination-reminders, finance-daily-sync,<br/>xero-membership-refresh, xero-link-backfill,<br/>xero-link-cleanup, xero-reconciliation-report"]
     Leader --> Cfg["Configurable<br/>backup"]
 ```
 
@@ -2111,6 +2115,7 @@ flowchart TD
 | `finance-daily-sync` | Daily when the finance dashboard module is enabled | Refresh finance report/invoice/balance snapshots from the operational Xero connection |
 | `data-pruning` | Daily | Prune expired tokens/logs and run audit retention |
 | `draft-cleanup` | Daily | Delete expired draft bookings |
+| `member-guest-consent-expiry` | Daily at 04:30 NZT when the member-guests module is enabled | Expire lapsed member-guest consent requests, release the bed, and settle the reduction as account credit to the booking owner; rows the shared removal path refuses are counted separately for the admin exception list |
 | `pending-deadline-alerts` | Daily | Alert admins about pending bookings approaching deadline |
 | `credit-reconciliation` | Daily | Reconcile account-credit ledger state and alert on refunded Stripe payments missing Xero credit notes |
 | `hut-leader-auto-assign` | Daily | Suggest hut leaders |

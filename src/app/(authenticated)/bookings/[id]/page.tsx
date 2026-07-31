@@ -19,6 +19,7 @@ import { BookingEditor, type BookingEditorData } from "@/components/booking-edit
 import { AdditionalPaymentCard } from "@/components/additional-payment-card";
 import { ConfirmDraftButton } from "@/components/confirm-draft-button";
 import { AdminBookingToolsCard } from "@/components/admin/admin-booking-tools-card";
+import { getBookingManualPaymentState } from "@/lib/manual-booking-payment-state";
 import { BookingBedAllocationPanel } from "@/components/admin/booking-bed-allocation-panel";
 import { BookingWithheldEmailsBanner } from "@/components/admin/booking-withheld-emails-banner";
 import { getWithheldBookingEmailSummary } from "@/lib/booking-email-suppression";
@@ -62,7 +63,12 @@ import {
   getRemainingRefundableCents,
   hasCapturedPayment,
 } from "@/lib/booking-payment-state";
+import {
+  deriveBookingAppliedCreditCents,
+  getMemberCreditBalance,
+} from "@/lib/member-credit";
 import { isBookingFullyPaidForGuestNameEdits } from "@/lib/booking-modify";
+import { resolveCreditElectionNoticeAudience } from "@/lib/booking-credit-election";
 import {
   bookingHoldsCapacity,
   isPaymentOwedBookingStatus,
@@ -84,6 +90,19 @@ import { hasAdminAccess } from "@/lib/access-roles";
 import { SelfRemoveFromBookingCard } from "@/components/self-remove-from-booking-card";
 import { resolveBookingSelfRemovalCard } from "@/lib/booking-guest-self-removal";
 import { isQuotePricedBooking } from "@/lib/booking-modify-validation";
+import { MemberGuestConsentCard } from "@/components/member-guest-consent-card";
+import {
+  describeConsentDeclineRefusal,
+  describeConsentNightsCount,
+  describeMemberGuestConsentBadge,
+  formatConsentFullDate,
+  formatConsentNightsLabel,
+  formatConsentStayLabel,
+  formatConsentWeekdayDate,
+  resolveBookingConsentCard,
+} from "@/lib/member-guest-consent-card";
+import { isOperationallyPresentConsent } from "@/lib/member-guest-consent";
+import { eachDateOnlyInRange, getTodayDateOnly } from "@/lib/date-only";
 import {
   bookingManagementAuthorizationRole,
   hasAdminAreaAccess,
@@ -123,6 +142,9 @@ const narrativeBannerClasses: Record<string, string> = {
 // set here (rather than re-deriving each card's render condition) is safe.
 const BOOKING_SECTIONS: SectionNavItem[] = [
   { id: "details", label: "Booking Details" },
+  // #2307: the member-guest consent card — present only while the viewer's own
+  // consent is being asked for; the request email deep-links to #consent.
+  { id: "consent", label: "Consent" },
   { id: "non-member-guests", label: "Non-member Guests" },
   { id: "group", label: "Group Booking" },
   { id: "arrival", label: "Arrival Time" },
@@ -165,7 +187,13 @@ export default async function BookingDetailPage({
   const booking = await prisma.booking.findUnique({
     where: { id },
     include: {
-      guests: { include: { nights: { select: { stayDate: true } } } },
+      // Deterministic order (#2266 MED-4): the edit panel derives promo
+      // beneficiary bindings and pricing rows from this list, so it must be
+      // the same order the modify/modify-quote fetches use.
+      guests: {
+        include: { nights: { select: { stayDate: true } } },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      },
       payment: true,
       member: { select: { firstName: true, lastName: true } },
       // Admin capacity hold (#1764): who placed it, for the admin tools card.
@@ -297,10 +325,11 @@ export default async function BookingDetailPage({
   if (!booking) notFound();
   if (booking.deletedAt && !isAdmin) notFound();
   const isBookingOwner = booking.memberId === session.user.id;
-  const isLinkedGuestViewer =
-    !isBookingOwner &&
-    !isAdmin &&
-    booking.guests.some((guest) => guest.memberId === session.user.id);
+  // The viewer's OWN guest row, kept rather than thrown away: its consent state
+  // decides what operational detail (the door code, below) this viewer may see.
+  const viewerGuestRow =
+    booking.guests.find((guest) => guest.memberId === session.user.id) ?? null;
+  const isLinkedGuestViewer = !isBookingOwner && !isAdmin && viewerGuestRow !== null;
   const canManageBooking = isBookingOwner || isAdmin;
   // Issue #1289: Booking Officer / Read-only Admin reach the admin bookings
   // list and calendar (gated on bookings-area view), so the member-facing
@@ -372,6 +401,91 @@ export default async function BookingDetailPage({
         isQuotePriced: await isQuotePricedBooking(prisma, booking.id),
       })
     : selfRemovalCandidate;
+
+  // #2307: the viewer's own member-guest consent state — the ask card while
+  // their consent is PENDING (owner decision D-11 gives that row this whole
+  // page, so the card sits inside it), or the told-not-asked notice for a
+  // notify-only add. Two-phase like the self-removal card above: the
+  // quote-priced lookup (one indexed query) only runs when the ask card will
+  // actually render, because its refusal prediction is the only consumer.
+  const consentCardInput = {
+    actorMemberId: session.user.id,
+    bookingDeletedAt: booking.deletedAt,
+    bookingStatus: booking.status,
+    bookingCheckIn: booking.checkIn,
+    guests: booking.guests,
+    selfRemovalCardPresent: Boolean(selfRemovalCard),
+    // The clock is read HERE, by name, and passed down: the card resolver and
+    // its refusal prediction are pure, so "today" is this page's fact to state
+    // rather than something a helper quietly looks up for itself.
+    today: getTodayDateOnly(),
+  };
+  const consentCandidate = resolveBookingConsentCard({
+    ...consentCardInput,
+    isQuotePriced: false,
+  });
+  const consentIsQuotePriced =
+    consentCandidate?.kind === "PENDING_ASK"
+      ? await isQuotePricedBooking(prisma, booking.id)
+      : false;
+  const consentCard =
+    consentCandidate?.kind === "PENDING_ASK"
+      ? resolveBookingConsentCard({
+          ...consentCardInput,
+          isQuotePriced: consentIsQuotePriced,
+        })
+      : consentCandidate;
+  // The ask card names the lodge the way the request email does — the
+  // booking's own lodge identity. Loaded only when the card renders.
+  const consentLodgeName =
+    consentCard?.kind === "PENDING_ASK"
+      ? (await loadEmailMessageSettingsForLodge(booking.lodgeId)).lodgeName
+      : null;
+  const viewerConsentGuest =
+    consentCard?.kind === "PENDING_ASK"
+      ? booking.guests.find((guest) => guest.id === consentCard.guestId) ?? null
+      : null;
+  const viewerConsentNights = viewerConsentGuest
+    ? viewerConsentGuest.nights.length > 0
+      ? viewerConsentGuest.nights.map((night) => night.stayDate)
+      : eachDateOnlyInRange(viewerConsentGuest.stayStart, viewerConsentGuest.stayEnd)
+    : [];
+
+  // #2307 (owner decision MG2-M-2): the per-guest consent badge, shown to
+  // everyone who can see the guest list — member and admin read the same page.
+  // Family and non-member rows get no badge and no layout change.
+  //
+  // WHICH BADGE WORDING depends on who is reading, because the two signed-off
+  // mockups differ: the member pack draws the bare "Consented" / "Added by the
+  // club" forms, the admin pack the named and dated ones. The person who
+  // answered is routinely a family adult with no place on this booking (D-9),
+  // so their name is the club's business, not every co-guest's. For a member
+  // viewer the responder names are therefore never even looked up.
+  const consentBadgeAudience = isAdmin || canViewAsAdmin ? "ADMIN" : "MEMBER";
+  const consentResponderIds =
+    consentBadgeAudience === "ADMIN"
+      ? [
+          ...new Set(
+            booking.guests
+              .filter((guest) => guest.consentStatus !== null)
+              .map((guest) => guest.consentRespondedByMemberId)
+              .filter((memberId): memberId is string => Boolean(memberId)),
+          ),
+        ]
+      : [];
+  const consentResponders =
+    consentResponderIds.length > 0
+      ? await prisma.member.findMany({
+          where: { id: { in: consentResponderIds } },
+          select: { id: true, firstName: true, lastName: true },
+        })
+      : [];
+  const consentResponderNameById = new Map(
+    consentResponders.map((member) => [
+      member.id,
+      `${member.firstName} ${member.lastName}`.trim(),
+    ]),
+  );
 
   const bookingAuditLogs = await prisma.auditLog.findMany({
     where: {
@@ -628,6 +742,27 @@ export default async function BookingDetailPage({
     duplicateCaptureRefunds,
   });
 
+  // #2266: the edit panel's account-credit card (its own card above the
+  // Return-method radio — owner-decided placement). Only statuses whose stored
+  // election (#2265) a pay-time consumer will honour are eligible; PENDING is
+  // deliberately out (see CREDIT_ELECTION_WRITABLE_STATUSES in
+  // booking-credit-election.ts), as are organiser-settled bookings and anything
+  // with captured money. The balance shown is the BOOKING OWNER's, so an admin
+  // editing on behalf offers the member's credit, not their own.
+  const creditElectionEligible =
+    canModify &&
+    !isDeleted &&
+    ["DRAFT", "AWAITING_REVIEW", "PAYMENT_PENDING"].includes(booking.status) &&
+    !booking.organiserSettled &&
+    !hasCapturedPayment(booking.payment);
+  const editorCredit = creditElectionEligible
+    ? {
+        availableCents: await getMemberCreditBalance(booking.memberId),
+        electionCents: booking.creditElectionCents,
+        appliedCents: await deriveBookingAppliedCreditCents(booking.id),
+      }
+    : null;
+
   const editorData: BookingEditorData = {
     id: booking.id,
     checkIn: new Date(booking.checkIn).toISOString().split("T")[0],
@@ -645,6 +780,19 @@ export default async function BookingDetailPage({
       stayEnd: g.stayEnd.toISOString().slice(0, 10),
       priceCents: g.priceCents,
       nights: g.nights.map((n) => n.stayDate.toISOString().slice(0, 10)),
+      // #2307 (MG2-M-2): null for family and non-member rows — no badge, no
+      // layout change. A conditional spread so those rows' serialised payload
+      // carries no `consent` key at all (React Flight serialises the key too).
+      ...(() => {
+        const consent = describeMemberGuestConsentBadge({
+          guest: g,
+          audience: consentBadgeAudience,
+          responderName: g.consentRespondedByMemberId
+            ? (consentResponderNameById.get(g.consentRespondedByMemberId) ?? null)
+            : null,
+        });
+        return consent ? { consent } : {};
+      })(),
     })),
     viewerRole: viewerAuthorizationRole,
     totalPriceCents: booking.totalPriceCents,
@@ -695,6 +843,15 @@ export default async function BookingDetailPage({
       checkInEditable: editPolicy.checkInEditable,
       adminOverrideAvailable: canAdminOverride,
     },
+    // #2266: null (rather than omitted) when ineligible, so the panel renders
+    // no credit card at all for a booking whose election nothing would honour.
+    credit: editorCredit,
+    // #2266: the booking OWNER's member id — the shared PromoCodeInput
+    // validates on-behalf promo entry against the member's assignments, not
+    // the acting admin's.
+    memberId: booking.memberId,
+    // #2266: promo lodge restrictions validate against THIS booking's lodge.
+    lodgeId: booking.lodgeId,
   };
   const backHref = resolveInternalReturnPath(
     query.returnTo,
@@ -708,9 +865,20 @@ export default async function BookingDetailPage({
     !isDeleted &&
     booking.status === "CANCELLED" &&
     isAdmin;
+  // #2307 (domain invariant D-12): a member guest whose consent is still
+  // PENDING — or who said no, or let the request lapse — is NOT operationally
+  // present. D-11 lets them open this page so they can answer the question, and
+  // that is all it lets them do. The arrival instructions are the club's
+  // operational detail for people who are actually coming, and they carry the
+  // LODGE DOOR CODE, which the repo classifies as sensitive opt-in data. So the
+  // same predicate that keeps an unconsented row off the kiosk, the chore
+  // roster and the arrival emails gates it here too. The booking OWNER is
+  // unaffected: it is their booking, and they have no consent row of their own.
   const showMemberArrivalInstructions =
     !isDeleted &&
-    (booking.memberId === session.user.id || isLinkedGuestViewer) &&
+    (isBookingOwner ||
+      (isLinkedGuestViewer &&
+        isOperationallyPresentConsent(viewerGuestRow?.consentStatus))) &&
     ["CONFIRMED", "PAID"].includes(booking.status);
   // Arrival instructions must carry THIS booking's lodge identity (door
   // code, travel note), not the default lodge's.
@@ -983,6 +1151,15 @@ export default async function BookingDetailPage({
       }
     : null;
 
+  // B5 (#2262): cash / off-Xero payment controls. Advisory only — the settle
+  // path re-derives every condition under lock(1) + the per-lodge lock — so a
+  // stale page can cause a 409 and never a wrong write. Skipped for a deleted
+  // booking, which settles nothing.
+  const manualPaymentState =
+    canSeeAdminTools && !isDeleted
+      ? await getBookingManualPaymentState(booking.id)
+      : null;
+
   // Admin conflict surfacing (ADR-001 decision 1, issue #119): when this
   // booking exclusively holds the whole lodge, list the existing
   // capacity-holding bookings overlapping its nights so the officer can resolve
@@ -1117,6 +1294,7 @@ export default async function BookingDetailPage({
             conflicts: exclusiveHoldConflicts,
           }}
           noEmails={isDeleted ? undefined : (noEmailsState ?? undefined)}
+          manualPayment={manualPaymentState ?? undefined}
         />
       )}
 
@@ -1240,6 +1418,45 @@ export default async function BookingDetailPage({
         </div>
       ) : null}
 
+      {/* #2266 (absorbing #2265's notice surface): a stored credit election is
+          a promise the pay step keeps, and the member must see that promise on
+          every re-entry — draft save lands here, Resume lands here. Wording is
+          the owner-decided sentence from the signed-off mockup. Only shown
+          while a consumer will still honour the election (the same statuses
+          the edit path may write one onto), and never on a deleted booking.
+
+          Audience (MED-2): the OWNER hears the second-person promise, an
+          admin-type viewer the third-person one; a linked-guest viewer sees
+          nothing at all — the election is the owner's money, and every other
+          money surface on this page is likewise withheld from linked guests
+          (see resolveCreditElectionNoticeAudience). */}
+      {(() => {
+        const creditNoticeAudience = resolveCreditElectionNoticeAudience({
+          isBookingOwner,
+          isNonOwnerAdminViewer: nonOwnerAdminViewer,
+        });
+        return !isDeleted &&
+          creditNoticeAudience !== null &&
+          booking.creditElectionCents != null &&
+          booking.creditElectionCents > 0 &&
+          ["DRAFT", "AWAITING_REVIEW", "PAYMENT_PENDING"].includes(
+            booking.status,
+          ) ? (
+          <div className="space-y-1 rounded-md border border-success-6 bg-success-3 px-4 py-3 text-sm text-success-11">
+            <p className="font-medium">
+              {creditNoticeAudience === "admin"
+                ? `The member's ${formatCents(booking.creditElectionCents)} credit choice is saved and will be applied when they confirm.`
+                : `Your ${formatCents(booking.creditElectionCents)} credit choice is saved and will be applied when you confirm.`}
+            </p>
+            <p className="opacity-80">
+              {creditNoticeAudience === "admin"
+                ? "No credit has been taken from their balance yet — it is applied at payment, against the balance and price at that moment."
+                : "Nothing has been taken from your balance yet — your credit is applied when you pay, against your balance and the price at that moment."}
+            </p>
+          </div>
+        ) : null;
+      })()}
+
       <section id="details" className="scroll-mt-20">
         <BookingEditor
           booking={editorData}
@@ -1247,6 +1464,73 @@ export default async function BookingDetailPage({
           canAdminOverride={canAdminOverride}
         />
       </section>
+
+      {/* #2307: the viewer's own member-guest consent. The ask card sits
+          immediately above the #2250 self-removal card, under the #consent
+          anchor the request email deep-links to; the notify-only notice has no
+          question to answer and only points at the #2250 card below it. */}
+      {consentCard?.kind === "PENDING_ASK" && viewerConsentGuest ? (
+        <section id="consent" className="scroll-mt-20">
+          <MemberGuestConsentCard
+            bookingId={booking.id}
+            guestId={consentCard.guestId}
+            bookerName={`${booking.member.firstName} ${booking.member.lastName}`.trim()}
+            bookerFirstName={booking.member.firstName}
+            lodgeName={consentLodgeName ?? ""}
+            stayLabel={formatConsentStayLabel(booking.checkIn, booking.checkOut)}
+            nightsLabel={formatConsentNightsLabel(viewerConsentNights)}
+            nightsCountLabel={describeConsentNightsCount(viewerConsentNights.length)}
+            answerByLabel={
+              consentCard.consentExpiresAt
+                ? formatConsentFullDate(consentCard.consentExpiresAt)
+                : "—"
+            }
+            lapseByLabel={
+              consentCard.consentExpiresAt
+                ? formatConsentWeekdayDate(consentCard.consentExpiresAt)
+                : "the deadline"
+            }
+            party={booking.guests.map((guest) => ({
+              name: `${guest.firstName} ${guest.lastName}`.trim(),
+              isViewer: guest.id === consentCard.guestId,
+            }))}
+            quotePriced={consentIsQuotePriced}
+            refusalWarning={
+              consentCard.refusalBlocker
+                ? describeConsentDeclineRefusal({
+                    blocker: consentCard.refusalBlocker,
+                    voice: { kind: "TARGET" },
+                    bookerFirstName: booking.member.firstName,
+                  })
+                : null
+            }
+          />
+        </section>
+      ) : consentCard?.kind === "NOTIFY_ONLY_NOTICE" ? (
+        <Card>
+          <CardHeader className="space-y-2">
+            <div>
+              <Badge
+                variant="outline"
+                className="border-success-6 bg-success-3 text-success-11"
+              >
+                You&apos;re on this booking
+              </Badge>
+            </div>
+            <CardTitle>
+              {`${booking.member.firstName} ${booking.member.lastName}`.trim()}{" "}
+              added you to this booking
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm text-muted-foreground">
+              Your place is already held — the club does not ask first for
+              member guests. If you would rather not go, take yourself off
+              below.
+            </p>
+          </CardContent>
+        </Card>
+      ) : null}
 
       {/* #2250: the member's own way off somebody else's booking. Only ever
           rendered for a linked guest viewer (never the owner, never an admin —

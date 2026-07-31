@@ -1,6 +1,7 @@
 import type { AgeTier } from "@prisma/client";
 
 import { logAudit } from "@/lib/audit";
+import logger from "@/lib/logger";
 import { ApiError } from "@/lib/api-error";
 import {
   createDraftBooking,
@@ -10,8 +11,15 @@ import {
   assertLinkedBookingMembersCanBeBooked,
   BookingGuestValidationError,
   normalizeBookingGuestInputs,
-  resolveLinkedBookingMembers,
+  resolveLinkedBookingMembersWithBoundary,
+  type ResolvedLinkedBookingMembers,
 } from "@/lib/booking-guests";
+import {
+  loadMemberGuestAddPolicy,
+  matchMemberGuestNotificationRows,
+  planMemberGuestConsentWrites,
+} from "@/lib/member-guest-add-policy";
+import type { MemberGuestAddActor } from "@/lib/member-guest-consent";
 import {
   addDaysDateOnly,
   formatDateOnly,
@@ -84,26 +92,45 @@ export async function copyBookingToDraft({
     .map((guest) => guest.memberId)
     .filter((memberId): memberId is string => Boolean(memberId));
 
-  let linkedMembers: Awaited<ReturnType<typeof resolveLinkedBookingMembers>>;
+  // "+ Add Member Guest" (epic #2305, MG2 #2307). Read before `createDraftBooking`
+  // opens its transaction.
+  const memberGuestPolicy = await loadMemberGuestAddPolicy();
+  // MG4-D-a: the copy is an ADMIN add. This is also where CONSENT IS NOT
+  // TRANSITIVE — see the re-stamp note below.
+  const memberGuestActor: MemberGuestAddActor = {
+    kind: "ADMIN",
+    adminMemberId: adminMemberId,
+  };
+
+  let resolved: ResolvedLinkedBookingMembers;
   try {
-    linkedMembers = await resolveLinkedBookingMembers(
+    resolved = await resolveLinkedBookingMembersWithBoundary(
       prisma,
       source.memberId,
       memberGuestIds,
-      { skipAuthorization: true },
+      {
+        skipAuthorization: true,
+        memberGuestWideningEnabled: memberGuestPolicy.wideningEnabled,
+      },
     );
     await assertLinkedBookingMembersCanBeBooked(
       prisma,
-      linkedMembers,
+      resolved.members,
       adminMemberId,
       {
         actorRole: "ADMIN",
         onBehalfOfMemberId: source.memberId,
+        // D-8: a blocked cross-family member is refused neutrally, even here —
+        // the admin copying the booking may be looking at a member whose details
+        // the source booking's owner should not have handed over in the first
+        // place, and the refusal text is the club's, not the admin's.
+        crossFamilyMemberIds: resolved.boundary.beyondFamilyMemberIds,
       },
     );
   } catch (error) {
     throw toApiError(error);
   }
+  const linkedMembers = resolved.members;
 
   const copiedGuestInputs = source.guests.map((guest) => {
     if (guest.isMember && !guest.memberId) {
@@ -133,10 +160,36 @@ export async function copyBookingToDraft({
     };
   });
 
-  const guests = normalizeBookingGuestInputs(
-    copiedGuestInputs,
-    linkedMembers,
-  ) as DraftBookingGuestInput[];
+  /**
+   * CONSENT IS NOT TRANSITIVE ACROSS BOOKINGS, and this is the only place that
+   * could have made it look like it is.
+   *
+   * The copy reads the SOURCE booking's guest rows, which may carry a
+   * TARGET_APPROVED consent — a member who agreed to be on THAT stay, on those
+   * nights, made by that person. Copying those columns forward would silently
+   * assert that they also agreed to a different stay on different dates they have
+   * never been told about. So the source consent columns are never read: every
+   * copied cross-family guest is re-stamped here through
+   * `buildMemberGuestConsentWrite` against the COPYING admin (MG4-D-a,
+   * ADMIN_ASSIGNED), and the target is told about the new booking.
+   *
+   * Note that `copiedGuestInputs` above is built field by field from the source
+   * rows and deliberately does NOT include the consent columns — that omission is
+   * what makes the re-stamp the only possible outcome rather than a correction
+   * applied on top.
+   */
+  const consentPlan = planMemberGuestConsentWrites({
+    guests: normalizeBookingGuestInputs(
+      copiedGuestInputs,
+      linkedMembers,
+    ) as DraftBookingGuestInput[],
+    boundary: resolved.boundary,
+    actor: memberGuestActor,
+    now: new Date(),
+    bookingCheckIn: newCheckIn,
+    policy: memberGuestPolicy,
+  });
+  const guests = consentPlan.guests;
 
   const booking = await createDraftBooking({
     effectiveMemberId: source.memberId,
@@ -148,6 +201,45 @@ export async function copyBookingToDraft({
     notes: source.notes ?? undefined,
     expectedArrivalTime: source.expectedArrivalTime ?? undefined,
   });
+
+  // AFTER the draft's transaction has committed. Awaited so a copy that could not
+  // reach anybody has already been logged and audited by the time the caller
+  // returns.
+  // Nothing planned means nothing written and nobody owed — every copy on a club
+  // with the module off, and every copy whose guests are all inside the owner's
+  // family. Checked first so the ordinary copy does no work at all.
+  const memberGuestRows =
+    consentPlan.entriesByMemberId.size === 0
+      ? []
+      : matchMemberGuestNotificationRows({
+          createdGuests: booking.guests,
+          entriesByMemberId: consentPlan.entriesByMemberId,
+        });
+  if (memberGuestRows.length > 0) {
+    // Loaded lazily on purpose: the sender pulls in the whole email/template
+    // graph, and only a booking that actually added a cross-family member guest
+    // needs it. A club with the module off never loads the mailer through this
+    // path at all.
+    const { sendMemberGuestAddNotifications } = await import(
+      "@/lib/member-guest-consent-notifications"
+    );
+    // Belt and braces around a function that is documented never to reject: the
+    // booking is ALREADY COMMITTED at this point, so an unexpected throw here
+    // would hand the member an error for a booking that exists and was paid for.
+    // A notification problem is logged, never surfaced as a booking failure.
+    try {
+      await sendMemberGuestAddNotifications({
+        bookingId: booking.id,
+        rows: memberGuestRows,
+        actor: memberGuestActor,
+      });
+    } catch (err) {
+      logger.error(
+        { err, bookingId: booking.id },
+        "Failed to dispatch member-guest add notifications",
+      );
+    }
+  }
 
   logAudit({
     action: "booking.copy.created",

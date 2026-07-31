@@ -62,6 +62,23 @@ date-only lodge night (no times), matching the rules in
    the whole filter state is stored in the page URL so a filtered view can be
    bookmarked or shared.
 3. Click **Clear** to reset every filter.
+4. When the **Add another member as a guest** module is in use (or anything is
+   still stuck from when it was), two **consent queue chips** sit above the
+   table (#2307):
+   - **Waiting for consent · N** — narrows the table to bookings holding a
+     member-guest consent request nobody has answered yet. The number is the
+     number of bookings the chip reveals.
+   - **Consent needs attention · N** — swaps the table for a per-guest
+     exception list: requests that were declined or lapsed but whose guest
+     could **not** be removed automatically. Each row states *why it is stuck*
+     (last guest on the booking, quote-priced, the booking's status, or a stay
+     that already started) and *what fixes it* — always the real remedy
+     (cancel the booking, add another guest first, re-quote the request),
+     never a dead-end. The number is the number of stuck guest rows.
+
+   Clicking an active chip clears it. Everything else on a booking's consent —
+   who consented, who was told — shows as badges on the guest list of the
+   booking's own page.
 
 ### Read the results table
 
@@ -162,6 +179,7 @@ are its filters and columns.
 | Updated / Check In / Check Out ranges | Date-range filters | empty | NZ date-only |
 | Lodge | Filter by lodge | All lodges | Only shown when more than one active lodge exists |
 | + Create Booking | Open the Book on Behalf wizard | — | Disabled for view-only bookings roles |
+| Booking page → Admin tools → Cash / off-Xero payment | Record a payment made in cash or by a bank transfer that never reached Xero, or reverse one | — | Needs finance **edit** (not bookings edit). Never contacts Xero. See the [Payments guide](payments.md) |
 
 **Booking status chips** (shared with the rest of the app): Draft, Pending,
 Payment Pending, Confirmed (Unpaid), Awaiting Review, Paid, Completed,

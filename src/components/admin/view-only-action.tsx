@@ -67,12 +67,12 @@ interface ViewOnlyActionButtonProps extends ButtonProps {
    *
    * Since #2160 the DEFAULT is no longer the usual case — it is the fallback.
    * Most admin sections render an {@link AdminViewOnlySectionBanner} and pass
-   * `describeReason={false}` here (224 of 293 call sites), and a further 26 pass
+   * `describeReason={false}` here (226 of 299 call sites), and a further 26 pass
    * `describeReason={!ancestorRendersViewOnlyBanner}` because a VOUCHING PARENT
    * renders the banner instead — 21 vouched at a JSX render site (#2168) and 5
    * through the guided-setup shell's `WizardStepHelpers` channel (#2324), where
    * the shell calls each step from another file and no render site exists.
-   * 250 opt-outs in total.
+   * 252 opt-outs in total.
    * `view-only-banner-contract.test.ts` asserts every one of those figures, so
    * they are measured rather than counted by hand. The default survives in
    * three shapes:
@@ -83,10 +83,11 @@ interface ViewOnlyActionButtonProps extends ButtonProps {
    *  - in a leaf component with no section of its own, dropped by a parent into
    *    someone else's layout (the member detail header toolbar, the booking
    *    capacity/exclusive hold controls, the #2259 per-booking "No emails"
-   *    switch, the non-member contact form), where
+   *    switch, the #2262 cash-payment and manual-refund-task controls, the
+   *    non-member contact form), where
    *    nothing local proves an ancestor renders a banner. (`docs/ARCHITECTURE.md`
-   *    counts 30 controls here, but that bucket is the arithmetic remainder,
-   *    not a pure shape: 3 of the 30 are the FIRST shape — dialog contents
+   *    counts 34 controls here, but that bucket is the arithmetic remainder,
+   *    not a pure shape: 3 of the 34 are the FIRST shape — dialog contents
    *    inside `page-content-panel.tsx` and `site-banners-panel.tsx`, which are
    *    themselves banner-bearing panels; and 9 are the #2324 SCOPE exceptions
    *    below, sitting inside setup wizards that do render a banner); and

@@ -5,6 +5,7 @@ import {
   type SeasonRateData,
 } from "@/lib/pricing";
 import { normalizeDateOnlyForTimeZone } from "@/lib/date-only";
+import type { MemberGuestConsentGuestFields } from "@/lib/member-guest-add-policy";
 
 interface ExistingBookingEditGuest {
   id: string;
@@ -23,7 +24,14 @@ interface ExistingBookingEditGuest {
   priceCents: number;
 }
 
-interface AddedBookingEditGuest {
+// Extends MemberGuestConsentGuestFields ("+ Add Member Guest", epic #2305, MG2
+// #2307) so a cross-family guest added to an IN-PROGRESS stay carries its consent
+// columns and its D-8 marker through this plan to the row writer. Without the
+// declaration the fields would still be present at runtime and invisible to the
+// type system, which is how an in-progress add would quietly become the one path
+// that writes a consent-free cross-family guest row. Type-only import: nothing is
+// pulled into this module at runtime.
+interface AddedBookingEditGuest extends MemberGuestConsentGuestFields {
   firstName: string;
   lastName: string;
   ageTier: AgeTier;

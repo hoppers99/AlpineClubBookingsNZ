@@ -20,7 +20,20 @@ interface Guest {
   stayEnd?: string | null;
   nights?: string[] | null;
   priceCents: number;
+  // #2307 (owner decision MG2-M-2): the member-guest consent badge, composed
+  // server-side (`describeMemberGuestConsentBadge`). Absent — not null-valued —
+  // for family and non-member rows, which get no badge and no layout change.
+  consent?: {
+    tone: "pending" | "ok" | "blocked";
+    label: string;
+  };
 }
+
+const consentBadgeToneClasses: Record<"pending" | "ok" | "blocked", string> = {
+  pending: "border-warning-6 bg-warning-3 text-warning-11",
+  ok: "border-success-6 bg-success-3 text-success-11",
+  blocked: "border-danger-6 bg-danger-3 text-danger-11",
+};
 
 interface PromoInfo {
   code: string;
@@ -70,6 +83,21 @@ export interface BookingEditorData {
   // stay valid. Nothing on this member-facing editor renders from it — only
   // the panel's admin-only dialog reads it.
   noEmails?: boolean;
+  // #2266: the edit panel's account-credit card. Null when the booking cannot
+  // carry a credit election (settled, organiser-settled, or a status no
+  // pay-time consumer would honour) — the panel then renders no credit card.
+  // Optional so pre-existing fixtures stay valid.
+  credit?: {
+    availableCents: number;
+    electionCents: number | null;
+    appliedCents: number;
+  } | null;
+  // #2266: booking OWNER's member id, for on-behalf promo validation in the
+  // shared PromoCodeInput. Optional so pre-existing fixtures stay valid.
+  memberId?: string;
+  // #2266: the booking's lodge, so promo lodge restrictions validate against
+  // the right lodge. Optional so pre-existing fixtures stay valid.
+  lodgeId?: string | null;
 }
 
 
@@ -114,6 +142,9 @@ export function BookingEditor({
           requiresAdminReview: booking.requiresAdminReview,
           adminReviewStatus: booking.adminReviewStatus,
           noEmails: booking.noEmails,
+          credit: booking.credit,
+          memberId: booking.memberId,
+          lodgeId: booking.lodgeId,
         }}
         canAdminOverride={canAdminOverride}
         onDone={() => setEditing(false)}
@@ -217,6 +248,14 @@ export function BookingEditor({
                       Stay: {guest.stayStart ?? booking.checkIn} to{" "}
                       {guest.stayEnd ?? booking.checkOut}
                     </p>
+                  ) : null}
+                  {guest.consent ? (
+                    <Badge
+                      variant="outline"
+                      className={`mt-1 ${consentBadgeToneClasses[guest.consent.tone]}`}
+                    >
+                      {guest.consent.label}
+                    </Badge>
                   ) : null}
                 </div>
                 <p className="font-medium">{formatCents(guest.priceCents)}</p>

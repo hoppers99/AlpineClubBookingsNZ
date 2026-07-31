@@ -322,11 +322,11 @@ const NOTICE = "AdminViewOnlyNotice";
 */
 const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 293,
+  callSites: 299,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 250,
+  optOuts: 252,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 224,
+  staticOptOuts: 226,
   /** `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch. */
   vouchedOptOuts: 26,
   /** …of the vouched: proved at a parent's own JSX render site (#2168). */
@@ -334,13 +334,13 @@ const FIGURES = {
   /** …of the vouched: proved through the wizard shell's channel (#2324). */
   shellVouchedOptOuts: 5,
   /** Controls that KEEP the per-button reason, and the files holding them. */
-  exceptions: 43,
-  exceptionFiles: 23,
+  exceptions: 47,
+  exceptionFiles: 25,
   /** The remainder bucket: neither a member detail card nor dialog-only. */
-  leafControls: 30,
-  leafFiles: 18,
+  leafControls: 34,
+  leafFiles: 20,
   /** Components that render an `AdminViewOnlySectionBanner`. */
-  bannerComponents: 79,
+  bannerComponents: 80,
 } as const;
 
 const WIZARD_SHELL = "IntegrationWizard";
@@ -1114,8 +1114,7 @@ describe("view-only section banner coverage (#2160)", () => {
                Nothing else in the tree changed, and no call site was removed —
                the whole +10 is those four provider wizards' step files
                becoming visible to this suite for the first time.
-
-        And how the other figures moved with it, each re-measured:
+        And how the other figures moved with #2324, each re-measured:
 
           optOuts  237 -> 242 (+5)   the controls the vouch NOW covers, all of
                them gated on the wizard's OWN area, which is exactly what its
@@ -1175,11 +1174,36 @@ describe("view-only section banner coverage (#2160)", () => {
                existing row actions (reset PIN, delete) already opt out under
                (optOuts 245 -> 248, staticOptOuts 219 -> 222; nothing else
                moves).
-          293  +2  the Mountain Conditions "Source & selectors" panel adds
+          295  +4  #2262 adds the cash / off-Xero payment feature's two leaf
+               surfaces, four controls across two files, all keeping their own
+               per-button reason: `booking-manual-payment-controls.tsx` (Record
+               and Reverse manual payment) is a leaf control dropped into the
+               Admin tools card's layout, exactly like the "No emails" switch
+               and the two hold controls beside it, and
+               `manual-refund-task-queue.tsx` (Mark paid back and Dismiss, one
+               pair per open task) is a card on /admin/payments with no banner
+               of its own. Both are gated on FINANCE, so neither may vouch off a
+               banner elsewhere on its page that states another area. No new
+               banner component: dropping one into the Admin tools card would
+               duplicate what its siblings already handle per button. With them
+               exceptions 43 -> 47 (+4), exceptionFiles 23 -> 25 (+2), and the
+               leaf bucket 30/18 -> 34/20; optOuts, the vouched split and
+               bannerComponents are untouched.
+          293  +2  #2307's Member guests settings card on Bookings setup
+               (member-guest-settings-card.tsx): Edit + Save, both static
+               opt-outs under the card's own banner, so staticOptOuts and
+               optOuts move +2 with it and bannerComponents +1 (79 -> 80).
+               Re-measured on the merged tree rather than added to either
+               side's figure: #2286 and #2307 landed in the same window and
+               both moved the count.
+          297      Re-measured on the merged tree: #2262's +4 and #2307's +2 are
+               independent, so 291 -> 295 -> 297. Neither side's number is
+               taken as-is.
+          299  +2  the Mountain Conditions "Source & selectors" panel adds
                Preview and Save configuration ViewOnlyActionButtons — two static
                opt-outs under the panel's existing AdminViewOnlySectionBanner
-               (optOuts 248 -> 250, staticOptOuts 222 -> 224; vouched,
-               exceptions and bannerComponents all unchanged — no new banner).
+               (optOuts 250 -> 252, staticOptOuts 224 -> 226; vouched,
+               exceptions and bannerComponents unchanged — no new banner).
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into
@@ -1267,7 +1291,9 @@ describe("view-only section banner coverage (#2160)", () => {
       // bucket (-3) and brings the four provider wizards' Full-Admin writes into
       // this one (+8 controls / +5 files) — see the delta chain above. Every
       // wizard control left here is a SCOPE exception, not an indirection one:
-      // its gate is narrower than the banner its shell renders.
+      // its gate is narrower than the banner its shell renders. Finally
+      // +4 controls / +2 files: the #2262 cash-payment controls and the
+      // manual-refund-task queue, both leaf surfaces described above.
       leaves: { controls: FIGURES.leafControls, files: FIGURES.leafFiles },
     });
   });
@@ -1341,7 +1367,30 @@ describe("view-only section banner coverage (#2160)", () => {
       }
       const flat = flatten(readFileSync(file, "utf8"));
       for (const phrase of phrases) {
-        if (!flat.includes(phrase)) offenders.push(`${rel}: "${phrase}"`);
+        if (!flat.includes(phrase)) {
+          offenders.push(`${rel}: "${phrase}"`);
+          continue;
+        }
+        // A CORRECT SENTENCE ELSEWHERE IN THE SAME FILE MUST NOT EXCUSE A STALE
+        // ONE, and that is not hypothetical: `includes` only answers "does the
+        // measured figure appear at least once". A CHANGELOG quotes this
+        // sentence once per release that moved the numbers, so a new entry
+        // carrying the right figure let an older entry keep publishing a
+        // superseded one — a reader landing on the wrong paragraph is told a
+        // number no test disagrees with, which is the exact failure the census
+        // above exists to prevent.
+        //
+        // So every occurrence of each sentence's SHAPE — the same words with any
+        // digits in the numeric slots — has to carry the measured figures.
+        const shape = new RegExp(
+          phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\d+/g, "\\d+"),
+          "g",
+        );
+        for (const match of flat.matchAll(shape)) {
+          if (match[0] !== phrase) {
+            offenders.push(`${rel}: stale "${match[0]}" — should read "${phrase}"`);
+          }
+        }
       }
     }
 

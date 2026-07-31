@@ -6,7 +6,9 @@ import {
   fetchOccupiedBeds,
   selectCalendarDay,
 } from "./helpers/booking";
+import { E2E_ADMIN } from "./helpers/fixtures";
 import { personas } from "./helpers/personas";
+import { cancelMemberBookingsOnDate } from "./helpers/reset";
 import { lodgeNightLabel, stayWindow } from "./helpers/stay-dates";
 
 // Critical row: member books a bed through /book with the capacity lock.
@@ -21,7 +23,37 @@ test.use({ storageState: storageStatePath(personas.booker.email) });
 
 test.describe.configure({ mode: "serial" });
 
+// RETRY IDEMPOTENCY (#2302). This file is the sharpest case of the pollution
+// class: it is serial end to end, test 1 CREATES a PAYMENT_PENDING booking on
+// this window, and test 2 must re-book THE SAME window for the member-night lock
+// to be the thing under test. A retry re-runs the whole group against the
+// database the failed attempt left behind, so test 1 would meet its own leftover
+// and fail at the review step with BOOKING_MEMBER_NIGHT_CONFLICT — the
+// `waitlist.spec.ts:57` signature, reported on the test that is not broken.
+//
+// `stayWindowForAttempt` is structurally unusable here (twice over): this window
+// is a module-scope const, which has no `testInfo` to read `retry` from, and
+// test 2 must use the same window as test 1 rather than its own. So the reset is
+// the tool — an idempotent group `beforeAll`, which re-runs on every attempt
+// because a retry restarts the worker. A clean first attempt cancels nothing.
 const window = stayWindow(0);
+
+test.beforeAll(async ({ browser }) => {
+  // A full-admin context purely for the reset: cancelling another member's
+  // booking (and opting out of the cancellation email) is admin-only. Reuses the
+  // session auth.setup.ts already saved rather than logging in again (#1779).
+  const adminContext = await browser.newContext({
+    storageState: storageStatePath(E2E_ADMIN.email),
+  });
+  try {
+    await cancelMemberBookingsOnDate(adminContext.request, {
+      memberName: `${personas.booker.firstName} ${personas.booker.lastName}`,
+      checkIn: window.checkIn,
+    });
+  } finally {
+    await adminContext.close();
+  }
+});
 
 test("member books a bed through /book and the booking owes payment", async ({
   page,

@@ -5,10 +5,13 @@ import {
   type MemberProfileCompletenessResult,
 } from "@/lib/member-profile-completeness";
 import {
-  MEMBER_GUEST_WIDENING_ENABLED,
   type MemberGuestBoundaryScope,
   type MemberGuestBoundaryState,
 } from "@/lib/member-guest-consent";
+import {
+  MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE,
+  MEMBER_GUEST_CROSS_FAMILY_REFUSAL_STATUS,
+} from "@/lib/member-guest-refusal";
 
 export type BookingGuestPricingInput = {
   ageTier: AgeTier;
@@ -115,6 +118,18 @@ export class BookingGuestProfileRequiredError extends BookingGuestValidationErro
 export type LinkedBookingMemberProfileGateContext = {
   actorRole?: string | null;
   onBehalfOfMemberId?: string | null;
+  /**
+   * The `BEYOND_FAMILY` member ids for this add, from
+   * `computeMemberGuestBoundary` (MG2 #2307, owner decision **D-8**).
+   *
+   * A blocked member in this set gets the one neutral refusal instead of the
+   * detailed `BookingGuestProfileRequiredError` body, which would otherwise hand
+   * the caller a stranger's name, the exact fields missing from their profile,
+   * and whether they hold a login. Absent or empty means "every requested member
+   * is inside the booker's family" and the gate behaves exactly as it did before
+   * MG2 — which is also what every non-widened call site passes.
+   */
+  crossFamilyMemberIds?: readonly string[];
 };
 
 function skipsMemberProfileGateForAdminOnBehalf(
@@ -181,9 +196,12 @@ export interface ResolvedLinkedBookingMembers {
 /**
  * `resolveLinkedBookingMembers`, plus the family-boundary state it computed.
  *
- * MG2 (#2307) switches the seven call sites onto this variant so each one can
- * persist the right `consentStatus` per guest. MG1 leaves every call site on the
- * map-only wrapper below, so this release changes no call-site code at all.
+ * MG2 (#2307) switches the persisting call sites onto this variant so each one
+ * can persist the right `consentStatus` per guest, and adds the
+ * `memberGuestWideningEnabled` option that lets a beyond-family member resolve
+ * at all. The option defaults to `false`: a caller that does not pass it keeps
+ * MG1's refusal, which is the safe direction (see
+ * `MEMBER_GUEST_MODULE_KEY`'s note in `member-guest-consent.ts`).
  *
  * THE STRUCTURAL RULE OF MG1, and the thing to check first in review: the
  * boundary is computed OUTSIDE the `skipAuthorization` branch, unconditionally,
@@ -218,7 +236,7 @@ export async function resolveLinkedBookingMembersWithBoundary(
   db: BookingGuestLookupDb,
   bookingMemberId: string,
   memberIds: Array<string | null | undefined>,
-  options?: { skipAuthorization?: boolean }
+  options?: { skipAuthorization?: boolean; memberGuestWideningEnabled?: boolean }
 ): Promise<ResolvedLinkedBookingMembers> {
   const normalizedMemberIds = normalizeMemberIds(memberIds);
 
@@ -238,14 +256,21 @@ export async function resolveLinkedBookingMembersWithBoundary(
   );
 
   if (!options?.skipAuthorization) {
-    // The refusal is gated on MEMBER_GUEST_WIDENING_ENABLED, not on the
-    // memberGuests module flag: an admin switching the module on in this
-    // release must change nothing, or they could strand capacity-holding
-    // PENDING rows that no released code can resolve or expire. The error is
-    // byte-for-byte the pre-existing one — same message, same 403 — so
-    // module-on is not observable here and D-8's neutral refusal surface is
-    // still MG2's to design.
-    if (!MEMBER_GUEST_WIDENING_ENABLED && boundary.beyondFamilyMemberIds.length > 0) {
+    // MG2 (#2307) turns the feature on: with the memberGuests module enabled a
+    // beyond-family ACTIVE member resolves here, and the boundary above is what
+    // decides whether the row that follows needs consent. With the module off —
+    // the shipped default (D-2) — the refusal is byte-for-byte the pre-existing
+    // one (same message, same 403), so a club that has not opted in sees no
+    // change whatsoever and no error text mentions member guests.
+    //
+    // The refusal deliberately stays neutral even with the module ON, because
+    // the reasons a specific cross-family member cannot be added are D-8's
+    // subject and are collapsed to one neutral message elsewhere. Nothing here
+    // names the member.
+    if (
+      options?.memberGuestWideningEnabled !== true &&
+      boundary.beyondFamilyMemberIds.length > 0
+    ) {
       throw new BookingGuestValidationError("Invalid guest member reference", 403);
     }
   }
@@ -258,7 +283,7 @@ export async function resolveLinkedBookingMembers(
   db: BookingGuestLookupDb,
   bookingMemberId: string,
   memberIds: Array<string | null | undefined>,
-  options?: { skipAuthorization?: boolean }
+  options?: { skipAuthorization?: boolean; memberGuestWideningEnabled?: boolean }
 ): Promise<Map<string, LinkedBookingMember>> {
   const { members } = await resolveLinkedBookingMembersWithBoundary(
     db,
@@ -330,6 +355,58 @@ async function resolveLinkedMemberRecords(
   }
 
   return linkedMemberMap;
+}
+
+/**
+ * Do two members share at least one family group?
+ *
+ * Lifted out of `assertLinkedBookingMembersCanBeBooked` by MG2 (#2307) as a
+ * pure, behaviour-preserving extraction: it was a closure over the same map, and
+ * the caller below still passes that map. It is exported because the member-guest
+ * delegate resolver (`member-guest-delegate.ts`) has to apply exactly the same
+ * rule from its own query, and two hand-written copies of a family-boundary
+ * predicate on an authorization path is how those two copies drift.
+ *
+ * Note the deliberate `false` on a missing entry: a member with no family group
+ * shares one with nobody, including themselves.
+ */
+export function memberIdsShareFamilyGroup(
+  groupsByMemberId: ReadonlyMap<string, ReadonlySet<string>>,
+  memberId: string,
+  otherMemberId: string,
+): boolean {
+  const groups = groupsByMemberId.get(memberId);
+  const otherGroups = groupsByMemberId.get(otherMemberId);
+  if (!groups || !otherGroups) {
+    return false;
+  }
+
+  for (const groupId of groups) {
+    if (otherGroups.has(groupId)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The "can stand in for another member" half of the delegated-confirmation rule:
+ * active, holds a login, and is an adult.
+ *
+ * Lifted alongside `memberIdsShareFamilyGroup` and for the same reason — this is
+ * the predicate owner decision D-10 names as the interim delegate rule, so the
+ * delegate resolver must use this exact function and not a lookalike. Each of
+ * the three conjuncts is a separate mutation-probe target.
+ */
+export function isActiveLoginAdultMember(
+  member:
+    | { active?: boolean | null; canLogin?: boolean | null; ageTier?: string | null }
+    | null
+    | undefined,
+): boolean {
+  return (
+    member?.active === true && member.canLogin === true && member.ageTier === "ADULT"
+  );
 }
 
 function hasProfileGateFields(member: LinkedBookingMember) {
@@ -417,29 +494,11 @@ export async function assertLinkedBookingMembersCanBeBooked(
     resolverMembers.map((member) => [member.id, member])
   );
 
-  function sharesFamilyGroup(memberId: string, otherMemberId: string) {
-    const groups = groupsByMemberId.get(memberId);
-    const otherGroups = groupsByMemberId.get(otherMemberId);
-    if (!groups || !otherGroups) {
-      return false;
-    }
+  const sharesFamilyGroup = (memberId: string, otherMemberId: string) =>
+    memberIdsShareFamilyGroup(groupsByMemberId, memberId, otherMemberId);
 
-    for (const groupId of groups) {
-      if (otherGroups.has(groupId)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  function isActiveLoginAdult(memberId: string) {
-    const member = resolverMemberMap.get(memberId);
-    return (
-      member?.active === true &&
-      member.canLogin === true &&
-      member.ageTier === "ADULT"
-    );
-  }
+  const isActiveLoginAdult = (memberId: string) =>
+    isActiveLoginAdultMember(resolverMemberMap.get(memberId));
 
   const blockedMembers: GuestProfileRequiredMember[] = [];
 
@@ -482,6 +541,25 @@ export async function assertLinkedBookingMembersCanBeBooked(
   }
 
   if (blockedMembers.length > 0) {
+    // D-8 (MG2 #2307): a blocked CROSS-FAMILY member collapses the whole
+    // response to the one neutral refusal, and it wins over the detailed body
+    // even when a family-scope member is blocked in the same request.
+    //
+    // Winning is the deliberate choice, and the alternative was worse. Returning
+    // the detailed list for the family members alongside a neutral entry for the
+    // stranger would leak by omission — the caller learns which of the two
+    // members the club refused to talk about, and can iterate one id at a time to
+    // read the same oracle the detailed body used to hand over. Refusing
+    // wholesale costs the booker one extra round trip: they drop the member the
+    // club will not discuss, retry, and get the full, helpful detail for their
+    // own family exactly as before.
+    const crossFamilyIds = new Set(context?.crossFamilyMemberIds ?? []);
+    if (blockedMembers.some((member) => crossFamilyIds.has(member.memberId))) {
+      throw new BookingGuestValidationError(
+        MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE,
+        MEMBER_GUEST_CROSS_FAMILY_REFUSAL_STATUS,
+      );
+    }
     throw new BookingGuestProfileRequiredError(blockedMembers);
   }
 }

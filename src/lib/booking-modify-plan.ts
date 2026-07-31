@@ -6,6 +6,7 @@
 
 import {
   AdminReviewStatus,
+  BookingStatus,
   type AgeTier,
   type BookingGuest,
   type Prisma,
@@ -63,9 +64,16 @@ import { isLikelyTypoCorrection } from "@/lib/guest-name-similarity";
 import {
   assertLinkedBookingMembersCanBeBooked,
   normalizeBookingGuestInputs,
-  resolveLinkedBookingMembers,
+  resolveLinkedBookingMembersWithBoundary,
   type BookingGuestInput,
 } from "@/lib/booking-guests";
+import {
+  planMemberGuestConsentWrites,
+  type MemberGuestAddPolicy,
+  type MemberGuestConsentGuestFields,
+  type MemberGuestConsentWritePlanEntry,
+} from "@/lib/member-guest-add-policy";
+import type { MemberGuestAddActor } from "@/lib/member-guest-consent";
 import {
   BookingGuestStayRangeValidationError,
   normalizeGuestStayRanges,
@@ -273,8 +281,18 @@ export type GuestPlan = {
   remainingGuests: BookingGuest[];
   proposedRemainingGuests: ProposedRemainingGuest[];
   removedGuests: BookingGuest[];
-  normalizedAddGuests: BookingGuestInput[] | undefined;
+  normalizedAddGuests:
+    | Array<BookingGuestInput & MemberGuestConsentGuestFields>
+    | undefined;
   guestsForPricing: ProposedGuestPricingInput[];
+  /**
+   * The cross-family member guests this modification adds, keyed by target member
+   * id ("+ Add Member Guest", epic #2305, MG2 #2307). The batch service matches
+   * these to the guest rows `applyGuestChanges` creates and sends the request or
+   * notice AFTER the transaction commits — nothing in this file mails anybody.
+   * Empty on every family-scope modification.
+   */
+  memberGuestEntries: Map<string, MemberGuestConsentWritePlanEntry>;
   totalGuestCount: number;
   requiresAdminReview: boolean;
   adminReviewReason: string | null;
@@ -311,6 +329,8 @@ export async function prepareGuestPlan(
     editableFrom,
     newCheckIn,
     newCheckOut,
+    memberGuestPolicy,
+    now = new Date(),
   }: {
     booking: LoadedBookingForModify;
     role: Role;
@@ -320,26 +340,59 @@ export async function prepareGuestPlan(
     editableFrom: Date | null;
     newCheckIn: Date;
     newCheckOut: Date;
+    /**
+     * MG2 (#2307). Read by the caller BEFORE it opened this transaction — see the
+     * ordering rule in `member-guest-add-policy.ts`. Optional so the existing
+     * unit tests of this planner keep compiling; a missing policy is MG1's
+     * behaviour, which is a refusal, not a silent consent-free add.
+     */
+    memberGuestPolicy?: MemberGuestAddPolicy;
+    now?: Date;
   },
 ): Promise<GuestPlan> {
-  const linkedMembers = await resolveLinkedBookingMembers(
-    tx,
-    booking.memberId,
-    (input.addGuests ?? []).map((guest) => guest.memberId),
-    { skipAuthorization: role === "ADMIN" },
-  );
+  // MG4-D-a, brought forward: `role === "ADMIN"` is exactly the condition that
+  // passes `skipAuthorization`, so an admin modification adds a cross-family guest
+  // consent-free and always-notify, stamped with the acting admin.
+  const memberGuestActor: MemberGuestAddActor =
+    role === "ADMIN" ? { kind: "ADMIN", adminMemberId: actorId } : { kind: "MEMBER" };
+  const { members: linkedMembers, boundary } =
+    await resolveLinkedBookingMembersWithBoundary(
+      tx,
+      booking.memberId,
+      (input.addGuests ?? []).map((guest) => guest.memberId),
+      {
+        skipAuthorization: role === "ADMIN",
+        memberGuestWideningEnabled: memberGuestPolicy?.wideningEnabled ?? false,
+      },
+    );
   await assertLinkedBookingMembersCanBeBooked(tx, linkedMembers, actorId, {
     actorRole: role,
     onBehalfOfMemberId: role === "ADMIN" ? booking.memberId : null,
+    // D-8: a blocked cross-family member is refused neutrally.
+    crossFamilyMemberIds: boundary.beyondFamilyMemberIds,
   });
-  const normalizedAddGuests = input.addGuests
-    ? normalizeBookingGuestInputs(input.addGuests, linkedMembers).map((guest, index) => ({
-        ...guest,
-        stayStart: input.addGuests?.[index]?.stayStart ?? null,
-        stayEnd: input.addGuests?.[index]?.stayEnd ?? null,
-        nights: input.addGuests?.[index]?.nights ?? null,
-      }))
-    : undefined;
+  const consentPlan = planMemberGuestConsentWrites({
+    guests: input.addGuests
+      ? normalizeBookingGuestInputs(input.addGuests, linkedMembers).map((guest, index) => ({
+          ...guest,
+          stayStart: input.addGuests?.[index]?.stayStart ?? null,
+          stayEnd: input.addGuests?.[index]?.stayEnd ?? null,
+          nights: input.addGuests?.[index]?.nights ?? null,
+        }))
+      : [],
+    boundary,
+    actor: memberGuestActor,
+    now,
+    bookingCheckIn: newCheckIn,
+    policy:
+      memberGuestPolicy ?? {
+        wideningEnabled: false,
+        approvalRequired: true,
+        pendingHoldExpiryDays: 0,
+      },
+  });
+  const memberGuestEntries = consentPlan.entriesByMemberId;
+  const normalizedAddGuests = input.addGuests ? consentPlan.guests : undefined;
 
   const removeSet = new Set(input.removeGuestIds ?? []);
   const remainingGuests = booking.guests.filter((g) => !removeSet.has(g.id));
@@ -420,6 +473,10 @@ export async function prepareGuestPlan(
       stayStart: g.stayStart,
       stayEnd: g.stayEnd,
       nights: g.nights,
+      // D-8 (MG2 #2307): this list is rebuilt field by field, so the marker is
+      // carried across explicitly — the in-transaction person-night guard below
+      // reads it to refuse a cross-family clash neutrally.
+      crossFamilyMemberGuest: g.crossFamilyMemberGuest,
     })),
   ];
 
@@ -479,6 +536,7 @@ export async function prepareGuestPlan(
     requiresAdminReview,
     adminReviewReason,
     reviewUpdate,
+    memberGuestEntries,
   };
 }
 
@@ -990,6 +1048,76 @@ function targetBookingGuestIdsForSelectedIndexes(
     .filter((id): id is string => Boolean(id));
 }
 
+/**
+ * Resolve a request's promo beneficiaries to positional indexes over the
+ * priced guest list (#2266, MED-4).
+ *
+ * EXISTING guests are bound by `bookingGuestId`, never by position: the
+ * pricing order is [remaining guests..., added guests...] as of APPLY time,
+ * so a positional index chosen at preview time would be re-bound to whatever
+ * that list happens to be when the save lands — a concurrent edit by another
+ * session between preview and save would silently redeem the discount for
+ * the wrong guest. An id that no longer resolves refuses loudly instead.
+ *
+ * TO-BE-ADDED guests have no id yet, so they alone remain positional —
+ * relative to this same request's `addGuests` array, which nothing concurrent
+ * can reorder.
+ *
+ * Shared by the apply path (applyPromoCodeChanges) and the modify-quote
+ * preview so the two can never disagree about who a code covers.
+ */
+export function resolvePromoBeneficiarySelection({
+  guestNightRates,
+  addedGuestCount,
+  promoGuestIds,
+  promoAddedGuestIndexes,
+}: {
+  /** Priced guests in apply order: remaining (with ids) then added (no ids). */
+  guestNightRates: Array<{ bookingGuestId?: string | null }>;
+  /** How many TO-BE-ADDED guests sit at the tail of guestNightRates. */
+  addedGuestCount: number;
+  promoGuestIds?: string[];
+  promoAddedGuestIndexes?: number[];
+}): number[] | undefined {
+  if (!promoGuestIds?.length && !promoAddedGuestIndexes?.length) {
+    return undefined;
+  }
+
+  const indexByGuestId = new Map<string, number>();
+  guestNightRates.forEach((guest, index) => {
+    if (guest.bookingGuestId) indexByGuestId.set(guest.bookingGuestId, index);
+  });
+
+  const selected = new Set<number>();
+  for (const guestId of promoGuestIds ?? []) {
+    const index = indexByGuestId.get(guestId);
+    if (index === undefined) {
+      throw new ApiError(
+        "A guest selected for the promo code is no longer on this booking — refresh and re-apply the code",
+        400,
+      );
+    }
+    selected.add(index);
+  }
+
+  const addedStartIndex = guestNightRates.length - addedGuestCount;
+  for (const addedIndex of promoAddedGuestIndexes ?? []) {
+    if (
+      !Number.isInteger(addedIndex) ||
+      addedIndex < 0 ||
+      addedIndex >= addedGuestCount
+    ) {
+      throw new ApiError(
+        "A guest selected for the promo code is not part of this change",
+        400,
+      );
+    }
+    selected.add(addedStartIndex + addedIndex);
+  }
+
+  return [...selected].sort((a, b) => a - b);
+}
+
 export async function applyPromoCodeChanges(
   tx: Prisma.TransactionClient,
   {
@@ -1069,7 +1197,15 @@ export async function applyPromoCodeChanges(
       {
         excludeBookingId: bookingId,
         db: tx,
-        selectedGuestIndexes: input.promoGuestIndexes,
+        // #2266 (MED-4): existing beneficiaries arrive bound by bookingGuestId
+        // and are resolved against THIS transaction's priced guest list, so a
+        // concurrent edit can never re-point the discount; stale ids 400.
+        selectedGuestIndexes: resolvePromoBeneficiarySelection({
+          guestNightRates,
+          addedGuestCount: input.addGuests?.length ?? 0,
+          promoGuestIds: input.promoGuestIds,
+          promoAddedGuestIndexes: input.promoAddedGuestIndexes,
+        }),
         lodgeId: bookingLodgeId,
       },
     );
@@ -1165,6 +1301,12 @@ export async function calculateModificationChangeFee({
   if (skipBookingLifecycleRules || !checkInChanged) {
     return 0;
   }
+  // #2266: no change fee on a DRAFT — nothing has been committed to, exactly
+  // like moving the dates in the wizard before saving. Member draft edits do
+  // not take the admin skip above, so the guard must be explicit.
+  if (booking.status === BookingStatus.DRAFT) {
+    return 0;
+  }
   const now = new Date();
   const policy = await loadCancellationPolicy(booking.checkIn, booking.lodgeId);
   const feeResult = calculateChangeFee({
@@ -1196,7 +1338,10 @@ export async function applyGuestChanges(
     removedGuests: BookingGuest[];
     remainingGuests: BookingGuest[];
     proposedRemainingGuests: ProposedRemainingGuest[];
-    normalizedAddGuests: BookingGuestInput[] | undefined;
+    // Carries the MG2 consent columns straight from `prepareGuestPlan` (#2307).
+    normalizedAddGuests:
+      | Array<BookingGuestInput & MemberGuestConsentGuestFields>
+      | undefined;
     guestNameUpdates?: ResolvedGuestNameUpdate[];
     priceBreakdown: PricingResult["priceBreakdown"];
     inProgressPlan: BookingEditGuestRangePlan | null;
@@ -1280,6 +1425,10 @@ export async function applyGuestChanges(
           // Persist the resolved rate-type snapshot on the added guest (#1930,
           // E4).
           rateMembershipTypeId: g.rateMembershipTypeId,
+          // Member-guest consent (MG2 #2307), decided by
+          // `buildMemberGuestConsentWrite` and spread only when present, so a
+          // family-scope or non-member guest writes exactly what it wrote before.
+          ...(g.memberGuestConsent ?? {}),
         },
       });
       const envelope = await syncGuestNights(
@@ -1332,6 +1481,8 @@ export async function applyGuestChanges(
         // E4).
         rateMembershipTypeId: (bg as { rateMembershipTypeId?: string | null })
           .rateMembershipTypeId,
+        // Member-guest consent (MG2 #2307) — see the in-progress branch above.
+        ...(g.memberGuestConsent ?? {}),
       },
     });
     const envelope = await syncGuestNights(

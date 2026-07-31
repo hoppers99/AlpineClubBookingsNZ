@@ -1,0 +1,102 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Member guests — mockup pack for sign-off (MG2 #2307)</title>
+<style>
+  :root { --bg:#eef2f4; --panel:#fff; --panel2:#f6f9fa; --ink:#102329; --muted:#516670; --line:#dce5e9; --accent:#0e6e78; --accent-ink:#0a545c; --grp:#6f52c8; --warn:#8a5a00; --warn-bg:#fff6e2; --warn-line:#e8cf9a; --radius:16px; --maxw:1000px; }
+  @media (prefers-color-scheme: dark){ :root{ --bg:#08171c; --panel:#0f242b; --panel2:#0c1e24; --ink:#e8f4f6; --muted:#8fb0b8; --line:#213840; --accent:#3fb9cb; --accent-ink:#6fd2e0; --grp:#b79bff; --warn:#f0c674; --warn-bg:#2b2313; --warn-line:#5a4a20; } }
+  :root[data-theme="light"]{ --bg:#eef2f4; --panel:#fff; --panel2:#f6f9fa; --ink:#102329; --muted:#516670; --line:#dce5e9; --accent:#0e6e78; --accent-ink:#0a545c; --grp:#6f52c8; --warn:#8a5a00; --warn-bg:#fff6e2; --warn-line:#e8cf9a; }
+  :root[data-theme="dark"]{ --bg:#08171c; --panel:#0f242b; --panel2:#0c1e24; --ink:#e8f4f6; --muted:#8fb0b8; --line:#213840; --accent:#3fb9cb; --accent-ink:#6fd2e0; --grp:#b79bff; --warn:#f0c674; --warn-bg:#2b2313; --warn-line:#5a4a20; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; line-height:1.55; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:var(--maxw); margin:0 auto; padding: clamp(24px,5vw,58px) clamp(18px,4vw,38px) 90px; }
+  .eyebrow { font-size:12px; letter-spacing:.18em; text-transform:uppercase; color:var(--accent-ink); font-weight:700; margin:0 0 12px; }
+  h1 { font-size:clamp(28px,5.2vw,44px); line-height:1.04; margin:0 0 14px; letter-spacing:-.025em; font-weight:800; text-wrap:balance; }
+  .lede { font-size:clamp(16px,2.3vw,19px); color:var(--muted); max-width:66ch; margin:0; }
+  h2 { font-size:clamp(19px,2.6vw,24px); margin:clamp(34px,6vw,52px) 0 4px; letter-spacing:-.01em; }
+  .sub { margin:0 0 16px; color:var(--muted); font-size:14.5px; max-width:72ch; }
+  .rule { height:2px; background:linear-gradient(to right, var(--accent), transparent 65%); border-radius:2px; margin:0 0 18px; opacity:.5; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:16px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:20px 22px; display:flex; flex-direction:column; gap:9px; }
+  .card h3 { margin:0; font-size:19px; letter-spacing:-.01em; }
+  .card p { margin:0; color:var(--muted); font-size:14px; }
+  .tags { display:flex; flex-wrap:wrap; gap:6px; }
+  .tag { font-size:11px; font-weight:700; letter-spacing:.03em; text-transform:uppercase; padding:3px 9px; border-radius:999px; background:var(--panel2); color:var(--muted); border:1px solid var(--line); }
+  .tag.m { background:color-mix(in srgb,var(--accent) 16%, transparent); color:var(--accent-ink); border-color:color-mix(in srgb,var(--accent) 35%, transparent); }
+  .tag.a { background:color-mix(in srgb,var(--grp) 16%, transparent); color:var(--grp); border-color:color-mix(in srgb,var(--grp) 40%, transparent); }
+  .links { margin-top:auto; padding-top:6px; }
+  a.view { display:inline-flex; align-items:center; gap:7px; font-weight:700; font-size:14px; color:#fff; background:var(--accent); text-decoration:none; padding:8px 15px; border-radius:10px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:20px 24px; }
+  .panel + .panel { margin-top:14px; }
+  .panel h4 { margin:0 0 6px; font-size:16.5px; }
+  .panel p { margin:0 0 10px; font-size:14.5px; color:var(--muted); } .panel p:last-child { margin-bottom:0; }
+  .panel p b, .panel li b { color:var(--ink); font-weight:650; }
+  ul.q { margin:8px 0 0; padding:0; list-style:none; display:flex; flex-direction:column; gap:11px; }
+  ul.q li { font-size:14.5px; color:var(--muted); }
+  ul.q code { background:var(--panel2); border:1px solid var(--line); border-radius:6px; padding:1px 6px; font-size:12.5px; }
+  .warn { background:var(--warn-bg); border:1px solid var(--warn-line); color:var(--warn); border-radius:10px; padding:12px 15px; font-size:13.5px; margin:14px 0 0; }
+  .foot { margin-top:44px; padding-top:18px; border-top:1px solid var(--line); font-size:13px; color:var(--muted); }
+  code { background:var(--panel2); border:1px solid var(--line); border-radius:6px; padding:1px 6px; font-size:12.5px; }
+  a { color:var(--accent-ink); }
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">Alpine Sports Club · epic #2305 · MG2 (#2307)</p>
+  <h1>Member guests — mockup pack for sign-off</h1>
+  <p class="lede">MG2 is the release that turns "add another member as a guest" on. It ships member-visible and admin-visible surfaces, so they go to you before they are built. Three pages, mock data throughout, real proposed copy.</p>
+
+  <h2>The pack</h2>
+  <div class="rule"></div>
+  <div class="cards">
+    <div class="card">
+      <div class="tags"><span class="tag m">member-facing</span></div>
+      <h3>What the member sees</h3>
+      <p>The consent card on the booking page, the standalone page a family adult answers on for someone without a login, notify-only mode, the honest refusals, and the consent badges on the guest list.</p>
+      <div class="links"><a class="view" href="member-surfaces.html">Open ↗</a></div>
+    </div>
+    <div class="card">
+      <div class="tags"><span class="tag m">member-facing</span></div>
+      <h3>The four emails</h3>
+      <p>Consent request, "you have been added", the outcome to whoever made the booking, and the lapse notice. Each shown as received, with the editable default body behind a toggle.</p>
+      <div class="links"><a class="view" href="emails.html">Open ↗</a></div>
+    </div>
+    <div class="card">
+      <div class="tags"><span class="tag a">admin-facing</span></div>
+      <h3>What the admin sees</h3>
+      <p>The settings card (including both name-search toggles and their warnings, plus the view-only state), consent state on a booking, and the exception list of rows the system could not resolve on its own.</p>
+      <div class="links"><a class="view" href="admin-surfaces.html">Open ↗</a></div>
+    </div>
+  </div>
+
+  <h2>What is already decided, and shown here as decided</h2>
+  <div class="rule"></div>
+  <div class="panel">
+    <p>These came out of your ticks on the epic and on this issue. The mockups implement them; nothing here reopens them.</p>
+    <ul class="q">
+      <li><b>Ask first is the default</b> (D-3); "just tell them" is an explicit opt-down.</li>
+      <li><b>The consent email carries the full party listing</b> — every guest's name, no money (MG2-D-a).</li>
+      <li><b>A member who has not answered yet can already see the whole booking page</b> (D-11) — so the card sits inside the real page, and the honest consequence is that they see other guests' names and prices too.</li>
+      <li><b>A booker can extend an approved stay without asking again</b> (D-13).</li>
+      <li><b>The ordinary "take yourself off" blockers apply even to someone who never consented</b> (D-14) — which is why section 4 of the member page exists.</li>
+      <li><b>The nightly sweep settles money as account credit</b> so ordinary paid bookings lapse cleanly (D-15); only four genuinely stuck reasons reach the admin exception list.</li>
+      <li><b>Consent email ignores notification preferences but obeys the per-booking No-emails switch</b> (D-16).</li>
+      <li><b>This release ships the settings card</b>, not MG1 and not MG4 (D-17); the two name-search toggles never travel in config transfer (D-18).</li>
+      <li><b>Waiting period ships at 7 days</b>, admin-configurable 1–60.</li>
+    </ul>
+  </div>
+
+  <h2>What we would like you to tick</h2>
+  <div class="rule"></div>
+  <div class="panel">
+    <h4>Three copy/placement calls, and one genuine choice</h4>
+    <p>Everything else in the pack follows from decisions you have already made. If all four are fine as drawn, one comment saying so is enough — we are holding the visible half of the build until then.</p>
+    <ul class="q">
+      <li><b>MG2-M-1 — where the settings card lives.</b> Drawn under <b>Admin › Bookings setup</b> with the other booking-policy cards. The alternative is its own <b>Admin › Member guests</b> page in the sidebar, which costs a new admin route and its whole registry fan-out. Recommended: <b>Bookings setup</b>, as drawn.</li>
+      <li><b>MG2-M-2 — the badge wording.</b> "Waiting for consent", "Consented", "Told, not asked", "Added by Jo Admin", "Said no — could not be removed", "Lapsed — could not be removed". These are what a member sees as well as an admin. Recommended: <b>as drawn</b>.</li>
+      <li><b>MG2-M-3 — the exception list as a filter, not a page.</b> Drawn as two extra filter chips on the existing bookings list. A dedicated queue page was rejected for the same registry-fan-out reason as above and is available later if you want it. Recommended: <b>filter, as drawn</b>.</li>
+      <li><b>MG2-M-4 — does the settings card stay editable while the module is off?</b> Drawn as <em>yes, with a banner</em> (State A on the admin page), so a club can configure the policy before switching the feature on. The alternative is read-only until the module is on, which is safer-looking but forces an awkward order. Recommended: <b>editable with the banner, as drawn</b>.</li>
+    </ul>
+    <div class="warn"><b>One thing to look at hard, because it is the one that cannot be undone quietly:</b> the two name-search toggles on the admin settings card, and the warnings beside them. Both ship <b>off</b>. Turning the first on makes your membership list browsable by any member; turning the second on does the same for children's names. If the warning wording is not blunt enough, say so — that copy is the whole safety rail.</div>
+  </div>
+
+  <p class="foot">Mock data, static HTML, no behaviour. The server half of MG2 (state machine, expiry sweep, exclusions, delegate rule) is being built in parallel and does not wait on this; the visible half does.</p>
+</div>

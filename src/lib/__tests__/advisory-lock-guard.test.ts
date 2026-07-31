@@ -56,7 +56,24 @@ const GLOBAL_BOOKING_MONEY_LOCK_INVENTORY: Record<string, number> = {
   "src/lib/group-cancel.ts": 2,
   "src/lib/group-settlement.ts": 6,
   "src/lib/internet-banking-payment-cron.ts": 1,
-  "src/lib/payment-reconciliation.ts": 1,
+  // "+ Add Member Guest" (#2307, epic #2305). Two sites, both in the
+  // global-cohort class and both genuinely needing BOTH locks: a consent decline
+  // and a lapse each reprice the booking, can elect account credit to the owner
+  // (owner decision D-15), AND release a bed. Global `lock(1)` is taken FIRST and
+  // `acquireLodgeCapacityLock` second in both, matching the declared
+  // global-before-per-lodge order, and each then re-reads under the locks and
+  // makes a status-guarded claim before any side effect. See
+  // docs/CONCURRENCY_AND_LOCKING.md, "Global-cohort money / status transition".
+  "src/lib/member-guest-consent-service.ts": 2,
+  // #2262: site 1 is the ONE settlement body, shared byte-for-byte by the
+  // Stripe capture and the admin's manual cash settlement (the refactor that
+  // generalised it over a settlement source added NO lock site — the manual
+  // path composes global -> lodge -> MEMBER-CREDIT, and the third tier is a
+  // call to lockMemberCreditLedger, not a raw lock site). Site 2 is the manual
+  // mark-paid REVERSAL, a booking-status + money writer that also releases
+  // capacity when it restores a PAYMENT_PENDING booking, so it composes the
+  // same global-before-per-lodge pair in the same order.
+  "src/lib/payment-reconciliation.ts": 2,
   "src/lib/school-booking-request.ts": 1,
   "src/lib/xero-group-settlement-invoices.ts": 3,
   "src/lib/xero-inbound/invoice-paid-effects.ts": 1,

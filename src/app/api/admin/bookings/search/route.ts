@@ -35,8 +35,24 @@ function getBookingIdSearchTerms(query: string) {
 
 function getInvoiceSyncEligibility(booking: {
   status: string;
-  payment: { id: string; xeroInvoiceId: string | null } | null;
+  payment: {
+    id: string;
+    xeroInvoiceId: string | null;
+    manuallyMarkedPaidAt: Date | null;
+  } | null;
 }, linkedPaymentIds: Set<string>, queuedPaymentIds: Set<string>) {
+  // B5 (#2262): a cash / off-Xero settlement has no invoice by design, so
+  // offering "force sync invoice" would invite an admin to mint (and email) an
+  // awaiting-payment invoice for money already collected. Admin UX only — the
+  // enqueue choke point refuses regardless of what this returns.
+  if (booking.payment?.manuallyMarkedPaidAt) {
+    return {
+      canForceSyncInvoice: false,
+      forceSyncInvoiceReason:
+        "This booking was manually marked paid (cash / off-Xero) — no Xero invoice is expected.",
+    };
+  }
+
   if (booking.status !== "PAID") {
     return {
       canForceSyncInvoice: false,
@@ -151,6 +167,9 @@ export async function GET(request: NextRequest) {
           select: {
             id: true,
             xeroInvoiceId: true,
+            // B5 (#2262): manual-settlement provenance gates the force-sync
+            // affordance below.
+            manuallyMarkedPaidAt: true,
           },
         },
         _count: {

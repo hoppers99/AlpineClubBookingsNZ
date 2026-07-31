@@ -644,3 +644,103 @@ describe("custodian bed holds and partner-shared admission (#2286)", () => {
     expect(result.partnerSharedHeadroom).toBe(1);
   });
 });
+
+
+// ============================================================================
+// FREEZE TEST (#2307): the partner-shared admission check still counts a
+// PENDING member guest
+// ============================================================================
+//
+// Owner decision D-4: a PENDING member guest holds a bed. Owner decision D-12
+// keeps that guest off every operational surface — and this is not one, it is a
+// capacity gate. The two directions are easy to conflate because the same guest
+// rows feed both, so this pins the capacity side.
+//
+// The specific damage a filter here would do: partner-shared admission is the
+// path that lets a couple onto ONE double bed when the lodge is otherwise full.
+// Undercount the existing occupants by the pending member guests and the check
+// grants a slot the lodge does not have, on the fullest nights of the year.
+describe("#2307 partner-shared admission freeze: a PENDING guest still occupies (D-4)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // The occupancy rows this check loads are per-guest stay envelopes. Consent
+  // columns ride along on the same rows in production; they are set here so the
+  // fixture is honest about what the query returns, and so a future filter has
+  // something to (wrongly) act on.
+  function pendingOccupant() {
+    return {
+      stayStart: CHECK_IN,
+      stayEnd: CHECK_OUT,
+      consentStatus: "PENDING",
+      consentRequestedAt: new Date("2026-08-01T00:00:00.000Z"),
+      consentExpiresAt: new Date("2026-08-09T12:00:00.000Z"),
+    };
+  }
+
+  it("refuses the share when the last free bed is held by a PENDING guest", async () => {
+    // 4 beds, 1 double. Three ordinary occupants plus one pending member guest
+    // fills all four beds, so the couple can only be admitted on the double
+    // sharing slot, and one slot is exactly what a single double grants.
+    const db = fakeDb({
+      beds: 4,
+      doubles: 1,
+      bookings: [
+        {
+          checkIn: CHECK_IN,
+          checkOut: CHECK_OUT,
+          guests: [...nightGuests(3), pendingOccupant()],
+        },
+      ],
+      partnerGuestRows: partnerCoverageFullStay,
+    });
+
+    const result = await checkCapacityForPartnerSharedAdmission(
+      LODGE,
+      CHECK_IN,
+      CHECK_OUT,
+      // One ordinary (non-sharing) guest alongside the sharer: with the pending
+      // guest counted the lodge is over its base ceiling and the ordinary guest
+      // cannot be seated, which is the honest answer.
+      [{ stayStart: CHECK_IN, stayEnd: CHECK_OUT }],
+      [sharerFullStay],
+      undefined,
+      db,
+    );
+
+    // If the pending guest were filtered out of occupancy, a bed would appear
+    // free and this would read available.
+    expect(result.available).toBe(false);
+  });
+
+  it("sends no consent filter in the occupancy or coverage queries", async () => {
+    const db = fakeDb({
+      beds: 4,
+      doubles: 1,
+      partnerGuestRows: partnerCoverageFullStay,
+    });
+
+    await checkCapacityForPartnerSharedAdmission(
+      LODGE,
+      CHECK_IN,
+      CHECK_OUT,
+      [],
+      [sharerFullStay],
+      undefined,
+      db,
+    );
+
+    const bookingArgs = (
+      db as unknown as { booking: { findMany: { mock: { calls: unknown[][] } } } }
+    ).booking.findMany.mock.calls[0][0];
+    expect(JSON.stringify(bookingArgs)).not.toContain("consentStatus");
+
+    const guestArgs = (
+      db as unknown as {
+        bookingGuest: { findMany: { mock: { calls: unknown[][] } } };
+      }
+    ).bookingGuest.findMany.mock.calls[0][0];
+    expect(JSON.stringify(guestArgs)).not.toContain("consentStatus");
+  });
+});

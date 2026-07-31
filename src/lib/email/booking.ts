@@ -16,6 +16,11 @@ import {
   bookingModificationTypeLabel,
   bookingModificationSummaryRows,
 } from "../email-templates";
+import {
+  composeChoreLine,
+  composeOptionalEmailLine,
+  splitGuestPortionOwnBookingLine,
+} from "../email-message-notes";
 import { CLUB_NAME } from "@/config/club-identity";
 import { EMAIL_DEFAULT_LODGE_NAME } from "@/lib/email-message-settings";
 import {
@@ -96,9 +101,15 @@ export async function sendBookingConfirmedEmail(
   // hardcode the "Door code: " label around the bare {{doorCode}} value, which
   // left a dangling "Door code:" line in every confirmation a club without a
   // door code sent.
-  const doorCodeNote = settings.doorCode?.trim()
-    ? `Door code: ${settings.doorCode.trim()}`
-    : "";
+  // #2268: built by the one shared composer, so this line and the identical
+  // one on the pre-arrival reminder cannot drift. `trailing: ""` keeps the
+  // #2267 shape — a bare line that the body surrounds with its own blank
+  // lines — rather than a block that carries its own.
+  const doorCodeNote = composeOptionalEmailLine(
+    "Door code",
+    settings.doorCode,
+    { trailing: "" },
+  );
   const provisionalGuests = options?.provisionalGuests;
   // Composed sentence for the {{provisionalGuestsNote}} token — the same story
   // the FILE template renders, so an operator override keeps parity. Empty when
@@ -135,7 +146,11 @@ export async function sendBookingConfirmedEmail(
   const paymentOutcome = paymentDue
     ? `Total Due: ${formatMoneyCents(totalCents)}\n\n${paymentDueNote}`
     : `Total Paid: ${formatMoneyCents(totalCents)}\n\nPayment has been processed successfully.`;
-  await sendEmail({
+  // #2262: the outcome is RETURNED so a caller that promised the admin a
+  // receipt can report honestly what became of it (queued vs withheld vs
+  // failed) instead of turning a decision into a delivery claim. Existing
+  // callers ignore it and are unaffected.
+  return await sendEmail({
     to: email,
     subject: `Booking Confirmed - ${EMAIL_DEFAULT_LODGE_NAME}`,
     html: bookingConfirmedTemplate(
@@ -290,7 +305,8 @@ export async function sendBookingCancelledEmail(
   checkIn: Date,
   checkOut: Date,
   refundCents: number,
-  refundMethod: "card" | "credit" = "card",
+  // B5 (#2262): "manual" — a cash / off-Xero settlement handed back by a person.
+  refundMethod: "card" | "credit" | "manual" = "card",
   creditRestoredCents: number = 0,
   // Booking's lodge (multi-lodge phase 8): see sendBookingConfirmedEmail.
   lodgeId?: string | null,
@@ -314,11 +330,13 @@ export async function sendBookingCancelledEmail(
       checkOut: formatNZDate(checkOut),
       refundAmount: formatMoneyCents(refundCents),
       refundMessage:
-        refundCents > 0 && refundMethod === "credit"
-          ? `A credit of ${formatMoneyCents(refundCents)} has been added to your account for future bookings.`
-          : refundCents > 0
-            ? `A refund of ${formatMoneyCents(refundCents)} has been processed to your original payment method.`
-            : "No refund was applicable based on the cancellation policy.",
+        refundCents > 0 && refundMethod === "manual"
+          ? `You paid for this booking in cash or by bank transfer, so there is no card payment to reverse. The club will arrange your refund of ${formatMoneyCents(refundCents)} directly and will be in touch.`
+          : refundCents > 0 && refundMethod === "credit"
+            ? `A credit of ${formatMoneyCents(refundCents)} has been added to your account for future bookings.`
+            : refundCents > 0
+              ? `A refund of ${formatMoneyCents(refundCents)} has been processed to your original payment method.`
+              : "No refund was applicable based on the cancellation policy.",
       // #1164 / D7: applied account credit is restored subject to the same
       // cancellation policy as the card slice. Empty when nothing was restored
       // so the override body renders no line (mirrors the refundMessage token).
@@ -369,6 +387,19 @@ export async function sendSplitGuestPortionCancelledEmail(params: {
       checkIn: formatNZDate(params.checkIn),
       checkOut: formatNZDate(params.checkOut),
       bookingReference: params.parentBookingReference ?? "",
+      // #2268: pre-composed optional line — a member whose own booking
+      // reference is not cheaply available must not read a dangling
+      // "Your booking reference:".
+      bookingReferenceNote: composeOptionalEmailLine(
+        "Your booking reference",
+        params.parentBookingReference,
+        { trailing: "\n" },
+      ),
+      // #2268: the reassurance sentence about the member's OWN booking, built
+      // from the same helper as the hand-built HTML. The flat body used to
+      // promise "unaffected and remains confirmed" unconditionally, which is
+      // false when the parent booking is not settled.
+      ownBookingNote: splitGuestPortionOwnBookingLine(params.parentConfirmed),
     },
     lodgeId: params.lodgeId,
   });
@@ -403,6 +434,12 @@ export async function sendBookingReviewApprovedEmail(params: {
       checkIn: formatNZDate(params.checkIn),
       checkOut: formatNZDate(params.checkOut),
       adminNotes: params.adminNotes,
+      // #2268: pre-composed optional line — an approval with no admin note
+      // must not print a bare "Note from admin:".
+      adminNotesLine: composeOptionalEmailLine(
+        "Note from admin",
+        params.adminNotes,
+      ),
       bookingId: params.bookingId,
     },
   });
@@ -437,6 +474,11 @@ export async function sendBookingReviewRejectedEmail(params: {
       checkIn: formatNZDate(params.checkIn),
       checkOut: formatNZDate(params.checkOut),
       adminNotes: params.adminNotes,
+      // #2268: pre-composed optional line — see sendBookingReviewApprovedEmail.
+      adminNotesLine: composeOptionalEmailLine(
+        "Reason from admin",
+        params.adminNotes,
+      ),
     },
   });
 }
@@ -454,6 +496,12 @@ export async function sendCheckinReminderEmail(
   // Booking's lodge (multi-lodge phase 8): see sendBookingConfirmedEmail.
   lodgeId?: string | null,
 ) {
+  // One "First Last" per line — see the token comments below for why the same
+  // string is handed to three tokens.
+  const guestList = guests
+    .map((guest) => `${guest.firstName} ${guest.lastName}`.trim())
+    .join("\n");
+
   await sendEmail({
     to: email,
     subject: `Check-in Reminder - ${EMAIL_DEFAULT_LODGE_NAME}`,
@@ -465,13 +513,55 @@ export async function sendCheckinReminderEmail(
       checkIn: formatNZDate(checkIn),
       checkOut: formatNZDate(checkOut),
       guestCount: guests.length,
-      guestFirstName: guests.map((guest) => guest.firstName).join(", "),
-      guestLastName: guests.map((guest) => guest.lastName).join(", "),
+      // #2307: the audited/overridable body renders one guest per line. This
+      // used to supply every FIRST name comma-joined into {{guestFirstName}} and
+      // every LAST name comma-joined into {{guestLastName}} on one line, so a
+      // three-guest booking read "Ada, Bob, Cleo Lovelace, Smith, Jones" — each
+      // guest's surname attached to somebody else. One newline-joined
+      // "First Last" per guest is what the HTML template has always rendered as
+      // a <li> list, so the audit trail and the delivered mail now agree.
+      guestName: guestList,
+      // BACK-COMPATIBILITY for a club that SAVED an override of this body before
+      // the fix above. Their stored text still says
+      // "{{guestFirstName}} {{guestLastName}}", and a token nobody supplies
+      // renders as an empty string — so dropping the pair outright would have
+      // sent those clubs a reminder that names NOBODY, which is worse than the
+      // bug it replaced.
+      //
+      // THE MAPPING, and why it is this one. {{guestFirstName}} carries the same
+      // full "First Last" per-guest list as {{guestName}}, and
+      // {{guestLastName}} is deliberately empty:
+      //   - the saved pair "{{guestFirstName}} {{guestLastName}}" renders the
+      //     correct one-guest-per-line list, with the literal space between the
+      //     two tokens left trailing at the end of the last line — invisible,
+      //     because plainTextEmailTemplate trims every blank-line-separated
+      //     block, and because an empty guest list makes the whole block trim to
+      //     nothing and drop out rather than leaving a stray blank line;
+      //   - a body using {{guestFirstName}} alone still names everybody;
+      //   - a body using {{guestLastName}} alone renders nothing. Surnames on
+      //     their own cannot be shown truthfully — a bare list of surnames is
+      //     how the original bug misattributed them — so this shows nobody
+      //     rather than somebody wrong.
+      // What it can NEVER do, which was the whole point of the fix, is put one
+      // guest's surname next to another guest's first name.
+      guestFirstName: guestList,
+      guestLastName: "",
       choreName: chores.map((chore) => chore.name).join(", "),
       choreDescription: chores
         .map((chore) => chore.description ?? "")
         .filter(Boolean)
         .join(", "),
+      // #2268: the whole arrival-day chore block, pre-composed — heading and
+      // all — or nothing at all. The flat body has no conditional syntax, so
+      // a stay with no arrival-day chores must not print a bare
+      // "Your arrival day chores:" heading over an empty list.
+      choreListNote: chores.length
+        ? "Your arrival day chores:\n\n" +
+          chores
+            .map((chore) => composeChoreLine(chore.name, chore.description))
+            .join("") +
+          "\n"
+        : "",
     },
     lodgeId,
   });
@@ -510,6 +600,20 @@ export async function sendPreArrivalReminderEmail(params: {
       guestCount: params.guestCount,
       expectedArrivalTime: params.expectedArrivalTime ?? "",
       doorCode: settings.doorCode ?? "",
+      // #2268: pre-composed optional lines. Both values are nullable, so the
+      // flat body carries only these tokens — a stay with no expected arrival
+      // time, or a lodge with no door code, prints neither a dangling
+      // "Expected arrival:" nor a dangling "Door code:".
+      expectedArrivalNote: composeOptionalEmailLine(
+        "Expected arrival",
+        params.expectedArrivalTime,
+        { trailing: "\n" },
+      ),
+      // #2268: identical shape to the booking-confirmed line above — a bare
+      // "Door code: 1234", or nothing at all for a lodge with no code.
+      doorCodeNote: composeOptionalEmailLine("Door code", settings.doorCode, {
+        trailing: "",
+      }),
     },
     lodgeId: params.lodgeId,
   });

@@ -309,7 +309,12 @@ import logger from "@/lib/logger";
 describe("processStoredXeroInboundEvents", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    vi.mocked(sendBookingConfirmedEmail).mockResolvedValue(undefined);
+    // #2262: sendBookingConfirmedEmail now RETURNS its send outcome so the
+    // manual mark-paid path can report an honest receipt. This suite only cares
+    // that it was called, so a benign "sent" stub keeps the mock type-correct.
+    vi.mocked(sendBookingConfirmedEmail).mockResolvedValue({
+      status: "sent",
+    } as Awaited<ReturnType<typeof sendBookingConfirmedEmail>>);
     vi.mocked(sendBookingCancelledEmail).mockResolvedValue(undefined);
     vi.mocked(sendAdminPaymentFailureAlert).mockResolvedValue(undefined);
     mocks.checkCapacity.mockResolvedValue({ available: true });
@@ -1312,15 +1317,21 @@ describe("processStoredXeroInboundEvents", () => {
         subjectMemberId: "mem_1",
         metadata: expect.objectContaining({
           creditElectionCents: 4500,
+          // #2262 delta MED-2: the LIVE balance rides the row too, so nothing
+          // downstream can quote the elected figure as still available. This
+          // member's balance is the suite default of zero.
+          availableCreditCents: 0,
+          refundableCents: 0,
           xeroInvoiceId: "inv_ib_election",
         }),
       }),
     });
     expect(vi.mocked(sendAdminPaymentFailureAlert)).toHaveBeenCalledWith(
       expect.objectContaining({
-        amountCents: 4500,
+        // Clamped: their balance is gone, so there is nothing to hand back.
+        amountCents: 0,
         paymentIntentId: "inv_ib_election",
-        errorMessage: expect.stringContaining("account credit balance is untouched"),
+        errorMessage: expect.stringContaining("never debited"),
       })
     );
   });
