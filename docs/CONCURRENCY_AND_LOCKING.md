@@ -528,7 +528,15 @@ guards remain mandatory; ordinary application databases are never valid targets.
 Alongside scratch-table lock/CAS probes, the harness seeds the migrated
 application schema and races the real group-settlement failure writer against a
 locked PaymentIntent re-point, proving a stale webhook cannot fail the new
-settlement attempt.
+settlement attempt. It also exercises trusted induction baselining through
+separate PostgreSQL connections: the baseline's `SHARE ROW EXCLUSIVE` table lock
+holds an ordinary `MemberInduction` insert until commit, and an already-open
+ordinary writer makes the baseline wait and then re-read the committed workflow
+before refusing to apply. Further probes prove a real database failure during
+the post-create audit rolls back both baseline rows and audit, while concurrent
+baseline applies serialize into one inserted set and one no-op. These probes are
+still opt-in; without the explicit flag the suite runs only its URL safety
+guards and never imports or connects Prisma.
 
 ### Member-night guard → per-member lock, ACROSS lodges
 

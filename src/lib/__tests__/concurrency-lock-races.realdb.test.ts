@@ -19,16 +19,30 @@
  * After validation, the dedicated URL is copied to DATABASE_URL solely for the
  * app's Prisma singleton/driver adapter used by this isolated test process.
  *
- * The harness validates the MECHANISM the whole fix rests on — advisory-lock
- * mutual exclusion plus status-guarded compare-and-set — against a scratch
- * table, plus a representative application-level settlement failure/re-point
- * race against the migrated Prisma schema. This keeps the mechanism probes
- * deterministic while proving an actual writer uses the protocol correctly.
+ * The harness validates the MECHANISMS the fixes rest on — advisory-lock
+ * mutual exclusion plus status-guarded compare-and-set, and the trusted
+ * induction baseline's maintenance-only table lock — against the migrated
+ * schema. This keeps the probes deterministic while proving actual PostgreSQL
+ * lock/rollback behavior.
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { Prisma, PrismaClient } from "@prisma/client";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from "vitest";
 
 let prisma: typeof import("@/lib/prisma")["prisma"];
 let markGroupSettlementIntentFailed: typeof import("@/lib/group-settlement")["markGroupSettlementIntentFailed"];
+let runInductionBaseline: typeof import("@/lib/induction-baseline")["runInductionBaseline"];
+let InductionBaselineBlockedError: typeof import("@/lib/induction-baseline")["InductionBaselineBlockedError"];
+let inductionBaselineLockSql: string;
+let baselineClientA: PrismaClient;
+let baselineClientB: PrismaClient;
+let ordinaryWriterClient: PrismaClient;
 
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
@@ -75,6 +89,128 @@ const APP_LODGE_ID = "race-1881-lodge";
 const APP_BOOKING_ID = "race-1881-booking";
 const APP_GROUP_ID = "race-1881-group";
 const APP_SETTLEMENT_ID = "race-1881-settlement";
+const BASELINE_ACTOR_ID = "race-2361-admin";
+const BASELINE_MEMBER_A_ID = "race-2361-member-a";
+const BASELINE_MEMBER_B_ID = "race-2361-member-b";
+const BASELINE_NA_MEMBER_ID = "race-2361-member-na";
+const BASELINE_TEMPLATE_ID = "race-2361-template";
+const BASELINE_TEMPLATE_SECTION_ID = "race-2361-template-section";
+const BASELINE_TEMPLATE_ITEM_ID = "race-2361-template-item";
+const BASELINE_CLUB_NAME = "Race 2361 Alpine Club";
+const BASELINE_AUDIT_ACTION = "MEMBER_INDUCTION_LEGACY_BASELINE_APPLIED";
+const BASELINE_PROVENANCE_PREFIX = "Trusted legacy induction baseline:";
+const BASELINE_DATE = "2024-06-30";
+const BASELINE_MEMBER_IDS = [
+  APP_MEMBER_ID,
+  BASELINE_ACTOR_ID,
+  BASELINE_MEMBER_A_ID,
+  BASELINE_MEMBER_B_ID,
+  BASELINE_NA_MEMBER_ID,
+];
+const BASELINE_ELIGIBLE_MEMBER_IDS = [
+  APP_MEMBER_ID,
+  BASELINE_ACTOR_ID,
+  BASELINE_MEMBER_A_ID,
+  BASELINE_MEMBER_B_ID,
+];
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+async function waitForTableLock(params: {
+  mode: "RowExclusiveLock" | "ShareRowExclusiveLock";
+  granted: boolean;
+}): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const rows = await prisma.$queryRaw<Array<{ count: number }>>`
+      SELECT COUNT(*)::int AS "count"
+      FROM pg_locks
+      WHERE relation = '"MemberInduction"'::regclass
+        AND mode = ${params.mode}
+        AND granted = ${params.granted}
+    `;
+    if ((rows[0]?.count ?? 0) > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(
+    `Timed out waiting for ${params.granted ? "granted" : "pending"} ${params.mode} on MemberInduction`,
+  );
+}
+
+type BaselineStoreHooks = {
+  afterLock?: (tx: Prisma.TransactionClient) => Promise<void>;
+  replaceAuditCreate?: (tx: Prisma.TransactionClient) => Promise<never>;
+};
+
+/**
+ * Test-only transaction proxy. It delegates every operation to a real
+ * PrismaClient/transaction, pausing only after PostgreSQL has granted the
+ * production lock or replacing the audit create with an intentional real-DB
+ * failure. No production hook is needed.
+ */
+function createBaselineStore(
+  client: PrismaClient,
+  hooks: BaselineStoreHooks = {},
+) {
+  return {
+    $transaction<T>(
+      callback: (tx: Prisma.TransactionClient) => Promise<T>,
+      options: {
+        isolationLevel: Prisma.TransactionIsolationLevel;
+        maxWait: number;
+        timeout: number;
+      },
+    ) {
+      return client.$transaction(async (tx) => {
+        let lockHookRan = false;
+        const txProxy = new Proxy(tx, {
+          get(target, property) {
+            if (property === "$executeRawUnsafe") {
+              const execute = target.$executeRawUnsafe.bind(target) as (
+                query: string,
+                ...values: unknown[]
+              ) => Promise<number>;
+              return async (query: string, ...values: unknown[]) => {
+                const result = await execute(query, ...values);
+                if (
+                  !lockHookRan &&
+                  query === inductionBaselineLockSql &&
+                  hooks.afterLock
+                ) {
+                  lockHookRan = true;
+                  await hooks.afterLock(target);
+                }
+                return result;
+              };
+            }
+            if (property === "auditLog" && hooks.replaceAuditCreate) {
+              return new Proxy(target.auditLog, {
+                get(delegate, delegateProperty) {
+                  if (delegateProperty === "create") {
+                    return () => hooks.replaceAuditCreate!(target);
+                  }
+                  const value = Reflect.get(delegate, delegateProperty);
+                  return typeof value === "function"
+                    ? value.bind(delegate)
+                    : value;
+                },
+              });
+            }
+            const value = Reflect.get(target, property);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        });
+        return callback(txProxy);
+      }, options);
+    },
+  };
+}
 
 describe("concurrency race DB safety guard (#1881)", () => {
   it("accepts only a dedicated loopback scratch database", () => {
@@ -98,6 +234,189 @@ describe("concurrency race DB safety guard (#1881)", () => {
 (RUN ? describe : describe.skip)(
   "two-tier lock protocol — real-DB interleavings (#1881)",
   () => {
+    async function clearBaselineRunState() {
+      await prisma.auditLog.deleteMany({
+        where: {
+          OR: [
+            { action: BASELINE_AUDIT_ACTION },
+            { id: "race-2361-forced-audit-failure" },
+          ],
+        },
+      });
+      await prisma.memberInduction.deleteMany({
+        where: { memberId: { in: BASELINE_MEMBER_IDS } },
+      });
+    }
+
+    async function clearBaselineFixtures() {
+      await clearBaselineRunState();
+      await prisma.inductionChecklistTemplate.deleteMany({
+        where: { id: BASELINE_TEMPLATE_ID },
+      });
+      await prisma.memberAccessRole.deleteMany({
+        where: { memberId: { in: BASELINE_MEMBER_IDS } },
+      });
+      await prisma.member.deleteMany({
+        where: {
+          id: {
+            in: [
+              BASELINE_ACTOR_ID,
+              BASELINE_MEMBER_A_ID,
+              BASELINE_MEMBER_B_ID,
+              BASELINE_NA_MEMBER_ID,
+            ],
+          },
+        },
+      });
+      await prisma.membershipNominationSettings.deleteMany({
+        where: { id: "default" },
+      });
+      await prisma.ageTierSetting.deleteMany({
+        where: { tier: { in: ["INFANT", "CHILD", "YOUTH", "ADULT"] } },
+      });
+      await prisma.clubIdentitySettings.deleteMany({
+        where: { id: "default" },
+      });
+    }
+
+    async function seedBaselineFixtures() {
+      await prisma.clubIdentitySettings.create({
+        data: { id: "default", name: BASELINE_CLUB_NAME },
+      });
+      await prisma.ageTierSetting.createMany({
+        data: [
+          {
+            tier: "INFANT",
+            minAge: 0,
+            maxAge: 4,
+            label: "Infant",
+            sortOrder: 0,
+          },
+          {
+            tier: "CHILD",
+            minAge: 5,
+            maxAge: 9,
+            label: "Child",
+            sortOrder: 1,
+          },
+          {
+            tier: "YOUTH",
+            minAge: 10,
+            maxAge: 17,
+            label: "Youth",
+            sortOrder: 2,
+          },
+          {
+            tier: "ADULT",
+            minAge: 18,
+            maxAge: null,
+            label: "Adult",
+            sortOrder: 3,
+          },
+        ],
+      });
+      await prisma.membershipNominationSettings.create({
+        data: { id: "default", requiredSignOffs: 2 },
+      });
+      await prisma.inductionChecklistTemplate.create({
+        data: {
+          id: BASELINE_TEMPLATE_ID,
+          name: "Race harness New Member induction",
+          version: "race-2361-v1",
+          kind: "NEW_MEMBER",
+          isActive: true,
+          sections: {
+            create: {
+              id: BASELINE_TEMPLATE_SECTION_ID,
+              title: "Safety",
+              priority: "GENERAL",
+              items: {
+                create: {
+                  id: BASELINE_TEMPLATE_ITEM_ID,
+                  label: "Emergency exits",
+                },
+              },
+            },
+          },
+        },
+      });
+      await prisma.member.createMany({
+        data: [
+          {
+            id: BASELINE_ACTOR_ID,
+            email: "race-2361-admin@example.invalid",
+            passwordHash: "not-a-real-password",
+            firstName: "Baseline",
+            lastName: "Admin",
+            role: "ADMIN",
+            ageTier: "ADULT",
+            canLogin: true,
+          },
+          {
+            id: BASELINE_MEMBER_A_ID,
+            email: "race-2361-a@example.invalid",
+            passwordHash: "not-a-real-password",
+            firstName: "Baseline",
+            lastName: "Child",
+            role: "USER",
+            ageTier: "CHILD",
+          },
+          {
+            id: BASELINE_MEMBER_B_ID,
+            email: "race-2361-b@example.invalid",
+            passwordHash: "not-a-real-password",
+            firstName: "Baseline",
+            lastName: "Adult",
+            role: "USER",
+            ageTier: "ADULT",
+          },
+          {
+            id: BASELINE_NA_MEMBER_ID,
+            email: "race-2361-na@example.invalid",
+            passwordHash: "not-a-real-password",
+            firstName: "Baseline",
+            lastName: "NotApplicable",
+            role: "USER",
+            ageTier: "NOT_APPLICABLE",
+          },
+        ],
+      });
+      await prisma.memberAccessRole.create({
+        data: { memberId: BASELINE_ACTOR_ID, role: "ADMIN" },
+      });
+    }
+
+    function applyInductionBaseline(
+      store: PrismaClient | ReturnType<typeof createBaselineStore>,
+    ) {
+      return runInductionBaseline({
+        actorMemberId: BASELINE_ACTOR_ID,
+        baselineDate: BASELINE_DATE,
+        provenanceNote: "Race harness committee minute",
+        apply: true,
+        confirmClubName: BASELINE_CLUB_NAME,
+        store: store as never,
+        fallbackClubName: "unused",
+        fallbackClubNameSource: "primary",
+      });
+    }
+
+    async function countBaselineRows() {
+      return prisma.memberInduction.count({
+        where: {
+          memberId: { in: BASELINE_ELIGIBLE_MEMBER_IDS },
+          status: "COMPLETED",
+          finalComments: { startsWith: BASELINE_PROVENANCE_PREFIX },
+        },
+      });
+    }
+
+    async function countBaselineAudits() {
+      return prisma.auditLog.count({
+        where: { action: BASELINE_AUDIT_ACTION },
+      });
+    }
+
     beforeAll(async () => {
       // Never touch a default/production DB: the singleton connects via
       // dedicated URL, so guard THAT before importing Prisma or creating any
@@ -107,9 +426,42 @@ describe("concurrency race DB safety guard (#1881)", () => {
       process.env.DATABASE_URL = RACE_DB_URL;
       ({ prisma } = await import("@/lib/prisma"));
       ({ markGroupSettlementIntentFailed } = await import("@/lib/group-settlement"));
+      const baseline = await import("@/lib/induction-baseline");
+      runInductionBaseline = baseline.runInductionBaseline;
+      InductionBaselineBlockedError = baseline.InductionBaselineBlockedError;
+      inductionBaselineLockSql = baseline.INDUCTION_BASELINE_LOCK_SQL;
+      const [{ PrismaClient: SeparatePrismaClient }, { createPrismaPgAdapter }] =
+        await Promise.all([
+          import("@prisma/client"),
+          import("@/lib/prisma-adapter"),
+        ]);
+      const createSeparateClient = (applicationName: string) => {
+        const url = new URL(RACE_DB_URL);
+        url.searchParams.set("connection_limit", "1");
+        url.searchParams.set("application_name", applicationName);
+        return new SeparatePrismaClient({
+          adapter: createPrismaPgAdapter(url.toString()),
+        });
+      };
+      baselineClientA = createSeparateClient("race-2361-baseline-a");
+      baselineClientB = createSeparateClient("race-2361-baseline-b");
+      ordinaryWriterClient = createSeparateClient("race-2361-writer");
+      await Promise.all([
+        baselineClientA.$connect(),
+        baselineClientB.$connect(),
+        ordinaryWriterClient.$connect(),
+      ]);
+
       await prisma.$executeRawUnsafe(
         `CREATE TABLE IF NOT EXISTS "${PROBE_TABLE}" (id text PRIMARY KEY, status text NOT NULL)`
       );
+      // Idempotent recovery from an interrupted earlier opt-in run.
+      await prisma.groupBooking.deleteMany({ where: { id: APP_GROUP_ID } });
+      await prisma.booking.deleteMany({ where: { id: APP_BOOKING_ID } });
+      await prisma.lodge.deleteMany({ where: { id: APP_LODGE_ID } });
+      await clearBaselineFixtures();
+      await prisma.member.deleteMany({ where: { id: APP_MEMBER_ID } });
+
       await prisma.member.create({
         data: {
           id: APP_MEMBER_ID,
@@ -150,14 +502,21 @@ describe("concurrency race DB safety guard (#1881)", () => {
           amountCents: 100,
         },
       });
+      await seedBaselineFixtures();
     });
 
     afterAll(async () => {
+      await clearBaselineFixtures();
       await prisma.groupBooking.deleteMany({ where: { id: APP_GROUP_ID } });
       await prisma.booking.deleteMany({ where: { id: APP_BOOKING_ID } });
       await prisma.lodge.deleteMany({ where: { id: APP_LODGE_ID } });
       await prisma.member.deleteMany({ where: { id: APP_MEMBER_ID } });
       await prisma.$executeRawUnsafe(`DROP TABLE IF EXISTS "${PROBE_TABLE}"`);
+      await Promise.all([
+        baselineClientA.$disconnect(),
+        baselineClientB.$disconnect(),
+        ordinaryWriterClient.$disconnect(),
+      ]);
       await prisma.$disconnect();
     });
 
@@ -305,6 +664,192 @@ describe("concurrency race DB safety guard (#1881)", () => {
           status: "PENDING",
         });
       }
+    });
+
+    describe("trusted induction baseline table-lock protocol (#2361)", { timeout: 15_000 }, () => {
+      beforeEach(async () => {
+        await clearBaselineRunState();
+      });
+
+      it("holds SHARE ROW EXCLUSIVE until commit and blocks an ordinary induction create", async () => {
+        const lockAcquired = deferred();
+        const releaseBaseline = deferred();
+        const baselineStore = createBaselineStore(baselineClientA, {
+          afterLock: async () => {
+            lockAcquired.resolve();
+            await releaseBaseline.promise;
+          },
+        });
+        const applyPromise = applyInductionBaseline(baselineStore);
+        await lockAcquired.promise;
+
+        let writerSettled = false;
+        const writerPromise = ordinaryWriterClient
+          .$transaction((tx) =>
+            tx.memberInduction.create({
+              data: {
+                id: "race-2361-writer-after-baseline",
+                memberId: BASELINE_MEMBER_A_ID,
+                templateId: BASELINE_TEMPLATE_ID,
+                kind: "RE_INDUCTION",
+                status: "IN_PROGRESS",
+                requiredSignOffs: 2,
+                createdByMemberId: BASELINE_ACTOR_ID,
+              },
+            }),
+          )
+          .finally(() => {
+            writerSettled = true;
+          });
+
+        let observationError: unknown;
+        try {
+          await waitForTableLock({
+            mode: "ShareRowExclusiveLock",
+            granted: true,
+          });
+          await waitForTableLock({ mode: "RowExclusiveLock", granted: false });
+          expect(writerSettled).toBe(false);
+        } catch (error) {
+          observationError = error;
+        } finally {
+          releaseBaseline.resolve();
+        }
+
+        const [report, writer] = await Promise.all([
+          applyPromise,
+          writerPromise,
+        ]);
+        if (observationError) throw observationError;
+        expect(report.appliedCount).toBe(BASELINE_ELIGIBLE_MEMBER_IDS.length);
+        expect(writer.id).toBe("race-2361-writer-after-baseline");
+        expect(await countBaselineRows()).toBe(
+          BASELINE_ELIGIBLE_MEMBER_IDS.length,
+        );
+        expect(await countBaselineAudits()).toBe(1);
+      });
+
+      it("waits behind an ordinary writer, re-reads after commit, and blocks without baseline writes", async () => {
+        const writerInserted = deferred();
+        const releaseWriter = deferred();
+        const writerPromise = ordinaryWriterClient.$transaction(async (tx) => {
+          const row = await tx.memberInduction.create({
+            data: {
+              id: "race-2361-writer-before-baseline",
+              memberId: BASELINE_MEMBER_B_ID,
+              templateId: BASELINE_TEMPLATE_ID,
+              kind: "RE_INDUCTION",
+              status: "IN_PROGRESS",
+              requiredSignOffs: 2,
+              createdByMemberId: BASELINE_ACTOR_ID,
+            },
+          });
+          writerInserted.resolve();
+          await releaseWriter.promise;
+          return row;
+        });
+        await writerInserted.promise;
+
+        let applySettled = false;
+        const applyPromise = applyInductionBaseline(baselineClientA).finally(
+          () => {
+            applySettled = true;
+          },
+        );
+        let observationError: unknown;
+        try {
+          await waitForTableLock({ mode: "RowExclusiveLock", granted: true });
+          await waitForTableLock({
+            mode: "ShareRowExclusiveLock",
+            granted: false,
+          });
+          expect(applySettled).toBe(false);
+        } catch (error) {
+          observationError = error;
+        } finally {
+          releaseWriter.resolve();
+        }
+
+        await writerPromise;
+        let applyError: unknown;
+        try {
+          await applyPromise;
+        } catch (error) {
+          applyError = error;
+        }
+        if (observationError) throw observationError;
+        expect(applyError).toBeInstanceOf(InductionBaselineBlockedError);
+        expect(
+          (applyError as InstanceType<typeof InductionBaselineBlockedError>)
+            .report.openWorkflows,
+        ).toEqual([
+          expect.objectContaining({ memberId: BASELINE_MEMBER_B_ID }),
+        ]);
+        expect(await countBaselineRows()).toBe(0);
+        expect(await countBaselineAudits()).toBe(0);
+        expect(
+          await prisma.memberInduction.count({
+            where: {
+              memberId: { in: BASELINE_MEMBER_IDS },
+              status: { in: ["DRAFT", "IN_PROGRESS"] },
+            },
+          }),
+        ).toBe(1);
+      });
+
+      it("rolls back baseline rows and audit when the real audit insert fails", async () => {
+        const forcedAuditId = "race-2361-forced-audit-failure";
+        let rowsVisibleBeforeAudit = 0;
+        const baselineStore = createBaselineStore(baselineClientA, {
+          replaceAuditCreate: async (tx) => {
+            rowsVisibleBeforeAudit = await tx.memberInduction.count({
+              where: {
+                memberId: { in: BASELINE_ELIGIBLE_MEMBER_IDS },
+                status: "COMPLETED",
+                finalComments: {
+                  startsWith: BASELINE_PROVENANCE_PREFIX,
+                },
+              },
+            });
+            await tx.$executeRawUnsafe(
+              `INSERT INTO "AuditLog" ("id", "action") VALUES ($1, NULL)`,
+              forcedAuditId,
+            );
+            throw new Error("Expected PostgreSQL to reject a null audit action");
+          },
+        });
+
+        await expect(applyInductionBaseline(baselineStore)).rejects.toThrow();
+        expect(rowsVisibleBeforeAudit).toBe(
+          BASELINE_ELIGIBLE_MEMBER_IDS.length,
+        );
+        expect(await countBaselineRows()).toBe(0);
+        expect(await countBaselineAudits()).toBe(0);
+        expect(
+          await prisma.auditLog.count({ where: { id: forcedAuditId } }),
+        ).toBe(0);
+      });
+
+      it("serializes two concurrent applies into one inserted set and one no-op", async () => {
+        const [first, second] = await Promise.all([
+          applyInductionBaseline(baselineClientA),
+          applyInductionBaseline(baselineClientB),
+        ]);
+
+        expect([first.appliedCount, second.appliedCount].sort()).toEqual([
+          0,
+          BASELINE_ELIGIBLE_MEMBER_IDS.length,
+        ]);
+        expect(await countBaselineRows()).toBe(
+          BASELINE_ELIGIBLE_MEMBER_IDS.length,
+        );
+        expect(await countBaselineAudits()).toBe(1);
+        expect(
+          await prisma.memberInduction.count({
+            where: { memberId: BASELINE_NA_MEMBER_ID },
+          }),
+        ).toBe(0);
+      });
     });
   }
 );
