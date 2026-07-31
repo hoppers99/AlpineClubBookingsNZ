@@ -149,7 +149,22 @@ export const EXTRA_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, strin
   // Lodge the warning is about; empty for single-lodge clubs (ADR-002).
   "admin-capacity-warning": ["lodgeName"],
   // #2268 raw values behind the pre-composed lines (see the note above).
-  "checkin-reminder": ["choreName", "choreDescription"],
+  // #2269 review: {{guestFirstName}}/{{guestLastName}} are STILL SUPPLIED by
+  // sendCheckinReminderEmail (src/lib/email/booking.ts) precisely so a club
+  // holding a pre-#2307 override keeps rendering a correct guest list. They
+  // left the default body when #2307 moved to a one-guest-per-line
+  // {{guestName}}, and without them here `allowedTokens` omits them: the
+  // editor then reported "uses {{guestFirstName}}, {{guestLastName}}, which
+  // this template no longer supplies" — both clauses false — and, because
+  // disallowed_token makes the validation invalid, that club could not re-save
+  // its template at all. The only remedy offered was Restore Default, which
+  // destroys the wording the back-compatibility exists to protect.
+  "checkin-reminder": [
+    "choreName",
+    "choreDescription",
+    "guestFirstName",
+    "guestLastName",
+  ],
   "pre-arrival-reminder": ["doorCode", "expectedArrivalTime"],
   "chore-roster": ["choreName", "choreDescription", "choreLink"],
   "membership-application-rejected": ["adminNotes"],

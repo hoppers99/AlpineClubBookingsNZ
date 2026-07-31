@@ -101,6 +101,72 @@ export const OPTIONAL_TEMPLATE_TOKENS: Record<string, readonly string[]> = {
   "membership-payment-recorded": ["amountRecordedNote"],
 };
 
+/**
+ * #2269 — tokens a send site can supply EMPTY that are no longer in the current
+ * default body, so only a SAVED OVERRIDE can still be using them.
+ *
+ * OPTIONAL_TEMPLATE_TOKENS above cannot hold these: guard 5
+ * (`findStaleOptionalTokens`) requires every name declared there to appear in
+ * the default it describes, and by construction none of these do — they are the
+ * legacy per-piece tokens the defaults stopped using when #2263/#2267 moved to
+ * pre-composed blocks. The senders still supply them, precisely so an override
+ * written against an older default keeps rendering.
+ *
+ * WHY THIS EXISTS AT ALL. #2269's migration strips the "[only when …]" notes
+ * out of saved overrides. On three real shipped defaults those notes were
+ * padded onto money lines:
+ *
+ *   Subtotal: {{subtotal}}                  [only when discountCents > 0]
+ *   Discount ({{promoCode}}): -{{discount}} [only when promoCode exists]
+ *   Discount: -{{discount}}                 [only when discount exists ...]
+ *
+ * The brackets were the only thing telling an admin those lines were
+ * conditional. Once they are gone the row renders "Discount (): -" on an
+ * ordinary booking and "Discount (PEAK): -" on a promo that RAISED the price —
+ * the #2267 incident verbatim — and nothing would say a word. Declaring the
+ * tokens here is what turns guard 4 on for them, so the editor names the exact
+ * broken lines instead.
+ *
+ * Maintained BY HAND under the same discipline as OPTIONAL_TEMPLATE_TOKENS:
+ * every entry below was read off its sender in src/lib/email/booking.ts, and
+ * every one of them is a literal `""` or `?? ""` on some branch.
+ *
+ * ONE KNOWN IMPRECISION, recorded rather than hidden: guard 4 renders every
+ * declared token empty AT ONCE, and {{totalPaid}} / {{totalDue}} are two halves
+ * of one story — exactly one of them is empty on any real send, never both. An
+ * override that put both on the same line would be reported as dangling when it
+ * is not. The trade is deliberate: "Total Paid: {{totalPaid}}" alone is the
+ * line the pre-#2263 default shipped and it really does render "Total Paid:" on
+ * an unpaid booking, so leaving the pair undeclared would miss a live defect to
+ * avoid a hypothetical one. The report is advisory and quotes the exact
+ * rendered line, so an admin can see for themselves.
+ */
+export const EMPTYABLE_OVERRIDE_TOKENS: Record<string, readonly string[]> = {
+  // sendBookingConfirmedEmail: subtotal/promoAdjustment are "" when no promo
+  // applied, discount is "" unless the adjustment is a price CUT, promoCode is
+  // `?? ""`, and totalPaid/totalDue are the two halves of one story — exactly
+  // one of them is "" on every send.
+  "booking-confirmed": [
+    "subtotal",
+    "discount",
+    "promoCode",
+    "promoAdjustment",
+    "totalPaid",
+    "totalDue",
+  ],
+  // sendBookingModifiedEmail: each of these is `?? ""` when the change did not
+  // involve an additional payment.
+  "booking-modified": [
+    "additionalPaymentMethod",
+    "paymentReference",
+    "xeroInvoiceNumber",
+  ],
+  // #2307: {{guestLastName}} is supplied DELIBERATELY EMPTY (surnames on their
+  // own cannot be shown truthfully), so any override line built around it alone
+  // renders a bare label.
+  "checkin-reminder": ["guestLastName"],
+};
+
 export function extractTokens(value: string): string[] {
   return Array.from(value.matchAll(TOKEN_PATTERN), (match) =>
     match[1].trim(),

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { diffLines, isSameText } from "@/lib/text-diff";
+import {
+  diffLines,
+  isSameText,
+  markInvisibleCharacters,
+} from "@/lib/text-diff";
 
 // #2269 (F3). The email template editor shows this diff to an admin who is
 // deciding whether to keep their saved wording or press Restore Default, so a
@@ -83,6 +87,40 @@ describe("diffLines", () => {
         .map((line) => line.value)
         .join("\n"),
     ).toBe(after);
+  });
+
+  it("normalises a lone carriage return as a line break", () => {
+    // \r\n was already handled; a lone \r (an old-Mac paste, or a value that
+    // has been through a tool that rewrote line endings) would otherwise
+    // arrive as one enormous single line and diff as "everything replaced".
+    // This repo has had a real CRLF incident (#2399).
+    expect(isSameText("one\rtwo", "one\ntwo")).toBe(true);
+    expect(diffLines("one\rtwo", "one\ntwo")).toEqual([
+      { type: "equal", value: "one" },
+      { type: "equal", value: "two" },
+    ]);
+  });
+
+  it("does not show two visually identical lines as a change", () => {
+    // "é" as one code point and as "e" + combining acute look the same on
+    // screen. Without normalising, the diff shows a removed line and an added
+    // line that an admin cannot tell apart, which reads as a broken diff.
+    const composed = "Café open at 7";
+    const decomposed = "Café open at 7";
+    expect(composed).not.toBe(decomposed);
+    expect(isSameText(composed, decomposed)).toBe(true);
+    expect(diffLines(composed, decomposed)).toEqual([
+      { type: "equal", value: composed },
+    ]);
+  });
+
+  it("marks trailing whitespace so a whitespace-only change is visible", () => {
+    expect(markInvisibleCharacters("Total:  ")).toBe("Total:··");
+    expect(markInvisibleCharacters("Total:\t")).toBe("Total:→");
+    // Interior spacing is left exactly as written — the defaults padded their
+    // notes into a column, and turning that into dots would be unreadable.
+    expect(markInvisibleCharacters("Total:  x")).toBe("Total:  x");
+    expect(markInvisibleCharacters("Total: x")).toBe("Total: x");
   });
 
   it("degrades to a whole-block replacement rather than hanging on huge input", () => {

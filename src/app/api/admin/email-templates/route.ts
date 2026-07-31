@@ -8,7 +8,12 @@ import {
   EMAIL_TEMPLATE_DEFINITIONS,
   EMAIL_TEMPLATE_KEY_SET,
 } from "@/lib/email-message-registry";
-import { findBracketAnnotations } from "@/lib/email-message-token-contract";
+import {
+  EMPTYABLE_OVERRIDE_TOKENS,
+  OPTIONAL_TEMPLATE_TOKENS,
+  findBracketAnnotations,
+  findDanglingDefaultLines,
+} from "@/lib/email-message-token-contract";
 import { validateEmailTemplateContent } from "@/lib/email-message-renderer";
 import { prisma } from "@/lib/prisma";
 import { isSameText } from "@/lib/text-diff";
@@ -133,6 +138,21 @@ export async function GET() {
   //     are repeated per template so the editor can show one consolidated
   //     indicator on the template you have open, instead of making you read a
   //     list of names at the top of the page and match them up yourself.
+  //   dangling_line — a line of the saved copy renders as a bare label when a
+  //     token the sender can legitimately supply EMPTY comes back empty. This
+  //     is the reason #2269's own migration made urgent: the shipped defaults
+  //     padded "[only when discountCents > 0]" onto
+  //     "Discount ({{promoCode}}): -{{discount}}", and once the migration
+  //     removes the bracket the line still goes out as "Discount (): -" on an
+  //     ordinary booking and "Discount (PEAK): -" on a promo that RAISED the
+  //     price — a member charged MORE shown a "Discount" line, which is the
+  //     #2267 incident word for word. This is objectively wrong output, not a
+  //     matter of taste, so it belongs in `reasons` without breaching the rule
+  //     that we never nag an admin about wording they chose.
+  //   invalid_content — the catch-all. `reasons` above names five of the
+  //     validator's nine issue codes; a row that trips one of the other four
+  //     (a sensitive token in a subject is the reachable one) cannot be
+  //     re-saved and would otherwise be told nothing at all.
   const staleContentByTemplate = new Map<
     string,
     {
@@ -143,6 +163,7 @@ export async function GET() {
       missingRequiredTokens: string[];
       retiredTokens: string[];
       bracketAnnotations: string[];
+      danglingLines: string[];
     }
   >();
   for (const definition of EMAIL_TEMPLATE_DEFINITIONS) {
@@ -165,22 +186,72 @@ export async function GET() {
       ),
     );
     // A null field means "fall back to the built-in wording", which is not a
-    // difference — only a stored value that is not the default is.
+    // difference — only a stored value that is not the default is. A BLANK
+    // value means the same thing to the renderer and is treated the same way
+    // here (#2269 review): the save route stores `subject || null` so the app
+    // never creates one, but a row that predates that, or one written by hand,
+    // would otherwise be reported as "your saved copy differs" with the whole
+    // default diffed as removed — false drift over a row that renders exactly
+    // the built-in wording.
     // isSameText, not ===, so a saved copy that differs only in line-ending
     // style (a browser/textarea round trip can introduce CRLF) is not reported
     // as a difference an admin should look at.
+    const storedSubject = override.subject?.trim() ? override.subject : null;
+    const storedBody = override.bodyText?.trim() ? override.bodyText : null;
     const subjectDiffersFromDefault =
-      override.subject !== null &&
-      !isSameText(override.subject, definition.defaultSubject);
+      storedSubject !== null &&
+      !isSameText(storedSubject, definition.defaultSubject);
     const bodyDiffersFromDefault =
-      override.bodyText !== null &&
-      !isSameText(override.bodyText, definition.defaultBody);
+      storedBody !== null && !isSameText(storedBody, definition.defaultBody);
+    // Guard 4, run over the SAVED OVERRIDE rather than over a shipped default:
+    // render every token the sender can supply empty as empty and see which
+    // lines come out as a bare label. Both declaration tables are used —
+    // OPTIONAL_TEMPLATE_TOKENS for the pre-composed blocks still in the default
+    // body, EMPTYABLE_OVERRIDE_TOKENS for the legacy per-piece tokens only an
+    // override can still be using. Anything not declared renders with its
+    // preview sample, so a token that is always supplied cannot produce noise.
+    const emptyableTokens = [
+      ...(OPTIONAL_TEMPLATE_TOKENS[definition.key] ?? []),
+      ...(EMPTYABLE_OVERRIDE_TOKENS[definition.key] ?? []),
+    ];
+    const danglingLines = findDanglingDefaultLines(
+      {
+        // A null field means "use the built-in wording", which this club did
+        // not author and cannot be warned about — the defaults have their own
+        // build-time guard-4 run.
+        [definition.key]: {
+          defaultSubject: override.subject ?? "",
+          defaultBody: override.bodyText ?? "",
+        },
+      },
+      { [definition.key]: emptyableTokens },
+      (token) => definition.sampleData[token] ?? token,
+    ).flatMap((finding) =>
+      // Guard 4 reports its lines JSON-quoted and pipe-joined. Read them back
+      // as JSON string literals rather than splitting on the pipe, because a
+      // template line may legitimately contain " | ".
+      Array.from(
+        finding.detail.matchAll(/"(?:[^"\\]|\\.)*"/g),
+        (match) => JSON.parse(match[0]) as string,
+      ),
+    );
+
     const reasons = [
       validation.missingRequiredTokens.length > 0
         ? "missing_required_token"
         : null,
       retiredTokens.length > 0 ? "retired_token" : null,
       validation.bracketAnnotations.length > 0 ? "bracket_annotation" : null,
+      danglingLines.length > 0 ? "dangling_line" : null,
+      // The catch-all, last: a save this club can no longer make and no other
+      // reason explains. Only raised when nothing above already covers it, so
+      // the editor never says the same thing twice.
+      !validation.valid &&
+      validation.missingRequiredTokens.length === 0 &&
+      retiredTokens.length === 0 &&
+      validation.bracketAnnotations.length === 0
+        ? "invalid_content"
+        : null,
     ].filter((reason): reason is string => reason !== null);
 
     staleContentByTemplate.set(definition.key, {
@@ -191,6 +262,7 @@ export async function GET() {
       missingRequiredTokens: validation.missingRequiredTokens,
       retiredTokens,
       bracketAnnotations: validation.bracketAnnotations,
+      danglingLines,
     });
   }
 

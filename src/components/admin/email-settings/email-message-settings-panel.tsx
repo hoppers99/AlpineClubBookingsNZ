@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { Eye, GitCompareArrows, RotateCcw, Save } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -16,7 +16,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { diffLines } from "@/lib/text-diff";
+import {
+  diffLines,
+  isSameText,
+  markInvisibleCharacters,
+} from "@/lib/text-diff";
+import { useConfirm } from "@/components/confirm-dialog";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import {
   AdminForbiddenSaveNotice,
@@ -56,6 +61,9 @@ interface TemplateStaleContent {
   missingRequiredTokens: string[];
   retiredTokens: string[];
   bracketAnnotations: string[];
+  // Lines of the saved copy that render as a bare label when a token the
+  // sender can legitimately supply empty comes back empty (#2269).
+  danglingLines?: string[];
 }
 
 interface TemplateDefinition {
@@ -136,6 +144,21 @@ export function requiredTokenSentence(
   return `Keep these in the body: ${parts.join(", ")}.`;
 }
 
+// #2269 review: the banners named templates by their registry key
+// ("booking-confirmed") when the human label an admin actually sees in the
+// picker ("Booking Confirmed") is already in the same payload. Falls back to
+// the key for a STALE override — a row whose template no longer exists has no
+// label, and the key is the only thing an operator can act on.
+function templateLabel(
+  templates: TemplateDefinition[],
+  templateName: string,
+): string {
+  return (
+    templates.find((template) => template.key === templateName)?.label ??
+    templateName
+  );
+}
+
 // #2269 (F3): the reasons, in plain English, for the admin looking at the
 // template they have open. Each one is a rule the save path enforces, so the
 // wording here and the wording of a rejected save describe the same thing.
@@ -165,6 +188,22 @@ function staleContentSentences(
       )}). Emails render tokens and nothing else, so these are sent to the recipient word for word.`,
     );
   }
+  if ((staleContent.danglingLines ?? []).length > 0) {
+    sentences.push(
+      `Some lines of your saved copy go out with nothing after the label when the value behind them is empty — for example a booking with no promo code, or one where payment is still owing. As sent, they read: ${(
+        staleContent.danglingLines ?? []
+      )
+        .map((line) => `“${line}”`)
+        .join(
+          ", ",
+        )}. A “Discount” line on a booking whose price a promo code RAISED is the same fault that caused issue #2267. Either delete these lines or replace them with the pre-composed token for this message, which renders the whole line or nothing at all.`,
+    );
+  }
+  if (staleContent.reasons.includes("invalid_content")) {
+    sentences.push(
+      "Your saved copy breaks one of the rules the editor enforces when you press Save, so this template can no longer be saved as it stands. Press Preview to see it, or open the token help for what is allowed — and if you cannot see what is wrong, press Save and the editor will name it.",
+    );
+  }
   return sentences;
 }
 
@@ -178,11 +217,26 @@ function TemplateDiffBlock({
   current: string;
 }) {
   const lines = diffLines(saved, current);
+  const headingId = useId();
   return (
     <div className="space-y-1">
-      <p className="text-xs font-medium text-foreground">{label}</p>
-      <div className="overflow-x-auto rounded-md border border-border">
-        <pre className="min-w-fit font-mono text-xs leading-relaxed">
+      <p id={headingId} className="text-xs font-medium text-foreground">
+        {label}
+      </p>
+      {/*
+        A scrollable region must be reachable from the keyboard (WCAG 2.1.1),
+        and horizontal scrolling is the NORMAL case here — these lines run to
+        150-400 characters. `whitespace-pre-wrap` wraps them so most readers
+        never have to scroll at all, and the region is focusable and named for
+        anyone who does.
+      */}
+      <div
+        role="group"
+        aria-labelledby={headingId}
+        tabIndex={0}
+        className="overflow-x-auto rounded-md border border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <pre className="min-w-fit whitespace-pre-wrap break-words font-mono text-xs leading-relaxed">
           {lines.map((line, index) => (
             <div
               key={`${index}-${line.type}`}
@@ -195,7 +249,7 @@ function TemplateDiffBlock({
               }
             >
               {line.type === "removed" ? "- " : line.type === "added" ? "+ " : "  "}
-              {line.value === "" ? " " : line.value}
+              {line.value === "" ? " " : markInvisibleCharacters(line.value)}
             </div>
           ))}
         </pre>
@@ -236,6 +290,8 @@ export function EmailMessageSettingsPanel() {
   const [missingRequiredTokenTemplates, setMissingRequiredTokenTemplates] =
     useState<{ templateName: string; tokens: string[] }[]>([]);
   const [showDiff, setShowDiff] = useState(false);
+  const { confirm, confirmDialog } = useConfirm();
+  const diffRegionId = useId();
   const [loading, setLoading] = useState(true);
   const [savingSettings, setSavingSettings] = useState(false);
   const [savingTemplate, setSavingTemplate] = useState(false);
@@ -252,6 +308,20 @@ export function EmailMessageSettingsPanel() {
     () => requiredTokenSentence(currentTemplate),
     [currentTemplate],
   );
+  // #2269 review: the staleness notes and the diff both describe the SAVED
+  // row. Whether the boxes still hold that row is a separate fact, and the
+  // admin has to be told which one they are looking at. isSameText, not ===,
+  // so a textarea CRLF round trip is not mistaken for an edit.
+  const hasUnsavedEdits = useMemo(() => {
+    if (!currentTemplate) return false;
+    const savedSubject =
+      currentTemplate.override?.subject ?? currentTemplate.defaultSubject;
+    const savedBody =
+      currentTemplate.override?.bodyText ?? currentTemplate.defaultBody;
+    return (
+      !isSameText(subject, savedSubject) || !isSameText(bodyText, savedBody)
+    );
+  }, [bodyText, currentTemplate, subject]);
 
   async function load() {
     setLoading(true);
@@ -405,6 +475,18 @@ export function EmailMessageSettingsPanel() {
 
   async function resetTemplate() {
     if (!currentTemplate) return;
+    // #2269 review: this deletes the club's own wording outright and there is
+    // no undo in the product — the only copy afterwards is the audit row the
+    // reset route now records. One click was not enough of a gate, especially
+    // now that three separate places in this editor point at it as the remedy.
+    const confirmed = await confirm({
+      title: `Replace your wording for “${currentTemplate.label}”?`,
+      description:
+        "This deletes your saved subject and body for this message and goes back to the built-in wording. It cannot be undone from here — recovering it would mean someone reading the audit log. If you only want to compare, close this and use Show differences instead.",
+      confirmLabel: "Replace with the built-in wording",
+      destructive: true,
+    });
+    if (!confirmed) return;
     setSavingTemplate(true);
     setForbiddenSave(false);
     try {
@@ -505,7 +587,9 @@ export function EmailMessageSettingsPanel() {
           word. Open each template, remove the bracketed text, and save (or
           reset it to the corrected default):{" "}
           <span className="font-medium">
-            {bracketAnnotationTemplates.join(", ")}
+            {bracketAnnotationTemplates
+              .map((templateName) => templateLabel(templates, templateName))
+              .join(", ")}
           </span>
           .
         </div>
@@ -521,7 +605,12 @@ export function EmailMessageSettingsPanel() {
           (or reset it to the current default):{" "}
           <span className="font-medium">
             {retiredTokenTemplates
-              .map((entry) => `${entry.templateName} (${entry.tokens.join(", ")})`)
+              .map(
+                (entry) =>
+                  `${templateLabel(templates, entry.templateName)} (${entry.tokens
+                    .map((token) => `{{${token}}}`)
+                    .join(", ")})`,
+              )
               .join("; ")}
           </span>
           .
@@ -541,7 +630,7 @@ export function EmailMessageSettingsPanel() {
             {missingRequiredTokenTemplates
               .map(
                 (entry) =>
-                  `${entry.templateName} (${entry.tokens
+                  `${templateLabel(templates, entry.templateName)} (${entry.tokens
                     .map((token) => `{{${token}}}`)
                     .join(", ")})`,
               )
@@ -688,6 +777,8 @@ export function EmailMessageSettingsPanel() {
                 <Button
                   variant="outline"
                   size="sm"
+                  aria-expanded={showDiff}
+                  aria-controls={diffRegionId}
                   onClick={() => setShowDiff((current) => !current)}
                 >
                   <GitCompareArrows className="h-4 w-4" />
@@ -706,7 +797,12 @@ export function EmailMessageSettingsPanel() {
               ),
             )}
             {showDiff ? (
-              <div className="space-y-3">
+              <div
+                id={diffRegionId}
+                role="region"
+                aria-label="Differences between your saved copy and the built-in wording"
+                className="space-y-3"
+              >
                 <p className="text-xs text-muted-foreground">
                   <span className="font-medium text-danger-11">- red</span> is
                   your saved copy,{" "}
@@ -714,16 +810,28 @@ export function EmailMessageSettingsPanel() {
                   is the current built-in wording. Restore Default replaces your
                   copy with the green side; saving keeps yours.
                 </p>
+                {/* #2269 review: the diff and the warnings above both describe
+                    the SAVED row, not what is in the boxes right now. An admin
+                    who edits to fix a flagged problem and then opens this would
+                    otherwise read their pre-edit text under a legend saying
+                    "yours", with no hint anything was stale. */}
+                {hasUnsavedEdits ? (
+                  <p className="rounded-md border border-warning-6 bg-warning-3 p-2 text-xs text-warning-11">
+                    You have unsaved edits. This comparison — and the notes
+                    above it — describe the copy that is currently saved, not
+                    what is in the boxes below. Save to refresh them.
+                  </p>
+                ) : null}
                 {currentTemplate.staleContent.subjectDiffersFromDefault ? (
                   <TemplateDiffBlock
-                    label="Subject"
+                    label="Subject differences"
                     saved={currentTemplate.override.subject ?? ""}
                     current={currentTemplate.defaultSubject}
                   />
                 ) : null}
                 {currentTemplate.staleContent.bodyDiffersFromDefault ? (
                   <TemplateDiffBlock
-                    label="Body"
+                    label="Body differences"
                     saved={currentTemplate.override.bodyText ?? ""}
                     current={currentTemplate.defaultBody}
                   />
@@ -799,6 +907,7 @@ export function EmailMessageSettingsPanel() {
         ) : null}
       </section>
       </div>
+      {confirmDialog}
     </div>
   );
 }

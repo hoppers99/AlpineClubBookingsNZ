@@ -37,6 +37,16 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unknown email template" }, { status: 400 });
   }
 
+  // #2269 review: this is one click, irreversible, and the editor now points at
+  // it from three different places. Read the row BEFORE deleting it and record
+  // the wording in the audit metadata — the same content #2269's own migration
+  // treats as precious enough to store in full when it edits a single line of
+  // it. Without this the destroyed subject and body existed nowhere afterwards
+  // and a club that reset by mistake had lost years of wording for good.
+  const before = await prisma.emailTemplateOverride.findUnique({
+    where: { templateName: parsed.data.templateName },
+  });
+
   const result = await prisma.emailTemplateOverride.deleteMany({
     where: { templateName: parsed.data.templateName },
   });
@@ -52,7 +62,17 @@ export async function POST(request: NextRequest) {
       severity: "important",
       outcome: "success",
       summary: "Email template override reset",
-      metadata: { templateName: parsed.data.templateName },
+      metadata: {
+        templateName: parsed.data.templateName,
+        deletedOverride: before
+          ? {
+              subject: before.subject,
+              bodyText: before.bodyText,
+              updatedByMemberId: before.updatedByMemberId,
+              updatedAt: before.updatedAt.toISOString(),
+            }
+          : null,
+      },
       request: getAuditRequestContext(request),
     }),
   );

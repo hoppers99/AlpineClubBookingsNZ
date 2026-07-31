@@ -465,13 +465,15 @@ describe("admin email message APIs", () => {
   it("names saved overrides that still use a token their template no longer offers", async () => {
     // #2307 review (M2). A token a template stopped supplying renders as
     // NOTHING — there is no conditional syntax and no error — so an override
-    // written against an older default keeps sending with a hole in it. The
-    // live example: the check-in reminder's guest list moved from
-    // {{guestFirstName}} {{guestLastName}} on one line to a one-per-line
-    // {{guestName}}, and a club holding the old pair would have emailed a
-    // reminder that listed nobody at all. The sender keeps supplying the old
-    // pair so those overrides still render correctly; this banner is how the
-    // admin learns to move off them.
+    // written against an older default keeps sending with a hole in it.
+    //
+    // This fixture used to be the check-in reminder's {{guestFirstName}}
+    // {{guestLastName}} pair. The #2269 review proved that was the wrong
+    // example and, worse, a live false warning: that sender DELIBERATELY still
+    // supplies both tokens so a club holding a pre-#2307 override keeps naming
+    // its guests. They are now declared in EXTRA_TEMPLATE_TOKENS and are no
+    // longer reported. A token the template genuinely does not offer — a door
+    // code in a password reset — is the honest case.
     mocks.emailTemplateOverrideFindMany.mockResolvedValue([
       {
         // Current wording: not flagged.
@@ -482,14 +484,14 @@ describe("admin email message APIs", () => {
         updatedByMemberId: "admin-1",
       },
       {
-        templateName: "checkin-reminder",
-        subject: "Check-in Reminder",
+        templateName: "chore-roster",
+        subject: "Chore Roster",
         bodyText: [
-          "Hi {{firstName}}.",
+          "Hi {{guestName}}.",
           "",
-          "Guest list:",
+          "{{choreListNote}}",
           "",
-          "{{guestFirstName}} {{guestLastName}}",
+          "Door code: {{doorCode}}",
         ].join("\n"),
         updatedAt: new Date("2026-05-23T00:00:00.000Z"),
         updatedByMemberId: "admin-1",
@@ -502,8 +504,8 @@ describe("admin email message APIs", () => {
     expect(response.status).toBe(200);
     expect(body.retiredTokenOverrides).toEqual([
       {
-        templateName: "checkin-reminder",
-        tokens: ["guestFirstName", "guestLastName"],
+        templateName: "chore-roster",
+        tokens: ["doorCode"],
       },
     ]);
   });
@@ -593,11 +595,17 @@ describe("admin email message APIs", () => {
       // kept every piece of required information. That is what an override is
       // for, so it gets the diff affordance and nothing that reads as a
       // problem.
+      //
+      // It uses {{paymentOutcome}} rather than the older "Total Paid:
+      // {{totalPaid}}" row, because that row really does render "Total Paid:"
+      // on a booking where payment is still owing — see the dangling-line case
+      // below. This fixture is about wording that is DIFFERENT, not wording
+      // that is broken.
       mocks.emailTemplateOverrideFindMany.mockResolvedValue([
         overrideRow(
           "booking-confirmed",
           "Kia ora — your hut is booked",
-          "Kia ora {{firstName}}, your bunk is locked in.\n\n{{promoSummary}}Total Paid: {{totalPaid}}\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\n{{doorCodeNote}}\n\nRemember to sign the hut book.",
+          "Kia ora {{firstName}}, your bunk is locked in.\n\n{{promoSummary}}{{paymentOutcome}}\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\n{{doorCodeNote}}\n\nRemember to sign the hut book.",
         ),
       ]);
 
@@ -629,11 +637,17 @@ describe("admin email message APIs", () => {
 
       const staleContent = await staleContentFor("booking-confirmed");
       expect(staleContent.differsFromDefault).toBe(true);
-      expect(staleContent.reasons).toEqual([]);
       expect(staleContent.missingRequiredTokens).toEqual([]);
+      expect(staleContent.reasons).not.toContain("missing_required_token");
 
       const response = await getEmailTemplates();
       expect((await response.json()).missingRequiredTokenOverrides).toEqual([]);
+
+      // It IS flagged for something else, and rightly: those hand-written
+      // money rows render "Subtotal:" and "Discount (): -" on a booking with
+      // no promo code. That is the separate dangling-line rule below, not a
+      // "you have drifted" nag about the wording itself.
+      expect(staleContent.reasons).toContain("dangling_line");
     });
 
     it("flags a saved copy that no longer shows something the email must say", async () => {
@@ -650,7 +664,7 @@ describe("admin email message APIs", () => {
       ]);
 
       const staleContent = await staleContentFor("booking-confirmed");
-      expect(staleContent.reasons).toEqual(["missing_required_token"]);
+      expect(staleContent.reasons).toContain("missing_required_token");
       expect(staleContent.missingRequiredTokens).toEqual(["promoSummary"]);
 
       const response = await getEmailTemplates();
@@ -667,22 +681,128 @@ describe("admin email message APIs", () => {
         overrideRow(
           "checkin-reminder",
           "Check-in Reminder",
-          "Hi {{firstName}}.\n\nGuest list:\n\n{{guestFirstName}} {{guestLastName}} [only when chores exist]",
+          "Hi {{firstName}}.\n\nGuest list:\n\n{{guestName}} [only when chores exist]",
         ),
       ]);
 
       const staleContent = await staleContentFor("checkin-reminder");
-      expect(staleContent.reasons).toEqual([
-        "retired_token",
-        "bracket_annotation",
-      ]);
-      expect(staleContent.retiredTokens).toEqual([
-        "guestFirstName",
-        "guestLastName",
-      ]);
+      expect(staleContent.reasons).toEqual(["bracket_annotation"]);
       expect(staleContent.bracketAnnotations).toEqual([
         "[only when chores exist]",
       ]);
+    });
+
+    it("does NOT call the still-supplied check-in guest tokens retired", async () => {
+      // #2269 review, reproduced against the live sender. The check-in reminder
+      // supplies {{guestFirstName}}/{{guestLastName}} deliberately, so that a
+      // club holding a pre-#2307 override keeps naming its guests
+      // (src/lib/email/booking.ts). The editor nevertheless told those clubs
+      // the template "no longer supplies" them — both clauses false — and,
+      // because a disallowed token makes the whole validation invalid, that
+      // club could not re-save its template at all. The only remedy on offer
+      // was Restore Default, which destroys the very wording the
+      // back-compatibility exists to protect.
+      mocks.emailTemplateOverrideFindMany.mockResolvedValue([
+        overrideRow(
+          "checkin-reminder",
+          "Check-in Reminder",
+          "Hi {{firstName}}.\n\nGuest list:\n\n{{guestFirstName}} {{guestLastName}}",
+        ),
+      ]);
+
+      const staleContent = await staleContentFor("checkin-reminder");
+      expect(staleContent.retiredTokens).toEqual([]);
+      expect(staleContent.reasons).toEqual([]);
+
+      const response = await getEmailTemplates();
+      expect((await response.json()).retiredTokenOverrides).toEqual([]);
+
+      // And the save it was blocking now goes through.
+      const saved = await putEmailTemplate(
+        request("/api/admin/email-templates", {
+          templateName: "checkin-reminder",
+          subject: "Check-in Reminder",
+          bodyText:
+            "Hi {{firstName}}.\n\nGuest list:\n\n{{guestFirstName}} {{guestLastName}}",
+        }),
+      );
+      expect(saved.status).toBe(200);
+    });
+
+    it("names the exact lines that go out as a bare label (#2269 CRITICAL)", async () => {
+      // The reason this issue's own migration made urgent. The shipped default
+      // padded "[only when discountCents > 0]" onto these money lines, and the
+      // brackets were the ONLY thing telling an admin they were conditional.
+      // Once the migration removes them the row keeps rendering
+      // "Discount (): -" on an ordinary booking and "Discount (PEAK): -" on a
+      // promo that RAISED the price — a member charged more, shown a
+      // "Discount" line. That is #2267 word for word, and before this it
+      // produced no warning at all.
+      mocks.emailTemplateOverrideFindMany.mockResolvedValue([
+        overrideRow(
+          "booking-confirmed",
+          "Booking Confirmed",
+          "Hi {{firstName}}.\n\nSubtotal: {{subtotal}}\nDiscount ({{promoCode}}): -{{discount}}\nDiscount: -{{discount}}\nTotal Paid: {{totalPaid}}\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\n{{doorCodeNote}}",
+        ),
+      ]);
+
+      const staleContent = await staleContentFor("booking-confirmed");
+      expect(staleContent.reasons).toContain("dangling_line");
+      expect(staleContent.danglingLines).toEqual([
+        "Subtotal:",
+        "Discount (): -",
+        "Discount: -",
+        "Total Paid:",
+      ]);
+    });
+
+    it("does not invent a dangling line for a token that is always supplied", async () => {
+      // The no-false-noise half: {{firstName}} and {{checkIn}} are never empty,
+      // so a label in front of one is not a finding.
+      mocks.emailTemplateOverrideFindMany.mockResolvedValue([
+        overrideRow(
+          "booking-confirmed",
+          "Booking Confirmed",
+          "Hi {{firstName}}.\n\nCheck-in: {{checkIn}}\nGuests: {{guestCount}}\n\n{{promoSummary}}{{CLUB_LODGE_TRAVEL_NOTE}}\n\n{{doorCodeNote}}",
+        ),
+      ]);
+
+      const staleContent = await staleContentFor("booking-confirmed");
+      expect(staleContent.danglingLines).toEqual([]);
+      expect(staleContent.reasons).not.toContain("dangling_line");
+    });
+
+    it("says something rather than nothing when a saved copy is unsaveable for some other reason", async () => {
+      // reasons covers five of the validator's nine issue codes. A row that
+      // trips one of the other four cannot be re-saved, and until now nothing
+      // in the editor said why. A sensitive token in a subject is the
+      // reachable case.
+      mocks.emailTemplateOverrideFindMany.mockResolvedValue([
+        overrideRow(
+          "pre-arrival-reminder",
+          "Your door code is {{doorCode}}",
+          null,
+        ),
+      ]);
+
+      const staleContent = await staleContentFor("pre-arrival-reminder");
+      expect(staleContent.reasons).toContain("invalid_content");
+    });
+
+    it("treats a blank stored value as 'use the built-in wording'", async () => {
+      // A stored "" renders exactly like the default, so reporting it as a
+      // difference and diffing the whole default as removed is false drift.
+      mocks.emailTemplateOverrideFindMany.mockResolvedValue([
+        overrideRow("booking-confirmed", "", "   "),
+      ]);
+
+      expect(await staleContentFor("booking-confirmed")).toEqual(
+        expect.objectContaining({
+          differsFromDefault: false,
+          subjectDiffersFromDefault: false,
+          bodyDiffersFromDefault: false,
+        }),
+      );
     });
 
     it("treats a null field as 'use the built-in wording', not as a difference", async () => {
@@ -781,6 +901,41 @@ describe("admin email message APIs", () => {
       EMAIL_TEMPLATE_DEFINITIONS.map((definition) => [
         { where: { templateName: definition.key } },
       ]),
+    );
+  });
+
+  it("records the wording Restore Default destroys (#2269 review)", async () => {
+    // One click, no undo, and this release points at it from three places. The
+    // deleted subject and body used to exist nowhere afterwards, so a club that
+    // reset by mistake had lost years of wording for good.
+    mocks.emailTemplateOverrideFindUnique.mockResolvedValue({
+      id: "override-1",
+      templateName: "booking-confirmed",
+      subject: "Kia ora, your hut is booked",
+      bodyText: "Years of the club own wording.",
+      updatedByMemberId: "admin-9",
+      createdAt: new Date("2025-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-05-23T00:00:00.000Z"),
+    });
+
+    const response = await resetEmailTemplate(
+      postRequest("/api/admin/email-templates/reset", {
+        templateName: "booking-confirmed",
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const auditArgs = mocks.auditLogCreate.mock.calls.at(-1)?.[0];
+    expect(auditArgs.data.action).toBe("EMAIL_TEMPLATE_OVERRIDE_RESET");
+    expect(auditArgs.data.metadata).toEqual(
+      expect.objectContaining({
+        templateName: "booking-confirmed",
+        deletedOverride: expect.objectContaining({
+          subject: "Kia ora, your hut is booked",
+          bodyText: "Years of the club own wording.",
+          updatedByMemberId: "admin-9",
+        }),
+      }),
     );
   });
 

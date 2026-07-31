@@ -227,9 +227,113 @@ describe("email template saved-copy staleness surface (#2269)", () => {
         /Your saved copy no longer shows something this email is required to tell the recipient\. Add back \{\{promoSummary\}\}/,
       ),
     ).toBeInTheDocument();
+    // The banner names the template by the LABEL an admin sees in the picker,
+    // not by its registry key (#2269 review) — the label is already in the
+    // same payload, and "booking-confirmed" is not a thing anyone can find on
+    // the screen.
     expect(
-      screen.getByText(/booking-confirmed \(\{\{promoSummary\}\}\)/),
+      screen.getByText(/Booking Confirmed \(\{\{promoSummary\}\}\)/),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/booking-confirmed \(/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("names the exact lines that go out as a bare label (#2269 CRITICAL)", async () => {
+    // The money lines the shipped defaults padded "[only when ...]" onto. Once
+    // the migration removes the bracket, this row still renders
+    // "Discount (): -" on an ordinary booking and "Discount (PEAK): -" on a
+    // promo that RAISED the price. Nothing said a word about it before.
+    stubEmailFetches(
+      templatesResponse({
+        bodyText:
+          "Hi {{firstName}}.\n\nDiscount ({{promoCode}}): -{{discount}}\n\n{{doorCodeNote}}",
+        staleContent: {
+          differsFromDefault: true,
+          subjectDiffersFromDefault: false,
+          bodyDiffersFromDefault: true,
+          reasons: ["dangling_line"],
+          missingRequiredTokens: [],
+          retiredTokens: [],
+          bracketAnnotations: [],
+          danglingLines: ["Discount (): -"],
+        },
+      }),
+    );
+    render(<EmailMessageSettingsPanel />);
+
+    expect(
+      await screen.findByText(
+        /Some lines of your saved copy go out with nothing after the label/,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Discount \(\): -/)).toBeInTheDocument();
+  });
+
+  it("says the comparison describes the SAVED copy once you start editing", async () => {
+    // The diff and the notes above it are computed from the stored row. An
+    // admin who edits to fix a flagged problem and then opens the comparison
+    // would otherwise read their pre-edit text under a legend saying "yours".
+    stubEmailFetches(
+      templatesResponse({
+        bodyText: "Hi {{firstName}}.\n\n{{promoSummary}}{{doorCodeNote}}",
+        staleContent: {
+          differsFromDefault: true,
+          subjectDiffersFromDefault: false,
+          bodyDiffersFromDefault: true,
+          reasons: [],
+          missingRequiredTokens: [],
+          retiredTokens: [],
+          bracketAnnotations: [],
+        },
+      }),
+    );
+    render(<EmailMessageSettingsPanel />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Show differences/ }));
+    expect(screen.queryByText(/You have unsaved edits/)).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Body"), {
+      target: { value: "Something else entirely." },
+    });
+    expect(screen.getByText(/You have unsaved edits/)).toBeInTheDocument();
+  });
+
+  it("makes the comparison reachable and announceable", async () => {
+    // A scrollable region has to be focusable (WCAG 2.1.1) and the toggle has
+    // to say what it controls.
+    stubEmailFetches(
+      templatesResponse({
+        bodyText: "Hi {{firstName}}.\n\n{{promoSummary}}{{doorCodeNote}}",
+        staleContent: {
+          differsFromDefault: true,
+          subjectDiffersFromDefault: false,
+          bodyDiffersFromDefault: true,
+          reasons: [],
+          missingRequiredTokens: [],
+          retiredTokens: [],
+          bracketAnnotations: [],
+        },
+      }),
+    );
+    render(<EmailMessageSettingsPanel />);
+
+    const toggle = await screen.findByRole("button", {
+      name: /Show differences/,
+    });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle).toHaveAttribute("aria-controls");
+
+    fireEvent.click(toggle);
+    expect(
+      screen.getByRole("button", { name: /Hide differences/ }),
+    ).toHaveAttribute("aria-expanded", "true");
+    const region = screen.getByRole("region", {
+      name: /Differences between your saved copy and the built-in wording/,
+    });
+    expect(region).toBeInTheDocument();
+    const scrollable = screen.getByRole("group", { name: "Body differences" });
+    expect(scrollable).toHaveAttribute("tabindex", "0");
   });
 
   it("says nothing at all when there is no saved override", async () => {

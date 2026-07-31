@@ -28,8 +28,34 @@ const MAX_DIFFABLE_LINES = 1500;
 function splitLines(value: string): string[] {
   // A trailing newline would otherwise produce a phantom empty final line on
   // one side only, which reads as a spurious change.
-  const normalised = value.replace(/\r\n/g, "\n").replace(/\n$/, "");
+  //
+  // \r\n AND a lone \r: an old-Mac paste, or a value that has been through a
+  // tool that rewrote line endings, would otherwise arrive as one enormous
+  // single line and diff as "everything replaced". This repo has had a real
+  // CRLF incident (#2399), so the extra `?` is cheap insurance.
+  //
+  // NFC: "é" written as one code point and as "e" + combining acute look
+  // identical on screen but are different strings, so a diff would show two
+  // visually identical lines and give an admin nothing to act on. Normalising
+  // both sides the same way means such a pair is simply equal.
+  const normalised = value
+    .replace(/\r\n?/g, "\n")
+    .normalize("NFC")
+    .replace(/\n$/, "");
   return normalised.length === 0 ? [] : normalised.split("\n");
+}
+
+/**
+ * Make otherwise-invisible differences visible in a rendered diff line.
+ *
+ * Trailing spaces and tabs are the case that actually happens: two lines that
+ * differ only in what follows the last visible character render as an
+ * identical pair, and an admin reasonably concludes the diff is broken.
+ */
+export function markInvisibleCharacters(value: string): string {
+  return value.replace(/[ \t]+$/, (run) =>
+    run.replace(/ /g, "·").replace(/\t/g, "→"),
+  );
 }
 
 function wholeBlockDiff(before: string[], after: string[]): TextDiffLine[] {

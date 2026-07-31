@@ -13,12 +13,17 @@ All notable public reference-release changes should be recorded here.
   the built-in wording, which quietly fixed every club that had not customised
   the message. A club that had **saved its own copy** of a message kept its copy,
   and so kept the notes, for ever. This release repairs those saved copies on
-  upgrade. It removes only the notes this project itself shipped and leaves the
-  rest of your wording byte for byte as it was — including any square-bracketed
-  text your own admins wrote, which is still flagged for a person to decide
-  about rather than deleted by a script. Every message it changes is recorded in
-  the audit log with the whole before and after, so a club can see exactly what
-  we changed and put anything back.
+  upgrade. It matches the **exact** notes this project shipped — not anything
+  that merely looks like one — and leaves the rest of your wording byte for byte
+  as it was. Your own square-bracketed text is never touched, even when it reads
+  like ours (`[when you are 30 minutes away]` is your wording, and it stays);
+  such text keeps being flagged in the admin screen for a person to decide
+  about, rather than deleted by a script. The trade we chose deliberately: if
+  one of our notes was retyped or re-spaced by an admin at some point, the
+  repair leaves it alone rather than risk deleting something you meant, and the
+  admin screen keeps flagging it. Every message the repair changes is recorded
+  in the audit log with the whole before and after, so a club can see exactly
+  what we changed and, with an administrator's help, restore any of it.
   **And the editor now tells you when your saved wording has fallen behind.**
   **Admin → Email messages** names any message whose saved copy no longer shows
   something that message is required to tell the recipient — most often a

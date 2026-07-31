@@ -82,7 +82,9 @@ Two consequences worth knowing:
   they were all removed in v0.13, the build refuses any that come back, and
   **Save now refuses square-bracketed text in an override** too. The notes the
   project itself shipped were also **stripped out of every saved customisation
-  on upgrade** — only those, leaving the rest of your wording exactly as it was,
+  on upgrade** — matched as the exact strings we shipped, never anything that
+  merely looks like one, so your own bracketed wording survives even when it
+  reads like ours (`[when you are 30 minutes away]` is yours, and it stays),
   and every message changed is recorded in the audit log with the whole before
   and after so you can see what happened and put anything back. Square-bracketed
   text your own admins wrote is deliberately **not** deleted for you: a warning
@@ -104,16 +106,34 @@ The page handles the two situations differently, on purpose.
   a booking confirmation saved before the promo explanation moved into
   `{{promoSummary}}`: it now shows a subtotal and a total with nothing in
   between to explain why they differ. Wording of your own that carries the same
-  information counts — a hand-written `Discount ({{promoCode}}): -{{discount}}`
-  line satisfies the requirement and is never flagged.
+  information counts, so a hand-written `Discount ({{promoCode}}): -{{discount}}`
+  line does satisfy this particular requirement.
+- **A line of your copy goes out with nothing after the label.** A warning names
+  the exact lines and quotes them as a member would read them. This is the
+  companion to the point above, and the same hand-written discount line is the
+  worked example: `Discount ({{promoCode}}): -{{discount}}` is fine on a booking
+  that had a discount, but on an ordinary booking it sends `Discount (): -`, and
+  on a promo code that **raised** the price it sends `Discount (PEAK): -` to a
+  member who was charged more. The old built-in wording carried a note in square
+  brackets beside those lines saying when they applied; the notes were never
+  understood by anything and are now removed, so this warning is what tells you
+  instead. The fix is to delete the line, or replace it with `{{promoSummary}}`,
+  which renders the whole explanation or nothing at all.
 - **Your copy simply reads differently.** That is stated as a plain fact under
   the template you have open, with no warning attached, because a customisation
   differing from the built-in wording is exactly what you asked for.
 
-In both cases **Show differences** lays your saved copy beside the current
+In every case **Show differences** lays your saved copy beside the current
 built-in wording line by line — red is yours, green is the built-in — so you can
 decide whether to patch your own words or press **Restore Default**, knowing
 exactly what you would be giving up. Nothing is ever changed for you here.
+
+Two things to know about that comparison. It shows the copy that is currently
+**saved**, not what is in the editing boxes, and it says so when you have
+unsaved edits — save first if you want to compare what you have just typed. And
+**Restore Default deletes your wording outright**: it asks you to confirm, and
+after that the only copy is in the audit log, which needs someone with database
+access to read back. If you are unsure, copy your wording somewhere safe first.
 
 For the same reason, **each template covers exactly one outcome.** Where a
 message could go two ways there are two templates to edit, not one with a
