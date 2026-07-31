@@ -106,6 +106,33 @@ are listed on the booking for you to relay.
    (school groups) to convert it into a booking. Use **Decline** with an
    optional reason to turn it down.
 
+**If you link a guest row to a real member account** (#2309). A request's guest
+list is free-text names, but you can attach a place to an actual member so it
+prices at member rates. With the **Add another member as a guest** module on,
+that link is now recorded and the member is told:
+
+- Holding beds for the quote, and approving the request, both put a note against
+  the guest row naming **you** as the officer who placed them, and email the
+  member to say they are on a lodge booking created from a booking request. You
+  cannot turn that email off; the booking's **No emails** switch is the only
+  thing that withholds it, and a withheld send is listed on the booking's
+  withheld-emails banner.
+- **Nobody is asked first on this path**, whatever the club's ask-first setting
+  says. A booking request is the club placing somebody, not a member asking a
+  favour, so no bed is held pending an answer.
+- **If you change who is on a place between the quote and the approval**, both
+  people are told — the new person that they are on it, the person you replaced
+  that they are not. That matters because the guest row keeps its identity so
+  pre-assigned beds survive, which means a swap looks like an ordinary edit and
+  would otherwise be silent.
+- **These members cannot take themselves off.** A booking priced by hand refuses
+  guest changes from a member's account, so the email tells them to contact the
+  club and names the real remedies — you cancel the booking, or re-quote the
+  request without them. Expect the call.
+
+With the module off, none of this happens and a linked guest row behaves exactly
+as it did before.
+
 ## Settings reference
 
 This is a work queue. The controls per tab:

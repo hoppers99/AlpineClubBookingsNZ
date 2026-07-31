@@ -80,6 +80,42 @@ date-only lodge night (no times), matching the rules in
    who consented, who was told — shows as badges on the guest list of the
    booking's own page.
 
+### Add a member guest to somebody's booking (#2309)
+
+There is no separate admin booking page in this app — you read a member's own
+booking page with admin tools on it — so this lives in the same place a member
+would find it. Open the booking, choose **Edit Booking**, and the guest section
+carries **+ Add Member Guest**.
+
+Three things about it differ from what a member sees, and all three are
+deliberate:
+
+- **The member is added straight away.** They are not asked first and no bed is
+  held pending an answer, whatever the club's ask-first setting says. An officer
+  adding somebody on a member's behalf is treated as the club having decided.
+- **The member is always emailed to say so, and you cannot turn that off.** It
+  is not the courtesy "…and email member" tick you get elsewhere on a booking —
+  being put on somebody else's booking is something the person is entitled to
+  hear about. The one thing that does withhold it is the booking's own **No
+  emails** switch, and a withheld send is then listed on that booking's
+  withheld-emails banner so you can see what was held back.
+- **You can search by name even when members cannot.** The club's *let members
+  search by name* setting is about members; it does not bind you. If your role
+  carries membership access you get the name type-ahead including under-18s; if
+  it does not — a Booking Officer role with membership access removed — you get
+  the exact-email box instead, which is the same thing you have always had.
+  Either way the lookup is recorded in the audit log against your name.
+
+**Withdrawing a request or taking a member guest off** is the ordinary guest
+removal, on the same edit panel. The member gets one email saying they are no
+longer on the booking (or that the request has been called off, if they had not
+answered yet).
+
+**Do not confuse this with "Confirm pending guests".** That button is about
+charging a card and confirming a booking awaiting review, and has nothing to do
+with member-guest consent. The consent surfaces say *awaiting approval* or
+*consent* and never *pending guests*.
+
 ### Read the results table
 
 1. The toolbar shows "Showing N of M bookings found". Sort any sortable column

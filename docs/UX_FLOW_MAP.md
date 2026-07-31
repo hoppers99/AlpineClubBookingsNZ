@@ -97,6 +97,28 @@ actually encounters in this release:
 - **Admin policy settings** at `GET`/`PUT /api/admin/member-guest-settings`,
   gated on the bookings permission area with a real view/manage split so a card
   can render read-only without ever showing a Save button that would 403.
+- **The edit path and admin parity** (MG4 #2309). The same "+ Add Member Guest"
+  section sits on the booking's own edit panel, between the family quick-add and
+  the partner block, so a booker who realises afterwards can add somebody
+  without cancelling and rebooking. There is no separate admin booking page in
+  this app, so an officer reads the same panel with admin copy: their add is
+  immediate and always notifies (MG4-D-a), and the section deliberately offers
+  no "…and email member" tick, because D-16 puts that notice outside the
+  per-action choice. The officer's picker is its own booking-scoped route whose
+  NAME mode is gated on `membership:view` rather than `bookings:edit`, so
+  #1376's directory-less Booking Officer falls back to exact-email resolve; both
+  modes are audited exactly as a member's are.
+- **A member guest who comes OFF a booking is told**, once, by whichever surface
+  did it — the request called off before anybody answered, the guest taken off,
+  or a booking-request booking re-arranged so somebody else has the place. A
+  decline and a lapse each already have their own message and do not use it, and
+  a member who removes themselves is not told what they just did.
+- **The booking-request pipeline notifies too** (MG4-D-b). All three of its
+  guest-write points — the capacity hold, the approval-time swap, and the
+  approval with no hold behind it — stamp the officer who placed the member and
+  email them. The swap preserves each guest row's id so pre-assigned beds
+  survive, which means substituting one person for another looks like an
+  ordinary edit; both parties are told.
 - **A pending guest is deliberately invisible operationally** (owner decision
   D-12): absent from the kiosk arrivals list and the arrive/depart gate, the chore
   roster and its print sheet, bed allocation and the admin bed board, the

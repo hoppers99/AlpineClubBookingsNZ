@@ -1701,6 +1701,62 @@ because both are surprising and neither should be discovered by a member:
   `consentStatus` as a field. Excluding them would make the export incomplete
   about a commitment that exists.
 
+**MG4 (#2309) closes the last three paths.** MG1 provisioned the columns, MG2
+turned them on for the member-facing add, MG3 built the finder, and MG4 covers
+the edit path, admin parity and the booking-request pipeline. Its rules:
+
+- **Adding a member guest while EDITING is the same act as adding one while
+  creating.** The edit panel's section goes through the modification path, which
+  resolves the family boundary and plans consent through the same single writer
+  every other add uses. There is no second consent rule for the edit path, and a
+  refusal on it is the same neutral D-8 sentence.
+- **Every path that can place a member on a booking now records who did it and
+  tells the member.** Four write points reach this: the member add, the admin
+  add, the admin booking-copy, and the booking-request pipeline (owner decisions
+  MG4-D-a and MG4-D-b). The pipeline has THREE such points, not the two the issue
+  body named — the capacity hold's booking create, the approval-time guest swap,
+  and the approval that runs with no hold behind it — and all three write
+  `ADMIN_ASSIGNED` naming the approving officer. There is no exemption: MG4-D-b
+  was ticked in the direction of bringing the pipeline under the rule, so this
+  section records the rule rather than an exception to it.
+- **A held booking's guest swap can substitute one person for another in place.**
+  The approval preserves each guest row's id so pre-assigned beds survive
+  (#1254), which means replacing a member on a row looks like an ordinary update.
+  Both parties must be told: the newcomer that they are on the booking, the
+  person dropped that they are not. A reused row's consent record is cleared when
+  the person on it changes — a stale `ADMIN_ASSIGNED` would vouch for somebody
+  who was never asked, which `classifyMemberGuestConsent` calls a broken row.
+- **A member guest who comes OFF a booking is told, once, by whichever path
+  removed them.** `member-guest-request-withdrawn` covers a request called off
+  before anybody answered, a settled member guest taken off, and a pipeline
+  substitution. It is sent by the single-guest removal route and the batch edit
+  and by NOTHING else: a decline and a lapse each already have their own message
+  for the same event, and a member removing themselves is not told what they just
+  did. A row whose `consentStatus` is `NULL` owes nobody anything, because no
+  message was ever sent about it.
+- **"Always notify" beats the per-action tick and the member's preferences, and
+  loses to the per-booking No-emails switch** (owner decision D-16, and the
+  precedent D10 set over #1705's invoice email). None of the six member-guest
+  senders consults `shouldSendEmail`, and no caller gates them on an admin's
+  notify choice — being asked, being told you are on a booking, and being told
+  you are off it are not courtesy messages. All six pass a real `bookingContext`,
+  so a silenced booking withholds them and each withheld send lands on that
+  booking's withheld-banner record where an operator can see what was held back.
+- **The officer's member picker is gated on `membership:view`, not on
+  `bookings:edit`** (owner decision D-20). It is deliberately NOT bound by the
+  club's two member-facing privacy switches: an admin holding `membership:view`
+  can already browse the whole roll from `/admin/members`, so gating their
+  booking-side picker on a member-facing setting protects nothing. The rider is
+  what keeps #1376 true — a Booking Officer whose role carries no membership
+  access gets a 404 on the NAME mode and falls back to exact-email resolve. Every
+  officer lookup is audited through the same two writers the member routes use,
+  so officers are not invisible in the trail that exists to make browsing
+  detectable.
+- **Exactly one file turns either open-search value into a decision about who is
+  discoverable.** Routes declare the AUDIENCE they are serving;
+  `member-guest-find-service.ts` decides what that means. A second decision site
+  is how two surfaces come to disagree about whether the roll is browsable.
+
 The eight legal column shapes, and only those eight, are. In the four column
 cells, **null** means the column must be `NULL`, **set** means it must be
 non-`NULL`, and **any** means either is legal; where the responder's identity
@@ -3456,6 +3512,15 @@ A `FamilyGroup` with zero `FamilyGroupMember` rows is inert: it never affects
 booking eligibility, pricing, or any member-visible UI, because family
 visibility and eligibility everywhere derive from `familyGroupMemberships`
 (`getMemberFamily`, `resolveMemberFamily`), never from bare `FamilyGroup` rows.
+
+*(Corrected by the member-guest epic, #2305. "Eligibility everywhere derives from
+`familyGroupMemberships`" is no longer true of BOOKING-GUEST eligibility: with
+the `memberGuests` module on, a member outside the booker's family group may be
+added as a guest, and `familyGroupMemberships` then decides only whether that add
+needs the other member's CONSENT — see "Member-Guest Consent". Everything else in
+this paragraph — pricing, family billing, the memberless-group rule — is
+unchanged, and the family boundary remains the single definition of "family" that
+the consent planner, the authorization check and the D-8 collapse all read.)*
 Family billing never infers a recipient from group role, login holder, or email
 inheritance. In `BILL_FAMILY_VIA_BILLING_MEMBER` mode the explicit billing
 member must be an active, unarchived member of that family; missing or removed

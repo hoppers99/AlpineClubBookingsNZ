@@ -290,16 +290,23 @@ export const MODULE_DEFINITIONS: Record<ModuleKey, ModuleDefinition> = {
     // that turning this on lets members reach OTHER households, and that the
     // other member is asked first by default.
     description:
-      "Lets a member add another club member, outside their own family group, as a guest on their booking. By default the other member is emailed and asked first, and a bed is held for them until they answer or the request lapses.",
+      "Lets a member add another club member, outside their own family group, as a guest on their booking — when they first book it and when they edit it later. By default the other member is emailed and asked first, and a bed is held for them until they answer or the request lapses.",
     dependencies: [
       // The MG2 honesty gate ("not ready to turn on yet") lived here while the
       // accept screen was held for the owner's mockup sign-off. That screen —
       // the booking-page consent card and the delegate page — ships in the same
       // release as this bullet's deletion, so the module is now genuinely
       // usable end to end.
+      //
+      // MG4 (#2309) adds the fourth bullet. The first three describe what
+      // happens when a MEMBER adds somebody; the fourth is the half an admin is
+      // most likely to be surprised by, because it changes what THEIR OWN
+      // actions do — an officer's add, a booking copy and an approved booking
+      // request all start emailing people the moment this switch goes on.
       "The other member is asked before they are added, unless you change that on the member-guest settings. Set how long a request waits there too.",
       "A member who has been asked but has not answered yet holds a bed, and is deliberately left off the kiosk arrivals list, the chore roster and the arrival emails until they accept.",
       "Finding another member is by exact email address unless you switch on name search — which makes your membership list browsable to any member. It ships off.",
+      "It also covers what YOUR staff do: adding a member guest on somebody's booking, copying a booking, and approving a booking request with a member linked to a place all email that member to say so. Those emails are not optional, and nobody is asked first on an admin path.",
     ],
   },
 };
