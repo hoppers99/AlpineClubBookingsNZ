@@ -4,6 +4,16 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Bed moves now stay on the guest's original lodge nights (#2366).** Dragging
+  an existing allocation chip across date columns now chooses only the
+  destination bed: the preview and keyboard announcement show the original NZ
+  night that will be kept. The first visible chip still moves all of that
+  guest's visible allocated nights together, while later chips move one night.
+  Same-bed drops and cancelled drags do nothing and create no audit entry.
+  Grouped moves are all-or-nothing, and the bed changes, shared-double partner
+  promotions and audit records now commit in one destination-lodge-locked
+  transaction instead of the browser creating a target night and then trying
+  to delete the original.
 - **Adding another club member as a guest (#2306, #2307).** Until now a member
   could only put people from their own family group on a booking. There is now a
   new **Add another member as a guest** switch on **Admin → Modules**, off by

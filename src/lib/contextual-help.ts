@@ -2445,6 +2445,10 @@ const ADMIN_HELP_QUESTIONS: Record<string, HelpQuestion[]> = {
       a: "Use auto-allocation for ordinary cases and manual moves for operational exceptions.",
     },
     {
+      q: "Can I move an allocated guest to another night?",
+      a: "No. Dragging an existing allocation chooses another bed only and keeps its original NZ lodge night, even when you hover over a different date column. The first visible chip moves that guest's visible allocated nights together; a later chip moves only its own night.",
+    },
+    {
       q: "Can automatic allocation displace a guest?",
       a: "For a paid or confirmed booking it can move a blocking Provisional allocation so a Held booking gets a bed, but the manual Run auto-allocation button never displaces a Held or admin-approved allocation.",
     },
