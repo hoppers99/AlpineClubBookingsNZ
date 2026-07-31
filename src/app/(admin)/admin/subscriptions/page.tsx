@@ -7,6 +7,11 @@ import type { ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { format } from "date-fns";
 import { subscriptionStatusLabel } from "@/lib/status-colors";
+import {
+  resetSubscriptionsDatasetSearchParams,
+  SUBSCRIPTION_DATASET_QUERY_KEYS,
+  withoutDatasetQueryKeys,
+} from "@/lib/admin-dataset-reset-state";
 import { loadAdminXeroContactGroups } from "@/lib/admin-xero-contact-groups";
 import { getAgeTierLabel, useAgeTierOptions } from "@/lib/use-age-tier-options";
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
@@ -71,15 +76,6 @@ function getSeasonYear(date: Date): number {
 
 const currentYear = getSeasonYear(new Date());
 const yearOptions = Array.from({ length: 5 }, (_, i) => currentYear - 2 + i);
-
-const SUBSCRIPTIONS_DATASET_QUERY_KEYS = [
-  "status",
-  "ageTier",
-  "xeroContactGroup",
-  "sortBy",
-  "sortDir",
-  "page",
-] as const;
 
 
 interface Subscription {
@@ -335,8 +331,10 @@ export default function SubscriptionsPage() {
   }, []);
 
   const buildSubscriptionsSearchParams = useCallback(() => {
-    const params = new URLSearchParams(searchParams.toString());
-    for (const key of SUBSCRIPTIONS_DATASET_QUERY_KEYS) params.delete(key);
+    const params = withoutDatasetQueryKeys(
+      searchParams.toString(),
+      SUBSCRIPTION_DATASET_QUERY_KEYS,
+    );
     params.set("seasonYear", String(seasonYear));
     if (status !== "all") params.set("status", status);
     if (ageTier !== "all") params.set("ageTier", ageTier);
@@ -409,6 +407,11 @@ export default function SubscriptionsPage() {
     setSortBy("member");
     setSortDir(getDefaultSortDir("member"));
     setPage(1);
+    const params = resetSubscriptionsDatasetSearchParams(searchParams.toString());
+    const query = params.toString();
+    router.replace(query ? `/admin/subscriptions?${query}` : "/admin/subscriptions", {
+      scroll: false,
+    });
   }
 
   // Thin wrapper over the shared admin SortHeader (#1805): callback mode with the

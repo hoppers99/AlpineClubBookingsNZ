@@ -4,8 +4,14 @@ import type { PaymentStatus } from "@prisma/client";
 import { useState, useEffect, useCallback } from "react";
 import type { ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { format, subMonths } from "date-fns";
+import { format } from "date-fns";
 import { todayDateOnlyForTimeZone } from "@/lib/date-only";
+import {
+  getPaymentsDatasetDefaults,
+  PAYMENT_DATASET_QUERY_KEYS,
+  resetPaymentsDatasetSearchParams,
+  withoutDatasetQueryKeys,
+} from "@/lib/admin-dataset-reset-state";
 import { Alert } from "@/components/ui/alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -129,24 +135,6 @@ function parsePageParam(value: string | null) {
   const page = Number(value);
   return Number.isInteger(page) && page > 0 ? page : 1;
 }
-
-const PAYMENTS_DATASET_QUERY_KEYS = [
-  "status",
-  "source",
-  "xeroState",
-  "settlement",
-  "lastUpdatedFrom",
-  "lastUpdatedTo",
-  "checkInFrom",
-  "checkInTo",
-  "search",
-  "amountExact",
-  "amountMin",
-  "amountMax",
-  "sortBy",
-  "sortDir",
-  "page",
-] as const;
 
 function getSortBy(value: string | null): PaymentSortBy {
   return paymentSortColumns.has(value as PaymentSortBy)
@@ -359,11 +347,8 @@ export default function PaymentsPage() {
   // operators whose clock trails NZ). Derive the "3 months ago" bound from the
   // same club-day so both ends stay consistent.
   const clubToday = todayDateOnlyForTimeZone();
-  const [clubYear, clubMonth, clubDay] = clubToday.split("-").map(Number);
-  const defaultLastUpdatedFrom = format(
-    subMonths(new Date(clubYear, clubMonth - 1, clubDay), 3),
-    "yyyy-MM-dd"
-  );
+  const paymentDefaults = getPaymentsDatasetDefaults(clubToday);
+  const defaultLastUpdatedFrom = paymentDefaults.lastUpdatedFrom;
   const [lastUpdatedFrom, setLastUpdatedFrom] = useState(
     searchParams.get("lastUpdatedFrom") || defaultLastUpdatedFrom
   );
@@ -386,8 +371,10 @@ export default function PaymentsPage() {
   const [loading, setLoading] = useState(false);
 
   const buildPaymentsSearchParams = useCallback(() => {
-    const params = new URLSearchParams(searchParams.toString());
-    for (const key of PAYMENTS_DATASET_QUERY_KEYS) params.delete(key);
+    const params = withoutDatasetQueryKeys(
+      searchParams.toString(),
+      PAYMENT_DATASET_QUERY_KEYS,
+    );
     if (status !== "all") params.set("status", status);
     if (source !== "all") params.set("source", source);
     if (xeroState !== "all") params.set("xeroState", xeroState);
@@ -549,6 +536,11 @@ export default function PaymentsPage() {
     setSortBy("lastUpdated");
     setSortDir("desc");
     setPage(1);
+    const params = resetPaymentsDatasetSearchParams(searchParams.toString(), clubToday);
+    const query = params.toString();
+    router.replace(query ? `/admin/payments?${query}` : "/admin/payments", {
+      scroll: false,
+    });
   }
 
   function toggleSort(column: PaymentSortBy) {
