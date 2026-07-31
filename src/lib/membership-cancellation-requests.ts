@@ -328,10 +328,15 @@ function toCandidate(
 ): MembershipCancellationCandidate {
   const relationship = relationshipForMember(member, requesterId);
   const requiresOwnConfirmation = member.id !== requesterId && member.canLogin;
-  // #2391: one rule for both routes. A relative who is also an admin, or an
-  // organisation account in the family, is a membership like any other and is
-  // selectable here — the old narrow test (legacy role USER) dropped them from
-  // the list with no explanation at all.
+  // #2391: one rule for both routes. The test here used to be the narrow
+  // legacy one (`isMemberLevelRole`: legacy role `USER`), which already
+  // accepted every scoped-role admin — a Membership Officer, Booking Officer,
+  // Treasurer, Content Manager or custom-role holder keeps an ordinary member
+  // account underneath their access. What it dropped, silently and with no
+  // reason shown, were the two classes the member page used to refuse as well
+  // (#2383): a relative holding the full admin bundle (legacy role `ADMIN`),
+  // and an organisation account in the family. Both hold a membership, so both
+  // are selectable here now.
   const holdsMembership = isMembershipHolderRecord({
     role: member.role,
     canLogin: member.canLogin,
@@ -432,12 +437,17 @@ async function loadCancellationCandidates(requesterMemberId: string) {
   const relatedMembers = await prisma.member.findMany({
     where: {
       active: true,
-      // #2391: no role filter. A relative who is also an admin, or an
-      // organisation account sharing the family group, is listed like anyone
-      // else; whether each one may actually be selected is decided per
-      // candidate by `isMembershipHolderRecord` in `toCandidate`, which can
-      // also say WHY not. Filtering here instead would drop them from the list
-      // silently, which is the failure #2354 and #2383 both set out to end.
+      // #2391: no role filter. The filter this replaces was
+      // `role in MEMBER_LEVEL_ROLE_VALUES`, i.e. legacy role `USER`, which
+      // already listed every scoped-role admin (they store `USER` underneath
+      // their access) and dropped exactly two classes that do hold a
+      // membership: a relative holding the full admin bundle (legacy role
+      // `ADMIN`), and an organisation account sharing the family group. Both
+      // are listed like anyone else now; whether each one may actually be
+      // selected is decided per candidate by `isMembershipHolderRecord` in
+      // `toCandidate`, which can also say WHY not. Filtering here instead
+      // drops a record from the list silently, which is the failure #2354 and
+      // #2383 both set out to end.
       OR: [
         { id: currentMember.id },
         ...(groupIds.length > 0

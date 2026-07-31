@@ -49,17 +49,24 @@ All notable public reference-release changes should be recorded here.
   endpoint already did. The member-facing **Membership Cancellation** panel in a
   member's own profile follows the same rule — see the next entry.
 
-- **A member can now start a cancellation from their own profile whatever kind
-  of account they hold (#2391).** The **Membership Cancellation** panel in a
-  member's profile used to be offered only to ordinary member accounts, so an
-  admin — even a committee member who simply wanted to leave the club — was told
-  to ring the office, and an organisation account was told the same. Family
-  lists had the matching gap: a spouse who happened to hold a committee role was
-  quietly missing from the list of memberships you could include, with no reason
-  shown, so it looked as though they held no membership at all. The profile panel
-  now asks exactly the question the member page asks: is there an account holder
-  here with a membership? So an admin can start their own cancellation, an
-  organisation can start its own, and a relative who is also an admin appears in
+- **A full admin, and an organisation account, can now start a cancellation
+  from their own profile (#2391).** The **Membership Cancellation** panel in a
+  member's profile asked a narrower question than the member page did, and it
+  turned away exactly the two kinds of account the member page used to turn away
+  before the entry above fixed it: a **Full Admin**, and an **organisation or
+  school account**. A departing full admin was told to ring the office; an
+  organisation was told the same and had no self-service route at all.
+  Committee members were never affected — a Membership Officer, Booking Officer,
+  Treasurer, Content Manager or holder of a club-defined custom role keeps an
+  ordinary member account underneath their access, so they were always offered
+  the panel and always appeared in a relative's family list. Family lists had
+  the matching gap for the two classes that were refused: a relative who is a
+  full admin, and an organisation sharing a family group, were simply missing
+  from the list of memberships you could include, with no reason shown, so it
+  looked as though they held no membership at all. The profile panel now asks
+  exactly the question the member page asks: is there an account holder here
+  with a membership? So a full admin can start their own cancellation, an
+  organisation can start its own, and a relative who is a full admin appears in
   the family list and can be included. Two conditions remain, and both are about
   being able to use your own profile rather than about what kind of account it
   is: the account must be active, and it must have its own login. A member with
