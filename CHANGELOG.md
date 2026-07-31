@@ -255,6 +255,34 @@ All notable public reference-release changes should be recorded here.
   dashboard finally renders the additional-payment split it had been quietly
   computing all along.
 
+- **A refused save no longer blames the email address when the email address is
+  not the problem, and switching a family's login holder now explains an email
+  clash (#2385).** Only one member per email address can sign in — that is why a
+  family's children can share a parent's address as long as they do not log in
+  themselves. Three changes, all about being told the truth when a save is
+  refused:
+
+  - On a member's **Account & Access** tab, ticking **Can Login** when that
+    member's address is already someone else's login is now spotted before the
+    save is attempted rather than by letting the database reject it. Admins see
+    the same message as before — "A member with this email already exists" — so
+    nothing looks different; the save simply stops earlier.
+  - What *has* changed is what a member save says when the database refuses it
+    because two records would end up sharing something that has to be unique to
+    one of them. Whatever the duplicated detail actually was, that used to be
+    reported as an email clash. Only a genuine email clash says so now;
+    anything else is reported as a general failure and recorded in the logs for
+    an administrator to look at. Nobody is sent off to fix an address that was
+    never wrong.
+  - On a family group's **Shared email & login** panel, handing the login to a
+    different adult when someone **outside that family** already signs in with
+    the address used to fail with an unexplained error. It now says "A member
+    with this email already exists", and the same message is given to whichever
+    of two admins loses a race to claim the address at the same moment.
+
+  Nothing about who is allowed to sign in has changed — the database rule that
+  permits only one login per address was always doing its job, and still is.
+
 - **Clubs can safely record a trusted induction history when moving an
   established membership onto the digital register (#2361).** A new
   dry-run-first operator command classifies every active real-member
