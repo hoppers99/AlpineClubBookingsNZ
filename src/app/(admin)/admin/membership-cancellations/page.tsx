@@ -36,9 +36,13 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { MembershipCancellationBlockerNotice } from "@/components/admin/membership-cancellation-blocker-notice";
-import { MembershipCancellationCheckSkippedNotice } from "@/components/admin/membership-cancellation-check-skipped-notice";
+import {
+  MembershipCancellationInvoiceCheckSkippedLine,
+  MembershipCancellationInvoiceCheckSkippedNotice,
+} from "@/components/admin/membership-cancellation-invoice-check-skipped-notice";
 import { MembershipCancellationSharedInvoiceNotice } from "@/components/admin/membership-cancellation-shared-invoice-notice";
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
+import { isMembershipCancellationParticipantAwaitingApproval } from "@/lib/membership-cancellation-approval-readiness";
 import type {
   MembershipCancellationBlocker,
   MembershipCancellationSharedInvoiceNotice as SharedInvoiceNotice,
@@ -102,11 +106,12 @@ type CancellationParticipant = {
   // #2400: present when this member's subscription invoice also covers members
   // who are staying, so approving raises no credit note against it.
   sharedInvoiceNotice: SharedInvoiceNotice | null;
-  // #2402: true when this participant could be approved but the approval
-  // pre-checks were not run for this viewer, so the two notices above are silent
-  // because nothing was asked. Said out loud rather than left to look like a
-  // clean bill of health.
-  blockerCheckSkipped: boolean;
+  // #2402: true when this participant could be approved but the UNPAID-INVOICE
+  // check was not run for this viewer, so the money side of the two notices
+  // above is silent because nothing was asked. The booking blockers in
+  // `blockers` are complete either way. Said out loud rather than left to look
+  // like a clean bill of health.
+  invoiceCheckSkipped: boolean;
   // #2383: serialized by membership-cancellation-admin.ts so the queue can say
   // what kind of account is being cancelled. `holdsPrivilegedAccess` is the
   // approval-time Full-Admin guard's own predicate.
@@ -243,8 +248,32 @@ function statusBadge(status: string) {
   );
 }
 
-function canApprove(participant: CancellationParticipant) {
-  return participant.status === "REQUESTED" && Boolean(participant.confirmedAt);
+/**
+ * #2402: the SHARED rule, not a copy of it.
+ *
+ * This used to be `status === "REQUESTED" && confirmedAt` — a hand-made
+ * approximation of the server's approval guards that omitted the request's own
+ * status and the membership's active/cancelled state. That mattered once the
+ * queue stopped loading blockers for rows nobody can approve: a member
+ * deactivated out of band still rendered an ENABLED Approve button beside an
+ * empty blocker panel, which is precisely the "silence read as a clean bill of
+ * health" this issue exists to prevent. Now the button is enabled exactly where
+ * the server would accept the approval, and therefore exactly where the checks
+ * behind the panel were run.
+ */
+function canApprove(
+  requestStatus: string,
+  participant: CancellationParticipant,
+) {
+  return isMembershipCancellationParticipantAwaitingApproval({
+    requestStatus,
+    status: participant.status,
+    confirmedAt: participant.confirmedAt,
+    member: {
+      active: participant.active,
+      cancelledAt: participant.cancelledAt,
+    },
+  });
 }
 
 function canReject(participant: CancellationParticipant) {
@@ -252,6 +281,43 @@ function canReject(participant: CancellationParticipant) {
     participant.status === "REQUESTED" ||
     participant.status === "PENDING_CONFIRMATION"
   );
+}
+
+/**
+ * Why Approve is unavailable, in the server's own terms — so a disabled button
+ * is never unexplained (#2402).
+ *
+ * Returns null when Approve is available, and when the participant is simply
+ * settled: a Rejected or Cancelled row already says so in its status badge, and
+ * a second sentence repeating it would be noise. The separation-of-duties case
+ * ("you raised this") has its own line further down and is deliberately not
+ * duplicated here.
+ */
+function approvalUnavailableReason(
+  requestStatus: string,
+  participant: CancellationParticipant,
+): string | null {
+  if (canApprove(requestStatus, participant)) return null;
+
+  if (!participant.confirmedAt) {
+    // Wording preserved exactly from the original PENDING_CONFIRMATION line.
+    return participant.status === "REQUESTED" ||
+      participant.status === "PENDING_CONFIRMATION"
+      ? "Approval is unavailable until this adult confirms their own cancellation request."
+      : null;
+  }
+
+  if (participant.status !== "REQUESTED") return null;
+
+  if (!participant.active || participant.cancelledAt) {
+    return "Approval is unavailable because this membership is already inactive or cancelled — so its Xero and booking checks were not run either. Reject this request instead, or reactivate the membership first.";
+  }
+
+  if (requestStatus !== "REQUESTED") {
+    return "Approval is unavailable because this request has already been reviewed. Reload the queue to see its current state.";
+  }
+
+  return null;
 }
 
 export default function MembershipCancellationsPage() {
@@ -816,7 +882,15 @@ export default function MembershipCancellationsPage() {
 
           {!loading && data && data.requests.length > 0 && (
             <div className="divide-y">
-              {data.requests.map((request) => (
+              {data.requests.map((request) => {
+                // #2402: the explanation is a fact about the VIEWER, identical
+                // for every affected row, so it is said once per request card
+                // and each affected row carries a one-line marker instead.
+                const invoiceChecksSkipped = request.participants.filter(
+                  (participant) => participant.invoiceCheckSkipped,
+                ).length;
+
+                return (
                 <section key={request.id} className="space-y-4 py-5 first:pt-0">
                   <div className="flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
                     <div className="space-y-1">
@@ -857,17 +931,28 @@ export default function MembershipCancellationsPage() {
                     )}
                   </div>
 
+                  <MembershipCancellationInvoiceCheckSkippedNotice
+                    count={invoiceChecksSkipped}
+                  />
+
                   <div className="space-y-3">
                     {request.participants.map((participant) => {
                       const requesterIsCurrentAdmin =
                         Boolean(currentAdminId) &&
                         request.requestedBy?.id === currentAdminId;
+                      const approvable = canApprove(request.status, participant);
                       const approveDisabled =
                         submittingId !== null ||
-                        !canApprove(participant) ||
+                        !approvable ||
                         requesterIsCurrentAdmin;
                       const rejectDisabled =
                         submittingId !== null || !canReject(participant);
+                      // #2402: a disabled Approve always says why, so a row whose
+                      // checks were never run is never silently inert.
+                      const unavailableReason = approvalUnavailableReason(
+                        request.status,
+                        participant,
+                      );
 
                       return (
                         <div
@@ -950,16 +1035,17 @@ export default function MembershipCancellationsPage() {
                             notice={participant.sharedInvoiceNotice ?? null}
                           />
 
-                          {/* #2402: the two notices above are only as good as
-                              the checks behind them, and for a view-only admin
-                              those checks are not run. Their silence is
-                              explained rather than left to read as "nothing is
-                              owing". */}
-                          <MembershipCancellationCheckSkippedNotice
-                            skipped={Boolean(participant.blockerCheckSkipped)}
+                          {/* #2402: the MONEY half of the two notices above is
+                              only as good as the Xero check behind it, and for a
+                              view-only admin that check is not run. This marks
+                              which rows, so their silence is never read as
+                              "nothing is owing"; the explanation itself sits once
+                              at the top of the request. */}
+                          <MembershipCancellationInvoiceCheckSkippedLine
+                            skipped={Boolean(participant.invoiceCheckSkipped)}
                           />
 
-                          {(canApprove(participant) || canReject(participant)) && (
+                          {(approvable || canReject(participant)) && (
                             <div className="mt-4 space-y-3">
                               <div className="space-y-1.5">
                                 <Label htmlFor={`note-${participant.id}`}>
@@ -1021,15 +1107,12 @@ export default function MembershipCancellationsPage() {
                                   Approve
                                 </ViewOnlyActionButton>
                               </div>
-                              {!participant.confirmedAt &&
-                                participant.status === "PENDING_CONFIRMATION" && (
-                                  <p className="text-xs text-muted-foreground">
-                                    Approval is unavailable until this adult confirms
-                                    their own cancellation request.
-                                  </p>
-                                )}
-                              {requesterIsCurrentAdmin &&
-                                canApprove(participant) && (
+                              {unavailableReason && (
+                                <p className="text-xs text-muted-foreground">
+                                  {unavailableReason}
+                                </p>
+                              )}
+                              {requesterIsCurrentAdmin && approvable && (
                                   <p className="text-xs text-warning-11">
                                     A different admin must approve cancellation
                                     requests you initiated.
@@ -1042,7 +1125,8 @@ export default function MembershipCancellationsPage() {
                     })}
                   </div>
                 </section>
-              ))}
+                );
+              })}
             </div>
           )}
         </CardContent>

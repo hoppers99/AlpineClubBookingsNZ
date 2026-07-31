@@ -18,19 +18,29 @@ All notable public reference-release changes should be recorded here.
   still awaiting approval, meaning the request is open, the member has confirmed,
   and the membership has not since been deactivated or cancelled.
 
+  Only the Xero half is affected. Outstanding **bookings and guest appearances**
+  come from ordinary database reads that cost nothing external, so they are still
+  loaded and still shown to everyone, including view-only admins.
+
   There is a real cost to this and it was accepted deliberately: a **view-only**
   membership admin is no longer told that money is owing on a participant. They
-  are not left to guess. Every row whose checks were skipped now carries a short
-  blue note — *Approval checks were not run for this member* — which exists
-  because an empty warning panel and "nothing is owing" look identical on screen,
-  and only one of them would have been true. The note says plainly that the
-  question was not asked, not that the answer was no.
+  are not left to guess. A request holding affected rows now carries a short blue
+  note — *The money-owing check was not run for … below* — with each affected
+  member marked, because an absent warning panel and "nothing is owing" look
+  identical on screen and only one of them would have been true. The note says
+  plainly that the question was not asked, not that the answer was no.
 
-  Nothing about approving changed. Pressing **Approve** still asks Xero live,
-  every time, for everyone, still refuses while anything is owing, and still
-  refuses when Xero cannot be asked at all — as does the second check made
-  immediately before a Xero contact is archived. An admin who can approve sees
-  exactly what they saw before, before they press the button.
+  The **Approve** button now follows the same rule the server does, rather than
+  the looser approximation it carried before. A membership deactivated after its
+  cancellation was raised no longer offers an Approve that the server would
+  refuse — the button is disabled and a line beneath it says why. That is what
+  makes the saving safe: a row is only left unchecked when an approval of it
+  would have been refused anyway.
+
+  Nothing about approving itself changed. Pressing **Approve** still asks Xero
+  live, every time, for everyone, still refuses while anything is owing, and
+  still refuses when Xero cannot be asked at all — as does the second check made
+  immediately before a Xero contact is archived.
 
 - **Cancelling one member of a family no longer wipes the whole family's bill
   (#2400).** When a family or billing group is charged for memberships, one Xero

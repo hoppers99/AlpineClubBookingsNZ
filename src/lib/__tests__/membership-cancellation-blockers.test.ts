@@ -166,6 +166,50 @@ describe("membership cancellation blockers", () => {
     });
   });
 
+  it("skips ONLY the Xero half when the caller declines it (#2402)", async () => {
+    // The review queue rendering for a view-only admin. The booking half costs
+    // two local reads and stays; the metered Xero call is the only thing
+    // withheld, and a caller can withhold nothing else.
+    const db = {
+      booking: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "booking-1",
+            memberId: "member-1",
+            checkIn: new Date("2099-01-01T00:00:00.000Z"),
+            checkOut: new Date("2099-01-03T00:00:00.000Z"),
+            status: "PAID",
+          },
+        ]),
+      },
+      bookingGuest: { findMany: vi.fn().mockResolvedValue([]) },
+    } as unknown as MembershipCancellationBlockerClient;
+
+    const blockers = await loadMembershipCancellationBlockersByMemberId(
+      ["member-1"],
+      db,
+      { invoiceCheck: "skip" },
+    );
+
+    expect(mocks.loadInvoiceBlockers).not.toHaveBeenCalled();
+    expect(blockers.get("member-1")?.map((blocker) => blocker.type)).toEqual([
+      "owned_booking",
+    ]);
+  });
+
+  it("runs the Xero half by default, so a caller cannot skip it by omission", async () => {
+    // Fail-closed: the option defaults to "run", because a forgotten option must
+    // produce the full check rather than a quietly partial one.
+    const db = {
+      booking: { findMany: vi.fn().mockResolvedValue([]) },
+      bookingGuest: { findMany: vi.fn().mockResolvedValue([]) },
+    } as unknown as MembershipCancellationBlockerClient;
+
+    await loadMembershipCancellationBlockersByMemberId(["member-1"], db, {});
+
+    expect(mocks.loadInvoiceBlockers).toHaveBeenCalled();
+  });
+
   it("asks Xero nothing when there are no members to check", async () => {
     const db = {
       booking: { findMany: vi.fn() },

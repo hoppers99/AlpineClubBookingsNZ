@@ -39,20 +39,25 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  // #2402: the queue's unpaid-invoice check is a live, metered Xero read, and
-  // its only use is to warn somebody before they press Approve. This is the
-  // SAME requirement the review endpoint enforces (`membership: edit`, see
-  // `[requestId]/participants/[participantId]/route.ts`), read off the
-  // DB-verified permission matrix `requireAdmin` just resolved rather than off
-  // the JWT-carried snapshot — so "will the check run?" and "would the approval
-  // be accepted?" cannot answer differently. Viewing the queue itself still only
-  // needs admin access, so a view-only admin loses no page, only the check.
-  const viewerCanApprove = hasAdminAreaAccess(guard.session.user, {
-    area: "membership",
-    level: "edit",
-  });
-
   try {
+    // #2402: the queue's unpaid-invoice check is a live, metered Xero read, and
+    // its only use is to warn somebody before they press Approve. This is the
+    // SAME requirement the review endpoint enforces (`membership: edit`, see
+    // `[requestId]/participants/[participantId]/route.ts`), read off the
+    // DB-verified permission matrix `requireAdmin` just resolved rather than off
+    // the JWT-carried snapshot — so "will the check run?" and "would the
+    // approval be accepted?" cannot answer differently. Viewing the queue itself
+    // still only needs admin access, so a view-only admin loses no page, only
+    // the check.
+    //
+    // Inside the try so a throw here is logged and answered like any other
+    // failure of this route, rather than escaping as a bare framework 500 with
+    // nothing in the log to explain it.
+    const viewerCanApprove = hasAdminAreaAccess(guard.session.user, {
+      area: "membership",
+      level: "edit",
+    });
+
     const data = await getAdminMembershipCancellationRequests({
       status: parsed.data.status as AdminCancellationStatusFilter,
       page: parsed.data.page,

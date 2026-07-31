@@ -18,6 +18,7 @@ import {
 } from "@/lib/email";
 import logger from "@/lib/logger";
 import { classifyAccountRecord } from "@/lib/member-roles";
+import { isMembershipCancellationParticipantAwaitingApproval } from "@/lib/membership-cancellation-approval-readiness";
 import {
   buildMembershipCancellationApprovalBlockedMessage,
   buildMembershipCancellationSharedInvoiceMessage,
@@ -56,56 +57,6 @@ const REVIEWABLE_REJECTION_STATUSES: readonly MembershipCancellationParticipantS
   MembershipCancellationParticipantStatus.REQUESTED,
   MembershipCancellationParticipantStatus.PENDING_CONFIRMATION,
 ] as const;
-
-/**
- * Everything the review queue needs in order to ask "could an approval of this
- * participant actually be attempted right now?" (#2402).
- */
-export type MembershipCancellationApprovalCandidate = {
-  requestStatus: MembershipCancellationRequestStatus;
-  status: MembershipCancellationParticipantStatus;
-  confirmedAt: Date | null;
-  member: { active: boolean; cancelledAt: Date | null };
-};
-
-/**
- * THE definition of "still awaiting approval" — one place, so the review queue,
- * the post-review reload and the tests cannot each carry their own (#2402).
- *
- * It is deliberately the conjunction of the two approval-time guards' own
- * preconditions, read straight off them:
- *
- * - `assertRequestCanBeReviewed` — the REQUEST is still `REQUESTED`;
- * - `assertParticipantCanBeApproved` — the participant is `REQUESTED`, has
- *   confirmed, and the membership is neither deactivated nor already cancelled.
- *
- * Those guards are NOT re-expressed in terms of this predicate: they throw one
- * specific message each, and rewriting them to share this would have been a
- * change to the approval path, which #2402 is explicitly not. The agreement is
- * held by test instead (`membership-cancellation-admin.test.ts`), which drives
- * every shape through both and asserts they answer alike.
- *
- * What it is FOR: the queue's unpaid-invoice check is a live Xero read, and Xero
- * bills the club for a daily quota of them. Spending one on a participant whose
- * outcome is already settled — rejected, already cancelled, still awaiting the
- * member's own confirmation — buys nothing, because no approval of that
- * participant is possible for the answer to inform. The one promise that must
- * not break is the other way round: anything an admin could press Approve on
- * gets checked, so blockers are on screen BEFORE the button. That is why the
- * predicate mirrors the guards rather than approximating them, and why it is
- * never narrower than the enabled-Approve condition the page itself uses.
- */
-export function isMembershipCancellationParticipantAwaitingApproval(
-  candidate: MembershipCancellationApprovalCandidate,
-): boolean {
-  return (
-    REVIEWABLE_REQUEST_STATUSES.includes(candidate.requestStatus) &&
-    candidate.status === MembershipCancellationParticipantStatus.REQUESTED &&
-    candidate.confirmedAt !== null &&
-    candidate.member.active &&
-    candidate.member.cancelledAt === null
-  );
-}
 
 type AdminCancellationRequestRecord =
   Prisma.MembershipCancellationRequestGetPayload<{
@@ -160,17 +111,20 @@ type AdminSerializedMembershipCancellationParticipant = {
    */
   sharedInvoiceNotice: MembershipCancellationSharedInvoiceNotice | null;
   /**
-   * #2402: true when this participant COULD be approved, but the approval
-   * pre-checks were not run for this viewer — so `blockers` and
-   * `sharedInvoiceNotice` are silent because nothing was asked, not because
-   * nothing is wrong.
+   * #2402: true when this participant COULD be approved, but the UNPAID-INVOICE
+   * check was not run for this viewer — so no `unpaid_invoice` or
+   * `invoice_check_unavailable` blocker could appear in `blockers`, and
+   * `sharedInvoiceNotice` is null because nothing was asked, not because nothing
+   * is wrong.
    *
-   * Only ever true for a viewer without `membership: edit`. The whole point of
-   * the field is that an empty amber panel must not read as "nothing is owing"
-   * to somebody who was never told either way; the queue renders an explicit
-   * "not checked" line off this flag instead of showing nothing at all.
+   * Precise about which half, because only one half is skipped: the BOOKING
+   * blockers in `blockers` are complete and were loaded for everyone. Only ever
+   * true for a viewer without `membership: edit`. The whole point of the field
+   * is that an absent amber panel must not read as "nothing is owing" to
+   * somebody who was never told either way; the queue renders an explicit "not
+   * checked" line off this flag instead of showing nothing at all.
    */
-  blockerCheckSkipped: boolean;
+  invoiceCheckSkipped: boolean;
   /** True when approving this participant requires a Full Admin (#1604/#2383). */
   holdsPrivilegedAccess: boolean;
   /** Derived User Type, so an organisation account is visibly one. */
@@ -257,11 +211,11 @@ type SerializeRequestOptions = {
   >;
   /**
    * #2402: whether the viewer this payload is for holds `membership: edit`, and
-   * so whether the approval pre-checks above were run at all. Required — not
+   * so whether the unpaid-invoice check above was run at all. Required — not
    * defaulted — because getting it wrong in either direction is a lie to an
    * admin about money: defaulted true would silently claim a check that never
-   * happened, defaulted false would tell an approver their checks were skipped
-   * when they were not.
+   * happened, defaulted false would tell an approver their check was skipped
+   * when it was not.
    */
   viewerCanApprove: boolean;
 };
@@ -313,11 +267,11 @@ function serializeRequest(
       sharedInvoiceNotice:
         sharedInvoiceNoticesByMemberId.get(participant.memberId) ?? null,
       // #2402: said out loud only where the silence would otherwise be
-      // ambiguous — a participant somebody COULD approve, whose checks this
-      // viewer did not earn. A settled or unconfirmed participant has an empty
-      // panel for a reason the queue already shows (its status badge), and
-      // saying "not checked" there would be noise.
-      blockerCheckSkipped:
+      // ambiguous — a participant somebody COULD approve, whose invoice check
+      // this viewer did not earn. A settled or unconfirmed participant has an
+      // empty panel for a reason the queue already shows (its status badge),
+      // and saying "not checked" there would be noise.
+      invoiceCheckSkipped:
         !viewerCanApprove &&
         isMembershipCancellationParticipantAwaitingApproval({
           requestStatus: request.status,
@@ -575,26 +529,43 @@ export async function getPendingMembershipCancellationReviewCount() {
  * view-only membership admin browsing the queue spent the same quota as a
  * reviewer about to act on it, for an answer neither of them could use.
  *
- * The owner's decision (31 Jul 2026, recorded on #2402) is to run the check only
- * where its answer can still change what somebody does:
+ * The owner's decision (31 Jul 2026, recorded on #2402) is to run **that check**
+ * only where its answer can still change what somebody does:
  *
  * 1. **the viewer holds `membership: edit`** — the exact permission the review
  *    endpoint requires, so "could this person press Approve at all?"; and
  * 2. **the participant is still awaiting approval** — see
  *    {@link isMembershipCancellationParticipantAwaitingApproval}.
  *
- * The accepted cost, stated rather than glossed: a view-only admin no longer
- * learns from this queue that money is owing. They are not left to guess,
- * though — `blockerCheckSkipped` marks each participant whose checks were not
- * run, and the queue says so in words, because an empty amber panel and "nothing
- * is owing" look identical and only one of them is true.
+ * ## What is NOT skipped
  *
- * The shared-invoice notice (#2400) is skipped with it, although it costs no
- * Xero call. It is built from the blockers as well as the credit plans — its
- * `blocksApproval` field says whether the unpaid-invoice check refuses over that
- * very invoice — so building it without them would not be a cheaper notice, it
- * would be a notice asserting "this does not block approval" on the strength of
- * a check that never ran.
+ * The BOOKING blockers. They are two local indexed reads with no external cost,
+ * so withholding them from a view-only officer would take away information the
+ * club was already giving away free — and the owner's decision was about the
+ * metered call, not about the panel. Condition 2 still applies to them (a
+ * rejected participant's future bookings are nobody's problem), but condition 1
+ * does not: every admin who can see the queue sees outstanding bookings, exactly
+ * as before this change.
+ *
+ * So a view-only viewer's participant rows carry a REAL, complete booking answer
+ * and no invoice answer at all. That distinction is the thing the UI must not
+ * blur, which is why `invoiceCheckSkipped` names the half that was skipped
+ * rather than claiming the row went unchecked.
+ *
+ * The shared-invoice notice (#2400) is skipped with the invoice half, although it
+ * costs no Xero call of its own. It is built from the blockers as well as the
+ * credit plans — its `blocksApproval` field says whether the unpaid-invoice check
+ * refuses over that very invoice — so building it without them would not be a
+ * cheaper notice, it would be a notice asserting "this does not block approval"
+ * on the strength of a check that never ran.
+ *
+ * ## The accepted cost
+ *
+ * A view-only admin no longer learns from this queue that MONEY IS OWING. They
+ * are not left to guess: `invoiceCheckSkipped` marks each participant whose
+ * invoice check was declined and the queue says so in words, because an absent
+ * amber panel and "nothing is owing" look identical and only one of them is
+ * true.
  *
  * None of this touches the approval-time check, which stays live, fresh and
  * fail-closed in `reviewMembershipCancellationParticipant`. This is the render
@@ -635,24 +606,21 @@ export async function getAdminMembershipCancellationRequests({
     getPendingMembershipCancellationReviewCount(),
   ]);
 
-  // #2402: the members whose approval pre-checks are worth running. Empty for a
-  // view-only viewer, which makes every load below a no-op — both loaders return
-  // an empty map without touching the database or Xero when handed no ids — so
-  // the skip needs no branch here and cannot half-happen.
-  const participantMemberIds = viewerCanApprove
-    ? requests.flatMap((request) =>
-        request.participants
-          .filter((participant) =>
-            isMembershipCancellationParticipantAwaitingApproval({
-              requestStatus: request.status,
-              status: participant.status,
-              confirmedAt: participant.confirmedAt,
-              member: participant.member,
-            }),
-          )
-          .map((participant) => participant.memberId),
+  // #2402: every participant an approval could still be attempted on. This set
+  // does NOT depend on who is looking — the booking half is loaded for all of
+  // them, for everyone.
+  const participantMemberIds = requests.flatMap((request) =>
+    request.participants
+      .filter((participant) =>
+        isMembershipCancellationParticipantAwaitingApproval({
+          requestStatus: request.status,
+          status: participant.status,
+          confirmedAt: participant.confirmedAt,
+          member: participant.member,
+        }),
       )
-    : [];
+      .map((participant) => participant.memberId),
+  );
   // #2400: the shared-invoice notice reads only local records — no Xero call.
   // The credit plans are loaded ONCE for the page and handed to both consumers:
   // the blocker check needs them to decide its exclusion, and the notice is
@@ -660,14 +628,23 @@ export async function getAdminMembershipCancellationRequests({
   // over MemberSubscription.xeroInvoiceId) happens once per page load rather
   // than twice (#2400 review, F8). The notice is built last because it has to
   // know whether the approval will actually be refused over that same invoice.
+  //
+  // #2402: asked about nobody when the invoice half is declined, because the
+  // plans exist only to serve it and the notice built from it. The loader
+  // returns an empty map for an empty list without touching the database, so
+  // the skip is expressed as "ask about nobody" rather than as a second branch.
   const creditPlansByMemberId =
     await loadMembershipCancellationSubscriptionCreditPlansByMemberId(
-      participantMemberIds,
+      viewerCanApprove ? participantMemberIds : [],
     );
   const blockersByMemberId = await loadMembershipCancellationBlockersByMemberId(
     participantMemberIds,
     prisma,
-    { creditPlansByMemberId },
+    {
+      creditPlansByMemberId,
+      // #2402: the ONE thing a view-only viewer does not get. Bookings still do.
+      invoiceCheck: viewerCanApprove ? "run" : "skip",
+    },
   );
   const sharedInvoiceNoticesByMemberId =
     buildMembershipCancellationSharedInvoiceNotices(

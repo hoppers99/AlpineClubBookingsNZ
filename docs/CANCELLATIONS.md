@@ -302,13 +302,26 @@ change what somebody does (#2402). Both of these have to be true:
   unconfirmed row is not checked, because no approval of it is possible for the
   answer to inform.
 
+That second condition is exactly what the approval itself demands. The rule the
+queue uses to decide "is this row still approvable?" is the same set of
+conditions the server checks when **Approve** is pressed, and the Approve button
+is enabled off that same rule — so the button is never live on a row whose check
+was not run. A test drives every shape through both and fails if they ever
+disagree.
+
+**Only the Xero half is affected.** Outstanding bookings and guest appearances
+come from two ordinary database reads that cost nothing external, so they are
+loaded for **everybody**, including view-only admins, exactly as before. What a
+view-only admin loses is the money answer, not the panel.
+
 The consequence, stated plainly because it is a real loss and was accepted
 deliberately: **a view-only admin is no longer told that money is owing on a
-participant.** They are not left to guess, though. Every row whose checks were
-skipped carries a short blue note saying so — "Approval checks were not run for
-this member" — which exists precisely because an empty amber panel and "nothing
-is owing" look identical on screen and only one of them would be true. Ask an
-admin who can approve if you need the answer; they see it on the same page.
+participant.** They are not left to guess, though. Each request holding affected
+rows carries a short blue note saying the money-owing check was not run and which
+members it applies to — it exists precisely because an absent amber panel and
+"nothing is owing" look identical on screen and only one of them would be true.
+Ask an admin who can approve if you need the answer; they see it on the same
+page.
 
 None of this touches the approval itself. Pressing **Approve** always runs the
 check live, for everyone, and always refuses on what it finds — including when

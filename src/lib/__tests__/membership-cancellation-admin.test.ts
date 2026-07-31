@@ -106,10 +106,10 @@ vi.mock("@/lib/logger", () => ({
 
 import {
   getAdminMembershipCancellationRequests,
-  isMembershipCancellationParticipantAwaitingApproval,
   MembershipCancellationAdminError,
   reviewMembershipCancellationParticipant,
 } from "@/lib/membership-cancellation-admin";
+import { isMembershipCancellationParticipantAwaitingApproval } from "@/lib/membership-cancellation-approval-readiness";
 import {
   LAST_FULL_ADMIN_GUARD_MESSAGE,
   PRIVILEGED_TARGET_GUARD_MESSAGE,
@@ -1312,6 +1312,19 @@ describe("membership cancellation admin review", () => {
       mocks.requestCount.mockResolvedValue(1);
     }
 
+    /** A future booking on the member — the free, local half of the blocker set. */
+    function seedFutureBooking() {
+      mocks.bookingFindMany.mockResolvedValue([
+        {
+          id: "booking-1",
+          memberId: "member-1",
+          checkIn: new Date("2099-01-01T00:00:00.000Z"),
+          checkOut: new Date("2099-01-03T00:00:00.000Z"),
+          status: "PAID",
+        },
+      ]);
+    }
+
     it("spends no Xero call for a view-only admin, and says so on the row", async () => {
       seedQueue(adminRequest());
 
@@ -1321,19 +1334,39 @@ describe("membership cancellation admin review", () => {
 
       // The whole point: Xero is never asked.
       expect(mocks.loadInvoiceBlockers).not.toHaveBeenCalled();
-      // Nor is anything else. The loads are still invoked — the skip is
-      // expressed as "ask about nobody" rather than as a branch, so it cannot
-      // half-happen — but every one of them is handed an empty member list and
-      // returns without touching the database.
+      // The credit plans exist only to serve the invoice check and the notice
+      // built from it, so they are asked about nobody. Expressed as an empty
+      // member list rather than a second branch, so the skip cannot half-happen.
       expect(mocks.loadCreditPlans).toHaveBeenCalledWith([]);
-      expect(mocks.bookingFindMany).not.toHaveBeenCalled();
 
       const [serialized] = result.requests[0].participants;
       expect(serialized.blockers).toEqual([]);
       expect(serialized.sharedInvoiceNotice).toBeNull();
-      // …and the silence is declared, so an empty panel is never mistaken for
+      // …and the silence is declared, so an absent panel is never mistaken for
       // "this member owes nothing".
-      expect(serialized.blockerCheckSkipped).toBe(true);
+      expect(serialized.invoiceCheckSkipped).toBe(true);
+    });
+
+    it("still shows a view-only admin the free booking blockers (#2402 review, F1)", async () => {
+      // The booking half is two local indexed reads with no external cost. It
+      // was visible to every admin before this change and must stay visible:
+      // withholding it saves the club nothing and takes away a real warning.
+      seedQueue(adminRequest());
+      seedFutureBooking();
+
+      const result = await getAdminMembershipCancellationRequests({
+        viewerCanApprove: false,
+      });
+
+      expect(mocks.bookingFindMany).toHaveBeenCalled();
+      expect(mocks.loadInvoiceBlockers).not.toHaveBeenCalled();
+      const [serialized] = result.requests[0].participants;
+      expect(serialized.blockers).toEqual([
+        expect.objectContaining({ type: "owned_booking", bookingId: "booking-1" }),
+      ]);
+      // Still true, and now precisely scoped: the MONEY half was skipped, the
+      // booking half was not.
+      expect(serialized.invoiceCheckSkipped).toBe(true);
     });
 
     it("still checks Xero for an admin who can approve, and shows what it found", async () => {
@@ -1353,7 +1386,7 @@ describe("membership cancellation admin review", () => {
       const [serialized] = result.requests[0].participants;
       expect(serialized.blockers).toEqual([unpaidInvoiceBlocker()]);
       // An approver's checks DID run, so there is nothing to apologise for.
-      expect(serialized.blockerCheckSkipped).toBe(false);
+      expect(serialized.invoiceCheckSkipped).toBe(false);
     });
 
     it("does not check a participant whose outcome is already settled", async () => {
@@ -1375,7 +1408,21 @@ describe("membership cancellation admin review", () => {
       expect(serialized.blockers).toEqual([]);
       // Nothing to explain: the row's own status badge already says why there is
       // no approval preview, so the "not checked" line would be noise.
-      expect(serialized.blockerCheckSkipped).toBe(false);
+      expect(serialized.invoiceCheckSkipped).toBe(false);
+    });
+
+    it("does not even load the free booking half for a settled participant", async () => {
+      // Condition 2 applies to BOTH halves: a rejected participant's future
+      // bookings are nobody's problem, whoever is looking.
+      seedQueue(adminRequest({ status: "REJECTED" }));
+      seedFutureBooking();
+
+      const result = await getAdminMembershipCancellationRequests({
+        viewerCanApprove: true,
+      });
+
+      expect(mocks.bookingFindMany).not.toHaveBeenCalled();
+      expect(result.requests[0].participants[0].blockers).toEqual([]);
     });
 
     it("does not check a participant still awaiting the member's own confirmation", async () => {
@@ -1406,7 +1453,7 @@ describe("membership cancellation admin review", () => {
         viewerCanApprove: false,
       });
 
-      expect(result.requests[0].participants[0].blockerCheckSkipped).toBe(false);
+      expect(result.requests[0].participants[0].invoiceCheckSkipped).toBe(false);
     });
   });
 
@@ -1468,8 +1515,8 @@ describe("membership cancellation admin review", () => {
 
         expect(
           isMembershipCancellationParticipantAwaitingApproval({
-            requestStatus: record.request.status as never,
-            status: record.status as never,
+            requestStatus: record.request.status,
+            status: record.status,
             confirmedAt: record.confirmedAt,
             member: record.member,
           }),

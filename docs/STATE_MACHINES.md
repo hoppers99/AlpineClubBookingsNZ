@@ -1706,16 +1706,22 @@ failures are never memoised. Because the archive is an outbox operation drained
 later, `syncXeroMembershipCancellationContact` re-runs the same check `fresh`
 immediately before archiving and DEFERS (fails for retry, like the credit-note
 guard) if anything is owing. The QUEUE RENDER is additionally scoped (#2402):
-`getAdminMembershipCancellationRequests` takes `viewerCanApprove` (the route
-resolves it from the same `membership: edit` requirement the review endpoint
-enforces) and only asks about participants satisfying
-`isMembershipCancellationParticipantAwaitingApproval` — the conjunction of both
-approval guards' own preconditions, held in agreement with them by test. A
-skipped participant is serialized with `blockerCheckSkipped: true` so the queue
-states that no check ran rather than rendering an empty panel that reads as
-"nothing owing"; the shared-invoice notice is skipped with it, because its
-`blocksApproval` field is derived from the blockers. Approval and archive-time
-checks are unaffected. See
+`getAdminMembershipCancellationRequests` asks about participants satisfying
+`isMembershipCancellationParticipantAwaitingApproval`
+(`membership-cancellation-approval-readiness.ts`) — the conjunction of both
+approval guards' own preconditions, held in agreement with them by test, and the
+same predicate the queue page's Approve button is enabled off, so the button is
+never live on a row whose check did not run. The BOOKING half loads for that set
+regardless of viewer. The INVOICE half additionally requires
+`viewerCanApprove`, which the route resolves from the same `membership: edit`
+requirement the review endpoint enforces, and is declined via
+`loadMembershipCancellationBlockersByMemberId`'s `invoiceCheck: "skip"` (default
+`"run"`, so omission is fail-closed). A declined participant is serialized with
+`invoiceCheckSkipped: true` so the queue states that the money check did not run
+rather than rendering an absent panel that reads as "nothing owing"; the
+shared-invoice notice and its credit-plan read are skipped with it, because its
+`blocksApproval` field is derived from the invoice blockers. Approval and
+archive-time checks are unaffected. See
 [`CANCELLATIONS.md`](CANCELLATIONS.md#unpaid-invoices-block-approval).
 
 Shared subscription invoices (#2400): one Xero invoice covers every member of a
