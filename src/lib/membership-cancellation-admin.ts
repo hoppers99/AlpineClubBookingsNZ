@@ -57,6 +57,56 @@ const REVIEWABLE_REJECTION_STATUSES: readonly MembershipCancellationParticipantS
   MembershipCancellationParticipantStatus.PENDING_CONFIRMATION,
 ] as const;
 
+/**
+ * Everything the review queue needs in order to ask "could an approval of this
+ * participant actually be attempted right now?" (#2402).
+ */
+export type MembershipCancellationApprovalCandidate = {
+  requestStatus: MembershipCancellationRequestStatus;
+  status: MembershipCancellationParticipantStatus;
+  confirmedAt: Date | null;
+  member: { active: boolean; cancelledAt: Date | null };
+};
+
+/**
+ * THE definition of "still awaiting approval" — one place, so the review queue,
+ * the post-review reload and the tests cannot each carry their own (#2402).
+ *
+ * It is deliberately the conjunction of the two approval-time guards' own
+ * preconditions, read straight off them:
+ *
+ * - `assertRequestCanBeReviewed` — the REQUEST is still `REQUESTED`;
+ * - `assertParticipantCanBeApproved` — the participant is `REQUESTED`, has
+ *   confirmed, and the membership is neither deactivated nor already cancelled.
+ *
+ * Those guards are NOT re-expressed in terms of this predicate: they throw one
+ * specific message each, and rewriting them to share this would have been a
+ * change to the approval path, which #2402 is explicitly not. The agreement is
+ * held by test instead (`membership-cancellation-admin.test.ts`), which drives
+ * every shape through both and asserts they answer alike.
+ *
+ * What it is FOR: the queue's unpaid-invoice check is a live Xero read, and Xero
+ * bills the club for a daily quota of them. Spending one on a participant whose
+ * outcome is already settled — rejected, already cancelled, still awaiting the
+ * member's own confirmation — buys nothing, because no approval of that
+ * participant is possible for the answer to inform. The one promise that must
+ * not break is the other way round: anything an admin could press Approve on
+ * gets checked, so blockers are on screen BEFORE the button. That is why the
+ * predicate mirrors the guards rather than approximating them, and why it is
+ * never narrower than the enabled-Approve condition the page itself uses.
+ */
+export function isMembershipCancellationParticipantAwaitingApproval(
+  candidate: MembershipCancellationApprovalCandidate,
+): boolean {
+  return (
+    REVIEWABLE_REQUEST_STATUSES.includes(candidate.requestStatus) &&
+    candidate.status === MembershipCancellationParticipantStatus.REQUESTED &&
+    candidate.confirmedAt !== null &&
+    candidate.member.active &&
+    candidate.member.cancelledAt === null
+  );
+}
+
 type AdminCancellationRequestRecord =
   Prisma.MembershipCancellationRequestGetPayload<{
     include: {
@@ -109,6 +159,18 @@ type AdminSerializedMembershipCancellationParticipant = {
    * review, F2).
    */
   sharedInvoiceNotice: MembershipCancellationSharedInvoiceNotice | null;
+  /**
+   * #2402: true when this participant COULD be approved, but the approval
+   * pre-checks were not run for this viewer — so `blockers` and
+   * `sharedInvoiceNotice` are silent because nothing was asked, not because
+   * nothing is wrong.
+   *
+   * Only ever true for a viewer without `membership: edit`. The whole point of
+   * the field is that an empty amber panel must not read as "nothing is owing"
+   * to somebody who was never told either way; the queue renders an explicit
+   * "not checked" line off this flag instead of showing nothing at all.
+   */
+  blockerCheckSkipped: boolean;
   /** True when approving this participant requires a Full Admin (#1604/#2383). */
   holdsPrivilegedAccess: boolean;
   /** Derived User Type, so an organisation account is visibly one. */
@@ -182,17 +244,40 @@ const adminCancellationRequestInclude = {
   },
 } satisfies Prisma.MembershipCancellationRequestInclude;
 
-function serializeRequest(
-  request: AdminCancellationRequestRecord,
-  blockersByMemberId = emptyMembershipCancellationBlockerMap(
-    request.participants.map((participant) => participant.memberId),
-  ),
+type SerializeRequestOptions = {
+  blockersByMemberId?: ReadonlyMap<
+    string,
+    MembershipCancellationBlocker[]
+  >;
   // #2400: absent by default, exactly like the blocker map — a caller that has
   // not asked shows no notice rather than an unexplained empty one.
-  sharedInvoiceNoticesByMemberId = new Map<
+  sharedInvoiceNoticesByMemberId?: ReadonlyMap<
     string,
     MembershipCancellationSharedInvoiceNotice | null
-  >(),
+  >;
+  /**
+   * #2402: whether the viewer this payload is for holds `membership: edit`, and
+   * so whether the approval pre-checks above were run at all. Required — not
+   * defaulted — because getting it wrong in either direction is a lie to an
+   * admin about money: defaulted true would silently claim a check that never
+   * happened, defaulted false would tell an approver their checks were skipped
+   * when they were not.
+   */
+  viewerCanApprove: boolean;
+};
+
+function serializeRequest(
+  request: AdminCancellationRequestRecord,
+  {
+    blockersByMemberId = emptyMembershipCancellationBlockerMap(
+      request.participants.map((participant) => participant.memberId),
+    ),
+    sharedInvoiceNoticesByMemberId = new Map<
+      string,
+      MembershipCancellationSharedInvoiceNotice | null
+    >(),
+    viewerCanApprove,
+  }: SerializeRequestOptions,
 ): AdminSerializedMembershipCancellationRequest {
   return {
     id: request.id,
@@ -227,6 +312,19 @@ function serializeRequest(
       blockers: blockersByMemberId.get(participant.memberId) ?? [],
       sharedInvoiceNotice:
         sharedInvoiceNoticesByMemberId.get(participant.memberId) ?? null,
+      // #2402: said out loud only where the silence would otherwise be
+      // ambiguous — a participant somebody COULD approve, whose checks this
+      // viewer did not earn. A settled or unconfirmed participant has an empty
+      // panel for a reason the queue already shows (its status badge), and
+      // saying "not checked" there would be noise.
+      blockerCheckSkipped:
+        !viewerCanApprove &&
+        isMembershipCancellationParticipantAwaitingApproval({
+          requestStatus: request.status,
+          status: participant.status,
+          confirmedAt: participant.confirmedAt,
+          member: participant.member,
+        }),
       // #2383: what the reviewer is actually approving. `holdsPrivilegedAccess`
       // is the exact predicate the approval guard uses, so it is a promise:
       // approving this participant needs a Full Admin.
@@ -466,14 +564,57 @@ export async function getPendingMembershipCancellationReviewCount() {
   });
 }
 
+/**
+ * The admin review queue.
+ *
+ * ## Who pays for the Xero check (#2402)
+ *
+ * The unpaid-invoice half of the blocker set is a LIVE Xero read, and Xero meters
+ * the club's API calls daily. This queue used to run it for every participant on
+ * the page on every load, filter change and refresh, whoever was looking — so a
+ * view-only membership admin browsing the queue spent the same quota as a
+ * reviewer about to act on it, for an answer neither of them could use.
+ *
+ * The owner's decision (31 Jul 2026, recorded on #2402) is to run the check only
+ * where its answer can still change what somebody does:
+ *
+ * 1. **the viewer holds `membership: edit`** — the exact permission the review
+ *    endpoint requires, so "could this person press Approve at all?"; and
+ * 2. **the participant is still awaiting approval** — see
+ *    {@link isMembershipCancellationParticipantAwaitingApproval}.
+ *
+ * The accepted cost, stated rather than glossed: a view-only admin no longer
+ * learns from this queue that money is owing. They are not left to guess,
+ * though — `blockerCheckSkipped` marks each participant whose checks were not
+ * run, and the queue says so in words, because an empty amber panel and "nothing
+ * is owing" look identical and only one of them is true.
+ *
+ * The shared-invoice notice (#2400) is skipped with it, although it costs no
+ * Xero call. It is built from the blockers as well as the credit plans — its
+ * `blocksApproval` field says whether the unpaid-invoice check refuses over that
+ * very invoice — so building it without them would not be a cheaper notice, it
+ * would be a notice asserting "this does not block approval" on the strength of
+ * a check that never ran.
+ *
+ * None of this touches the approval-time check, which stays live, fresh and
+ * fail-closed in `reviewMembershipCancellationParticipant`. This is the render
+ * only.
+ */
 export async function getAdminMembershipCancellationRequests({
   status = MembershipCancellationRequestStatus.REQUESTED,
   page = 1,
   pageSize = 25,
+  viewerCanApprove,
 }: {
   status?: AdminCancellationStatusFilter;
   page?: number;
   pageSize?: number;
+  /**
+   * Whether the admin being served holds `membership: edit`. Required, and
+   * never inferred here: this module has no session, and a default in either
+   * direction would be a guess about somebody's permissions.
+   */
+  viewerCanApprove: boolean;
 }) {
   const where =
     status === "ALL"
@@ -494,15 +635,24 @@ export async function getAdminMembershipCancellationRequests({
     getPendingMembershipCancellationReviewCount(),
   ]);
 
-  const participantMemberIds = requests.flatMap((request) =>
-    request.participants
-      .filter(
-        (participant) =>
-          participant.status ===
-          MembershipCancellationParticipantStatus.REQUESTED,
+  // #2402: the members whose approval pre-checks are worth running. Empty for a
+  // view-only viewer, which makes every load below a no-op — both loaders return
+  // an empty map without touching the database or Xero when handed no ids — so
+  // the skip needs no branch here and cannot half-happen.
+  const participantMemberIds = viewerCanApprove
+    ? requests.flatMap((request) =>
+        request.participants
+          .filter((participant) =>
+            isMembershipCancellationParticipantAwaitingApproval({
+              requestStatus: request.status,
+              status: participant.status,
+              confirmedAt: participant.confirmedAt,
+              member: participant.member,
+            }),
+          )
+          .map((participant) => participant.memberId),
       )
-      .map((participant) => participant.memberId),
-  );
+    : [];
   // #2400: the shared-invoice notice reads only local records — no Xero call.
   // The credit plans are loaded ONCE for the page and handed to both consumers:
   // the blocker check needs them to decide its exclusion, and the notice is
@@ -527,7 +677,11 @@ export async function getAdminMembershipCancellationRequests({
 
   return {
     requests: requests.map((request) =>
-      serializeRequest(request, blockersByMemberId, sharedInvoiceNoticesByMemberId),
+      serializeRequest(request, {
+        blockersByMemberId,
+        sharedInvoiceNoticesByMemberId,
+        viewerCanApprove,
+      }),
     ),
     pendingCount,
     total,
@@ -881,9 +1035,20 @@ export async function reviewMembershipCancellationParticipant({
     );
   }
 
+  // #2402: the same "still awaiting approval" rule the queue page uses, so the
+  // panel a reviewer sees after acting is built from exactly the same set as the
+  // one they saw before — and the reload does not spend a Xero call on a
+  // participant nobody can approve either. The viewer here is by definition an
+  // approver: this function is only reachable through the review endpoint, which
+  // requires `membership: edit`.
   const stillReviewableMemberIds = updatedRequest.participants
-    .filter(
-      (item) => item.status === MembershipCancellationParticipantStatus.REQUESTED,
+    .filter((item) =>
+      isMembershipCancellationParticipantAwaitingApproval({
+        requestStatus: updatedRequest.status,
+        status: item.status,
+        confirmedAt: item.confirmedAt,
+        member: item.member,
+      }),
     )
     .map((item) => item.memberId);
   // #2400: reloaded with the blockers, because approving one family member
@@ -907,11 +1072,12 @@ export async function reviewMembershipCancellationParticipant({
     );
 
   return {
-    request: serializeRequest(
-      updatedRequest,
+    request: serializeRequest(updatedRequest, {
       blockersByMemberId,
       sharedInvoiceNoticesByMemberId,
-    ),
+      // Only an admin with `membership: edit` can reach this function at all.
+      viewerCanApprove: true,
+    }),
     // #2255: always present (empty arrays on reject, or when nothing was
     // linked), so a caller cannot mistake "no key" for "nothing detached".
     orphanedLinks: orphanedByCancellation,

@@ -286,6 +286,36 @@ confirmed and ready to review, which is when they can be acted on anyway. A
 request is never rejected for a debt that may well be settled by the time
 somebody reviews it.
 
+### Who the queue runs the check for
+
+Asking Xero what a contact owes is a live API call, and Xero meters the club's
+calls daily. The queue therefore spends one only where the answer can still
+change what somebody does (#2402). Both of these have to be true:
+
+- **You can approve cancellations** — the check runs for an admin whose role has
+  *edit* access to the membership area, which is the same permission the Approve
+  and Reject buttons need. A **view-only** membership admin can still open the
+  queue and read every request; they simply do not trigger the Xero call.
+- **The participant is still awaiting approval** — the request is still open, the
+  participant is *Ready for review*, the member has confirmed, and the membership
+  has not since been deactivated or cancelled. A rejected, cancelled or
+  unconfirmed row is not checked, because no approval of it is possible for the
+  answer to inform.
+
+The consequence, stated plainly because it is a real loss and was accepted
+deliberately: **a view-only admin is no longer told that money is owing on a
+participant.** They are not left to guess, though. Every row whose checks were
+skipped carries a short blue note saying so — "Approval checks were not run for
+this member" — which exists precisely because an empty amber panel and "nothing
+is owing" look identical on screen and only one of them would be true. Ask an
+admin who can approve if you need the answer; they see it on the same page.
+
+None of this touches the approval itself. Pressing **Approve** always runs the
+check live, for everyone, and always refuses on what it finds — including when
+Xero cannot be asked. So does the [second check before the archive
+runs](#the-archive-checks-again-before-it-runs). What changed is only what the
+queue *renders*, never what an approval is decided on.
+
 ## Refund Policy
 
 Paid membership subscriptions are not refunded. Approval stops future

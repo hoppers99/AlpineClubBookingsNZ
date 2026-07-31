@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { MembershipCancellationBlockerNotice } from "@/components/admin/membership-cancellation-blocker-notice";
+import { MembershipCancellationCheckSkippedNotice } from "@/components/admin/membership-cancellation-check-skipped-notice";
 import { MembershipCancellationSharedInvoiceNotice } from "@/components/admin/membership-cancellation-shared-invoice-notice";
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
 import type {
@@ -101,6 +102,11 @@ type CancellationParticipant = {
   // #2400: present when this member's subscription invoice also covers members
   // who are staying, so approving raises no credit note against it.
   sharedInvoiceNotice: SharedInvoiceNotice | null;
+  // #2402: true when this participant could be approved but the approval
+  // pre-checks were not run for this viewer, so the two notices above are silent
+  // because nothing was asked. Said out loud rather than left to look like a
+  // clean bill of health.
+  blockerCheckSkipped: boolean;
   // #2383: serialized by membership-cancellation-admin.ts so the queue can say
   // what kind of account is being cancelled. `holdsPrivilegedAccess` is the
   // approval-time Full-Admin guard's own predicate.
@@ -942,6 +948,15 @@ export default function MembershipCancellationsPage() {
 
                           <MembershipCancellationSharedInvoiceNotice
                             notice={participant.sharedInvoiceNotice ?? null}
+                          />
+
+                          {/* #2402: the two notices above are only as good as
+                              the checks behind them, and for a view-only admin
+                              those checks are not run. Their silence is
+                              explained rather than left to read as "nothing is
+                              owing". */}
+                          <MembershipCancellationCheckSkippedNotice
+                            skipped={Boolean(participant.blockerCheckSkipped)}
                           />
 
                           {(canApprove(participant) || canReject(participant)) && (
