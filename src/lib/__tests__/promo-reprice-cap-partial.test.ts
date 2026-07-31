@@ -53,13 +53,12 @@ function trim(overrides: Partial<Parameters<typeof trimPromoBeneficiariesToCaps>
   return trimPromoBeneficiariesToCaps({
     beneficiaryMemberIds: [ANN, BOB, CAL],
     protectedMemberIds: new Set([ANN]),
+    exhaustedMemberIds: new Set(),
     existingUniqueBeneficiaryMemberIds: new Set(),
     redemptionsHeldElsewhere: 0,
     maxRedemptionsTotal: null,
     uniqueMembersUsed: 0,
     maxUniqueMembersTotal: null,
-    memberRedemptionCounts: {},
-    maxUsesPerMember: null,
     ...overrides,
   });
 }
@@ -68,6 +67,7 @@ describe("trimPromoBeneficiariesToCaps — who a capped promotion still covers",
   it("covers everybody when no cap is set", () => {
     expect(trim()).toEqual({
       coveredMemberIds: [ANN, BOB, CAL],
+      retainedMemberIds: [ANN],
       excludedMemberIds: [],
     });
   });
@@ -76,6 +76,7 @@ describe("trimPromoBeneficiariesToCaps — who a capped promotion still covers",
     // Two slots; Ann already holds one. Bob fits, Cal does not.
     expect(trim({ maxRedemptionsTotal: 2 })).toEqual({
       coveredMemberIds: [ANN, BOB],
+      retainedMemberIds: [ANN],
       excludedMemberIds: [CAL],
     });
   });
@@ -92,6 +93,7 @@ describe("trimPromoBeneficiariesToCaps — who a capped promotion still covers",
       })
     ).toEqual({
       coveredMemberIds: [ANN, BOB],
+      retainedMemberIds: [ANN, BOB],
       excludedMemberIds: [CAL],
     });
   });
@@ -99,7 +101,11 @@ describe("trimPromoBeneficiariesToCaps — who a capped promotion still covers",
   it("counts slots other bookings hold against the allowance", () => {
     expect(
       trim({ maxRedemptionsTotal: 3, redemptionsHeldElsewhere: 2 })
-    ).toEqual({ coveredMemberIds: [ANN], excludedMemberIds: [BOB, CAL] });
+    ).toEqual({
+      coveredMemberIds: [ANN],
+      retainedMemberIds: [ANN],
+      excludedMemberIds: [BOB, CAL],
+    });
   });
 
   it("never lets a newcomer take a slot ahead of somebody who already holds one", () => {
@@ -112,17 +118,30 @@ describe("trimPromoBeneficiariesToCaps — who a capped promotion still covers",
         protectedMemberIds: new Set([ANN]),
         maxRedemptionsTotal: 1,
       })
-    ).toEqual({ coveredMemberIds: [ANN], excludedMemberIds: [BOB, CAL] });
+    ).toEqual({
+      coveredMemberIds: [ANN],
+      retainedMemberIds: [ANN],
+      excludedMemberIds: [BOB, CAL],
+    });
   });
 
-  it("admits candidates in the booking's own guest order", () => {
+  it("admits candidates in the order the promotion applies to them", () => {
+    // The caller hands the list over already ordered by
+    // `selectPromoDiscountGuests` — most expensive stay first — and this
+    // function spends the allowance straight down that list. Ordering is the
+    // caller's job precisely so the trim and the pricing cannot disagree about
+    // who comes first.
     expect(
       trim({
         beneficiaryMemberIds: [CAL, BOB],
         protectedMemberIds: new Set(),
         maxRedemptionsTotal: 1,
       })
-    ).toEqual({ coveredMemberIds: [CAL], excludedMemberIds: [BOB] });
+    ).toEqual({
+      coveredMemberIds: [CAL],
+      retainedMemberIds: [],
+      excludedMemberIds: [BOB],
+    });
   });
 
   it("applies the unique-members cap only to members who are new to the code", () => {
@@ -135,26 +154,32 @@ describe("trimPromoBeneficiariesToCaps — who a capped promotion still covers",
         uniqueMembersUsed: 2,
         maxUniqueMembersTotal: 2,
       })
-    ).toEqual({ coveredMemberIds: [ANN, BOB], excludedMemberIds: [CAL] });
+    ).toEqual({
+      coveredMemberIds: [ANN, BOB],
+      retainedMemberIds: [ANN],
+      excludedMemberIds: [CAL],
+    });
   });
 
   it("leaves out a newcomer who has personally used the code up", () => {
-    expect(
-      trim({
-        maxUsesPerMember: 1,
-        memberRedemptionCounts: { [BOB]: 1 },
-      })
-    ).toEqual({ coveredMemberIds: [ANN, CAL], excludedMemberIds: [BOB] });
+    expect(trim({ exhaustedMemberIds: new Set([BOB]) })).toEqual({
+      coveredMemberIds: [ANN, CAL],
+      retainedMemberIds: [ANN],
+      excludedMemberIds: [BOB],
+    });
   });
 
-  it("still keeps a PROTECTED member who is over their own per-member cap", () => {
+  it("still keeps a PROTECTED member who has used their own allowance up", () => {
     expect(
       trim({
         protectedMemberIds: new Set([ANN]),
-        maxUsesPerMember: 1,
-        memberRedemptionCounts: { [ANN]: 5 },
+        exhaustedMemberIds: new Set([ANN]),
       })
-    ).toEqual({ coveredMemberIds: [ANN, BOB, CAL], excludedMemberIds: [] });
+    ).toEqual({
+      coveredMemberIds: [ANN, BOB, CAL],
+      retainedMemberIds: [ANN],
+      excludedMemberIds: [],
+    });
   });
 
   it("returns nobody when nobody fits and nobody is protected", () => {
@@ -164,7 +189,11 @@ describe("trimPromoBeneficiariesToCaps — who a capped promotion still covers",
         maxRedemptionsTotal: 1,
         redemptionsHeldElsewhere: 1,
       })
-    ).toEqual({ coveredMemberIds: [], excludedMemberIds: [ANN, BOB, CAL] });
+    ).toEqual({
+      coveredMemberIds: [],
+      retainedMemberIds: [],
+      excludedMemberIds: [ANN, BOB, CAL],
+    });
   });
 });
 
@@ -276,6 +305,10 @@ function usageDb(
     otherBeneficiaries?: string[];
     ownAllocationRows?: number;
     memberRedemptionCounts?: Record<string, number>;
+    /** Free nights this member holds on OTHER bookings. */
+    memberFreeNightsUsed?: Record<string, number>;
+    /** Free nights this booking's own allocation rows already granted. */
+    bookingFreeNights?: Record<string, number>;
   } = {}
 ) {
   const findManyWheres: Record<string, unknown>[] = [];
@@ -292,14 +325,24 @@ function usageDb(
             ? options.memberRedemptionCounts?.[memberId] ?? 0
             : 0;
         }),
-        aggregate: vi.fn(async () => ({ _sum: { freeNightsUsed: 0 } })),
+        aggregate: vi.fn(async ({ where }: { where: Record<string, unknown> }) => ({
+          _sum: {
+            freeNightsUsed:
+              typeof where.memberId === "string"
+                ? options.memberFreeNightsUsed?.[where.memberId] ?? 0
+                : 0,
+          },
+        })),
         findMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
           findManyWheres.push(where);
           const ids =
             typeof where.bookingId === "string"
               ? options.bookingBeneficiaries ?? []
               : options.otherBeneficiaries ?? [];
-          return ids.map((memberId) => ({ memberId }));
+          return ids.map((memberId) => ({
+            memberId,
+            freeNightsUsed: options.bookingFreeNights?.[memberId] ?? 0,
+          }));
         }),
       },
       member: {
@@ -355,6 +398,7 @@ describe("validateAndCalculatePromoDiscount — partial coverage on a reprice", 
     expect(application.error).toBeUndefined();
     expect(application.capCoverage).toEqual({
       coveredMemberIds: [ANN, BOB],
+      retainedMemberIds: [ANN],
       excludedMemberIds: [CAL],
     });
     // 20% of Ann's and Bob's $100 each — NOT Cal's.
@@ -518,9 +562,302 @@ describe("validateAndCalculatePromoDiscount — partial coverage on a reprice", 
     // third, so he is priced normally.
     expect(application.capCoverage).toEqual({
       coveredMemberIds: [ANN, BOB],
+      retainedMemberIds: [ANN],
       excludedMemberIds: [CAL],
     });
     expect(application.discount?.discountCents).toBe(4000);
+  });
+});
+
+// --- The guest cap runs BEFORE protection could be consulted -----------------
+//
+// `maxGuestsPerBooking` is spent while the beneficiary list is being built:
+// eligible guests are ordered most-expensive-stay first and cut to the cap.
+// Every protection check downstream reads that list — so a protected member the
+// cut removed is invisible to all of them, and the edit reads as "they are not
+// a beneficiary any more" rather than "they must be kept". The fix is to let
+// protection win a slot inside the cut itself.
+
+describe("a protected member cannot be cut by maxGuestsPerBooking", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // Ann is on the booking and already has the discount; the guest she adds has
+  // the more expensive stay. One slot only.
+  const ANN_CHEAP_CAL_EXPENSIVE = {
+    memberId: ANN,
+    totalPriceCents: 24000,
+    guests: [
+      { memberId: ANN, isMember: true, perNightRates: [3000, 3000] },
+      { memberId: CAL, isMember: true, perNightRates: [9000, 9000] },
+    ],
+  };
+
+  it("bills nobody back when the newcomer has used the code up (the money bug)", async () => {
+    // The precise failure #2390 exists to prevent, with no over-cap
+    // precondition at all. Cut to one guest by stay cost, Ann disappears and
+    // Cal is then dropped as exhausted, leaving nobody — which every reprice
+    // path turns into `deletePromoRedemptionAndAdjustCount`: Ann is billed back
+    // a discount she already had, and the panel tells her the code is no longer
+    // valid.
+    const { db } = usageDb({
+      bookingBeneficiaries: [ANN],
+      memberRedemptionCounts: { [CAL]: 1 },
+    });
+
+    const application = await validateAndCalculatePromoDiscount(
+      promoSubject({
+        maxRedemptionsTotal: null,
+        maxUsesPerMember: 1,
+        maxGuestsPerBooking: 1,
+      }),
+      ANN_CHEAP_CAL_EXPENSIVE,
+      [ANN, CAL],
+      {
+        excludeBookingId: "booking-1",
+        db: db as never,
+        capOverflow: "coverExisting",
+      }
+    );
+
+    expect(application.error).toBeUndefined();
+    // 20% of Ann's $60 stay. Exactly what she had before the edit.
+    expect(application.discount?.discountCents).toBe(1200);
+    expect(application.beneficiaryMemberIds).toEqual([ANN]);
+    expect(application.capCoverage).toEqual({
+      coveredMemberIds: [ANN],
+      retainedMemberIds: [ANN],
+      excludedMemberIds: [CAL],
+    });
+  });
+
+  it("does not hand the slot to the newcomer just because their stay costs more", async () => {
+    // The milder variant, live on any code with a guest cap and no per-member
+    // cap: the newcomer simply takes the slot, which inverts the rule — the
+    // person who already had the discount loses it to the person who did not.
+    const { db } = usageDb({ bookingBeneficiaries: [ANN] });
+
+    const application = await validateAndCalculatePromoDiscount(
+      promoSubject({ maxRedemptionsTotal: null, maxGuestsPerBooking: 1 }),
+      ANN_CHEAP_CAL_EXPENSIVE,
+      [ANN, CAL],
+      {
+        excludeBookingId: "booking-1",
+        db: db as never,
+        capOverflow: "coverExisting",
+      }
+    );
+
+    expect(application.beneficiaryMemberIds).toEqual([ANN]);
+    expect(application.discount?.allocations.map((a) => a.memberId)).toEqual([ANN]);
+    // And Cal is NAMED, not silently priced at the normal rate: he is the
+    // person the protection kept out, so the sentence has to account for him.
+    expect(application.capCoverage?.excludedMemberIds).toEqual([CAL]);
+  });
+
+  it("still spends a guest cap on the most expensive stay when nobody is protected", async () => {
+    // The ordering rule itself is unchanged — protection is the only thing that
+    // outranks cost, and on a booking with no protected member the cap goes
+    // where it is worth the most, exactly as it does at booking creation.
+    const { db } = usageDb({ bookingBeneficiaries: [] });
+
+    const application = await validateAndCalculatePromoDiscount(
+      promoSubject({ maxRedemptionsTotal: null, maxGuestsPerBooking: 1 }),
+      ANN_CHEAP_CAL_EXPENSIVE,
+      [ANN, CAL],
+      {
+        excludeBookingId: "booking-1",
+        db: db as never,
+        capOverflow: "coverExisting",
+      }
+    );
+
+    expect(application.beneficiaryMemberIds).toEqual([CAL]);
+    // 20% of Cal's $180 stay.
+    expect(application.discount?.discountCents).toBe(3600);
+    expect(application.capCoverage).toBeUndefined();
+  });
+});
+
+// --- Nobody is left out without being told -----------------------------------
+
+describe("a newcomer who has personally used the code up is NAMED, not just dropped", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("names the exhausted newcomer in the sentence the member reads", async () => {
+    // The most commonly configured cap of the lot: one use per member. Bob
+    // redeemed the code last winter, so he is priced at the normal rate — and
+    // before this he was removed from the beneficiary list BEFORE the trim ran,
+    // so he never reached the excluded list and the panel, the email and the
+    // history all said nothing about him.
+    const { db } = usageDb({
+      bookingBeneficiaries: [ANN],
+      memberRedemptionCounts: { [BOB]: 1 },
+    });
+
+    const application = await validateAndCalculatePromoDiscount(
+      promoSubject({ maxRedemptionsTotal: null, maxUsesPerMember: 1 }),
+      BOOKING_DETAILS,
+      ASSIGNED,
+      {
+        excludeBookingId: "booking-1",
+        db: db as never,
+        capOverflow: "coverExisting",
+      }
+    );
+
+    expect(application.error).toBeUndefined();
+    expect(application.capCoverage).toEqual({
+      coveredMemberIds: [ANN, CAL],
+      retainedMemberIds: [ANN],
+      excludedMemberIds: [BOB],
+    });
+    // Ann and Cal only: 20% of $100 each.
+    expect(application.discount?.discountCents).toBe(4000);
+    expect(application.discount?.allocations.map((a) => a.memberId).sort()).toEqual(
+      [ANN, CAL]
+    );
+
+    const notice = await describePromoCapCoverage(db as never, {
+      promoCode: "SUMMER25",
+      capCoverage: application.capCoverage,
+    });
+    expect(notice?.message).toContain("does not extend to Bob Hughes");
+  });
+
+  it("says so plainly when every linked member has used it up", async () => {
+    // Nobody is protected and everybody is exhausted, so there is no discount
+    // to keep. The refusal keeps its own words rather than borrowing the
+    // total-uses message, because that is not what happened.
+    const { db } = usageDb({
+      bookingBeneficiaries: [],
+      memberRedemptionCounts: { [ANN]: 1, [BOB]: 1, [CAL]: 1 },
+    });
+
+    const application = await validateAndCalculatePromoDiscount(
+      promoSubject({ maxRedemptionsTotal: null, maxUsesPerMember: 1 }),
+      BOOKING_DETAILS,
+      ASSIGNED,
+      {
+        excludeBookingId: "booking-1",
+        db: db as never,
+        capOverflow: "coverExisting",
+      }
+    );
+
+    expect(application.error).toBe("All linked member guests have used this promo code");
+    expect(application.discount).toBeUndefined();
+  });
+});
+
+// --- A lowered lifetime cap is a budget, not a slot ---------------------------
+
+describe("a protected member's free nights survive a lowered lifetime cap", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const FREE_NIGHTS_SUBJECT = promoSubject({
+    type: "FREE_NIGHTS",
+    percentOff: null,
+    freeNightsPerIndividual: 2,
+    lifetimeFreeNightsCap: 2,
+    maxRedemptionsTotal: null,
+  });
+
+  const ANN_ONLY = {
+    memberId: ANN,
+    totalPriceCents: 10000,
+    guests: [{ memberId: ANN, isMember: true, perNightRates: [5000, 5000] }],
+  };
+
+  it("keeps the nights this booking already gave her", async () => {
+    // The cap was 4 and is now 2. Ann holds two nights on this booking and two
+    // on another. Protecting her place in the beneficiary list is not enough:
+    // the remaining-nights budget reads 2 - 2 = 0, she is awarded nothing, and
+    // because she counts as COVERED there is no notice anywhere — roughly $100
+    // simply disappears from her discount.
+    const { db } = usageDb({
+      bookingBeneficiaries: [ANN],
+      bookingFreeNights: { [ANN]: 2 },
+      memberFreeNightsUsed: { [ANN]: 2 },
+    });
+
+    const application = await validateAndCalculatePromoDiscount(
+      FREE_NIGHTS_SUBJECT,
+      ANN_ONLY,
+      [ANN],
+      {
+        excludeBookingId: "booking-1",
+        db: db as never,
+        capOverflow: "coverExisting",
+      }
+    );
+
+    expect(application.error).toBeUndefined();
+    expect(application.remainingFreeNightsByMemberId).toEqual({ [ANN]: 2 });
+    expect(application.discount?.freeNightsUsed).toBe(2);
+    expect(application.discount?.discountCents).toBe(10000);
+  });
+
+  it("gives a member nothing extra just because they were protected", async () => {
+    // The floor can only hold somebody level with what they already had. Ann
+    // holds ONE night here and has used one elsewhere against a cap of two, so
+    // her budget stays at one — not two, and not one-plus-one.
+    const { db } = usageDb({
+      bookingBeneficiaries: [ANN],
+      bookingFreeNights: { [ANN]: 1 },
+      memberFreeNightsUsed: { [ANN]: 1 },
+    });
+
+    const application = await validateAndCalculatePromoDiscount(
+      FREE_NIGHTS_SUBJECT,
+      ANN_ONLY,
+      [ANN],
+      {
+        excludeBookingId: "booking-1",
+        db: db as never,
+        capOverflow: "coverExisting",
+      }
+    );
+
+    expect(application.remainingFreeNightsByMemberId).toEqual({ [ANN]: 1 });
+    expect(application.discount?.freeNightsUsed).toBe(1);
+  });
+
+  it("leaves a member who never had free nights here at the cap's answer", async () => {
+    // Bob is on the booking but holds no allocation of his own, so nothing is
+    // floored for him: an exhausted newcomer is still excluded and named.
+    const { db } = usageDb({
+      bookingBeneficiaries: [ANN],
+      bookingFreeNights: { [ANN]: 2 },
+      memberFreeNightsUsed: { [ANN]: 2, [BOB]: 2 },
+    });
+
+    const application = await validateAndCalculatePromoDiscount(
+      FREE_NIGHTS_SUBJECT,
+      {
+        memberId: ANN,
+        totalPriceCents: 20000,
+        guests: [
+          { memberId: ANN, isMember: true, perNightRates: [5000, 5000] },
+          { memberId: BOB, isMember: true, perNightRates: [5000, 5000] },
+        ],
+      },
+      [ANN, BOB],
+      {
+        excludeBookingId: "booking-1",
+        db: db as never,
+        capOverflow: "coverExisting",
+      }
+    );
+
+    expect(application.capCoverage?.excludedMemberIds).toEqual([BOB]);
+    expect(application.remainingFreeNightsByMemberId).toEqual({ [ANN]: 2 });
+    expect(application.discount?.freeNightsUsed).toBe(2);
   });
 });
 
@@ -531,21 +868,54 @@ describe("the wording a member reads", () => {
     expect(
       promoCapCoverageMessage({
         promoCode: "SUMMER25",
-        coveredNames: ["Ann Hughes", "Bob Hughes"],
+        keptNames: ["Ann Hughes"],
+        addedNames: [],
         excludedNames: ["Cal Hughes"],
       })
     ).toBe(
-      "Promo code SUMMER25 has reached its limit, so it stays with Ann Hughes " +
-        "and Bob Hughes, who already had it, and does not extend to Cal Hughes " +
+      "Promo code SUMMER25 has reached its limit, so it stays with Ann Hughes, " +
+        "who already had it, and does not extend to Cal Hughes " +
         "— Cal Hughes is priced at the normal rate. The total shown already " +
         "includes this."
     );
   });
 
+  it("does not tell somebody this edit just added that they 'already had it'", () => {
+    // The owner's own headline case: two slots free, Ann already covered, the
+    // member adds Bob and Cal. Bob IS covered — but by this edit, not before
+    // it, and a member who reads "Ann and Bob, who already had it" about a
+    // guest they added a moment ago stops believing the rest of the sentence.
+    expect(
+      promoCapCoverageMessage({
+        promoCode: "SUMMER25",
+        keptNames: ["Ann Hughes"],
+        addedNames: ["Bob Hughes"],
+        excludedNames: ["Cal Hughes"],
+      })
+    ).toBe(
+      "Promo code SUMMER25 has reached its limit, so it stays with Ann Hughes, " +
+        "who already had it, and it also covers Bob Hughes, and does not extend " +
+        "to Cal Hughes — Cal Hughes is priced at the normal rate. The total " +
+        "shown already includes this."
+    );
+  });
+
+  it("claims nothing about the past when everybody covered is new", () => {
+    const message = promoCapCoverageMessage({
+      promoCode: "SUMMER25",
+      keptNames: [],
+      addedNames: ["Bob Hughes"],
+      excludedNames: ["Cal Hughes"],
+    });
+    expect(message).toContain("so it covers Bob Hughes, and does not extend to Cal Hughes");
+    expect(message).not.toContain("already had it");
+  });
+
   it("reads naturally with more than one person left out", () => {
     const message = promoCapCoverageMessage({
       promoCode: "SUMMER25",
-      coveredNames: ["Ann Hughes"],
+      keptNames: ["Ann Hughes"],
+      addedNames: [],
       excludedNames: ["Bob Hughes", "Cal Hughes"],
     });
     expect(message).toContain("Bob Hughes and Cal Hughes are priced at the normal rate");
@@ -572,12 +942,34 @@ describe("the wording a member reads", () => {
     const { db } = usageDb();
     const notice = await describePromoCapCoverage(db as never, {
       promoCode: "SUMMER25",
-      capCoverage: { coveredMemberIds: [ANN], excludedMemberIds: [CAL] },
+      capCoverage: {
+        coveredMemberIds: [ANN],
+        retainedMemberIds: [ANN],
+        excludedMemberIds: [CAL],
+      },
     });
 
     expect(notice?.coveredNames).toEqual(["Ann Hughes"]);
+    expect(notice?.retainedNames).toEqual(["Ann Hughes"]);
     expect(notice?.excludedNames).toEqual(["Cal Hughes"]);
     expect(notice?.message).toContain("does not extend to Cal Hughes");
+  });
+
+  it("splits the covered into who kept it and who this edit brought in", async () => {
+    const { db } = usageDb();
+    const notice = await describePromoCapCoverage(db as never, {
+      promoCode: "SUMMER25",
+      capCoverage: {
+        coveredMemberIds: [ANN, BOB],
+        retainedMemberIds: [ANN],
+        excludedMemberIds: [CAL],
+      },
+    });
+
+    expect(notice?.retainedNames).toEqual(["Ann Hughes"]);
+    expect(notice?.message).toContain(
+      "it stays with Ann Hughes, who already had it, and it also covers Bob Hughes"
+    );
   });
 });
 
