@@ -205,6 +205,14 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Must run AFTER the build: production CSP is nonce-only and Next stamps
+      # its nonce into inline bootstrap scripts only during DYNAMIC rendering,
+      # so a statically prerendered route ships scripts the browser then blocks
+      # (#2356). Only the real build output shows it, and the script fails loudly
+      # if that output is missing rather than passing on an empty scan.
+      - name: Check prerendered pages carry script nonces
+        run: node scripts/ci/check-prerendered-script-nonces.mjs
+
   migration-drift:
     name: Migration drift check
     runs-on: ubuntu-latest
@@ -293,6 +301,16 @@ jobs:
         env:
           XERO_MEMBER_GROUPING_MIGRATION_TEST_DATABASE_URL: ${{ env.DATABASE_URL }}
         run: npx vitest run src/lib/__tests__/xero-member-grouping-migration.test.ts
+
+      # #2269 / #2418: the email-override annotation strip writes an audit row
+      # per changed row, and that half was pinned by string-matching the SQL
+      # only — neutering the INSERT kept every assertion green. Same
+      # disposable-schema pattern as the step above; the suite describe.skip's
+      # itself when the env var is absent, so this step MUST stay wired.
+      - name: Test email override annotation strip against PostgreSQL
+        env:
+          EMAIL_OVERRIDE_ANNOTATION_STRIP_TEST_DATABASE_URL: ${{ env.DATABASE_URL }}
+        run: npx vitest run src/lib/__tests__/email-message-annotation-strip.test.ts
 
       # F28 (#1888): wire the real-DB BookingGuest stay-range trigger suite so it
       # is no longer a silent no-op. It self-provisions a throwaway schema and

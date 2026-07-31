@@ -1350,23 +1350,7 @@ export async function register() {
   }
 }
 
-// OBS-02: Sentry onRequestError handler for server-side errors
-export const onRequestError = async (
-  err: unknown,
-  request: { method: string; url: string; headers: Record<string, string> },
-  context: { routerKind: string; routePath: string; routeType: string; renderSource: string }
-) => {
-  const Sentry = await import("@sentry/nextjs");
-  Sentry.captureException(err, {
-    tags: {
-      routerKind: context.routerKind,
-      routePath: context.routePath,
-      routeType: context.routeType,
-      renderSource: context.renderSource,
-    },
-    extra: {
-      method: request.method,
-      url: request.url,
-    },
-  });
-};
+// OBS-02's `onRequestError` used to live here, where Next could never find it:
+// the framework reads the hook off the `instrumentation` convention entry, not
+// off a module that entry lazily imports. It now lives in `src/instrumentation.ts`
+// (#2356 review), which is also where the edge runtime can reach it.

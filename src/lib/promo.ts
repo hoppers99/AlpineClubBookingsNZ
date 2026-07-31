@@ -131,6 +131,29 @@ export interface PromoApplicationSubject extends PromoRuleSubject {
   internal?: boolean | null;
 }
 
+/**
+ * Who a promotion still covers on a booking, and who it no longer reaches
+ * (#2390). Present on a reprice result ONLY when the promotion's usage caps
+ * forced somebody out; `undefined` means everybody the code applies to is
+ * covered, which keeps "was anyone left out?" a single truthy check.
+ *
+ * All three lists are member ids in the order the promotion applies to people —
+ * most expensive stay first, except that members already holding the discount
+ * come first of all (see `selectPromoDiscountGuests`). One consistent order, so
+ * the sentence a member reads never reshuffles between surfaces.
+ */
+export interface PromoCapCoverage {
+  coveredMemberIds: string[];
+  /**
+   * The subset of `coveredMemberIds` who were already benefiting on this
+   * booking before the edit — the people the sentence may truthfully describe
+   * as having already had the discount. Anyone covered but not listed here was
+   * admitted by this edit.
+   */
+  retainedMemberIds: string[];
+  excludedMemberIds: string[];
+}
+
 export interface PromoApplicationResult {
   error?: string;
   requiresGuestSelection?: boolean;
@@ -140,6 +163,7 @@ export interface PromoApplicationResult {
   remainingFreeNights?: number;
   remainingFreeNightsByMemberId?: Record<string, number>;
   selectedGuestIndexes?: number[];
+  capCoverage?: PromoCapCoverage;
 }
 
 function hasAssignedMembers(assignedMemberIds: string[] | null | undefined) {
@@ -312,7 +336,7 @@ export function isBeneficialPromoAllocation(allocation: {
  *
  * SPREAD IT — and only into a `where` that has no `OR` of its own. An object
  * literal cannot hold two `OR` keys, so the later one silently wins and one of
- * the two conditions vanishes without a type error. All five current call sites
+ * the two conditions vanishes without a type error. All six current call sites
  * spread it into a plain AND-of-scalars filter, which is safe; a future caller
  * that needs its own `OR` must nest both under `AND: [...]` instead.
  *
@@ -429,9 +453,10 @@ export function calculatePromoDiscountForGuestRates(
 
 function selectPromoBeneficiaryGuests(
   promo: PromoCodeInput,
-  guests: PromoDiscountGuest[]
+  guests: PromoDiscountGuest[],
+  protectedMemberIds?: ReadonlySet<string> | null
 ) {
-  const selectedGuests = selectPromoDiscountGuests(promo, guests);
+  const selectedGuests = selectPromoDiscountGuests(promo, guests, protectedMemberIds);
   if (promo.type !== "FIXED_NIGHTLY_PRICE") {
     return selectedGuests;
   }
@@ -448,14 +473,23 @@ function selectPromoBeneficiaryGuests(
   return selectedGuests.filter(({ guest }) => guest.perNightRates.length > 0);
 }
 
+/**
+ * Who a promotion would benefit on this booking.
+ *
+ * `protectedMemberIds` (#2390) keeps a member who already holds the discount on
+ * the booking being repriced ahead of the `maxGuestsPerBooking` cut, so an
+ * expensive newly-added guest cannot take their slot. See
+ * `selectPromoDiscountGuests`.
+ */
 function getPromoBeneficiaryMemberIds(
   promo: PromoCodeInput,
   bookingMemberId: string,
   guests: PromoDiscountGuest[],
-  assignedMemberIds: string[] | null = null
+  assignedMemberIds: string[] | null = null,
+  protectedMemberIds?: ReadonlySet<string> | null
 ): string[] {
   const scopedGuests = scopeGuestsForAssignedMembers(guests, assignedMemberIds);
-  const selectedGuests = selectPromoBeneficiaryGuests(promo, scopedGuests);
+  const selectedGuests = selectPromoBeneficiaryGuests(promo, scopedGuests, protectedMemberIds);
   if (selectedGuests.length === 0) return [];
 
   if (!hasAssignedMembers(assignedMemberIds)) {
@@ -611,6 +645,182 @@ async function getExistingBeneficiaryMemberIds(
     distinct: ["memberId"],
   });
   return new Set(rows.map((row) => row.memberId));
+}
+
+/**
+ * The members who are ALREADY benefiting from this promotion **on this booking**
+ * (#2390) — the people an edit must never take the discount away from.
+ *
+ * Read from the allocation rows, which since #2299 mean "this member actually
+ * got something", and benefit-filtered again defensively so a legacy all-zero
+ * row cannot buy someone protection they never had.
+ *
+ * MUST be read before the reprice writes anything. Every reprice path calls it
+ * during validation, which is before `replacePromoRedemptionAllocations`
+ * touches the redemption — so the `PromoRedemption_sync_allocation_*` triggers
+ * (20260527120000_add_promo_redemption_allocations) have not fired yet and
+ * cannot conjure a transient row into this answer. Reading it after the
+ * redemption write would let the trigger's booker row grant protection.
+ *
+ * Returns free nights as well as identity, because a FREE_NIGHTS promotion's
+ * `lifetimeFreeNightsCap` is a budget rather than a slot: protecting the
+ * member's place in the beneficiary list is not enough if the budget arithmetic
+ * then awards them nothing. See `remainingFreeNightsByMemberId` below.
+ */
+async function getBookingBeneficiaryFreeNights(
+  promoCodeId: string,
+  bookingId: string,
+  db: PromoUsageClient
+): Promise<Map<string, number>> {
+  const rows = await db.promoRedemptionAllocation.findMany({
+    where: {
+      promoCodeId,
+      bookingId,
+      ...BENEFICIAL_PROMO_ALLOCATION_FILTER,
+    },
+    select: { memberId: true, freeNightsUsed: true },
+  });
+  const freeNightsByMemberId = new Map<string, number>();
+  for (const row of rows) {
+    freeNightsByMemberId.set(
+      row.memberId,
+      (freeNightsByMemberId.get(row.memberId) ?? 0) + (row.freeNightsUsed ?? 0)
+    );
+  }
+  return freeNightsByMemberId;
+}
+
+/**
+ * Decide who a promotion covers when a booking edit would push it past a usage
+ * cap (#2390, owner decision 31 Jul 2026).
+ *
+ * The rule, in one sentence: **the edit always succeeds, everyone already
+ * benefiting keeps their discount, and newly-added people are simply priced
+ * normally.** A member changing their dates is never blocked by somebody else's
+ * consumption of a promotion, and nothing they were already promised is taken
+ * back.
+ *
+ * Three deliberate choices live here.
+ *
+ * 1. **Pre-existing beneficiaries are kept even when they alone exceed a cap.**
+ *    That happens through legacy data, or through an admin lowering a cap after
+ *    bookings were made. Honouring the promise is the whole point of the
+ *    decision, so the alternative — quietly billing a member for a discount the
+ *    club already gave them — is rejected outright. The consequence is that a
+ *    lowered cap can read as over-subscribed until those bookings pass; that is
+ *    visible to an admin on the promo card, which is the right place for it. The
+ *    overage can only ever shrink: no NEW person is admitted while over cap,
+ *    because the loop below counts the protected members against the allowance
+ *    before it considers a single candidate.
+ * 2. **Protected members are counted first**, so a newcomer can never take the
+ *    slot of somebody who already holds it just by appearing earlier in the
+ *    list.
+ * 3. **Everyone else is admitted in the order the promotion applies to them** —
+ *    the order `selectPromoDiscountGuests` produced, which is the most expensive
+ *    stay first. That spends a scarce allowance where it is worth the most, and
+ *    it depends only on the guests' own rates: nothing here turns on a query
+ *    plan or a hash order.
+ *
+ * Pure and exported so both the arithmetic and each guard can be tested and
+ * mutated without a database.
+ */
+export function trimPromoBeneficiariesToCaps(input: {
+  /** Beneficiaries the recalculated booking would have, in the order above. */
+  beneficiaryMemberIds: string[];
+  /** Members already benefiting on THIS booking. Never excluded. */
+  protectedMemberIds: ReadonlySet<string>;
+  /**
+   * Members who have personally used up this promotion — their per-member
+   * redemption cap, or their lifetime free-nights budget. Passed in rather than
+   * recomputed here because `validateAndCalculatePromoDiscount` already decides
+   * it (both caps, one predicate), and a second expression of the same rule
+   * would be one more thing to keep in step. Protection still wins: an admin
+   * lowering a cap does not reach back into a discount already given.
+   */
+  exhaustedMemberIds: ReadonlySet<string>;
+  /** Members who already benefit from this code on some OTHER booking. */
+  existingUniqueBeneficiaryMemberIds: ReadonlySet<string>;
+  /** Allocation rows held by every booking except this one. */
+  redemptionsHeldElsewhere: number;
+  maxRedemptionsTotal: number | null | undefined;
+  /** Distinct benefiting members across every booking except this one. */
+  uniqueMembersUsed: number;
+  maxUniqueMembersTotal: number | null | undefined;
+}): PromoCapCoverage {
+  const {
+    beneficiaryMemberIds,
+    protectedMemberIds,
+    exhaustedMemberIds,
+    existingUniqueBeneficiaryMemberIds,
+    redemptionsHeldElsewhere,
+    maxRedemptionsTotal,
+    uniqueMembersUsed,
+    maxUniqueMembersTotal,
+  } = input;
+
+  const covered = new Set<string>();
+  const excluded = new Set<string>();
+  let slotsTaken = 0;
+  let newUniqueTaken = 0;
+
+  const admit = (memberId: string) => {
+    covered.add(memberId);
+    slotsTaken += 1;
+    if (!existingUniqueBeneficiaryMemberIds.has(memberId)) {
+      newUniqueTaken += 1;
+    }
+  };
+
+  // Choice 2: the people who already hold the discount are counted first, and
+  // unconditionally (choice 1).
+  for (const memberId of beneficiaryMemberIds) {
+    if (protectedMemberIds.has(memberId) && !covered.has(memberId)) {
+      admit(memberId);
+    }
+  }
+
+  // Choice 3: everyone else, in the order the promotion applies to them.
+  for (const memberId of beneficiaryMemberIds) {
+    if (covered.has(memberId) || excluded.has(memberId)) continue;
+
+    if (exhaustedMemberIds.has(memberId)) {
+      excluded.add(memberId);
+      continue;
+    }
+    if (
+      maxRedemptionsTotal !== null &&
+      maxRedemptionsTotal !== undefined &&
+      redemptionsHeldElsewhere + slotsTaken + 1 > maxRedemptionsTotal
+    ) {
+      excluded.add(memberId);
+      continue;
+    }
+    if (
+      maxUniqueMembersTotal !== null &&
+      maxUniqueMembersTotal !== undefined &&
+      !existingUniqueBeneficiaryMemberIds.has(memberId) &&
+      uniqueMembersUsed + newUniqueTaken + 1 > maxUniqueMembersTotal
+    ) {
+      excluded.add(memberId);
+      continue;
+    }
+    admit(memberId);
+  }
+
+  // Emitted in the input's own order, so the sentence a member reads names
+  // people in one consistent order rather than in the order the two passes above
+  // happened to admit them.
+  return {
+    coveredMemberIds: beneficiaryMemberIds.filter((memberId) => covered.has(memberId)),
+    // Who among the covered already had the discount before this edit. The
+    // member-facing sentence needs the two groups apart: telling somebody the
+    // code "stays with Ann and Bob, who already had it" when Bob was added in
+    // this very edit is simply untrue.
+    retainedMemberIds: beneficiaryMemberIds.filter(
+      (memberId) => covered.has(memberId) && protectedMemberIds.has(memberId)
+    ),
+    excludedMemberIds: beneficiaryMemberIds.filter((memberId) => excluded.has(memberId)),
+  };
 }
 
 export async function getAvailablePromoCodesForMember(
@@ -802,6 +1012,24 @@ export interface PromoRuleCounts {
   // their per-member cap (redemptions or lifetime free nights). Signals that
   // no beneficiary survives the upstream filter.
   allBeneficiariesExhausted?: boolean;
+  /**
+   * #2390 — the beneficiary set handed to this validator has already been
+   * trimmed to what the caps allow by `trimPromoBeneficiariesToCaps`, and
+   * people who were already benefiting on this booking were deliberately kept
+   * even where they exceed a cap.
+   *
+   * So the four "the code is full, refuse the whole thing" rejections below
+   * must not run. Left in, they would either re-reject a set the trim has
+   * already made fit, or — the case that actually costs a member money — strip
+   * the discount from somebody who already had it because an admin lowered the
+   * cap afterwards. Refusing is exactly what the owner decision rules out: the
+   * edit always succeeds and only NEW people are left out.
+   *
+   * Set ONLY by the reprice paths (`capOverflow: "coverExisting"`). Booking
+   * creation and applying a new code still refuse, because there nobody is
+   * being taken anything away from.
+   */
+  capsResolvedByBeneficiaryTrim?: boolean;
 }
 
 // test seam
@@ -856,7 +1084,7 @@ export function validatePromoCodeRules(
     }
   }
 
-  if (promoCode.maxRedemptionsTotal !== null) {
+  if (promoCode.maxRedemptionsTotal !== null && !counts.capsResolvedByBeneficiaryTrim) {
     // Slots held by OTHER bookings. The excluded booking's own rows are about
     // to be replaced by this very application, so counting them would make a
     // booking fail its own reprice (#2299). Floored at zero so a counter that
@@ -888,6 +1116,7 @@ export function validatePromoCodeRules(
   if (
     promoCode.maxUniqueMembersTotal !== null &&
     promoCode.maxUniqueMembersTotal !== undefined &&
+    !counts.capsResolvedByBeneficiaryTrim &&
     counts.requestedNewUniqueMemberCount !== undefined &&
     (counts.uniqueMembersUsed ?? 0) + counts.requestedNewUniqueMemberCount >
       promoCode.maxUniqueMembersTotal
@@ -898,6 +1127,7 @@ export function validatePromoCodeRules(
   if (
     promoCode.maxUniqueMembersTotal !== null &&
     promoCode.maxUniqueMembersTotal !== undefined &&
+    !counts.capsResolvedByBeneficiaryTrim &&
     counts.requestedNewUniqueMemberCount === undefined &&
     !counts.memberHasRedeemedBefore &&
     (counts.uniqueMembersUsed ?? 0) >= promoCode.maxUniqueMembersTotal
@@ -914,6 +1144,7 @@ export function validatePromoCodeRules(
   if (
     promoCode.maxUsesPerMember !== null &&
     promoCode.maxUsesPerMember !== undefined &&
+    !counts.capsResolvedByBeneficiaryTrim &&
     !counts.memberRedemptionCounts &&
     (counts.memberRedemptionCount ?? 0) >= promoCode.maxUsesPerMember
   ) {
@@ -922,9 +1153,17 @@ export function validatePromoCodeRules(
       : "You have reached the maximum uses of this promo code";
   }
 
+  // The lifetime free-nights cap is a per-night BUDGET, not a count of
+  // beneficiaries, so the trim above cannot resolve it by leaving somebody out.
+  // Under a reprice it is suppressed all the same (#2390): refusing here strips
+  // the code from the whole booking, and the budget arithmetic downstream
+  // already awards only the nights that remain — which for a member with none
+  // left is zero, so the application simply carries no benefit and consumes no
+  // slot (#2299), keeping the redemption's audit row instead of deleting it.
   if (
     promoCode.type === "FREE_NIGHTS" &&
     promoCode.lifetimeFreeNightsCap &&
+    !counts.capsResolvedByBeneficiaryTrim &&
     !counts.memberFreeNightsUsedByMemberId &&
     (counts.memberFreeNightsUsed ?? 0) >= promoCode.lifetimeFreeNightsCap
   ) {
@@ -952,6 +1191,22 @@ export async function validateAndCalculatePromoDiscount(
     // 4); omitted only by callers that cannot yet resolve a lodge (fail-open
     // to unrestricted, matching "no rows = every lodge").
     lodgeId?: string | null;
+    /**
+     * What to do when the recalculated booking would push the promotion past a
+     * usage cap (#2390).
+     *
+     * - `"reject"` (default) refuses the whole application. Right for booking
+     *   creation and for applying a code the member has just typed: nobody is
+     *   holding a discount yet, so "sorry, this code is full" is the honest
+     *   answer and the member can choose something else.
+     * - `"coverExisting"` is the reprice answer, and requires
+     *   `excludeBookingId`. The edit is never refused: everyone already
+     *   benefiting on that booking keeps their discount, and only the
+     *   newly-added people are left out and priced normally. The result then
+     *   carries `capCoverage` so the caller can say who is covered and who is
+     *   not, at the moment of the edit.
+     */
+    capOverflow?: "reject" | "coverExisting";
   } = {}
 ): Promise<PromoApplicationResult> {
   if (!promoCode) {
@@ -1054,22 +1309,61 @@ export async function validateAndCalculatePromoDiscount(
     promoCode,
     assignedMemberIds
   );
+  // #2390. On a reprice the cap question stops being "may this booking use the
+  // code?" and becomes "who does it still cover?". `excludeBookingId` is what
+  // makes "this booking" answerable, so without it we stay on the refusing
+  // path rather than guess.
+  const trimBeneficiariesToCaps =
+    options.capOverflow === "coverExisting" && Boolean(options.excludeBookingId);
+  // Read BEFORE the beneficiary list is built, not after. `maxGuestsPerBooking`
+  // is applied while that list is built, so a protected member the guest cap
+  // cut would be invisible to every later protection check — the edit would
+  // then see them as "no longer a beneficiary" and bill back a discount they
+  // already held (#2390).
+  const bookingBeneficiaryFreeNights = trimBeneficiariesToCaps
+    ? await getBookingBeneficiaryFreeNights(promoCode.id, options.excludeBookingId!, db)
+    : new Map<string, number>();
+  const protectedMemberIds: ReadonlySet<string> = new Set(
+    bookingBeneficiaryFreeNights.keys()
+  );
+
+  const promoPricingInput: PromoCodeInput = {
+    type: promoCode.type,
+    valueCents: promoCode.valueCents,
+    percentOff: promoCode.percentOff,
+    freeNightsPerIndividual: promoCode.freeNightsPerIndividual,
+    fixedNightlyPriceCents: promoCode.fixedNightlyPriceCents,
+    fixedNightlyMode: promoCode.fixedNightlyMode,
+    maxGuestsPerBooking: promoCode.maxGuestsPerBooking,
+    maxNightlyValueCents: promoCode.maxNightlyValueCents,
+    memberGuestsOnly: promoCode.memberGuestsOnly,
+  };
   const initialBeneficiaryMemberIds = getPromoBeneficiaryMemberIds(
-    {
-      type: promoCode.type,
-      valueCents: promoCode.valueCents,
-      percentOff: promoCode.percentOff,
-      freeNightsPerIndividual: promoCode.freeNightsPerIndividual,
-      fixedNightlyPriceCents: promoCode.fixedNightlyPriceCents,
-      fixedNightlyMode: promoCode.fixedNightlyMode,
-      maxGuestsPerBooking: promoCode.maxGuestsPerBooking,
-      maxNightlyValueCents: promoCode.maxNightlyValueCents,
-      memberGuestsOnly: promoCode.memberGuestsOnly,
-    },
+    promoPricingInput,
     bookingDetails.memberId,
     guestsForPromo,
-    assignedGuestScopeMemberIds
+    assignedGuestScopeMemberIds,
+    protectedMemberIds
   );
+
+  // Who the `maxGuestsPerBooking` cut would have covered had nobody been
+  // protected — i.e. the people a protected member kept their slot ahead of.
+  // They are priced normally, so they belong in the sentence the member reads;
+  // without this they would be left out AND unmentioned, which is the "found
+  // out later" outcome the owner decision rules out. Empty unless protection
+  // actually displaced somebody, so an unchanged booking gains no new notice.
+  const guestCapDisplacedMemberIds =
+    trimBeneficiariesToCaps &&
+    protectedMemberIds.size > 0 &&
+    promoCode.maxGuestsPerBooking !== null &&
+    promoCode.maxGuestsPerBooking !== undefined
+      ? getPromoBeneficiaryMemberIds(
+          promoPricingInput,
+          bookingDetails.memberId,
+          guestsForPromo,
+          assignedGuestScopeMemberIds
+        ).filter((memberId) => !initialBeneficiaryMemberIds.includes(memberId))
+      : [];
 
   if (hasAssignedMembers(assignedGuestScopeMemberIds) && initialBeneficiaryMemberIds.length === 0) {
     return {
@@ -1114,9 +1408,20 @@ export async function validateAndCalculatePromoDiscount(
     return false;
   };
 
+  const exhaustedMemberIds: ReadonlySet<string> = new Set(
+    assignedScoped ? initialBeneficiaryMemberIds.filter(isMemberExhausted) : []
+  );
+
+  // On a reprice, an exhausted member is NOT dropped here (#2390). Dropping
+  // them silently is what let a newly-added guest who had used the code up be
+  // priced at the normal rate with nobody told why: gone before the trim ran,
+  // they never reached the excluded list, so the sentence the member reads
+  // never mentioned them. The trim below leaves them out AND names them.
+  // Protection wins there as it does here: an admin lowering a cap afterwards
+  // must not reach back and take away a discount the club already gave.
   const beneficiaryMemberIds =
-    assignedScoped && initialBeneficiaryMemberIds.length > 0
-      ? initialBeneficiaryMemberIds.filter((id) => !isMemberExhausted(id))
+    assignedScoped && initialBeneficiaryMemberIds.length > 0 && !trimBeneficiariesToCaps
+      ? initialBeneficiaryMemberIds.filter((id) => !exhaustedMemberIds.has(id))
       : initialBeneficiaryMemberIds;
 
   const allBeneficiariesExhausted =
@@ -1140,13 +1445,14 @@ export async function validateAndCalculatePromoDiscount(
 
   let uniqueMembersUsed = 0;
   let requestedNewUniqueMemberCount: number | undefined;
+  let existingBeneficiaries: Set<string> = new Set();
   if (promoCode.maxUniqueMembersTotal !== null && promoCode.maxUniqueMembersTotal !== undefined) {
     uniqueMembersUsed = await getUniqueMemberRedemptionCount(
       promoCode.id,
       options.excludeBookingId,
       db
     );
-    const existingBeneficiaries = await getExistingBeneficiaryMemberIds(
+    existingBeneficiaries = await getExistingBeneficiaryMemberIds(
       promoCode.id,
       beneficiaryMemberIds,
       options.excludeBookingId,
@@ -1155,6 +1461,63 @@ export async function validateAndCalculatePromoDiscount(
     requestedNewUniqueMemberCount = beneficiaryMemberIds.filter(
       (memberId) => !existingBeneficiaries.has(memberId)
     ).length;
+  }
+
+  // #2390 — on a reprice, decide WHO the code still covers instead of refusing
+  // the edit. Runs after every cap input above has been read (all of them
+  // inside this transaction, off the row-locked promo), so the numbers it
+  // divides up are the same numbers the write below consumes.
+  let coveredBeneficiaryMemberIds = beneficiaryMemberIds;
+  let capCoverage: PromoCapCoverage | undefined;
+  if (trimBeneficiariesToCaps && beneficiaryMemberIds.length > 0) {
+    const trimmed = trimPromoBeneficiariesToCaps({
+      beneficiaryMemberIds,
+      protectedMemberIds,
+      exhaustedMemberIds,
+      existingUniqueBeneficiaryMemberIds: existingBeneficiaries,
+      // Counted RAW against `currentRedemptions`, which is itself a raw row
+      // count, so the two are in the same units (#2299). A legacy all-zero row
+      // this booking holds is therefore subtracted here while buying nobody
+      // protection above — correct, because this very reprice deletes it: the
+      // slot it occupied is genuinely released in the same transaction.
+      redemptionsHeldElsewhere: Math.max(
+        0,
+        promoCode.currentRedemptions - excludedBookingRedemptionCount
+      ),
+      maxRedemptionsTotal: promoCode.maxRedemptionsTotal,
+      uniqueMembersUsed,
+      maxUniqueMembersTotal: promoCode.maxUniqueMembersTotal,
+    });
+    const coverage: PromoCapCoverage = {
+      ...trimmed,
+      excludedMemberIds: [...trimmed.excludedMemberIds, ...guestCapDisplacedMemberIds],
+    };
+
+    if (coverage.coveredMemberIds.length === 0) {
+      // Nobody on the booking can be covered. That can only happen when the
+      // booking had no beneficiaries left to protect — anyone already
+      // benefiting is kept unconditionally — so this takes nothing away from
+      // anyone who is still on the booking, and the caller drops the code as
+      // it always has. Guarded explicitly because an empty beneficiary list
+      // reads as "unassigned promo" downstream, which would price the code for
+      // every guest.
+      return {
+        error: coverage.excludedMemberIds.every((id) => exhaustedMemberIds.has(id))
+          ? "All linked member guests have used this promo code"
+          : "This promo code has reached its maximum number of uses",
+        beneficiaryMemberIds: initialBeneficiaryMemberIds,
+      };
+    }
+
+    coveredBeneficiaryMemberIds = coverage.coveredMemberIds;
+    if (coverage.excludedMemberIds.length > 0) {
+      capCoverage = coverage;
+    }
+    if (requestedNewUniqueMemberCount !== undefined) {
+      requestedNewUniqueMemberCount = coveredBeneficiaryMemberIds.filter(
+        (memberId) => !existingBeneficiaries.has(memberId)
+      ).length;
+    }
   }
 
   // For assigned-member promos the booker is just another linked member guest
@@ -1169,10 +1532,11 @@ export async function validateAndCalculatePromoDiscount(
       memberFreeNightsUsed: assignedScoped ? undefined : bookerUsage.freeNightsUsed,
       uniqueMembersUsed,
       memberHasRedeemedBefore: bookerUsage.redemptionCount > 0,
-      requestedRedemptionCount: beneficiaryMemberIds.length,
+      requestedRedemptionCount: coveredBeneficiaryMemberIds.length,
       requestedNewUniqueMemberCount,
       excludedBookingRedemptionCount,
       allBeneficiariesExhausted,
+      capsResolvedByBeneficiaryTrim: trimBeneficiariesToCaps,
     },
     requiresAssignedBooker ? assignedMemberIds : null,
     options.lodgeId ?? null
@@ -1191,12 +1555,24 @@ export async function validateAndCalculatePromoDiscount(
     promoCode.lifetimeFreeNightsCap !== null &&
     promoCode.lifetimeFreeNightsCap !== undefined
       ? Object.fromEntries(
-          beneficiaryMemberIds.map((memberId) => [
+          coveredBeneficiaryMemberIds.map((memberId) => [
             memberId,
             Math.max(
               0,
               promoCode.lifetimeFreeNightsCap! -
-                (beneficiaryUsage[memberId]?.freeNightsUsed ?? 0)
+                (beneficiaryUsage[memberId]?.freeNightsUsed ?? 0),
+              // #2390: the lifetime cap is a BUDGET, not a slot, so keeping a
+              // protected member in the beneficiary list is not enough — an
+              // admin who lowered the cap under them would leave the budget at
+              // zero and the member would silently lose free nights this
+              // booking had already given them, with no notice anywhere because
+              // they were "covered". Floored at what this booking's own
+              // allocation rows already granted, which is what "everyone
+              // already benefiting keeps their discount" means for a budget.
+              // It can only hold them level: the floor is what they already
+              // had, never more, and it is 0 for anyone not already benefiting
+              // here.
+              bookingBeneficiaryFreeNights.get(memberId) ?? 0
             ),
           ])
         )
@@ -1211,9 +1587,13 @@ export async function validateAndCalculatePromoDiscount(
 
   // Effective assigned-member list passed to pricing: filtered to those with
   // remaining budget so exhausted members' guest rows are excluded from the
-  // discount candidates.
+  // discount candidates, and (#2390) to those the caps still cover, so a guest
+  // the code no longer reaches is priced at the normal rate. This is the single
+  // point where "who is covered" becomes "what is charged", which is why the
+  // notice, the invoice, the email and the booking summary cannot disagree:
+  // they all read the one price this produces.
   const effectiveGuestScopeMemberIds = assignedScoped
-    ? beneficiaryMemberIds
+    ? coveredBeneficiaryMemberIds
     : assignedGuestScopeMemberIds;
 
   const discount = calculatePromoDiscountForGuestRates(
@@ -1236,12 +1616,20 @@ export async function validateAndCalculatePromoDiscount(
     remainingFreeNightsByMemberId
   );
 
+  // `selectedGuestIndexes` is returned UNTRIMMED on purpose (#2390). It is the
+  // booker's chosen beneficiaries, which is what the stored guest-target rows
+  // mean; who actually benefited is the allocation rows, which the trim above
+  // does govern. Keeping the two separate means a slot freed by another booking
+  // restores the guest at the next reprice, instead of the choice being quietly
+  // rewritten by a cap that has since moved. (In practice a guest-targeted code
+  // scopes its cap to the booker, so this branch and the trim rarely meet.)
   return {
     discount,
-    beneficiaryMemberIds,
+    beneficiaryMemberIds: coveredBeneficiaryMemberIds,
     remainingFreeNights,
     remainingFreeNightsByMemberId,
     selectedGuestIndexes: requiresGuestSelection ? selectedGuestIndexes.indexes : undefined,
+    capCoverage,
   };
 }
 

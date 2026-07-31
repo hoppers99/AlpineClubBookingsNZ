@@ -190,6 +190,11 @@ async function repriceWaitlistCandidate(
           previousFinalPriceCents: candidate.finalPriceCents,
           newFinalPriceCents,
           promoRemoved: promoResult.promoRemoved,
+          // #2390: this reprice shares `recalculateBookingPromo` with guest
+          // removal, so it inherits the same rule — nobody already benefiting
+          // loses the discount. An offer-time reprice has no member in front of
+          // it to tell, so the split is logged for the admin instead.
+          promoCoverageNote: promoResult.promoCoverage?.message ?? null,
         },
         "Repriced waitlisted booking at offer time"
       );

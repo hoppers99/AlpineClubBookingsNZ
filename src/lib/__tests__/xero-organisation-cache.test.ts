@@ -225,6 +225,7 @@ describe("connected-organisation summary: live read (#2261 review F1/F2)", () =>
       name: "Live Org",
       financialYearEndMonth: 3,
       shortCode: "!live1",
+      readFailure: null,
     });
     expect(live.getOrganisations).toHaveBeenCalledTimes(1);
   });
@@ -246,6 +247,9 @@ describe("connected-organisation summary: live read (#2261 review F1/F2)", () =>
       name: null,
       financialYearEndMonth: null,
       shortCode: null,
+      // The read SUCCEEDED — Xero simply reported no organisation. That is a
+      // different thing from a failed read, and #2394 turns on the difference.
+      readFailure: null,
     });
   });
 
@@ -263,19 +267,26 @@ describe("connected-organisation summary: live read (#2261 review F1/F2)", () =>
     );
   });
 
-  // `maxTransientRetries` defaults to `min(maxRetries, 1)` in withXeroRetry, so
-  // `maxRetries: 0` alone would ALSO zero the transient budget — and exhausting
-  // that budget arms `rememberXeroTransientOutage`, the process-global breaker
-  // that fails every Xero call (invoicing and sync included) for two minutes.
-  // This decorative read must never be one 5xx away from stopping invoicing.
-  it("keeps the transient budget so one 5xx cannot trip the global outage breaker", async () => {
+  // #2394 review, F2. This read sits behind an operator-facing Try again button
+  // that is rendered precisely when Xero is 5xx-ing, so the two options are one
+  // decision. `maxTransientRetries: 1` would spend TWO Xero calls per press and,
+  // on exhausting the budget, arm `rememberXeroTransientOutage` — the
+  // process-global breaker that fails every Xero call (invoicing, sync, webhook
+  // replay) for two minutes. `maxTransientRetries: 0` alone is worse: the very
+  // first 5xx arms it. So: no transient retry, and an explicit opt-out of
+  // arming the breaker at all. A page decoration must not be able to stop
+  // invoicing, however often a human presses.
+  it("spends one call per read and can never arm the global outage breaker", async () => {
     stubLiveOrg({ name: "Live Org", shortCode: "!live1" });
 
     await getXeroConnectedOrganisation();
 
     expect(live.callXeroApi).toHaveBeenCalledWith(
       expect.any(Function),
-      expect.objectContaining({ maxTransientRetries: 1 }),
+      expect.objectContaining({
+        maxTransientRetries: 0,
+        armTransientBreaker: false,
+      }),
     );
   });
 
@@ -340,6 +351,13 @@ describe("connected-organisation summary: live read (#2261 review F1/F2)", () =>
       name: null,
       financialYearEndMonth: null,
       shortCode: null,
+      // A bare `invalid_grant` Error carries no status and no known error
+      // name, so it classifies as the generic "try again" case (#2394).
+      readFailure: {
+        kind: "unavailable",
+        rateLimit: null,
+        retryAfterSeconds: null,
+      },
     });
     expect(live.getAuthenticatedXeroClient).toHaveBeenCalledTimes(1);
 
@@ -435,6 +453,139 @@ describe("connected-organisation summary: live read (#2261 review F1/F2)", () =>
 
     expect(live.getAuthenticatedXeroClient).toHaveBeenCalledTimes(1);
     expect(results.every((r) => r.name === null)).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // #2394: a failed read now says WHY, in the three shapes an operator acts on
+  // differently. Before this the summary degraded to nulls indistinguishable
+  // from "Xero has no name for you", and the setup wizard could only sit on
+  // "Confirming the organisation name…" for ever.
+  // -------------------------------------------------------------------------
+  it("classifies a revoked/unusable authorisation as 'disconnected'", async () => {
+    const err = new Error("Xero is not connected. Please connect via admin panel.");
+    err.name = "XeroReconnectRequiredError";
+    live.getAuthenticatedXeroClient.mockRejectedValue(err);
+
+    expect((await getXeroConnectedOrganisation()).readFailure).toEqual({
+      kind: "disconnected",
+      rateLimit: null,
+      retryAfterSeconds: null,
+    });
+  });
+
+  it("classifies a token that no longer decrypts as 'disconnected' too", async () => {
+    const err = new Error("stored Xero token could not be decrypted");
+    err.name = "XeroTokenDecryptError";
+    live.getAuthenticatedXeroClient.mockRejectedValue(err);
+
+    expect((await getXeroConnectedOrganisation()).readFailure?.kind).toBe(
+      "disconnected",
+    );
+  });
+
+  it("classifies a live 401 as 'disconnected', not as a transient blip", async () => {
+    // The token was revoked in Xero's own UI, so it arrives as a raw API error
+    // rather than a reconnect-classed one.
+    stubLiveOrg({ name: "Live Org" });
+    live.callXeroApi.mockRejectedValue({ response: { statusCode: 401 } });
+
+    expect((await getXeroConnectedOrganisation()).readFailure?.kind).toBe(
+      "disconnected",
+    );
+  });
+
+  it("classifies the daily-limit error, with its own retry-after", async () => {
+    const err = new Error("Xero daily API limit reached.") as Error & {
+      retryAfterSec: number;
+    };
+    err.name = "XeroDailyLimitError";
+    err.retryAfterSec = 7200;
+    live.getAuthenticatedXeroClient.mockRejectedValue(err);
+
+    expect((await getXeroConnectedOrganisation()).readFailure).toEqual({
+      kind: "rate_limited",
+      rateLimit: "day",
+      retryAfterSeconds: 7200,
+    });
+  });
+
+  it("reads the limit scope and Retry-After off a live 429", async () => {
+    stubLiveOrg({ name: "Live Org" });
+    live.callXeroApi.mockRejectedValue({
+      response: {
+        statusCode: 429,
+        headers: { "x-rate-limit-problem": "minute", "retry-after": "37" },
+      },
+    });
+
+    expect((await getXeroConnectedOrganisation()).readFailure).toEqual({
+      kind: "rate_limited",
+      rateLimit: "minute",
+      retryAfterSeconds: 37,
+    });
+  });
+
+  it("classifies the process-global transient breaker as 'unavailable' with a wait", async () => {
+    const err = new Error("Xero is temporarily unavailable.") as Error & {
+      retryAfterSec: number;
+    };
+    err.name = "XeroTransientOutageError";
+    err.retryAfterSec = 120;
+    live.getAuthenticatedXeroClient.mockRejectedValue(err);
+
+    expect((await getXeroConnectedOrganisation()).readFailure).toEqual({
+      kind: "unavailable",
+      rateLimit: null,
+      retryAfterSeconds: 120,
+    });
+  });
+
+  it("classifies a 5xx as 'unavailable'", async () => {
+    stubLiveOrg({ name: "Live Org" });
+    live.callXeroApi.mockRejectedValue({ response: { statusCode: 503 } });
+
+    expect((await getXeroConnectedOrganisation()).readFailure).toEqual({
+      kind: "unavailable",
+      rateLimit: null,
+      retryAfterSeconds: null,
+    });
+  });
+
+  // A failure does not blank a name we already have — but it must still be
+  // reported, or the surface showing that stale name has no way to know it is
+  // stale. Both halves matter, so both are pinned together.
+  it("keeps the last known name AND reports the failure beside it", async () => {
+    stubLiveOrg({ name: "Live Org", shortCode: "!live1" });
+    expect((await getXeroConnectedOrganisation()).name).toBe("Live Org");
+
+    live.callXeroApi.mockRejectedValue({ response: { statusCode: 503 } });
+    const summary = await getXeroConnectedOrganisation(true);
+
+    expect(summary.name).toBe("Live Org");
+    expect(summary.shortCode).toBe("!live1");
+    expect(summary.readFailure?.kind).toBe("unavailable");
+  });
+
+  // The whole point of the wizard's Try again button: a forced read must not be
+  // answered out of the 60-second NEGATIVE cache the failure just wrote.
+  it("lets a forced refresh escape the negative cache and recover", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-31T00:00:00.000Z"));
+    live.getAuthenticatedXeroClient.mockRejectedValue(new Error("boom"));
+
+    expect((await getXeroConnectedOrganisation()).readFailure?.kind).toBe(
+      "unavailable",
+    );
+    // An ordinary read inside the window is served from the negative entry.
+    await getXeroConnectedOrganisation();
+    expect(live.getAuthenticatedXeroClient).toHaveBeenCalledTimes(1);
+
+    // Xero recovers. Without forceRefresh the operator would wait out the TTL.
+    stubLiveOrg({ name: "Back Online", shortCode: "!back1" });
+    const retried = await getXeroConnectedOrganisation(true);
+
+    expect(retried.name).toBe("Back Online");
+    expect(retried.readFailure).toBeNull();
   });
 });
 

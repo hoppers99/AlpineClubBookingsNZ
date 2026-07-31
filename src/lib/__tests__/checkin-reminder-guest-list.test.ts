@@ -251,18 +251,24 @@ describe("check-in reminder guest list (#2307)", () => {
     expect(renderTemplateString("{{guestLastName}}", templateData)).toBe("");
   });
 
-  it("tells an admin who re-opens the editor that the old tokens have gone", async () => {
-    // The flagging half. A club whose override still holds the legacy pair gets
-    // a correct email from the mapping above, but the body is stale and should
-    // move to {{guestName}}. Each template's allowedTokens are derived from its
-    // DEFAULT body, so the moment the default stopped using the pair they left
-    // this template's allowed set — and the save-time validator that #2267 built
-    // now names them precisely when the admin next saves.
+  it("keeps a club holding the legacy pair able to save its own template", async () => {
+    // THIS TEST USED TO ASSERT THE OPPOSITE, and the #2269 review showed the
+    // old assertion was the bug rather than the contract.
     //
-    // This is the whole of the flagging available in the repo today: there is no
-    // proactive "your saved override uses a retired token" banner on the admin
-    // panel. Its only stale-override notice counts overrides whose TEMPLATE KEY
-    // no longer exists, which this is not.
+    // Each template's allowedTokens are derived from its DEFAULT body, so when
+    // the default moved to {{guestName}} the legacy pair fell out of the
+    // allowed set — even though the sender above STILL SUPPLIES BOTH, on
+    // purpose, so that a club holding a pre-#2307 override keeps naming its
+    // guests. The consequences of that mismatch were both wrong and both
+    // reached a real club: the editor said the pair was "no longer supplied"
+    // (false — see the render assertions above), and, because a disallowed
+    // token makes the whole validation invalid, that club could not re-save
+    // its template at all. The only remedy the screen offered was Restore
+    // Default, which destroys the very wording the back-compatibility exists
+    // to protect.
+    //
+    // Both tokens are now declared in EXTRA_TEMPLATE_TOKENS — the register for
+    // exactly this case, "supplied by the sender, not in the default body".
     const { validateEmailTemplateContent } = await import(
       "../email-message-renderer"
     );
@@ -272,13 +278,8 @@ describe("check-in reminder guest list (#2307)", () => {
       bodyText: "Guest list:\n\n{{guestFirstName}} {{guestLastName}}",
     });
 
-    expect(result.valid).toBe(false);
-    expect(result.disallowedTokens.sort()).toEqual([
-      "guestFirstName",
-      "guestLastName",
-    ]);
-    // Not "unknown": both are still globally approved tokens, so the admin is
-    // told they are not allowed HERE rather than that they are gibberish.
+    expect(result.valid).toBe(true);
+    expect(result.disallowedTokens).toEqual([]);
     expect(result.unknownTokens).toEqual([]);
   });
 
@@ -315,6 +316,30 @@ describe("check-in reminder guest list (#2307)", () => {
     expect(rendered).not.toContain("{{guestName}}");
     expect(definition.defaultBody).not.toContain("{{guestFirstName}}");
     expect(definition.defaultBody).not.toContain("{{guestLastName}}");
+  });
+
+  it("previews the legacy pair exactly as a real send renders it (#2269 second review)", async () => {
+    // Making the pair allowed again gives {{guestLastName}} a preview sample.
+    // Left to the generic sample generator that would be a plausible surname,
+    // so an admin who NEWLY typed the token would see a name in Preview and get
+    // nothing on every send. The preview sample is empty, which is what the
+    // send supplies, so Preview and the delivered email agree — including the
+    // one arrangement that matters, the saved pair on one line.
+    const { getEmailTemplateDefinition } = await import(
+      "../email-message-registry"
+    );
+    const { renderTemplateString } = await import("../email-message-renderer");
+    const definition = getEmailTemplateDefinition("checkin-reminder");
+    if (!definition) throw new Error("missing checkin-reminder definition");
+
+    expect(definition.allowedTokens).toContain("guestLastName");
+    expect(definition.sampleData.guestLastName).toBe("");
+    expect(
+      renderTemplateString(
+        "{{guestFirstName}} {{guestLastName}}",
+        definition.sampleData,
+      ).trimEnd(),
+    ).toBe(String(definition.sampleData.guestFirstName));
   });
 
   it("uses the already-approved guestName token, adding none of its own", async () => {

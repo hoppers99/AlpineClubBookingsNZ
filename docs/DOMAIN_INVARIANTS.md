@@ -77,6 +77,39 @@ Future reviews and issues should cite this file when proposing changes.
     the same lock instead), and each must then validate against the object the
     wrapper RETURNS — validating the snapshot that went in reopens the race. See
     `docs/CONCURRENCY_AND_LOCKING.md` → "Narrow row-lock protocols".
+  - **A reprice narrows a promotion's coverage; it never refuses the edit
+    (#2390).** On the four reprice paths (and the edit preview, which must match
+    them) the cap question is "who does this code still cover?", not "may this
+    booking use it?". Members already holding a **beneficial** allocation on the
+    booking being repriced are counted first and kept unconditionally — even
+    where they alone exceed a cap, which is the stated behaviour when an admin
+    lowers a cap under bookings that already have the discount; everyone else is
+    admitted in the order the promotion applies to them — **most expensive stay
+    first**, the order `selectPromoDiscountGuests` produces — until the
+    allowance runs out. Booking creation and applying a newly-entered code still
+    refuse, because nobody holds a discount from the code yet.
+    - Protection is applied **inside** that selection, not after it: a
+      `maxGuestsPerBooking` cap is spent while the beneficiary list is built, so
+      an expensive newly-added guest would otherwise evict a member who already
+      held the discount before any protection check could see them. Anyone a
+      protected member keeps their slot ahead of is named in the coverage
+      notice, so nobody is left out silently.
+    - A member who has personally used the code up is left out **by the trim**,
+      not filtered away before it, so they reach the notice rather than being
+      priced normally with nothing said.
+    - For a `FREE_NIGHTS` code the lifetime cap is a budget, not a slot, so a
+      protected member's remaining nights are floored at what this booking's own
+      allocation rows already granted them. Keeping them on the list is not
+      enough: a lowered cap would otherwise award them zero nights while still
+      reporting them as covered.
+    - The protected set is read from `PromoRedemptionAllocation` **before the
+      redemption write**, for the same trigger reason as the two orderings
+      above: `PromoRedemption_sync_allocation_update` upserts a booker
+      allocation row, and a protected-set read placed after it would grant
+      protection nobody earned.
+    - An empty covered set is refused explicitly rather than falling through.
+      Downstream an empty beneficiary list means "unassigned promo", which would
+      price the code for every guest on the booking, cap and all.
   - **A cap check that excludes a booking must exclude it from
     `currentRedemptions` too.** The counter includes the rows the excluded
     booking holds right now, and unlike every other cap it cannot be filtered by

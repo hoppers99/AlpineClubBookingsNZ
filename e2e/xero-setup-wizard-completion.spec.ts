@@ -90,7 +90,9 @@ test("operator completes the whole Xero wizard including verified webhooks", asy
     page.getByRole("heading", { name: /connect to xero/i }),
   ).toBeVisible();
   await page.getByRole("button", { name: /^Connect Xero$/ }).click();
-  await expect(page).toHaveURL(/\/admin\/xero\/setup\?connected=true/);
+  // ?connected=true is consumed and stripped by the wizard context (#2394
+  // review, F1), so match the page, not the marker.
+  await expect(page).toHaveURL(/\/admin\/xero\/setup/);
   await expect(
     page.getByText(new RegExp(`Connected to\\s+${MOCK_XERO_ORG_NAME}`, "i")),
   ).toBeVisible({ timeout: 30_000 });

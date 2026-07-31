@@ -17,11 +17,14 @@ import {
 } from "@/lib/xero-contact-sync";
 import { getXeroApiErrorInfo } from "@/lib/xero-api-errors";
 import logger from "@/lib/logger";
-import { isPrismaUniqueConstraintError } from "@/lib/prisma-errors";
 import {
   copyStreetAddressToPostal,
   POSTAL_ADDRESS_FIELDS,
 } from "@/lib/member-address";
+import {
+  isLoginEmailUniqueConflict,
+  MEMBER_LOGIN_EMAIL_TAKEN_MESSAGE,
+} from "@/lib/member-email";
 import { validateInheritEmailSource } from "@/lib/member-email-inheritance";
 import {
   buildParentLinks,
@@ -883,24 +886,40 @@ export async function updateAdminMember(params: {
     );
   }
 
-  // Check email uniqueness if changing email for a canLogin member
+  // Check login-email uniqueness whenever this edit claims the address as a
+  // login identity — either by changing the email of a login-capable member, or
+  // by switching login ON (#2385). The second case used to be missed here: the
+  // Account & Access form posts canLogin/active/roles and NO email
+  // (`buildAccountPayload`, src/lib/admin-member-edit-groups.ts), so a
+  // canLogin false → true save short-circuited a guard that required a
+  // *changed* email and went on to attempt the write. The admin still got the
+  // 409 — the partial unique index rejected it and the catch at the end of this
+  // function translated that P2002 — so this is not a fix for a silent failure;
+  // it stops a save that cannot succeed from being attempted at all, and lets
+  // that catch be narrowed to email collisions only. An already-login-capable
+  // member re-saving an unchanged email still skips the query: they already
+  // hold the address.
   const effectiveCanLogin =
     data.canLogin !== undefined ? data.canLogin : existing.canLogin;
-  if (
-    data.email &&
-    data.email.toLowerCase() !== existing.email &&
-    effectiveCanLogin
-  ) {
+  // Normalised exactly as the write below stores it (`updateData.email`), so
+  // the value checked here is the value the unique index will see.
+  const requestedEmail = data.email?.toLowerCase().trim();
+  const emailIsChanging = Boolean(
+    requestedEmail && requestedEmail !== existing.email,
+  );
+  const enablesLogin = effectiveCanLogin && !existing.canLogin;
+  if (effectiveCanLogin && (emailIsChanging || enablesLogin)) {
+    const loginEmail = requestedEmail ?? existing.email;
     const emailTaken = await prisma.member.findFirst({
       where: {
-        email: data.email.toLowerCase(),
+        email: loginEmail,
         canLogin: true,
         id: { not: id },
       },
     });
     if (emailTaken) {
       return jsonResult(
-        { error: "A member with this email already exists" },
+        { error: MEMBER_LOGIN_EMAIL_TAKEN_MESSAGE },
         { status: 409 },
       );
     }
@@ -1471,9 +1490,19 @@ export async function updateAdminMember(params: {
       );
     }
 
-    if (isPrismaUniqueConstraintError(error)) {
+    // Backstop for the race the pre-check above cannot close (#2385): the
+    // uniqueness query runs before the transaction, so a concurrent write can
+    // claim the address in between. The partial unique index
+    // `Member_email_login_unique` is what actually makes two login-capable
+    // members on one address impossible; this only translates its rejection
+    // into the same 409 the pre-check returns, so the loser of the race gets
+    // the same explanation rather than a 500. Narrowed from "any P2002 here
+    // means the email is taken" (#2385): a collision on some other unique
+    // column now falls through to the generic failure below rather than sending
+    // the admin off to fix an address that is fine.
+    if (isLoginEmailUniqueConflict(error)) {
       return jsonResult(
-        { error: "A member with this email already exists" },
+        { error: MEMBER_LOGIN_EMAIL_TAKEN_MESSAGE },
         { status: 409 },
       );
     }

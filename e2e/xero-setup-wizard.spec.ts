@@ -94,10 +94,15 @@ test("operator reaches Connected to <Org> entirely in-app", async () => {
   await page.getByRole("button", { name: /^Connect Xero$/ }).click();
 
   // Back on the wizard after the mock OAuth round-trip: right-org confirmation.
-  await expect(page).toHaveURL(/\/admin\/xero\/setup\?connected=true/);
+  // The callback lands with ?connected=true, but the wizard context CONSUMES
+  // that marker once and strips it (#2394 review, F1) — otherwise every later
+  // return to this step re-fires a forced live Xero read with nobody pressing
+  // anything. So assert the landing page, then that the marker is gone.
+  await expect(page).toHaveURL(/\/admin\/xero\/setup/);
   await expect(
     page.getByText(new RegExp(`Connected to\\s+${MOCK_XERO_ORG_NAME}`, "i")),
   ).toBeVisible({ timeout: 30_000 });
+  await expect(page).not.toHaveURL(/connected=true/);
   // Connect is verified but the wizard is NOT complete (#2081 extends it with
   // webhooks/mapping/import) — the next step is reachable, and no completion
   // banner shows yet (never "the whole integration is done" mid-flow, #2080

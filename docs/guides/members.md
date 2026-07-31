@@ -108,7 +108,10 @@ prose here rather than with a screenshot:
 - **Contact & Personal** — name, email, phone, DOB, occupation, addresses,
   comments (a privileged member's login email is Full-Admin-only to change).
 - **Account & Access** — user type, login, access roles, status, induction, and
-  lodge access.
+  lodge access. Only one member per email address can sign in, so ticking **Can
+  Login** here is refused with "A member with this email already exists" when the
+  member's address is already someone else's login — even though you have not
+  touched the address itself.
 - **Family** — family groups, the family tree, the billing family selector
   (finance edit), parent links, partner, and dependents. The **family tree**
   sits just under the family-group chips, above the billing family and parent
@@ -206,7 +209,7 @@ The list is a working roster; its controls:
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
 | The page is read-only ("… can view membership records but cannot create, edit, import, or bulk-update members") | Your admin role has membership view but not edit | Ask a full admin for membership edit access |
-| "A member with this email already exists" | A login-enabled member already uses that email | Non-login members can share a parent's email; otherwise use a different email or merge the duplicate |
+| "A member with this email already exists" | A login-enabled member already uses that email — either you changed the address to a taken one, or you ticked **Can Login** on a member whose existing address is already someone else's login | Non-login members can share a parent's email; otherwise use a different email or merge the duplicate |
 | A CSV import created nothing | One or more rows were blocked in validation | Fix the flagged rows (First/Last/Email required, valid dates) and re-import |
 | A Xero contact wasn't created on save | Xero needs the full name, email, phone, DOB, joined date, and both addresses | Complete the listed fields, then create in Xero |
 | I can't merge, or change a privileged member's login email | Those actions are Full Admin only | Ask a full admin |
