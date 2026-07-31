@@ -142,6 +142,7 @@ type CancellationRequestRecord = {
 
 type MembershipCancellationRelationship =
   | "self"
+  | "organisation"
   | "dependent"
   | "non_login_adult"
   | "family_adult";
@@ -295,6 +296,11 @@ function relationshipForMember(
   requesterId: string,
 ): MembershipCancellationRelationship {
   if (member.id === requesterId) return "self";
+  // #2391: an organisation account carries `ageTier = NOT_APPLICABLE`, so
+  // without this it fell through to the age test below and was badged
+  // "Dependant" — nonsense for an organisation, and freshly reachable now that
+  // the family list no longer filters organisations out.
+  if (member.role === "SCHOOL") return "organisation";
   if (
     member.ageTier !== "ADULT" ||
     member.parentMemberId === requesterId ||
