@@ -2465,7 +2465,14 @@ login-enabled Full Admin, and only a Full Admin may approve one against a
 privileged account. Separation of duties holds on the self-cancellation case a
 widened rule newly reaches — `assertCancellationApprovalIsIndependent` refuses
 an approval by the member who raised the request — so a club's sole Full Admin
-must appoint a successor before their own cancellation can be approved.
+must appoint a successor before their own cancellation can be approved. That
+guard fails CLOSED on a null `requestedByMemberId` (the FK is
+`onDelete: SetNull`, so hard-deleting the raiser nulls it): "we cannot tell who
+raised this" means "not you", never "anyone". Rejection is unaffected, so such
+a request is never stuck. The approval queue also surfaces, per participant,
+whether the target holds privileged access (the guard's own predicate) and
+whether it is an organisation account, so an approval that is permitted but
+mistaken has a human check in front of it.
 
 Both callers of the rule must feed it the same shape. The admin member page is
 served `resolveAccessRoleTokens` output, which is EMPTY whenever
@@ -2499,6 +2506,15 @@ place.** No such path exists today — the member edit service and bulk update
 both refuse to reactivate a cancelled member, and nothing writes
 `cancelledAt: null` — and any that is added must clear or re-grant the roles
 deliberately.
+
+The same fact constrains session-authenticated routes: cancellation neither
+clears the rows nor invalidates the JWT (`auth()` invalidates only on
+`passwordChangedAt`, and re-stamps `token.accessRoles` from the retained rows on
+every request), so any route that resolves admin access from a member row must
+re-read `active` rather than trusting the rows. `requireAdmin` does; the display
+preview branch of `GET /api/display/state` did not, and now does (#2383) — it
+was unreachable before, because a cancelled member could not previously hold an
+`ADMIN` row.
 
 Application-approval mapping (link + overwrite of an existing member at approval
 time) preserves the login-uniqueness and auth invariants: it never creates a

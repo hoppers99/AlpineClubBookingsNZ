@@ -29,14 +29,24 @@ All notable public reference-release changes should be recorded here.
   itself — the one whose account type reads *Lodge (kiosk account)* — and not
   anyone who has merely been given the lodge role alongside their own: a
   booking officer who also runs the lodge screen is a person with a membership,
-  and had also been quietly losing the cancellation action. The safeguards that
+  and was quietly losing the cancellation action too. The safeguards that
   matter sit where the decision is actually made, at approval: only a full admin
   may approve a cancellation for an account with admin access, an admin can
   never approve a cancellation they raised themselves, and the club can never be
   left with no full admin — so a sole admin who wants to leave must appoint
-  their successor first, and then that successor approves. Cancelling a member
-  no longer needs their roles deleted, so the record of what they once did for
-  the club stays intact. The member-facing **Cancel Membership** flow in a
+  their successor first, and then that successor approves. The review queue now
+  says what it is you are approving, marking a participant who holds admin
+  access or is an organisation account — "cancel the treasurer" and "cancel an
+  ordinary member" used to look identical there — and an approval is refused
+  outright if the admin who raised the request has since been deleted, since
+  the club can no longer tell that it is a second pair of eyes. Cancelling a
+  member no longer needs their roles deleted, so the record of what they once
+  did for the club stays intact; the flip side, now written down, is that the
+  club cannot delete such a record outright until the roles are removed, and
+  that nothing may quietly un-cancel a membership. Related hardening found
+  while checking this: the lobby-display preview endpoint now re-checks that the
+  admin previewing it still has an active account, which every other admin
+  endpoint already did. The member-facing **Cancel Membership** flow in a
   member's own profile is unchanged and still limited to ordinary member
   accounts; its wording no longer implies otherwise.
 

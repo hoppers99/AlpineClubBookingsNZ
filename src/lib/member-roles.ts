@@ -30,7 +30,10 @@ export type AppRole = (typeof ROLE_VALUES)[number];
  * against the generated enum object, so a stale build cannot hide it either.
  */
 type AssertNever<T extends never> = T;
-export type RolesMissingFromRoleValues = AssertNever<Exclude<Role, AppRole>>;
+// Declaration-site constraint check: deliberately never referenced, and not
+// exported — its whole job is to fail to compile.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+type RolesMissingFromRoleValues = AssertNever<Exclude<Role, AppRole>>;
 
 export const MEMBER_LEVEL_ROLE_VALUES = [
   "USER",

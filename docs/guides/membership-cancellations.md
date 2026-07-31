@@ -130,6 +130,7 @@ approval (checkbox).
 | **Approve** on a cancellation says only a Full Admin can do it | The member holds a privileged access role (any admin, finance, lodge, or custom role), and only a Full Admin may approve a cancellation for such an account | Ask a full admin to approve it |
 | **Approve** says this is the last Full Admin account | Approving would disable the login of the club's only remaining active Full Admin, leaving nobody able to administer the club | Give another active account Full Admin access first, then approve. This applies to an admin cancelling their own membership too — appoint your successor first |
 | An admin cannot approve the cancellation they raised themselves | Cancellation approval always needs a different admin, including when an admin has raised it against their own membership | Ask another admin to review it |
+| **Approve** says the admin who raised the request is no longer on file | That admin's record has since been deleted, so the club can no longer show the approval was a second pair of eyes | Reject the request and raise a new one; it can then be approved normally |
 | Approve/Reject is disabled on an archive | You raised it — the two-admin rule needs a different reviewer | Ask another admin to review it |
 | A refund didn't happen on cancellation | Paid subscriptions are not refunded; unpaid/overdue invoices are cleared with a credit note | This is by policy — see [`CANCELLATIONS.md`](../CANCELLATIONS.md#refund-policy) |
 

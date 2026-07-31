@@ -64,11 +64,20 @@ transaction (#1604/#1622):
   another Full Admin, and including the admin themselves. Give another active
   account Full Admin access first, then approve.
 
+Because any account holder can now be raised, the review queue labels what is
+being cancelled: a participant who holds admin access is marked (approving that
+one needs a Full Admin — the badge uses the guard's own test), and an
+organisation account is marked as one. The reviewer is the last human check
+before an approval that is allowed but mistaken.
+
 An admin may raise a cancellation request against their own membership. They
 cannot then approve it: cancellation approval always requires a different admin.
 A club's only Full Admin therefore cannot complete their own departure alone —
 they must appoint a successor Full Admin, who then approves. This is deliberate,
 and is the same separation-of-duties rule the archive and deletion queues use.
+If the admin who raised a request has since been deleted from the club records,
+approval is refused rather than allowed — with the raiser gone there is no way
+to show the approval was independent. Reject that request and raise a new one.
 
 Approving a cancellation does **not** delete the member's access roles. It sets
 the account **inactive** — which is what actually stops every admin area, since
