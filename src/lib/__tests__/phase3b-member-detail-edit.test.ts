@@ -337,6 +337,120 @@ describe("Phase 3b: Member Detail Edit — PUT /api/admin/members/[id]", () => {
     });
   });
 
+  // Every shape a unique-constraint failure can arrive in, because which one
+  // Postgres actually sends for the RAW PARTIAL index Member_email_login_unique
+  // is not settled (#2412): `meta.target` is what the old query engine
+  // populated and what the join-code retry still reads, while the pg driver
+  // adapter renders the SQLSTATE 23505 detail into the message instead. The
+  // backstop reads both, so both are pinned.
+  const p2002 = (message: string, meta?: { target?: unknown }) =>
+    Object.assign(new Error(message), {
+      code: "P2002",
+      ...(meta ? { meta } : {}),
+    });
+
+  const wrappedInvocationMessage = (column: string) =>
+    [
+      "",
+      "Invalid `prisma.member.update()` invocation in",
+      "/app/src/lib/admin-member-detail-service.ts:1278:44",
+      "",
+      "  1275 }",
+      "  1276",
+      "  1277 const updatedMember = await tx.member.update({",
+      '→ 1278   where: { id: "m1" },',
+      `Unique constraint failed on the fields: (\`${column}\`)`,
+    ].join("\n");
+
+  const backstopShapes = [
+    // The meta.target cases carry a message that says the OPPOSITE, so they
+    // fail if that branch is ever dropped or loses its precedence over the
+    // message.
+    {
+      name: "meta.target as a field-name array",
+      error: p2002(
+        "Unique constraint failed on the constraint: `Member_googleSub_key`",
+        { target: ["email"] },
+      ),
+      status: 409,
+    },
+    {
+      name: "meta.target as a constraint-name string",
+      error: p2002("Unique constraint failed on the fields: (`googleSub`)", {
+        target: "Member_email_login_unique",
+      }),
+      status: 409,
+    },
+    {
+      name: "meta.target naming a different column",
+      error: p2002("Unique constraint failed on the fields: (`email`)", {
+        target: ["googleSub"],
+      }),
+      status: 500,
+    },
+    {
+      name: "a `constraint:` index name in the message",
+      error: p2002(
+        "Unique constraint failed on the constraint: `Member_email_login_unique`",
+      ),
+      status: 409,
+    },
+    {
+      name: "a `constraint:` index name for a different column",
+      error: p2002(
+        "Unique constraint failed on the constraint: `Member_googleSub_key`",
+      ),
+      status: 500,
+    },
+    // The client wraps the sentence in an invocation preamble and a source
+    // excerpt, so the field list has to be found anywhere in the message, not
+    // just at the start. Both wrapped cases are pinned because only the
+    // non-email one can fail if the match is ever anchored — an unfound field
+    // list falls back to "unidentifiable", which is 409 either way.
+    {
+      name: "the wrapped invocation message the client really throws",
+      error: p2002(wrappedInvocationMessage("email")),
+      status: 409,
+    },
+    {
+      name: "a wrapped invocation message naming a different column",
+      error: p2002(wrappedInvocationMessage("googleSub")),
+      status: 500,
+    },
+    {
+      // Documented behaviour: this write can produce no other collision, so an
+      // unidentifiable P2002 is still explained rather than left opaque.
+      name: "a P2002 that names nothing identifiable",
+      error: p2002("Unique constraint failed"),
+      status: 409,
+    },
+  ];
+
+  it.each(backstopShapes)(
+    "maps a concurrent-write P2002 reported as $name to $status",
+    async ({ error, status }) => {
+      mockedAuth.mockResolvedValue(adminSession);
+      vi.mocked(prisma.member.findUnique).mockResolvedValue(
+        noLoginMember as any,
+      );
+      vi.mocked(prisma.member.findFirst).mockResolvedValue(null);
+      vi.mocked(prisma.member.update).mockRejectedValue(error);
+
+      const res = await updateMember(
+        makePutRequest("m1", { canLogin: true, active: true, role: "USER", accessRoles: ["USER"] }),
+        { params: Promise.resolve({ id: "m1" }) }
+      );
+
+      expect(res.status).toBe(status);
+      await expect(res.json()).resolves.toMatchObject({
+        error:
+          status === 409
+            ? "A member with this email already exists"
+            : "Failed to update member",
+      });
+    },
+  );
+
   // ── Successful updates ──
 
   it("updates firstName and lastName", async () => {
