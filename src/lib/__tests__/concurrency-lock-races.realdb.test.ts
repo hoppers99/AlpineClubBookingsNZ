@@ -125,15 +125,19 @@ function deferred() {
 async function waitForTableLock(params: {
   mode: "RowExclusiveLock" | "ShareRowExclusiveLock";
   granted: boolean;
+  applicationName?: string;
 }): Promise<void> {
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
+    const applicationName = params.applicationName ?? null;
     const rows = await prisma.$queryRaw<Array<{ count: number }>>`
       SELECT COUNT(*)::int AS "count"
-      FROM pg_locks
-      WHERE relation = '"MemberInduction"'::regclass
-        AND mode = ${params.mode}
-        AND granted = ${params.granted}
+      FROM pg_locks AS locks
+      JOIN pg_stat_activity AS activity ON activity.pid = locks.pid
+      WHERE locks.relation = '"MemberInduction"'::regclass
+        AND locks.mode = ${params.mode}
+        AND locks.granted = ${params.granted}
+        AND (${applicationName}::text IS NULL OR activity.application_name = ${applicationName})
     `;
     if ((rows[0]?.count ?? 0) > 0) return;
     await new Promise((resolve) => setTimeout(resolve, 25));
@@ -831,12 +835,58 @@ describe("concurrency race DB safety guard (#1881)", () => {
       });
 
       it("serializes two concurrent applies into one inserted set and one no-op", async () => {
-        const [first, second] = await Promise.all([
-          applyInductionBaseline(baselineClientA),
-          applyInductionBaseline(baselineClientB),
-        ]);
+        const firstLockAcquired = deferred();
+        const releaseFirstApply = deferred();
+        const firstStore = createBaselineStore(baselineClientA, {
+          afterLock: async () => {
+            firstLockAcquired.resolve();
+            await releaseFirstApply.promise;
+          },
+        });
+        const firstPromise = applyInductionBaseline(firstStore);
+        await firstLockAcquired.promise;
 
-        expect([first.appliedCount, second.appliedCount].sort()).toEqual([
+        let secondSettled = false;
+        const secondPromise = applyInductionBaseline(baselineClientB);
+        void secondPromise.then(
+          () => {
+            secondSettled = true;
+          },
+          () => {
+            secondSettled = true;
+          },
+        );
+
+        let observationError: unknown;
+        try {
+          await waitForTableLock({
+            mode: "ShareRowExclusiveLock",
+            granted: true,
+            applicationName: "race-2361-baseline-a",
+          });
+          await waitForTableLock({
+            mode: "ShareRowExclusiveLock",
+            granted: false,
+            applicationName: "race-2361-baseline-b",
+          });
+          expect(secondSettled).toBe(false);
+        } catch (error) {
+          observationError = error;
+        } finally {
+          releaseFirstApply.resolve();
+        }
+
+        const outcomes = await Promise.allSettled([
+          firstPromise,
+          secondPromise,
+        ]);
+        if (observationError) throw observationError;
+        const reports = outcomes.map((outcome) => {
+          if (outcome.status === "rejected") throw outcome.reason;
+          return outcome.value;
+        });
+
+        expect(reports.map((report) => report.appliedCount).sort()).toEqual([
           0,
           BASELINE_ELIGIBLE_MEMBER_IDS.length,
         ]);
