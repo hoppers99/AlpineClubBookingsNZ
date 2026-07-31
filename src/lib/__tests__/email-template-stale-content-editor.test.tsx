@@ -1,7 +1,13 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -334,6 +340,55 @@ describe("email template saved-copy staleness surface (#2269)", () => {
     expect(region).toBeInTheDocument();
     const scrollable = screen.getByRole("group", { name: "Body differences" });
     expect(scrollable).toHaveAttribute("tabindex", "0");
+  });
+
+  it("asks before Restore Default throws the club's wording away", async () => {
+    // #2269 review: one click, no undo, and this release points at Restore
+    // Default from three separate places. The only copy afterwards is an audit
+    // row, which needs database access to read back.
+    stubEmailFetches(
+      templatesResponse({
+        bodyText: "Hi {{firstName}}.\n\n{{promoSummary}}{{doorCodeNote}}",
+        staleContent: {
+          differsFromDefault: true,
+          subjectDiffersFromDefault: false,
+          bodyDiffersFromDefault: true,
+          reasons: [],
+          missingRequiredTokens: [],
+          retiredTokens: [],
+          bracketAnnotations: [],
+        },
+      }),
+    );
+    render(<EmailMessageSettingsPanel />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Restore Default/ }));
+
+    // Nothing has been destroyed yet.
+    const fetchMock = globalThis.fetch as unknown as {
+      mock: { calls: Array<[string]> };
+    };
+    const resetCalls = () =>
+      fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes("/api/admin/email-templates/reset"),
+      );
+    expect(resetCalls()).toHaveLength(0);
+    expect(
+      await screen.findByText(/It cannot be undone from here/),
+    ).toBeInTheDocument();
+
+    // Backing out leaves the saved wording alone.
+    fireEvent.click(screen.getByRole("button", { name: /^Cancel$/ }));
+    expect(resetCalls()).toHaveLength(0);
+
+    // Confirming goes through.
+    fireEvent.click(screen.getByRole("button", { name: /Restore Default/ }));
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: /Replace with the built-in wording/,
+      }),
+    );
+    await waitFor(() => expect(resetCalls()).toHaveLength(1));
   });
 
   it("says nothing at all when there is no saved override", async () => {
