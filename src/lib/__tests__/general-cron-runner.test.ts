@@ -4,6 +4,10 @@ vi.mock("@/lib/booking-request", () => ({
   purgeExpiredBookingRequests: vi.fn(),
 }));
 
+vi.mock("@/lib/cron-additional-payment-reminders", () => ({
+  sendAdditionalPaymentReminders: vi.fn(),
+}));
+
 vi.mock("@/lib/cron-confirm-pending", () => ({
   confirmPendingBookings: vi.fn(),
 }));
@@ -55,6 +59,16 @@ describe("general cron runner", () => {
     const result = await runGeneralCronCycle({
       recordCronRun,
       tasks: {
+        sendAdditionalPaymentReminders: vi.fn(async () => ({
+          reminderDays: 3,
+          finalReminderDaysBeforeCheckIn: 2,
+          chaseStartsAt: new Date("2026-08-01T00:00:00.000Z"),
+          initialSentBookingIds: ["booking-9"],
+          finalSentBookingIds: [],
+          skippedBookingIds: [],
+          suppressedBookingIds: [],
+          failedBookingIds: [],
+        })),
         confirmPendingBookings: vi.fn(async () => ({
           confirmedBookingIds: ["booking-1"],
           bumpedBookingIds: [],
@@ -100,6 +114,9 @@ describe("general cron runner", () => {
     });
 
     expect(result.confirmPending?.confirmedBookingIds).toEqual(["booking-1"]);
+    expect(result.additionalPaymentReminders?.initialSentBookingIds).toEqual([
+      "booking-9",
+    ]);
     expect(result.preArrivalReminders?.sentBookingIds).toEqual(["booking-1"]);
     expect(result.bookingRequestPurge).toEqual({
       declinedPurged: 1,
@@ -127,7 +144,13 @@ describe("general cron runner", () => {
       sent: 0,
       failed: 0,
     });
-    expect(recordCronRun).toHaveBeenCalledTimes(6);
+    expect(recordCronRun).toHaveBeenCalledTimes(7);
+    expect(recordCronRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobName: "additional-payment-reminders",
+        status: "SUCCESS",
+      })
+    );
     expect(recordCronRun).toHaveBeenCalledWith(
       expect.objectContaining({
         jobName: "group-settlement-reaper",
@@ -200,11 +223,22 @@ describe("general cron runner", () => {
       sent: 0,
       failed: 0,
     }));
+    const sendAdditionalPaymentReminders = vi.fn(async () => ({
+      reminderDays: 3,
+      finalReminderDaysBeforeCheckIn: 2,
+      chaseStartsAt: new Date("2026-08-01T00:00:00.000Z"),
+      initialSentBookingIds: [],
+      finalSentBookingIds: [],
+      skippedBookingIds: [],
+      suppressedBookingIds: [],
+      failedBookingIds: [],
+    }));
 
     await expect(
       runGeneralCronCycle({
         recordCronRun,
         tasks: {
+          sendAdditionalPaymentReminders,
           confirmPendingBookings: vi.fn(async () => {
             throw new Error("database unavailable");
           }),
@@ -221,6 +255,7 @@ describe("general cron runner", () => {
       ],
     });
 
+    expect(sendAdditionalPaymentReminders).toHaveBeenCalled();
     expect(reapStaleGroupSettlements).toHaveBeenCalled();
     expect(sendPreArrivalReminders).toHaveBeenCalled();
     expect(purgeExpiredBookingRequests).toHaveBeenCalled();

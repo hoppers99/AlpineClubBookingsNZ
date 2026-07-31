@@ -57,6 +57,10 @@ interface ReportData {
   summary: {
     totalBookings: number;
     totalRevenueCents: number;
+    // #2350: how much of the booked revenue above has not been collected —
+    // upward booking changes whose extra is still PENDING or FAILED.
+    outstandingAdditionalCents: number;
+    outstandingAdditionalBookings: number;
     totalGuests: number;
     avgOccupancyRate: number;
     memberGuests: number;
@@ -235,7 +239,22 @@ export default function ReportsPage() {
     rows.push([]);
     rows.push(["Summary"]);
     rows.push(["Total Bookings", String(data.summary.totalBookings)]);
-    rows.push(["Total Revenue", (data.summary.totalRevenueCents / 100).toFixed(2)]);
+    rows.push(["Booked Revenue", (data.summary.totalRevenueCents / 100).toFixed(2)]);
+    rows.push([
+      "Outstanding Additional Payments",
+      (data.summary.outstandingAdditionalCents / 100).toFixed(2),
+    ]);
+    rows.push([
+      "Bookings With An Outstanding Addition",
+      String(data.summary.outstandingAdditionalBookings),
+    ]);
+    rows.push([
+      "Booked Revenue Less Outstanding",
+      (
+        (data.summary.totalRevenueCents - data.summary.outstandingAdditionalCents) /
+        100
+      ).toFixed(2),
+    ]);
     rows.push(["Total Guests", String(data.summary.totalGuests)]);
     rows.push(["Avg Occupancy Rate", `${data.summary.avgOccupancyRate}%`]);
     rows.push(["Member Guests", String(data.summary.memberGuests)]);
@@ -407,10 +426,18 @@ export default function ReportsPage() {
                 icon={CalendarRange}
               />
               <StatCard
-                title="Total Revenue"
+                title="Booked Revenue"
                 value={formatDollarsDisplay(data.summary.totalRevenueCents)}
-                subtitle="Excludes cancelled and bumped bookings"
+                subtitle="Total priced, whether or not it has been collected. Excludes cancelled and bumped bookings"
                 icon={DollarSign}
+              />
+              <StatCard
+                title="Outstanding Additions"
+                value={formatDollarsDisplay(
+                  data.summary.outstandingAdditionalCents,
+                )}
+                subtitle={`Inside the figure above and not yet collected, across ${data.summary.outstandingAdditionalBookings} booking${data.summary.outstandingAdditionalBookings === 1 ? "" : "s"}`}
+                icon={AlertTriangle}
               />
               <StatCard
                 title="Total Guests"
