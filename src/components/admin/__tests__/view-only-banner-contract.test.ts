@@ -322,11 +322,11 @@ const NOTICE = "AdminViewOnlyNotice";
 */
 const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 297,
+  callSites: 299,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 250,
+  optOuts: 252,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 224,
+  staticOptOuts: 226,
   /** `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch. */
   vouchedOptOuts: 26,
   /** …of the vouched: proved at a parent's own JSX render site (#2168). */
@@ -1199,6 +1199,11 @@ describe("view-only section banner coverage (#2160)", () => {
           297      Re-measured on the merged tree: #2262's +4 and #2307's +2 are
                independent, so 291 -> 295 -> 297. Neither side's number is
                taken as-is.
+          299  +2  the Mountain Conditions "Source & selectors" panel adds
+               Preview and Save configuration ViewOnlyActionButtons — two static
+               opt-outs under the panel's existing AdminViewOnlySectionBanner
+               (optOuts 250 -> 252, staticOptOuts 224 -> 226; vouched,
+               exceptions and bannerComponents unchanged — no new banner).
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into
