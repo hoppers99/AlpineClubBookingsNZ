@@ -424,10 +424,29 @@ describe("review finding source/schema contracts", () => {
 
     for (const file of mustMark) {
       expect(callers, `${file} still calls the guard`).toContain(file);
+      const source = stripComments(readRepoFile(file));
+      // The CALL, not the import and not a lookalike identifier. A first version
+      // of this assertion matched the bare substring, and three mutation probes
+      // walked straight through it: deleting the call left the import behind,
+      // and renaming it to `SKIPPED_markCrossFamilyGuestsOnBooking` still
+      // contained the string.
+      const callAt = source.search(/\bawait markCrossFamilyGuestsOnBooking\(/);
       expect(
-        readRepoFile(file),
-        `${file}: must mark the whole proposed party against the live family boundary`,
-      ).toContain("markCrossFamilyGuestsOnBooking");
+        callAt,
+        `${file}: must AWAIT markCrossFamilyGuestsOnBooking over the whole proposed party`,
+      ).toBeGreaterThanOrEqual(0);
+      // And before the guard reads, or the guard sees the unmarked list.
+      const guardAt = source.search(
+        /\b(await )?(assertNo)?[fF]indBookingMemberNightConflicts\(/,
+      );
+      expect(
+        guardAt,
+        `${file}: still calls the person-night guard after stripping comments`,
+      ).toBeGreaterThanOrEqual(0);
+      expect(
+        callAt,
+        `${file}: marks the party BEFORE the person-night guard reads it`,
+      ).toBeLessThan(guardAt);
     }
   });
 
