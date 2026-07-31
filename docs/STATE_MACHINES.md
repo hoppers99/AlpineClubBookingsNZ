@@ -1393,6 +1393,17 @@ the list short by electing account credit on the sweep, so an ordinary paid
 booking always releases; only four reasons reach the list (last guest,
 quote-priced, a status that forbids guest changes, check-in already started).
 
+**A refused removal is TWO writes, and it has to be.** The shared removal path
+deletes the guest's chore assignments and the guest row *before* its last two
+gates run, so a refusal caught inside the transaction and returned as a value
+would let Prisma commit a half-completed removal — the row gone, the price never
+recalculated, no credit, no bed reconcile, and no blocked row for the exception
+list to show. The refusal is therefore THROWN out of the transaction, which rolls
+all of that back, and the terminal status is written afterwards by a separate,
+minimal transaction over the row the rollback restored. That second write reuses
+the same status-guarded claim, so a sweep that legitimately claimed the row in
+between wins and the caller reports `ALREADY_RESOLVED` with no side effects.
+
 To verify: the status-guarded claim in `member-guest-consent-service.ts` (a bare
 `update` by id breaks a concurrency test); the two-lock order (global
 `pg_advisory_xact_lock(1)` for money/status, THEN the per-lodge capacity lock);

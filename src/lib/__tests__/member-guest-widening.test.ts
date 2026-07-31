@@ -756,6 +756,11 @@ describe("consent columns have exactly one writer", () => {
         "the delegate consent page",
       "src/lib/admin-bookings-service.ts":
         "the two consent filter chips' SQL narrowing on the bookings list",
+      // The tenth D-12 site, and the one an officer can reach by hand: the
+      // manual bed-write chokepoint refuses a guest who has not consented, so a
+      // hand-typed guest id cannot write bed rows the next reconcile sweeps away.
+      "src/lib/admin-bed-allocation.ts":
+        "D-12: the manual bed-allocation chokepoint refuses an unconsented guest",
     };
 
     const mentions = productionFilesUnder("src")

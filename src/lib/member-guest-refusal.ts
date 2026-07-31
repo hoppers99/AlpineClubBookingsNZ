@@ -55,7 +55,7 @@
  *
  * Closing the correlation channel needs a different tool — a discoverability
  * decision plus per-caller throttling on the add paths — which is MG3's
- * find-endpoint work. It is tracked as a follow-up issue on MG3 (#TODO-ISSUE)
+ * find-endpoint work. It is tracked as a follow-up issue on MG3 (#2388)
  * rather than left as an implied property of this constant.
  *
  * STRICTLY CROSS-FAMILY, STRICTLY PRE-CONSENT. A family-scope add (D-6) keeps

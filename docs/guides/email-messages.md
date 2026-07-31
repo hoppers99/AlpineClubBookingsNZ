@@ -105,8 +105,9 @@ Two consequences worth knowing before you edit one:
 
 ### Consent emails ignore a member's notification preferences
 
-The four member-guest emails — the consent request, the "you have been added"
-notice, the outcome notice to whoever made the booking, and the lapse notice —
+The five member-guest emails — the consent request, the "you have been added"
+notice, the outcome notice to whoever made the booking, the notice that somebody
+in the family answered on a member's behalf, and the lapse notice —
 deliberately do **not** follow a member's own notification-category preferences,
 and they are not affected by the per-action "email the member" choices on admin
 screens. Being asked whether you agree to be on somebody's booking is not a

@@ -1229,6 +1229,26 @@ because both are surprising and neither should be discovered by a member:
   them (a delegate approving for a target with no login, D-5/D-10), or name the
   acting admin (an admin assignment or a booking copy). MG4's admin-assigner
   audit rides this column; no extra column exists or is needed.
+- **Nobody answers for a member who can sign in** (owner decision D-5/D-10). The
+  delegate rule has a target side as well as an actor side, and both are
+  enforced: a delegate must be an active, login-holding ADULT sharing a family
+  group with the target, AND the target must NOT hold a login of their own.
+  Without the target conjunct, two members of one household who are both put on
+  the same booking can answer for each other — including declining, which
+  releases the other's bed and deletes their guest row. `canRespondForTarget`
+  and `resolveNotificationRecipients` in `src/lib/member-guest-delegate.ts` share
+  one predicate for it, so "who may act" and "who is told" cannot drift into two
+  different rules. A consequence worth expecting: a login-holding target the club
+  has no email address for is asked nobody and told nobody, because the household
+  may not answer for them either — an unanswerable request emailed to a household
+  would only strand the bed.
+- **A delegate's answer is told to the member it was given for.** A member
+  answering for themselves needs no notice, but a delegate's answer is somebody
+  else's decision about them, so the member — and the other adults who were sent
+  the same request — receive the `member-guest-consent-answered` email naming who
+  answered and what they said. It carries no money and no booking link: the
+  recipient may have nothing to do with the booking, and D-11 grants booking-page
+  access to a guest ROW, never to a delegate.
 - **A `PENDING` row holds the bed** (D-4) until `consentExpiresAt`, which is set
   from `MemberGuestSettings.pendingHoldExpiryDays` (default 7, bounds 1–60). A
   `PENDING` row without an expiry would be an unbounded capacity hold and is not
