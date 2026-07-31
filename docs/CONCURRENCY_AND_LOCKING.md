@@ -414,6 +414,22 @@ do not use unnamespaced `hashtext(<id>)` for new lock families.
   hard-deleted. The fresh locked read supplies the member's current pointer so
   the blob is swept.
 
+  The merge's fresh read is a **whole-row** read of both members, not just
+  `photoImageId`, because the same staleness sinks its field-merge WRITE (#2243).
+  `Member.photoImageId` is a real FK, so a patch derived from the transaction's
+  opening snapshot writes the blob id the racing upload just deleted, and
+  Postgres 23503 / Prisma P2003 rolls the ENTIRE merge back as a bare 500 — with
+  the preview token none the wiser, because it verifies against that same stale
+  snapshot. Both the write patch and the sweep pointer now come from that one
+  locked read. `familyGroupId` is the patch's other real FK and the same story:
+  a family admin can delete the `FamilyGroup` without taking any
+  member-lifecycle lock. **No new lock is introduced.** The loser's row lock is
+  the one `teardownLoserXero` already holds, and the master is re-read
+  immediately before the update that has always taken its row lock — that side
+  is a *narrowed* read-modify-write window rather than a closed one, which is
+  sufficient because the master's values never enter the patch (they only decide
+  whether a blank is filled) and so can never cause the FK rollback.
+
 Do not add or compose a row lock without updating this inventory and documenting
 its order against every advisory- and row-lock counterpart.
 

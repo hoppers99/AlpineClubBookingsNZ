@@ -597,6 +597,66 @@ describe("member-photo reconciliation at execute time (MP1, #189)", () => {
     );
   }
 
+  /**
+   * A member delegate whose loser reads flip from `stale` to `fresh` the moment
+   * the merge reaches its Xero teardown (step 4) — i.e. after the
+   * top-of-transaction snapshot, the guards and the preview-token check have all
+   * read the loser, and before the field merge writes.
+   *
+   * That is exactly where a real on-behalf photo upload has to commit to cause
+   * #2243: the photo route takes no member-lifecycle advisory lock, and the
+   * merge does not hold the loser's ROW lock until `teardownLoserXero`'s
+   * unconditional `member.update`.
+   *
+   * The master's `update` refuses a patch naming the deleted blob "L1" with a
+   * Prisma P2003, standing in for the real `Member_photoImageId_fkey` violation
+   * that rolls the whole merge back as a bare 500.
+   */
+  function raceHarness(
+    masterRow: Record<string, unknown>,
+    stale: Record<string, unknown>,
+    fresh: Record<string, unknown>,
+  ) {
+    let uploadLanded = false;
+    const memberDelegate = {
+      ...defaultDelegate(),
+      findUnique: vi.fn(({ where }: { where: { id: string } }) => {
+        if (where.id === MASTER_ID) return Promise.resolve(masterRow);
+        if (where.id !== LOSER_ID) return Promise.resolve(null);
+        return Promise.resolve(uploadLanded ? fresh : stale);
+      }),
+      count: vi.fn(({ where }: { where: { id?: string } }) =>
+        Promise.resolve(where?.id === ACTOR_ID ? 1 : 0),
+      ),
+      update: vi.fn(
+        ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
+          if (where.id === MASTER_ID && data.photoImageId === "L1") {
+            return Promise.reject(
+              Object.assign(
+                new Error(
+                  "Foreign key constraint violated on the constraint: `Member_photoImageId_fkey`",
+                ),
+                { code: "P2003" },
+              ),
+            );
+          }
+          return Promise.resolve({});
+        },
+      ),
+      delete: vi.fn().mockResolvedValue({}),
+    };
+    // Step 4 runs between the snapshot and the field merge; landing the upload
+    // here is what makes the snapshot stale at write time.
+    const xeroObjectLink = {
+      ...defaultDelegate(),
+      findMany: vi.fn(() => {
+        uploadLanded = true;
+        return Promise.resolve([]);
+      }),
+    };
+    return { memberDelegate, xeroObjectLink };
+  }
+
   it("keeps the master's photo and deletes the loser's orphaned MEMBER_PHOTO blob", async () => {
     const masterRow = makeMember(MASTER_ID, { occupation: null, photoImageId: "master-img" });
     const loserRow = makeMember(LOSER_ID, { occupation: "Engineer", photoImageId: "loser-img" });
@@ -678,37 +738,25 @@ describe("member-photo reconciliation at execute time (MP1, #189)", () => {
   it("sweeps the loser's CURRENT photo (read fresh under lock), not the stale snapshot", async () => {
     // Race: an admin POSTs a photo ON BEHALF OF the loser AFTER the merge's
     // top-of-transaction `loserFull` snapshot (photoImageId "L1") but BEFORE the
-    // reconcile. The upload creates blob "L2" (uploadedByMemberId = the ADMIN,
-    // NOT the loser), repoints the loser to L2 and deletes L1. By reconcile time
+    // field merge. The upload creates blob "L2" (uploadedByMemberId = the ADMIN,
+    // NOT the loser), repoints the loser to L2 and deletes L1. By field-merge time
     // the loser row is row-locked (teardownLoserXero's member.update), so a fresh
     // locked read returns L2 — the value the sweep must key on so L2 is not
-    // orphaned once the loser is hard-deleted. We model this by making the
-    // loser's `findUnique` return the stale L1 for the plain snapshot read and
-    // the fresh L2 for the `select: { photoImageId }` locked read at reconcile.
+    // orphaned once the loser is hard-deleted.
+    //
+    // The upload is modelled as landing during the Xero teardown (step 4), which
+    // is where the real one has to land: after the snapshot, before the merge
+    // takes the loser's row lock.
     const masterRow = makeMember(MASTER_ID, { occupation: null, photoImageId: "master-img" });
     const staleLoser = makeMember(LOSER_ID, { occupation: "Engineer", photoImageId: "L1" });
-    const memberDelegate = {
-      ...defaultDelegate(),
-      findUnique: vi.fn(
-        ({ where, select }: { where: { id: string }; select?: { photoImageId?: boolean } }) => {
-          if (where.id === MASTER_ID) return Promise.resolve(masterRow);
-          if (where.id !== LOSER_ID) return Promise.resolve(null);
-          // The fresh locked read at reconcile time carries select.photoImageId;
-          // it must observe the CURRENT pointer (L2) set by the racing upload.
-          if (select?.photoImageId) return Promise.resolve({ photoImageId: "L2" });
-          // Every other loser read (the top-of-tx snapshot, guards, token) sees
-          // the stale pre-upload snapshot (L1).
-          return Promise.resolve(staleLoser);
-        },
-      ),
-      count: vi.fn(({ where }: { where: { id?: string } }) =>
-        Promise.resolve(where?.id === ACTOR_ID ? 1 : 0),
-      ),
-      update: vi.fn().mockResolvedValue({}),
-      delete: vi.fn().mockResolvedValue({}),
-    };
+    const freshLoser = { ...staleLoser, photoImageId: "L2" };
+    const race = raceHarness(masterRow, staleLoser, freshLoser);
     const mediaImage = { ...defaultDelegate(), deleteMany: vi.fn().mockResolvedValue({ count: 1 }) };
-    const { client, member } = makeClient({ member: memberDelegate, mediaImage });
+    const { client, member } = makeClient({
+      member: race.memberDelegate,
+      xeroObjectLink: race.xeroObjectLink,
+      mediaImage,
+    });
 
     // The preview token is built from the stale snapshot (what the admin saw when
     // opening the merge). Master keeps its own photo, so photoImageId is not in
@@ -741,16 +789,99 @@ describe("member-photo reconciliation at execute time (MP1, #189)", () => {
       where: { OR: { id?: string }[] };
     };
     expect(sweep.where.OR).not.toContainEqual({ id: "L1" });
-    // The fresh locked read of the loser's photoImageId happened.
-    const memberFindUnique = (member as { findUnique: ReturnType<typeof vi.fn> }).findUnique;
-    expect(memberFindUnique).toHaveBeenCalledWith({
-      where: { id: LOSER_ID },
-      select: { photoImageId: true },
-    });
     // The loser is still hard-deleted.
     expect((member as { delete: ReturnType<typeof vi.fn> }).delete).toHaveBeenCalledWith({
       where: { id: LOSER_ID },
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // #2243 — the field-merge PATCH must come from the fresh read too.
+  // -------------------------------------------------------------------------
+
+  it("derives the write patch from the FRESH loser, so a mid-merge photo swap cannot roll the merge back (#2243)", async () => {
+    // The master has no photo, so the field merge absorbs the loser's — putting a
+    // real FK value (`Member.photoImageId` -> `MediaImage`) into the patch. The
+    // racing on-behalf upload deletes blob L1 and repoints the loser to L2. A
+    // patch derived from the transaction-opening snapshot would write the deleted
+    // L1 and rollback the ENTIRE merge on a Postgres 23503 / Prisma P2003, as a
+    // bare 500 the preview could not have predicted (the token verifies against
+    // that same stale snapshot, so it passes).
+    const masterRow = makeMember(MASTER_ID, { occupation: null, photoImageId: null });
+    const staleLoser = makeMember(LOSER_ID, { occupation: "Engineer", photoImageId: "L1" });
+    const freshLoser = { ...staleLoser, photoImageId: "L2" };
+    const race = raceHarness(masterRow, staleLoser, freshLoser);
+    const mediaImage = { ...defaultDelegate(), deleteMany: vi.fn().mockResolvedValue({ count: 0 }) };
+    const { client, auditLog } = makeClient({
+      member: race.memberDelegate,
+      xeroObjectLink: race.xeroObjectLink,
+      mediaImage,
+    });
+
+    const result = await executeMemberMerge({
+      masterId: MASTER_ID,
+      loserId: LOSER_ID,
+      actorMemberId: ACTOR_ID,
+      previewToken: photoToken(
+        masterRow as unknown as Record<string, unknown>,
+        staleLoser as unknown as Record<string, unknown>,
+      ),
+      confirmationText: "MERGE Dup Person",
+      db: client as never,
+    });
+
+    // The master absorbs the photo that actually exists (L2), never the deleted L1.
+    const masterPatches = race.memberDelegate.update.mock.calls
+      .map(([arg]) => arg as { where: { id: string }; data: Record<string, unknown> })
+      .filter((call) => call.where.id === MASTER_ID)
+      .map((call) => call.data);
+    expect(masterPatches).toHaveLength(1);
+    expect(masterPatches[0]).toMatchObject({ photoImageId: "L2" });
+    expect(masterPatches[0].photoImageId).not.toBe("L1");
+    expect(result.fieldsChanged).toContain("photoImageId");
+
+    // The merge completed rather than rolling back.
+    expect(race.memberDelegate.delete).toHaveBeenCalledWith({ where: { id: LOSER_ID } });
+
+    // ...and the sweep spares the absorbed L2 while still keying on the fresh
+    // pointer, so nothing the master now points at is deleted.
+    expect(mediaImage.deleteMany).toHaveBeenCalledWith({
+      where: {
+        kind: "MEMBER_PHOTO",
+        OR: [{ uploadedByMemberId: LOSER_ID }, { id: "L2" }],
+        photoOfMembers: { none: { id: { not: LOSER_ID } } },
+        NOT: { id: "L2" },
+      },
+    });
+
+    // The divergence from what the operator previewed is on the record.
+    const auditSpy = (auditLog as { create: ReturnType<typeof vi.fn> }).create;
+    expect(auditSpy).toHaveBeenCalledTimes(1);
+    const metadata = (
+      auditSpy.mock.calls[0][0] as { data: { metadata: { fieldMergeDriftFields: string[] } } }
+    ).data.metadata;
+    expect(metadata.fieldMergeDriftFields).toContain("photoImageId");
+  });
+
+  it("records NO field-merge drift on an ordinary uncontended merge (#2243)", async () => {
+    // The guard above must stay silent when nothing races, or it is noise on
+    // every merge and nobody will read it when it matters.
+    const { client, auditLog } = makeClient();
+
+    await executeMemberMerge({
+      masterId: MASTER_ID,
+      loserId: LOSER_ID,
+      actorMemberId: ACTOR_ID,
+      previewToken: validToken(),
+      confirmationText: "MERGE Dup Person",
+      db: client as never,
+    });
+
+    const auditSpy = (auditLog as { create: ReturnType<typeof vi.fn> }).create;
+    const metadata = (
+      auditSpy.mock.calls[0][0] as { data: { metadata: { fieldMergeDriftFields: string[] } } }
+    ).data.metadata;
+    expect(metadata.fieldMergeDriftFields).toEqual([]);
   });
 });
 

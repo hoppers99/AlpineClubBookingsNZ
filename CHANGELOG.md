@@ -4,6 +4,23 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **A member merge no longer fails outright when someone changes the duplicate
+  mid-merge (#2243).** Merging two member profiles runs as one long transaction,
+  and it used to work out what to copy onto the surviving record the moment that
+  transaction opened, then write it much later. A member photo can be uploaded
+  at any time without waiting for a merge to finish, so an on-behalf photo upload
+  landing in that gap left the merge writing a photo reference that had already
+  been deleted — the database refused it and the whole merge rolled back as an
+  unexplained error, with nothing in the operator's preview to hint at why. The
+  merge now works out what to copy from a fresh read taken just before it writes,
+  which covers every field it copies rather than photos alone (the duplicate's
+  family group is the other one that could fail the same way). Nothing changes
+  for an ordinary merge; where the fresh read does differ from what was previewed,
+  the affected field names are recorded in the merge's audit entry. Separately,
+  the safety net that stops a new member-referencing column being forgotten by a
+  merge now also covers columns that hold a member id without a database
+  foreign key — two calendar columns had slipped past it — and a test fails on
+  the next one.
 - **The finance dashboard was counting a paid price increase twice, and now
   counts it once (#2408).** When a booking's price goes up after it was made —
   someone adds a guest — the difference is tracked as an "additional payment".

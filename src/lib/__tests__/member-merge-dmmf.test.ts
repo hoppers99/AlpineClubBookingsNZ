@@ -4,8 +4,10 @@ import { Prisma } from "@prisma/client";
 import { describe, expect, it } from "vitest";
 import {
   MEMBER_MERGE_RELATION_SPECS,
+  MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS,
   diffRelationSpecCoverage,
   memberRelationNamesFromDmmf,
+  parseFkLessMemberIdColumns,
   parseMemberRelationOwnerKeys,
 } from "@/lib/member-merge";
 
@@ -168,6 +170,77 @@ model AttributeFirstThing {
     expect(unparsedSingularMemberFields(withGhost, ownerKeys, typeTokens)).toEqual([
       "GhostModel.member",
     ]);
+  });
+
+  // ---------------------------------------------------------------------
+  // #2243: FK-less member-id columns. The relation walk above is exact but
+  // structurally blind to a bare `String` column holding a member id, and the
+  // documented snapshot list used to be hand-kept and self-described as
+  // non-exhaustive — so `CalendarEvent.createdById` and
+  // `CalendarEventSeries.createdById` escaped BOTH with nothing in CI to
+  // notice. These tests make the detectable slice of that class accounted for
+  // and self-maintaining.
+  // ---------------------------------------------------------------------
+
+  it("documents every FK-less member-id column the schema scan can find", () => {
+    const detected = parseFkLessMemberIdColumns(schemaText);
+    const documented = new Set(MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS);
+
+    // Sanity: the detector really is looking at this schema, not an empty one.
+    expect(detected.length).toBeGreaterThan(20);
+    expect(detected.filter((c) => !documented.has(c))).toEqual([]);
+  });
+
+  it("names the two columns that motivated the guard (#2243)", () => {
+    const detected = parseFkLessMemberIdColumns(schemaText);
+    expect(detected).toContain("CalendarEvent.createdById");
+    expect(detected).toContain("CalendarEventSeries.createdById");
+    expect(MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS).toContain("CalendarEvent.createdById");
+    expect(MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS).toContain(
+      "CalendarEventSeries.createdById",
+    );
+  });
+
+  it("FAILS when the schema grows an undocumented FK-less member-id column (fixture proof)", () => {
+    // The next `CalendarEvent.createdById`: a bare String named like a Member FK
+    // column used elsewhere in the schema, owning no relation of its own. It is
+    // invisible to the relation walk, so this detector is the only thing between
+    // it and a silent escape.
+    const injected = `${schemaText}
+model FutureAuditThing {
+  id          String @id @default(cuid())
+  createdById String
+  note        String?
+}
+`;
+    const detected = parseFkLessMemberIdColumns(injected);
+    const documented = new Set(MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS);
+
+    expect(detected).toContain("FutureAuditThing.createdById");
+    expect(detected.filter((c) => !documented.has(c))).toEqual([
+      "FutureAuditThing.createdById",
+    ]);
+  });
+
+  it("does not report a column that DOES own a Member relation (no false positives)", () => {
+    // `Booking.createdById` owns `Booking.createdBy Member @relation(...)`, so it
+    // is classified, not a snapshot column — the detector must leave it alone or
+    // the two lists would fight over it.
+    const detected = parseFkLessMemberIdColumns(schemaText);
+    expect(detected).not.toContain("Booking.createdById");
+    expect(detected).not.toContain("Booking.memberId");
+  });
+
+  it("keeps the detected set and the classified relation columns disjoint", () => {
+    const specColumns = new Set(
+      MEMBER_MERGE_RELATION_SPECS.map((s) => `${s.model}.${s.column}`),
+    );
+    for (const column of parseFkLessMemberIdColumns(schemaText)) {
+      expect(
+        specColumns.has(column),
+        `${column} is both classified and detected as FK-less`,
+      ).toBe(false);
+    }
   });
 
   it("every spec key names a real DMMF model.field whose type is Member (catches typos)", () => {
