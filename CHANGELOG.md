@@ -4,6 +4,23 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Bed moves now stay on the guest's original lodge nights (#2366).** Dragging
+  an existing allocation chip across date columns now chooses only the
+  destination bed: the preview and keyboard announcement show the original NZ
+  night that will be kept. The first visible chip still moves all of that
+  guest's visible allocated nights together, while later chips move one night.
+  A drop explicitly says **No change** and creates no audit entry only when
+  every represented row already uses that bed; mixed-bed proxy rows still
+  converge on it. Bucket removal names and removes only the dragged night,
+  unbooked single-night targets are refused locally, and drag-end feedback says
+  a valid request is saving instead of announcing success before the server.
+  Cancelled drags do nothing.
+  Grouped moves are all-or-nothing, and the bed changes, shared-double partner
+  promotions and audit records now commit in one global-then-destination-lodge
+  locked transaction instead of the browser creating a target night and then
+  trying to delete the original. The shared global lock also prevents a
+  concurrent cancellation from pruning and then having the move resurrect an
+  allocation.
 - **Recording a cash payment now asks about any extra still owing (#2397).**
   When a booking is priced up after it was made — someone adds a guest, say —
   the increase is tracked separately as an "additional payment" the member is
@@ -66,6 +83,49 @@ All notable public reference-release changes should be recorded here.
   whole configuration can be **exported and imported as a JSON file** so one
   site's known-good settings can be handed to another rather than re-entered by
   hand.
+
+- **A cancellation is no longer approved while the member's Xero contact still
+  has money owing (#2392).** Approving a cancellation archives that member's
+  contact in Xero, and an archived contact drops out of Xero's pickers and can
+  no longer be invoiced, credited or paid. Nothing used to check whether the
+  club was still owed anything by it — the approval only looked at future
+  bookings — so the club could quietly archive an account it was in the middle
+  of chasing. That became likelier once school and organisation accounts became
+  cancellable, because an organisation is usually the billing contact for its
+  booking invoices rather than only its own membership. The approval is now
+  refused instead, and the refusal tells the reviewer exactly what is in the way:
+  each invoice by number and the amount still owing, and that each one needs to
+  be paid, credited with an allocated credit note, or voided in Xero before the
+  cancellation can go through. Voiding is the right answer for an invoice nobody
+  intends to collect, so a cancellation is never held hostage by a debt the club
+  has already written off. "Owing" means what an accountant means by it — an
+  approved or submitted invoice with a balance left. Drafts are ignored, since
+  they have never been issued; voided, deleted and paid invoices are ignored,
+  since nothing is due; and a credit note that only partly covers an invoice
+  still counts, for whatever is left, which is the figure shown. Bills the club
+  owes the contact count too, for the same reason. The member's own unpaid
+  season subscription is deliberately not counted, because approving the
+  cancellation is what credits it — counting it would make the most ordinary
+  cancellation of all impossible to approve. (An invoice for *next* season, at a
+  club that bills early, is not credited by the cancellation and so does count;
+  void it in Xero, which is right anyway for a member who is leaving.) If Xero
+  cannot be asked at all — not connected, rate limited, unreachable, or refusing
+  the request because the member's Xero contact has been merged or deleted there
+  — the approval is refused rather than let through, because "we could not find
+  out" is not the same answer as "nothing is owing". The notice says which of
+  those it is and what to do about that particular one, including whether
+  waiting will help at all, and **every** version of it also offers the way out:
+  switching **Archive Xero contacts after cancellation approval** off means no
+  contact is archived, so the check is not needed. None of this applies to a
+  club that has that setting off already, or to a member with no Xero contact:
+  nothing is archived in either case, so nothing is checked and a Xero outage
+  cannot hold up a cancellation. The review queue shows the outstanding invoices
+  next to each participant that is ready for review — each one linked straight
+  into Xero, so a bill or an invoice Xero never numbered can still be opened in
+  one click — so a reviewer finds out before they press Approve rather than
+  after. Finally, because the Xero archive itself happens later on the sync
+  queue rather than at the moment of approval, it asks the same question again
+  just before it runs and holds off if the answer has changed since.
 
 - **A promo code that turned out to be worth nothing no longer uses up
   someone's one permitted go at it (#2299).** Until now the system counted a

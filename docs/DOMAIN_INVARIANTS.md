@@ -708,6 +708,27 @@ Future reviews and issues should cite this file when proposing changes.
   The same three paths (single-night/drag placements, `source: "AUTO"`
   suggestions, and move re-drafts) are why draft rows persist under #2251's
   auto-approve, and why a confirmation affordance stays meaningful.
+- **Existing allocation moves preserve their lodge nights and commit atomically
+  (#2366):** an existing-chip drag selects a destination bed only. The hovered
+  column is presentation input, never a target date; the server accepts
+  allocation ids and re-reads each persisted `stayDate` under global booking
+  `lock(1)` followed by the destination lodge's capacity lock. The shared
+  global key makes cancellation's allocation prune and the move mutually
+  exclusive, so a move can never resurrect a row after cancellation. A
+  first-visible chip proxies for that guest's currently
+  visible allocated nights, while a later chip represents only its own night.
+  Every selected row keeps its original NZ date. A same-bed normalized move is a
+  no-op at both client and service boundaries, with no request from the normal
+  client and no audit even if another client calls the route directly.
+  Multi-night existing-allocation moves are all-or-nothing: one destination
+  conflict, inactive bed/room, lodge mismatch, status/guest-date failure,
+  custodian hold or invalid double-bed share rolls back every row. The row
+  updates, any second-occupant promotions, and all corresponding audit entries
+  live in the same transaction. Each promotion audit identifies both the
+  promoted row/guest and the causal moved allocation/guest. This does not
+  change bucket-to-board placement,
+  whose existing bulk path continues to report and skip individual conflicting
+  nights while placing the rest.
 - **A range assignment writes all or nothing, and records itself once (#2251):**
   `assignBedRange` scans, writes and audits inside one transaction. If any
   requested night is blocked, NOTHING is written and the caller receives a
@@ -740,8 +761,10 @@ Future reviews and issues should cite this file when proposing changes.
   will be written, so a partial result is never one click from a warning. The
   31-night `MAX_BED_ALLOCATION_RANGE_NIGHTS` bounds
   the board's READ window, not this write: lodge capacity is the active bed
-  count and never reads `BedAllocation` rows, and no capacity or advisory lock
-  is taken on any allocation write path. The separate write bound
+  count and never reads `BedAllocation` rows. Placement paths nevertheless take
+  the destination lodge's capacity lock because custodian holds share the bed
+  inventory (#2286); existing-allocation moves follow destination-key read →
+  lock → authoritative re-read. The separate write bound
   (`MAX_BED_ALLOCATION_ASSIGN_RANGE_NIGHTS`, 366) exists only to keep one
   transaction finite, and is **refused at, never silently truncated to** — as is
   every board window the admin types.
