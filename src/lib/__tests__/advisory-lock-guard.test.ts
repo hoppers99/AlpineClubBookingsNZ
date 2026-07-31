@@ -43,6 +43,12 @@ const GLOBAL_BOOKING_MONEY_LOCK_INVENTORY: Record<string, number> = {
   // its status writes did not exclude a concurrent cancel.
   "src/app/api/payments/create-payment-intent/route.ts": 1,
   "src/app/api/payments/switch-to-internet-banking/route.ts": 1,
+  // #2366: an existing-allocation move does not change booking status, but it
+  // composes with cancellation because cancellation prunes those rows. It
+  // therefore takes global lock(1) before the destination-lodge capacity lock,
+  // re-reads the source rows under both, and cannot resurrect a cancelled
+  // booking's allocation after the prune commits.
+  "src/lib/admin-bed-allocation.ts": 1,
   "src/lib/booking-batch-modification-service.ts": 1,
   // #1881 residual: the fifth site protects the linked provisional-child
   // PENDING -> CANCELLED claim. That path also takes the child's per-lodge lock
