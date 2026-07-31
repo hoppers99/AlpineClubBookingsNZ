@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { manuallyAllocateBed } from "@/lib/admin-bed-allocation";
+import {
+  MAX_BED_ALLOCATION_RANGE_NIGHTS,
+  manuallyAllocateBed,
+  moveBedAllocationsSameDate,
+} from "@/lib/admin-bed-allocation";
+import { formatDateOnly } from "@/lib/date-only";
 import {
   bedAllocationErrorResponse,
   requireBedAllocationAdmin,
@@ -14,6 +19,16 @@ const manualAllocationSchema = z
     bookingGuestId: z.string().min(1),
     bedId: z.string().min(1),
     stayDate: z.string().min(1),
+  })
+  .strict();
+
+const moveAllocationSchema = z
+  .object({
+    allocationIds: z
+      .array(z.string().min(1))
+      .min(1)
+      .max(MAX_BED_ALLOCATION_RANGE_NIGHTS),
+    bedId: z.string().min(1),
   })
   .strict();
 
@@ -74,6 +89,47 @@ export async function POST(request: Request) {
     }
 
     return NextResponse.json({ allocation });
+  } catch (error) {
+    return bedAllocationErrorResponse(error);
+  }
+}
+
+export async function PATCH(request: Request) {
+  const guard = await requireBedAllocationAdmin();
+  if (!guard.ok) return guard.response;
+
+  try {
+    const json = await parseJsonRequestBody(request);
+    if (!json.ok) return json.response;
+
+    const body = moveAllocationSchema.safeParse(json.body);
+    if (!body.success) {
+      return NextResponse.json(
+        { error: "Invalid input", details: body.error.flatten() },
+        { status: 400 },
+      );
+    }
+
+    // The service owns the transaction and writes both allocation changes and
+    // audit rows inside it. Keeping the route audit-free avoids the old
+    // committed-write/missing-audit window and makes server-side no-ops silent.
+    const result = await moveBedAllocationsSameDate({
+      ...body.data,
+      actorMemberId: guard.session.user.id,
+    });
+
+    return NextResponse.json({
+      noop: result.noop,
+      allocations: result.allocations.map((allocation) => ({
+        id: allocation.id,
+        bookingId: allocation.bookingId,
+        bookingGuestId: allocation.bookingGuestId,
+        roomId: allocation.roomId,
+        bedId: allocation.bedId,
+        stayDate: formatDateOnly(allocation.stayDate),
+        source: allocation.source,
+      })),
+    });
   } catch (error) {
     return bedAllocationErrorResponse(error);
   }

@@ -68,6 +68,13 @@ vi.mock("@/lib/promo", () => ({
     beneficiaryMemberIds: [],
   }),
   replacePromoRedemptionAllocations: vi.fn(),
+  // #2299: the promo path row-locks each PromoCode it may charge or
+  // refund before reading or writing any usage cap; the reprice paths also
+  // re-read the usage counter under that lock.
+  lockPromoCodeRowsForUpdate: vi.fn(),
+  lockAndRefreshPromoCodeUsage: vi.fn(
+    async (_tx: unknown, promoCode: unknown) => promoCode
+  ),
   deletePromoRedemptionAndAdjustCount: vi.fn(),
 }));
 vi.mock("@/lib/audit", () => ({ logAudit: vi.fn(), createAuditLog: vi.fn() }));

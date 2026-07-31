@@ -1286,6 +1286,30 @@ async function performBookingCancellation(
     // payment.creditAppliedCents (NOT the ledger sum) so the actual restore
     // matches the preview input; restoreCreditFromBooking caps the override at
     // the ledger sum in the SAFE (never over-restore) direction.
+    //
+    // #2397 (F8), DECIDED, not accidental. When a cash settlement recorded LESS
+    // than the booking's price because the money did not cover an outstanding
+    // addition, `payment.amountCents` is the smaller figure, so
+    // `refundableBaseCents` above is smaller too. Inside
+    // calculateAppliedCreditRestore that shrinks `cardGross`, which raises
+    // `feeRemainder` (the tier's fixed fee is charged ONCE per cancellation,
+    // card-first), which can reduce the restored credit by up to that fixed
+    // fee. That is the intended behaviour on all three counts:
+    //
+    //  * the card slice must be tiered off what the member ACTUALLY paid — the
+    //    club cannot refund a percentage of money it never received;
+    //  * the fixed cancellation fee is a fee for cancelling, not a share of
+    //    what was handed over, so it must not shrink or vanish because the
+    //    member paid less. Letting it fall through to the credit slice is
+    //    exactly the "fee once, card-first" rule already in force; and
+    //  * the member is not out of pocket overall — they still hold the
+    //    uncollected addition, which is strictly larger than the extra fee
+    //    absorption (capped at the tier's fixed fee), and the club stops
+    //    chasing it on cancellation.
+    //
+    // The alternative — tiering the credit slice off the booking's PRICE rather
+    // than the amount paid — would charge a member who paid in full more
+    // cancellation fee than one who underpaid, which is worse.
     let creditRestoredCents = 0;
     if (payment.creditAppliedCents > 0) {
       const { creditRestoredCents: creditToRestore } = calculateAppliedCreditRestore(
