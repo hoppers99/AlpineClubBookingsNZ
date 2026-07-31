@@ -52,6 +52,20 @@ export const XERO_INBOUND_DATASET_QUERY_KEYS = [
   "inPage",
 ] as const
 
+export const FINANCE_DASHBOARD_DATASET_QUERY_KEYS = [
+  "range",
+  "compare",
+  "from",
+  "to",
+  "compareFrom",
+  "compareTo",
+  "forward",
+  "forwardFrom",
+  "forwardTo",
+  "expenseCategoryId",
+  "expenseLine",
+] as const
+
 export function withoutDatasetQueryKeys(
   currentSearch: string,
   keys: readonly string[],
@@ -90,6 +104,31 @@ export function resetSubscriptionsDatasetSearchParams(
   currentSearch: string,
 ): URLSearchParams {
   return withoutDatasetQueryKeys(currentSearch, SUBSCRIPTION_DATASET_QUERY_KEYS)
+}
+
+export function resetFinanceDashboardDatasetSearchParams(
+  currentSearch: string,
+): URLSearchParams {
+  return withoutDatasetQueryKeys(
+    currentSearch,
+    FINANCE_DASHBOARD_DATASET_QUERY_KEYS,
+  )
+}
+
+export function isFinanceDashboardDatasetDefault(selection: {
+  range: string
+  compare: string
+  forward: string
+  expenseCategoryId: string | null
+  expenseLine: string | null
+}): boolean {
+  return (
+    selection.range === "last-month" &&
+    selection.compare === "previous-period" &&
+    selection.forward === "next-month" &&
+    !selection.expenseCategoryId &&
+    !selection.expenseLine
+  )
 }
 
 function resetXeroDatasetSearchParams(

@@ -48,6 +48,7 @@ season/cohort selectors, and unknown URL keys remain in place.
 | Induction Register | Search empty; status neutral | Page route context |
 | Promo Redemptions | Date and lodge filters empty; page 1 | Promo-code record; expanded rows are transient presentation |
 | Lockers | Locker-name ascending | Selected lodge; create/edit form state is not dataset state |
+| Finance Dashboard | Range `Last Month`; comparison `Previous Period`; forward window `Next Month`; expense category and line empty | Current `view`; `lodgeId`; Ratio Explorer inputs; unknown URL keys |
 
 ## Excluded state
 

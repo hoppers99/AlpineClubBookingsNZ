@@ -89,6 +89,7 @@ const CAPTURES: Capture[] = [
   },
   { name: "admin-waitlist", route: "/admin/waitlist", area: "admin" },
   { name: "admin-reports", route: "/admin/reports", area: "admin" },
+  { name: "finance-dashboard", route: "/finance", area: "admin" },
   { name: "admin-setup", route: "/admin/setup", area: "admin" },
   { name: "public-home", route: "/", area: "public", auth: false },
   // Batch 1 (#2050): bookings & capacity operator guides.

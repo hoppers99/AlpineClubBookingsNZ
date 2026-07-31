@@ -123,6 +123,9 @@ describe("contextual help registry", () => {
 
     expect(help.title).toBe("Finance Dashboard");
     expect(help.fields?.map((field) => field.name)).toContain("View");
+    expect(help.actions).toContainEqual(
+      expect.stringContaining("without changing the current view or lodge scope"),
+    );
   });
 
   it("documents the Reports Next Month quick range and retained filters", () => {

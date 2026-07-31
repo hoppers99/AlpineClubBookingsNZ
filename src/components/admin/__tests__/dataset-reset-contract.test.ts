@@ -27,6 +27,7 @@ const INCLUDED_DATASETS = [
   ["Induction Register", "src/components/admin/induction-register-table.tsx"],
   ["Promo Redemptions", "src/app/(admin)/admin/promo-codes/promo-redemptions-panel.tsx"],
   ["Lockers", "src/app/(admin)/admin/lockers/page.tsx"],
+  ["Finance Dashboard", "src/app/(finance)/finance/_components/finance-dashboard-client.tsx"],
 ] as const
 
 function conditionalAncestor(node: ts.Node): ts.Node | null {
@@ -48,9 +49,9 @@ function conditionalAncestor(node: ts.Node): ts.Node | null {
 
 describe("admin dataset Reset inventory contract", () => {
   it("keeps the audited inventory explicit", () => {
-    expect(INCLUDED_DATASETS).toHaveLength(21)
-    expect(new Set(INCLUDED_DATASETS.map(([name]) => name)).size).toBe(21)
-    expect(new Set(INCLUDED_DATASETS.map(([, path]) => path)).size).toBe(21)
+    expect(INCLUDED_DATASETS).toHaveLength(22)
+    expect(new Set(INCLUDED_DATASETS.map(([name]) => name)).size).toBe(22)
+    expect(new Set(INCLUDED_DATASETS.map(([, path]) => path)).size).toBe(22)
   })
 
   it.each(INCLUDED_DATASETS)(

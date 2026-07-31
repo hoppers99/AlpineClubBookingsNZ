@@ -2220,6 +2220,7 @@ const financeHelpEntries: HelpEntry[] = [
       "The Finance dashboard combines booking metrics, revenue/cost views, mapped Xero snapshots, sync diagnostics, and export tools.",
       [
         "Choose the view, date range, comparison range, and forward window, then apply filters.",
+        "Use Reset to restore Last Month, Previous Period, Next Month, and empty expense filters without changing the current view or lodge scope.",
         "Use CSV or PDF exports for committee reporting or offline reconciliation.",
         "If you are a finance manager, run a manual sync when the sync status indicates stale or missing data.",
       ],

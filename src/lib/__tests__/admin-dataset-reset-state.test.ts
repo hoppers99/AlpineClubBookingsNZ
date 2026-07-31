@@ -3,6 +3,8 @@ import {
   buildBookingRequestDatasetPath,
   getPaymentsDatasetDefaults,
   getReportsDatasetDefaults,
+  isFinanceDashboardDatasetDefault,
+  resetFinanceDashboardDatasetSearchParams,
   resetPaymentsDatasetSearchParams,
   resetReportsDatasetState,
   resetSubscriptionsDatasetSearchParams,
@@ -11,6 +13,57 @@ import {
 } from "@/lib/admin-dataset-reset-state"
 
 describe("admin dataset reset state", () => {
+  it("resets Finance selectors while preserving view, lodge, Ratio Explorer, and unknown context", () => {
+    const params = resetFinanceDashboardDatasetSearchParams(
+      "view=costs&lodgeId=lodge-2&range=custom&compare=custom&from=2025-01&to=2025-03&compareFrom=2024-01&compareTo=2024-03&forward=custom&forwardFrom=2026-01&forwardTo=2026-04&expenseCategoryId=food&expenseLine=groceries&ratioNumerator=income&ratioDenominator=costs&ratioRange=fy-current&futureContext=keep",
+    )
+
+    expect(params.get("view")).toBe("costs")
+    expect(params.get("lodgeId")).toBe("lodge-2")
+    expect(params.get("ratioNumerator")).toBe("income")
+    expect(params.get("ratioDenominator")).toBe("costs")
+    expect(params.get("ratioRange")).toBe("fy-current")
+    expect(params.get("futureContext")).toBe("keep")
+    for (const key of [
+      "range",
+      "compare",
+      "from",
+      "to",
+      "compareFrom",
+      "compareTo",
+      "forward",
+      "forwardFrom",
+      "forwardTo",
+      "expenseCategoryId",
+      "expenseLine",
+    ]) {
+      expect(params.has(key), key).toBe(false)
+    }
+  })
+
+  it("recognises only the true Finance selector defaults", () => {
+    const defaults = {
+      range: "last-month",
+      compare: "previous-period",
+      forward: "next-month",
+      expenseCategoryId: null,
+      expenseLine: null,
+    }
+
+    expect(isFinanceDashboardDatasetDefault(defaults)).toBe(true)
+    for (const change of [
+      { range: "last-3-months" },
+      { compare: "none" },
+      { forward: "next-quarter" },
+      { expenseCategoryId: "category-1" },
+      { expenseLine: "Catering" },
+    ]) {
+      expect(isFinanceDashboardDatasetDefault({ ...defaults, ...change })).toBe(
+        false,
+      )
+    }
+  })
+
   it("restores Payments to the rolling NZ three-month range and preserves unknown keys", () => {
     expect(getPaymentsDatasetDefaults("2026-08-01")).toEqual({
       lastUpdatedFrom: "2026-05-01",
