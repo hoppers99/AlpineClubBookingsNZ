@@ -385,6 +385,20 @@ interface XeroRetryRateLimitEvent {
 interface XeroRetryOptions {
   maxRetries?: number;
   maxTransientRetries?: number;
+  /**
+   * Whether exhausting the transient (5xx/408) budget may arm the PROCESS-GLOBAL
+   * transient-outage breaker. Defaults to true, which is right for every call
+   * that MATTERS: if invoicing keeps hitting 5xx, stopping the whole process for
+   * two minutes protects the quota and the downstream state.
+   *
+   * Pass false for a call whose own failure is inconsequential but whose blast
+   * radius would not be — a decorative read behind an operator-facing button, in
+   * particular (#2394). Such a call should be able to fail as often as a human
+   * presses it without taking invoicing, sync and webhook replay down with it.
+   * Opting out never lets a call IGNORE the breaker: `withXeroRetry` still
+   * refuses up front while a cooldown armed elsewhere is active.
+   */
+  armTransientBreaker?: boolean;
   maxWaitSec?: number;
   context?: string;
   onRateLimit?: (event: XeroRetryRateLimitEvent) => void;
@@ -557,6 +571,7 @@ export async function withXeroRetry<T>(
     options?.maxTransientRetries ??
     Math.min(maxRateLimitRetries, DEFAULT_XERO_TRANSIENT_MAX_RETRIES);
   const maxWaitSec = options?.maxWaitSec ?? 120;
+  const armTransientBreaker = options?.armTransientBreaker ?? true;
   const context = options?.context ?? "Xero API call";
   const maxAttempts = Math.max(maxRateLimitRetries, maxTransientRetries);
 
@@ -617,7 +632,9 @@ export async function withXeroRetry<T>(
           continue;
         }
 
-        rememberXeroTransientOutage(getXeroTransientCooldownSeconds(err));
+        if (armTransientBreaker) {
+          rememberXeroTransientOutage(getXeroTransientCooldownSeconds(err));
+        }
         throw err;
       }
 

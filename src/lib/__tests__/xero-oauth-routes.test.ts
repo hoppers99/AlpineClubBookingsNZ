@@ -36,6 +36,12 @@ vi.mock("@/lib/logger", () => ({
 
 import { GET as connectXero } from "@/app/api/admin/xero/connect/route";
 import { GET as handleXeroConnectCallback } from "@/app/api/admin/xero/callback/route";
+import {
+  toSafeXeroOAuthCallbackMessage,
+  XERO_OAUTH_CALLBACK_GENERIC_MESSAGE,
+  XERO_OAUTH_CALLBACK_INVALID_STATE_MESSAGE,
+  XERO_OAUTH_CALLBACK_NO_TENANT_MESSAGE,
+} from "@/lib/xero-oauth-callback-messages";
 
 const adminSession = { user: { id: "admin-1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] } } as const;
 
@@ -162,5 +168,44 @@ describe("Xero OAuth admin routes", () => {
     );
     expect(location).not.toContain("secret-code");
     expect(location).not.toContain("secret-state");
+  });
+});
+
+// #2394 review, F9. The callback's error message travels back as `?error=` and
+// is now rendered in a danger-styled box on TWO admin pages, so the same
+// allow-list has to be enforced when READING the query string — not only when
+// writing it. React escapes the value, so this is not XSS; it is a phishing
+// surface, and a crafted link would otherwise put attacker-chosen prose of
+// unbounded length into an authoritative-looking red banner on a trusted page.
+describe("toSafeXeroOAuthCallbackMessage (the read side of ?error=)", () => {
+  it("passes our own three messages through unchanged", () => {
+    for (const message of [
+      XERO_OAUTH_CALLBACK_INVALID_STATE_MESSAGE,
+      XERO_OAUTH_CALLBACK_NO_TENANT_MESSAGE,
+      XERO_OAUTH_CALLBACK_GENERIC_MESSAGE,
+    ]) {
+      expect(toSafeXeroOAuthCallbackMessage(message)).toBe(message);
+    }
+  });
+
+  it("collapses anything else to the generic message rather than rendering it", () => {
+    expect(
+      toSafeXeroOAuthCallbackMessage(
+        "Your Xero session was suspended. Call 0800-000-000 to restore it.",
+      ),
+    ).toBe(XERO_OAUTH_CALLBACK_GENERIC_MESSAGE);
+    // Including a near-miss of one of ours, and something enormous.
+    expect(
+      toSafeXeroOAuthCallbackMessage("Invalid Xero OAuth state."),
+    ).toBe(XERO_OAUTH_CALLBACK_GENERIC_MESSAGE);
+    expect(toSafeXeroOAuthCallbackMessage("x".repeat(5000))).toBe(
+      XERO_OAUTH_CALLBACK_GENERIC_MESSAGE,
+    );
+  });
+
+  it("says nothing at all when there was no error", () => {
+    expect(toSafeXeroOAuthCallbackMessage(null)).toBeNull();
+    expect(toSafeXeroOAuthCallbackMessage(undefined)).toBeNull();
+    expect(toSafeXeroOAuthCallbackMessage("")).toBeNull();
   });
 });

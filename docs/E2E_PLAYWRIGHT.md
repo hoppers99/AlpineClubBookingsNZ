@@ -348,6 +348,13 @@ and `xero-setup-wizard.spec.ts` could only time out. `fetchMockLoopback`
 self-calls (three attempts, short backoff); any HTTP status the handler returns
 is still surfaced unchanged, and the whole module stays production-inert.
 
+That fixed the *harness*. The **product** side of the same dead end was fixed
+separately in **#2394**: the wizard step now shows why the organisation read
+failed and offers a manual **Try again**, so a real Xero blip costs an operator
+one click instead of a stuck page. A spec that wants to assert the failure path
+should therefore look for that explanation, not for an indefinite
+"Confirming the organisation name…".
+
 ## Flake invariants — read before writing a spec (issue #2302)
 
 Five specs flaked on `main` over the last week of July 2026

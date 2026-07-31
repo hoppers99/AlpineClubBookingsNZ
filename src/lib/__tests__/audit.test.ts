@@ -181,6 +181,73 @@ describe("audit helper", () => {
     expect(String(sanitized.longText)).toContain("[TRUNCATED]");
   });
 
+  // #2269 second review. A handful of audit rows exist BECAUSE the metadata is
+  // the record — Restore Default deletes a club's email wording with one click
+  // and no undo, and the audit row is the only copy left. The 1000-character
+  // clip turned a measured 1748-character body into 1014 characters ending
+  // "[TRUNCATED]", which is not a copy of anything. Archive mode relaxes size
+  // and nothing else.
+  describe("archive mode", () => {
+    it("keeps a long value whole instead of clipping it at 1000 characters", () => {
+      const wording = "x".repeat(1748);
+      const sanitized = sanitizeAuditMetadata(
+        { deletedOverride: { bodyText: wording } },
+        { archiveText: { maxStringLength: 10_000 } }
+      ) as { deletedOverride: { bodyText: string } };
+
+      expect(sanitized.deletedOverride.bodyText).toBe(wording);
+    });
+
+    it("changes nothing for a caller that does not ask for it", () => {
+      const sanitized = sanitizeAuditMetadata({
+        deletedOverride: { bodyText: "x".repeat(1748) },
+      }) as { deletedOverride: { bodyText: string } };
+
+      expect(sanitized.deletedOverride.bodyText).toContain("[TRUNCATED]");
+      expect(sanitized.deletedOverride.bodyText.length).toBeLessThan(1_100);
+    });
+
+    it("still redacts secrets, card numbers and sensitive keys", () => {
+      const sanitized = sanitizeAuditMetadata(
+        {
+          apiKey: `${"a".repeat(1200)} sk_live_ABCDEF1234567890`,
+          card: { number: "4242424242424242" },
+          note: `${"n".repeat(1200)} 4242 4242 4242 4242`,
+          password: "secret",
+        },
+        { archiveText: { maxStringLength: 10_000 } }
+      ) as Record<string, unknown>;
+
+      expect(sanitized.apiKey).toBe("[REDACTED]");
+      expect(sanitized.card).toBe("[REDACTED]");
+      expect(sanitized.password).toBe("[REDACTED]");
+      expect(String(sanitized.note)).toContain("[REDACTED_CARD]");
+    });
+
+    it("still clips a value that runs past the archive length it was given", () => {
+      const sanitized = sanitizeAuditMetadata(
+        { bodyText: "x".repeat(12_000) },
+        { archiveText: { maxStringLength: 10_000 } }
+      ) as { bodyText: string };
+
+      expect(sanitized.bodyText).toContain("[TRUNCATED]");
+    });
+
+    it("gives the JSON envelope matching headroom so it cannot collapse to a stub", () => {
+      // A value that is mostly newlines doubles under JSON escaping. Without
+      // the extra headroom the whole object becomes {_truncated: true, …},
+      // which loses more than the clipping it was meant to avoid.
+      const wording = "a\n".repeat(5_000);
+      const sanitized = sanitizeAuditMetadata(
+        { bodyText: wording },
+        { archiveText: { maxStringLength: 10_000 } }
+      ) as { bodyText?: string; _truncated?: boolean };
+
+      expect(sanitized._truncated).toBeUndefined();
+      expect(sanitized.bodyText).toBe(wording);
+    });
+  });
+
   it("classifies retention and calculates expiry dates", () => {
     const from = new Date("2026-01-01T00:00:00.000Z");
 

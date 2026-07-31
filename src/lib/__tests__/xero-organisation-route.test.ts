@@ -28,6 +28,7 @@ describe("GET /api/admin/xero/organisation", () => {
       name: "Alpine Club",
       financialYearEndMonth: 3,
       shortCode: "!aBc12",
+      readFailure: null,
     });
 
     const res = await GET(
@@ -39,6 +40,7 @@ describe("GET /api/admin/xero/organisation", () => {
       name: "Alpine Club",
       financialYearEndMonth: 3,
       shortCode: "!aBc12",
+      readFailure: null,
     });
     // No forced refresh, so the 12-hour in-process cache still serves the read.
     expect(mocks.getXeroConnectedOrganisation).toHaveBeenCalledWith(false);
@@ -49,6 +51,7 @@ describe("GET /api/admin/xero/organisation", () => {
       name: null,
       financialYearEndMonth: null,
       shortCode: null,
+      readFailure: null,
     });
 
     const res = await GET(
@@ -59,7 +62,55 @@ describe("GET /api/admin/xero/organisation", () => {
       name: null,
       financialYearEndMonth: null,
       shortCode: null,
+      readFailure: null,
     });
+  });
+
+  // #2394: the client cannot tell "Xero has no name for you" from "the read
+  // failed" unless this route says so, and the setup wizard hung on
+  // "Confirming the organisation name…" for exactly that reason.
+  it("passes the read failure through so a caller can explain the empty name", async () => {
+    mocks.getXeroConnectedOrganisation.mockResolvedValue({
+      name: null,
+      financialYearEndMonth: null,
+      shortCode: null,
+      readFailure: {
+        kind: "rate_limited",
+        rateLimit: "day",
+        retryAfterSeconds: 7200,
+      },
+    });
+
+    const res = await GET(
+      new NextRequest("https://club.example.org/api/admin/xero/organisation"),
+    );
+
+    await expect(res.json()).resolves.toEqual({
+      name: null,
+      financialYearEndMonth: null,
+      shortCode: null,
+      readFailure: {
+        kind: "rate_limited",
+        rateLimit: "day",
+        retryAfterSeconds: 7200,
+      },
+    });
+  });
+
+  // The field is always present, never absent: an absent key would leave the
+  // client guessing whether the read succeeded or the server is simply older.
+  it("still reports readFailure: null when the summary omits the field", async () => {
+    mocks.getXeroConnectedOrganisation.mockResolvedValue({
+      name: "Alpine Club",
+      financialYearEndMonth: 3,
+      shortCode: "!aBc12",
+    });
+
+    const res = await GET(
+      new NextRequest("https://club.example.org/api/admin/xero/organisation"),
+    );
+
+    await expect(res.json()).resolves.toMatchObject({ readFailure: null });
   });
 
   it("honours ?refresh=1 so a reconnect cannot serve the old org's short code", async () => {

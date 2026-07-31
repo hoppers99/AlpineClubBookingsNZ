@@ -31,6 +31,47 @@ All notable public reference-release changes should be recorded here.
   be short by and how many bookings are involved, instead of quietly publishing
   a number that is too low.
 
+- **Clubs that had saved their own email wording stop emailing our editing notes
+  (#2269).** Older releases shipped little square-bracketed notes inside the
+  built-in email wording — things like `Door code: {{doorCode}} [only when a door
+  code is set]`. They were written for whoever was reading the template, but
+  emails fill in `{{tokens}}` and copy everything else through exactly as typed,
+  so those notes were being sent to members word for word. Earlier fixes cleaned
+  the built-in wording, which quietly fixed every club that had not customised
+  the message. A club that had **saved its own copy** of a message kept its copy,
+  and so kept the notes, for ever. This release repairs those saved copies on
+  upgrade. It matches the **exact** notes this project shipped — not anything
+  that merely looks like one — and leaves the rest of your wording byte for byte
+  as it was. Your own square-bracketed text is never touched, even when it reads
+  like ours (`[when you are 30 minutes away]` is your wording, and it stays);
+  such text keeps being flagged in the admin screen for a person to decide
+  about, rather than deleted by a script. The trade we chose deliberately: if
+  one of our notes was retyped or re-spaced by an admin at some point, the
+  repair leaves it alone rather than risk deleting something you meant, and the
+  admin screen keeps flagging it. Every message the repair changes is recorded
+  in the audit log with the whole before and after, so a club can see exactly
+  what we changed and, with an administrator's help, restore any of it.
+  **Every message the repair touched is named on screen afterwards.** Some of
+  those notes were the only thing marking a line as conditional — `Payment has
+  been processed successfully.` was our wording, with `[only when the booking is
+  already paid]` beside it — so once the note goes, that line sends every time,
+  including on a booking that still owes money. **Admin → Email messages** lists
+  each repaired message, the notes removed and the lines they were attached to,
+  so an admin can read them and fix anything that no longer makes sense. Saving
+  the message clears the notice. **And Restore Default now keeps a full copy.**
+  It still deletes your wording and still cannot be undone from that screen, but
+  the subject and body it deletes are written to the audit log in full — not an
+  extract — so an administrator can read them back.
+  **And the editor now tells you when your saved wording has fallen behind.**
+  **Admin → Email messages** names any message whose saved copy no longer shows
+  something that message is required to tell the recipient — most often a
+  booking confirmation saved before the promo explanation moved into its own
+  token, which now shows a subtotal and a total with nothing in between to
+  explain the difference. Open that message and **Show differences** lays your
+  saved copy beside the current built-in wording line by line, so you can patch
+  your own words or restore the default knowing exactly what you would be giving
+  up. Wording that simply *reads* differently is reported as a plain difference
+  and never as a problem — that is what saving your own copy is for.
 - **The public site no longer advertises guest bookings (#2421).** The
   signed-out help corpus previously answered "Can I stay without being a
   member?" with "Yes", and the sign-in page carried a *Request a booking
@@ -65,6 +106,34 @@ All notable public reference-release changes should be recorded here.
   trying to delete the original. The shared global lock also prevents a
   concurrent cancellation from pruning and then having the move resurrect an
   allocation.
+
+- **Editing a booking no longer takes away a promo discount the club already
+  gave (#2390).** A promotion's usage limits are checked again every time a
+  booking is repriced — a date change, a guest added or removed, an edit from
+  the Edit panel. If other members had used the code up in the meantime, the
+  edit used to fail that check, and failing it stripped the promotion from the
+  booking *entirely*: everyone on it lost the discount, including the people who
+  already had it, and the member was billed the difference for changing a date.
+
+  Now the edit always goes through, everyone already benefiting keeps their
+  discount, and only people the edit newly adds are priced at the normal rate.
+  Where there is not enough room for everybody, the people who already had the
+  discount keep it and the remaining room goes to the most expensive stays
+  first, so the code is worth as much as it can be to the booking. The member is
+  told before they save, in one sentence naming who keeps it, who this edit
+  brought under it, who is not covered, and confirming that the total on screen
+  already reflects it — and that same sentence goes into their booking-modified
+  email and onto the booking's own history, so nobody has to work it out
+  afterwards. On a free-nights code, a member who already had free nights on the
+  booking keeps them even if an admin has since lowered the lifetime limit.
+
+  This also settles what happens when an admin **lowers** a limit on a code
+  members are already using: the bookings that already have the discount keep
+  it, so "Benefits given" can sit above the new limit until those stays pass.
+  That is the club honouring what it already promised, not a fault — and no new
+  member is given the code while it is over. If a code is exhausted and nobody
+  on the booking was benefiting from it, the edit removes it from the booking as
+  before; nobody loses anything, because nobody had anything.
 - **Recording a cash payment now asks about any extra still owing (#2397).**
   When a booking is priced up after it was made — someone adds a guest, say —
   the increase is tracked separately as an "additional payment" the member is
@@ -282,6 +351,75 @@ All notable public reference-release changes should be recorded here.
   dashboard finally renders the additional-payment split it had been quietly
   computing all along.
 
+- **Xero setup no longer gets stuck on "Confirming the organisation name…"
+  (#2394).** After connecting Xero, the setup wizard fetches your organisation's
+  name so you can check you picked the right one. That fetch happened exactly
+  once, and if it failed — because Xero was momentarily busy, briefly
+  unreachable, or the connection needed re-authorising — the page simply sat on
+  "Confirming the organisation name…" with no explanation, no way to retry, and
+  no way forward. The only escape was guessing that a reload might help.
+
+  The step now tells you what actually happened, in the terms that decide what
+  you should do about it, and offers a **Try again** button wherever pressing it
+  could genuinely help — including when Xero's daily limit has been reached,
+  since that limit can clear while you are still on the page. If Xero needs
+  re-authorising, it says so and points at Disconnect and Connect, and offers no
+  button, because retrying would never have worked. If the daily limit was hit
+  it says when that clears — midnight UTC, about midday in New Zealand — so you
+  can judge whether to wait or come back tomorrow. If your sign-in has simply
+  expired it tells you to sign in again rather than blaming your permissions,
+  and if your admin role really isn't allowed to read the organisation it says
+  that instead of pretending a retry might fix it. Each attempt is stamped
+  ("Checked 3 times, most recently at 2:32 pm") so a repeat failure is visible
+  rather than a silent flicker.
+
+  Nothing retries on its own, deliberately. Each Xero connection has a limited
+  number of calls per day, and hammering a limit that has already been hit only
+  makes it last longer — so apart from one fresh check when you come back from
+  authorising Xero (where the organisation may have just changed), a live check
+  happens only when you press the button. That check can also no longer put the
+  rest of the Xero integration on hold: it used to be able to trip the app-wide
+  "Xero looks unwell, pause everything" guard that stops invoicing and syncing
+  for a couple of minutes, and a button inviting you to press it during an
+  outage should never be able to do that.
+
+  Two related gaps closed at the same time. If Xero refused the authorisation
+  itself, the wizard used to show only "Not Connected" with no hint that
+  anything had gone wrong; it now says the connection attempt failed and what to
+  do about it. (It deliberately does not quote Xero's own wording back at you —
+  that text arrives through the browser and cannot be trusted to be Xero's.) And
+  a connected organisation whose name we could not re-check no longer shows a
+  green "all set" tick: it now says plainly that the name is the last one we
+  saw, not a confirmation — which is what you would see if the club revoked the
+  app inside Xero.
+- **A refused save no longer blames the email address when the email address is
+  not the problem, and switching a family's login holder now explains an email
+  clash (#2385).** Only one member per email address can sign in — that is why a
+  family's children can share a parent's address as long as they do not log in
+  themselves. Three changes, all about being told the truth when a save is
+  refused:
+
+  - On a member's **Account & Access** tab, ticking **Can Login** when that
+    member's address is already someone else's login is now spotted before the
+    save is attempted rather than by letting the database reject it. Admins see
+    the same message as before — "A member with this email already exists" — so
+    nothing looks different; the save simply stops earlier.
+  - What *has* changed is what a member save says when the database refuses it
+    because two records would end up sharing something that has to be unique to
+    one of them. Whatever the duplicated detail actually was, that used to be
+    reported as an email clash. Only a genuine email clash says so now;
+    anything else is reported as a general failure and recorded in the logs for
+    an administrator to look at. Nobody is sent off to fix an address that was
+    never wrong.
+  - On a family group's **Shared email & login** panel, handing the login to a
+    different adult when someone **outside that family** already signs in with
+    the address used to fail with an unexplained error. It now says "A member
+    with this email already exists", and the same message is given to whichever
+    of two admins loses a race to claim the address at the same moment.
+
+  Nothing about who is allowed to sign in has changed — the database rule that
+  permits only one login per address was always doing its job, and still is.
+
 - **Clubs can safely record a trusted induction history when moving an
   established membership onto the digital register (#2361).** A new
   dry-run-first operator command classifies every active real-member
@@ -340,6 +478,29 @@ All notable public reference-release changes should be recorded here.
   test. That call now retries. The testing guide gains a "Flake invariants"
   section so a future test cannot quietly reintroduce any of this. No part of
   this touches the running club site.
+
+- **The "page not found" page is now always assembled fresh, closing a small
+  security-policy inconsistency (#2356).** This is a correctness and
+  future-proofing fix rather than something most visitors would have noticed. A
+  copy of the 404 page was being built once, in advance, when the software was
+  packaged — before it had any connection to your club's database — and frozen.
+  That frozen copy still carried the template's demo club name and ignored the
+  404 page you can write yourself under **Website content**, and its scripts were
+  blocked by the site's own security policy. In ordinary browsing you would not
+  have met it: a mistyped or dead web address is handled elsewhere in the site
+  and already produced a correct, live page with your own club name. The frozen
+  copy was reached only by two internal request shapes that browsers and normal
+  scanners do not use. It is now assembled on request like every other page, so
+  the inconsistency is gone rather than waiting to surface, and a check runs on
+  every build so no other page can be frozen in the same way unnoticed.
+
+- **Server-side errors are now actually reported to error monitoring (#2356).**
+  The hook that hands a server-side page error to Sentry had been written in the
+  wrong file, so the framework never found it and never called it. Nothing failed
+  visibly — errors simply went unreported through that channel. It is now wired
+  up correctly and covered by a test, so if it is ever moved again the build
+  fails instead of the reports quietly stopping. Clubs that have not configured
+  Sentry are unaffected.
 
 - **Adding another club member as a guest (#2306, #2307).** Until now a member
   could only put people from their own family group on a booking. There is now a

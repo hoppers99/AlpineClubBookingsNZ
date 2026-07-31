@@ -65,9 +65,15 @@ Sentry.init({
     return redactSensitiveJson(breadcrumb) as typeof breadcrumb;
   },
 
-  // Filter out noisy errors
+  // Filter out noisy errors. `ignoreErrors` string patterns are SUBSTRING
+  // matches against the event message, so these match the digest Next puts in
+  // the thrown Error's message. `notFound()` throws
+  // `NEXT_HTTP_ERROR_FALLBACK;404` (`HTTP_ERROR_FALLBACK_ERROR_CODE` in
+  // `next/dist/client/components/http-access-fallback/http-access-fallback`),
+  // NOT the pre-15 `NEXT_NOT_FOUND`; the prefix alone also covers `forbidden()`
+  // /`unauthorized()` (`;403`/`;401`).
   ignoreErrors: [
-    "NEXT_NOT_FOUND",
+    "NEXT_HTTP_ERROR_FALLBACK",
     "NEXT_REDIRECT",
   ],
 });

@@ -231,6 +231,9 @@ export async function DELETE(
         changeFeeCents: 0,
         refundAmountCents: result.refundAmountCents,
         accountCreditAmountCents: result.accountCreditAmountCents,
+        // #2390: same words as the edit preview and the booking history when a
+        // usage cap stopped the promotion reaching somebody on this booking.
+        promoCoverageNote: result.promoCoverage?.message ?? null,
         lodgeId: result.booking.lodgeId,
         // Removing a guest can raise the price when it invalidates a group
         // promo the remaining guests relied on. Surface the increase when a
@@ -293,6 +296,9 @@ export async function DELETE(
           ? additionalPaymentClientSecret ?? null
           : null,
       promoRemoved: result.promoRemoved,
+      // #2390: who the promotion still covers after this edit, and who it does
+      // not. Null unless a usage cap left somebody out.
+      promoCoverage: result.promoCoverage,
       choreWarnings: result.choreWarnings,
     });
   } catch (err) {

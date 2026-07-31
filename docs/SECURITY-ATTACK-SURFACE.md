@@ -1037,6 +1037,174 @@ bounded by the 60-second lifetime, and affecting only anonymous visitors during
 first-time setup or a content edit — accepted rather than special-cased, since
 gating the allow list on render state would put a database read in the proxy.
 
+## Prerendered Pages And The Nonce-Only CSP - 2026-07-31
+
+Issue #2356. **A statically prerendered page can never satisfy this app's
+production CSP.** The policy is nonce-only (`script-src 'self' 'nonce-…'`,
+`src/lib/csp.ts`) and the nonce is minted per request in `src/proxy.ts`. Next
+stamps that nonce into its inline bootstrap/RSC `<script>` tags only during
+**dynamic** rendering, reading it back out of the request's own CSP header
+(`next/dist/server/app-render/app-render.js` via `get-script-nonce-from-header`).
+A route prerendered at build time was rendered once with no request, so it ships
+inline scripts with no `nonce` attribute — and the browser blocks every one of
+them, using the very header the same response carries. The page renders but never
+hydrates.
+
+This is a standing invariant, not a one-off bug. It has now been hit twice: the
+lobby TV display (fork #54) and the global 404 (#2356).
+
+- **Measured on a real build, before the fix.** `.next/server/app/_not-found.html`
+  carried 24 `<script>` tags: 17 with `src=` (fine under `script-src 'self'`) and
+  7 inline with no nonce. The emitted flight payload spells the cause out —
+  every script entry serialised as `"nonce":"$undefined"`. Confirmed at runtime
+  against the built server: a response served from that artefact carried
+  `script-src 'self' 'nonce-…'` in its headers and a body byte-identical to the
+  prerendered file, 0 of 7 inline scripts nonced. A *dynamically* rendered
+  response in the same session had all of its inline scripts nonced, which is
+  the contrast that isolates the mechanism.
+- **How narrow the pre-fix exposure actually was, measured rather than
+  assumed.** On the pre-fix build the frozen artefact was reached only by
+  `/_next/data/*` and `/_error` — URL shapes a browser or an ordinary scanner
+  does not request. Every human-plausible miss (`/definitely-missing`,
+  `/wp-admin/setup-config.php`, `/.env`, `/admin/nope`,
+  `/wp-content/uploads/x.php`) was claimed by the `(website)/[...slug]` CMS
+  catch-all instead, rendered dynamically, and came back with the club's real
+  title from the database and every inline script nonced. So the practical value
+  of this change is CSP correctness on two synthetic shapes plus future-proofing
+  — not the rescue of a broken visitor-facing 404. Say so plainly anywhere this
+  is described to clubs.
+- **Two latent defects travelled with the frozen artefact, both from "no request,
+  no database at build time".** In the artefact,
+  `getSanitizedPageContentByPath("/404")` had failed at build and been swallowed
+  by the surrounding catch, so the admin-authored `/404` CMS page could not
+  appear in it — the hardcoded fallback was baked in. And the root layout's
+  `generateMetadata()` fell back to `SAFE_DEFAULT_CONFIG`, baking the template
+  placeholder club name and `http://localhost:3000` into that artefact's
+  `<title>` and OG tags. Both were confined to the artefact, which is why they
+  were invisible in normal browsing. Forcing dynamic rendering removes all three
+  at once.
+- **The reach is wider than the app route.** Next copies a prerendered app 404
+  and global error to `server/pages/404.html` and `server/pages/500.html` and
+  registers them in `pages-manifest.json`; `base-server` serves those copies for
+  status pages that never enter the app render. Any audit of this property must
+  look at `server/pages/**` as well as `server/app/**`.
+- **The fix for the 404: `export const dynamic = "force-dynamic"` in
+  `src/app/not-found.tsx`**, the same mechanism `src/app/display/page.tsx`
+  already uses. Verified on the post-fix build: `/_not-found` leaves
+  `prerender-manifest.json`, and `_not-found.html` and `pages/404.html` are no
+  longer emitted. On the two shapes that previously hit the artefact
+  (`/_next/data/*`, `/_error`) the response now renders per-request, keeps its
+  404 status, carries the CSP header, and has zero unnonced inline scripts.
+  - **Not a status claim about 404s generally.** Measured identically on both
+    the pre-fix and post-fix builds, so unchanged by this work:
+    `/definitely-missing`, `/wp-admin/setup-config.php`, `/.env`, `/admin/nope`,
+    `/foo%00bar` and `POST /definitely-missing` all return **200 OK** carrying
+    the 404 page body — a soft 404. The behaviour is consistent with the shell
+    flushing before `(website)/[...slug]`'s database-bound `notFound()` resolves.
+    It is a separate defect with SEO and monitoring consequences, tracked on its
+    own issue; do not read the bullet above as saying every 404 URL returns 404.
+- **The cost is small, and was checked rather than assumed.** #2351 measured a
+  cold dynamic render at ~3.5-5 CPU-seconds, so "every 404 now costs a render"
+  deserved scrutiny — bot traffic on nonexistent URLs is real load. It turns out
+  the app was already paying it: the `(website)/[...slug]` CMS catch-all claims
+  essentially every mistyped or probed URL, reads the database, and calls
+  `notFound()`, which renders this boundary dynamically. Only the narrow set of
+  paths that bypassed the catch-all and hit the static artefact changes cost.
+- **`src/app/global-error.tsx` cannot use the same mechanism, and separately, the
+  prerendered "global error" artefact is not this app's page at all.** Two
+  distinct facts that are easy to conflate:
+  - A global error boundary must be a Client Component (Next's own
+    `docs/01-app/03-api-reference/03-file-conventions/error.md`, which is also
+    why `metadata`/`generateMetadata` are unsupported there), and route segment
+    config is not read from a client module. `export const dynamic =
+    "force-dynamic"` in `src/app/global-error.tsx` was tried and measured: the
+    build accepts it with no error and no warning, and `/_global-error`
+    prerenders exactly as before — a silent no-op.
+  - But `.next/server/app/_global-error.html` (9,387 bytes) and its
+    byte-identical `server/pages/500.html` copy are **Next's own built-in error
+    shell**, not a render of `src/app/global-error.tsx`. Their visible text is
+    "500 — This page couldn't load — A server error occurred. Reload to try
+    again — Reload"; the strings this repo's page renders ("Something went
+    wrong", "Try Again", "Go to Home Page") appear zero times, as does any
+    `<a href="/">`. The framework emits that shell with 6 unnonced inline
+    scripts and nothing in this repository influences it.
+  - Consequence for the allowlist in
+    `scripts/ci/check-prerendered-script-nonces.mjs`: those two entries are
+    carve-outs for a **framework** artefact, and they will fall away only if a
+    Next release starts nonce-ing its own shell — not if this app's global error
+    page becomes fixable. The allowlist comment says exactly that; keep it that
+    way.
+  - `src/app/error.tsx` exists and handles the ordinary case, so
+    `global-error.tsx` is reached only when the root layout itself fails. When it
+    is reached it renders dynamically in the failing request, with the nonce, and
+    hydrates normally. The plain `<a href="/">` it now renders is therefore
+    ordinary progressive enhancement — an escape route that survives a failed or
+    blocked hydration — not a rescue of the static artefact, which contains none
+    of this app's markup. Do not replace it with a `<Link>` or an `onClick`
+    handler.
+  - Server-side reporting for app-render errors goes through `onRequestError` in
+    `src/instrumentation.ts`. Until #2356 that hook lived in
+    `src/instrumentation.node.ts` — a module Next never reads it from, since the
+    framework looks only at the `instrumentation` convention entry — so it had
+    never run at all: the compiled convention entry exported `register` and
+    nothing else. To re-check that, read the emitted **chunk**, not
+    `.next/server/instrumentation.js` — that file is a ~160-byte Turbopack
+    wrapper (`R.c("server/chunks/<hash>._.js"); module.exports =
+    R.m(<id>).exports`) and contains neither name before or after the fix. The
+    chunk it loads carries the export list. It is wired now — that chunk's
+    export list reads `["onRequestError", …, "register", …]`, verified in a
+    rebuild — and `src/lib/__tests__/instrumentation-hooks.test.ts` asserts it
+    stays on the convention module and is reached there directly, not via a
+    static re-export from `instrumentation.node` (which would drag Prisma and
+    node-cron into the edge bundle). It also now records the request `path` Next
+    actually passes; the old dead copy read a `request.url` that does not exist.
+    Router errors never reach this channel: Next resolves `notFound()` and
+    `redirect()` to a digest first, and the Sentry configs additionally ignore
+    `NEXT_HTTP_ERROR_FALLBACK` (the prefix `notFound()`/`forbidden()`/
+    `unauthorized()` actually throw on Next 16 — the long-standing
+    `NEXT_NOT_FOUND` string matched nothing and was corrected in this work) and
+    `NEXT_REDIRECT`.
+- **Enforced by `scripts/ci/check-prerendered-script-nonces.mjs`**, run in the
+  `verify` job immediately after `npm run build` (the only point where the
+  property is observable). It walks every `.html` under `server/app/**` and
+  `server/pages/**` and fails on any inline `<script>` without a non-empty
+  `nonce`. `nonce=""` counts as unnonced, because it matches no `'nonce-…'`
+  source expression and is blocked just the same. Data blocks the browser never
+  executes (`type="application/json"`, `type="application/ld+json"`) are skipped,
+  because `script-src` does not govern them; `type="module"`,
+  `type="importmap"` and anything unrecognised are still checked. A missing build
+  directory, a missing scan root, or a scan that finds no HTML at all throws
+  rather than reporting success. The two framework artefacts sit on a closed,
+  reason-carrying allowlist, and each allowlisted entry is itself asserted to
+  still exist and still offend, so a carve-out cannot quietly outlive its reason.
+  `scripts/ci/check-prerendered-script-nonces.test.mjs` pins the rules without
+  needing a build.
+- **What this guard does NOT cover, and it is the bigger half of the class.** It
+  reads emitted HTML, so it can only see pages Next prerendered. It cannot see a
+  page that renders dynamically but never receives a CSP header in the first
+  place — and `src/proxy.ts`'s matcher excludes `/api/*` (bar an explicit list),
+  `_next/static`, `_next/image`, `favicon.ico`, `logo.png`, and any path ending
+  `.png|.jpg|.jpeg|.gif|.webp|.svg|.ico`. On those paths no nonce is minted, so
+  Next's 404 render carries none: measured post-fix, `/foo.png` returns 200 with
+  **no** `Content-Security-Policy` header and 11 unnonced inline scripts;
+  `/api/does-not-exist` and `/_next/static/chunks/nope.js` return 12 each.
+  `Caddyfile`'s set-if-absent `?Content-Security-Policy "default-src 'self'"`
+  then supplies a policy with no `'nonce-…'` source, which blocks every one of
+  them — the same end state as #2356, on the URL shapes bots actually hit.
+  **Treat this class as enforced for prerendered output only.** The proxy-matcher
+  gap is a separate change with its own blast radius (touching the matcher
+  changes what runs on static assets and API routes) and is tracked on its own
+  issue.
+- **Interaction with #2352.** The constant-per-deploy nonce proposed for public
+  routes would make a fixed nonce value available at build time and so would
+  dissolve this whole class — including Next's own built-in error shell, which
+  nothing else can reach. This fix does not conflict with it: it adds no CSP
+  surface and no new policy branch, only a per-request render for one route. If #2352 lands, the
+  `force-dynamic` here becomes a performance question rather than a correctness
+  one and can be revisited on its own merits; the CI guard above stays useful
+  either way, since it asserts the outcome (no unnonced inline script ships)
+  rather than the mechanism.
+
 ## Follow-Up Mapping
 
 - #613 - Standardize route guards: route metadata and shared active-session and
