@@ -1,4 +1,7 @@
+import { loadBookingAppliedCredit } from "@/lib/booking-confirmation-credit";
 import {
+  appliedCreditSummaryRows,
+  settledByPaymentCents,
   bookingConfirmedTemplate,
   bookingPendingTemplate,
   bookingBumpedTemplate,
@@ -87,6 +90,13 @@ export async function sendBookingConfirmedEmail(
   },
 ) {
   const settings = await loadEmailMessageSettingsForLodge(options?.lodgeId);
+  // #2328: account credit spent on this booking, read from the booking's own
+  // persisted ledger rows (and its Payment row, for how the rest was settled)
+  // rather than threaded in by the caller — see
+  // `loadBookingAppliedCredit` for why the sender owns this read. Every send
+  // site calls this function after its settlement transaction has committed,
+  // so what is read here is the settled truth for THIS booking at THIS moment.
+  const appliedCredit = await loadBookingAppliedCredit(bookingContext.bookingId);
   // #2267: derived by the same shared helper the HTML template uses, so the
   // two paths can never disagree about what the promo did to the price.
   const promoAdjustmentCents = resolvePromoAdjustmentCents(options);
@@ -168,11 +178,33 @@ export async function sendBookingConfirmedEmail(
         ? " You can pay it from your booking page."
         : " The club will be in touch to arrange it.")
     : "";
+  // #2328: the pre-composed {{creditNote}} block — the two reconciling lines
+  // that say where the money came from when part of it came from the member's
+  // account credit, or NOTHING AT ALL when it did not. Built from the SAME
+  // shared rows the HTML confirmation's info table uses, so the two paths tell
+  // one story about one booking. Each row carries its own trailing newline
+  // (the {{promoSummary}} convention), so the block sits hard against the
+  // "Total Paid" line above it and leaves no blank line behind when empty —
+  // which is what keeps every no-credit confirmation byte-for-byte unchanged.
+  // The credit value carries its own minus sign, so a body must never prefix
+  // one of its own (the editor rejects that at save time).
+  const creditNote = appliedCreditSummaryRows(
+    appliedCredit.amountCents,
+    settledByPaymentCents({
+      totalCents,
+      appliedCreditCents: Math.max(0, appliedCredit.amountCents),
+      unpaid: Boolean(paymentDue),
+      outstandingCents: outstandingBalance?.amountCents ?? 0,
+    }),
+    appliedCredit.settlementMethod,
+  )
+    .map((row) => `${row.label}: ${row.value}\n`)
+    .join("");
   const paymentOutcome = paymentDue
     ? `Total Due: ${formatMoneyCents(totalCents)}\n\n${paymentDueNote}`
     : outstandingBalance
-      ? `Booking Total: ${formatMoneyCents(totalCents)}\nPaid: ${formatMoneyCents(outstandingPaidCents)}\nStill Owing: ${formatMoneyCents(outstandingBalance.amountCents)}\n\n${outstandingBalanceNote}`
-      : `Total Paid: ${formatMoneyCents(totalCents)}\n\nPayment has been processed successfully.`;
+      ? `Booking Total: ${formatMoneyCents(totalCents)}\nPaid: ${formatMoneyCents(outstandingPaidCents)}\n${creditNote}Still Owing: ${formatMoneyCents(outstandingBalance.amountCents)}\n\n${outstandingBalanceNote}`
+      : `Total Paid: ${formatMoneyCents(totalCents)}\n${creditNote}\nPayment has been processed successfully.`;
   // #2262: the outcome is RETURNED so a caller that promised the admin a
   // receipt can report honestly what became of it (queued vs withheld vs
   // failed) instead of turning a decision into a delivery claim. Existing
@@ -191,6 +223,9 @@ export async function sendBookingConfirmedEmail(
         lodgeTravelNote: settings.lodgeTravelNote,
         doorCode: settings.doorCode,
         provisionalGuests,
+        // #2328: the same figures the {{creditNote}} token above is built from,
+        // handed to the hand-built HTML so both render the shared rows.
+        appliedCredit,
       },
     ),
     bookingContext,
@@ -236,6 +271,14 @@ export async function sendBookingConfirmedEmail(
           ? formatMoneyCents(outstandingBalance.amountCents)
           : "",
       total: formatMoneyCents(totalCents),
+      // #2328: pre-composed and ALREADY INSIDE {{paymentOutcome}} above, which
+      // is what the shipped default body renders. It is supplied separately for
+      // the same reason {{totalPaid}} is: an override that builds its own money
+      // lines out of the per-piece tokens has no other way to explain a card
+      // charge that is smaller than the total. A body that uses both renders the
+      // pair twice — exactly as one using {{paymentOutcome}} and {{totalPaid}}
+      // together renders the total twice.
+      creditNote,
       paymentOutcome,
       paymentDueNote,
       paymentReference: paymentDue?.reference ?? "",

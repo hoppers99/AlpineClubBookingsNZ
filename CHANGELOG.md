@@ -4,6 +4,27 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **A booking confirmation now explains account credit that paid part of the
+  stay (#2328).** A member who put $120.00 of account credit towards a $300.00
+  booking was charged $180.00 on their card and then read "Total Paid: $300.00"
+  in the confirmation, with nothing in the message to explain the difference —
+  the email quoted the booking's price and never knew about the credit, which is
+  recorded in the member credit ledger. Every confirmation now carries two
+  reconciling lines beneath the total — `Account credit applied: -$120.00` and
+  `Paid by card: $180.00` — so the three figures add up against the member's own
+  card statement. `Total Paid` deliberately stays the booking's full price: the
+  credit really did pay for part of the stay. The second line names how the club
+  was actually paid (`Paid by card`, `Paid by bank transfer`, or `Paid by cash or
+  bank transfer` for a settlement an admin recorded by hand), read from the
+  booking's own payment record. A booking that used no credit is unchanged, down
+  to the byte — no blank line, no empty label. A stay fully covered by credit now
+  says `Paid by card: $0.00` instead of claiming the card was charged the whole
+  price, a partly-paid settlement breaks down the slice that was settled, and a
+  booking confirmed with money still owing states no payment at all. The built-in
+  HTML email and the admin-editable body are built from one shared helper, so
+  they cannot drift; clubs that write their own money lines in an override get a
+  new `{{creditNote}}` token for the pair (existing overrides keep rendering and
+  re-saving unchanged). Money stays in integer cents throughout.
 - **The finance dashboard was counting a paid price increase twice, and now
   counts it once (#2408).** When a booking's price goes up after it was made —
   someone adds a guest — the difference is tracked as an "additional payment".

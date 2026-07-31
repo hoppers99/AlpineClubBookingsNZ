@@ -1326,6 +1326,34 @@ Future reviews and issues should cite this file when proposing changes.
   `ADMIN_ADJUSTMENT`/`BOOKING_MODIFICATION_REFUND` row, net-non-zero ledger,
   Xero-linked note, or independently captured/refunded payment still blocks
   (owner decision 2026-07-07, FINAL).
+- A booking confirmation must RECONCILE against the member's own statement when
+  account credit paid part of the stay (#2328). The email's total has always
+  been the booking's `finalPriceCents`, so a member who spent $120.00 of credit
+  on a $300.00 stay read "Total Paid: $300.00" while their card took $180.00,
+  with nothing to explain the difference. Every confirmation now carries the
+  applied-credit pair beneath the total — `Account credit applied: -$120.00`
+  then `Paid by <method>: $180.00` — so `total − credit = settled` is checkable
+  on the page. "Total Paid" deliberately remains the FULL price: the credit
+  really did pay for part of the stay, and reporting only the cash would read as
+  though the club were still owed the credit the member had already spent (the
+  same convention the #2397 rows follow). The figure is READ, never re-derived:
+  `loadBookingAppliedCredit` sums the booking's `BOOKING_APPLIED` ledger rows —
+  the same `deriveBookingAppliedCreditCents` authority the effective-price
+  guards and the #1887 clamp use, so a later clamp offset nets out — and takes
+  the settlement wording from the booking's own Payment row, so a bank transfer
+  or a manually-recorded cash settlement is never described as a card charge.
+  Re-running `calculateBookingCreditApplication` at send time would instead
+  answer "what would we apply now", against a balance and a price that have both
+  moved since. `sendBookingConfirmedEmail` performs the read itself rather than
+  each of its thirteen send sites threading the figure in, so no site can omit it
+  — and an omission is invisible, because a missing credit line looks exactly
+  like a booking that used no credit. Empty-case contract: no credit means no
+  rows at all (byte-for-byte unchanged), and a send that reports money as NOT
+  yet taken (`paymentDue`) renders no pair, because it has no "paid by" figure
+  to state. The hand-built HTML and the admin-editable `{{creditNote}}` token
+  are built from ONE shared row builder (`appliedCreditSummaryRows`), the
+  `{{promoSummary}}` precedent, so the two paths cannot tell different stories
+  about the same booking. Money is integer cents throughout.
 - Applied credit reduces the Internet-Banking invoice by ALLOCATING the member's
   EXISTING floating credit notes (#1620, "allocate-existing"; owner decision
   2026-07-08). A member's credit is already represented in Xero as floating

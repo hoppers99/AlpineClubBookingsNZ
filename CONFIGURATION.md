@@ -204,6 +204,33 @@ build its own money lines from the per-piece tokens (`{{totalPaid}}`,
 `{{totalDue}}`, `{{paymentDueNote}}`, `{{paymentReference}}`); exactly one of
 `{{totalPaid}}`/`{{totalDue}}` carries a figure on any given send.
 
+Account credit spent on the booking is explained by the pre-composed
+`{{creditNote}}` block, on the same convention again. When a member put account
+credit towards their stay it renders two reconciling lines — `Account credit
+applied: -$120.00` and `Paid by card: $180.00` — and when they did not (the
+great majority of bookings) it renders **nothing at all**, so those
+confirmations are byte-for-byte what they were before the token existed.
+`Total Paid` above it stays the booking's **full price**, because the credit
+really did pay for part of the stay, so the three figures reconcile:
+`300.00 − 120.00 = 180.00`. The second line names how the club was actually
+paid — `Paid by card`, `Paid by bank transfer`, or `Paid by cash or bank
+transfer` for a manually-recorded settlement — read from the booking's own
+payment record, so a member who bank-transferred is never told their card was
+charged. On a partly-paid settle the pair sits between `Paid:` and
+`Still Owing:` and breaks down the settled slice; on a confirmed-but-unpaid send
+nothing has been paid yet, so no pair is rendered at all.
+
+The figure itself comes from the member credit **ledger** for that booking, read
+at send time from the persisted rows — never re-computed from the credit policy,
+whose answer depends on a balance and a price that both move after the booking
+is paid. `{{creditNote}}` is already carried **inside** `{{paymentOutcome}}`, so
+the shipped default body needs no change; it is supplied separately for an
+override that builds its own money lines, exactly as `{{totalPaid}}` is. An
+override written before this token existed keeps rendering and keeps re-saving
+(it is not a required token) — but a hand-built money body that omits it will
+show a member who was charged $180.00 a bare `Total Paid: $300.00`, so add it
+under your total line.
+
 **The promo explanation is required, not advisory.** An override of the
 booking-confirmed body that shows a member no promo explanation at all is
 rejected on save, because a member charged a promo price would otherwise read a
@@ -223,8 +250,9 @@ Of the three, only `{{promoSummary}}` handles all promo shapes cleanly —
 `{{discount}}` is empty for a price-raising promo, and `{{promoAdjustment}}`
 carries its own `+`/`-` sign, so never write a manual minus in front of it. The
 editor enforces that last point too: a body or subject that types `+` or `-`
-immediately before `{{promoSummary}}` or `{{promoAdjustment}}` is rejected on
-save with an explanation.
+immediately before `{{promoSummary}}`, `{{promoAdjustment}}` or `{{creditNote}}`
+is rejected on save with an explanation — `{{creditNote}}`'s first line already
+reads `Account credit applied: -$120.00`.
 
 Two other pre-composed tokens follow the same pattern. The booking-confirmed
 body's `{{doorCodeNote}}` renders the whole `Door code: 1234` line, and nothing
@@ -256,9 +284,9 @@ string, and the default body carries only the token. `{{doorCodeNote}}`,
 `{{rejoinProcessNote}}`, `{{reviewReasonNote}}`, `{{requestedAmountNote}}`,
 `{{amountRecordedNote}}`, `{{bookingReferenceNote}}`, `{{choreListNote}}`,
 `{{choreLinkNote}}`, `{{localRecordNote}}`, `{{latestErrorNote}}`,
-`{{xeroLinksNote}}`, `{{refundOutcomeNote}}`, `{{settlementActionNote}}` and
-`{{ownBookingNote}}` all behave this way, alongside the older
-`{{provisionalGuestsNote}}`, `{{paymentNote}}` and `{{promoSummary}}`. An
+`{{xeroLinksNote}}`, `{{refundOutcomeNote}}`, `{{settlementActionNote}}`,
+`{{creditNote}}` and `{{ownBookingNote}}` all behave this way, alongside the
+older `{{provisionalGuestsNote}}`, `{{paymentNote}}` and `{{promoSummary}}`. An
 operator overriding one of these bodies should place the token on a line of its
 own and **never** write a label of their own in front of it. The raw value
 behind each (`{{doorCode}}`, `{{reason}}`, `{{adminNote}}` …) stays valid for
