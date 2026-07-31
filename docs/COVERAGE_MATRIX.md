@@ -297,12 +297,16 @@ guides document:
 
 - **Two guest paths need no login, but only one is advertised.** The sign-in
   page (`/login`) links to *Request a school group booking*
-  (`/school-bookings/confirm/[token]`). The general guest quote flow
+  (`/school-bookings`). The general guest quote flow
   (`/booking-requests`, `/booking-requests/respond/[token]`) is deliberately
-  unlisted (#2421): no public page links to it, it is `noindex` and disallowed in
-  `robots.txt`, and the club shares the direct URL only with guests it has agreed
-  to host — an admin copies it from the **Public Requests** tab of
-  `/admin/booking-requests`. The
+  unlisted (#2421): no page a visitor can browse to links to it, and it is
+  excluded from search engines via a route-level `noindex` (`robots.txt`
+  deliberately does not disallow it, so crawlers can fetch the page and see the
+  noindex). The club shares the direct URL only with guests it has agreed to
+  host — an admin copies it from the **Public Requests** tab of
+  `/admin/booking-requests` — and the only other path in is the rebook button
+  on a tokenised `/pay/[token]` link the club itself emailed a past requester.
+  The
   [Booking a stay](user-guide/booking-a-stay.md) guide covers both as the guest
   journey, and says plainly that whether a non-member can stay is the club's own
   policy; operators handle them via

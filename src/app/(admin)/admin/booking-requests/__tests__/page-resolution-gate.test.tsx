@@ -154,7 +154,9 @@ describe("Public Requests tab share link (#2421)", () => {
     sessionMatrix = { ...editMatrix(), bookings: "view" };
     render(<BookingRequestsPage />);
 
-    expect(screen.getByText("Public request form link")).toBeInTheDocument();
+    expect(
+      screen.getByText("Guest request form link (unlisted)"),
+    ).toBeInTheDocument();
     expect(
       screen.getByText(`${window.location.origin}/booking-requests`),
     ).toBeInTheDocument();
@@ -168,7 +170,9 @@ describe("Public Requests tab share link (#2421)", () => {
     sessionMatrix = editMatrix();
     render(<BookingRequestsPage />);
 
-    expect(screen.getByText("Public request form link")).toBeInTheDocument();
+    expect(
+      screen.getByText("Guest request form link (unlisted)"),
+    ).toBeInTheDocument();
     expect(screen.queryByTestId("public-panel")).not.toBeInTheDocument();
   });
 });

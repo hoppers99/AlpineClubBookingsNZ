@@ -353,7 +353,10 @@ export function LoginForm({
               advertising open guest bookings reads as commercial accommodation.
               /booking-requests still works by direct URL — the club shares that
               link privately with guests it is willing to host (an admin copies
-              it from Admin > Booking Requests > Public Requests). */}
+              it from Admin > Booking Requests > Public Requests). With this link
+              gone, no page a visitor can browse to reaches the form; the only
+              other path in is the rebook button on a tokenised /pay/[token]
+              link the club itself emails to an already-vetted requester. */}
           <p className="text-sm text-center text-muted-foreground">
             Booking for a school group?{" "}
             <Link

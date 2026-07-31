@@ -128,14 +128,15 @@ page.
 There are two paths that need no login. Neither is an open invitation to book —
 both are requests the club reviews and can decline:
 
-- **A guest booking request** — the request form is **not linked from the
-  sign-in page or anywhere else on the public site**. The club sends its direct
-  link to a guest it has agreed to host (its admins copy that link from the
-  Booking Requests area). Once the request is in, the club replies with a secure
-  quote link. You open it to review the price,
-  options, and expiry, then **accept**, **cancel**, **ask a question**, or
-  **request changes**. Accepting is how a guest confirms; the quote states when
-  it expires.
+- **Request a guest booking** — the request form is **not linked from the
+  sign-in page, or from any other page you can browse to**. The club sends its
+  direct link to a guest it has agreed to host (its admins copy that link from
+  the Booking Requests area); the only other way back to it is the **Book these
+  dates again** button on a payment link the club emailed you for an earlier
+  stay. Once your request is in, the club replies with a secure quote link. You
+  open it to review the price, options, and expiry, then **accept**, **cancel**,
+  **ask a question**, or **request changes**. Accepting is how a guest confirms;
+  the quote states when it expires.
 - **Request a school group booking** — for a school or organisation trip, still
   linked from the sign-in page (`/login`). The club prices it and, closer to
   check-in, emails you a secure link to confirm each attendee's name for the
