@@ -120,7 +120,18 @@ export async function resolveMemberGuestCandidatesByEmail(params: {
  */
 export async function searchMemberGuestCandidatesByName(params: {
   q: string;
-  includeMinors: boolean;
+  /**
+   * The whole settings object, NOT a pre-read `includeMinors` boolean.
+   *
+   * Taking the settings and reading the flag here keeps BOTH open-search
+   * decisions — "does this route exist" and "are children in the list" — inside
+   * this one file. A route that read `openMemberSearchIncludesMinors` itself
+   * would be a second place that turns a stored privacy value into a decision
+   * about who is discoverable, and two such places is how two surfaces come to
+   * disagree about whether the roll is browsable. `member-guest-widening.test.ts`
+   * asserts this directly.
+   */
+  settings: MemberGuestSettingsValues;
 }): Promise<MemberGuestCandidateResponse> {
   const parsed = parseMemberGuestSearchQuery(params.q);
   if (!parsed.ok) {
@@ -130,7 +141,9 @@ export async function searchMemberGuestCandidatesByName(params: {
     return { candidates: [], truncated: false };
   }
 
-  const ageTiers: AgeTier[] = memberGuestSearchAgeTiers(params.includeMinors);
+  const ageTiers: AgeTier[] = memberGuestSearchAgeTiers(
+    params.settings.openMemberSearchIncludesMinors,
+  );
   const insensitive = { mode: "insensitive" } as const;
 
   const nameFilter =

@@ -93,9 +93,12 @@ export async function GET(request: NextRequest) {
   }
 
   try {
+    // The whole settings object goes through, not a flag read here: both
+    // open-search decisions live in `loadMemberGuestFindGate`'s file, so this
+    // route obeys and never decides. See that function's note.
     const result = await searchMemberGuestCandidatesByName({
       q: rawQ,
-      includeMinors: gate.settings.openMemberSearchIncludesMinors,
+      settings: gate.settings,
     });
 
     // EVERY query is audited, including the under-minimum ones that never
