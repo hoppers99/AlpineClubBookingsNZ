@@ -70,12 +70,48 @@ export type LinkedBookingMember = {
 };
 
 export class BookingGuestValidationError extends Error {
+  /**
+   * The beyond-family members this refusal was about, when it is one of D-8's
+   * COLLAPSED cross-family refusals (#2388, MG3 #2308) — otherwise undefined.
+   *
+   * It rides on the error rather than being recomputed by each route because the
+   * refusal is thrown from three different depths (member resolution, the profile
+   * gate, and the callers' own subscription and person-night checks) and only the
+   * thrower knows which target it was about. A route that had to work it out
+   * again would either duplicate the family-boundary computation or guess — and
+   * guessing wrong writes an audit row naming the wrong member.
+   *
+   * Presence of this field is also what tells a route "this was a collapsed
+   * cross-family refusal", which is what triggers the audit row, the throttle
+   * accounting and the response-timing floor. An ordinary validation error
+   * carries none of that machinery.
+   */
+  public crossFamilyMemberIds?: readonly string[];
+
   constructor(
     message: string,
-    public status: number
+    public status: number,
+    options?: { crossFamilyMemberIds?: readonly string[] }
   ) {
     super(message);
+    this.crossFamilyMemberIds = options?.crossFamilyMemberIds;
   }
+}
+
+/**
+ * Build D-8's one collapsed refusal, tagged with the targets it concerned.
+ *
+ * Every collapse site goes through this so the message, the status and the audit
+ * tag can never be assembled three slightly different ways.
+ */
+export function memberGuestCrossFamilyRefusal(
+  crossFamilyMemberIds: readonly string[],
+): BookingGuestValidationError {
+  return new BookingGuestValidationError(
+    MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE,
+    MEMBER_GUEST_CROSS_FAMILY_REFUSAL_STATUS,
+    { crossFamilyMemberIds },
+  );
 }
 
 const GUEST_PROFILE_REQUIRED_ERROR_CODE = "GUEST_PROFILE_REQUIRED";
@@ -334,10 +370,7 @@ async function resolveLinkedMemberRecords(
   const collapseFor = options?.collapseForMemberIds;
   const refuse = (memberId: string, message: string, status: number): never => {
     if (collapseFor?.has(memberId)) {
-      throw new BookingGuestValidationError(
-        MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE,
-        MEMBER_GUEST_CROSS_FAMILY_REFUSAL_STATUS,
-      );
+      throw memberGuestCrossFamilyRefusal([memberId]);
     }
     throw new BookingGuestValidationError(message, status);
   };
@@ -599,11 +632,11 @@ export async function assertLinkedBookingMembersCanBeBooked(
     // club will not discuss, retry, and get the full, helpful detail for their
     // own family exactly as before.
     const crossFamilyIds = new Set(context?.crossFamilyMemberIds ?? []);
-    if (blockedMembers.some((member) => crossFamilyIds.has(member.memberId))) {
-      throw new BookingGuestValidationError(
-        MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE,
-        MEMBER_GUEST_CROSS_FAMILY_REFUSAL_STATUS,
-      );
+    const blockedCrossFamilyIds = blockedMembers
+      .map((member) => member.memberId)
+      .filter((memberId) => crossFamilyIds.has(memberId));
+    if (blockedCrossFamilyIds.length > 0) {
+      throw memberGuestCrossFamilyRefusal(blockedCrossFamilyIds);
     }
     throw new BookingGuestProfileRequiredError(blockedMembers);
   }

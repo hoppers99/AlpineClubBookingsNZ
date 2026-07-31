@@ -36,6 +36,10 @@ import {
   planMemberGuestConsentWrites,
   type MemberGuestConsentWritePlanEntry,
 } from "@/lib/member-guest-add-policy";
+import {
+  applyMemberGuestAddThrottle,
+  handleMemberGuestAddRefusal,
+} from "@/lib/member-guest-probe-guard";
 import type { MemberGuestAddActor } from "@/lib/member-guest-consent";
 import { nameField } from "@/lib/zod-helpers";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
@@ -150,6 +154,9 @@ const createBookingSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
+  // #2388: taken at the top so the collapsed-refusal timing floor covers the
+  // whole request, not only the part after the refusal was detected.
+  const startedAt = Date.now();
   const rateLimited = await applyRateLimit(rateLimiters.bookingCreate, request);
   if (rateLimited) return rateLimited;
 
@@ -362,6 +369,16 @@ export async function POST(request: NextRequest) {
           memberGuestWideningEnabled: memberGuestPolicy.wideningEnabled,
         }
       );
+    // #2388: the per-acting-member throttle, counted only on an attempt that
+    // actually names a beyond-family member.
+    const probeThrottled = await applyMemberGuestAddThrottle({
+      request,
+      actorMemberId: session.user.id,
+      beyondFamilyMemberIds: boundary.beyondFamilyMemberIds,
+      skipAuthorization: isAuthorizedOnBehalf,
+    });
+    if (probeThrottled) return probeThrottled;
+
     await assertLinkedBookingMembersCanBeBooked(
       prisma,
       linkedMembers,
@@ -388,6 +405,14 @@ export async function POST(request: NextRequest) {
     memberGuestEntries = consentPlan.entriesByMemberId;
   } catch (error) {
     if (error instanceof BookingGuestValidationError) {
+      await handleMemberGuestAddRefusal({
+        request,
+        actorMemberId: session.user.id,
+        error: error,
+        route: "bookings/create",
+        startedAt,
+        skipAuthorization: isAuthorizedOnBehalf,
+      });
       return NextResponse.json(
         getBookingGuestValidationErrorResponse(error),
         { status: error.status }
@@ -463,6 +488,14 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     if (error instanceof BookingGuestValidationError) {
+      await handleMemberGuestAddRefusal({
+        request,
+        actorMemberId: session.user.id,
+        error: error,
+        route: "bookings/create",
+        startedAt,
+        skipAuthorization: isAuthorizedOnBehalf,
+      });
       return NextResponse.json(
         getBookingGuestValidationErrorResponse(error),
         { status: error.status },
@@ -612,6 +645,14 @@ export async function POST(request: NextRequest) {
       });
     } catch (error) {
       if (error instanceof BookingGuestValidationError) {
+        await handleMemberGuestAddRefusal({
+          request,
+          actorMemberId: session.user.id,
+          error: error,
+          route: "bookings/create",
+          startedAt,
+          skipAuthorization: isAuthorizedOnBehalf,
+        });
         return NextResponse.json(
           getBookingGuestValidationErrorResponse(error),
           { status: error.status },
@@ -695,7 +736,17 @@ export async function POST(request: NextRequest) {
     } catch (err) {
       if (err instanceof BookingGuestValidationError) {
         // The in-transaction person-night guard's D-8 refusal (the pre-flight
-        // check above ran before the lock, so a race lands here).
+        // check above ran before the lock, so a race lands here). The
+        // transaction has already rolled back, so the #2388 handling below runs
+        // outside it and holds no lock while it waits.
+      await handleMemberGuestAddRefusal({
+          request,
+          actorMemberId: session.user.id,
+          error: err,
+          route: "bookings/create",
+          startedAt,
+          skipAuthorization: isAuthorizedOnBehalf,
+        });
         return NextResponse.json(
           getBookingGuestValidationErrorResponse(err),
           { status: err.status },
@@ -871,6 +922,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(waitlisted.booking, { status: 201 });
     } catch (waitlistErr) {
       if (waitlistErr instanceof BookingGuestValidationError) {
+      await handleMemberGuestAddRefusal({
+          request,
+          actorMemberId: session.user.id,
+          error: waitlistErr,
+          route: "bookings/create",
+          startedAt,
+          skipAuthorization: isAuthorizedOnBehalf,
+        });
         return NextResponse.json(
           getBookingGuestValidationErrorResponse(waitlistErr),
           { status: waitlistErr.status },
@@ -913,6 +972,14 @@ export async function POST(request: NextRequest) {
     if (err instanceof BookingGuestValidationError) {
       // The in-transaction person-night guard's D-8 refusal, reached on a race
       // with the pre-flight check above.
+      await handleMemberGuestAddRefusal({
+        request,
+        actorMemberId: session.user.id,
+        error: err,
+        route: "bookings/create",
+        startedAt,
+        skipAuthorization: isAuthorizedOnBehalf,
+      });
       return NextResponse.json(
         getBookingGuestValidationErrorResponse(err),
         { status: err.status },

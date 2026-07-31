@@ -49,6 +49,10 @@ import {
   markCrossFamilyMemberGuests,
   type MemberGuestConsentGuestFields,
 } from "@/lib/member-guest-add-policy";
+import {
+  applyMemberGuestAddThrottle,
+  handleMemberGuestAddRefusal,
+} from "@/lib/member-guest-probe-guard";
 import { findUnpaidMemberGuestNames } from "@/lib/booking-member-guest-subscriptions";
 import { nameField } from "@/lib/zod-helpers";
 import {
@@ -251,6 +255,9 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // #2388: taken at the top so the collapsed-refusal timing floor covers the
+  // whole request.
+  const startedAt = Date.now();
   const session = await auth();
   if (!session) {
     return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
@@ -567,6 +574,18 @@ export async function POST(
           memberGuestWideningEnabled: memberGuestPolicy.wideningEnabled,
         }
       );
+    // #2388: per-acting-member throttling, counted only when the attempt names a
+    // beyond-family member. This route is a side-effect-free PREVIEW, which puts
+    // it in the same class as `/api/bookings/quote` — the cheap surface a probe
+    // run would actually use.
+    const probeThrottled = await applyMemberGuestAddThrottle({
+      request,
+      actorMemberId: session.user.id,
+      beyondFamilyMemberIds: boundary.beyondFamilyMemberIds,
+      skipAuthorization: isAdmin,
+    });
+    if (probeThrottled) return probeThrottled;
+
     await assertLinkedBookingMembersCanBeBooked(
       prisma,
       linkedMembers,
@@ -591,6 +610,14 @@ export async function POST(
       : undefined;
   } catch (error) {
     if (error instanceof BookingGuestValidationError) {
+      await handleMemberGuestAddRefusal({
+        request,
+        actorMemberId: session.user.id,
+        error,
+        route: "bookings/modify-quote",
+        startedAt,
+        skipAuthorization: isAdmin,
+      });
       return NextResponse.json(
         getBookingGuestValidationErrorResponse(error),
         { status: error.status }
@@ -845,6 +872,14 @@ export async function POST(
     });
   } catch (error) {
     if (error instanceof BookingGuestValidationError) {
+      await handleMemberGuestAddRefusal({
+        request,
+        actorMemberId: session.user.id,
+        error,
+        route: "bookings/modify-quote",
+        startedAt,
+        skipAuthorization: isAdmin,
+      });
       return NextResponse.json(
         getBookingGuestValidationErrorResponse(error),
         { status: error.status },

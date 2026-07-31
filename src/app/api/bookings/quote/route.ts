@@ -47,6 +47,10 @@ import {
   findBookingMemberNightConflicts,
   getBookingMemberNightConflictResponse,
 } from "@/lib/booking-member-night-conflicts";
+import {
+  applyMemberGuestAddThrottle,
+  handleMemberGuestAddRefusal,
+} from "@/lib/member-guest-probe-guard";
 
 const dateOnlyString = z.string().refine(isDateOnlyString, {
   message: "Date must be YYYY-MM-DD",
@@ -71,6 +75,10 @@ const quoteSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
+  // #2388: read once, at the very top, so the response-timing floor on a
+  // collapsed cross-family refusal covers the WHOLE request rather than only the
+  // part after the refusal was detected.
+  const startedAt = Date.now();
   const rateLimited = await applyRateLimit(rateLimiters.bookingQuery, request);
   if (rateLimited) return rateLimited;
 
@@ -158,6 +166,19 @@ export async function POST(request: NextRequest) {
           memberGuestWideningEnabled: memberGuestPolicy.wideningEnabled,
         }
       );
+    // #2388, owner decision 31 Jul: per-ACTING-MEMBER throttling on the add
+    // paths. Applied only when the attempt actually names a beyond-family
+    // member, so an ordinary family booking is never rate-limited by it — and
+    // applied HERE, before the checks whose pattern of answers is the channel,
+    // so a run of probes across dates is slowed before it yields a calendar.
+    const probeThrottled = await applyMemberGuestAddThrottle({
+      request,
+      actorMemberId: session.user.id,
+      beyondFamilyMemberIds: boundary.beyondFamilyMemberIds,
+      skipAuthorization: isAuthorizedOnBehalf,
+    });
+    if (probeThrottled) return probeThrottled;
+
     await assertLinkedBookingMembersCanBeBooked(
       prisma,
       linkedMembers,
@@ -180,6 +201,14 @@ export async function POST(request: NextRequest) {
     );
   } catch (error) {
     if (error instanceof BookingGuestValidationError) {
+      await handleMemberGuestAddRefusal({
+        request,
+        actorMemberId: session.user.id,
+        error,
+        route: "bookings/quote",
+        startedAt,
+        skipAuthorization: isAuthorizedOnBehalf,
+      });
       return NextResponse.json(
         getBookingGuestValidationErrorResponse(error),
         { status: error.status }
@@ -237,6 +266,17 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     if (error instanceof BookingGuestValidationError) {
+      // The person-night guard's collapsed refusal is the single most
+      // date-dependent answer this route gives, so it is the one #2388's
+      // correlation channel is actually built out of.
+      await handleMemberGuestAddRefusal({
+        request,
+        actorMemberId: session.user.id,
+        error,
+        route: "bookings/quote",
+        startedAt,
+        skipAuthorization: isAuthorizedOnBehalf,
+      });
       return NextResponse.json(
         getBookingGuestValidationErrorResponse(error),
         { status: error.status },

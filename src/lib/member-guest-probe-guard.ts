@@ -33,7 +33,7 @@ import {
  *     change.
  *  3. `recordMemberGuestAddRefusal` — every collapsed refusal is written to the
  *     audit trail naming the actor and the target, and a run of them against the
- *     same target raises a distinct, severity-warning row an admin can find.
+ *     same target raises a distinct, severity-important row an admin can find.
  *
  * WHAT MITIGATION 3 DELIBERATELY IS NOT. The owner's explicit sub-decision:
  * **log for admins only, never refuse outright.** A member trying several dates
@@ -171,7 +171,7 @@ export const MEMBER_GUEST_REFUSAL_AUDIT_ACTION = "member_guest.add_refused";
 /**
  * The audit action a RUN of refusals against one target raises, distinctly.
  *
- * A distinct action with `severity: "warning"` is what makes the pattern findable:
+ * A distinct action with `severity: "important"` is what makes the pattern findable:
  * an admin scanning the audit log sees one warning row saying "this member has now
  * been refused N times against this same other member", rather than having to
  * notice the shape of fifty identical `add_refused` rows.
@@ -255,7 +255,11 @@ export async function recordMemberGuestAddRefusal(params: {
           actor: { memberId: actorMemberId },
           subject: { memberId: targetMemberId },
           category: "privacy",
-          severity: "warning",
+          // "important", not "info": this is the row an admin is meant to find.
+          // The repo's severity scale is info | important | critical, and
+          // "critical" is reserved for things that need acting on now — this
+          // needs a look, not an alarm.
+          severity: "important",
           outcome: "failure",
           summary:
             `This member has been refused ${recentRefusals} times in 24 hours while ` +
@@ -274,4 +278,63 @@ export async function recordMemberGuestAddRefusal(params: {
       );
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// The one call every add path makes on its refusal path
+// ---------------------------------------------------------------------------
+
+/**
+ * Everything a booking add path owes a COLLAPSED cross-family refusal, in the
+ * right order, in one call.
+ *
+ * The four add paths each catch `BookingGuestValidationError` in two or three
+ * places; asking every one of them to remember three steps in the right order is
+ * how one of them ends up auditing without equalising, or equalising before it
+ * has spent the throttle budget. They call this instead.
+ *
+ * ORDINARY VALIDATION ERRORS PASS STRAIGHT THROUGH. The timing floor applies to
+ * collapsed cross-family refusals ONLY — those are the answers that have to be
+ * indistinguishable from each other. Putting a quarter-second floor on "check-out
+ * must be after check-in" would slow the whole booking flow down to hide nothing.
+ * The discriminator is `crossFamilyMemberIds` being present on the error, which
+ * only the collapse sites set.
+ *
+ * WHY THE THROTTLE IS SPENT HERE AND ITS ANSWER IGNORED. A refusal thrown during
+ * member RESOLUTION happens before the route knows the attempt was cross-family,
+ * so there was no earlier point at which the throttle could have been applied and
+ * returned a 429. Spending the budget on the way out means the probe is still
+ * counted, and the NEXT one in the run is the one that gets throttled. Returning
+ * a 429 here instead of the refusal would also be its own oracle — "you get a 429
+ * only when you guessed a real member" — which is precisely the distinction the
+ * whole exercise removes.
+ */
+export async function handleMemberGuestAddRefusal(params: {
+  request: Request;
+  actorMemberId: string;
+  /** The caught error; only one carrying `crossFamilyMemberIds` does anything. */
+  error: { crossFamilyMemberIds?: readonly string[] };
+  route: string;
+  /** `Date.now()` from the top of the handler. */
+  startedAt: number;
+  skipAuthorization?: boolean;
+}): Promise<void> {
+  const targetMemberIds = params.error.crossFamilyMemberIds ?? [];
+  if (targetMemberIds.length === 0) return;
+
+  await applyMemberGuestAddThrottle({
+    request: params.request,
+    actorMemberId: params.actorMemberId,
+    beyondFamilyMemberIds: targetMemberIds,
+    skipAuthorization: params.skipAuthorization,
+  });
+
+  await recordMemberGuestAddRefusal({
+    request: params.request,
+    actorMemberId: params.actorMemberId,
+    targetMemberIds,
+    route: params.route,
+  });
+
+  await equaliseMemberGuestRefusalTiming(params.startedAt);
 }

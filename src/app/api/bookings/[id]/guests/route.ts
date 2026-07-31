@@ -58,6 +58,7 @@ import {
   type MemberGuestConsentGuestFields,
   type MemberGuestConsentWritePlanEntry,
 } from "@/lib/member-guest-add-policy";
+import { handleMemberGuestAddRefusal } from "@/lib/member-guest-probe-guard";
 import type { MemberGuestAddActor } from "@/lib/member-guest-consent";
 import { findUnpaidMemberGuestNames } from "@/lib/booking-member-guest-subscriptions";
 import {
@@ -150,6 +151,9 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // #2388: taken at the top so the collapsed-refusal timing floor covers the
+  // whole request.
+  const startedAt = Date.now();
   const session = await auth();
   if (!session) {
     return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
@@ -909,6 +913,23 @@ export async function POST(
       );
     }
     if (err instanceof BookingGuestValidationError) {
+      // #2388, refusal path only. Unlike the quote routes, this one resolves its
+      // members INSIDE `prisma.$transaction` while holding the per-lodge capacity
+      // lock, so the throttle cannot be applied on the success path there — a
+      // rate-limit counter write is a second connection, and taking one while
+      // holding that lock is how a deadlock gets introduced. Spending the budget
+      // here instead (the transaction has already rolled back) still counts every
+      // probe, and the channel #2388 describes is built out of refusals anyway. A
+      // SUCCESSFUL add on this route is not a probe: it mutates a real booking and
+      // emails the person it added.
+      await handleMemberGuestAddRefusal({
+        request,
+        actorMemberId: session.user.id,
+        error: err,
+        route: "bookings/guests-add",
+        startedAt,
+        skipAuthorization: isAdmin,
+      });
       return NextResponse.json(
         getBookingGuestValidationErrorResponse(err),
         { status: err.status }
