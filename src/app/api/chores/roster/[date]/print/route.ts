@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma"
 import { OPERATIONAL_STAY_BOOKING_STATUSES } from "@/lib/booking-status"
 import { countActiveGuestsForNight } from "@/lib/booking-guest-stay-ranges"
 import { hasAdminAccess } from "@/lib/access-roles"
+import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent"
 
 /**
  * GET /api/chores/roster/[date]/print
@@ -47,6 +48,7 @@ export async function GET(
         some: {
           stayStart: { lte: date },
           stayEnd: { gt: date },
+          ...OPERATIONALLY_PRESENT_GUEST_WHERE,
         },
       },
     },
@@ -55,6 +57,14 @@ export async function GET(
         where: {
           stayStart: { lte: date },
           stayEnd: { gt: date },
+          // Owner decision D-12 (#2307): the printed roster sheet is what goes
+          // on the lodge wall, so its guest list describes who is actually
+          // there. An unconsented guest is excluded here — which also fixes the
+          // headcount below, because it counts the rows this `where` returns.
+          // The headcount is an OPERATIONAL number (how many people the leader
+          // should see), not a capacity number: a PENDING guest still holds a
+          // bed under D-4 and is still counted by everything in capacity.ts.
+          ...OPERATIONALLY_PRESENT_GUEST_WHERE,
         },
       },
     },

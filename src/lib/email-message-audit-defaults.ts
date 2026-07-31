@@ -56,7 +56,7 @@ export const EMAIL_AUDIT_DEFAULTS = {
   },
   "checkin-reminder": {
     "defaultSubject": "Check-in Reminder - {{CLUB_LODGE_NAME}}",
-    "defaultBody": "Check-in Reminder\n\nHi {{firstName}}, your lodge stay begins tomorrow!\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\n\nGuest list:\n\n{{guestFirstName}} {{guestLastName}}\n...\n\n{{choreListNote}}Please ensure you arrive prepared for alpine conditions. Check the weather forecast before departing.\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\nView Booking: {{BASE_URL}}/bookings"
+    "defaultBody": "Check-in Reminder\n\nHi {{firstName}}, your lodge stay begins tomorrow!\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\n\nGuest list:\n\n{{guestName}}\n\n{{choreListNote}}Please ensure you arrive prepared for alpine conditions. Check the weather forecast before departing.\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\nView Booking: {{BASE_URL}}/bookings"
   },
   "pre-arrival-reminder": {
     "defaultSubject": "Pre-arrival Information - {{CLUB_LODGE_NAME}}",
@@ -429,6 +429,26 @@ export const EMAIL_AUDIT_DEFAULTS = {
   "membership-payment-recorded": {
     "defaultSubject": "Your {{seasonYear}} membership payment has been recorded — {{CLUB_NAME}}",
     "defaultBody": "Membership Payment Recorded\n\nHi {{firstName}}, thank you — {{CLUB_NAME}} has recorded your membership subscription payment for the {{seasonYear}} season.\n\nSeason: {{seasonYear}}\n{{amountRecordedNote}}Date recorded: {{date}}\n\nYour membership is now marked paid for the season, so there is nothing further for you to pay.\n\nIf anything looks wrong, contact the club at {{SUPPORT_EMAIL}}."
+  },
+  "member-guest-consent-request": {
+    "defaultSubject": "{{askHeading}}",
+    "defaultBody": "{{askHeading}}\n\nHi {{firstName}}, {{askContextNote}}\n\nLodge: {{CLUB_LODGE_NAME}}\nStay: {{checkIn}} - {{checkOut}}\nNights: {{guestNightsLabel}}\nBooked by: {{bookerName}}\nPlease answer by: {{consentExpiresAt}}\n\n{{partyListNote}}\n\nIf you do not answer by {{consentExpiresAt}}, the request lapses on its own and {{bookerName}} is told. You do not have to do anything to decline. In most cases the held bed is released at the same time; occasionally it cannot be - when there would be nobody left on the booking, for example - and the club sorts that out by hand.\n\nAnswer this request: {{consentUrl}}\n\nIf you were not expecting this, you can safely ignore it - the place is only confirmed if somebody answers yes."
+  },
+  "member-guest-added": {
+    "defaultSubject": "{{addedHeading}} - {{CLUB_LODGE_NAME}}",
+    "defaultBody": "{{addedHeading}}\n\nHi {{firstName}}, {{addedContextNote}}\n\nLodge: {{CLUB_LODGE_NAME}}\nStay: {{checkIn}} - {{checkOut}}\nNights: {{guestNightsLabel}}\n\n{{partyListNote}}\n\n{{removalNote}}\n\nView this booking: {{BASE_URL}}/bookings"
+  },
+  "member-guest-consent-outcome": {
+    "defaultSubject": "{{outcomeHeading}} - {{CLUB_LODGE_NAME}}",
+    "defaultBody": "{{outcomeHeading}}\n\nHi {{firstName}}, {{outcomeSentence}}\n\n{{consequenceNote}}\n\nView this booking: {{BASE_URL}}/bookings/{{bookingId}}"
+  },
+  "member-guest-consent-answered": {
+    "defaultSubject": "{{answeredHeading}} - {{CLUB_LODGE_NAME}}",
+    "defaultBody": "{{answeredHeading}}\n\nHi {{firstName}}, {{answeredSentence}}\n\n{{answeredNote}}"
+  },
+  "member-guest-consent-expired": {
+    "defaultSubject": "The request to add you to a lodge booking has lapsed",
+    "defaultBody": "That request has lapsed\n\nHi {{firstName}}, the request from {{bookerName}} to add you to a booking at {{CLUB_LODGE_NAME}} on {{checkIn}} - {{checkOut}} has lapsed, and the bed that was held for you has been released.\n\nYou do not need to do anything. If you did want to come, ask {{bookerName}} to add you again."
   }
 } as const;
 

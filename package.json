@@ -63,6 +63,7 @@
     "db:check-drift": "prisma migrate diff --from-migrations ./prisma/migrations --to-schema ./prisma/schema.prisma --exit-code",
     "config:self-heal": "tsx scripts/config-self-heal.ts",
     "db:audit-access-role-cleanup": "tsx scripts/audit-access-role-membership-cleanup.ts",
+    "induction:baseline": "tsx scripts/induction-baseline.ts",
     "xero:audit-invoice-rounding": "tsx scripts/audit-xero-invoice-rounding.ts",
     "finance:backfill-monthly-facts": "tsx scripts/backfill-finance-monthly-facts.ts",
     "payments:backfill-cancel-flattened": "tsx scripts/backfill-cancel-flattened-payments.ts"

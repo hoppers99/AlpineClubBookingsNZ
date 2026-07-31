@@ -5,9 +5,10 @@ lodge, double-restoring a member's credit, two people holding the same night,
 two runners generating one roster, a settle racing a reap. The primary
 cross-row mechanisms here are **PostgreSQL transaction-scoped advisory locks**
 (`pg_advisory_xact_lock(...)`): they are held for the life of the enclosing
-transaction and released automatically on commit or rollback. Two narrow
-`SELECT ... FOR UPDATE` protocols also exist and are inventoried below. All
-writers additionally follow the status-guarded-claim rule described below.
+transaction and released automatically on commit or rollback. Narrow
+`SELECT ... FOR UPDATE` protocols and one maintenance-only table-lock protocol
+also exist and are inventoried below. All writers additionally follow the
+status-guarded-claim rule described below.
 
 This doc maps **which locks exist, what each one protects, how they interact,
 and the ordering every writer must follow**. Read it before changing any lock
@@ -223,7 +224,67 @@ contend with the cluster or each other. The legacy Xero member-contact key is an
 explicit exception: retain it only for its two current counterpart writers and
 do not use unnamespaced `hashtext(<id>)` for new lock families.
 
-### Narrow row-lock protocols
+### Narrow row- and table-lock protocols
+
+- **Trusted legacy induction baseline** —
+  `src/lib/induction-baseline.ts` (`runInductionBaseline`, #2361): apply takes
+  `LOCK TABLE "MemberInduction" IN SHARE ROW EXCLUSIVE MODE` as the **first
+  database statement** in its Serializable transaction. The mode conflicts
+  with the `ROW EXCLUSIVE` lock PostgreSQL takes for every insert, update, or
+  delete on `MemberInduction`, including cascade deletes, so the command first
+  waits for existing direct induction DML and then makes later direct DML wait
+  until apply commits. It re-reads the complete active `USER`/`ADMIN`
+  real-member population and all of their induction rows only after that lock,
+  rebuilds a versioned SHA-256 digest over every safe plan input, and compares
+  it exactly with the reviewed dry-run digest before the blocker, no-op, or
+  write branches. A concurrent writer that changes the plan therefore makes
+  the waiting apply fail with a refreshed report rather than silently taking
+  the blocker or no-op path. With a matching digest, apply refuses the entire
+  run if any eligible member has a `DRAFT` or `IN_PROGRESS` row visible in that
+  locked read, and performs its `createMany` plus digest-bearing audit write in
+  the same transaction. Dry run never takes the lock and never writes.
+
+  This is deliberately a table lock rather than a new advisory-lock family:
+  PostgreSQL makes ordinary `MemberInduction` DML in
+  `src/lib/induction.ts`, application approval, member lifecycle/merge cascade
+  paths, and admin induction routes contend **when that DML reaches this
+  table**. This does not serialize those workflows' earlier reads, member
+  creation/import, other lifecycle writes, configuration changes, or any side
+  effect outside this table. From the final dry run through the post-apply
+  verification dry run, operators must therefore pause all of the following;
+  the runbook makes this freeze mandatory:
+
+  - individual and bulk member updates to `role`, `active`, date of birth, or
+    `ageTier`;
+  - membership-application approvals, admin and family-request member creation,
+    group-booking join acceptance/token claims that can create an active
+    `USER`, CSV/member imports, and Xero member imports;
+  - membership-assignment saves and roll-forward jobs that can update
+    `ageTier`;
+  - changes to the chosen actor's `canLogin`, access-role assignments,
+    active/archive/cancel state, account deletion, or merge;
+  - archive, cancel, reactivate, delete, merge, and other member lifecycle
+    operations;
+  - induction create, signer assignment/reassignment, sign-off, admin
+    completion/override, void, and delete operations; and
+  - changes to club identity, age-tier settings, nomination settings, or
+    induction-template content and activation.
+
+  None of those actor, `Member`, group-booking join, or configuration writers
+  is covered by the `MemberInduction` table lock merely because the baseline
+  later reads its result. Their pause is an operational freeze, not a database
+  lock.
+
+  The baseline transaction takes no application advisory lock and mutates no
+  `Member` or template row, so it cannot invert the global -> lodge -> member
+  advisory order. Foreign-key checks can still wait on a concurrent member
+  lifecycle transaction; if PostgreSQL detects a deadlock or the transaction
+  times out, the whole apply rolls back and the operator starts again from a
+  fresh dry run. Do not move validation reads before the table lock or weaken
+  the lock mode: either change would reopen the locked
+  classification/direct-DML race. Do not claim this table lock freezes the
+  wider population or composes with writers before they touch
+  `MemberInduction`.
 
 - `booking-create-promo.ts` locks the selected `PromoCode` row with `FOR UPDATE`
   before validating and consuming its use count. Booking creation has already
@@ -370,7 +431,11 @@ Cancel (`booking-cancel.ts`), Stripe capture, the manual cash / off-Xero
 mark-paid and its reversal, and the capacity-failed void
 (`payment-reconciliation.ts`), the Internet-Banking hold-expiry release
 (`internet-banking-payment-cron.ts`), the quote hold-release crons
-(`cron-quote-expiry-reminders.ts`), and the whole group-settlement lifecycle —
+(`cron-quote-expiry-reminders.ts`), the member-guest consent transitions
+(`member-guest-consent-service.ts` — both the member/delegate approve-decline
+path and the nightly expiry sweep `cron-member-guest-consent-expiry.ts`, because
+a decline or a lapse reprices the booking, can elect account credit, AND releases
+a bed, putting it in both cohorts), and the whole group-settlement lifecycle —
 settle (`group-settlement.ts` `settleConfirmedChildrenAndNotify`), the reaper
 (`cron-group-settlement-reaper.ts`), `markGroupSettlementIntentFailed` /
 `markGroupSettlementIntentRefunded`, and the organiser-cancel FAILED claim
@@ -507,7 +572,15 @@ guards remain mandatory; ordinary application databases are never valid targets.
 Alongside scratch-table lock/CAS probes, the harness seeds the migrated
 application schema and races the real group-settlement failure writer against a
 locked PaymentIntent re-point, proving a stale webhook cannot fail the new
-settlement attempt.
+settlement attempt. It also exercises trusted induction baselining through
+separate PostgreSQL connections: the baseline's `SHARE ROW EXCLUSIVE` table lock
+holds an ordinary `MemberInduction` insert until commit, and an already-open
+ordinary writer makes the baseline wait and then re-read the committed workflow
+before refusing to apply. Further probes prove a real database failure during
+the post-create audit rolls back both baseline rows and audit, while concurrent
+baseline applies serialize into one inserted set and one no-op. These probes are
+still opt-in; without the explicit flag the suite runs only its URL safety
+guards and never imports or connects Prisma.
 
 ### Member-night guard → per-member lock, ACROSS lodges
 

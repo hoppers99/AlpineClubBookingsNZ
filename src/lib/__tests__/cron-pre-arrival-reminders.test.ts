@@ -181,3 +181,56 @@ describe("sendPreArrivalReminders", () => {
     expect(result.sentBookingIds).toEqual([]);
   });
 });
+
+// --- D-12 (#2307): the headcount in the email --------------------------------
+//
+// Owner decision D-12: an unconsented member guest is not operationally present.
+// This email tells the booker how many guests are arriving, and there is no
+// separate count query — `guests.length` is read straight off the include — so
+// the include is where the exclusion has to land, and an inflated "Guests: 4" is
+// the club stating something untrue in writing.
+describe("sendPreArrivalReminders member-guest consent exclusion (D-12, #2307)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-10T12:00:00.000Z"));
+    vi.clearAllMocks();
+    mockPrisma.booking.findMany.mockResolvedValue([]);
+    mockPrisma.booking.updateMany.mockResolvedValue({ count: 1 });
+    mockSendPreArrivalReminderEmail.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("asks the database for operationally present guests only", async () => {
+    await sendPreArrivalReminders();
+
+    // The include, not a post-filter: `guests.length` below has nothing to
+    // filter with, so the predicate has to travel in the query.
+    const args = mockPrisma.booking.findMany.mock.calls[0][0] as {
+      include: { guests: { where?: { OR?: unknown } } };
+    };
+    // The explicit OR, never `{ not: "PENDING" }` — NULL is the dominant
+    // consentStatus and `<> 'PENDING'` is UNKNOWN for NULL, which would drop
+    // every ordinary guest out of every reminder ever sent.
+    expect(args.include.guests.where?.OR).toEqual([
+      { consentStatus: null },
+      { consentStatus: "CONFIRMED" },
+    ]);
+  });
+
+  it("counts the guests the query returned, so a pending guest never inflates it", async () => {
+    // The query above excludes the pending row, so what reaches this code is a
+    // two-guest booking whose third member guest is still awaiting consent.
+    mockPrisma.booking.findMany.mockResolvedValue([
+      booking({ guests: [{ id: "guest-1" }, { id: "guest-2" }] }),
+    ]);
+
+    await sendPreArrivalReminders();
+
+    expect(mockSendPreArrivalReminderEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ guestCount: 2 }),
+    );
+  });
+});

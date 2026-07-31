@@ -89,6 +89,13 @@ vi.mock("@/lib/booking-modify", () => ({
 }));
 vi.mock("@/lib/booking-guests", () => ({
   resolveLinkedBookingMembers: vi.fn().mockResolvedValue([]),
+  // MG2 (#2307): the widened call sites use the boundary-returning variant. An
+  // empty boundary is "everybody is inside the booker's family", which is this
+  // test's world unchanged.
+  resolveLinkedBookingMembersWithBoundary: vi.fn().mockResolvedValue({
+    members: new Map(),
+    boundary: { scopeByMemberId: new Map(), beyondFamilyMemberIds: [] },
+  }),
   assertLinkedBookingMembersCanBeBooked: vi.fn().mockResolvedValue(undefined),
   normalizeBookingGuestInputs: vi.fn().mockReturnValue([]),
   BookingGuestValidationError: class extends Error {},
@@ -103,6 +110,13 @@ vi.mock("@/lib/change-fee", () => ({ calculateChangeFee: h.calculateChangeFee })
 // getEffectiveXeroLockDate stays real.
 vi.mock("@/lib/module-settings", () => ({
   loadEffectiveModuleFlags: h.loadModuleFlags,
+  // MG2 (#2307): the route now reaches `@/lib/admin-modules` through
+  // `member-guest-add-policy` (it reads the memberGuests module flag before
+  // opening any transaction), and admin-modules imports these two from this
+  // module at module scope. A flags object without `memberGuests` leaves the
+  // widening off, which is this test's world unchanged.
+  CLUB_MODULE_SETTINGS_ID: "default",
+  normalizeClubModuleSettings: (record: unknown) => record ?? {},
 }));
 vi.mock("@/lib/xero-token-store", () => ({
   isXeroConnected: h.isXeroConnected,

@@ -123,7 +123,47 @@ Per-template editor:
 | Subject safety | Sensitive token values (e.g. raw tokens) are never allowed in a subject line |
 | Override vs default | Saving stores an override; **Restore Default** deletes it and reverts to the built-in text |
 | Stale overrides | A count is shown if any stored overrides reference templates that no longer exist (a data-cleanup task) |
+| Retired tokens | A warning names any saved override still using a token its template no longer offers. A token that is not supplied renders as **nothing**, so the line it sits on can go out empty — open the named template, swap the old token for the chips now shown, and save (or reset it to the current default) |
 | Audit | Template edits are audited (who changed what, when) |
+| Pre-composed blocks | Some tokens hold a whole sentence or block the system builds for you. You can move one or leave it out, but you cannot reformat what is inside it — see below |
+
+### Tokens that hold a whole block, and what that means for you
+
+The body editor substitutes tokens and nothing else — there are no "if" tests and
+no repeating rows. So wherever a message has to say something only *sometimes*,
+or has to list *several* things, the system builds that whole piece of text and
+hands it over as one token. You will see these on the member-guest emails and on
+several booking emails; they are named `...Note` or `...Line`.
+
+Two consequences worth knowing before you edit one:
+
+- **Leave a block token on a line of its own.** Do not put a label of your own in
+  front of it. When there is nothing to say the token comes through empty, and a
+  label you added would be left stranded above nothing.
+- **The party listing on the member-guest emails is one block, heading included.**
+  `{{partyListNote}}` produces the "Everyone on this booking" heading and the list
+  of names together. You can move that block or leave it out; you cannot change
+  how each guest's line is laid out, because the editor has no way to repeat a
+  row. If a club needs a different per-guest layout, that is a change to the
+  template engine, not something an override can do.
+- **Never type a currency sign in front of a money token.** Tokens such as
+  `{{consequenceNote}}` already contain the formatted amount, so a `$` in front
+  of one prints `$$48.00`.
+
+### Consent emails ignore a member's notification preferences
+
+The five member-guest emails — the consent request, the "you have been added"
+notice, the outcome notice to whoever made the booking, the notice that somebody
+in the family answered on a member's behalf, and the lapse notice —
+deliberately do **not** follow a member's own notification-category preferences,
+and they are not affected by the per-action "email the member" choices on admin
+screens. Being asked whether you agree to be on somebody's booking is not a
+preference: a member who had muted a category would never be asked, and would
+then quietly come off the booking days later without ever having heard about it.
+
+You can still change their wording here like any other template. A booking that an
+admin has silenced does withhold them, along with everything else about that
+booking.
 
 ## Troubleshooting
 

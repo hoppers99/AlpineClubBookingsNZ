@@ -872,6 +872,87 @@ export async function register() {
 
     logger.info({ job: "draft-cleanup" }, "Scheduled draft cleanup (daily at 4:00 AM NZST)");
 
+    // Member-guest pending-hold expiry (#2307, epic #2305) — daily at 4:30 AM
+    // NZST. Its own schedule rather than a slot in general-cron-runner's 3-hourly
+    // cycle: a lapse should happen once, on a predictable day boundary, not eight
+    // times a day. 4:30 is a free slot between draft-cleanup (4:00) and
+    // credit-reconciliation (5:00).
+    //
+    // Registration is UNCONDITIONAL and the module is checked at run time, so an
+    // admin switching the memberGuests module on or off takes effect on the next
+    // tick without a restart. With the module off the job reports SKIPPED, which
+    // is what keeps the background-jobs health view honest instead of showing a
+    // stale "last ran never".
+    let isMemberGuestConsentExpiryRunning = false;
+    cron.default.schedule("30 4 * * *", async () => {
+      if (isMemberGuestConsentExpiryRunning) {
+        logger.info({ job: "member-guest-consent-expiry" }, "Already running, skipping");
+        return;
+      }
+      isMemberGuestConsentExpiryRunning = true;
+      const startedAt = new Date();
+      logger.info(
+        { job: "member-guest-consent-expiry" },
+        "Expiring lapsed member-guest consent requests",
+      );
+
+      const checkInId = Sentry.captureCheckIn(
+        { monitorSlug: "member-guest-consent-expiry", status: "in_progress" },
+        sentryCronMonitorConfig("30 4 * * *", { checkinMargin: 10, maxRuntime: 15 })
+      );
+
+      try {
+        const { runMemberGuestConsentExpiryCron, summariseMemberGuestConsentExpiryRun } =
+          await import("./lib/cron-member-guest-consent-expiry");
+        const { isEffectiveModuleEnabled } = await import("./lib/admin-modules");
+        const result = await runMemberGuestConsentExpiryCron({
+          isModuleEnabled: () => isEffectiveModuleEnabled("memberGuests"),
+        });
+        const resultSummary = summariseMemberGuestConsentExpiryRun(result);
+        logger.info(
+          { job: "member-guest-consent-expiry", resultSummary },
+          "Member-guest consent expiry complete",
+        );
+        await recordCronRun(
+          "member-guest-consent-expiry",
+          startedAt,
+          result.cronStatus,
+          { resultSummary, ...result },
+        );
+        Sentry.captureCheckIn({
+          checkInId,
+          monitorSlug: "member-guest-consent-expiry",
+          status: "ok",
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        reportCronError({
+          tag: "member-guest-consent-expiry",
+          err,
+          message: "Failed to expire lapsed member-guest consent requests",
+        });
+        await recordCronRun(
+          "member-guest-consent-expiry",
+          startedAt,
+          "FAILURE",
+          undefined,
+          message,
+        );
+        Sentry.captureCheckIn({
+          checkInId,
+          monitorSlug: "member-guest-consent-expiry",
+          status: "error",
+        });
+      } finally {
+        isMemberGuestConsentExpiryRunning = false;
+      }
+    }, { timezone: CRON_TIMEZONE });
+
+    logger.info(
+      { job: "member-guest-consent-expiry" },
+      "Scheduled member-guest consent expiry (daily at 4:30 AM NZST)",
+    );
+
     // N-06: Cron job - Pending deadline alerts (daily at 8:00 AM NZST)
     let isPendingDeadlineRunning = false;
     cron.default.schedule("0 8 * * *", async () => {

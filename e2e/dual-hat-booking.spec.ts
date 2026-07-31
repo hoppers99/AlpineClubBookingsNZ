@@ -7,7 +7,7 @@ import {
 } from "./helpers/booking";
 import { DUAL_HAT_ADMIN, E2E_ADMIN, ROLE_PERSONAS } from "./helpers/fixtures";
 import { personas } from "./helpers/personas";
-import { stayWindow } from "./helpers/stay-dates";
+import { stayWindowForAttempt } from "./helpers/stay-dates";
 
 // Issue #1442: portal context determines booking intent.
 // - A dual-hat admin (USER + ADMIN tokens: dana) books their own stay through
@@ -27,9 +27,12 @@ test.describe.configure({ mode: "serial" });
 
 test("a dual-hat admin books their own stay through the member wizard", async ({
   page,
-}) => {
+}, testInfo) => {
   await loginPersona(page, DUAL_HAT_ADMIN.email);
-  const window = stayWindow(3);
+  // Retry-scoped window (#2302): this file is a serial group, so a failure in a
+  // later test re-runs this one against the booking its own previous attempt
+  // left behind. Attempt 0 is unchanged.
+  const window = stayWindowForAttempt(3, testInfo.retry);
 
   // The old behavior replaced /book with /admin/book for every ADMIN-token
   // holder; dual-hat accounts must stay on the member wizard now.
@@ -64,9 +67,9 @@ test.describe("admin-only routing", () => {
 
 test("a booking officer completes an on-behalf booking draft", async ({
   page,
-}) => {
+}, testInfo) => {
   await loginPersona(page, ROLE_PERSONAS.ADMIN_BOOKINGS.email);
-  const window = stayWindow(4);
+  const window = stayWindowForAttempt(4, testInfo.retry);
 
   await page.goto("/admin/book");
   await expect(

@@ -72,8 +72,34 @@ vi.mock("@/lib/logger", () => ({ default: mockLogger }));
 
 const STATE = { lodge: { name: "Silverpeak Lodge" }, rooms: [] };
 const TEMPLATE = { key: "everyday-board", definition: { regions: [] } };
-const ADMIN_MEMBER = { id: "admin-1", accessRoles: [{ role: "ADMIN" }] };
-const PLAIN_MEMBER = { id: "member-1", accessRoles: [{ role: "USER" }] };
+const ADMIN_MEMBER = {
+  id: "admin-1",
+  active: true,
+  canLogin: true,
+  accessRoles: [{ role: "ADMIN" }],
+};
+const PLAIN_MEMBER = {
+  id: "member-1",
+  active: true,
+  canLogin: true,
+  accessRoles: [{ role: "USER" }],
+};
+// #2383: cancellation, archive, deletion and bulk deactivate all leave the
+// ADMIN row in place and none of them invalidates the session, so an ex-admin's
+// live JWT still presents the role. Account state, not the rows, is what must
+// stop them — and the two flags are separable, so both are pinned.
+const DEACTIVATED_ADMIN = {
+  id: "admin-2",
+  active: false,
+  canLogin: true,
+  accessRoles: [{ role: "ADMIN" }],
+};
+const DELOGINED_ADMIN = {
+  id: "admin-3",
+  active: true,
+  canLogin: false,
+  accessRoles: [{ role: "ADMIN" }],
+};
 const DEVICE_AUTH = {
   device: {
     id: "dev-1",
@@ -186,6 +212,37 @@ describe("GET /api/display/state — admin preview (issue #52)", () => {
     const res = await GET(await stateRequest("?previewDevice=dev-1"));
     expect(res.status).toBe(401);
     expect(mockBuildDisplayState).not.toHaveBeenCalled();
+  });
+
+  it("rejects a preview from a deactivated admin who still holds the row (#2383)", async () => {
+    // Every other auth()-using admin route re-reads `active`; this one did not,
+    // and #2383 made the gap reachable by letting a member keep the ADMIN row
+    // through cancellation. The row alone must not be enough.
+    loginAs(DEACTIVATED_ADMIN);
+    const { GET } = await import("@/app/api/display/state/route");
+    // ?preview=1 needs no device row, so a 200 here would mean the auth gate
+    // let them through — not that some later lookup happened to fail.
+    const res = await GET(await stateRequest("?preview=1"));
+    expect(res.status).toBe(401);
+    expect(mockBuildDisplayState).not.toHaveBeenCalled();
+  });
+
+  it("rejects a preview from an admin whose login has been disabled (#2383)", async () => {
+    // Only true if the query selects canLogin: hasAdminAccess is login-aware,
+    // but an unselected field arrives undefined and resolves the full bundle.
+    loginAs(DELOGINED_ADMIN);
+    const { GET } = await import("@/app/api/display/state/route");
+    const res = await GET(await stateRequest("?preview=1"));
+    expect(res.status).toBe(401);
+    expect(mockBuildDisplayState).not.toHaveBeenCalled();
+    // Prisma is mocked, so the fixture carries canLogin whatever the query
+    // asks for; assert the query itself, since an unselected field arrives
+    // undefined in production and hasAdminAccess then resolves the full bundle.
+    expect(mockPrisma.member.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({ active: true, canLogin: true }),
+      }),
+    );
   });
 
   it("previewDevice serves that device's lodge and template WITHOUT stamping lastSeenAt", async () => {

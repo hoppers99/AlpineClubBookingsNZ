@@ -97,6 +97,70 @@ function mockUrl(origin: string, path: string): string {
 }
 
 /**
+ * Attempts for a mock self-fetch, and the pause before each retry (#2302).
+ *
+ * Every call in this module dials the app's OWN in-container origin
+ * (`XERO_MOCK_INTERNAL_ORIGIN`, `http://127.0.0.1:3000` in CI) rather than
+ * Xero's servers. That loopback hop is an artefact of the harness, and on a
+ * loaded GitHub runner it intermittently fails to connect: the E2E app container
+ * log for run 30530889448 shows four `TypeError: fetch failed … ECONNREFUSED`
+ * bursts, and one of them landed on the organisation read behind
+ * `/admin/xero/setup`'s "Connected to <Org>" confirmation. Nothing downstream
+ * retries it — `fetchMockXeroOrganisation` throws, `getXeroConnectedOrganisation`
+ * degrades to a null name and negative-caches for 60s, and the wizard's
+ * post-OAuth `refresh()` is a one-shot mount effect — so a single refused socket
+ * pinned the step on "Confirming the organisation name…" and the spec could only
+ * time out.
+ */
+const MOCK_FETCH_ATTEMPTS = 3;
+const MOCK_FETCH_RETRY_DELAY_MS = 150;
+
+/**
+ * `fetch` for the mock harness's loopback calls, retrying TRANSPORT failures
+ * only (a rejected `fetch`: connection refused/reset, DNS, socket hang up).
+ *
+ * An HTTP response — including a 4xx/5xx — is returned untouched on the first
+ * attempt: every caller here treats a non-2xx as a real fixture/gating failure
+ * and must keep failing loudly rather than being masked by a retry.
+ *
+ * A rejected `fetch` is NOT proof the request never arrived: ECONNREFUSED means
+ * it did not, but ECONNRESET / socket hang up can land after the handler already
+ * ran, so a retry can genuinely repeat a served request. Safe for every caller
+ * here: the reads are idempotent by nature, and the one POST with a side effect
+ * — the intent-to-receive ping, which drives the real webhook route — records
+ * its marker through `recordXeroWebhookValidation`, a single-row upsert keyed on
+ * the provider (src/lib/xero-webhook-validation.ts), so a repeat rewrites the
+ * same row rather than accumulating anything.
+ *
+ * Test-only by construction, like the rest of this module: nothing calls it
+ * unless `XERO_MOCK_API_ORIGIN` is set, which no real deployment ever sets.
+ *
+ * Exported so the gated route handlers that make the SAME loopback hop (the
+ * intent-to-receive ping in `/api/testing/xero-mock/send-validation`, which
+ * POSTs the real webhook route) share one retry policy instead of inventing a
+ * second one.
+ */
+export async function fetchMockLoopback(
+  url: string,
+  init?: RequestInit,
+): Promise<Response> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= MOCK_FETCH_ATTEMPTS; attempt += 1) {
+    try {
+      return await fetch(url, init);
+    } catch (error) {
+      lastError = error;
+      if (attempt < MOCK_FETCH_ATTEMPTS) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, MOCK_FETCH_RETRY_DELAY_MS * attempt),
+        );
+      }
+    }
+  }
+  throw lastError;
+}
+
+/**
  * Mock consent URL: points at the gated authorize endpoint, which immediately
  * redirects back to our real callback with a code + the same state, so the
  * existing callback route and its state-cookie check are exercised unchanged.
@@ -119,7 +183,7 @@ export async function handleMockXeroCallback(
 ): Promise<void> {
   const code = new URL(callbackUrl).searchParams.get("code") ?? "mock-code";
 
-  const tokenRes = await fetch(mockUrl(origin, "/token"), {
+  const tokenRes = await fetchMockLoopback(mockUrl(origin, "/token"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ code }),
@@ -133,7 +197,7 @@ export async function handleMockXeroCallback(
     expires_in?: number;
   };
 
-  const connRes = await fetch(mockUrl(origin, "/connections"));
+  const connRes = await fetchMockLoopback(mockUrl(origin, "/connections"));
   if (!connRes.ok) {
     throw new Error("Mock Xero connections read failed.");
   }
@@ -183,7 +247,7 @@ export const MOCK_XERO_ITEMS = [
 export async function fetchMockChartOfAccounts(
   origin: string,
 ): Promise<Array<{ code: string; name: string; type: string; class: string }>> {
-  const res = await fetch(mockUrl(origin, "/chart-of-accounts"));
+  const res = await fetchMockLoopback(mockUrl(origin, "/chart-of-accounts"));
   if (!res.ok) return [];
   return (await res.json()) as Array<{
     code: string;
@@ -199,7 +263,7 @@ export async function fetchMockXeroItems(
 ): Promise<
   Array<{ itemID: string; code: string; name: string; description: string }>
 > {
-  const res = await fetch(mockUrl(origin, "/items"));
+  const res = await fetchMockLoopback(mockUrl(origin, "/items"));
   if (!res.ok) return [];
   return (await res.json()) as Array<{
     itemID: string;
@@ -228,7 +292,7 @@ export interface MockXeroOrganisation {
 export async function fetchMockXeroOrganisation(
   origin: string,
 ): Promise<MockXeroOrganisation> {
-  const res = await fetch(mockUrl(origin, "/organisation"));
+  const res = await fetchMockLoopback(mockUrl(origin, "/organisation"));
   if (!res.ok) {
     throw new Error(
       `Mock Xero organisation read failed (HTTP ${res.status}).`,

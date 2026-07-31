@@ -99,6 +99,34 @@ export async function GET() {
         entry !== null,
     );
 
+  // #2307 review (M2): the same failure one level up. A token a template no
+  // longer supplies renders as NOTHING — there is no conditional syntax and no
+  // error — so an override written against an older default keeps sending, with
+  // a hole in it, until somebody happens to re-save. The check-in reminder is
+  // the live example: `{{guestFirstName}}`/`{{guestLastName}}` gave way to a
+  // one-guest-per-line `{{guestName}}`, and a club holding the old pair would
+  // have emailed a reminder listing NOBODY. (The sender keeps supplying the old
+  // pair so those overrides still render correctly; this is how the admin
+  // learns to move off them.) Reuses the SAVE-TIME validator rather than a
+  // second rule, so "your save was refused for this" and "your saved override
+  // has this" can never disagree.
+  const retiredTokenOverrides = [...overrideByTemplate.entries()]
+    .map(([templateName, override]) => {
+      const validation = validateEmailTemplateContent({
+        templateName,
+        subject: override.subject ?? "",
+        bodyText: override.bodyText ?? "",
+      });
+      const tokens = validation.issues
+        .filter(
+          (issue) => issue.code === "disallowed_token" || issue.code === "unknown_token",
+        )
+        .flatMap((issue) => issue.tokens ?? []);
+      if (tokens.length === 0) return null;
+      return { templateName, tokens: Array.from(new Set(tokens)) };
+    })
+    .filter((entry): entry is { templateName: string; tokens: string[] } => entry !== null);
+
   return NextResponse.json({
     templates: EMAIL_TEMPLATE_DEFINITIONS.map((definition) => {
       const override = overrideByTemplate.get(definition.key);
@@ -110,6 +138,7 @@ export async function GET() {
     staleOverrideCount: staleOverrides.length,
     staleOverrides,
     bracketAnnotationOverrides,
+    retiredTokenOverrides,
   });
 }
 
