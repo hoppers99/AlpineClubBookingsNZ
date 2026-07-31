@@ -8,6 +8,9 @@ const mocks = vi.hoisted(() => ({
   // the point of the coupling is that the exclusion below and the credit note
   // agree, and a stub would let them drift.
   chargeCoverageFindMany: vi.fn(),
+  // #2400 (review F3): the credit note's RECORDED outcome. An invoice whose
+  // credit note already ran and skipped is never excused again.
+  xeroSyncOperationFindMany: vi.fn(),
   loadMembershipCancellationSettings: vi.fn(),
   getAuthenticatedXeroClient: vi.fn(),
   getInvoices: vi.fn(),
@@ -28,6 +31,7 @@ vi.mock("@/lib/prisma", () => ({
     membershipSubscriptionChargeCoverage: {
       findMany: mocks.chargeCoverageFindMany,
     },
+    xeroSyncOperation: { findMany: mocks.xeroSyncOperationFindMany },
   },
 }));
 
@@ -114,6 +118,9 @@ beforeEach(() => {
   ]);
   mocks.memberSubscriptionFindMany.mockResolvedValue([]);
   mocks.chargeCoverageFindMany.mockResolvedValue([]);
+  // No cancellation credit note has run yet, which is what every approval-time
+  // read sees (#2400 review, F3).
+  mocks.xeroSyncOperationFindMany.mockResolvedValue([]);
   mocks.getAuthenticatedXeroClient.mockResolvedValue({
     xero: { accountingApi: { getInvoices: mocks.getInvoices } },
     tenantId: "tenant-1",
@@ -267,7 +274,11 @@ describe("membership cancellation unpaid-invoice blockers", () => {
 
   it("ignores the subscription invoice this very approval is about to credit", async () => {
     mocks.memberSubscriptionFindMany.mockResolvedValue([
-      { memberId: "member-1", xeroInvoiceId: "sub-invoice" },
+      {
+        memberId: "member-1",
+        xeroInvoiceId: "sub-invoice",
+        member: { xeroContactId: "contact-1" },
+      },
     ]);
     respondWithInvoices([
       invoice({ invoiceID: "sub-invoice", invoiceNumber: "SUB-1", amountDue: 90 }),
@@ -299,7 +310,11 @@ describe("membership cancellation unpaid-invoice blockers", () => {
       { id: "member-2", xeroContactId: "contact-1" },
     ]);
     mocks.memberSubscriptionFindMany.mockResolvedValue([
-      { memberId: "member-1", xeroInvoiceId: "sub-invoice" },
+      {
+        memberId: "member-1",
+        xeroInvoiceId: "sub-invoice",
+        member: { xeroContactId: "contact-1" },
+      },
     ]);
     respondWithInvoices([
       invoice({ invoiceID: "sub-invoice", invoiceNumber: "SUB-1", amountDue: 90 }),
@@ -331,9 +346,19 @@ describe("membership cancellation unpaid-invoice blockers", () => {
       mocks.memberSubscriptionFindMany.mockImplementation(
         async (args: { where?: Record<string, unknown> }) =>
           args?.where?.seasonYear !== undefined
-            ? (input.season ?? [])
+            ? (input.season ?? []).map((row) => ({
+                member: { xeroContactId: "contact-1" },
+                ...row,
+              }))
             : (input.linkedToInvoice ?? []),
       );
+    }
+
+    /** A settled cancellation credit-note operation for one subscription. */
+    function creditNoteAlreadyRan(subscriptionId: string) {
+      mocks.xeroSyncOperationFindMany.mockResolvedValue([
+        { localId: subscriptionId },
+      ]);
     }
 
     beforeEach(() => {
@@ -450,7 +475,10 @@ describe("membership cancellation unpaid-invoice blockers", () => {
         ],
       });
       mocks.chargeCoverageFindMany.mockResolvedValue([
-        { memberId: "member-2", charge: { xeroInvoiceId: "sub-invoice" } },
+        {
+          charge: { xeroInvoiceId: "sub-invoice" },
+          subscription: { memberId: "member-2" },
+        },
       ]);
 
       const blockers = await loadMembershipCancellationInvoiceBlockersByMemberId(
@@ -459,6 +487,58 @@ describe("membership cancellation unpaid-invoice blockers", () => {
       );
 
       expect(blockers.get("member-1")).toHaveLength(1);
+    });
+
+    // #2400 (review F3): the one that used to archive a contact over a live
+    // balance. Every covered member has now been cancelled, so "would this
+    // credit in full?" answers YES again — but this member's credit note already
+    // had its single run, while the siblings were live, and skipped. Nothing is
+    // going to credit that invoice, so nothing may excuse it.
+    it("does not excuse an invoice whose credit note already ran and skipped", async () => {
+      respondWithSubscriptions({
+        season: [
+          {
+            id: "sub-1",
+            memberId: "member-1",
+            xeroInvoiceId: "sub-invoice",
+            xeroInvoiceNumber: "SUB-1",
+          },
+        ],
+        linkedToInvoice: [
+          { memberId: "member-1", xeroInvoiceId: "sub-invoice" },
+          { memberId: "member-2", xeroInvoiceId: "sub-invoice" },
+        ],
+      });
+      // The whole family is cancelled now, so the live covered set is empty.
+      mocks.memberFindMany.mockResolvedValue([
+        {
+          id: "member-1",
+          xeroContactId: "contact-1",
+          firstName: "Ada",
+          lastName: "Smith",
+          cancelledAt: new Date(NOW_MS),
+          active: false,
+        },
+        {
+          id: "member-2",
+          xeroContactId: null,
+          firstName: "Bob",
+          lastName: "Smith",
+          cancelledAt: new Date(NOW_MS),
+          active: false,
+        },
+      ]);
+      creditNoteAlreadyRan("sub-1");
+
+      const blockers = await loadMembershipCancellationInvoiceBlockersByMemberId(
+        ["member-1"],
+        { nowMs: NOW_MS, fresh: true },
+      );
+
+      expect(blockers.get("member-1")).toHaveLength(1);
+      expect(blockers.get("member-1")?.[0]).toMatchObject({
+        invoiceNumber: "SUB-1",
+      });
     });
 
     it("is the same answer the archive re-check gets, so the contact is not archived over a live balance", async () => {

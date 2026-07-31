@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   memberFindUnique: vi.fn(),
   memberSubscriptionFindUnique: vi.fn(),
   xeroObjectLinkFindFirst: vi.fn(),
+  xeroObjectLinkCreateMany: vi.fn(),
   xeroSyncOperationUpdate: vi.fn(),
   xeroSyncOperationFindFirst: vi.fn(),
   callXeroApi: vi.fn(),
@@ -32,6 +33,9 @@ const mocks = vi.hoisted(() => ({
   // #2400: who else the subscription invoice still covers. Default: nobody, so
   // the leaver is the last one out and the invoice is credited in full.
   findOtherLiveMembersCovered: vi.fn(),
+  // #2400 (review F3): the invoice a coverage claim says the subscription is
+  // billed on, for a member who carries no `xeroInvoiceId` of their own.
+  findSubscriptionInvoiceIdFromCoverage: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -44,6 +48,7 @@ vi.mock("@/lib/prisma", () => ({
     },
     xeroObjectLink: {
       findFirst: mocks.xeroObjectLinkFindFirst,
+      createMany: mocks.xeroObjectLinkCreateMany,
     },
     xeroSyncOperation: {
       update: mocks.xeroSyncOperationUpdate,
@@ -84,6 +89,8 @@ vi.mock("@/lib/membership-cancellation-invoice-blockers", () => ({
 vi.mock("@/lib/membership-cancellation-subscription-credit", () => ({
   findOtherLiveMembersCoveredBySubscriptionInvoice:
     mocks.findOtherLiveMembersCovered,
+  findSubscriptionInvoiceIdFromCoverage:
+    mocks.findSubscriptionInvoiceIdFromCoverage,
 }));
 
 vi.mock("@/lib/xero-member-grouping", () => ({
@@ -147,6 +154,10 @@ describe("membership cancellation Xero operations", () => {
         new Map(memberIds.map((memberId) => [memberId, []])),
     );
     mocks.findOtherLiveMembersCovered.mockResolvedValue([]);
+    mocks.findSubscriptionInvoiceIdFromCoverage.mockResolvedValue(null);
+    // #2400 (review F1): the per-invoice credit claim. Default: this run takes
+    // it, which is what every pre-existing test assumes implicitly.
+    mocks.xeroObjectLinkCreateMany.mockResolvedValue({ count: 1 });
   });
 
   it("creates and allocates a subscription cancellation credit note using the membership cancellation mapping", async () => {
@@ -386,6 +397,240 @@ describe("membership cancellation Xero operations", () => {
             invoiceId: "inv_family",
             sharedWith: [{ memberId: "member_2", name: "Bob Smith" }],
           }),
+        }),
+      );
+    });
+
+    // #2400 (review F1). The reviewer is told to approve a whole family in a
+    // burst, each approval fires an unawaited outbox kick, and two drains
+    // overlap: one runs member A's credit note while another runs member C's.
+    // By then EVERY covered member carries `cancelledAt`, so both read
+    // `sharedWith = []`, both read amountDue 300, and both would create a $300
+    // credit note under different Xero idempotency keys. One allocation lands,
+    // the other is rejected as an over-allocation, and $300 of unallocated
+    // credit sits on the family's contact ready to be spent.
+    it("raises nothing when a sibling's cancellation already owns the credit for this invoice", async () => {
+      unpaidFamilySubscription();
+      mocks.findOtherLiveMembersCovered.mockResolvedValue([]);
+      // The sibling won the insert race, so this one's claim conflicts.
+      mocks.xeroObjectLinkCreateMany.mockResolvedValue({ count: 0 });
+      mocks.xeroObjectLinkFindFirst
+        // The existing-credit-note lookup — keyed on THIS subscription, so a
+        // racing sibling's credit note is invisible to it.
+        .mockResolvedValueOnce(null)
+        // The claim holder.
+        .mockResolvedValueOnce({ metadata: { subscriptionId: "sub_sibling" } });
+
+      await expect(
+        createXeroMembershipCancellationCreditNote({
+          subscriptionId: "sub_1",
+          requestId: "request_1",
+          participantId: "participant_1",
+          syncOperationId: "op_1",
+        }),
+      ).resolves.toBeNull();
+
+      // A lost claim runs NO side effect: no Xero call at all.
+      expect(mocks.getAuthenticatedXeroClient).not.toHaveBeenCalled();
+      expect(mocks.createCreditNotes).not.toHaveBeenCalled();
+      expect(mocks.createCreditNoteAllocation).not.toHaveBeenCalled();
+      expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
+        "op_1",
+        expect.objectContaining({
+          responsePayload: expect.objectContaining({
+            skipped: true,
+            reason: "invoice_credit_claimed_by_other_cancellation",
+            invoiceId: "inv_family",
+            holderSubscriptionId: "sub_sibling",
+          }),
+        }),
+      );
+    });
+
+    it("claims the invoice before it authenticates, keyed on the invoice and not the member", async () => {
+      unpaidFamilySubscription();
+      mocks.findOtherLiveMembersCovered.mockResolvedValue([]);
+
+      await expect(
+        createXeroMembershipCancellationCreditNote({
+          subscriptionId: "sub_1",
+          requestId: "request_1",
+          participantId: "participant_1",
+          syncOperationId: "op_1",
+        }),
+      ).resolves.toBe("cn_1");
+
+      expect(mocks.xeroObjectLinkCreateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          skipDuplicates: true,
+          data: [
+            expect.objectContaining({
+              localId: "inv_family",
+              xeroObjectId: "inv_family",
+              role: "MEMBERSHIP_CANCELLATION_CREDIT_INVOICE_CLAIM",
+            }),
+          ],
+        }),
+      );
+      expect(
+        mocks.xeroObjectLinkCreateMany.mock.invocationCallOrder[0],
+      ).toBeLessThan(mocks.getAuthenticatedXeroClient.mock.invocationCallOrder[0]);
+    });
+
+    it("lets the same subscription's own retry through, because the claim records who holds it", async () => {
+      unpaidFamilySubscription();
+      mocks.findOtherLiveMembersCovered.mockResolvedValue([]);
+      mocks.xeroObjectLinkCreateMany.mockResolvedValue({ count: 0 });
+      mocks.xeroObjectLinkFindFirst
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ metadata: { subscriptionId: "sub_1" } });
+
+      await expect(
+        createXeroMembershipCancellationCreditNote({
+          subscriptionId: "sub_1",
+          requestId: "request_1",
+          participantId: "participant_1",
+          syncOperationId: "op_1",
+        }),
+      ).resolves.toBe("cn_1");
+    });
+
+    it("does not claim the invoice while other covered members are staying", async () => {
+      unpaidFamilySubscription();
+      mocks.findOtherLiveMembersCovered.mockResolvedValue([
+        { memberId: "member_2", name: "Bob Smith" },
+      ]);
+
+      await createXeroMembershipCancellationCreditNote({
+        subscriptionId: "sub_1",
+        requestId: "request_1",
+        participantId: "participant_1",
+        syncOperationId: "op_1",
+      });
+
+      // Claiming here would fence the sibling who WILL legitimately credit it.
+      expect(mocks.xeroObjectLinkCreateMany).not.toHaveBeenCalled();
+    });
+
+    // #2400 (review F3). Invoice covers A, B and C; C's subscription is PAID —
+    // marked paid by hand, or already PAID when the invoice was raised, in which
+    // case C carries no `xeroInvoiceId` at all and is covered only by the
+    // charge's coverage claim. A skips (C live), B skips (C live), and C credits
+    // nothing, so the invoice keeps its full balance forever having told the
+    // reviewer the last cancellation would clear it.
+    it("reports the invoice a whole-family cancellation is about to strand", async () => {
+      mocks.memberSubscriptionFindUnique.mockResolvedValue({
+        id: "sub_c",
+        memberId: "member_3",
+        seasonYear: 2026,
+        status: "PAID",
+        xeroInvoiceId: null,
+        xeroInvoiceNumber: null,
+        member: {
+          id: "member_3",
+          firstName: "Cy",
+          lastName: "Smith",
+          xeroContactId: "contact_1",
+        },
+      });
+      // No invoice link of their own — the coverage claim is the only record.
+      mocks.findSubscriptionInvoiceIdFromCoverage.mockResolvedValue(
+        "inv_family",
+      );
+      // A and B have already been cancelled, so nobody is left covered.
+      mocks.findOtherLiveMembersCovered.mockResolvedValue([]);
+
+      await expect(
+        createXeroMembershipCancellationCreditNote({
+          subscriptionId: "sub_c",
+          requestId: "request_1",
+          participantId: "participant_3",
+          syncOperationId: "op_3",
+        }),
+      ).resolves.toBeNull();
+
+      expect(mocks.sendAdminXeroSyncErrorAlert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          errorType: "membership_cancellation_shared_invoice_left_uncredited",
+          errorMessage: expect.stringContaining("inv_family"),
+        }),
+      );
+      expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
+        "op_3",
+        expect.objectContaining({
+          responsePayload: expect.objectContaining({
+            skipped: true,
+            reason: "subscription_status_not_creditable",
+            sharedInvoiceLeftUncredited: expect.objectContaining({
+              invoiceId: "inv_family",
+              lastCoveredMember: true,
+            }),
+          }),
+          xeroObjectId: "inv_family",
+        }),
+      );
+    });
+
+    it("says nothing about a stranded invoice while somebody covered is still with the club", async () => {
+      mocks.memberSubscriptionFindUnique.mockResolvedValue({
+        id: "sub_c",
+        memberId: "member_3",
+        seasonYear: 2026,
+        status: "PAID",
+        xeroInvoiceId: null,
+        xeroInvoiceNumber: null,
+        member: {
+          id: "member_3",
+          firstName: "Cy",
+          lastName: "Smith",
+          xeroContactId: "contact_1",
+        },
+      });
+      mocks.findSubscriptionInvoiceIdFromCoverage.mockResolvedValue(
+        "inv_family",
+      );
+      mocks.findOtherLiveMembersCovered.mockResolvedValue([
+        { memberId: "member_1", name: "Ada Smith" },
+      ]);
+
+      await createXeroMembershipCancellationCreditNote({
+        subscriptionId: "sub_c",
+        requestId: "request_1",
+        participantId: "participant_3",
+        syncOperationId: "op_3",
+      });
+
+      expect(mocks.sendAdminXeroSyncErrorAlert).not.toHaveBeenCalled();
+    });
+
+    it("names the stranded invoice in the PAID-subscription alert too", async () => {
+      mocks.memberSubscriptionFindUnique.mockResolvedValue({
+        id: "sub_c",
+        memberId: "member_3",
+        seasonYear: 2026,
+        status: "PAID",
+        xeroInvoiceId: "inv_family",
+        xeroInvoiceNumber: "INV-0042",
+        member: {
+          id: "member_3",
+          firstName: "Cy",
+          lastName: "Smith",
+          xeroContactId: "contact_1",
+        },
+      });
+      mocks.findOtherLiveMembersCovered.mockResolvedValue([]);
+
+      await createXeroMembershipCancellationCreditNote({
+        subscriptionId: "sub_c",
+        requestId: "request_1",
+        participantId: "participant_3",
+        syncOperationId: "op_3",
+      });
+
+      expect(mocks.sendAdminXeroSyncErrorAlert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          errorType: "membership_cancellation_paid_subscription_no_refund",
+          errorMessage: expect.stringContaining("INV-0042"),
         }),
       );
     });

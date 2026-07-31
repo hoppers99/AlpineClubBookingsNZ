@@ -2,7 +2,10 @@ import { Contact, CreditNote, LineAmountTypes, type Contacts, type LineItem } fr
 import { getManagedGroupUniverse } from "@/lib/xero-member-grouping";
 import { buildMembershipCancellationApprovalBlockedMessage } from "@/lib/membership-cancellation-blocker-messages";
 import { loadMembershipCancellationInvoiceBlockersByMemberId } from "@/lib/membership-cancellation-invoice-blockers";
-import { findOtherLiveMembersCoveredBySubscriptionInvoice } from "@/lib/membership-cancellation-subscription-credit";
+import {
+  findOtherLiveMembersCoveredBySubscriptionInvoice,
+  findSubscriptionInvoiceIdFromCoverage,
+} from "@/lib/membership-cancellation-subscription-credit";
 import {
   loadMembershipCancellationSettings,
   type MembershipCancellationXeroContactGroupSetting,
@@ -36,6 +39,18 @@ const MEMBERSHIP_CANCELLATION_CREDIT_ROLE = "MEMBERSHIP_CANCELLATION_CREDIT_NOTE
 const MEMBERSHIP_CANCELLATION_CREDIT_ALLOCATION_ROLE =
   "MEMBERSHIP_CANCELLATION_CREDIT_ALLOCATION";
 const MEMBERSHIP_CANCELLATION_CONTACT_ROLE = "MEMBERSHIP_CANCELLATION_CONTACT";
+
+/**
+ * The per-INVOICE single-flight for the cancellation credit note (#2400 review,
+ * F1). One row per subscription invoice, inserted by whichever cancellation is
+ * about to credit that invoice's whole balance; the `XeroObjectLink` composite
+ * unique key `(localModel, localId, xeroObjectType, xeroObjectId, role)` makes
+ * the second inserter fail structurally.
+ */
+const MEMBERSHIP_CANCELLATION_CREDIT_INVOICE_CLAIM_ROLE =
+  "MEMBERSHIP_CANCELLATION_CREDIT_INVOICE_CLAIM";
+const MEMBERSHIP_CANCELLATION_CREDIT_CLAIM_LOCAL_MODEL =
+  "MembershipCancellationSubscriptionInvoice";
 
 type XeroGroupReference = {
   id: string;
@@ -150,6 +165,152 @@ function buildCancellationRecordLinks(params: {
   ];
 }
 
+/**
+ * Claim the right to credit ONE subscription invoice, exactly once, for the
+ * whole app (#2400 review, F1).
+ *
+ * ## The race this closes
+ *
+ * A family of three on one $600 invoice, all leaving. The reviewer approves them
+ * in a burst — which is exactly what the shared-invoice notice tells them to do
+ * — and each approval fires an unawaited outbox kick, so two drains overlap. The
+ * outbox's own claim is PER OPERATION, so drain A can be running the first
+ * member's credit note while drain B runs the third member's. By then every
+ * covered member carries `cancelledAt`, so BOTH read `sharedWith = []`, both
+ * read `amountDue = 600` from Xero, and both create a $600 credit note. Xero
+ * cannot dedupe them: the idempotency key is built from the SUBSCRIPTION, so the
+ * two keys differ. One allocation lands and the other is rejected as an
+ * over-allocation, leaving $600 of unallocated credit on the family's contact,
+ * spendable against future invoices. The `amountDue <= 0` check only saves the
+ * serialised interleaving, and the existing-credit-note lookup is keyed on this
+ * subscription, so a racing sibling's link is invisible to it.
+ *
+ * ## Why a unique-key claim and not a lock
+ *
+ * `docs/CONCURRENCY_AND_LOCKING.md` prefers a database constraint wherever one
+ * CAN carry the invariant, and points at credit restoration (#1636) as the
+ * in-tree precedent: an exactly-once guarantee expressed as a unique key rather
+ * than as everyone remembering to take the same advisory lock. That fits here
+ * exactly, and an advisory lock does not: the side effect to serialise is a
+ * sequence of Xero API calls, and `pg_advisory_xact_lock` is transaction-scoped,
+ * so covering them would mean holding a transaction open across provider calls —
+ * the one shape AGENTS.md's concurrency checklist forbids outright. No new lock
+ * family is introduced and no existing key changes.
+ *
+ * `XeroObjectLink` already carries the composite unique key
+ * `(localModel, localId, xeroObjectType, xeroObjectId, role)`, so a
+ * `createMany({ skipDuplicates: true })` — `INSERT ... ON CONFLICT DO NOTHING` —
+ * is an atomic first-writer-wins claim keyed on the invoice, with no schema
+ * change and no new table. It commits BEFORE any Xero call, so nothing is held
+ * open across the provider.
+ *
+ * ## What a lost claim does: nothing
+ *
+ * The loser runs no side effect at all — it completes SUCCEEDED with a skip
+ * reason and returns, exactly as a lost status-guarded claim must. That is
+ * conservative in the right direction: the invoice is credited once by the
+ * winner, and if the winner ultimately FAILS the invoice simply keeps its
+ * balance, which the #2392 archive re-check then refuses to archive over.
+ *
+ * A RETRY of the same subscription is not a loser: the claim records who holds
+ * it, so a re-run of the same subscription's operation proceeds and Xero's own
+ * idempotency key (identical across retries of one subscription) dedupes the
+ * credit note itself.
+ */
+async function claimSubscriptionInvoiceForCancellationCredit(params: {
+  invoiceId: string;
+  subscriptionId: string;
+  requestId: string;
+  participantId: string;
+  memberId: string;
+}): Promise<{ held: boolean; holderSubscriptionId: string | null }> {
+  const claimWhere = {
+    localModel: MEMBERSHIP_CANCELLATION_CREDIT_CLAIM_LOCAL_MODEL,
+    localId: params.invoiceId,
+    xeroObjectType: "INVOICE",
+    xeroObjectId: params.invoiceId,
+    role: MEMBERSHIP_CANCELLATION_CREDIT_INVOICE_CLAIM_ROLE,
+  };
+
+  const inserted = await prisma.xeroObjectLink.createMany({
+    data: [
+      {
+        ...claimWhere,
+        xeroObjectUrl: buildXeroInvoiceUrl(params.invoiceId),
+        metadata: {
+          subscriptionId: params.subscriptionId,
+          requestId: params.requestId,
+          participantId: params.participantId,
+          memberId: params.memberId,
+        },
+      },
+    ],
+    skipDuplicates: true,
+  });
+  if (inserted.count > 0) {
+    return { held: true, holderSubscriptionId: params.subscriptionId };
+  }
+
+  const existing = await prisma.xeroObjectLink.findFirst({
+    where: claimWhere,
+    select: { metadata: true },
+  });
+  const metadata =
+    existing?.metadata && typeof existing.metadata === "object"
+      ? (existing.metadata as Record<string, unknown>)
+      : null;
+  const holderSubscriptionId =
+    typeof metadata?.subscriptionId === "string" ? metadata.subscriptionId : null;
+
+  return {
+    held: holderSubscriptionId === params.subscriptionId,
+    holderSubscriptionId,
+  };
+}
+
+/**
+ * The subscription invoice a cancellation is walking away from when it credits
+ * nothing AND nobody else covered by that invoice is left with the club (#2400
+ * review, F3).
+ *
+ * The shape that motivates it: an invoice covering A, B and C where C's
+ * subscription is PAID — either marked paid by hand, or already PAID when the
+ * invoice was raised, in which case `createXeroMembershipSubscriptionInvoice`'s
+ * `status: { not: "PAID" }` guard left C with no `xeroInvoiceId` at all and C is
+ * covered only by the charge's coverage claim. A skips (C is live), B skips (C
+ * is live), and C has no creditable subscription — so the invoice keeps its full
+ * balance forever, having told the reviewer the last cancellation would credit
+ * it in full. Nothing said so.
+ *
+ * Returns null when the invoice cannot be identified, or when somebody covered
+ * by it is still with the club — their cancellation may yet credit it, so there
+ * is nothing stranded to report.
+ */
+async function findStrandedSubscriptionInvoice(subscription: {
+  id: string;
+  memberId: string;
+  xeroInvoiceId: string | null;
+  xeroInvoiceNumber: string | null;
+}): Promise<{ invoiceId: string; invoiceNumber: string | null } | null> {
+  const invoiceId =
+    subscription.xeroInvoiceId ??
+    (await findSubscriptionInvoiceIdFromCoverage(subscription.id));
+  if (!invoiceId) return null;
+
+  const stillCovered = await findOtherLiveMembersCoveredBySubscriptionInvoice({
+    invoiceId,
+    leavingMemberId: subscription.memberId,
+  });
+  if (stillCovered.length > 0) return null;
+
+  return {
+    invoiceId,
+    invoiceNumber: subscription.xeroInvoiceId
+      ? subscription.xeroInvoiceNumber
+      : null,
+  };
+}
+
 export async function createXeroMembershipCancellationCreditNote(
   params: {
     subscriptionId: string;
@@ -183,6 +344,35 @@ export async function createXeroMembershipCancellationCreditNote(
     Boolean(subscription.xeroInvoiceId);
 
   if (!shouldCredit) {
+    // #2400 (review F3): this cancellation is raising nothing. If it is also the
+    // LAST member the invoice covers, nobody else's cancellation will ever
+    // credit it either — so the balance stands forever, and until now nothing
+    // said so. Resolved before either branch below because both need it, and it
+    // costs only local reads.
+    const strandedInvoice = await findStrandedSubscriptionInvoice(subscription);
+    const strandedInvoiceSentence = strandedInvoice
+      ? ` The membership was billed on Xero invoice ${
+          strandedInvoice.invoiceNumber ?? strandedInvoice.invoiceId
+        }, and no other member that invoice covers is still with the club, so no cancellation will credit it automatically. Open it in Xero: if it still carries a balance, take the payment, credit it with an allocated credit note, or void it.`
+      : "";
+    const strandedInvoicePayload = strandedInvoice
+      ? {
+          sharedInvoiceLeftUncredited: {
+            invoiceId: strandedInvoice.invoiceId,
+            invoiceNumber: strandedInvoice.invoiceNumber,
+            lastCoveredMember: true,
+          },
+        }
+      : {};
+    const strandedInvoiceLinks = strandedInvoice
+      ? {
+          xeroObjectType: "INVOICE",
+          xeroObjectId: strandedInvoice.invoiceId,
+          xeroObjectNumber: strandedInvoice.invoiceNumber,
+          xeroObjectUrl: buildXeroInvoiceUrl(strandedInvoice.invoiceId),
+        }
+      : {};
+
     // Option B from the audit: paid subscriptions are not auto-refunded.
     // The booking-side refund pipeline is not yet wired into the
     // membership cancellation flow. Skipping silently for PAID would
@@ -200,13 +390,14 @@ export async function createXeroMembershipCancellationCreditNote(
           xeroInvoiceId: subscription.xeroInvoiceId,
           requestId: params.requestId,
           participantId: params.participantId,
+          strandedInvoiceId: strandedInvoice?.invoiceId ?? null,
         },
         "Paid membership subscription cancelled without automatic refund",
       );
       await sendAdminXeroSyncErrorAlert({
         errorType: "membership_cancellation_paid_subscription_no_refund",
         operation: "createXeroMembershipCancellationCreditNote",
-        errorMessage: `Member ${subscription.member.firstName} ${subscription.member.lastName} (${subscription.memberId}) had a PAID season subscription cancelled. No Stripe refund or Xero credit note was issued automatically; manual reconciliation required.`,
+        errorMessage: `Member ${subscription.member.firstName} ${subscription.member.lastName} (${subscription.memberId}) had a PAID season subscription cancelled. No Stripe refund or Xero credit note was issued automatically; manual reconciliation required.${strandedInvoiceSentence}`,
         timestamp: new Date(),
       }).catch((err) =>
         logger.error(
@@ -226,10 +417,46 @@ export async function createXeroMembershipCancellationCreditNote(
             status: subscription.status,
             xeroInvoiceId: subscription.xeroInvoiceId,
             adminAlertSent: true,
+            ...strandedInvoicePayload,
           },
+          ...strandedInvoiceLinks,
         });
       }
       return null;
+    }
+
+    // Not creditable for any other reason — NOT_INVOICED, or PAID before the
+    // family's invoice was even raised, which is the shape that leaves no
+    // `xeroInvoiceId` behind at all. Silent until now; it is only reported when
+    // an invoice is actually identified AND this member is the last one it
+    // covers, so an ordinary uninvoiced cancellation still says nothing.
+    if (strandedInvoice) {
+      logger.warn(
+        {
+          subscriptionId: subscription.id,
+          memberId: subscription.memberId,
+          status: subscription.status,
+          xeroInvoiceId: strandedInvoice.invoiceId,
+          requestId: params.requestId,
+          participantId: params.participantId,
+        },
+        "Membership cancellation credited nothing and left a shared subscription invoice with nobody covered by it",
+      );
+      await sendAdminXeroSyncErrorAlert({
+        errorType: "membership_cancellation_shared_invoice_left_uncredited",
+        operation: "createXeroMembershipCancellationCreditNote",
+        errorMessage: `Member ${subscription.member.firstName} ${subscription.member.lastName} (${subscription.memberId}) was cancelled with a ${subscription.status} season subscription, so no Xero credit note was raised.${strandedInvoiceSentence}`,
+        timestamp: new Date(),
+      }).catch((err) =>
+        logger.error(
+          {
+            err,
+            subscriptionId: subscription.id,
+            requestId: params.requestId,
+          },
+          "Failed to send admin alert for an uncredited shared subscription invoice",
+        ),
+      );
     }
 
     if (operationId) {
@@ -239,7 +466,10 @@ export async function createXeroMembershipCancellationCreditNote(
           reason: "subscription_status_not_creditable",
           status: subscription.status,
           xeroInvoiceId: subscription.xeroInvoiceId,
+          ...strandedInvoicePayload,
+          ...(strandedInvoice ? { adminAlertSent: true } : {}),
         },
+        ...strandedInvoiceLinks,
       });
     }
     return null;
@@ -282,6 +512,10 @@ export async function createXeroMembershipCancellationCreditNote(
   // existing-credit-note lookup above — once a credit note exists for this
   // cancellation the money is already credited in Xero, and finishing its
   // allocation is better than abandoning it half-done.
+  //
+  // Passing this gate is not on its own the right to credit: several siblings'
+  // cancellations can pass it at the same moment, so the branch ends by taking a
+  // durable per-invoice claim before anything is sent to Xero (#2400 review, F1).
   if (!existingCreditLink) {
     const sharedWith = await findOtherLiveMembersCoveredBySubscriptionInvoice({
       invoiceId,
@@ -306,6 +540,48 @@ export async function createXeroMembershipCancellationCreditNote(
             reason: "shared_invoice_covers_remaining_members",
             invoiceId,
             sharedWith,
+          },
+          xeroObjectType: "INVOICE",
+          xeroObjectId: invoiceId,
+          xeroObjectNumber: subscription.xeroInvoiceNumber ?? null,
+          xeroObjectUrl: buildXeroInvoiceUrl(invoiceId),
+        });
+      }
+      return null;
+    }
+
+    // Nobody else is covered, so this cancellation is about to credit the
+    // invoice's WHOLE balance. Take the per-invoice claim before any Xero call:
+    // a sibling's cancellation, drained concurrently, reads the same empty
+    // covered set and the same amountDue and would raise a SECOND full-balance
+    // credit note (#2400 review, F1 — see the helper for the full trace). A lost
+    // claim runs no side effect.
+    const invoiceClaim = await claimSubscriptionInvoiceForCancellationCredit({
+      invoiceId,
+      subscriptionId: subscription.id,
+      requestId: params.requestId,
+      participantId: params.participantId,
+      memberId: subscription.memberId,
+    });
+    if (!invoiceClaim.held) {
+      logger.warn(
+        {
+          subscriptionId: subscription.id,
+          memberId: subscription.memberId,
+          xeroInvoiceId: invoiceId,
+          requestId: params.requestId,
+          participantId: params.participantId,
+          holderSubscriptionId: invoiceClaim.holderSubscriptionId,
+        },
+        "Membership cancellation credit note skipped: another cancellation already owns the credit for this subscription invoice",
+      );
+      if (operationId) {
+        await completeXeroSyncOperation(operationId, {
+          responsePayload: {
+            skipped: true,
+            reason: "invoice_credit_claimed_by_other_cancellation",
+            invoiceId,
+            holderSubscriptionId: invoiceClaim.holderSubscriptionId,
           },
           xeroObjectType: "INVOICE",
           xeroObjectId: invoiceId,

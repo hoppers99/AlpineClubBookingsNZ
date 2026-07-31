@@ -67,7 +67,18 @@
  * `loadMembershipCancellationSubscriptionCreditPlansByMemberId`, the same module
  * the credit note itself consults, so the set excluded here is exactly the set
  * that will be cleared. That is the invariant: **this check excuses an invoice
- * if and only if the approval is about to credit its full balance.**
+ * if and only if the approval is STILL about to credit its full balance.**
+ *
+ * "Still" is not decoration. The credit-note operation is one-shot: it completes
+ * SUCCEEDED even when it deliberately skips, and is never retried. Once a whole
+ * family has been cancelled, "would this cancellation credit in full?" answers
+ * YES again for every one of them — although each of their credit notes already
+ * ran and skipped while siblings were live. The archive re-check below runs at
+ * exactly that moment, so recomputing that question there would excuse an
+ * invoice nobody is ever going to credit and archive the contact over a live
+ * balance — the very harm #2392 exists to prevent. The exclusion therefore reads
+ * `excusesUnpaidInvoiceBlocker`, which also consults the credit operation's
+ * RECORDED OUTCOME, not `creditsInFull` on its own (#2400 review, F3).
  *
  * ## When the check runs at all
  *
@@ -140,7 +151,10 @@ import type {
   MembershipCancellationUnpaidInvoiceBlocker,
 } from "@/lib/membership-cancellation-blocker-messages";
 import { loadMembershipCancellationSettingsStrict } from "@/lib/membership-cancellation-settings";
-import { loadMembershipCancellationSubscriptionCreditPlansByMemberId } from "@/lib/membership-cancellation-subscription-credit";
+import {
+  loadMembershipCancellationSubscriptionCreditPlansByMemberId,
+  type MembershipCancellationSubscriptionCreditPlan,
+} from "@/lib/membership-cancellation-subscription-credit";
 import { prisma } from "@/lib/prisma";
 import {
   callXeroApi,
@@ -233,6 +247,20 @@ export interface MembershipCancellationInvoiceBlockerOptions {
   fresh?: boolean;
   /** Injectable clock, for the memo TTL and the current season year. */
   nowMs?: number;
+  /**
+   * The credit plans, already loaded by the caller.
+   *
+   * The review queue needs the same map twice — once here for the exclusion,
+   * once for the shared-invoice notice — and it reaches
+   * `MemberSubscription.xeroInvoiceId` with an `in` list, so computing it twice
+   * per page load doubled that read for nothing. Passing it in makes the queue
+   * load it exactly once (#2400 review, F8). Omit it and this loads its own,
+   * which is what the archive-time re-check does.
+   */
+  creditPlansByMemberId?: ReadonlyMap<
+    string,
+    MembershipCancellationSubscriptionCreditPlan | null
+  >;
 }
 
 /**
@@ -602,15 +630,24 @@ export async function loadMembershipCancellationInvoiceBlockersByMemberId(
   // an admin settles it in Xero. Written down because that safety depends on
   // another module's behaviour, not on anything visible here (#2392 review,
   // #2400).
+  //
+  // At archive time the exclusion is decided almost entirely by the RECORDED
+  // outcome rather than by the live covered set: by then this member's credit
+  // note has settled (the archive is not attempted until it has), so
+  // `excusesUnpaidInvoiceBlocker` is false and nothing is excused. That is the
+  // point — see the "Still" paragraph in the module note (#2400 review, F3).
   const creditPlansByMemberId =
-    await loadMembershipCancellationSubscriptionCreditPlansByMemberId(
+    options.creditPlansByMemberId ??
+    (await loadMembershipCancellationSubscriptionCreditPlansByMemberId(
       memberIdsWithContact,
       { nowMs: options.nowMs },
-    );
+    ));
   const selfCreditedByMemberId = new Map<string, Set<string>>();
-  for (const [memberId, plan] of creditPlansByMemberId) {
-    // Only a plan that clears the WHOLE balance earns the exclusion.
-    if (!plan?.creditsInFull) continue;
+  for (const memberId of memberIdsWithContact) {
+    const plan = creditPlansByMemberId.get(memberId);
+    // Only a plan that is STILL going to clear the WHOLE balance earns the
+    // exclusion — a credit note that already ran and skipped never does.
+    if (!plan?.excusesUnpaidInvoiceBlocker) continue;
     selfCreditedByMemberId.set(memberId, new Set([plan.invoiceId]));
   }
 
