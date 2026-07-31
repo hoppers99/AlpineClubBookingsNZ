@@ -421,14 +421,24 @@ export function sharedInvoiceLabel(
  */
 function describeSharedInvoiceRoute(
   route: MembershipCancellationSharedInvoiceRoute,
+  blocksApproval: boolean,
 ): string {
+  // Only offered where something is actually being refused. Telling an approver
+  // whose approval is going through to turn the archive setting off would be
+  // advice about a check that is not in their way.
+  const settleInXero = blocksApproval
+    ? ` Settle, credit or void the invoice in Xero to clear the refusal — or turn off ${MEMBERSHIP_CANCELLATION_ARCHIVE_SETTING_LABEL} in the Membership Cancellation settings, which stops the archive and lifts the check.`
+    : "";
+
   switch (route) {
     case "cancel_others_first":
-      return "If the rest of the family is leaving too, approve them first — the last cancellation on this invoice credits it in full, and any refusal over it clears by itself.";
+      return blocksApproval
+        ? "If the rest of the family is leaving too, approve them first — the last cancellation on this invoice credits it in full, and the refusal over it clears by itself."
+        : "If the rest of the family is leaving too, approve them first — the last cancellation on this invoice credits it in full.";
     case "shared_xero_contact":
-      return `Approving the others first will not help here: every one of them is billed to this same Xero contact, so each of them is refused over this same invoice. Settle, credit or void the invoice in Xero to clear all of them at once — or turn off ${MEMBERSHIP_CANCELLATION_ARCHIVE_SETTING_LABEL} in the Membership Cancellation settings, which stops the archive and lifts the check for the whole family.`;
+      return `Approving the others first will not help here: every one of them is billed to this same Xero contact, so each of them is refused over this same invoice.${settleInXero}`;
     case "remaining_not_cancellable":
-      return `There is nobody to approve first: the members this invoice still covers are deactivated rather than cancelled, and a deactivated membership cannot be approved for cancellation at all. They hold this invoice open by design, so settle, credit or void it in Xero — or turn off ${MEMBERSHIP_CANCELLATION_ARCHIVE_SETTING_LABEL} in the Membership Cancellation settings.`;
+      return `There is nobody to approve first: the members this invoice still covers are deactivated rather than cancelled, and a deactivated membership cannot be approved for cancellation at all. They hold this invoice open by design.${settleInXero}`;
   }
 }
 
@@ -460,6 +470,7 @@ export function describeMembershipCancellationSharedInvoiceParts(
     href: notice.xeroUrl,
     after: `, which also covers ${names}. ${outcome} ${describeSharedInvoiceRoute(
       notice.route,
+      notice.blocksApproval,
     )} If this member is owed something back, raise that credit note yourself in Xero.`,
   };
 }
