@@ -132,13 +132,21 @@ knowing so you can answer a member who asks:
 - **Everyone who was already getting the discount keeps it.** It is never taken
   back, and the member is never billed the difference for a change of dates.
 - **Anyone the edit newly adds is priced at the normal rate** if the code has no
-  room left for them. Guests are covered in the order they appear on the
-  booking — first come, first served.
+  room left for them. When there is not enough room for everybody, the people
+  already getting the discount keep it, and the remaining room goes to the
+  guests with the most expensive stays first — so the code is worth as much as
+  it can be to the booking. (This is the same rule that decides who a
+  "max guests per booking" limit covers, so the two never disagree.)
 - **The member is told at the moment of the edit**, before they save, in one
-  sentence naming who is covered and who is not, and stating that the total on
-  screen already reflects it. The same sentence goes into their booking-modified
-  email and onto the booking's own history, so nobody has to reconstruct it
-  later. The redemptions report shows exactly who benefited.
+  sentence naming who keeps the discount, who this edit has brought under it,
+  and who is not covered, and stating that the total on screen already reflects
+  it. The same sentence goes into their booking-modified email and onto the
+  booking's own history, so nobody has to reconstruct it later. The redemptions
+  report shows exactly who benefited.
+  - The check is run once for the preview and again when the edit is saved, so
+    if somebody else takes the last place in between, the panel shows the saved
+    answer before it closes. The member reads what actually happened, not what
+    was expected to happen.
 
 Two consequences to expect:
 
@@ -147,6 +155,9 @@ Two consequences to expect:
   above the new limit for a while. That is correct, not a fault — the club
   honours what it already promised — and the figure comes back under the limit
   as those bookings pass. No new member is given the code while it is over.
+  This holds for a free-nights limit too: a member who already has free nights
+  on a booking keeps exactly those nights, even if the lifetime limit has since
+  been lowered below them.
 - If a code is completely used up and nobody on the booking was benefiting from
   it, the edit removes the code from the booking rather than pretending it still
   applies. Nobody loses anything, because nobody had anything.

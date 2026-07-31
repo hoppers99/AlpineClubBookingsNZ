@@ -84,9 +84,24 @@ Future reviews and issues should cite this file when proposing changes.
     booking being repriced are counted first and kept unconditionally — even
     where they alone exceed a cap, which is the stated behaviour when an admin
     lowers a cap under bookings that already have the discount; everyone else is
-    admitted in the booking's own guest order until the allowance runs out.
-    Booking creation and applying a newly-entered code still refuse, because
-    nobody holds a discount from the code yet.
+    admitted in the order the promotion applies to them — **most expensive stay
+    first**, the order `selectPromoDiscountGuests` produces — until the
+    allowance runs out. Booking creation and applying a newly-entered code still
+    refuse, because nobody holds a discount from the code yet.
+    - Protection is applied **inside** that selection, not after it: a
+      `maxGuestsPerBooking` cap is spent while the beneficiary list is built, so
+      an expensive newly-added guest would otherwise evict a member who already
+      held the discount before any protection check could see them. Anyone a
+      protected member keeps their slot ahead of is named in the coverage
+      notice, so nobody is left out silently.
+    - A member who has personally used the code up is left out **by the trim**,
+      not filtered away before it, so they reach the notice rather than being
+      priced normally with nothing said.
+    - For a `FREE_NIGHTS` code the lifetime cap is a budget, not a slot, so a
+      protected member's remaining nights are floored at what this booking's own
+      allocation rows already granted them. Keeping them on the list is not
+      enough: a lowered cap would otherwise award them zero nights while still
+      reporting them as covered.
     - The protected set is read from `PromoRedemptionAllocation` **before the
       redemption write**, for the same trigger reason as the two orderings
       above: `PromoRedemption_sync_allocation_update` upserts a booker

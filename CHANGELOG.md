@@ -14,11 +14,15 @@ All notable public reference-release changes should be recorded here.
 
   Now the edit always goes through, everyone already benefiting keeps their
   discount, and only people the edit newly adds are priced at the normal rate.
-  Guests are covered in the order they appear on the booking, first come first
-  served. The member is told before they save, in one sentence naming who is
-  covered, who is not, and confirming that the total on screen already reflects
-  it — and that same sentence goes into their booking-modified email and onto
-  the booking's own history, so nobody has to work it out afterwards.
+  Where there is not enough room for everybody, the people who already had the
+  discount keep it and the remaining room goes to the most expensive stays
+  first, so the code is worth as much as it can be to the booking. The member is
+  told before they save, in one sentence naming who keeps it, who this edit
+  brought under it, who is not covered, and confirming that the total on screen
+  already reflects it — and that same sentence goes into their booking-modified
+  email and onto the booking's own history, so nobody has to work it out
+  afterwards. On a free-nights code, a member who already had free nights on the
+  booking keeps them even if an admin has since lowered the lifetime limit.
 
   This also settles what happens when an admin **lowers** a limit on a code
   members are already using: the bookings that already have the discount keep
