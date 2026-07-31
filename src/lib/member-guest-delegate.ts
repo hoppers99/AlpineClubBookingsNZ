@@ -121,20 +121,49 @@ async function loadFamilyAdults(db: MemberGuestDelegateDb, targetMemberId: strin
 }
 
 /**
+ * Does this member answer for themselves?
+ *
+ * THE TARGET SIDE OF THE RULE, AND IT IS HALF THE RULE. Every prose statement of
+ * D-10 in this repository — `docs/DOMAIN_INVARIANTS.md`, the docblock at the top
+ * of this file, the consent page, the delegate page state machine — says a
+ * delegate answers for a member **with no login of their own**. Both resolver
+ * methods must therefore ask the same question about the target, not just about
+ * the actor. `resolveNotificationRecipients` always did; `canRespondForTarget`
+ * did not, which meant one adult in a household could answer — and silently
+ * decline, releasing the bed and deleting the guest row — for a spouse who holds
+ * a login and was never told. The two methods now share this one predicate so
+ * they cannot drift apart again.
+ *
+ * Only `active` and `canLogin` are consulted, deliberately: whether the member
+ * happens to have an email ADDRESS on file changes who can be reached, never who
+ * is entitled to decide. A login-holding member with no address is nobody's
+ * delegate case — they can sign in and answer, and the request simply cannot be
+ * emailed to anyone.
+ */
+function memberAnswersForThemselves(
+  member: { active: boolean | null; canLogin: boolean | null } | null | undefined,
+): boolean {
+  return member?.active === true && member.canLogin === true;
+}
+
+/**
  * The D-10 interim rule: an active, login-holding ADULT sharing a family group
- * with the target.
+ * with the target, answering for a target who has NO login of their own.
  *
- * Both conjuncts are imported from `booking-guests.ts` rather than re-written
- * here — `isActiveLoginAdultMember` and `memberIdsShareFamilyGroup` are the same
- * two predicates the existing delegated-details-confirmation rule uses, lifted
- * out of their closures for exactly this reason. Re-implementing either one would
- * create a second, drifting definition of a family boundary on an authorization
- * path, which is the failure mode worth spending a refactor to avoid.
+ * The first two conjuncts are imported from `booking-guests.ts` rather than
+ * re-written here — `isActiveLoginAdultMember` and `memberIdsShareFamilyGroup`
+ * are the same two predicates the existing delegated-details-confirmation rule
+ * uses, lifted out of their closures for exactly this reason. Re-implementing
+ * either one would create a second, drifting definition of a family boundary on
+ * an authorization path, which is the failure mode worth spending a refactor to
+ * avoid. The third conjunct is `memberAnswersForThemselves` above, applied to the
+ * TARGET.
  *
- * Mutation-verify (two probes, two DISTINCT failures — one test covering both
- * would pass for the wrong reason): drop the shared-family-group conjunct and a
- * cross-family-adult test fails; drop the active-login-adult conjunct and a
- * minor/no-login/inactive test fails.
+ * Mutation-verify (three probes, three DISTINCT failures — one test covering
+ * them all would pass for the wrong reason): drop the shared-family-group
+ * conjunct and a cross-family-adult test fails; drop the active-login-adult
+ * conjunct and a minor/no-login/inactive ACTOR test fails; drop the target
+ * conjunct and the login-holding-TARGET test fails.
  */
 export const familyAdultDelegateResolver: MemberGuestConsentDelegateResolver = {
   async canRespondForTarget({ actorMemberId, targetMemberId, db }) {
@@ -142,6 +171,15 @@ export const familyAdultDelegateResolver: MemberGuestConsentDelegateResolver = {
     // The target answering for themselves is not delegation, and callers check
     // that case first. Returning false here keeps this function about one thing.
     if (actorMemberId === targetMemberId) return false;
+
+    const target = await db.member.findUnique({
+      where: { id: targetMemberId },
+      select: { id: true, active: true, canLogin: true },
+    });
+    // A member who can sign in decides for themselves, full stop. Nobody in
+    // their household may answer on their behalf — not to accept, and above all
+    // not to decline, which would release their bed and delete their guest row.
+    if (memberAnswersForThemselves(target)) return false;
 
     const { groupsByMemberId, candidates } = await loadFamilyAdults(db, targetMemberId);
     const actor = candidates.find((candidate) => candidate.id === actorMemberId);
@@ -167,16 +205,21 @@ export const familyAdultDelegateResolver: MemberGuestConsentDelegateResolver = {
     // A target who holds a login is asked directly, and no delegate is copied in
     // — being added to a booking is that member's own business, and fanning the
     // request out to their household would disclose it to people who have no
-    // part in it.
-    if (target?.active === true && target.canLogin === true && target.email) {
-      return [
-        {
-          memberId: target.id,
-          email: target.email,
-          firstName: target.firstName ?? "",
-          isTarget: true,
-        },
-      ];
+    // part in it. That holds even when we have no address for them: since
+    // `canRespondForTarget` refuses every delegate for a login-holding target,
+    // falling back to the household here would email people an invitation only
+    // the target can answer.
+    if (memberAnswersForThemselves(target) && target) {
+      return target.email
+        ? [
+            {
+              memberId: target.id,
+              email: target.email,
+              firstName: target.firstName ?? "",
+              isTarget: true,
+            },
+          ]
+        : [];
     }
 
     if (target?.active !== true) {
@@ -203,3 +246,53 @@ export const familyAdultDelegateResolver: MemberGuestConsentDelegateResolver = {
       }));
   },
 };
+
+/**
+ * Who is told that a DELEGATE answered — the missing half of the delegate story.
+ *
+ * A delegate answering is the one transition nobody downstream hears about
+ * otherwise. The booking's owner is told the outcome, and the person who clicked
+ * obviously knows; but the member the answer was GIVEN FOR, and the other adults
+ * in the household who were sent the same request, would have learnt nothing —
+ * and a decline releases a bed and takes that member off a booking somebody put
+ * them on. "They just made the decision themselves" is true of a target
+ * answering for themselves and false of a delegate, so this list exists.
+ *
+ * The target comes first and is included whenever we hold an address for them,
+ * even though they have no login to have answered with: not being able to ACT is
+ * not a reason not to be TOLD. The rest of the list is the same recipient set the
+ * request itself went to, minus whoever answered, resolved through the injected
+ * resolver so #2284 can replace the rule in one place.
+ */
+export async function resolveDelegateAnswerRecipients(params: {
+  resolver: MemberGuestConsentDelegateResolver;
+  targetMemberId: string;
+  actorMemberId: string;
+  db: MemberGuestDelegateDb;
+}): Promise<MemberGuestConsentRecipient[]> {
+  const { resolver, targetMemberId, actorMemberId, db } = params;
+
+  const target = await db.member.findUnique({
+    where: { id: targetMemberId },
+    select: { id: true, active: true, email: true, firstName: true },
+  });
+
+  const recipients: MemberGuestConsentRecipient[] = [];
+  if (target?.active === true && target.email) {
+    recipients.push({
+      memberId: target.id,
+      email: target.email,
+      firstName: target.firstName ?? "",
+      isTarget: true,
+    });
+  }
+
+  const asked = await resolver.resolveNotificationRecipients({ targetMemberId, db });
+  for (const recipient of asked) {
+    if (recipient.memberId === actorMemberId) continue;
+    if (recipients.some((existing) => existing.memberId === recipient.memberId)) continue;
+    recipients.push(recipient);
+  }
+
+  return recipients;
+}

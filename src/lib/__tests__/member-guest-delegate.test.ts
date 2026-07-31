@@ -28,7 +28,10 @@
 // Both are named again at the tests themselves.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { familyAdultDelegateResolver } from "@/lib/member-guest-delegate";
+import {
+  familyAdultDelegateResolver,
+  resolveDelegateAnswerRecipients,
+} from "@/lib/member-guest-delegate";
 
 // ---------------------------------------------------------------------------
 // Fixture world
@@ -46,6 +49,12 @@ const NO_EMAIL_ADULT = "m-no-email-adult";
 const OUTSIDE_ADULT = "m-outside-adult";
 const LONER = "m-loner";
 const LOGIN_TARGET = "m-login-target";
+// A household adult who sits in the login-holding target's OWN family group, so
+// "the rule refuses a delegate for a login-holding target" is a real refusal
+// rather than "there was nobody to refuse".
+const LOGIN_TARGET_HOUSEHOLD_ADULT = "m-login-target-spouse";
+// Same again, but the club never captured an address for the target.
+const LOGIN_TARGET_NO_EMAIL = "m-login-target-no-email";
 const INACTIVE_TARGET = "m-inactive-target";
 const UNGROUPED_TARGET = "m-ungrouped-target";
 
@@ -70,6 +79,8 @@ const MEMBERS: Record<string, MemberFixture> = {
   [OUTSIDE_ADULT]: { active: true, canLogin: true, ageTier: "ADULT", email: "outside@example.com", firstName: "Otto" },
   [LONER]: { active: true, canLogin: true, ageTier: "ADULT", email: "loner@example.com", firstName: "Lou" },
   [LOGIN_TARGET]: { active: true, canLogin: true, ageTier: "ADULT", email: "login-target@example.com", firstName: "Lena" },
+  [LOGIN_TARGET_HOUSEHOLD_ADULT]: { active: true, canLogin: true, ageTier: "ADULT", email: "spouse@example.com", firstName: "Sam" },
+  [LOGIN_TARGET_NO_EMAIL]: { active: true, canLogin: true, ageTier: "ADULT", email: null, firstName: "Noa" },
   [INACTIVE_TARGET]: { active: false, canLogin: true, ageTier: "ADULT", email: "gone@example.com", firstName: "Gus" },
   [UNGROUPED_TARGET]: { active: true, canLogin: false, ageTier: "ADULT", email: "solo@example.com", firstName: "Sol" },
 };
@@ -85,6 +96,8 @@ const FAMILY_LINKS: Record<string, string[]> = {
   // right, and putting them in fg-1 would make them incidental delegates for the
   // main target and blur what each test is asserting.
   [LOGIN_TARGET]: ["fg-3"],
+  [LOGIN_TARGET_HOUSEHOLD_ADULT]: ["fg-3"],
+  [LOGIN_TARGET_NO_EMAIL]: ["fg-3"],
   [INACTIVE_TARGET]: ["fg-4"],
   [OUTSIDE_ADULT]: ["fg-2"],
   [LONER]: [],
@@ -225,6 +238,42 @@ describe("canRespondForTarget — the D-10 accept/reject matrix", () => {
     return expect(canRespond(LONER)).resolves.toBe(false);
   });
 
+  it("refuses a household adult answering for a target who holds their own login", async () => {
+    // THE TARGET SIDE OF THE RULE, and it is half the rule. Every prose statement
+    // of D-10 in this repository says a delegate answers for a member with NO
+    // login of their own, but the predicate used to look only at the ACTOR. Two
+    // spouses both added to the same booking is all it took: one signs in, reads
+    // the other's guest id off the guest list the booking page serialises to
+    // every viewer, and declines for them — releasing their bed, deleting their
+    // guest row, and telling them nothing.
+    //
+    // `LOGIN_TARGET_HOUSEHOLD_ADULT` satisfies every ACTOR conjunct — active,
+    // login-holding, adult, same family group — so this refusal can only come
+    // from the target conjunct.
+    //
+    // Mutation probe 3: delete the `memberAnswersForThemselves(target)` check in
+    // `canRespondForTarget` and exactly this test fails.
+    await expect(
+      canRespond(LOGIN_TARGET_HOUSEHOLD_ADULT, LOGIN_TARGET),
+    ).resolves.toBe(false);
+  });
+
+  it("still accepts that same adult for a household member who has no login", async () => {
+    // The other side of the probe: the adult refused above is not refused for
+    // being the wrong sort of person, so the rule has not simply been broken.
+    await expect(canRespond(ADULT_DELEGATE, TARGET)).resolves.toBe(true);
+  });
+
+  it("refuses a delegate for a login-holding target even with no address on file", async () => {
+    // Whether the club happens to hold an email address changes who can be
+    // REACHED, never who is entitled to decide. This member can sign in and
+    // answer for themselves, so nobody answers for them — and nobody is emailed
+    // an invitation only they can accept.
+    await expect(
+      canRespond(LOGIN_TARGET_HOUSEHOLD_ADULT, LOGIN_TARGET_NO_EMAIL),
+    ).resolves.toBe(false);
+  });
+
   it("refuses the target answering for themselves", async () => {
     // Not a refusal of the ACTION — the target answering for themselves is the
     // ordinary case — but a statement that this is not DELEGATION. The state
@@ -296,6 +345,19 @@ describe("resolveNotificationRecipients — who is told, and who is deliberately
       },
     ]);
     expect(list.filter((recipient) => !recipient.isTarget)).toEqual([]);
+    // And there genuinely IS a household adult in fg-3 to have copied in, so this
+    // is a refusal to fan out rather than an empty household.
+    expect(list.map((recipient) => recipient.memberId)).not.toContain(
+      LOGIN_TARGET_HOUSEHOLD_ADULT,
+    );
+  });
+
+  it("tells nobody about a login-holding target it has no address for", async () => {
+    // The honest answer, and the one that matches who may act: nobody may answer
+    // for a member who holds a login, so mailing their household an invitation
+    // they are not allowed to accept would only strand the request. The notifier
+    // logs "nobody to notify" for exactly this shape.
+    await expect(recipients(LOGIN_TARGET_NO_EMAIL)).resolves.toEqual([]);
   });
 
   it("tells every accepted family adult when the target has no login", async () => {
@@ -396,5 +458,54 @@ describe("resolveNotificationRecipients — who is told, and who is deliberately
       db,
     });
     expect(told.map((recipient) => recipient.memberId)).not.toContain(NO_EMAIL_ADULT);
+  });
+});
+
+describe("resolveDelegateAnswerRecipients — who hears that somebody answered for them", () => {
+  it("tells the member it was answered for, and the household adults who were asked", async () => {
+    // The member comes FIRST and is included even though they have no login to
+    // have answered with: not being able to ACT is not a reason not to be TOLD.
+    // The adult who clicked is left out — they know — and nobody appears twice.
+    const { db } = makeDb();
+    const list = await resolveDelegateAnswerRecipients({
+      resolver: familyAdultDelegateResolver,
+      targetMemberId: TARGET,
+      actorMemberId: ADULT_DELEGATE,
+      db,
+    });
+
+    expect(list.map((recipient) => recipient.memberId)).toEqual([TARGET]);
+    expect(list[0]).toMatchObject({ email: "target@example.com", isTarget: true });
+  });
+
+  it("leaves the adult who answered off their own notice", async () => {
+    // Asserted against a household with TWO accepted adults, so "the actor is
+    // absent" cannot pass merely because the list was empty.
+    const { db } = makeDb();
+    const list = await resolveDelegateAnswerRecipients({
+      resolver: familyAdultDelegateResolver,
+      targetMemberId: TARGET,
+      actorMemberId: NO_EMAIL_ADULT,
+      db,
+    });
+
+    const ids = list.map((recipient) => recipient.memberId);
+    expect(ids).toContain(TARGET);
+    expect(ids).toContain(ADULT_DELEGATE);
+    expect(ids).not.toContain(NO_EMAIL_ADULT);
+  });
+
+  it("tells nobody when the club holds no address for anyone involved", async () => {
+    // A target with no group and no delegates. Reported as an empty list rather
+    // than as a send to nowhere, so the caller can log it for an operator.
+    const { db } = makeDb();
+    await expect(
+      resolveDelegateAnswerRecipients({
+        resolver: familyAdultDelegateResolver,
+        targetMemberId: INACTIVE_TARGET,
+        actorMemberId: ADULT_DELEGATE,
+        db,
+      }),
+    ).resolves.toEqual([]);
   });
 });
