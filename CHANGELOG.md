@@ -38,6 +38,34 @@ All notable public reference-release changes should be recorded here.
   trying to delete the original. The shared global lock also prevents a
   concurrent cancellation from pruning and then having the move resurrect an
   allocation.
+
+- **Editing a booking no longer takes away a promo discount the club already
+  gave (#2390).** A promotion's usage limits are checked again every time a
+  booking is repriced — a date change, a guest added or removed, an edit from
+  the Edit panel. If other members had used the code up in the meantime, the
+  edit used to fail that check, and failing it stripped the promotion from the
+  booking *entirely*: everyone on it lost the discount, including the people who
+  already had it, and the member was billed the difference for changing a date.
+
+  Now the edit always goes through, everyone already benefiting keeps their
+  discount, and only people the edit newly adds are priced at the normal rate.
+  Where there is not enough room for everybody, the people who already had the
+  discount keep it and the remaining room goes to the most expensive stays
+  first, so the code is worth as much as it can be to the booking. The member is
+  told before they save, in one sentence naming who keeps it, who this edit
+  brought under it, who is not covered, and confirming that the total on screen
+  already reflects it — and that same sentence goes into their booking-modified
+  email and onto the booking's own history, so nobody has to work it out
+  afterwards. On a free-nights code, a member who already had free nights on the
+  booking keeps them even if an admin has since lowered the lifetime limit.
+
+  This also settles what happens when an admin **lowers** a limit on a code
+  members are already using: the bookings that already have the discount keep
+  it, so "Benefits given" can sit above the new limit until those stays pass.
+  That is the club honouring what it already promised, not a fault — and no new
+  member is given the code while it is over. If a code is exhausted and nobody
+  on the booking was benefiting from it, the edit removes it from the booking as
+  before; nobody loses anything, because nobody had anything.
 - **Recording a cash payment now asks about any extra still owing (#2397).**
   When a booking is priced up after it was made — someone adds a guest, say —
   the increase is tracked separately as an "additional payment" the member is

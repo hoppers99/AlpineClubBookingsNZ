@@ -35,6 +35,10 @@ import {
   validateAndCalculatePromoDiscount,
   validatePromoCodeFull,
 } from "@/lib/promo";
+import {
+  describePromoCapCoverage,
+  type PromoCoverageNotice,
+} from "@/lib/promo-cap-coverage";
 import { z } from "zod";
 import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
 import {
@@ -535,6 +539,8 @@ export async function POST(
       minimumStayValid: true,
       minimumStayViolations: [],
       promoStillValid: true,
+      // An identity-only edit re-prices nothing, so no cap is re-run.
+      promoCoverage: null,
       promoValidation: null,
       itemizedChanges:
         guestNameUpdates.length > 0
@@ -1289,6 +1295,11 @@ export async function POST(
   let newDiscountCents = 0;
   let newPromoAdjustmentCents = 0;
   let promoStillValid = true;
+  // #2390: who the promotion will still cover once this edit is saved. The
+  // preview MUST run the same rule as the save, or the panel would announce
+  // "your promo code will be removed" and the save would quietly keep a partial
+  // discount — the exact drift the owner decision warns about.
+  let promoCoverage: PromoCoverageNotice | null = null;
   let promoValidation: {
     valid: boolean;
     error?: string;
@@ -1391,7 +1402,15 @@ export async function POST(
       promo.assignments.length > 0
         ? promo.assignments.map((assignment) => assignment.memberId)
         : null,
-      { excludeBookingId: bookingId, db: prisma, selectedGuestIndexes, lodgeId: bookingLodgeId },
+      {
+        excludeBookingId: bookingId,
+        db: prisma,
+        selectedGuestIndexes,
+        lodgeId: bookingLodgeId,
+        // Same rule as `applyPromoCodeChanges`' reprice branch, so the preview
+        // and the save cannot tell different stories (#2390).
+        capOverflow: "coverExisting",
+      },
     );
 
     if (application.error || !application.discount) {
@@ -1400,6 +1419,10 @@ export async function POST(
       const promoResult = application.discount;
       newDiscountCents = promoResult.discountCents;
       newPromoAdjustmentCents = promoResult.priceAdjustmentCents;
+      promoCoverage = await describePromoCapCoverage(prisma, {
+        promoCode: promo.code,
+        capCoverage: application.capCoverage,
+      });
     }
   }
 
@@ -1452,6 +1475,7 @@ export async function POST(
     minimumStayValid: minimumStayViolations.length === 0,
     minimumStayViolations,
     promoStillValid,
+    promoCoverage,
     promoValidation,
     itemizedChanges,
     // #1746: why the partner-shared admission rejected — the UI shows this
@@ -1623,6 +1647,8 @@ async function buildShiftPreviewResponse({
     minimumStayValid: true,
     minimumStayViolations: [],
     promoStillValid: true,
+    // An admin date SHIFT holds every price as it stands, so no cap is re-run.
+    promoCoverage: null,
     promoValidation: null,
     itemizedChanges: [
       {
