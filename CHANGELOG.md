@@ -4,6 +4,23 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Bed moves now stay on the guest's original lodge nights (#2366).** Dragging
+  an existing allocation chip across date columns now chooses only the
+  destination bed: the preview and keyboard announcement show the original NZ
+  night that will be kept. The first visible chip still moves all of that
+  guest's visible allocated nights together, while later chips move one night.
+  A drop explicitly says **No change** and creates no audit entry only when
+  every represented row already uses that bed; mixed-bed proxy rows still
+  converge on it. Bucket removal names and removes only the dragged night,
+  unbooked single-night targets are refused locally, and drag-end feedback says
+  a valid request is saving instead of announcing success before the server.
+  Cancelled drags do nothing.
+  Grouped moves are all-or-nothing, and the bed changes, shared-double partner
+  promotions and audit records now commit in one global-then-destination-lodge
+  locked transaction instead of the browser creating a target night and then
+  trying to delete the original. The shared global lock also prevents a
+  concurrent cancellation from pruning and then having the move resurrect an
+  allocation.
 - **Recording a cash payment now asks about any extra still owing (#2397).**
   When a booking is priced up after it was made — someone adds a guest, say —
   the increase is tracked separately as an "additional payment" the member is
