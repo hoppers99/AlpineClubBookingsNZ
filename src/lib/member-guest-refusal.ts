@@ -28,11 +28,35 @@
  *
  * The refusal ITSELF cannot be removed — each one enforces a real invariant — so
  * what D-8 removes is the ability to tell the three APART. All three collapse to
- * this one message with ONE status (403), so a caller probing a stranger learns
- * only "not right now" and cannot use the booking API as a subscription-status,
- * occupancy, or profile oracle. A 409 for a collapsed night conflict would have
- * defeated the whole exercise: the status alone would have said "that member is
- * already booked those nights".
+ * this one message with ONE status (403). A 409 for a collapsed night conflict
+ * would have defeated even that much: the status alone would have said "that
+ * member is already booked those nights".
+ *
+ * WHAT THAT DOES AND DOES NOT BUY, stated exactly, because an overclaim here is
+ * how somebody later builds on a guarantee that was never made.
+ *
+ * WHAT IT DELIVERS: one refusal is byte-identical whatever the REASON. A caller
+ * holding a single refused response cannot tell "there is no such member" from
+ * "that member's subscription is unpaid" from "that member is already booked
+ * those nights" from "that member's profile is incomplete" — same words, same
+ * 403, so a single probe answers only "not right now".
+ *
+ * WHAT IT DOES NOT DELIVER: the refusal is DATE-DEPENDENT, and a caller who
+ * repeats it is not limited to a single probe. Adding the same member across a
+ * run of dates and recording which attempts succeed maps the nights that member
+ * is already booked on — at ANY lodge, since the person-night guard is
+ * club-wide. Repeating that across seasons separates a member who is refused on
+ * every date in a year (which is what unpaid subscription looks like) from one
+ * refused only on scattered nights. Uniform wording removes the label from each
+ * answer; it does not remove the signal in the PATTERN of answers. Nor does it
+ * equalise response timing, and nothing here rate-limits the probing: the tight
+ * `memberGuestConsentRespond` limiter covers the consent-answer endpoint, not
+ * the quote and create paths this refusal is returned from.
+ *
+ * Closing the correlation channel needs a different tool — a discoverability
+ * decision plus per-caller throttling on the add paths — which is MG3's
+ * find-endpoint work. It is tracked as a follow-up issue on MG3 (#TODO-ISSUE)
+ * rather than left as an implied property of this constant.
  *
  * STRICTLY CROSS-FAMILY, STRICTLY PRE-CONSENT. A family-scope add (D-6) keeps
  * today's detailed, actionable errors verbatim — a member adding their own child
@@ -41,11 +65,10 @@
  * `BEYOND_FAMILY` id set computed by `computeMemberGuestBoundary` and applies the
  * collapse to that set only.
  *
- * WHAT THIS DELIBERATELY DOES NOT DO: it does not equalise response TIMING, and
- * it does not hide the fact that a refusal happened. A caller can still learn
- * "this member cannot be added right now" — that is unavoidable, because the
- * booking genuinely cannot proceed. Timing equalisation belongs with MG3's
- * find-endpoint work, where the discoverability question is decided.
+ * ONE MORE THING IT DELIBERATELY DOES NOT DO: it does not hide the fact that a
+ * refusal happened at all. A caller always learns "this member cannot be added
+ * right now" — that is unavoidable, because the booking genuinely cannot
+ * proceed, and it is the fact the paragraph above turns into a probe.
  */
 export const MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE =
   "This member can't be added to this booking right now.";
