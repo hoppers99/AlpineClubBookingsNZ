@@ -73,6 +73,26 @@ let nadiaPage: Page;
 let wandaId: string;
 let nadiaId: string;
 
+/**
+ * The booking page's own content region, rooted at the layout's
+ * `#main-content` landmark.
+ *
+ * The `booking-detail-content` testid alone is NOT enough here. On the running
+ * app this page's markup is reachable TWICE in the DOM — CI reported every
+ * assertion as a strict-mode violation resolving to two identical elements,
+ * one addressable under `#main-content` and one not — so a testid-only locator
+ * is ambiguous no matter how exact the text match is. Rooting at the landmark
+ * the layout actually renders `{children}` inside (`(authenticated)/layout.tsx`)
+ * selects the real page and excludes whatever the second copy belongs to
+ * (the member layout also mounts the help, issue-report and onboarding widgets
+ * outside that landmark). Recorded here rather than worked around silently: if
+ * that duplication is ever found to be a defect, this is the note that says
+ * where it was first seen.
+ */
+function mainContent(page: Page) {
+  return page.locator("#main-content").getByTestId("booking-detail-content");
+}
+
 async function resolveMemberId(
   request: APIRequestContext,
   email: string,
@@ -178,7 +198,7 @@ test("the target approves on the booking page's consent card and the badge flips
 
   // D-11: the pending target opens the WHOLE booking page, card inside it.
   await nadiaPage.goto(`/bookings/${booking.id}#consent`);
-  const content = nadiaPage.getByTestId("booking-detail-content");
+  const content = mainContent(nadiaPage);
   // Scoped to the card's own anchor — the one the request email deep-links to
   // — and matched EXACTLY. Both matter: the page is long and mostly
   // conditional, and a substring match on a heading also matches every
@@ -211,7 +231,7 @@ test("the target approves on the booking page's consent card and the badge flips
 
   // Reload: the question is gone and the guest list carries the ticked badge.
   await nadiaPage.goto(`/bookings/${booking.id}`);
-  const reloaded = nadiaPage.getByTestId("booking-detail-content");
+  const reloaded = mainContent(nadiaPage);
   await expect(reloaded.getByText("Consented", { exact: true })).toBeVisible();
   await expect(
     reloaded.getByRole("button", { name: "Yes, add me" }),
@@ -227,7 +247,7 @@ test("the target declines on an unpaid booking and the booker's guest list no lo
   await nadiaPage.goto(`/bookings/consent/${guest.id}`);
   await expect(nadiaPage).toHaveURL(new RegExp(`/bookings/${booking.id}`));
 
-  const content = nadiaPage.getByTestId("booking-detail-content");
+  const content = mainContent(nadiaPage);
   await content.locator("#consent").getByRole("button", { name: "No thanks" }).click();
   await expect(
     content.getByText("You've said no", { exact: true }),
@@ -241,7 +261,7 @@ test("the target declines on an unpaid booking and the booker's guest list no lo
 
   // The booker's view: the party no longer includes the member who said no.
   await wandaPage.goto(`/bookings/${booking.id}`);
-  const wandaView = wandaPage.getByTestId("booking-detail-content");
+  const wandaView = mainContent(wandaPage);
   await expect(
     wandaView.getByText("Stay Details", { exact: true }),
   ).toBeVisible();
@@ -259,22 +279,24 @@ test("the delegate page tells a non-delegate — even the booker — nothing, in
   // panel, because she is no adult in the target's family group.
   if (approvedGuestId) {
     await wandaPage.goto(`/bookings/consent/${approvedGuestId}`);
+    const panel = wandaPage.locator("#main-content");
     await expect(
-      wandaPage.getByText("There is nothing here for you to answer", {
+      panel.getByText("There is nothing here for you to answer", {
         exact: true,
       }),
     ).toBeVisible();
     // No booking fact leaks onto the neutral page.
-    await expect(wandaPage.getByText(/has added/)).toHaveCount(0);
-    await expect(wandaPage.getByText("Booked by")).toHaveCount(0);
+    await expect(panel.getByText(/has added/)).toHaveCount(0);
+    await expect(panel.getByText("Booked by")).toHaveCount(0);
   }
 
   // A fabricated id renders the SAME neutral page — the route is no oracle.
   await wandaPage.goto("/bookings/consent/does-not-exist");
+  const fabricated = wandaPage.locator("#main-content");
   await expect(
-    wandaPage.getByText("There is nothing here for you to answer", {
+    fabricated.getByText("There is nothing here for you to answer", {
       exact: true,
     }),
   ).toBeVisible();
-  await expect(wandaPage.getByText("Booked by")).toHaveCount(0);
+  await expect(fabricated.getByText("Booked by")).toHaveCount(0);
 });
