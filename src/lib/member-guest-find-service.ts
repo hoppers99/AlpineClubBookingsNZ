@@ -191,6 +191,22 @@ export async function searchMemberGuestCandidatesByName(params: {
 // Auditing — every query, in both modes, including the empty and blocked ones
 // ---------------------------------------------------------------------------
 
+/**
+ * AWAITED, NOT FIRE-AND-FORGET (privacy re-review of MG3 #2308, LOW-4).
+ *
+ * Both writers below used to be `void createStructuredAuditLog(...)`, which
+ * returns before the row exists. On a runtime that can freeze or recycle the
+ * worker once the response is flushed, a detached insert is not a guarantee of
+ * anything — and with open member search ON, this audit trail is one of only
+ * FOUR controls standing between a deliberately browsable membership roll and a
+ * quiet harvest. A control that silently drops rows under load is worse than one
+ * that is honestly absent, because nobody goes looking.
+ *
+ * Still FAIL-OPEN: the promise's rejection is caught and logged here, so a
+ * failed audit write can never turn into a failed lookup — the same rule
+ * `recordMemberGuestAddRefusal` follows, and that one is awaited too.
+ */
+
 export const MEMBER_GUEST_RESOLVE_AUDIT_ACTION = "member_guest.resolve_email";
 export const MEMBER_GUEST_SEARCH_AUDIT_ACTION = "member_guest.search";
 
@@ -210,15 +226,15 @@ export const MEMBER_GUEST_SEARCH_AUDIT_ACTION = "member_guest.search";
  * permanent list of who lives together, which is more than the lookup itself
  * disclosed.
  */
-export function auditMemberGuestResolve(params: {
+export async function auditMemberGuestResolve(params: {
   request: Request;
   actorMemberId: string;
   email: string;
   candidates: readonly { memberId: string }[];
   outcome?: "success" | "blocked" | "failure";
-}): void {
+}): Promise<void> {
   const { request, actorMemberId, email, candidates } = params;
-  void createStructuredAuditLog({
+  await createStructuredAuditLog({
     action: MEMBER_GUEST_RESOLVE_AUDIT_ACTION,
     actor: { memberId: actorMemberId },
     subject: {
@@ -253,16 +269,16 @@ export function auditMemberGuestResolve(params: {
  * one person was still a SEARCH, and recording it as a lookup of that person
  * would misrepresent what happened to whoever reads the log later.
  */
-export function auditMemberGuestSearch(params: {
+export async function auditMemberGuestSearch(params: {
   request: Request;
   actorMemberId: string;
   q: string;
   resultCount: number;
   truncated: boolean;
   outcome?: "success" | "blocked" | "failure";
-}): void {
+}): Promise<void> {
   const { request, actorMemberId, q, resultCount, truncated } = params;
-  void createStructuredAuditLog({
+  await createStructuredAuditLog({
     action: MEMBER_GUEST_SEARCH_AUDIT_ACTION,
     actor: { memberId: actorMemberId },
     category: "privacy",

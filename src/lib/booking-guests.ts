@@ -11,6 +11,7 @@ import {
 import {
   MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE,
   MEMBER_GUEST_CROSS_FAMILY_REFUSAL_STATUS,
+  MEMBER_GUEST_NOT_ADDABLE_CODE,
 } from "@/lib/member-guest-refusal";
 
 export type BookingGuestPricingInput = {
@@ -199,20 +200,12 @@ function skipsMemberProfileGateForAdminOnBehalf(
 }
 
 /**
- * D-8's collapsed cross-family refusal, as a machine code (MG3 #2308, plan §5.4).
- *
- * The wizard needs to tell this refusal apart from every other booking error so
- * it can show it where the booker was working — in the find panel, beside the
- * person they were trying to add — rather than only in the page-level banner.
- * Matching on the message text would work today and break the first time the
- * sentence is reworded.
- *
- * It discloses nothing new: EVERY collapsed refusal carries the same code, for
- * the same reason they all carry the same sentence and the same 403. It says
- * "this is the neutral member-guest refusal", which the body already said
- * verbatim.
+ * D-8's collapsed cross-family refusal code — re-exported from the import-free
+ * leaf it now lives in, so the two CLIENT components that recognise it do not
+ * have to pull this server module into their bundle to get a string. See
+ * `member-guest-refusal.ts` for the note.
  */
-export const MEMBER_GUEST_NOT_ADDABLE_CODE = "MEMBER_GUEST_NOT_ADDABLE";
+export { MEMBER_GUEST_NOT_ADDABLE_CODE };
 
 export function getBookingGuestValidationErrorResponse(
   error: BookingGuestValidationError

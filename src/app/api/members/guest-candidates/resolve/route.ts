@@ -86,7 +86,7 @@ export async function POST(request: NextRequest) {
   if (rateLimited) {
     // A member who hits the cap is exactly the signal the audit trail exists
     // for, so the rejection is recorded rather than dropped.
-    auditMemberGuestResolve({
+    await auditMemberGuestResolve({
       request,
       actorMemberId,
       email: attemptedEmail,
@@ -105,7 +105,7 @@ export async function POST(request: NextRequest) {
     // §3.5 specifies. A run of malformed probes is a pattern an admin should be
     // able to find, and it was previously the one resolve outcome that left no
     // trace at all.
-    auditMemberGuestResolve({
+    await auditMemberGuestResolve({
       request,
       actorMemberId,
       email: attemptedEmail,
@@ -120,7 +120,7 @@ export async function POST(request: NextRequest) {
       email: parsed.data.email,
     });
 
-    auditMemberGuestResolve({
+    await auditMemberGuestResolve({
       request,
       actorMemberId,
       email: parsed.data.email,

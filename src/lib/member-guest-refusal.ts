@@ -140,3 +140,56 @@ export const MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE =
 
 /** The single status every collapsed refusal returns — see the note above. */
 export const MEMBER_GUEST_CROSS_FAMILY_REFUSAL_STATUS = 403;
+
+/**
+ * D-8's collapsed cross-family refusal, as a machine code (MG3 #2308, plan §5.4).
+ *
+ * The wizard needs to tell this refusal apart from every other booking error so
+ * it can show it where the booker was working — in the find panel, beside the
+ * person they were trying to add — rather than only in the page-level banner.
+ * Matching on the message text would work today and break the first time the
+ * sentence is reworded.
+ *
+ * It discloses nothing new: EVERY collapsed refusal carries the same code, for
+ * the same reason they all carry the same sentence and the same 403. It says
+ * "this is the neutral member-guest refusal", which the body already said
+ * verbatim.
+ *
+ * IT LIVES IN THIS LEAF, not in `booking-guests.ts` where it was first written
+ * (privacy re-review of MG3 #2308, finding 3). Two CLIENT components now have to
+ * recognise the code — the create wizard and the booking edit panel — and
+ * `booking-guests.ts` is a server module carrying the profile gate, the member
+ * resolver and the Prisma types with it. This file has no imports at all, which
+ * is what makes it safe for both sides. `booking-guests.ts` re-exports it, so
+ * every existing import keeps working.
+ */
+export const MEMBER_GUEST_NOT_ADDABLE_CODE = "MEMBER_GUEST_NOT_ADDABLE";
+
+/**
+ * The same refusal, worded for a request that ADDED NOBODY (privacy re-review of
+ * MG3 #2308, finding 3).
+ *
+ * THE SERVER STILL SENDS ONE SENTENCE; THIS IS A CLIENT-SIDE RE-WORDING, and the
+ * distinction matters. The collapse above exists so that two refusals cannot be
+ * told apart, and varying the SERVER's answer by anything would undo it. What a
+ * client may safely do is describe its OWN request more accurately, because it
+ * already knows what it asked for: nothing is disclosed by a browser telling its
+ * user what the browser just sent.
+ *
+ * WHY IT IS NEEDED. `MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE` says "this member
+ * can't be added", which is true on every path that adds somebody. It is FALSE on
+ * the booking edit panel's auto-quote: once a booking already carries a
+ * cross-family member guest, the C1 marking makes every date change re-ask the
+ * person-night question about them, so moving the dates and adding nobody can be
+ * refused with "this member can't be added" — naming an act the booker did not
+ * perform, about a person they cannot see referenced anywhere on screen. Bookers
+ * read that as a bug, and the honest ones then retry, which is the behaviour the
+ * throttle is least able to distinguish from probing.
+ *
+ * IT IS DELIBERATELY VAGUE ABOUT THE CAUSE, for the same reason its sibling is.
+ * "Try different dates" is not promised: the refusal can equally be an unpaid
+ * subscription, which no date fixes, and a hint that sends the booker on a
+ * date-by-date hunt is exactly the pattern #2388 asks us not to encourage.
+ */
+export const MEMBER_GUEST_CHANGE_REFUSAL_MESSAGE =
+  "This change can't be made to this booking right now. If it keeps happening, please contact the club.";

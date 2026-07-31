@@ -64,7 +64,7 @@ export async function GET(request: NextRequest) {
     actorMemberId,
   );
   if (burst) {
-    auditMemberGuestSearch({
+    await auditMemberGuestSearch({
       request,
       actorMemberId,
       q: rawQ,
@@ -81,7 +81,7 @@ export async function GET(request: NextRequest) {
     actorMemberId,
   );
   if (daily) {
-    auditMemberGuestSearch({
+    await auditMemberGuestSearch({
       request,
       actorMemberId,
       q: rawQ,
@@ -105,7 +105,7 @@ export async function GET(request: NextRequest) {
     // touched the database. A run of one-character probes is precisely the shape
     // an admin would want to find later, and it would be invisible if only
     // queries that ran a SELECT were recorded.
-    auditMemberGuestSearch({
+    await auditMemberGuestSearch({
       request,
       actorMemberId,
       q: rawQ,
