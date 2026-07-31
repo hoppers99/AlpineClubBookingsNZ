@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
@@ -297,11 +298,14 @@ const FILTER_LABELS: Record<PublicRequestFilter, string> = {
 
 function buildPublicRequestsPath(
   basePath: string,
+  currentSearch: string,
   fixedSearchParams: Record<string, string>,
   status: PublicRequestFilter,
   requestId: string | null,
 ) {
-  const params = new URLSearchParams(fixedSearchParams);
+  const params = new URLSearchParams(currentSearch);
+  params.delete("status");
+  for (const [key, value] of Object.entries(fixedSearchParams)) params.set(key, value);
 
   if (requestId) {
     params.set("requestId", requestId);
@@ -403,7 +407,13 @@ export function PublicBookingRequestsPanel({
     const choice = ownerChoiceFor(request.id);
     return choice.mode === "map" && !choice.memberId;
   }
-  const currentPath = buildPublicRequestsPath(basePath, fixedSearchParams, filter, requestId);
+  const currentPath = buildPublicRequestsPath(
+    basePath,
+    searchParams.toString(),
+    fixedSearchParams,
+    filter,
+    requestId,
+  );
 
   useEffect(() => {
     router.replace(currentPath, { scroll: false });
@@ -1040,6 +1050,10 @@ export function PublicBookingRequestsPanel({
             {FILTER_LABELS[status]}
           </Button>
         ))}
+        <DatasetResetButton
+          disabled={filter === "QUEUE"}
+          onReset={() => setFilter("QUEUE")}
+        />
       </div>
 
       {loading ? (

@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
@@ -87,11 +88,14 @@ const EMPTY_SEARCH_PARAMS: Record<string, string> = {};
 
 function buildBookingApprovalsPath(
   basePath: string,
+  currentSearch: string,
   fixedSearchParams: Record<string, string>,
   status: ReviewFilter,
   bookingId: string | null,
 ) {
-  const params = new URLSearchParams(fixedSearchParams);
+  const params = new URLSearchParams(currentSearch);
+  params.delete("status");
+  for (const [key, value] of Object.entries(fixedSearchParams)) params.set(key, value);
 
   if (bookingId) {
     params.set("bookingId", bookingId);
@@ -115,9 +119,10 @@ export function BookingApprovalsPanel({
   const searchParams = useSearchParams();
   const initialFilter = searchParams.get("status");
   const focusedBookingId = searchParams.get("bookingId");
+  const defaultFilter: ReviewFilter = focusedBookingId ? "ALL" : "PENDING";
   const [bookings, setBookings] = useState<BookingReviewData[]>([]);
   const [filter, setFilter] = useState<ReviewFilter>(
-    isReviewFilter(initialFilter) ? initialFilter : "PENDING",
+    isReviewFilter(initialFilter) ? initialFilter : defaultFilter,
   );
   const [loading, setLoading] = useState(true);
   const [reviewingId, setReviewingId] = useState<string | null>(null);
@@ -139,6 +144,7 @@ export function BookingApprovalsPanel({
   const [notifyDialogOpen, setNotifyDialogOpen] = useState(false);
   const currentPath = buildBookingApprovalsPath(
     basePath,
+    searchParams.toString(),
     fixedSearchParams,
     filter,
     focusedBookingId,
@@ -337,6 +343,10 @@ export function BookingApprovalsPanel({
             {status === "ALL" ? "All" : status.charAt(0) + status.slice(1).toLowerCase()}
           </Button>
         ))}
+        <DatasetResetButton
+          disabled={filter === defaultFilter}
+          onReset={() => setFilter(defaultFilter)}
+        />
       </div>
 
       {loading ? (

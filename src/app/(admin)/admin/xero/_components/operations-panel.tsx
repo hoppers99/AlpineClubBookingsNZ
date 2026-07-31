@@ -5,6 +5,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { CheckCircle2 } from "lucide-react"
 import { useConfirm } from "@/components/confirm-dialog"
 import { Button } from "@/components/ui/button"
+import { DatasetResetButton } from "@/components/admin/dataset-reset-button"
 import {
   AdminViewOnlySectionBanner,
   ViewOnlyActionButton,
@@ -148,6 +149,32 @@ export function OperationsPanel({
 
   const resetPage = () => {
     setUrlSyncEnabled(true)
+    setPage(1)
+  }
+
+  const isDatasetDefault =
+    statusFilter === "all" &&
+    entityFilter === "all" &&
+    localModelFilter === "all" &&
+    localIdFilter === "" &&
+    operationTypeFilter === "all" &&
+    failureStateFilter === "all" &&
+    resourceIdFilter === "" &&
+    createdFrom === "" &&
+    createdTo === "" &&
+    page === 1
+
+  const resetDataset = () => {
+    setUrlSyncEnabled(true)
+    setStatusFilter("all")
+    setEntityFilter("all")
+    setLocalModelFilter("all")
+    setLocalIdFilter("")
+    setOperationTypeFilter("all")
+    setFailureStateFilter("all")
+    setResourceIdFilter("")
+    setCreatedFrom("")
+    setCreatedTo("")
     setPage(1)
   }
 
@@ -362,6 +389,7 @@ export function OperationsPanel({
           <FilterSelect label="Entity" value={entityFilter} onValueChange={(value) => { setEntityFilter(value); resetPage() }} values={["all", "CONTACT", "CONTACT_GROUP", "INVOICE", "PAYMENT", "CREDIT_NOTE", "ALLOCATION", "SUBSCRIPTION"]} />
           <FilterSelect label="Local Model" value={localModelFilter} onValueChange={(value) => { setLocalModelFilter(value); resetPage() }} values={["all", "Member", "Booking", "Payment", "BookingModification", "MemberSubscription"]} />
           <FilterSelect label="Failure" value={failureStateFilter} onValueChange={(value) => { setFailureStateFilter(value); resetPage() }} values={["all", "ACTIVE", "REPAIRED", "SUPERSEDED"]} />
+          <DatasetResetButton disabled={isDatasetDefault} onReset={resetDataset} />
         </div>
         <div className="grid gap-3 md:grid-cols-5">
           <div className="space-y-1">
