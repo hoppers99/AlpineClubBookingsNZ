@@ -2997,6 +2997,47 @@ dependent changes must preserve financial history, booking and guest history,
 audit history, required family/dependent history, privacy preferences, and Xero
 contact/link history where required.
 
+A membership cancellation never credits money owed for a membership that
+continues (#2400). One Xero subscription invoice covers every member of a family
+or billing group, its lines are per fee component rather than per member, and the
+cancellation credit note is for the invoice's whole `amountDue` — so it is raised
+only when the leaving member is the last member that invoice covers who has not
+themselves been cancelled. "Covered" is the union of
+`MemberSubscription.xeroInvoiceId` and the charge's ACTIVE
+(`releasedAt IS NULL`) coverage claims: either one can be the only record of a
+covered member — a member already PAID when the invoice was raised carries the
+coverage claim alone, because `createXeroMembershipSubscriptionInvoice` never
+overwrites a PAID subscription, and rows predating coverage claims carry the
+invoice link alone — and an uncertain covered set must never authorise wiping a
+balance. The coverage half resolves its member through `subscription.memberId`, a
+real foreign key, never through the row's own denormalised `memberId`, which is
+on member-merge's FK-less snapshot list and is left pointing at a deleted loser.
+The union only ever SHRINKS over the life of a cancellation, because a covered
+member leaves it when `cancelledAt` is set and nothing in the app writes
+`cancelledAt: null` (see the reactivation constraint below) — so an approval
+decided on "the leaver is last" cannot be falsified before the outbox drains.
+
+**At most one cancellation ever credits a given subscription invoice.** Several
+different cancellations can each reach the "last covered member" state (a whole
+family leaving), and the outbox claims per operation, so overlapping drains could
+otherwise each raise a full-balance credit note under different Xero idempotency
+keys. The right to credit one invoice is a durable first-writer-wins claim — a
+`XeroObjectLink` row keyed on the invoice, inserted with `skipDuplicates` before
+any Xero call — and a cancellation that loses it raises nothing at all. See
+`docs/CONCURRENCY_AND_LOCKING.md`.
+
+Paired with it: the unpaid-invoice approval blocker (#2392) excuses the member's
+own subscription invoice **if and only if** the approval is still about to credit
+its full balance. Both sides derive that from
+`loadMembershipCancellationSubscriptionCreditPlansByMemberId`, so the excused set
+is by construction the cleared set, and no cancellation can archive a Xero
+contact with a balance nobody is going to credit. "Still" is load-bearing: the
+credit-note operation is one-shot and completes even when it deliberately skips,
+so once a whole family is cancelled the recomputed answer flips back to "would
+credit in full" for members whose credit note already ran and skipped. The
+exclusion therefore also consults that operation's RECORDED outcome, and an
+invoice whose credit note has settled is never excused again.
+
 Access role, seasonal membership type, age tier, Xero contact-group rule, and
 committee assignment are separate axes. `MemberAccessRole` controls application
 access via the legacy enum values (`USER`, `ADMIN`, `ADMIN_READONLY`,
@@ -3553,10 +3594,65 @@ two depths counts at its deeper one, because that is the chain that would grow),
 and a walk that hits the bound reports "at least bound+1", which refuses the new
 link rather than accepting it on incomplete information.
 
-Alongside the cap, the admin link route requires: the parent must be an active,
-non-archived adult; the target must not be archived, must not already be linked
-to that parent, must not already have two parents, and **must not be an ancestor
-of the parent**. That last one is now stated in its own right. Under the old
+**Parentage is recorded at ANY age; responsibility is not** (#2282, owner
+decision 2026-07-26). A 16 or 17 year old can genuinely be a parent, and the
+system previously could not record it: the admin link route refused a non-adult
+parent, the candidate search never offered one, and the only workarounds were to
+leave the child apparently parentless or to hang them off a grandparent —
+both of which misstate who the parent is. The age rule turned out to be in the
+wrong place. **The parent link is close to a labelling artefact:** every
+substantial power is gated on family-group co-membership plus being an active
+adult with a login, and none of those checks reads the parent columns —
+
+| Power | Actually gated by |
+|---|---|
+| Booking on someone's behalf | `getAllowedGuestMemberIds` / `isActiveLoginAdultMember` (`src/lib/booking-guests.ts`) |
+| Answering a consent request for someone | `familyAdultDelegateResolver` (`src/lib/member-guest-delegate.ts`) |
+| Editing or confirming another member's details | active + login + ADULT + shared group (`/api/members/family/[memberId]/details`) |
+| Being the contact of record for their mail | `validateInheritEmailSource` + `isUsableEmailSource` |
+| Being billed | `billingFamilyGroupId` — group-based; no billing path reads a parent link |
+
+Every row of that table lands on the same gate — family-group co-membership plus
+an active adult with a login — and **#2284 is the open question of whether that
+gate is too broad** (today every adult in a family group has identical powers
+over every non-login member in it). Nothing here pre-empts it: this issue moved
+no power onto the group gate, it only recorded that the powers were already
+there rather than on the parent link.
+
+So the only things recording a young parent grants are the word "Parent" on an
+admin card and a mail-routing question, and the second is answered by the
+transitive resolver walking **past** them to the nearest adult ancestor. The
+lowering of the ADULT tier's minimum age to 16 was considered and **rejected**:
+the boundaries are admin-configurable, but moving them would change fees,
+subscription requirements and booking rules for every 16–17 year old in the club
+to solve a records problem.
+
+What remains on the parent side is `active`, `archivedAt`, and whether the
+record is a PERSON at all — whether it is CURRENT and real, never capacity to
+take responsibility — shared by both write paths, by the "Add Parent" candidate
+search and by the admin UI as `dependentParentStateBlocker` /
+`dependentParentEligibleWhere` in `src/lib/dependent-link-eligibility.ts`. An
+inactive or archived member, and an organisation or school account, therefore
+shows "Add Dependent" **disabled with the reason** ("This member is inactive —
+reactivate them to add dependents") on both the create and link paths, rather
+than the control vanishing or failing on save.
+
+**Organisations are excluded by ROLE, never by age tier.** Dropping the ADULT
+clause dropped the only thing keeping organisation and school accounts off the
+parent side, and a school is nobody's parent — but `NOT_APPLICABLE` is the
+age-EXEMPT tier (#1440, #2106), carried by age-exempt *people* as well as by
+organisations, so filtering on it would bar real members and tell them they are
+an organisation. `isOrganisationMember` (the ORG access token, or the legacy
+`SCHOOL` role for a non-login account whose token is cleared) is the
+classification, on the write routes and in the search's SQL alike. This is a
+restoration of what the ADULT clause excluded by accident, not a narrowing of
+"any age": every real age tier, INFANT included, may be recorded as a parent.
+
+Alongside the cap, the admin link route requires: the parent must be active,
+non-archived and not an organisation account (**at any age tier**); the target
+must not be archived, must not already be linked to that parent, must not
+already have two parents, and **must not be an ancestor of the parent**. That
+last one is now stated in its own right. Under the old
 two-generation rule it was enforced only as a side effect — every ancestor of
 the parent necessarily has a dependant, so the "already has dependants" clause
 excluded the whole ancestor set — and relaxing the cap removed that cover. The
@@ -3574,7 +3670,11 @@ identity grounds** — subject to the request's own options, which the route
 still validates separately (family groups the parent does not belong to, an
 invalid inherit-email source, and the privileged-target and last-full-admin
 guards when "disable login" is ticked). The mirror-image "Add Parent" search
-(`parentLinkEligibleFor`) applies the cap the other way round: the member's own
+(`parentLinkEligibleFor`) filters `active: true`, `archivedAt: null` and "not an
+organisation account" through the same `dependentParentEligibleWhere` the write
+route's predicate mirrors — and, since #2282, **no age clause at all**, matching
+what that route now accepts — then applies the cap the other way round: the
+member's own
 dependants eat into the budget, the candidate parent's ancestors must fit in
 what is left, and the member's descendants are excluded outright so the dialog
 cannot offer a cycle.
@@ -3647,8 +3747,22 @@ nomination approval and admin member-create both stored one-hop pointers until
 #2255, and the Xero contact import wrote one with no validation at all.
 
 `validateInheritEmailSource` enforces the guarantees that follow: the source is
-an adult, with a real address, who does not itself inherit. Its former "must
-point to a **primary** adult member" rule (the source must have no parents) is
+an adult, with a real address, who does not itself inherit. The **adult** clause
+there — and the matching one in `isUsableEmailSource`, which is what makes the
+walk step past an unusable generation — is deliberate and survived #2282: a
+16-year-old may be recorded as a parent, but being the club's contact of record
+for someone else's notifications is a responsibility function, so their child's
+mail routes on up to the nearest adult ancestor (most often the young parent's
+own parent), and the link is **refused** if there is no such adult rather than
+quietly making the minor the family's contact. The admin member detail page
+resolves and displays that adult (`dependentEmailSource`) with the same walk the
+writes use, so the routing is on screen before the dependant is added — and both
+link dialogs resolve the parent the admin picks in the notification-recipient
+list the same way (`GET /api/admin/members/[id]/dependent-email-source`),
+because the list names PARENTS while the write stores whoever the walk lands
+on. The age-up cron's parent handoff resolves it too, rather than mailing the
+raw parent link. Its former "must point to a **primary** adult member" rule
+(the source must have no parents) is
 retired — it barred exactly the middle-generation source the four-generation
 model needs — and the "inherit email from" candidate search was relaxed to match
 AND tightened to exclude placeholder addresses, so the picker can neither hide a

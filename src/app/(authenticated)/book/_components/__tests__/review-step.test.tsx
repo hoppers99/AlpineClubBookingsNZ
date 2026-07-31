@@ -60,6 +60,7 @@ function renderReview(
       checkIn={new Date(2026, 6, 20)}
       checkOut={new Date(2026, 6, 22)}
       nights={2}
+      memberGuestPendingHoldExpiryDays={7}
       guests={guests}
       priceQuote={priceQuote}
       lodges={[]}

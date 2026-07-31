@@ -19,6 +19,13 @@ import { hasAccessRole, hasAdminAccess } from "@/lib/access-roles";
 import { isPaymentOwedBookingStatus } from "@/lib/booking-status";
 import { MEMBER_ONBOARDING_CONFIRMED_EVENT } from "@/lib/member-onboarding-events";
 import {
+  GUEST_MEMBER_NOT_ALLOWED_CODE,
+  MEMBER_GUEST_NOT_ADDABLE_CODE,
+} from "@/lib/booking-guests";
+import { MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE } from "@/lib/member-guest-refusal";
+import type { MemberGuestCandidate } from "@/lib/member-guest-find";
+import { predictMemberGuestConsent } from "../_components/member-guest-preview";
+import {
   type AvailablePromoCode,
   type BookingPaymentMethod,
   type BookingWizardStep,
@@ -81,6 +88,29 @@ interface SubscriptionStatus {
 }
 
 type BookingMessageMap = Record<string, string>;
+
+/**
+ * What the server says the "+ Add Member Guest" surface should look like
+ * (MG3 #2308, `GET /api/members/guest-candidates`).
+ *
+ * DECORATION ONLY. Both find routes re-read the module flag and the settings
+ * singleton for themselves, so a browser that flips `openSearchEnabled` in its
+ * own memory still gets a 404 from the route it then calls. This decides what is
+ * DRAWN, never what is ALLOWED.
+ */
+interface MemberGuestConfig {
+  enabled: boolean;
+  openSearchEnabled: boolean;
+  approvalRequired: boolean;
+  pendingHoldExpiryDays: number;
+}
+
+const MEMBER_GUEST_CONFIG_OFF: MemberGuestConfig = {
+  enabled: false,
+  openSearchEnabled: false,
+  approvalRequired: true,
+  pendingHoldExpiryDays: 7,
+};
 
 const UNKNOWN_SUBSCRIPTION_STATUS: SubscriptionStatus = {
   status: "UNKNOWN",
@@ -173,6 +203,9 @@ export function useBookingWizard() {
   const [internetBankingHoldSummary, setInternetBankingHoldSummary] = useState<string | null>(null);
   const [bookingMessages, setBookingMessages] = useState<BookingMessageMap>({});
   const [familyMembers, setFamilyMembers] = useState<FamilyMember[]>([]);
+  // Whether `/api/members/family` has answered at all — see the note in the
+  // fetch below and in `predictMemberGuestConsent`.
+  const [familyMembersLoaded, setFamilyMembersLoaded] = useState(false);
   const [subscriptionStatus, setSubscriptionStatus] = useState<SubscriptionStatus | null>(null);
   const [subscriptionLoading, setSubscriptionLoading] = useState(true);
   const [availablePromoCodes, setAvailablePromoCodes] = useState<AvailablePromoCode[]>([]);
@@ -188,6 +221,12 @@ export function useBookingWizard() {
   const [guestProfileBlocks, setGuestProfileBlocks] = useState<GuestProfileRequiredMember[]>([]);
   const [memberNightConflicts, setMemberNightConflicts] = useState<BookingMemberNightConflict[]>([]);
   const [removingConflictGuestId, setRemovingConflictGuestId] = useState<string | null>(null);
+  // "+ Add Member Guest" (MG3 #2308). Defaults to OFF so the button never
+  // flashes into view on a club that does not use the feature before the fetch
+  // resolves.
+  const [memberGuestConfig, setMemberGuestConfig] =
+    useState<MemberGuestConfig>(MEMBER_GUEST_CONFIG_OFF);
+  const [memberGuestAddError, setMemberGuestAddError] = useState<string | null>(null);
   const [memberReviewJustification, setMemberReviewJustification] = useState("");
   const requiresAdminReviewLocal = (() => {
     if (guests.length === 0) return false;
@@ -381,10 +420,18 @@ export function useBookingWizard() {
       // seeded ✓ button alongside the amber blocked warning.
       const seq = (familyLoadSeqRef.current += 1);
       fetch("/api/members/family")
-        .then((res) => res.ok ? res.json() : { familyMembers: [] })
+        .then((res) => (res.ok ? res.json() : null))
         .then((data) => {
           if (seq !== familyLoadSeqRef.current) return;
+          // MG3 (#2308): a FAILED load is distinguished from an EMPTY one, and
+          // only the success sets `familyMembersLoaded`. The consent prediction
+          // below decides "is this person my own family?" from this list, so an
+          // empty list that really means "we could not ask" would predict
+          // "Waiting for Mia to approve" over the booker's own child. See
+          // `predictMemberGuestConsent`.
+          if (!data) return;
           setFamilyMembers(data.familyMembers || []);
+          setFamilyMembersLoaded(true);
         })
         .catch(() => {});
     };
@@ -491,6 +538,30 @@ export function useBookingWizard() {
       .catch(() => setBookingMessages({}));
   }, []);
 
+  // MG3 (#2308): the member-guest surface's server-computed shape. Failing
+  // closed on any error is the right direction — a club whose settings could not
+  // be read shows no finder rather than one that 404s when used.
+  useEffect(() => {
+    fetch("/api/members/guest-candidates")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!data?.enabled) {
+          setMemberGuestConfig(MEMBER_GUEST_CONFIG_OFF);
+          return;
+        }
+        setMemberGuestConfig({
+          enabled: true,
+          openSearchEnabled: Boolean(data.openSearchEnabled),
+          approvalRequired: data.approvalRequired !== false,
+          pendingHoldExpiryDays:
+            typeof data.pendingHoldExpiryDays === "number"
+              ? data.pendingHoldExpiryDays
+              : MEMBER_GUEST_CONFIG_OFF.pendingHoldExpiryDays,
+        });
+      })
+      .catch(() => setMemberGuestConfig(MEMBER_GUEST_CONFIG_OFF));
+  }, []);
+
   useEffect(() => {
     fetch(
       lodgeId
@@ -571,6 +642,60 @@ export function useBookingWizard() {
     ]);
   }
 
+  /**
+   * Add a member the booker found through MG3's finder (#2308).
+   *
+   * THE INVALIDATION LIST IS COPIED FROM THE FAMILY PATH ABOVE, LIVE, NOT FROM A
+   * PLAN'S SNAPSHOT OF IT. `addFamilyMemberAsGuest` resets the promo, the price
+   * quote, the credit election and the member-night conflicts, because every one
+   * of them is computed for a party that has just changed; a member guest changes
+   * the party in exactly the same ways — it prices at member rates and counts
+   * toward the group discount — so it must reset exactly the same things. If that
+   * list ever grows, both functions have to grow together, which is why they sit
+   * next to each other.
+   *
+   * The three guards are the family path's three guards: already added, at
+   * capacity, and — the difference — no `canBeBooked` check, because the finder
+   * deliberately never evaluates eligibility. Whether this member CAN be added is
+   * the server's answer, given at quote/create time in D-8's neutral form, and
+   * asking here would be the client-side eligibility oracle the whole design
+   * avoids.
+   */
+  function addMemberGuest(candidate: MemberGuestCandidate) {
+    if (guests.some((g) => g.memberId === candidate.memberId)) return;
+    if (guests.length >= lodgeCapacity) return;
+    const dateStrings = getBookingDateStrings();
+    setMemberGuestAddError(null);
+    setAppliedPromo(null);
+    setPriceQuote(null);
+    setUseCredit(false);
+    setMemberNightConflicts([]);
+    setGuests([
+      ...guests,
+      {
+        firstName: candidate.firstName,
+        lastName: candidate.lastName,
+        ageTier: candidate.ageTier,
+        isMember: true,
+        memberId: candidate.memberId,
+        // Display only — a prediction of what confirming will do, never a
+        // consent record. Undefined for a family-scope add, which the finder
+        // can perfectly well produce (D-9 resolves any active member by email,
+        // the booker's own household included) and which needs no consent at
+        // all. See `predictMemberGuestConsent`.
+        memberGuestConsentPreview: predictMemberGuestConsent({
+          candidateMemberId: candidate.memberId,
+          familyMemberIds: familyMembers.map((fm) => fm.id),
+          familyMembersLoaded,
+          approvalRequired: memberGuestConfig.approvalRequired,
+        }),
+        ...(perGuestDatesEnabled && dateStrings
+          ? { stayStart: dateStrings.checkIn, stayEnd: dateStrings.checkOut }
+          : {}),
+      },
+    ]);
+  }
+
   function handleGuestProfileRequired(data: {
     error?: string;
     members?: GuestProfileRequiredMember[];
@@ -606,6 +731,63 @@ export function useBookingWizard() {
   }
 
   function handleBookingApiError(data: Record<string, unknown>, fallback: string) {
+    // MG3 (#2308) / D-8. The server collapses every cross-family refusal to one
+    // neutral sentence, and the wizard's job here is to NOT dress it up: the two
+    // detailed branches below are exactly the leaks D-8 forbids for a
+    // cross-family target — `GUEST_PROFILE_REQUIRED` renders the member's name,
+    // which profile fields are blank and whether they hold a login, and
+    // `BOOKING_MEMBER_NIGHT_CONFLICT` renders their booked nights. The server
+    // decides which code a request gets, from MG1's family-boundary computation;
+    // the client renders whatever it is given and never re-derives the choice.
+    // Family-scope adds keep both detailed branches unchanged.
+    if (data.code === MEMBER_GUEST_NOT_ADDABLE_CODE) {
+      const message =
+        typeof data.error === "string"
+          ? data.error
+          : MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE;
+      setMemberGuestAddError(message);
+      // WHERE THIS RENDERS, and why the step is consulted (correctness review of
+      // MG3 #2308, HIGH-1). On the guests step the refusal belongs in the find
+      // panel, beside the person the booker was adding (mockup panel 13), and
+      // the page banner is cleared so the same sentence is not shown twice.
+      //
+      // Everywhere else the panel does not exist: `GuestsStep` — the ONLY
+      // renderer of `memberGuestAddError` — is mounted on the guests step alone,
+      // while three of the four callers of this function (create, join-waitlist
+      // and save-draft) run from the REVIEW step. Clearing the banner there
+      // produced a completely silent failure: the Confirm button simply stopped
+      // working, and each further click spent another unit of cross-family
+      // throttle budget until a 429 became the booker's first feedback of any
+      // kind. It is also reachable without a race — `/api/bookings/quote` does
+      // not run the unpaid-subscription check, so a member guest with an unpaid
+      // subscription quotes cleanly and is refused only at Confirm.
+      //
+      // Setting `memberGuestAddError` as well is still right: the guests step
+      // re-opens the panel on it, so stepping back shows the refusal in context.
+      setError(step === "guests" ? "" : message);
+      setGuestProfileBlocks([]);
+      setMemberNightConflicts([]);
+      setErrorPaymentTargets([]);
+      return;
+    }
+    if (data.code === GUEST_MEMBER_NOT_ALLOWED_CODE) {
+      // MEDIUM-4. The club turned the member-guest module off between this page
+      // loading and the booker submitting (or a client sent a member id it was
+      // never offered). The server's refusal is `"Invalid guest member
+      // reference"` — deliberately byte-for-byte what it was before the feature
+      // existed, which MG2 pins by test — so it is a developer-facing string
+      // that must not be shown to a member. The code is what lets the wizard say
+      // something a person can act on without the server changing its wording.
+      setMemberGuestAddError(null);
+      setError(
+        "One of the members on this booking can't be added any more. Refresh the page and try again — if it keeps happening, ask the club.",
+      );
+      setGuestProfileBlocks([]);
+      setMemberNightConflicts([]);
+      setErrorPaymentTargets([]);
+      return;
+    }
+    setMemberGuestAddError(null);
     if (data.code === "GUEST_PROFILE_REQUIRED") {
       handleGuestProfileRequired(data as {
         error?: string;
@@ -1262,6 +1444,9 @@ export function useBookingWizard() {
     requiresAdminReviewLocal,
     handleGuestsChange,
     addFamilyMemberAsGuest,
+    addMemberGuest,
+    memberGuestConfig,
+    memberGuestAddError,
     handleRemoveConflictGuest,
     handleDateSelect,
     handleGuestsDone,

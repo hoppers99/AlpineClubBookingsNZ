@@ -12,30 +12,26 @@ import { DEFAULT_MEMBER_GUEST_SETTINGS } from "@/config/club-settings-defaults";
  * schema defaults and writes nothing — so the migration seeds no row and a
  * fresh install needs no config step.
  *
- * WHAT READS THIS IN THIS RELEASE: nothing but its own tests and the
- * config-transfer export (which reads the delegate directly, not through here).
- * That is deliberate. Per owner decision D-17, MG1 ships the module toggle only;
- * MG2 (#2307) ships the admin settings card, the `/api/admin` route that writes
- * these values, and the behaviour that reads them. This loader lands now so the
- * singleton, its defaults, and its config-transfer classification are one
- * reviewable change instead of three.
+ * WHO READS THIS. `approvalRequired` and `pendingHoldExpiryDays` drive MG2's
+ * consent plumbing through `loadMemberGuestAddPolicy`. As of MG3 (#2308) the two
+ * open-search values have readers too:
+ * `loadMemberGuestFindGate` (`member-guest-find-service.ts`) gates the name
+ * type-ahead route's existence on `openMemberSearchEnabled`, and its age-tier
+ * filter on `openMemberSearchIncludesMinors`.
  *
- * In particular `openMemberSearchEnabled` and `openMemberSearchIncludesMinors`
- * are read by NOTHING at runtime and must stay that way until MG3: they decide
- * whether the club's membership list becomes browsable, and both ship OFF. MG2's
- * admin route (`src/app/api/admin/member-guest-settings/route.ts`) lets a club's
- * own admin set them, which is a write, not a read — nothing consults either
- * value to decide who is discoverable until MG3's type-ahead lands.
+ * THE PROMISE THIS FILE MADE, AND MG3 KEPT. While the two values were saved but
+ * read by nothing, the admin card that writes them
+ * (`src/components/admin/member-guest-settings-card.tsx`) carried a paragraph
+ * saying so in as many words — "Not in use yet … starts working on its own when
+ * that update arrives" — because a stored privacy decision that quietly comes to
+ * life on a later deploy, with nobody asked again, is the failure this pair was
+ * one step away from. The note here said that annotation would come off in the
+ * SAME change that gave the values a reader. MG3 is that change and it did,
+ * exactly as MG1's "not available yet" module state came off in MG2.
  *
- * BECAUSE THEY ARE WRITABLE BEFORE THEY ARE READ, the admin card that writes
- * them (`src/components/admin/member-guest-settings-card.tsx`) says so on its
- * face: "Not in use yet ... starts working on its own when that update
- * arrives". That sentence is not decoration. A stored privacy decision that
- * quietly comes to life on a later deploy — with nobody asked again — is the
- * failure this pair is one step away from, and the honest copy is what keeps
- * the admin's choice a choice. When MG3 gives these values a reader, that
- * annotation comes off in the SAME change, exactly as MG1's
- * "not available yet" module state came off in MG2.
+ * Both still ship OFF, and both still refuse to travel in club config transfer
+ * (D-18): importing another club's configuration must never quietly make your
+ * own membership list browsable.
  */
 
 export const MEMBER_GUEST_SETTINGS_ID = "default";

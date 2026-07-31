@@ -9,6 +9,14 @@ import {
 } from "@/lib/booking-date-modification-service";
 import { OverCapacityConfirmationRequiredError } from "@/lib/over-capacity-confirmation";
 import {
+  BookingGuestValidationError,
+  getBookingGuestValidationErrorResponse,
+} from "@/lib/booking-guests";
+import {
+  handleMemberGuestAddRefusal,
+  startMemberGuestRefusalClock,
+} from "@/lib/member-guest-probe-guard";
+import {
   BookingMemberNightConflictError,
   getBookingMemberNightConflictResponse,
 } from "@/lib/booking-member-night-conflicts";
@@ -42,6 +50,14 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  // MG3 (#2308) C1: a date change on a booking that already carries a
+  // cross-family member guest can now produce D-8's neutral refusal, so this
+  // route needs the refusal clock the timing floor is measured from. Monotonic,
+  // never the wall clock — see `startMemberGuestRefusalClock`, and note that the
+  // contract test forbidding a wall-clock read in this file greps the source
+  // including its comments.
+  const startedAt = startMemberGuestRefusalClock();
+
   const session = await auth();
   if (!session) {
     return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
@@ -161,10 +177,46 @@ export async function PUT(
       );
     }
     if (err instanceof MembershipTypeBookingPolicyError) {
+      // Finding 2 (privacy re-review of MG3 #2308). The membership-type refusal
+      // is D-8's FOURTH collapsing refusal, so when it collapsed it owes the
+      // same three mitigations as its siblings — the throttle unit, the audit
+      // row naming actor and target, and the timing floor. A no-op for every
+      // other membership-type block: the handler returns immediately unless the
+      // error carries `crossFamilyMemberIds`, which only a collapsed one does.
+      await handleMemberGuestAddRefusal({
+        request,
+        actorMemberId: session.user.id,
+        error: err,
+        route: "bookings/modify-dates",
+        startedAt,
+        throttle: "CHARGE_NOW",
+        skipAuthorization: actorRole === "ADMIN",
+      });
       return NextResponse.json(
         getMembershipTypeBookingPolicyErrorBody(err),
         { status: err.status },
       );
+    }
+    if (err instanceof BookingGuestValidationError) {
+      // MG3 (#2308) C1 + #2388. Re-dating a booking that already carries a
+      // cross-family member guest now refuses NEUTRALLY rather than returning
+      // that member's booked nights, so this route became a refusal surface and
+      // owes the same three mitigations as every other add path: the throttle is
+      // spent, the refusal is audited against the actor and the target, and the
+      // response is held to the timing floor. Without this branch the neutral
+      // refusal would have fallen through to the generic 500.
+      await handleMemberGuestAddRefusal({
+        request,
+        actorMemberId: session.user.id,
+        error: err,
+        route: "bookings/modify-dates",
+        startedAt,
+        throttle: "CHARGE_NOW",
+        skipAuthorization: actorRole === "ADMIN",
+      });
+      return NextResponse.json(getBookingGuestValidationErrorResponse(err), {
+        status: err.status,
+      });
     }
     if (err instanceof BookingMemberNightConflictError) {
       return NextResponse.json(

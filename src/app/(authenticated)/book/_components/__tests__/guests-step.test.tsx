@@ -42,6 +42,10 @@ function renderGuestsStep(
       setStep={vi.fn()}
       handleGuestsDone={vi.fn()}
       priceLoading={false}
+      memberGuestEnabled={false}
+      memberGuestOpenSearchEnabled={false}
+      addMemberGuest={vi.fn()}
+      memberGuestAddError={null}
       {...overrides}
     />,
   );
@@ -75,6 +79,10 @@ describe("GuestsStep", () => {
         guests={[]}
         lodgeCapacity={8}
         addFamilyMemberAsGuest={vi.fn()}
+        memberGuestEnabled={false}
+        memberGuestOpenSearchEnabled={false}
+        addMemberGuest={vi.fn()}
+        memberGuestAddError={null}
         showInviteFamilyGroupMembersLink={false}
         handleGuestsChange={vi.fn()}
         perGuestDatesEnabled={false}

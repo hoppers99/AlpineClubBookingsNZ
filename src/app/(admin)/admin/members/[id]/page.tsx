@@ -603,8 +603,6 @@ export default function MemberDetailPage({
         member={member}
         backHref={backHref}
         backLabel={backLabel}
-        isAdultMember={isAdultMember}
-        memberIsArchived={memberIsArchived}
         pendingDeleteRequest={pendingDeleteRequest}
         xeroConnected={xeroConnected}
         xeroOrgShortCode={xeroOrgShortCode}
@@ -758,8 +756,6 @@ export default function MemberDetailPage({
               ancestorRendersViewOnlyBanner
               className={embeddedCardClassName}
               member={member}
-              isAdultMember={isAdultMember}
-              memberIsArchived={memberIsArchived}
               currentMemberPath={currentMemberPath}
               unlinkingDependentId={unlinkingDependentId}
               onOpenDependentDialog={openDependentDialog}

@@ -151,10 +151,12 @@ function bookingMetrics() {
         FAILED: 0,
         NONE: 2,
       },
-      capturedPrimaryCents: 24_000,
+      capturedGrossCents: 24_000,
       capturedAdditionalCents: 0,
       outstandingAdditionalCents: 0,
       outstandingAdditionalBookings: 0,
+      additionalLedgerGapCents: 0,
+      additionalLedgerGapBookings: 0,
       refundedCents: 0,
       netCollectedCents: 24_000,
       creditAppliedCents: 0,
@@ -636,6 +638,54 @@ describe("finance dashboard page model", () => {
       ["Payment failed", "1"],
       ["Total outstanding", "$250"],
     ]);
+  });
+
+  /*
+    #2408: net collected cash is the gross captured figure, which contains a
+    collected price increase because the payment ledger put it there. A payment
+    claiming that collection with no ledger row behind it is the one shape where
+    it does not, so the figure would be short — and the treasurer has to be told
+    where they read the number, not only in a server log.
+  */
+  it("warns on the cash figure when a collected increase has no payment record", async () => {
+    const metrics = bookingMetrics();
+    metrics.paymentSummary.additionalLedgerGapCents = 2_100;
+    metrics.paymentSummary.additionalLedgerGapBookings = 1;
+    mockGetFinanceBookingMetrics.mockResolvedValue(metrics);
+
+    const model = await buildFinanceDashboardPageModel({
+      member: financeManager(),
+      searchParams: { view: "bookings" },
+    });
+
+    expect(
+      model.warnings.some(
+        (warning) =>
+          warning.includes("Net collected cash may understate by $21") &&
+          warning.includes("1 booking"),
+      ),
+    ).toBe(true);
+    expect(
+      model.cards.find((entry) => entry.title === "Net collected cash")
+        ?.footnote,
+    ).toContain("May understate by $21");
+  });
+
+  it("leaves the cash figure uncaveated when the ledger backs every increase", async () => {
+    const model = await buildFinanceDashboardPageModel({
+      member: financeManager(),
+      searchParams: { view: "bookings" },
+    });
+
+    expect(
+      model.warnings.some((warning) =>
+        warning.includes("Net collected cash may understate"),
+      ),
+    ).toBe(false);
+    expect(
+      model.cards.find((entry) => entry.title === "Net collected cash")
+        ?.footnote,
+    ).toBe("Cash is local payment-derived and separate from Xero revenue.");
   });
 
   it("keeps the outstanding-payments panel off the dashboard when nothing is owing", async () => {

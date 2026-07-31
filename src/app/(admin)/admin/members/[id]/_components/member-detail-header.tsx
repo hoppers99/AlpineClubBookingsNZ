@@ -1,5 +1,6 @@
 "use client";
 
+import { useId } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { BackLink } from "@/components/admin/back-link";
@@ -19,14 +20,17 @@ import {
 import { accessRoleLabelForToken } from "@/lib/access-role-definitions";
 import { useAccessRoleOptions } from "@/hooks/use-access-role-options";
 import { buildXeroContactUrl } from "@/lib/xero-links";
+import {
+  DEPENDENT_PARENT_BLOCK_EXPLANATIONS,
+  dependentParentStateBlocker,
+} from "@/lib/dependent-link-eligibility";
+import { DependentNotice } from "./dependent-notices";
 import type { MemberDetail, MemberLifecycleActionRequest } from "../_types";
 
 interface MemberDetailHeaderProps {
   member: MemberDetail;
   backHref: string;
   backLabel: string;
-  isAdultMember: boolean;
-  memberIsArchived: boolean;
   pendingDeleteRequest: MemberLifecycleActionRequest | undefined;
   /** null = status still loading; no Xero UI renders until it resolves. */
   xeroConnected: boolean | null;
@@ -61,8 +65,6 @@ export function MemberDetailHeader({
   member,
   backHref,
   backLabel,
-  isAdultMember,
-  memberIsArchived,
   pendingDeleteRequest,
   xeroConnected,
   xeroOrgShortCode,
@@ -77,6 +79,10 @@ export function MemberDetailHeader({
 }: MemberDetailHeaderProps) {
   const roleOptions = useAccessRoleOptions();
   const accessRoles = member.accessRoles ?? [];
+  // #2282: the same predicate the two write routes use, so the toolbar button
+  // and the Dependents card cannot disagree with each other or with the server.
+  const addDependentBlockReason = dependentParentStateBlocker(member);
+  const addDependentBlockReasonId = useId();
   return (
     <div>
       <div className="mb-2">
@@ -145,17 +151,34 @@ export function MemberDetailHeader({
           </div>
         </div>
         <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:shrink-0 sm:justify-end">
-          {isAdultMember && !memberIsArchived && (
+          {/* #2282: shown at all ages — parentage is recordable whatever the
+              member's age tier — and shown DISABLED WITH THE REASON when the
+              record is not current, or is an organisation/school account rather
+              than a person, instead of disappearing. The reason sits beside the
+              button as visible text AND is attached to it with
+              `aria-describedby`, because a disabled Button has
+              `pointer-events-none`, so a `title` tooltip would never fire and a
+              nearby paragraph is not an association. */}
+          <div className="flex flex-col items-start gap-1">
             <ViewOnlyActionButton
               canEdit={canEditMembership}
               variant="outline"
               size="sm"
+              disabled={Boolean(addDependentBlockReason)}
+              aria-describedby={
+                addDependentBlockReason ? addDependentBlockReasonId : undefined
+              }
               onClick={onOpenDependentDialog}
             >
               <Plus className="h-4 w-4 mr-1" />
               Add Dependent
             </ViewOnlyActionButton>
-          )}
+            <DependentNotice id={addDependentBlockReasonId} tone="warning">
+              {addDependentBlockReason
+                ? DEPENDENT_PARENT_BLOCK_EXPLANATIONS[addDependentBlockReason]
+                : null}
+            </DependentNotice>
+          </div>
           {/* Xero actions render only once the connection status resolves to
               true: everyday actions stay visible, rare ones live in the
               overflow menu. Disconnected (or still loading) shows no Xero UI

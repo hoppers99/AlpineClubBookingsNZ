@@ -147,10 +147,29 @@ prose here rather than with a screenshot:
   back on itself, is refused with an explanation. The same limit applies when you
   **merge** two duplicate records: merging joins their families, so a merge that
   would produce a chain longer than four generations — or link a family back on
-  itself — is refused and asks you to remove the link between them first. Parent
-  links record who is responsible for a member. They do **not** decide who is
+  itself — is refused and asks you to remove the link between them first.
+  A parent link is a **record of a family relationship, at any age** (#2282): a
+  16 or 17 year old can genuinely be a parent, so the club can write that down.
+  It does **not** by itself decide anything else. It does not decide who is
   billed or who a family fee covers — that comes from family groups and
-  membership types.
+  membership types — and it does not decide who may book on someone's behalf,
+  edit or confirm their details, or answer a consent request for them; those
+  need an active adult with a login who shares a family group with them, which
+  the parent link neither grants nor is consulted for.
+  **Who the club emails is decided separately, and always resolves to an adult.**
+  A dependent's club email goes to the nearest adult at or above them in the
+  family who has a real address, so a dependent added under a young parent has
+  their mail routed on up — usually to that parent's own parent. The member's
+  page names that adult before you add the dependent, and both link dialogs name
+  it again next to the notification-recipient list, because the list shows
+  parents while the stored contact of record may be someone further up. If
+  nobody in reach can receive club email, adding the dependent is refused with
+  that reason rather than leaving the child unreachable.
+  **When Add Dependent is disabled** it says why, on both the *create new* and
+  *link existing* paths: the member is inactive, the member is archived
+  (archiving cannot be undone, so add the dependent under someone else in the
+  family), or the record is an organisation or school account, which is not a
+  person and so cannot be recorded as anyone's parent.
 - **Membership** — life-member status, the seasonal membership-type change
   (preview + admin reason required before saving), and subscription history.
 - **Finance** — account credit (request an adjustment for a second admin to

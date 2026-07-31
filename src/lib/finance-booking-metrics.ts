@@ -1,7 +1,13 @@
-import { BookingStatus, PaymentStatus, Prisma } from "@prisma/client";
+import {
+  BookingStatus,
+  PaymentStatus,
+  PaymentTransactionKind,
+  Prisma,
+} from "@prisma/client";
 import { isAdditionalPaymentOwed } from "@/lib/additional-payment-chase";
 import { getDefaultLodgeCapacity, getLodgeCapacity } from "@/lib/lodge-capacity";
 import { getDefaultLodgeId, lodgeNullTolerantScope } from "@/lib/lodges";
+import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import { countActiveGuestsForNight } from "@/lib/booking-guest-stay-ranges";
 import {
@@ -79,6 +85,27 @@ const bookingMetricsSelect = Prisma.validator<Prisma.BookingSelect>()({
       creditAppliedCents: true,
       additionalAmountCents: true,
       additionalPaymentStatus: true,
+      // #2408: the ledger, not just the summary columns. The guard below has to
+      // tell a genuinely collected price increase (a captured ADDITIONAL row,
+      // which is therefore already inside `amountCents`) from a column that
+      // merely CLAIMS one, and only the transactions can answer that.
+      //
+      // ADDITIONAL rows only. The cash total comes from `Payment.amountCents`,
+      // never from the ledger — a payment can be captured with no PRIMARY row
+      // behind it (an organiser-settled group booking, anything written before
+      // the ledger existed), and rebuilding the total from rows would report
+      // such a booking as having collected nothing. So the primary rows are
+      // not needed, and a range covering a season should not drag them across
+      // the wire. `kind` is still selected and re-checked in code: the filter
+      // is an optimisation, not the correctness boundary.
+      transactions: {
+        where: { kind: PaymentTransactionKind.ADDITIONAL },
+        select: {
+          kind: true,
+          status: true,
+          amountCents: true,
+        },
+      },
     },
   },
 });
@@ -86,6 +113,14 @@ const bookingMetricsSelect = Prisma.validator<Prisma.BookingSelect>()({
 type BookingMetricsRecord = Prisma.BookingGetPayload<{
   select: typeof bookingMetricsSelect;
 }>;
+
+type BookingMetricsPayment = NonNullable<BookingMetricsRecord["payment"]>;
+
+/**
+ * How many booking ids to name in the ledger-gap alarm. Enough to act on,
+ * bounded so one bad import cannot flood the log.
+ */
+const MAX_LOGGED_LEDGER_GAP_BOOKINGS = 20;
 
 type RealizedBookingStatus = (typeof FINANCE_REALIZED_BOOKING_STATUSES)[number];
 type ForwardCommittedBookingStatus =
@@ -177,7 +212,23 @@ interface FinanceBookingMetricsPaymentSummary {
     FinanceAdditionalPaymentStatusKey,
     number
   >;
-  capturedPrimaryCents: number;
+  /**
+   * Gross captured cash: `Payment.amountCents` summed over the payments whose
+   * status says money was taken.
+   *
+   * `reconcilePaymentAggregates` (src/lib/payment-transactions.ts) sets that
+   * column to the sum of EVERY captured ledger row — PRIMARY and ADDITIONAL
+   * alike — so this figure ALREADY contains any collected price increase.
+   * #2408 renamed it from `capturedPrimaryCents`, which read as "the primary
+   * leg only" and invited exactly the double count it caused: the net below
+   * used to add `capturedAdditionalCents` to it and report a $121 booking with
+   * a collected $21 addition as $142 collected.
+   */
+  capturedGrossCents: number;
+  /**
+   * How much of `capturedGrossCents` came from a later price increase. A
+   * BREAKDOWN of that total, never an addend beside it (#2408).
+   */
   capturedAdditionalCents: number;
   /**
    * #2350: upward booking changes whose extra was never collected (PENDING,
@@ -186,7 +237,28 @@ interface FinanceBookingMetricsPaymentSummary {
    */
   outstandingAdditionalCents: number;
   outstandingAdditionalBookings: number;
+  /**
+   * #2408 guard. Money on payments that CLAIM a collected price increase
+   * (`additionalPaymentStatus = "SUCCEEDED"`, non-zero `additionalAmountCents`)
+   * with no captured ADDITIONAL `PaymentTransaction` behind it.
+   *
+   * That is the one shape in which `capturedGrossCents` does NOT contain the
+   * addition, and therefore the one shape in which `netCollectedCents`
+   * understates the cash — by up to this amount. It does not exist in healthy
+   * data (`reconcilePaymentAggregates` derives both columns from the latest
+   * ADDITIONAL row, so a SUCCEEDED status implies a captured row), but an
+   * import, a repair pass, or a future write path could produce it, and a
+   * finance figure must never be quietly wrong. Non-zero means: reconcile those
+   * payments' ledgers before trusting the collected total.
+   */
+  additionalLedgerGapCents: number;
+  additionalLedgerGapBookings: number;
   refundedCents: number;
+  /**
+   * Cash the club actually holds for these bookings:
+   * `capturedGrossCents - refundedCents`, floored at zero. Never sums the gross
+   * and additional columns — see `capturedGrossCents` (#2408).
+   */
   netCollectedCents: number;
   creditAppliedCents: number;
   changeFeeCents: number;
@@ -301,10 +373,12 @@ function createZeroPaymentSummary(): FinanceBookingMetricsPaymentSummary {
     additionalPaymentStatusBreakdown: zeroStatusBreakdown(
       ADDITIONAL_PAYMENT_STATUS_KEYS
     ),
-    capturedPrimaryCents: 0,
+    capturedGrossCents: 0,
     capturedAdditionalCents: 0,
     outstandingAdditionalCents: 0,
     outstandingAdditionalBookings: 0,
+    additionalLedgerGapCents: 0,
+    additionalLedgerGapBookings: 0,
     refundedCents: 0,
     netCollectedCents: 0,
     creditAppliedCents: 0,
@@ -591,10 +665,32 @@ function getAdditionalPaymentStatusKey(
     : "PENDING";
 }
 
+/**
+ * Cash the ledger says was actually captured against this payment's ADDITIONAL
+ * leg, as opposed to what the `additionalPaymentStatus` column claims.
+ *
+ * A missing `transactions` array reads as zero — "no evidence of a capture" —
+ * rather than as "assume it is fine". That is the safe direction: it makes the
+ * #2408 guard fire on an unproven addition instead of silently trusting it.
+ */
+function capturedAdditionalLedgerCents(payment: BookingMetricsPayment): number {
+  const rows = Array.isArray(payment.transactions) ? payment.transactions : [];
+
+  return rows.reduce(
+    (sum, row) =>
+      row.kind === PaymentTransactionKind.ADDITIONAL &&
+      FINANCE_CAPTURED_PAYMENT_STATUSES.has(row.status)
+        ? sum + row.amountCents
+        : sum,
+    0
+  );
+}
+
 function summarizePayments(
   bookings: BookingMetricsRecord[]
 ): FinanceBookingMetricsPaymentSummary {
   const summary = createZeroPaymentSummary();
+  const ledgerGapBookingIds: string[] = [];
 
   summary.bookingCount = bookings.length;
 
@@ -614,39 +710,53 @@ function summarizePayments(
       getAdditionalPaymentStatusKey(booking)
     ] += 1;
 
-    // KNOWN ISSUE (pre-existing, raised while reviewing #2397 and deliberately
-    // NOT changed there — needs an owner decision, see below).
+    // #2408. `Payment.amountCents` is the GROSS capture, not the primary leg:
+    // `reconcilePaymentAggregates` (src/lib/payment-transactions.ts) sets it to
+    // the sum of ALL captured ledger rows, PRIMARY and ADDITIONAL alike. So a
+    // $121 booking whose $21 addition captured already carries
+    // `amountCents = 121`, and the old net added the same $21 a second time to
+    // report $142 collected. The addition is counted ONCE, here, by counting
+    // the gross figure and nothing else.
     //
-    // `capturedAdditionalCents` DOUBLE-COUNTS a collected price increase.
-    // `reconcilePaymentAggregates` (src/lib/payment-transactions.ts) sets
-    // `Payment.amountCents` to the sum of ALL captured ledger rows — PRIMARY
-    // and ADDITIONAL alike — so a $121 booking whose $21 addition captured
-    // already carries `amountCents = 121`, and `netCollectedCents` below adds
-    // the same $21 a second time to report $142. That is true of every
-    // card-settled booking with a collected addition today, and #2397's cash
-    // settlement writes the identical ledger shape, so it inherits the same
-    // overstatement on the covered answer (and is exactly right — $100 + $0 —
-    // on the not-covered one).
+    // `capturedAdditionalCents` survives as the BREAKDOWN — how much of that
+    // gross came from a later price increase — and must never be added back.
     //
-    // The obvious repair — drop `capturedAdditionalCents` from the net and let
-    // `amountCents` speak for the whole capture — is right for every payment
-    // whose ledger rows exist, and would UNDER-report any legacy payment whose
-    // `additionalAmountCents` column was set without a matching captured
-    // ADDITIONAL row. Deciding that means deciding it against the club's real
-    // historical data, and it moves a published finance figure, so it belongs
-    // to the owner rather than to a bug-fix PR about cash settlement.
-    const capturedPrimaryCents = FINANCE_CAPTURED_PAYMENT_STATUSES.has(
+    // Read from the COLUMN, never rebuilt by summing ledger rows. A captured
+    // payment can legitimately have no PRIMARY row — an organiser-settled group
+    // booking, or anything settled before the ledger existed — so a
+    // ledger-derived total would report a booking that collected $121 as having
+    // collected nothing, or (worse, once an addition exists) as having
+    // collected only the $21.
+    const capturedGrossCents = FINANCE_CAPTURED_PAYMENT_STATUSES.has(
       payment.status
     )
       ? payment.amountCents
       : 0;
-    const capturedAdditionalCents =
-      payment.additionalPaymentStatus === "SUCCEEDED"
-        ? payment.additionalAmountCents
-        : 0;
+    const claimsCollectedAdditional =
+      payment.additionalPaymentStatus === "SUCCEEDED" &&
+      payment.additionalAmountCents > 0;
+    const capturedAdditionalCents = claimsCollectedAdditional
+      ? payment.additionalAmountCents
+      : 0;
 
-    summary.capturedPrimaryCents += capturedPrimaryCents;
+    summary.capturedGrossCents += capturedGrossCents;
     summary.capturedAdditionalCents += capturedAdditionalCents;
+    // The guard. Counting the gross alone is right precisely BECAUSE a
+    // collected addition is inside it, which is true whenever a captured
+    // ADDITIONAL ledger row exists. A payment that claims the collection with
+    // no such row is the one shape where the gross does not contain it and this
+    // summary would quietly understate the cash — so it is measured and
+    // shouted about rather than absorbed. An UNCOLLECTED addition (PENDING,
+    // FAILED, legacy null) is not this shape: it is not in the gross, is not
+    // meant to be, and is already reported by `outstandingAdditionalCents`.
+    if (
+      claimsCollectedAdditional &&
+      capturedAdditionalLedgerCents(payment) === 0
+    ) {
+      summary.additionalLedgerGapCents += payment.additionalAmountCents;
+      summary.additionalLedgerGapBookings += 1;
+      ledgerGapBookingIds.push(booking.id);
+    }
     if (
       isAdditionalPaymentOwed({ bookingStatus: booking.status, payment })
     ) {
@@ -659,11 +769,24 @@ function summarizePayments(
   }
 
   summary.netCollectedCents = Math.max(
-    summary.capturedPrimaryCents +
-      summary.capturedAdditionalCents -
-      summary.refundedCents,
+    summary.capturedGrossCents - summary.refundedCents,
     0
   );
+
+  if (ledgerGapBookingIds.length > 0) {
+    logger.error(
+      {
+        bookingIds: ledgerGapBookingIds.slice(
+          0,
+          MAX_LOGGED_LEDGER_GAP_BOOKINGS
+        ),
+        bookingCount: summary.additionalLedgerGapBookings,
+        additionalLedgerGapCents: summary.additionalLedgerGapCents,
+        netCollectedCents: summary.netCollectedCents,
+      },
+      "Finance metrics: payments record a collected additional payment with no captured ADDITIONAL PaymentTransaction behind it. Net collected cash may understate by additionalLedgerGapCents. Reconcile those payments' ledgers (reconcilePaymentAggregates) before trusting the collected figure."
+    );
+  }
 
   return summary;
 }
