@@ -20,16 +20,16 @@ function entry(path: string, content: HelpPageContent): HelpPageEntry {
 const homeHelp: HelpPageContent = {
   title: "Welcome",
   summary:
-    "This is the club's booking website. Members sign in to book a stay and manage their account; if you are not a member yet, you can apply to join or ask the club for a booking as a guest.",
+    "This is the club's booking website. Members sign in to book a stay and manage their account; if you are not a member yet, you can apply to join. Whether non-members can stay at all is up to the club — check the club's own pages.",
   actions: [
     "Members: use Log In, then open Book to reserve lodge nights.",
     "Not a member yet: use the Join or Apply link to start a membership application.",
-    "Staying as a guest: use the request-a-booking option on the sign-in page to ask the club for a quote.",
+    "Not a member and wondering about staying? Look for any FAQ, rules, or policy pages the club publishes in the site menu or footer, or use the club's contact page.",
   ],
   questions: [
     {
       q: "How do I book a stay?",
-      a: "If you are a member, sign in and open Book to choose your nights and confirm. If you are not a member, apply to join first, or use the request-a-booking option to ask the club for a guest quote.",
+      a: "If you are a member, sign in and open Book to choose your nights and confirm. If you are not a member, apply to join first — and if you are hoping to stay without joining, check the club's own pages or contact the club, because that is the club's decision.",
     },
     {
       q: "How do I become a member?",
@@ -37,7 +37,7 @@ const homeHelp: HelpPageContent = {
     },
     {
       q: "Can I stay without being a member?",
-      a: "Yes. From the sign-in page you can request a booking without an account, and the club replies with a secure quote you can accept.",
+      a: "That is up to the club. Many clubs only host non-members as guests accompanied by a member, if at all. Look for any FAQ, rules, or policy pages the club publishes in the site menu or footer, or contact the club before planning a stay.",
     },
     {
       q: "Where do I find fees, dates, or the cancellation policy?",
@@ -62,7 +62,7 @@ export const publicFallbackHelp: HelpPageContent = {
     },
     {
       q: "How do I join or book?",
-      a: "Use the Join or Apply link to start a membership application, or the request-a-booking option on the sign-in page to ask the club for a guest quote.",
+      a: "Use the Join or Apply link to start a membership application. Members sign in and open Book to reserve nights. Whether non-members can stay is up to the club — check the club's own pages or use the club's contact page.",
     },
     {
       q: "Who do I contact for something specific?",

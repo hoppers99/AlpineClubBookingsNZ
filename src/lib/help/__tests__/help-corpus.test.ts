@@ -211,22 +211,22 @@ describe("buildHelpGrounding", () => {
     expect(buildHelpGrounding("public", "/")).toMatchInlineSnapshot(`
       "# Welcome
 
-      This is the club's booking website. Members sign in to book a stay and manage their account; if you are not a member yet, you can apply to join or ask the club for a booking as a guest.
+      This is the club's booking website. Members sign in to book a stay and manage their account; if you are not a member yet, you can apply to join. Whether non-members can stay at all is up to the club — check the club's own pages.
 
       ## What you can do
       - Members: use Log In, then open Book to reserve lodge nights.
       - Not a member yet: use the Join or Apply link to start a membership application.
-      - Staying as a guest: use the request-a-booking option on the sign-in page to ask the club for a quote.
+      - Not a member and wondering about staying? Look for any FAQ, rules, or policy pages the club publishes in the site menu or footer, or use the club's contact page.
 
       ## Questions and answers
       Q: How do I book a stay?
-      A: If you are a member, sign in and open Book to choose your nights and confirm. If you are not a member, apply to join first, or use the request-a-booking option to ask the club for a guest quote.
+      A: If you are a member, sign in and open Book to choose your nights and confirm. If you are not a member, apply to join first — and if you are hoping to stay without joining, check the club's own pages or contact the club, because that is the club's decision.
 
       Q: How do I become a member?
       A: Use the Join or Apply link to fill in a membership application. Applying does not create a login — the club reviews and approves applications before you can sign in.
 
       Q: Can I stay without being a member?
-      A: Yes. From the sign-in page you can request a booking without an account, and the club replies with a secure quote you can accept.
+      A: That is up to the club. Many clubs only host non-members as guests accompanied by a member, if at all. Look for any FAQ, rules, or policy pages the club publishes in the site menu or footer, or contact the club before planning a stay.
 
       Q: Where do I find fees, dates, or the cancellation policy?
       A: Those are set by the club. Check the club's own pages in the site menu or footer, or use the club's contact page to ask directly."
