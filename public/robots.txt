@@ -23,4 +23,8 @@ Disallow: /change-password
 Disallow: /verify-email
 Disallow: /confirm-email-change
 
+# Unlisted guest request form and its secure token links - the club shares the
+# direct URL privately, so it is never advertised or indexed
+Disallow: /booking-requests
+
 Sitemap: https://example.org/sitemap.xml
