@@ -293,11 +293,14 @@ function makeTx(
         where?: { familyGroupId?: unknown; memberId?: unknown };
       }) =>
         args?.where?.familyGroupId
-          ? booking.guests
-              .map((guest: { memberId?: string | null }) => guest.memberId)
-              .filter(Boolean)
-              .concat(booking.memberId)
-              .map((memberId: string) => ({ memberId, familyGroupId: "fg-fixture" }))
+          ? [
+              booking.memberId,
+              ...booking.guests.map(
+                (guest: { memberId?: string | null }) => guest.memberId,
+              ),
+            ]
+              .filter((memberId): memberId is string => Boolean(memberId))
+              .map((memberId) => ({ memberId, familyGroupId: "fg-fixture" }))
           : [{ memberId: booking.memberId, familyGroupId: "fg-fixture" }],
       ),
     },
