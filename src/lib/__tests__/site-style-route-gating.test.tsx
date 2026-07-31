@@ -162,6 +162,34 @@ describe("site style route-group gating", () => {
     expect(screen.queryByText("Website header")).toBeNull();
   });
 
+  it("does NOT claim setup is in progress when the theme read merely FAILED", async () => {
+    // #2420 review F4. `isComplete: false` used to mean both "this club has not
+    // finished setup" and "the database did not answer". On a live club the
+    // second reading turns a two-second blip into a "Site setup in progress"
+    // page — served with 200 and, because `/` is allow-listed as anonymously
+    // cacheable, stamped `public, max-age=60, stale-while-revalidate=300`. A
+    // launch-state lie pinned in every visitor's cache for a minute.
+    //
+    // The layout is only allowed to paint that screen on a POSITIVE answer. The
+    // proxy gate keeps failing closed on the same input, and that asymmetry is
+    // the point: 503 is a true statement about an unreadable database, a 200
+    // holding screen is not.
+    mocks.getWebsiteThemeRenderState.mockResolvedValue({
+      css: ":root{}",
+      appCss: ".app-theme-scope{}",
+      logoUrl: null,
+      logoDataUrl: null,
+      isComplete: false,
+      readFailed: true,
+      values: {},
+    });
+
+    render(await WebsiteLayout({ children: <p>Website child</p> }));
+
+    expect(screen.queryByText("Site setup in progress")).toBeNull();
+    expect(screen.getByText("Website child")).toBeTruthy();
+  });
+
   it("renders website children after setup is complete", async () => {
     mocks.getWebsiteThemeRenderState.mockResolvedValue({
       css: ":root{}",

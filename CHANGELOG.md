@@ -4,6 +4,56 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **A club's website now says "not ready yet" until its setup is finished,
+  instead of quietly answering as though everything were fine (#2420).** Before
+  a club saves its site style for the first time, every public web address shows
+  a "Site setup in progress" holding screen. That screen was being handed over
+  with the hidden status line that means "here is your page" — so a search
+  engine could start listing a club's half-built site, and an uptime check would
+  report a site that has never opened as healthy. Every public address now
+  carries the status that means "temporarily unavailable, come back shortly",
+  along with a stated wait, which is what search engines and monitoring tools are
+  built to act on.
+
+  Every public address is treated the same way while setup is unfinished — the
+  home page, a page the club has already written, and a mistyped address all get
+  the same holding screen. Until the club has chosen how its site looks, none of
+  it is ready to be seen or listed, and answering differently for pages that
+  exist would tell anyone probing a half-built site exactly which pages are
+  there.
+
+  Nothing an administrator needs in order to finish setup is affected: the admin
+  area, the site style wizard itself, the login and password pages, the member
+  and lodge areas, the lobby display, and the data addresses the app talks to all
+  behave exactly as before. Once setup is complete, so does the public website —
+  this changes nothing at all for a club already running. The site opens within
+  about fifteen seconds of the setup being saved.
+
+  Reviewing this work turned up four further problems, all fixed here. An
+  unlaunched club was still naming its pages: the page titles and summaries that
+  browsers and search engines read are assembled separately from the page itself,
+  so they were still being sent even though the page was not — enough for a
+  stranger to list every page an unfinished site had, including ones the club had
+  written but deliberately not published. Every public page now gives the same
+  neutral "site setup in progress" title until the club opens, whether the page
+  exists or not.
+
+  A club's optional custom styling could also be crafted to break out of the
+  styling block and run as page code, because the check that removes the
+  dangerous sequence only looked once and a carefully split sequence reassembled
+  itself behind it. It now repeats until nothing is left to find. This one
+  predates the change — the ordinary website had the same exposure — so it is
+  fixed for every page that uses custom styling, not just the new one.
+
+  A handful of addresses that merely began with a reserved word (`/apiary`,
+  `/logo.pngs`) were skipping the check entirely and still answering as though
+  the site were open; they no longer do, and as a side effect they now receive
+  the same browser-security headers as every other page. And a brief database
+  interruption on a long-running club could make the site claim it was still
+  being set up, then leave that claim in visitors' browsers for a minute — the
+  club's own pages now tell the difference between "not set up" and "could not
+  check".
+
 - **The finance dashboard was counting a paid price increase twice, and now
   counts it once (#2408).** When a booking's price goes up after it was made —
   someone adds a guest — the difference is tracked as an "additional payment".
@@ -70,9 +120,11 @@ All notable public reference-release changes should be recorded here.
   completed, where an unfinished-setup holding screen answers every address. On
   a real club that holding screen only shows before the site goes live, but it
   does mean any address at all is answered as though it were fine until setup is
-  finished. That behaviour is deliberately untouched here — changing it halfway
-  would have let a stranger map an unlaunched club's page list by seeing which
-  addresses answered differently — and is being decided separately (#2420).
+  finished. That behaviour is deliberately untouched by this change — altering
+  it halfway would have let a stranger map an unlaunched club's page list by
+  seeing which addresses answered differently. It is settled by the #2420 entry
+  above, which turns the whole unfinished-setup site into a plain "not ready
+  yet".
 - **A member can now find and add another club member as a guest, and is told
   plainly what that commits the other person to (#2308).** The booking wizard's
   Guests step gains a **+ Add Member Guest** button beside the existing

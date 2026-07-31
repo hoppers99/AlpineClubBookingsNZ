@@ -11,6 +11,9 @@ import {
 } from "@/lib/club-theme-schema";
 import type { ClubThemeUpdateInput } from "@/lib/club-theme-update-schema";
 
+/** Sentinel distinguishing "the read threw" from "there is no row" (#2420 F4). */
+const READ_FAILED = Symbol("club-theme-read-failed");
+
 async function ensureClubTheme() {
   return prisma.clubTheme.upsert({
     where: { id: CLUB_THEME_ID },
@@ -142,13 +145,33 @@ export async function saveClubTheme(input: ClubThemeUpdateInput) {
   };
 }
 
+/**
+ * `readFailed` exists because `isComplete: false` used to mean two different
+ * things (#2420 review finding F4): "the database says this club has not
+ * finished setup" and "the database did not answer". Callers that only need the
+ * theme values can keep ignoring the difference — the fallback palette is right
+ * either way — but any caller about to make a CLAIM ABOUT THE CLUB from it must
+ * not, and one was.
+ *
+ * The sequence that made it matter, on a live and fully configured club:
+ * `src/proxy.ts`'s setup gate holds a cached "complete" answer, so it lets the
+ * request through; the database blips; this read fails a moment later inside
+ * `(website)/layout.tsx`'s own cache refresh; the layout concludes "setup
+ * incomplete" and paints the "Site setup in progress" screen with a 200; and
+ * because `/` is allow-listed as anonymously cacheable, `proxy()` stamps
+ * `public, max-age=60, stale-while-revalidate=300` on it. A two-second outage
+ * therefore pinned a launch-state lie into every anonymous visitor's cache for a
+ * minute, and a shared cache for five.
+ */
 export async function getWebsiteThemeRenderState() {
   const theme = await prisma.clubTheme
     .findUnique({
       where: { id: CLUB_THEME_ID },
     })
-    .catch(() => null);
-  const values = normaliseThemeValues(theme ?? DEFAULT_CLUB_THEME_VALUES);
+    .catch(() => READ_FAILED);
+  const readFailed = theme === READ_FAILED;
+  const row = readFailed ? null : (theme as Exclude<typeof theme, symbol>);
+  const values = normaliseThemeValues(row ?? DEFAULT_CLUB_THEME_VALUES);
 
   return {
     values,
@@ -156,6 +179,8 @@ export async function getWebsiteThemeRenderState() {
     appCss: buildClubThemeAppCss(values),
     logoUrl: values.logoUrl,
     logoDataUrl: values.logoDataUrl,
-    isComplete: Boolean(theme?.completedAt),
+    isComplete: Boolean(row?.completedAt),
+    /** True only when the read THREW — never when it returned "no row". */
+    readFailed,
   };
 }

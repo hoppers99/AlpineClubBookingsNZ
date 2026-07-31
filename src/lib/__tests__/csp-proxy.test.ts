@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import {
   unstable_doesMiddlewareMatch as unstable_doesProxyMatch,
@@ -12,6 +12,7 @@ import {
   setSecurityHeaders,
 } from "@/lib/csp";
 import { REQUEST_PATH_HEADER } from "@/lib/internal-return-path";
+import { isPublicWebsitePath } from "@/lib/setup-gate";
 import { FEATURE_ROUTE_RULES } from "@/config/feature-routes";
 import { MODULE_KEYS } from "@/config/modules";
 import proxy, {
@@ -20,6 +21,15 @@ import proxy, {
   getFeatureFlagBlockResponse,
 } from "../../proxy";
 import type { FeatureFlags } from "@/config/schema";
+
+// #2420: the proxy now short-circuits every public-website URL with a 503 until
+// site setup is complete, and with no database it would resolve "incomplete" and
+// never reach the header work these cases are about. Every case here describes a
+// configured, live site, so the gate's single input is pinned complete. The
+// gate's own behaviour in BOTH setup states is covered by setup-gate.test.ts.
+vi.mock("@/lib/club-theme", () => ({
+  getWebsiteThemeRenderState: async () => ({ isComplete: true, css: "" }),
+}));
 
 const allFeaturesOn = Object.fromEntries(
   MODULE_KEYS.map((key) => [key, true]),
@@ -620,5 +630,98 @@ describe("anonymous public-page cache headers (#2322)", () => {
         `${path} must not be publicly cacheable`,
       ).toBeNull();
     }
+  });
+});
+
+/**
+ * The matcher and the setup gate's classifier have to agree (#2420 review
+ * finding F3).
+ *
+ * The gate lives inside `proxy()`, so a URL the matcher skips is a URL the gate
+ * never sees. If `isPublicWebsitePath()` calls such a URL a website address, the
+ * binding acceptance criterion — every public-website address answers 503 until
+ * setup is complete — is simply false for it, silently.
+ *
+ * It was false. Measured before the fix, all five of these skipped the matcher
+ * while the classifier called them website paths, so pre-setup they answered
+ * 200: `/apiary`, `/api-docs` (the `api` alternative was a bare PREFIX, not a
+ * path segment), `/favicon.icons`, `/logo.pngs` (same, and `favicon.ico`'s dot
+ * was unescaped so `/faviconXico` skipped too), and `/gallery.svg` (an
+ * image-extension suffix, which the matcher skips on purpose).
+ *
+ * The two were reconciled in opposite directions on purpose — see
+ * `isPublicWebsitePath`'s own comment for why the extension case is the
+ * classifier's problem and the prefix cases are the matcher's.
+ */
+describe("the proxy matcher covers every path the setup gate would gate", () => {
+  const matches = (url: string) =>
+    unstable_doesProxyMatch({ config, nextConfig: {}, url });
+
+  /**
+   * Shapes chosen to straddle every alternative in the matcher's negative
+   * lookahead, because that is where the two definitions can drift apart. The
+   * first five are the measured failures above.
+   */
+  const probes = [
+    "/",
+    "/about",
+    "/apiary",
+    "/api-docs",
+    "/favicon.icons",
+    "/logo.pngs",
+    "/faviconXico",
+    "/gallery.svg",
+    "/definitely-missing",
+    "/wp-admin/setup-config.php",
+    "/.env",
+    "/api",
+    "/api/",
+    "/api/definitely-missing",
+    "/favicon.ico",
+    "/logo.png",
+    "/branding/logo.png",
+    "/_next/static/chunks/main.js",
+    "/admin/site-style",
+    "/login",
+    "/robots.txt",
+    "/sitemap.xml",
+  ];
+
+  it.each(probes)(
+    "%s is matched by config.matcher whenever the gate claims it",
+    (url) => {
+      if (!isPublicWebsitePath(url)) {
+        return;
+      }
+
+      expect(
+        matches(url),
+        `${url} is classed as a public-website path but the proxy never runs on it, so the setup gate cannot answer 503 for it`,
+      ).toBe(true);
+    },
+  );
+
+  it("still skips the /api, static and asset shapes #2405 depends on", () => {
+    // The reconciliation must not have widened the matcher onto the paths whose
+    // exclusion is load-bearing elsewhere: /api keeps its own JSON 404 route and
+    // its module-gate verb parity, and static assets must not pay a nonce mint.
+    for (const url of [
+      "/api",
+      "/api/",
+      "/api/definitely-missing",
+      "/favicon.ico",
+      "/logo.png",
+      "/branding/logo.png",
+      "/gallery.svg",
+      "/_next/static/chunks/main.js",
+    ]) {
+      expect(matches(url), `${url} must stay outside the matcher`).toBe(false);
+    }
+  });
+
+  it("does run on the explicitly listed /api matcher entries", () => {
+    // The negative lookahead only governs the first matcher entry; the module
+    // gate's own /api list must keep matching.
+    expect(matches("/api/admin/waitlist")).toBe(true);
   });
 });
