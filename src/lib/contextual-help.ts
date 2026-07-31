@@ -2308,6 +2308,10 @@ const ADMIN_HELP_QUESTIONS: Record<string, HelpQuestion[]> = {
       q: "What should I check before quoting?",
       a: "Recheck the requested date-only lodge nights, guest counts, and capacity before you send a quote or approval.",
     },
+    {
+      q: "How does a non-member get to the request form?",
+      a: "Only from you. The form is deliberately unlisted: no page a visitor can browse to links to it, and it is excluded from search engines. Copy the link from the Public Requests tab and send it only to a guest the club has agreed to host.",
+    },
   ],
   "/admin/bookings": [
     {
@@ -2443,6 +2447,10 @@ const ADMIN_HELP_QUESTIONS: Record<string, HelpQuestion[]> = {
     {
       q: "When should I use auto versus manual allocation?",
       a: "Use auto-allocation for ordinary cases and manual moves for operational exceptions.",
+    },
+    {
+      q: "Can I move an allocated guest to another night?",
+      a: "No. Dragging an existing allocation chooses another bed only and keeps its original NZ lodge night, even when you hover over a different date column. The first visible chip moves that guest's visible allocated nights together; a later chip moves only its own night. A drop is a no-op only when every represented night already uses that bed.",
     },
     {
       q: "Can automatic allocation displace a guest?",

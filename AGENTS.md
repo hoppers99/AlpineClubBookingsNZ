@@ -201,8 +201,8 @@ before changing Next.js APIs or conventions.
   itself a load, it unmounts the very `PolicyScopeSelect` the admin just used,
   dropping keyboard focus to `<body>` mid-interaction. Started in the five
   Booking Policies sections (#2142) and rolled across most of the admin tree
-  (#2160, extended by #2168 and #2324): 250 of 297 `ViewOnlyActionButton` call
-  sites now opt out — 224 covered by a banner in the SAME file, 26 by a verified
+  (#2160, extended by #2168 and #2324): 252 of 299 `ViewOnlyActionButton` call
+  sites now opt out — 226 covered by a banner in the SAME file, 26 by a verified
   vouching parent (21 at a JSX render site, 5 through the guided-setup shell) —
   and 47 keep the per-button reason: dialog/popover contents, leaf toolbars,
   `member-credit-card.tsx`, whose finance scope differs from the member detail
@@ -285,10 +285,19 @@ an orchestrator with subagents, not a single agent doing everything inline:
   drift/consistency/UX). The orchestrator triages findings and dispatches
   fixes. This complements — it does not replace — the owner-approval gate for
   Critical/High-risk areas.
+- **Delegate deliberately.** Every subagent re-establishes context, re-explores,
+  and reports back, and the orchestrator then re-reads that report — the payoff
+  has to exceed that overhead. Do not spawn one for work the orchestrator could
+  finish in a handful of tool calls, do not split one modest job across several,
+  and keep routine verification in the orchestrator loop. Reserve subagents for
+  genuinely independent, sizeable tracks: per-issue implementation lanes, wide
+  multi-file investigations, and the adversarial review lenses.
 - **Capability scaling:** the orchestrator chooses subagent model/effort by
   task complexity. Work in gated areas (money movement, booking capacity,
   membership/family lifecycle, schema, auth/security, live providers) keeps
-  the strongest available model at high reasoning effort, per the rule above.
+  the strongest available model at high reasoning effort, per the rule above —
+  and auth/security work goes to `max`, since an uncertain security blocker
+  escalates in effort, never in model tier (see "Model selection").
 - **Parallel lanes:** multiple issues may run concurrently, each in its own
   worktree/branch/PR, only when their code surfaces do not clash. Shared
   documentation files (for example `docs/DOMAIN_INVARIANTS.md`) are acceptable
@@ -344,6 +353,15 @@ At the successful end of a meaningful piece of work:
      with full evidence and wait.
 4. Merge eligible PRs with a merge commit (never squash, rebase-merge, or
    force-push). A linked issue may close only when its PR is eligible and merged.
+   **Once a PR is eligible and only waiting on CI, arm
+   `gh pr merge <n> --auto --merge` rather than polling.** It lands the instant
+   the checks pass, closing the window in which `main` can move underneath and
+   force another conflict-resolve plus a full CI cycle. Polling for green and
+   merging by hand reliably loses that race when several sessions are active.
+   Note that another session may also merge a PR you built the moment the owner
+   approves it — so post the §5 close-out comment on the linked issue as soon as
+   you see it merged, whoever merged it, rather than assuming you will be the one
+   to do it.
 5. Close the linked issue at merge time (owner directive, 30 Jul 2026) with a
    plain-English close-out comment on the issue: what shipped, the delivering
    PR, what the review rounds found and how it was fixed (a sentence or two),
@@ -423,6 +441,22 @@ handed an epic-with-children or asked to run several related issues at once.
   stacked topical commits (schema / lib / callers / UI / tests / docs), **never
   push, never touch GitHub**, and run only lint + typecheck + targeted tests
   locally (CI arbitrates the full suite).
+- **Brief from the owner's decision, read verbatim — never from your memory of
+  it.** Before writing an implementor brief, read the decision comment itself
+  (`gh issue view <n> --json comments -q '.comments[].body'`) and quote its
+  operative sentences into the brief. Checking that a decision **exists** is not
+  reading it, and inferring a remedy from the issue *title* is how you end up
+  building the option the owner rejected — that happened on #2400 (31 Jul 2026),
+  where the brief asked for a per-member share split the owner had explicitly
+  turned down. Context compaction makes this worse: what survives is a summary of
+  a decision, which feels like knowing it. **Treat any decision you did not read
+  in the current context as unread.**
+- **Every brief states that the issue's binding decision governs, and that where
+  the brief and the issue disagree the issue wins.** That line is what let the
+  #2400 implementor override a wrong brief and build the right thing. No review
+  lens can catch this class — a reviewer checks the diff against the brief, and
+  it is the brief that is wrong — so the implementor's authority to contradict
+  the orchestrator is the only defence there is.
 - **Review subagents** attack the diff before the PR opens. **The orchestrator
   chooses the review angle and how many reviewers per issue, scaled to risk:**
   - Critical issues (money, schema/migrations, auth/security, Xero/Stripe, booking
@@ -437,19 +471,52 @@ handed an epic-with-children or asked to run several related issues at once.
     real code before reporting, and report only confirmed/plausible findings with
     `file:line` + a concrete failure scenario. They never modify code.
 - **Fix subagents** resolve every confirmed finding; the orchestrator triages
-  (rejecting false positives with reasoning recorded in the PR body) and **re-runs
-  the relevant reviewer lens to verify the fix** — especially for security
-  blockers, where the fix can reopen a symmetric hole.
+  (rejecting false positives with reasoning recorded in the PR body) and, **for
+  security blockers, re-runs the relevant reviewer lens to verify the fix** —
+  there the fix itself can reopen a symmetric hole, so a fresh lens is earning
+  its cost. **Outside security, stop after the fix.** A third pass over ground
+  two adversarial reviewers already covered costs a full review cycle and rarely
+  catches what the fix subagent missed; current models also self-verify their own
+  work, so instructing them to re-verify mostly buys redundancy.
+- **Two different things are both called "verifying the fix". Keep them apart —
+  conflating them is what turns a wave into a treadmill.**
+  - **verify-fix (§5): targeted, in-lane, always do it.** Confirm each fix does
+    what it claims and broke no neighbour: re-run the touched and adjacent
+    suites, mutation-test each new guard, re-read the changed hunks. Cheap,
+    bounded, and it is what catches the "fixes introduce new problems" class.
+  - **A fresh adversarial lens over the diff: expensive, and NOT the default.**
+    Reserve it for a security blocker, or for code the fix round **newly wrote
+    that no lens has seen** — a fix that widens scope onto a different route or
+    module. Scope that pass to the new code only, never the whole diff. If the
+    fix round only changed lines the reviewers already read, stop.
+- **A fix report's "what I did not verify" list is not a work queue.** Every
+  honest report ends with one, because the brief asks for it — so treating each
+  caveat as an open loop never terminates. Each item is resolved, or written into
+  the PR as a stated limit with its reasoning. It does not spawn another agent.
+- **Price the delay, because someone pays it.** Every hour a PR sits unready,
+  `main` moves under it: a `CHANGELOG.md` conflict at minimum, and on a schema
+  lane a migration-timestamp collision that fails `Migration drift check` and
+  `verify` together — each costing a re-resolve plus a full CI cycle. Optimise
+  **time-to-ready**, and get sibling PRs ready in the same window rather than
+  serially, since each merge re-conflicts every branch still open behind it.
 
 ### 4. Model selection
 
 - **Default subagents to the strongest generally-capable model (Opus).**
   Reserve the top Mythos-class tier (Fable) for tasks genuinely at the reasoning
   frontier — deep Xero-idempotency/frozen-reference contracts, immutable-charge
-  backfill correctness, irreversible member-merge + DMMF-completeness reasoning,
-  or a security blocker whose analysis the default model left uncertain. Scale
-  model *and* reasoning effort to the task; do not use the top tier blanket for
-  everything labelled "Critical".
+  backfill correctness, or irreversible member-merge + DMMF-completeness
+  reasoning. Scale model *and* reasoning effort to the task; do not use the top
+  tier blanket for everything labelled "Critical".
+- **Never route security work to the top tier — keep it on Opus at `max`
+  reasoning effort.** Fable's safety classifiers target cyber content, so a
+  security review or exploit analysis can come back *refused* rather than
+  answered. The refusal arrives as `stop_reason: "refusal"` on an HTTP 200, not
+  as an error — an unwary orchestrator reads the empty or truncated result as a
+  clean pass. Fable's bug-finding gains also explicitly exclude security-focused
+  analysis, so the escalation buys nothing here even when it does answer. Opus
+  refuses far less on this material and falls back rather than stopping outright,
+  which is why an uncertain security blocker escalates in *effort*, not in tier.
 
 ### 5. Per-issue pipeline
 
@@ -492,7 +559,11 @@ CI-green → evidence**.
   - **Fixes introduce new problems more often than expected.** In one wave, three
     separate fixes each created a fresh defect — including a security regression
     that dropped a header on error responses. The verify-fix pass above is what
-    caught every one; run it even when the fix looks obviously correct.
+    caught every one; run it even when the fix looks obviously correct. **This
+    means the targeted, in-lane verify-fix of §3 — re-run the touched and
+    adjacent suites, mutation-test each new guard, re-read the changed hunks. It
+    does not mean a fresh adversarial lens over the diff**, which §3 reserves for
+    a security blocker or for code the fix round newly wrote.
 - **Housekeeping that bites parallel lanes.** Every branch adds a `CHANGELOG.md`
   entry at the top of `## Unreleased`, so concurrent lanes reliably conflict
   there — resolve by keeping **both** entries with an ordinary merge commit, never
@@ -519,6 +590,18 @@ CI-green → evidence**.
   remain. A PR goes ready/merge-ready — and waits for approval — only once every
   residual has been dealt with. That is how complete, high-quality code ships
   (owner directive, 30 Jul 2026).
+- **What is and is not a residual — this loop must terminate.** A residual is
+  **known, achievable work**: a defect, a gap, a fix you could make now. It is
+  **not** every limit an honest report names. "Not exercised against a live
+  Postgres", "no screen reader was used", "reasoned but not measured" are
+  **stated limits** — write them in the PR with their reasoning and move on.
+  Treating them as residuals never terminates, because a truthful report always
+  produces more of them, and each extra loop is paid for in `main`-drift
+  conflicts and CI cycles (§5). When in doubt ask: *is there a change I could
+  make right now that removes this?* If no, it is a stated limit, not a residual.
+- **"Re-review the delta" above means review the newly-written lines**, not a
+  fresh pass over the whole diff, and it is only warranted when the iteration
+  widened scope into code no lens has read (§3).
 - **Never** leave a residual merely noted in the PR body. A written "Residual
   Risks" entry that describes a known, achievable fix is a deferral, not a
   disclosure — make the fix instead. A **refuted change is not a fenced-off

@@ -688,6 +688,14 @@ export function calculatePromoDiscount(
             : cappedNightCount > 0;
         if (!countsAsBeneficiary) continue;
 
+        // `includeWhenZero` below keeps a SET_PRICE guest in the in-memory
+        // allocation list even when their nights net to no change, so
+        // eligibleGuestCount and this list agree about who was re-priced. It no
+        // longer decides whether a usage cap is consumed: since #2299 an entry
+        // that moved no money is dropped at WRITE time by normalizeAllocations,
+        // because the member's total is identical with and without the code.
+        // See docs/DOMAIN_INVARIANTS.md → Money.
+
         totalAdjustment += guestAdjustment;
         effectiveGuestCount += 1;
         addPromoAllocation(

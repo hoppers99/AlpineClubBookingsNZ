@@ -38,10 +38,15 @@ const TYPE_LABELS: Record<string, string> = {
 const PAGE_SIZE = 50;
 
 interface Totals {
+  // PromoRedemption rows — applications of the code, one per booking.
   redemptions: number;
+  // Distinct BOOKERS across those applications (not beneficiaries).
   uniqueMembers: number;
   discountCents: number;
   freeNightsUsed: number;
+  // Applications that gave nobody a benefit and so consumed no allowance
+  // (#2299). Counted on the server, never derived by subtraction.
+  benefitFreeRedemptions: number;
 }
 
 interface RedemptionAllocation {
@@ -66,7 +71,13 @@ interface RedemptionRow {
   };
   eligibleGuestCount: number | null;
   discountCents: number;
+  // Signed: negative is money off, positive is a fixed nightly price ABOVE the
+  // guest's normal rate. A raising application still counts as a use (#2299),
+  // which is why a $0.00 discount is not by itself a "no benefit" marker.
+  priceAdjustmentCents: number;
   freeNightsUsed: number;
+  // Whether this application consumed any usage allowance at all.
+  gaveBenefit: boolean;
   memberUseIndex: number;
   allocations: RedemptionAllocation[];
 }
@@ -80,7 +91,11 @@ interface RedemptionsResponse {
     active: boolean;
     archived: boolean;
     internal: boolean;
-    currentRedemptions: number;
+    // What the usage caps count: applications that actually gave a benefit
+    // (#2299). The tiles below report every application, so the cap progress
+    // has to be driven from here or a fruitlessly-applied code reads as over
+    // its cap while still being usable.
+    capUsage: { redemptions: number; uniqueMembers: number };
     caps: {
       maxRedemptionsTotal: number | null;
       maxUniqueMembersTotal: number | null;
@@ -229,12 +244,32 @@ export function PromoRedemptionsPanel({
 
   const totals = data?.totals;
   const caps = data?.code.caps;
+  // Cap progress counts BENEFICIARIES — members whose price actually changed,
+  // one per member per booking (#2299) — and is always all-time. It lives on
+  // its own tiles, never as the subtitle of an application count.
+  const capUsage = data?.code.capUsage;
   const total = data?.pagination.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const resultStart = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
   const resultEnd = Math.min(page * PAGE_SIZE, total);
 
   const filterActive = Boolean(from || to || lodgeId);
+
+  // The all-time application count stays visible whatever the filter or the
+  // caps, because it is what an operator reconciles the cap tiles against; the
+  // benefit-free count is appended so a fruitlessly-applied code is legible
+  // here and not only on the promo-codes list card.
+  const benefitFreeAllTime = totals?.all.benefitFreeRedemptions ?? 0;
+  const applicationsSubtitle = [
+    filterActive || benefitFreeAllTime > 0
+      ? `${totals?.all.redemptions ?? 0} all-time`
+      : "One per booking",
+    benefitFreeAllTime > 0
+      ? `${benefitFreeAllTime} gave no benefit (no allowance used)`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   const csvFilename = useMemo(() => {
     const dateStr = new Date().toISOString().slice(0, 10);
@@ -321,44 +356,30 @@ export function PromoRedemptionsPanel({
         </div>
       ) : null}
 
-      {/* Summary stat tiles — recompute with the active filter. */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      {/*
+        Every tile shows ONE population, and says which (#2299).
+
+        The first four count APPLICATIONS of the code (PromoRedemption rows) and
+        follow the active filter. The last two are the CAP tiles: they count
+        BENEFICIARIES — members whose price actually changed, one per member per
+        booking — are always all-time, and are the only tiles carrying a
+        progress bar, because those are the numbers the caps are enforced
+        against. Mixing the two in one tile is what made "2" sit above "6 of 20"
+        and read as impossible.
+      */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <StatTile
-          title="Total redemptions"
+          title="Applications"
           value={String(totals?.filtered.redemptions ?? 0)}
-          subtitle={
-            caps?.maxRedemptionsTotal != null
-              ? `${totals?.all.redemptions ?? 0} of ${caps.maxRedemptionsTotal} all-time`
-              : filterActive
-                ? `${totals?.all.redemptions ?? 0} all-time`
-                : "No total cap"
-          }
-          progress={
-            caps?.maxRedemptionsTotal != null
-              ? {
-                  current: totals?.all.redemptions ?? 0,
-                  cap: caps.maxRedemptionsTotal,
-                }
-              : null
-          }
+          subtitle={applicationsSubtitle}
         />
         <StatTile
-          title="Unique members"
+          title="Members who applied it"
           value={String(totals?.filtered.uniqueMembers ?? 0)}
           subtitle={
-            caps?.maxUniqueMembersTotal != null
-              ? `${totals?.all.uniqueMembers ?? 0} of ${caps.maxUniqueMembersTotal} all-time`
-              : filterActive
-                ? `${totals?.all.uniqueMembers ?? 0} all-time`
-                : "No unique-member cap"
-          }
-          progress={
-            caps?.maxUniqueMembersTotal != null
-              ? {
-                  current: totals?.all.uniqueMembers ?? 0,
-                  cap: caps.maxUniqueMembersTotal,
-                }
-              : null
+            filterActive
+              ? `${totals?.all.uniqueMembers ?? 0} all-time · bookers, not beneficiaries`
+              : "Bookers, not beneficiaries"
           }
         />
         <StatTile
@@ -381,6 +402,40 @@ export function PromoRedemptionsPanel({
               : filterActive
                 ? `${totals?.all.freeNightsUsed ?? 0} all-time`
                 : "Guest-nights subsidised"
+          }
+        />
+        <StatTile
+          title="Benefits given"
+          value={String(capUsage?.redemptions ?? 0)}
+          subtitle={
+            caps?.maxRedemptionsTotal != null
+              ? `All-time, against a cap of ${caps.maxRedemptionsTotal} · one per member, per booking`
+              : "All-time · one per member, per booking · no total cap"
+          }
+          progress={
+            caps?.maxRedemptionsTotal != null
+              ? {
+                  current: capUsage?.redemptions ?? 0,
+                  cap: caps.maxRedemptionsTotal,
+                }
+              : null
+          }
+        />
+        <StatTile
+          title="Members who benefited"
+          value={String(capUsage?.uniqueMembers ?? 0)}
+          subtitle={
+            caps?.maxUniqueMembersTotal != null
+              ? `All-time distinct beneficiaries, against a cap of ${caps.maxUniqueMembersTotal}`
+              : "All-time distinct beneficiaries · no unique-member cap"
+          }
+          progress={
+            caps?.maxUniqueMembersTotal != null
+              ? {
+                  current: capUsage?.uniqueMembers ?? 0,
+                  cap: caps.maxUniqueMembersTotal,
+                }
+              : null
           }
         />
       </div>
@@ -498,6 +553,14 @@ export function PromoRedemptionsPanel({
                             Use #{row.memberUseIndex}
                           </Badge>
                         ) : null}
+                        {/* The only reliable marker of a benefit-free
+                            application: a $0.00 discount alone is not one
+                            (#2299). */}
+                        {!row.gaveBenefit ? (
+                          <Badge variant="outline" className="mt-1 text-xs">
+                            No benefit
+                          </Badge>
+                        ) : null}
                       </TableCell>
                       <TableCell>
                         <Link
@@ -517,7 +580,17 @@ export function PromoRedemptionsPanel({
                         </div>
                       </TableCell>
                       <TableCell>{row.eligibleGuestCount ?? "-"}</TableCell>
-                      <TableCell>{formatCents(row.discountCents)}</TableCell>
+                      <TableCell>
+                        {formatCents(row.discountCents)}
+                        {/* A fixed nightly price ABOVE the guest's normal rate
+                            raises the price: a real use with no discount, so
+                            it must not be mistaken for a benefit-free row. */}
+                        {row.priceAdjustmentCents > 0 ? (
+                          <div className="text-xs text-muted-foreground">
+                            +{formatCents(row.priceAdjustmentCents)} price
+                          </div>
+                        ) : null}
+                      </TableCell>
                       <TableCell>{row.freeNightsUsed}</TableCell>
                     </TableRow>
                     {canExpand && isOpen ? (

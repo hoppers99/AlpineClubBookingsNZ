@@ -1284,9 +1284,27 @@ to those overlapping the original range (no cascade).
 
 On the admin allocation board, dragging or menu-moving the first visible
 allocated night for a guest reassigns that guest's visible allocated nights to
-the target bed while preserving each date-only lodge night. Later-night moves
-remain single-night adjustments. The board's "Run Auto Allocation" uses the
-same whole-stay planner without displacement, and the board raises a
+the target bed while preserving each date-only lodge night. The hovered date
+column never changes an existing allocation's night: pointer preview and
+keyboard announcement name the destination bed plus the snapped original
+night(s). Later-night moves remain single-night adjustments, same-bed drops are
+no-ops with no request or audit, and cancel sends no request.
+
+The existing-allocation move endpoint accepts allocation ids plus a destination
+bed, never a target date. It resolves only the destination's immutable lodge key
+before the transaction, then takes global booking `lock(1)` followed by that
+lodge's capacity lock and re-reads the source rows, original dates,
+guest/booking state, active destination room/bed, custodian holds and sharing
+state under both. Cancellation prunes allocations under the same global key, so
+either the move finishes first or the post-cancel move sees no source row and
+cannot resurrect it. A first-chip multi-night move is all-or-nothing: one
+conflict rolls back every row, partner promotion and audit entry. Successful
+row changes, shared-double promotions and their causally attributed audit
+records commit in that same transaction. Bucket-to-board bulk placement keeps
+its older per-night conflict semantics.
+
+The board's "Run Auto Allocation" uses the same whole-stay planner without
+displacement, and the board raises a
 stay-level `ROOM_SWITCH` warning when a booking's rooms change between nights,
 plus a `MINOR_ADULT_MIX` warning on any persisted room-night that mixes one
 booking's minors with another booking's adults (#1768).
@@ -1644,6 +1662,40 @@ allowed but cannot be self-approved — including one raised from the profile
 panel, where the requester is recorded as the member themselves. See
 [`DOMAIN_INVARIANTS.md`](DOMAIN_INVARIANTS.md#membership-lifecycle) and
 [`CANCELLATIONS.md`](CANCELLATIONS.md#who-can-be-cancelled).
+
+Approval blockers (#2392): `loadMembershipCancellationBlockersByMemberId` is the
+single entry point for "why can this not be approved yet", and it now answers in
+two parts — future owned bookings / guest appearances (local), and unpaid Xero
+invoices on the member's contact. The invoice half runs only when
+`xeroArchiveContactsOnCancellation` is on AND the member has a linked
+`xeroContactId`, because those are exactly the conditions under which approval
+archives a Xero contact; otherwise no Xero call is made. That setting is read
+through `loadMembershipCancellationSettingsStrict`, so a failed read is an
+unknown (the check runs) rather than a silent "off" (the check is skipped) —
+the ordinary loader degrades to defaults whose archive flag is false. "Unpaid" means
+AUTHORISED or SUBMITTED with `AmountDue > 0` (the finance dashboard's own open-
+invoice definition), across ACCREC and ACCPAY, minus the member's current-season
+subscription invoice when the approval is itself about to credit it — mirroring
+`queueApprovedMembershipCancellationXeroOperations`, which would otherwise
+deadlock the ordinary unpaid-subscription cancellation. If Xero cannot be
+reached the check FAILS CLOSED: the participant gets an
+`invoice_check_unavailable` blocker (`disconnected` / `rate_limited` /
+`unavailable` / `invalid_request` / `too_many_invoices`) and the approval is
+refused, because an unknown answer is not "nothing owing". `invalid_request`
+(Xero 400/404 — usually a contact merged or deleted there) and
+`too_many_invoices` are the NON-transient ones and are worded as such; every
+failure message names the archive-setting escape hatch. Contact ids are chunked
+40 to a `getInvoices` call, and hitting the `MAX_INVOICE_PAGES` cap raises
+`too_many_invoices` for the batch rather than returning a truncated list — Xero
+orders a batched read `DueDate ASC` across all its contacts, so a truncated
+result could otherwise leave a quiet contact looking clear. The review queue
+reads through a 60s in-process memo; the approval guard always passes
+`freshInvoiceCheck` so a decision is never taken on a cached answer, and
+failures are never memoised. Because the archive is an outbox operation drained
+later, `syncXeroMembershipCancellationContact` re-runs the same check `fresh`
+immediately before archiving and DEFERS (fails for retry, like the credit-note
+guard) if anything is owing. See
+[`CANCELLATIONS.md`](CANCELLATIONS.md#unpaid-invoices-block-approval).
 
 To verify: financial blockers, future booking blockers, family cleanup, Xero
 group/archive behavior, and email visibility.

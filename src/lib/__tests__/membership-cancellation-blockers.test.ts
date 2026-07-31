@@ -1,4 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({
+  loadInvoiceBlockers: vi.fn(),
+}));
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
@@ -7,10 +11,24 @@ vi.mock("@/lib/prisma", () => ({
   },
 }));
 
+// #2392: the unpaid-invoice half is exercised in its own suite; here it is
+// stubbed so these tests stay about the booking half and the merge.
+vi.mock("@/lib/membership-cancellation-invoice-blockers", () => ({
+  loadMembershipCancellationInvoiceBlockersByMemberId: mocks.loadInvoiceBlockers,
+}));
+
 import {
   loadMembershipCancellationBlockersByMemberId,
   type MembershipCancellationBlockerClient,
 } from "@/lib/membership-cancellation-blockers";
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.loadInvoiceBlockers.mockImplementation(
+    async (memberIds: readonly string[]) =>
+      new Map(memberIds.map((memberId) => [memberId, []])),
+  );
+});
 
 describe("membership cancellation blockers", () => {
   it("loads future owned bookings and guest appearances by member", async () => {
@@ -84,5 +102,79 @@ describe("membership cancellation blockers", () => {
       },
     ]);
     expect(blockers.get("member-2")).toEqual([]);
+  });
+
+  it("merges unpaid Xero invoices in after the booking blockers", async () => {
+    const db = {
+      booking: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "booking-1",
+            memberId: "member-1",
+            checkIn: new Date("2099-01-01T00:00:00.000Z"),
+            checkOut: new Date("2099-01-03T00:00:00.000Z"),
+            status: "PAID",
+          },
+        ]),
+      },
+      bookingGuest: { findMany: vi.fn().mockResolvedValue([]) },
+    } as unknown as MembershipCancellationBlockerClient;
+    mocks.loadInvoiceBlockers.mockResolvedValue(
+      new Map([
+        [
+          "member-1",
+          [
+            {
+              type: "unpaid_invoice",
+              invoiceId: "inv-1",
+              invoiceNumber: "INV-0042",
+              invoiceStatus: "AUTHORISED",
+              direction: "receivable",
+              amountDueCents: 12050,
+              currency: "NZD",
+              dueDate: "2026-06-30",
+              xeroUrl: null,
+            },
+          ],
+        ],
+      ]),
+    );
+
+    const blockers = await loadMembershipCancellationBlockersByMemberId(
+      ["member-1"],
+      db,
+    );
+
+    expect(blockers.get("member-1")?.map((blocker) => blocker.type)).toEqual([
+      "owned_booking",
+      "unpaid_invoice",
+    ]);
+  });
+
+  it("passes the caller's fresh-check choice through to the invoice loader", async () => {
+    const db = {
+      booking: { findMany: vi.fn().mockResolvedValue([]) },
+      bookingGuest: { findMany: vi.fn().mockResolvedValue([]) },
+    } as unknown as MembershipCancellationBlockerClient;
+
+    await loadMembershipCancellationBlockersByMemberId(["member-1"], db, {
+      freshInvoiceCheck: true,
+    });
+
+    expect(mocks.loadInvoiceBlockers).toHaveBeenCalledWith(["member-1"], {
+      fresh: true,
+    });
+  });
+
+  it("asks Xero nothing when there are no members to check", async () => {
+    const db = {
+      booking: { findMany: vi.fn() },
+      bookingGuest: { findMany: vi.fn() },
+    } as unknown as MembershipCancellationBlockerClient;
+
+    const blockers = await loadMembershipCancellationBlockersByMemberId([], db);
+
+    expect(blockers.size).toBe(0);
+    expect(mocks.loadInvoiceBlockers).not.toHaveBeenCalled();
   });
 });
