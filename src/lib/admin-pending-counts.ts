@@ -17,6 +17,8 @@ export type AdminPendingCounts = {
   familyRequests: number;
   memberApplications: number;
   refundAppeals: number;
+  /** B5 (#2262): open hand-back tasks for cancelled cash-settled bookings. */
+  manualRefundTasks: number;
   creditApprovals: number;
   bookingReviews: number;
   bookingChangeRequests: number;
@@ -36,6 +38,7 @@ export type AdminPendingCounts = {
  *
  * ponytail: each count mirrors the where-clause of its queue route/service
  * (family-groups/requests, member-applications, refund-requests,
+ * manual refund tasks (#2262, the cash hand-back queue),
  * credit-approvals, booking-reviews, booking-change-requests,
  * booking-requests, unpaid-finished-stays and unsettled finished-stay
  * additions (shared helpers with the dashboard cards, #1709/#1731/#1723),
@@ -50,6 +53,7 @@ export async function getAdminPendingCounts(): Promise<AdminPendingCounts> {
     familyRequests,
     memberApplications,
     refundAppeals,
+    manualRefundTasks,
     creditApprovals,
     bookingReviews,
     bookingChangeRequests,
@@ -68,6 +72,7 @@ export async function getAdminPendingCounts(): Promise<AdminPendingCounts> {
     }),
     prisma.memberApplication.count({ where: { status: "PENDING_ADMIN" } }),
     prisma.refundRequest.count({ where: { status: "PENDING" } }),
+    prisma.manualRefundTask.count({ where: { status: "OPEN" } }),
     prisma.adminCreditAdjustmentRequest.count({ where: { status: "PENDING" } }),
     prisma.booking.count({
       where: { deletedAt: null, adminReviewStatus: "PENDING" },
@@ -94,6 +99,7 @@ export async function getAdminPendingCounts(): Promise<AdminPendingCounts> {
     familyRequests,
     memberApplications,
     refundAppeals,
+    manualRefundTasks,
     creditApprovals,
     bookingReviews,
     bookingChangeRequests,

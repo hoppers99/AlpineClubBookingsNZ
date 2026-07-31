@@ -680,6 +680,10 @@ model Member {
   noticesUpdated                             Notice[]                                   @relation("NoticeUpdatedBy")
   noticeAudienceTargets                      NoticeAudience[]                           @relation("NoticeAudienceMember")
   noticeReadReceipts                         NoticeReadReceipt[]                        @relation("NoticeReadReceiptMember")
+  // B5 (#2262): actor back-refs for manual booking-payment settlement and for
+  // completing/dismissing the manual-refund tasks a cash cancellation raises.
+  paymentsManuallyMarkedPaid                 Payment[]                                  @relation("PaymentManualPaidBy")
+  manualRefundTasksCompleted                 ManualRefundTask[]                         @relation("ManualRefundTaskCompletedBy")
 
   // Member profile photo (MP1). Outbound scalar FK, so it is part of the
   // additive master-wins field merge (not a re-pointed inbound relation); the
@@ -1745,6 +1749,8 @@ model Booking {
   creditsApplied              MemberCredit[]                  @relation("CreditApplied")
   refundRequests              RefundRequest[]
   paymentRecoveryOperations   PaymentRecoveryOperation[]
+  // B5 (#2262): hand-back tasks raised when a cash-settled booking is cancelled.
+  manualRefundTasks           ManualRefundTask[]
   bedAllocations              BedAllocation[]
   // Present when this booking was created from a public BookingRequest.
   originBookingRequest        BookingRequest?                 @relation("BookingRequestConvertedBooking")
@@ -2483,14 +2489,34 @@ model Payment {
   internetBankingHoldSlots      Boolean       @default(false)
   internetBankingHoldUntil      DateTime?
   internetBankingHoldReleasedAt DateTime?
+  // B5 (#2262): manual mark-paid provenance for cash / off-Xero bank transfers,
+  // mirroring MemberSubscription's #1944 columns. Written together by the
+  // finance:edit mark-paid endpoint when an admin records a settlement the app
+  // never saw, and cleared together on reversal. The row itself settles as an
+  // ordinary PaymentSource.INTERNET_BANKING payment (no new enum member), so
+  // "is this manual?" is keyed on `manuallyMarkedPaidAt IS NOT NULL` ALONE —
+  // never on the source, and never conjoined with "has no Xero id". Two
+  // stampers that run outside the cash-settle loop (syncLinkedPaymentInvoiceMetadata
+  // and the zero-cash arm of invoice-paid-effects) can legitimately stamp a
+  // Xero id onto a manual row, and a later-stamped id must not launder the
+  // row's manual provenance away from the fences that depend on it.
+  manuallyMarkedPaidAt             DateTime?
+  manuallyMarkedPaidByMemberId     String?
+  manualPaymentNote                String?        @db.VarChar(500)
+  // The booking's status at the moment of the manual settle, consumed only by
+  // the reversal so it can restore what it replaced. Lives on Payment so all
+  // manual provenance is written and cleared as one unit.
+  manuallyMarkedPaidPreviousStatus BookingStatus?
   createdAt                     DateTime      @default(now())
   updatedAt                     DateTime      @updatedAt
 
   // Relations
-  booking            Booking                    @relation(fields: [bookingId], references: [id], onDelete: Restrict)
-  transactions       PaymentTransaction[]
-  refunds            PaymentRefund[]
-  recoveryOperations PaymentRecoveryOperation[]
+  booking              Booking                    @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  transactions         PaymentTransaction[]
+  refunds              PaymentRefund[]
+  recoveryOperations   PaymentRecoveryOperation[]
+  manuallyMarkedPaidBy Member?                    @relation("PaymentManualPaidBy", fields: [manuallyMarkedPaidByMemberId], references: [id], onDelete: SetNull)
+  manualRefundTasks    ManualRefundTask[]
 
   @@index([bookingId])
   @@index([source, status, createdAt])
@@ -2498,6 +2524,46 @@ model Payment {
   @@index([stripePaymentIntentId])
   @@index([additionalPaymentIntentId])
   @@index([status, createdAt])
+  @@index([manuallyMarkedPaidByMemberId])
+}
+
+// B5 (#2262): a cash / off-Xero settlement that has to be handed back by hand.
+//
+// Deliberately NOT a RefundRequest: approving one of those EXECUTES a Stripe
+// refund against whatever the ledger shows Stripe-refundable, which for a cash
+// settlement is $0 — the exact silent-$0-refund hazard this feature must avoid.
+// Deliberately NOT a PaymentRecoveryOperation type either: the recovery cron
+// dispatches on that enum and its final arm is an unconditional fall-through to
+// the superseded-refund processor, so a PENDING row of a new type would be
+// EXECUTED as a Stripe refund. A task a cron must never execute does not belong
+// in a cron-executed table.
+enum ManualRefundTaskStatus {
+  OPEN
+  COMPLETED
+  DISMISSED
+}
+
+model ManualRefundTask {
+  id                  String                 @id @default(cuid())
+  bookingId           String
+  paymentId           String
+  amountCents         Int
+  reason              String                 @db.VarChar(500)
+  status              ManualRefundTaskStatus @default(OPEN)
+  completedByMemberId String?
+  completedAt         DateTime?
+  note                String?                @db.VarChar(500)
+  createdAt           DateTime               @default(now())
+  updatedAt           DateTime               @updatedAt
+
+  booking     Booking  @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  payment     Payment  @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  completedBy Member?  @relation("ManualRefundTaskCompletedBy", fields: [completedByMemberId], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@index([bookingId])
+  @@index([paymentId])
+  @@index([completedByMemberId])
 }
 
 model PaymentTransaction {

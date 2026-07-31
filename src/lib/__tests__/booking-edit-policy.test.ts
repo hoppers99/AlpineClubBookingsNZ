@@ -12,7 +12,8 @@ describe("booking edit policy", () => {
     expect(canModifyBookingStatusForRole("CONFIRMED", "MEMBER")).toBe(true);
     expect(canModifyBookingStatusForRole("PAID", "MEMBER")).toBe(true);
     expect(canModifyBookingStatusForRole("COMPLETED", "MEMBER")).toBe(true);
-    expect(canModifyBookingStatusForRole("DRAFT", "MEMBER")).toBe(false);
+    // #2266: members may edit their OWN drafts — the dashboard Resume journey.
+    expect(canModifyBookingStatusForRole("DRAFT", "MEMBER")).toBe(true);
     expect(canModifyBookingStatusForRole("WAITLISTED", "MEMBER")).toBe(false);
   });
 

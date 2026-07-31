@@ -188,39 +188,75 @@ function ledgerRow(overrides: Partial<LedgerRow> & { id: string }): LedgerRow {
 }
 
 /**
+ * True once the duplicate-capture candidate query has actually MATCHED a
+ * sibling row. The `already_paid` guard tests assert this, so a mock that
+ * silently stopped understanding the predicate shape would fail them loudly
+ * instead of making them pass for the wrong reason.
+ */
+let reachedSibling = false;
+
+/**
  * Drive both ledger lookups from one transaction list so the tests exercise
  * the REAL where-clause semantics of the duplicate-capture predicate:
  * `findFirst` honours kind/source/status filters and the arriving-intent
  * exclusion; `findPaymentTransactionByIntentId` resolves by intent id.
  */
 function primeLedger(transactions: LedgerRow[]) {
+  // #2262 widened the predicate to an OR: the STRIPE arm keeps the
+  // arriving-intent + superseded exclusions, and a second arm matches ANY
+  // settled non-Stripe PRIMARY row (a cash settlement, or a Xero-inbound
+  // internet-banking one). The mock interprets that shape rather than the old
+  // flat one; interpreting only the old shape would make the `already_paid`
+  // guard tests pass VACUOUSLY (no sibling would ever be returned), which is
+  // why reachedSibling below is asserted by those tests.
   mocks.paymentTransactionFindFirst.mockImplementation(
     async (args: {
       where: {
         kind: PaymentTransactionKind;
-        source: PaymentSource;
         status: { in: PaymentStatus[] };
-        stripePaymentIntentId: { not: string; notIn: string[] };
+        OR: Array<{
+          source?: PaymentSource | { not: PaymentSource };
+          stripePaymentIntentId?: { not: string; notIn: string[] };
+        }>;
       };
     }) => {
       const { where } = args;
-      return (
+      const matchesArm = (
+        transaction: LedgerRow,
+        arm: {
+          source?: PaymentSource | { not: PaymentSource };
+          stripePaymentIntentId?: { not: string; notIn: string[] };
+        }
+      ) => {
+        if (typeof arm.source === "string") {
+          if (transaction.source !== arm.source) return false;
+        } else if (arm.source && "not" in arm.source) {
+          if (transaction.source === arm.source.not) return false;
+        }
+        if (arm.stripePaymentIntentId) {
+          if (transaction.stripePaymentIntentId === null) return false;
+          if (transaction.stripePaymentIntentId === arm.stripePaymentIntentId.not) {
+            return false;
+          }
+          if (
+            arm.stripePaymentIntentId.notIn.includes(
+              transaction.stripePaymentIntentId
+            )
+          ) {
+            return false;
+          }
+        }
+        return true;
+      };
+      const match =
         transactions.find(
           (transaction) =>
             transaction.kind === where.kind &&
-            transaction.source === where.source &&
             where.status.in.includes(transaction.status) &&
-            transaction.stripePaymentIntentId !== null &&
-            transaction.stripePaymentIntentId !==
-              where.stripePaymentIntentId.not &&
-            // #1992 superseded-handoff exclusion (guard b′): intents whose
-            // money a live superseded-machinery operation owns are excluded
-            // from the candidate set.
-            !where.stripePaymentIntentId.notIn.includes(
-              transaction.stripePaymentIntentId
-            )
-        ) ?? null
-      );
+            where.OR.some((arm) => matchesArm(transaction, arm))
+        ) ?? null;
+      if (match) reachedSibling = true;
+      return match;
     }
   );
   mocks.findPaymentTransactionByIntentId.mockImplementation(
@@ -302,6 +338,7 @@ function makePaidBooking() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  reachedSibling = false;
   mocks.transaction.mockImplementation(
     async (fn: (store: typeof tx) => Promise<unknown>) => fn(tx)
   );
@@ -559,12 +596,23 @@ describe("#1992 duplicate-capture auto-refund", () => {
         where: {
           paymentId: "payment-1",
           kind: PaymentTransactionKind.PRIMARY,
-          source: PaymentSource.STRIPE,
           status: {
             in: [PaymentStatus.SUCCEEDED, PaymentStatus.PARTIALLY_REFUNDED],
           },
-          stripePaymentIntentId: { not: DUPLICATE_PI, notIn: [] },
-          NOT: { stripePaymentIntentId: null },
+          // #2262 guard 3: ANY settled PRIMARY row counts as the sibling. The
+          // STRIPE arm keeps the arriving-intent and superseded exclusions; the
+          // non-Stripe arm needs no arriving-row exclusion because
+          // upsertPaymentIntentTransaction hardcodes source STRIPE on both its
+          // create and update arms (pinned by its own test), so the row this
+          // settlement just wrote can never match it.
+          OR: [
+            {
+              source: PaymentSource.STRIPE,
+              stripePaymentIntentId: { not: DUPLICATE_PI, notIn: [] },
+              NOT: { stripePaymentIntentId: null },
+            },
+            { source: { not: PaymentSource.STRIPE } },
+          ],
         },
       })
     );
@@ -914,6 +962,27 @@ describe("#1992 duplicate-capture auto-refund", () => {
         1
       );
       expect(mocks.refundPaymentTransactions).toHaveBeenCalledTimes(1);
+      // #2262 non-vacuity control for the guard tests above: with the SAME
+      // ledger and the SAME (rewritten) predicate mock, a sibling IS matched
+      // once no live superseded operation owns it. So the already_paid
+      // outcomes above come from the guards doing their job, not from a mock
+      // that quietly stopped understanding the where-clause shape.
+      expect(reachedSibling).toBe(true);
+    });
+
+    it("#2262 non-vacuity: the same handoff ledger DOES match a sibling once no live superseded operation owns the candidate", async () => {
+      primeHandoffLedger();
+      primeRecoveryOperations([]);
+
+      const result = await markBookingPaymentSucceeded({
+        bookingId: "booking-1",
+        paymentIntentId: SETTLEMENT_PI,
+        amountCents: 10000,
+        paymentMethodId: "pm_1",
+      });
+
+      expect(reachedSibling).toBe(true);
+      expect(result.outcome).toBe("duplicate_capture_refunded");
     });
   });
 

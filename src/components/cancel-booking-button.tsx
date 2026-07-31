@@ -23,6 +23,12 @@ interface CancelPreview {
   creditRestoredCents: number;
   totalPaidCents: number;
   hasPayment: boolean;
+  /**
+   * B5 (#2262): this booking was settled in cash / by an off-Xero bank transfer,
+   * so there is no card payment to reverse and no account credit is minted —
+   * the club hands the refund back directly. The figures are unchanged.
+   */
+  manualRefund?: boolean;
 }
 
 function formatDollars(cents: number): string {
@@ -184,7 +190,17 @@ export function CancelBookingButton({
             {formatDollars(result.creditRestoredCents)} of previously applied credit has been returned to {onBehalfOfMember ? "the member's" : "your"} account.
           </p>
         )}
-        {refund > 0 && isCredit ? (
+        {/* B5 (#2262): a manual (cash / off-Xero) settlement has no card to
+            refund to and mints no account credit — the club hands the money
+            back directly. The plan-forbidden sentence ("processed to your
+            original payment method") must never render for this outcome. */}
+        {refund > 0 && result?.refundMethod === "manual" ? (
+          <p className="text-sm text-success-11">
+            {onBehalfOfMember
+              ? `The club will arrange the member's refund of ${formatDollars(refund)} directly — they'll hear from the club about how it will be paid back.`
+              : `The club will arrange your refund of ${formatDollars(refund)} directly — you'll hear from them about how it will be paid back.`}
+          </p>
+        ) : refund > 0 && isCredit ? (
           <p className="text-sm text-success-11">
             A credit of {formatDollars(refund)} has been added to {onBehalfOfMember ? "the member's" : "your"} account for future bookings.
           </p>
@@ -288,7 +304,18 @@ export function CancelBookingButton({
             {/* Refund method selection — only meaningful when a card/bank slice
                 can be refunded. A credit-only cancel (#1164) has no card slice,
                 so the radios are hidden and only the restored-credit row shows. */}
-            {hasCardRefund && (
+            {preview.manualRefund && hasCardRefund && (
+              <p className="text-sm text-muted-foreground">
+                This booking was paid in cash or by bank transfer, so there is no
+                card payment to reverse and no account credit is added. The club
+                will arrange{" "}
+                <span className="font-medium text-success-11">
+                  {formatDollars(preview.creditRefundAmountCents)}
+                </span>{" "}
+                back to {onBehalfOfMember ? "the member" : "you"} directly.
+              </p>
+            )}
+            {!preview.manualRefund && hasCardRefund && (
               <div className="space-y-2">
                 <p className="font-medium text-muted-foreground">Choose refund method:</p>
                 <label className="flex items-start gap-2 cursor-pointer">
@@ -331,9 +358,38 @@ export function CancelBookingButton({
               </div>
             )}
 
-            {/* Amount summary */}
+            {/* Amount summary.
+                B5 (#2262): a manual settlement's outcome uses the bank-
+                transfer/credit TIER (that is what the executed cancel raises
+                the hand-back task at), so the summary must show that figure —
+                never the card-tier "Refund to card" row, which would disagree
+                with the paragraph above and with what the club will actually
+                hand back. */}
             <div className="border-t border-danger-6 pt-2 space-y-1">
-              {hasCardRefund && (
+              {hasCardRefund && preview.manualRefund && (
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">
+                    Refund arranged by the club:
+                  </span>
+                  <span className="font-medium text-success-11">
+                    {formatDollars(preview.creditRefundAmountCents)}
+                  </span>
+                </div>
+              )}
+              {preview.manualRefund &&
+                preview.totalPaidCents - preview.creditRefundAmountCents > 0 && (
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">
+                      Amount kept ({preview.creditRefundPercentage}% refund):
+                    </span>
+                    <span className="font-medium text-muted-foreground">
+                      {formatDollars(
+                        preview.totalPaidCents - preview.creditRefundAmountCents
+                      )}
+                    </span>
+                  </div>
+                )}
+              {hasCardRefund && !preview.manualRefund && (
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">
                     {refundMethod === "credit" ? "Credit to account:" : "Refund to card:"}
@@ -347,14 +403,16 @@ export function CancelBookingButton({
                   </span>
                 </div>
               )}
-              {preview.keptAmountCents > 0 && refundMethod === "card" && (
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">
-                    Amount kept ({preview.refundPercentage}% refund):
-                  </span>
-                  <span className="font-medium text-muted-foreground">{formatDollars(preview.keptAmountCents)}</span>
-                </div>
-              )}
+              {preview.keptAmountCents > 0 &&
+                refundMethod === "card" &&
+                !preview.manualRefund && (
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">
+                      Amount kept ({preview.refundPercentage}% refund):
+                    </span>
+                    <span className="font-medium text-muted-foreground">{formatDollars(preview.keptAmountCents)}</span>
+                  </div>
+                )}
               {refundAppealDescription ? (
                 <p className="pt-2 text-xs text-muted-foreground">
                   {refundAppealDescription}

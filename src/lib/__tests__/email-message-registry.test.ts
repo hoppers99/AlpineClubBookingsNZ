@@ -47,6 +47,10 @@ describe("email message registry", () => {
   });
 
   it("has editor-safe defaults for every registered template", () => {
+    // Kept for the checks that are NOT circular — raw HTML, unsafe links,
+    // subject line breaks, sensitive subject tokens. The token half of this
+    // assertion never had teeth on a default (see the #2268 guards below):
+    // `allowedTokens` is scraped out of the default body it validates.
     const invalidDefinitions = EMAIL_TEMPLATE_DEFINITIONS.flatMap((definition) => {
       const validation = validateEmailTemplateContent({
         templateName: definition.key,
@@ -445,4 +449,128 @@ describe("render path for newly-registered action-link templates (#1797)", () =>
       expect(rendered).not.toMatch(/\{\{[^{}]+\}\}/);
     },
   );
+});
+
+// #2320 review (MED-1): the sweep cleaned the SHIPPED defaults, but a club's
+// saved override authored from the old editor text still carries the
+// "[only when …]" junk. The save-time validator now runs guard 1's detector,
+// BLOCKING the save (the same severity as an unknown token — every other
+// contract violation blocks, and a warn would let the same literal text keep
+// reaching members).
+describe("#2320 review — bracket annotations are refused at save time", () => {
+  it("blocks a body that still carries an [only when ...] authoring note", () => {
+    const validation = validateEmailTemplateContent({
+      templateName: "pre-arrival-reminder",
+      subject: "Pre-arrival Information",
+      bodyText:
+        "Hi {{firstName}}.\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\nDoor code: {{doorCode}} [only when a door code is set]",
+    });
+
+    expect(validation.valid).toBe(false);
+    expect(validation.bracketAnnotations).toEqual([
+      "[only when a door code is set]",
+    ]);
+    const issue = validation.issues.find(
+      (candidate) => candidate.code === "bracket_annotation",
+    );
+    expect(issue?.field).toBe("bodyText");
+    expect(issue?.message).toContain("word for word");
+  });
+
+  it("blocks a subject annotation and reports the field", () => {
+    const validation = validateEmailTemplateContent({
+      templateName: "pre-arrival-reminder",
+      subject: "Pre-arrival Information [only when confirmed]",
+      bodyText:
+        "Hi {{firstName}}.\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\n{{doorCodeNote}}",
+    });
+
+    expect(validation.valid).toBe(false);
+    expect(validation.bracketAnnotations).toEqual(["[only when confirmed]"]);
+    expect(
+      validation.issues.find(
+        (candidate) => candidate.code === "bracket_annotation",
+      )?.field,
+    ).toBe("subject");
+  });
+
+  it("keeps a clean override valid with an empty annotations list", () => {
+    const validation = validateEmailTemplateContent({
+      templateName: "pre-arrival-reminder",
+      subject: "Pre-arrival Information",
+      bodyText:
+        "Hi {{firstName}}.\n\n{{CLUB_LODGE_TRAVEL_NOTE}}\n\n{{doorCodeNote}}",
+    });
+
+    expect(validation.valid).toBe(true);
+    expect(validation.bracketAnnotations).toEqual([]);
+  });
+});
+
+// #2320 review (LOW-7): the composed chore-roster line CARRIES the 48-hour
+// bearer link, so it must be subject-forbidden exactly like the bare
+// {{choreLink}} value ({{doorCodeNote}} precedent).
+describe("#2320 review — {{choreLinkNote}} is subject-sensitive", () => {
+  it("classifies the composed line like the bare link it carries", () => {
+    expect(SENSITIVE_EMAIL_SUBJECT_TOKEN_SET.has("choreLinkNote")).toBe(true);
+  });
+
+  it("rejects it in a chore-roster subject line", () => {
+    const definition = getEmailTemplateDefinition("chore-roster");
+    if (!definition) throw new Error("missing chore-roster");
+
+    const validation = validateEmailTemplateContent({
+      templateName: "chore-roster",
+      subject: "Chores {{choreLinkNote}}",
+      bodyText: definition.defaultBody,
+    });
+
+    expect(validation.valid).toBe(false);
+    expect(validation.sensitiveSubjectTokens).toEqual(["choreLinkNote"]);
+  });
+});
+
+// #2320 review (LOW-4): the editor preview is the admin's only picture of what
+// a recipient reads, so a per-template sample must match what that template's
+// SENDER actually composes — not the global fallthrough for the token name.
+describe("#2320 review — per-template preview samples match the real sends", () => {
+  it("previews the CANCELLED lead paragraph on the terminal split alert", () => {
+    const cancelled = getEmailTemplateDefinition(
+      "admin-split-settlement-cancelled",
+    );
+    if (!cancelled) throw new Error("missing admin-split-settlement-cancelled");
+    // The cancelled story, not the recurring unpaid alert's ("hold extended")
+    // paragraph that used to sit self-contradictingly under this heading.
+    expect(cancelled.sampleData.settlementActionNote).toContain(
+      "has now been automatically cancelled",
+    );
+    expect(cancelled.sampleData.settlementActionNote).not.toContain(
+      "hold has been extended",
+    );
+
+    // The recurring alert keeps the unpaid paragraph.
+    const unpaid = getEmailTemplateDefinition("admin-split-settlement-unpaid");
+    if (!unpaid) throw new Error("missing admin-split-settlement-unpaid");
+    expect(unpaid.sampleData.settlementActionNote).toContain(
+      "hold has been extended",
+    );
+  });
+
+  it("previews the labels the booking-review senders really compose", () => {
+    // src/lib/email/booking.ts composes "Note from admin:" on approval and
+    // "Reason from admin:" on rejection; the refund-appeal templates keep the
+    // global "Notes:" sample because their sender really writes "Notes:".
+    expect(
+      getEmailTemplateDefinition("booking-review-approved")?.sampleData
+        .adminNotesLine,
+    ).toMatch(/^Note from admin: /);
+    expect(
+      getEmailTemplateDefinition("booking-review-rejected")?.sampleData
+        .adminNotesLine,
+    ).toMatch(/^Reason from admin: /);
+    expect(
+      getEmailTemplateDefinition("refund-request-approved")?.sampleData
+        .adminNotesLine,
+    ).toMatch(/^Notes: /);
+  });
 });

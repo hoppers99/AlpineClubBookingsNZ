@@ -20,6 +20,132 @@ All notable public reference-release changes should be recorded here.
   The records are explicit Admin Overrides with no invented signers, sign-offs,
   emails, or hut-leader eligibility; an identical rerun is a no-op. The new
   operator runbook documents rehearsal, review, verification, and recovery.
+- **A booking paid in cash — or by a bank transfer that never reached Xero —
+  can now be recorded as paid, properly (#2262).** Open the booking, and under
+  **Admin tools** you will find **Cash / off-Xero payment**: it shows the exact
+  amount owing after any account credit, takes a note for the club's records,
+  and asks whether the member should get the usual booking confirmation. The
+  booking then becomes Paid and claims its beds exactly as a card payment does —
+  it runs through the same locking, the same capacity check and the same ledger
+  writes, so a bed can never be admitted into a full lodge on the strength of a
+  manual click. Nothing is sent to Xero: no invoice is created, and none is
+  emailed to the member for money the club already holds. It is refused, with
+  the reason shown, when the booking already has a Xero invoice or has one
+  queued (record the payment against that invoice in Xero instead), when it was
+  settled as part of a group booking, when there is nothing owing, when the
+  booking no longer fits the lodge, or when the amount changed while your screen
+  was open. Recorded it against the wrong booking? **Reverse manual payment**
+  puts it back to unpaid without cancelling it, while nothing has happened since
+  that could not be undone. And if Xero later reports that booking's invoice as
+  paid anyway, the club now gets an alert saying the two records disagree,
+  instead of the second payment vanishing silently. Cancelling a cash-settled
+  booking raises a **Refunds to pay back by hand** task on the Payments page
+  rather than pretending a card refund happened: the member is told the club
+  will arrange their refund, and the ledger records it at the moment an admin
+  marks it paid back. And if the member had saved a choice to put account
+  credit towards the booking that was never applied, recording the cash does
+  not quietly spend or discard it: the saved choice is cleared, the booking's
+  history tells the member their credit was not used and their balance was not
+  reduced, and the club is alerted. The dialog warns you about that saved choice
+  BEFORE you record anything, so it is never a surprise, and the confirmation on
+  screen repeats it afterwards. Reversing the payment puts the saved choice back
+  on the booking, so the member can still spend their credit when the booking is
+  paid properly. Everywhere those figures are quoted — to the member and to the
+  club, on this door and on the card and Xero ones — they are now the member's
+  LIVE credit balance rather than the amount they once elected, so nobody is
+  invited to refund more than the account actually holds. Recording, reversing
+  and closing all need finance edit access and are written to the audit log with
+  your name.
+- **Emails no longer print the wording notes their authors left behind, or a
+  label with nothing after it (#2268).** Thirty-three built-in email templates
+  carried instructions to whoever might edit them — `[only when a door code is
+  set]`, `[only when reason exists]`, and a whole alternative paragraph on four
+  of them — written as ordinary body text. The email engine has no way to act on
+  such a note: it substitutes tokens and does nothing else. Because the admin
+  email editor pre-fills its box with that built-in wording and saves whatever it
+  is given, any club that had customised one of these templates was sending the
+  notes to members and admins verbatim. The shipped built-in wording is now all
+  clean; a customisation a club saved from the old text still carries its notes,
+  so those overrides are now flagged by name on the Email Messages page and can
+  no longer be re-saved until the bracketed text is removed. Deleting the notes
+  alone would have swapped one defect for another — a lodge with no door code
+  would have received a bare `Door code:`, an appeal with no figure a bare
+  `Requested:` — so every optional line is now built in full by the code that
+  sends it, or left out entirely: twenty such lines across thirty-one templates,
+  each with its own token an operator can place in an override. Four templates
+  were stating something that was sometimes simply untrue, and those are the ones
+  that mattered most: an admin alert said a duplicate card charge had been
+  refunded in full even when the refund had failed and only a retry was queued;
+  another said a payment link had been emailed to a member when none had been
+  sent; a third said a member's own booking was settled and unaffected when it
+  was not; and members whose guests' provisional place was cancelled were told
+  "your own booking is unaffected and remains confirmed" even when it was not.
+  Each now tells the true story on both outcomes, built from the same code as the
+  designed HTML version so the two can never drift apart. Alongside that, a
+  refund-appeal alert that read `Paid: $$300.00` loses its doubled dollar sign,
+  two Xero diagnostic links that appeared as unclickable labels became real
+  links, a school-group reminder can no longer begin `'s stay at …` when no
+  school name is on file, and an "Account Credit Applied" template that was
+  editable but had never been wired to send anything is removed from the editor.
+  Every original token stays valid, so a club's existing customisations keep
+  rendering and keep saving. Finally, the check that was supposed to catch all of
+  this is replaced: it had been comparing each built-in template against a list
+  of allowed tokens built from that same template, so it could never fail. Five
+  real checks now run on every build, each proved against a deliberately broken
+  example — and two of them immediately found further tokens the system supplied
+  but the editor rejected, now fixed.
+
+- **A declined refund appeal can no longer be told it was approved (#2321).**
+  One email template covered both outcomes of a refund appeal. Its built-in
+  wording said the appeal "has been approved" and named the refund amount, and
+  the code that sends a *declined* decision reached for the same template with
+  no amount to put in it. Clubs on the built-in wording were fine — the designed
+  email chose the right words each time — but a club that had customised the
+  template sent members whose appeal was turned down a message headed "Refund
+  Appeal Approved", containing the sentence "A refund of  will be processed to
+  your original payment method". There are now two separate templates, **Refund
+  Request Approved** and **Refund Request Declined**, each saying one thing and
+  editable on its own. The declined one has no refund-amount field at all, so
+  the figure cannot be printed there even by mistake — an override that tries is
+  refused when it is saved. Both remain covered by a booking's "No emails"
+  switch. If you had customised the old combined template, that customisation is
+  not carried across: both new templates start from the corrected wording, and
+  the leftover is flagged on the Email Messages page as a stale override to
+  clean up, so re-apply your wording to whichever one you want changed.
+
+- **Editing a booking no longer loses your account credit or your promo codes
+  (#2266, epic #2245 E2).** Going "back into" a booking — the dashboard's
+  Resume button, or Edit Booking on the booking page — lands on a different
+  screen from the create wizard, and every credit and promo affordance lived
+  only in the wizard. Both now exist on the edit path, built on the wizard's
+  own machinery so the two cannot drift. The edit panel gains an **Account
+  credit** card (its own card above the Return-method radio, with explicit
+  "Credit → booking" / "Booking → you" direction tags): tick **Apply credit to
+  this booking** and your choice is saved on the booking (#2265's stored
+  election) and applied when you confirm and pay — nothing is taken from your
+  balance at edit time, and the booking page reminds you with *"Your $X credit
+  choice is saved and will be applied when you confirm."* The panel's promo
+  section now surfaces your eligible codes as clickable chips and uses the
+  shared promo input, so codes that need you to pick which guests they cover
+  work on the edit path too (the in-progress promo lock is unchanged). And
+  members can now **edit their own drafts** — Resume previously landed a plain
+  member on a page with no Edit button at all. A draft edit commits you to
+  nothing: no change fee, no holds, no capacity claim; the confirm/pay doors
+  keep enforcing all of that when the draft becomes real. Server-side, the
+  modify preview/apply routes accept the election and promo guest selection
+  with the same status guards the pay step honours (never on a hold-rail
+  PENDING booking, never once money is captured, never on an organiser-settled
+  booking), and a credit-only edit is price-preserving by construction — it
+  can never reprice an untouched booking across a season-rate change. Review
+  hardening in the same change: a draft edit that leaves minors with no adult
+  parks the booking for admin review exactly as creating it that way would
+  (and the confirm/pay doors refuse an unresolved review outright); a promo
+  code's chosen guests are remembered by *who they are*, not by their position
+  in the list, so a simultaneous edit elsewhere can never quietly hand the
+  discount to the wrong guest; a saved credit choice is never rewritten just
+  because your balance happened to dip; and the price summary now shows the
+  credit figure the save will actually keep, any slice returning to your
+  balance, and the change fee inside "Remaining to pay".
 
 - **Admins can now cancel the membership of a member who has no login of
   their own (#2354).** Opening such a member's admin page used to show no
@@ -35,7 +161,6 @@ All notable public reference-release changes should be recorded here.
   eligibility question the server enforces — is this an active,
   not-yet-cancelled, not-archived member — so the action appears for
   exactly the members it can act on.
-
 
 - **Self-hosted sites now use whatever processing power the server has free,
   instead of being rationed to a fraction of one core (#2351).** The standard
@@ -58,7 +183,6 @@ All notable public reference-release changes should be recorded here.
   behind it, how to reimpose a hard cap on a shared server, and two
   mitigations for genuinely starved machines (a keep-warm pinger, and the
   planned pre-rendered public pages of #2352).
-
 
 - **A custodian can now be given a bed for the season without booking it
   (#2286).** Clubs that keep someone on site all winter had no honest way to
@@ -290,12 +414,13 @@ All notable public reference-release changes should be recorded here.
   Xero, Stripe and Google steps, which appeared and then vanished for actual Full
   Admins, because the page read "still working out who you are" as "not a Full
   Admin". All three are gone or now wait until they know. The published
-  banner-coverage figures were re-measured with it (and again after the
-  in-booking Bed allocation card, #2252, added its three, and once more when
-  #2286's Release/Change bed controls landed): **291**
+  banner-coverage figures were re-measured with it (again after the in-booking
+  Bed allocation card, #2252, added its three, once more when #2286's
+  Release/Change bed controls landed, and again when the cash / off-Xero
+  payment feature, #2262, landed its four per-button-reason controls): **295**
   gated admin controls, **248** of them covered by a banner (222 in their own
   file, 26 by a verified vouching parent — 5 of those through the wizard frame),
-  and **43** across 23 files deliberately keeping their own reason.
+  and **47** across 25 files deliberately keeping their own reason.
 - **Choosing to use your account credit and then saving the booking as a draft
   no longer throws that choice away (#2265).** Ticking "use my credit" in the
   booking wizard and pressing **Save as draft** used to discard the amount you
@@ -546,7 +671,6 @@ All notable public reference-release changes should be recorded here.
   a few seconds before trying Xero again so a struggling connection is not made
   worse, and an admin re-checking the connection still gets a live read
   straight away.
-
 - **Writing a Lodge TV footer or CSS override no longer means remembering the
   tokens (#2248).** Every field where a board's HTML or CSS is typed by hand —
   the Visual builder's **Footer HTML**, **CSS overrides** and a zone's **HTML

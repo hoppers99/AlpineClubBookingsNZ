@@ -14,6 +14,9 @@ import {
   memberArchiveRejectedTemplate,
 } from "../email-templates";
 import {
+  composeOptionalEmailLine,
+} from "../email-message-notes";
+import {
   CLUB_BOOKINGS_NAME,
   CLUB_NAME,
 } from "@/config/club-identity";
@@ -98,6 +101,13 @@ export async function sendMembershipPaymentRecordedEmail(params: {
       // when no fee amount is recorded, so an override's {{amount}} renders to
       // nothing instead of a made-up figure.
       amount: params.amountCents !== null ? formatCents(params.amountCents) : "",
+      // #2268: pre-composed optional line — the whole "Amount recorded: $x"
+      // line, or nothing when no amount can be attributed to this member.
+      amountRecordedNote: composeOptionalEmailLine(
+        "Amount recorded",
+        params.amountCents !== null ? formatCents(params.amountCents) : null,
+        { trailing: "\n" },
+      ),
       date: formatNZDate(params.recordedAt),
     },
   });
@@ -158,6 +168,12 @@ export async function sendMembershipApplicationApprovedEmail(params: {
       token: params.token,
       resetUrl,
       adminNotes: params.adminNotes ?? "",
+      // #2268: pre-composed optional line — the flat body has no conditional
+      // syntax, so "Committee note:" must not print without a note.
+      committeeNote: composeOptionalEmailLine(
+        "Committee note",
+        params.adminNotes,
+      ),
     },
   });
 }
@@ -180,6 +196,11 @@ export async function sendMembershipApplicationRejectedEmail(params: {
     templateData: {
       firstName: params.firstName,
       adminNotes: params.adminNotes ?? "",
+      // #2268: pre-composed optional line (see the approved sender).
+      committeeNote: composeOptionalEmailLine(
+        "Committee note",
+        params.adminNotes,
+      ),
     },
   });
 }
@@ -209,6 +230,8 @@ export async function sendMembershipCancellationSubmittedEmail(params: {
       firstName: params.firstName,
       participantSummary: params.participantSummary,
       reason: params.reason ?? "",
+      // #2268: pre-composed optional line — no dangling "Reason:".
+      reasonNote: composeOptionalEmailLine("Reason", params.reason),
       reviewUrl,
     },
   });
@@ -270,6 +293,14 @@ export async function sendMembershipCancellationApprovedEmail(params: {
       reason: params.reason ?? "",
       adminNote: params.adminNote ?? "",
       rejoinProcessText: params.rejoinProcessText ?? "",
+      // #2268: pre-composed optional lines — the flat body carries only these
+      // tokens, so nothing prints when a value is absent.
+      reasonNote: composeOptionalEmailLine("Request reason", params.reason),
+      adminNoteLine: composeOptionalEmailLine("Admin note", params.adminNote),
+      rejoinProcessNote: composeOptionalEmailLine(
+        null,
+        params.rejoinProcessText,
+      ),
     },
   });
 }
@@ -291,6 +322,11 @@ export async function sendMemberArchiveApprovedEmail(params: {
       firstName: params.firstName,
       reason: params.reason,
       reviewNote: params.reviewNote ?? "",
+      // #2268: pre-composed optional line — no dangling "Review note:".
+      reviewNoteLine: composeOptionalEmailLine(
+        "Review note",
+        params.reviewNote,
+      ),
     },
   });
 }
@@ -312,6 +348,11 @@ export async function sendMemberArchiveRejectedEmail(params: {
       firstName: params.firstName,
       reason: params.reason,
       reviewNote: params.reviewNote ?? "",
+      // #2268: pre-composed optional line — no dangling "Review note:".
+      reviewNoteLine: composeOptionalEmailLine(
+        "Review note",
+        params.reviewNote,
+      ),
     },
   });
 }
@@ -335,6 +376,9 @@ export async function sendMembershipCancellationRejectedEmail(params: {
       participantName: params.participantName,
       reason: params.reason ?? "",
       adminNote: params.adminNote ?? "",
+      // #2268: pre-composed optional lines (see the approved sender).
+      reasonNote: composeOptionalEmailLine("Request reason", params.reason),
+      adminNoteLine: composeOptionalEmailLine("Admin note", params.adminNote),
     },
   });
 }

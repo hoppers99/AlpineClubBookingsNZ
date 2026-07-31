@@ -403,7 +403,8 @@ cancel writers use the disjoint global lock and may still race the row update.
 
 ### Global-cohort money / status transition → global `lock(1)`
 
-Cancel (`booking-cancel.ts`), Stripe capture and the capacity-failed void
+Cancel (`booking-cancel.ts`), Stripe capture, the manual cash / off-Xero
+mark-paid and its reversal, and the capacity-failed void
 (`payment-reconciliation.ts`), the Internet-Banking hold-expiry release
 (`internet-banking-payment-cron.ts`), the quote hold-release crons
 (`cron-quote-expiry-reminders.ts`), and the whole group-settlement lifecycle —
@@ -423,6 +424,21 @@ their status-guard `notIn` set BY DESIGN: a settlement marked `FAILED` by a
 captured (`payment_intent.succeeded` → settle) must still become `SUCCEEDED`, so
 settle legitimately overwrites `FAILED` → `SUCCEEDED`. `lock(1)` guarantees the
 two run whole-before-whole; it is not a veto on that transition.
+
+#### Three-tier composition: global → lodge → member-credit (#2262)
+
+The manual mark-paid path in `payment-reconciliation.ts` is the settlement body's
+second entry point, and it derives its own settlement amount from the member's
+credit ledger rather than accepting one from a client. Credit writers serialise
+on the per-member `member-credit` key, **not** on `lock(1)`, so the path composes
+a third tier — `lock(1)` → `acquireLodgeCapacityLock(lodgeId)` →
+`lockMemberCreditLedger(memberId)` — taking them in exactly that order and
+deriving `effectiveAmountCents = finalPriceCents - appliedCredit` only once all
+three are held. This is the same composition (and the same order)
+`switch-to-internet-banking` uses, which likewise refuses to rely on other
+writers happening to hold `lock(1)`. The reversal takes the first two tiers only:
+it writes no amount and reads no credit ledger, but it does restore booking
+status and can release capacity.
 
 `lock(1)` also serialises the duplicate-capture adjudication (#1992). When a
 Stripe success arrives for an already-PAID booking, `markBookingPaymentSucceeded`
