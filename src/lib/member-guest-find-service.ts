@@ -41,7 +41,22 @@ import { prisma } from "@/lib/prisma";
  * no such member and a query below the minimum all return `{ candidates: [] }`.
  * The server never sends a reason string; the UI renders one fixed sentence from
  * the empty array. That is strictly stronger than the partner-link precedent's
- * 404/403/422 split, which this deliberately does not copy.
+ * 404/403/422 split, which this deliberately does not copy — and note that the
+ * precedent is still there: `POST /api/members/partner-link`'s own email path
+ * answers the same kind of question with more detail and only IP-keyed limiting.
+ * The uniform envelope is a property of THIS surface, not of the application.
+ *
+ * ONE CONSEQUENCE OF "NEVER EVALUATE ELIGIBILITY", recorded because it is a real
+ * divergence rather than an oversight (correctness review, LOW-5). The family
+ * quick-add row on the guests step hides a family member whose profile is
+ * incomplete (`canBeBooked === false`); the finder, resolving that same person by
+ * their household address, offers them. So there are two routes to one person
+ * that behave differently. That is the price of the rule above — a `canBeBooked`
+ * check here would be exactly the client-side eligibility oracle the design
+ * exists to avoid, and it would have to run for strangers too. It is recoverable
+ * rather than a trap: the add is refused at quote time with the profile gate's
+ * own detailed, actionable message, because the person IS in the booker's family
+ * and D-8's collapse does not apply to them.
  */
 
 /** What the module + settings gate decided for one request. */

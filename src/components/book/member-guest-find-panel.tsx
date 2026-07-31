@@ -137,6 +137,16 @@ export function MemberGuestFindPanel({
         setState({ kind: "RATE_LIMITED" });
         return;
       }
+      if (res.status === 400) {
+        // The route re-parses with zod's own email rule, which is stricter than
+        // this component's "does it look like an address?" test — `sam@a.co.nz.`
+        // passes here and fails there. Showing "that didn't work" for a typing
+        // mistake is both unhelpful and a needless third answer; a malformed
+        // address says nothing about any member, so it gets the SAME fixed
+        // sentence a genuine miss gets (correctness review, LOW-3).
+        setState({ kind: "RESULTS", response: { candidates: [] }, mode: "EMAIL" });
+        return;
+      }
       if (!res.ok) {
         // Includes the module-off 404. There is nothing useful to say and
         // nothing safe to infer, so it reads as the ordinary failure it is.

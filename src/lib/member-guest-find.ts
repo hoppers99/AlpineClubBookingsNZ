@@ -193,6 +193,14 @@ export function normalizeMemberGuestEmail(email: string): string {
  * A space splits the query into "first name starts with A **and** last name
  * starts with B", so "sam whitt" narrows to one person rather than returning
  * everyone called Sam plus everyone called Whittaker.
+ *
+ * THE FIRST AND LAST TOKENS, not "before and after the first space" (correctness
+ * review, LOW-4). Splitting on the first space made "anna maria smith" mean
+ * `lastName startsWith "maria smith"`, which matches nobody at all — including
+ * Anna Maria Smith, the person being typed. Taking the first token as the
+ * first-name prefix and the LAST as the last-name prefix handles middle names
+ * without weakening anything: it is still prefix-only, still two terms, still
+ * never `contains`.
  */
 export type MemberGuestSearchTerms =
   | { kind: "SINGLE"; prefix: string }
@@ -206,21 +214,24 @@ export function parseMemberGuestSearchQuery(
     return { ok: false };
   }
 
-  const spaceAt = normalized.indexOf(" ");
-  if (spaceAt === -1) {
-    return { ok: true, terms: { kind: "SINGLE", prefix: normalized }, normalized };
-  }
-
-  const firstPrefix = normalized.slice(0, spaceAt);
-  const lastPrefix = normalized.slice(spaceAt + 1);
   // "sam " (a trailing space) is one term, not a term plus an empty one — an
   // empty prefix matches EVERYONE, which is the whole roll in one request.
-  if (!lastPrefix) {
-    return { ok: true, terms: { kind: "SINGLE", prefix: firstPrefix }, normalized };
+  const tokens = normalized.split(" ").filter(Boolean);
+  if (tokens.length <= 1) {
+    return {
+      ok: true,
+      terms: { kind: "SINGLE", prefix: tokens[0] ?? normalized },
+      normalized,
+    };
   }
+
   return {
     ok: true,
-    terms: { kind: "FIRST_AND_LAST", firstPrefix, lastPrefix },
+    terms: {
+      kind: "FIRST_AND_LAST",
+      firstPrefix: tokens[0],
+      lastPrefix: tokens[tokens.length - 1],
+    },
     normalized,
   };
 }

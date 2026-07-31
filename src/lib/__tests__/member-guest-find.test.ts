@@ -85,6 +85,16 @@ describe("parseMemberGuestSearchQuery — prefix-only, never contains", () => {
     });
   });
 
+  it("uses the FIRST and LAST tokens, so a middle name does not match nobody", () => {
+    // Splitting on the first space made this `lastName startsWith "maria smith"`,
+    // which matches nobody — including Anna Maria Smith (correctness review LOW-4).
+    expect(parseMemberGuestSearchQuery("anna maria smith")).toEqual({
+      ok: true,
+      terms: { kind: "FIRST_AND_LAST", firstPrefix: "anna", lastPrefix: "smith" },
+      normalized: "anna maria smith",
+    });
+  });
+
   it("never produces an EMPTY prefix, which would match the whole roll", () => {
     // A trailing space must collapse to one term rather than "sam" AND "".
     const parsed = parseMemberGuestSearchQuery("sam ");
