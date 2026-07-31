@@ -102,6 +102,99 @@ describe("MemberGuestSettingsCard", () => {
     expect(screen.queryByText(/switched off, so none of this is in use/)).toBeNull();
   });
 
+  it("says the two search settings are stored now and start working later", async () => {
+    // The toggles are writable a whole release before anything reads them. If
+    // the card reads as though the setting is already live, an admin arms a
+    // privacy decision that comes to life on its own at the next deploy with
+    // nobody re-deciding it — so the "not yet" has to be in the copy, and
+    // reachable by a screen reader, not just in a source comment.
+    await renderCard();
+
+    expect(screen.getByText("Not in use yet.")).toBeInTheDocument();
+    expect(
+      screen.getByText(/starts working on its own when that update arrives/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/a member always types the other member's exact email/),
+    ).toBeInTheDocument();
+  });
+
+  it("describes each search control with the consequence, not just the mechanics", async () => {
+    await renderCard();
+
+    const describedText = (control: HTMLElement) =>
+      (control.getAttribute("aria-describedby") ?? "")
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((id) => document.getElementById(id)?.textContent ?? "")
+        .join(" ");
+
+    const nameSearch = screen.getByRole("checkbox", {
+      name: /^Let members search by name/,
+    });
+    expect(describedText(nameSearch)).toMatch(/Not in use yet/);
+    expect(describedText(nameSearch)).toMatch(
+      /makes your membership list browsable/,
+    );
+
+    const minors = screen.getByRole("checkbox", {
+      name: /^Include under-18s in name search/,
+    });
+    expect(describedText(minors)).toMatch(/Not in use yet/);
+    expect(describedText(minors)).toMatch(
+      /makes children's names browsable to any member/,
+    );
+  });
+
+  it("will not let the under-18s setting be armed on its own", async () => {
+    await renderCard();
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+
+    const nameSearch = screen.getByRole("checkbox", {
+      name: /^Let members search by name/,
+    });
+    const minors = screen.getByRole("checkbox", {
+      name: /^Include under-18s in name search/,
+    });
+
+    // Name search is off, so the under-18s setting cannot be touched at all —
+    // the dependency is carried by the markup, not by the indentation.
+    expect(minors).toBeDisabled();
+
+    fireEvent.click(nameSearch);
+    expect(minors).toBeEnabled();
+    fireEvent.click(minors);
+    expect(minors).toBeChecked();
+
+    // Turning name search back off takes the under-18s decision with it, so a
+    // club can never store "include children" with name search off.
+    fireEvent.click(nameSearch);
+    expect(minors).toBeDisabled();
+    expect(minors).not.toBeChecked();
+
+    fireEvent.change(screen.getByLabelText("How long to wait for an answer"), {
+      target: { value: "14" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([, init]) => (init as RequestInit | undefined)?.method === "PUT",
+        ),
+      ).toBe(true),
+    );
+    const putCall = fetchMock.mock.calls.find(
+      ([, init]) => (init as RequestInit | undefined)?.method === "PUT",
+    );
+    expect(JSON.parse((putCall![1] as RequestInit).body as string)).toEqual({
+      approvalRequired: true,
+      pendingHoldExpiryDays: 14,
+      openMemberSearchEnabled: false,
+      openMemberSearchIncludesMinors: false,
+    });
+  });
+
   it("keeps the card editable while the module is off, with the not-in-use banner (MG2-M-4)", async () => {
     await renderCard(false);
 

@@ -26,6 +26,16 @@ import { DEFAULT_MEMBER_GUEST_SETTINGS } from "@/config/club-settings-defaults";
  * admin route (`src/app/api/admin/member-guest-settings/route.ts`) lets a club's
  * own admin set them, which is a write, not a read — nothing consults either
  * value to decide who is discoverable until MG3's type-ahead lands.
+ *
+ * BECAUSE THEY ARE WRITABLE BEFORE THEY ARE READ, the admin card that writes
+ * them (`src/components/admin/member-guest-settings-card.tsx`) says so on its
+ * face: "Not in use yet ... starts working on its own when that update
+ * arrives". That sentence is not decoration. A stored privacy decision that
+ * quietly comes to life on a later deploy — with nobody asked again — is the
+ * failure this pair is one step away from, and the honest copy is what keeps
+ * the admin's choice a choice. When MG3 gives these values a reader, that
+ * annotation comes off in the SAME change, exactly as MG1's
+ * "not available yet" module state came off in MG2.
  */
 
 export const MEMBER_GUEST_SETTINGS_ID = "default";

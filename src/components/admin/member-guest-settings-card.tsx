@@ -47,7 +47,24 @@ import { PolicyFeedback } from "@/components/admin/booking-policies/policy-feedb
  * verbatim on the mockup pack, and per D-18 neither value ever travels in club
  * config transfer — this card (backed by its admin route) is the only way they
  * change.
+ *
+ * THOSE TWO TOGGLES ARE SAVED NOW AND USED BY NOTHING YET. Searching for a
+ * member by name arrives in MG3; until it does, nothing anywhere reads either
+ * value (see the "what reads this" note in src/lib/member-guest-settings.ts).
+ * An admin settling their club's privacy posture ahead of time is perfectly
+ * reasonable, so the toggles stay settable — but the card has to say plainly,
+ * in the copy an admin actually reads and hears, that the choice starts working
+ * later and on its own. Copy that reads as though the setting is already live
+ * is how a privacy decision gets armed once and takes effect a release later
+ * with nobody re-deciding it.
  */
+
+// Ids for the sentences each name-search control is described by. They are
+// spelled out here rather than inline so the control and the sentence it points
+// at cannot drift apart.
+const NOT_LIVE_YET_ID = "member-guest-search-not-live-yet";
+const OPEN_SEARCH_CONSEQUENCE_ID = "member-guest-open-search-consequence";
+const MINORS_CONSEQUENCE_ID = "member-guest-minors-consequence";
 
 interface MemberGuestSettingsDraft {
   approvalRequired: boolean;
@@ -306,14 +323,48 @@ export function MemberGuestSettingsCard({
             <legend className="text-sm font-medium">
               Finding the other member
             </legend>
+            {/*
+              Both of these settings are STORED now and READ by nothing yet
+              (see src/lib/member-guest-settings.ts). Saying so on the card is
+              the whole point: without it an admin decides their club's privacy
+              posture believing it is live, and it quietly starts working on a
+              later deploy with nobody re-deciding. Referenced by both
+              checkboxes' aria-describedby so it is heard, not just seen.
+            */}
+            <p
+              id={NOT_LIVE_YET_ID}
+              className="rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground"
+            >
+              <span className="font-medium text-foreground">
+                Not in use yet.
+              </span>{" "}
+              Searching for a member by name is still being built. Whatever you
+              choose here is saved now and starts working on its own when that
+              update arrives — nobody will ask you again first, so set it the
+              way you mean it. Until then, a member always types the other
+              member&apos;s exact email address.
+            </p>
             <label className="flex items-start gap-3 rounded-md border border-border bg-muted px-3 py-2">
               <input
                 type="checkbox"
                 checked={draft.openMemberSearchEnabled}
-                onChange={(e) =>
-                  section.setDraft({ openMemberSearchEnabled: e.target.checked })
-                }
+                onChange={(e) => {
+                  const enabled = e.target.checked;
+                  // Turning the parent off takes the minors setting off with
+                  // it. A saved "include children" with name search off is a
+                  // decision nobody made out loud, and it would come to life
+                  // the moment someone turned name search on.
+                  section.setDraft(
+                    enabled
+                      ? { openMemberSearchEnabled: true }
+                      : {
+                          openMemberSearchEnabled: false,
+                          openMemberSearchIncludesMinors: false,
+                        },
+                  );
+                }}
                 disabled={!editing}
+                aria-describedby={`${NOT_LIVE_YET_ID} ${OPEN_SEARCH_CONSEQUENCE_ID}`}
                 className="mt-1 rounded border-input"
               />
               <span className="text-sm">
@@ -326,37 +377,66 @@ export function MemberGuestSettingsCard({
                 </span>
               </span>
             </label>
-            <p className="rounded-md border border-warning-6 bg-warning-3 px-3 py-2 text-sm text-warning-11">
+            {/*
+              The consequence sentence sits outside the label so it keeps its
+              warning styling, so each control points at it with
+              aria-describedby — otherwise a screen-reader admin hears the
+              neutral mechanics and never learns they just made the membership
+              roster browsable (pattern: change-password's password hints).
+            */}
+            <p
+              id={OPEN_SEARCH_CONSEQUENCE_ID}
+              className="rounded-md border border-warning-6 bg-warning-3 px-3 py-2 text-sm text-warning-11"
+            >
               Turning this on makes your membership list browsable. Any member
               can type a few letters and see the names of other members who
               match. Leave it off unless your club has agreed to that.
             </p>
-            <label className="ml-6 flex items-start gap-3 rounded-md border border-border bg-muted px-3 py-2">
-              <input
-                type="checkbox"
-                checked={draft.openMemberSearchIncludesMinors}
-                onChange={(e) =>
-                  section.setDraft({
-                    openMemberSearchIncludesMinors: e.target.checked,
-                  })
-                }
-                disabled={!editing}
-                className="mt-1 rounded border-input"
-              />
-              <span className="text-sm">
-                <span className="block font-medium">
-                  Include under-18s in name search
+            {/*
+              A nested fieldset, not an indent: the minors setting only means
+              anything while name search is on, and indentation alone says that
+              to sighted users only. Disabling the whole group carries the
+              dependency to the keyboard and to assistive tech as well.
+            */}
+            <fieldset
+              className="ml-6 space-y-2 border-l-2 border-border pl-4"
+              disabled={!editing || !draft.openMemberSearchEnabled}
+            >
+              <legend className="text-sm font-medium">
+                Only while name search is on
+              </legend>
+              <label className="flex items-start gap-3 rounded-md border border-border bg-muted px-3 py-2">
+                <input
+                  type="checkbox"
+                  checked={draft.openMemberSearchIncludesMinors}
+                  onChange={(e) =>
+                    section.setDraft({
+                      openMemberSearchIncludesMinors: e.target.checked,
+                    })
+                  }
+                  aria-describedby={`${NOT_LIVE_YET_ID} ${MINORS_CONSEQUENCE_ID}`}
+                  className="mt-1 rounded border-input"
+                />
+                <span className="text-sm">
+                  <span className="block font-medium">
+                    Include under-18s in name search
+                  </span>
+                  <span className="text-muted-foreground">
+                    Off: children never appear in the name list. This can only
+                    be set while &ldquo;Let members search by name&rdquo; above
+                    is on.
+                  </span>
                 </span>
-                <span className="text-muted-foreground">
-                  Off: children never appear in the name list.
-                </span>
-              </span>
-            </label>
-            <p className="ml-6 rounded-md border border-warning-6 bg-warning-3 px-3 py-2 text-sm text-warning-11">
-              Turning this on makes children&apos;s names browsable to any
-              member. A child can still be added by their household email
-              address either way.
-            </p>
+              </label>
+              <p
+                id={MINORS_CONSEQUENCE_ID}
+                className="rounded-md border border-warning-6 bg-warning-3 px-3 py-2 text-sm text-warning-11"
+              >
+                Turning this on makes children&apos;s names browsable to any
+                member. A child can still be added by their household email
+                address either way.
+              </p>
+            </fieldset>
           </fieldset>
 
           <div className="rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground">
