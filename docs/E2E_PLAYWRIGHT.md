@@ -349,7 +349,7 @@ is still surfaced unchanged, and the whole module stays production-inert.
 
 ## Flake invariants — read before writing a spec (issue #2302)
 
-Five specs flaked on `main` across three days in July 2026
+Five specs flaked on `main` over the last week of July 2026
 (`waitlist`, `xero-setup-wizard`, `stripe-payment`, `bed-allocation`,
 plus the `#21` cross-lodge case). **Every one of them shared one of the two
 mechanisms below**, and in four of the five a *single* transient failure was
@@ -372,7 +372,7 @@ the one that really broke:
 | `stripe-payment.spec.ts` | the persona booked onto its stay window | the wizard never reaches "Booking Summary" |
 | `bed-allocation.spec.ts` | the seeded booking already approved | "Ken King" no longer in the pending-review list |
 
-Three rules follow, and a new spec must satisfy all three:
+Four rules follow, and a new spec must satisfy all four:
 
 - **Keep serial groups as narrow as the real dependency.** Only tests that
   genuinely hand state to the next one belong in a `mode: "serial"` describe;
