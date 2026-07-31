@@ -28,9 +28,11 @@ Only two kinds of record are refused, because they are not account holders and
 have no membership to cancel: **the lodge kiosk device login**, and **the
 booking-request contact records** — the guest contact minted by a public booking
 request, and the school owner contact and teacher records minted by a school
-booking request. Those are refused silently: no cancellation action is offered
-on their page, and there is nothing to explain, because there is no membership
-being withheld.
+booking request. Those are refused silently on the admin member page: no
+cancellation action is offered there, and there is nothing to explain, because
+there is no membership being withheld. The self-service route is the one place
+they are told, because the kiosk login can open its own profile and ask — there
+it says plainly that the login holds no membership of its own.
 
 "The lodge kiosk device login" means a record whose *whole* account type is the
 kiosk — the one the member page's User Type shows as **Lodge (kiosk account)**.
@@ -67,6 +69,14 @@ either by a relative who includes them in a family request, or by an admin from
 the member page; nothing is uncancellable. The lodge kiosk login and the
 booking-request contact records are refused here as well, for the same reason as
 above: they hold no membership.
+
+A request you raise for your own membership needs no email confirmation — you
+have just asked for it, so it is confirmed at creation and goes straight to the
+review queue, exactly as an admin-raised request does. Only *other* adults with
+their own login are emailed a confirmation link. That is what makes an
+organisation's own cancellation work: an organisation account has no separate
+person to confirm on its behalf, and nothing is left waiting on an email nobody
+would answer.
 
 Cancellation eligibility is deliberately not a permissions question. Two
 separate rules govern the **approval** of a cancellation against an account that
