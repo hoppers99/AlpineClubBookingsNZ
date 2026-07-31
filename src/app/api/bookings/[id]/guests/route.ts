@@ -30,6 +30,7 @@ import {
 } from "@/lib/policies/booking-route-decisions";
 import {
   deletePromoRedemptionAndAdjustCount,
+  lockAndRefreshPromoCodeUsage,
   replacePromoRedemptionAllocations,
   validateAndCalculatePromoDiscount,
 } from "@/lib/promo";
@@ -559,7 +560,17 @@ export async function POST(
       let promoRemoved = false;
 
       if (booking.promoRedemption?.promoCode) {
-        const promo = booking.promoRedemption.promoCode;
+        // Row-lock the promo code and re-read its usage counter before the caps
+        // are checked (#2299). Adding a member guest to an assigned promo makes
+        // that member a NEW beneficiary, so this path can take a
+        // total-redemptions slot, not just keep one — two concurrent add-guest
+        // requests on different bookings could otherwise both pass a
+        // "one use left" check. The per-lodge capacity lock is already held, so
+        // the order stays lodge -> promo row.
+        const promo = await lockAndRefreshPromoCodeUsage(
+          tx,
+          booking.promoRedemption.promoCode
+        );
         const selectedGuestIndexes = selectedIndexesForStoredGuestTargets(
           booking.promoRedemption,
           guestNightRates

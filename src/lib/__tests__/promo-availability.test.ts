@@ -112,7 +112,17 @@ describe("getAvailablePromoCodesForMember", () => {
         promoCode: {
           include: {
             allocations: {
-              where: { memberId: "member-1" },
+              // Beneficial allocations only (#2299): a zero-benefit
+              // application must not trip the uses-per-member cap or the
+              // member-facing "Already used by member" status.
+              where: {
+                memberId: "member-1",
+                OR: [
+                  { discountCents: { gt: 0 } },
+                  { priceAdjustmentCents: { not: 0 } },
+                  { freeNightsUsed: { gt: 0 } },
+                ],
+              },
               select: { id: true, freeNightsUsed: true },
             },
           },

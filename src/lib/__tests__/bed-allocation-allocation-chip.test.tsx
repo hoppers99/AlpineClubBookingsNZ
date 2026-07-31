@@ -293,7 +293,9 @@ describe("AllocationChip held vs provisional state (#1251)", () => {
     renderChip({ canEdit: false });
 
     expect(
-      screen.getByRole("button", { name: /Drag Example Guest to another bed or night/i }),
+      screen.getByRole("button", {
+        name: /Drag Example Guest to another bed; original lodge night 2026-07-01 will be kept/i,
+      }),
     ).toBeDisabled();
     expect(
       screen.getByRole("button", { name: /Manage allocation for Example Guest/i }),

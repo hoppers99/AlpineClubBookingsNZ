@@ -290,6 +290,39 @@ do not use unnamespaced `hashtext(<id>)` for new lock families.
   before validating and consuming its use count. Booking creation has already
   taken the per-lodge capacity lock, so the current order is lodge -> promo row;
   no counterpart writer may take the promo row and then a lodge lock.
+- **Every booking-modification path that may write `currentRedemptions`** takes
+  the same protocol via `lockPromoCodeRowsForUpdate` / the reprice wrapper
+  `lockAndRefreshPromoCodeUsage` (both `src/lib/promo.ts`), *before* its first
+  cap read and its first `currentRedemptions` write. All four are covered:
+  `booking-modify-plan.ts` (`applyPromoCodeChanges`, the batch-modification
+  path — the only one that can touch **two** codes, so it uses the multi-id
+  form), `/api/bookings/[id]/guests` (adding guests),
+  `booking-date-modification-service.ts` (changing dates) and
+  `booking-guest-removal-service.ts` (removing guests). Each of the four has
+  already taken the per-lodge capacity lock, so the order is again
+  lodge -> promo row. The reprice wrapper also **re-reads
+  `currentRedemptions` under the lock**, because a reprice carries a
+  `PromoCode` snapshot loaded with the booking before the locks were taken;
+  locking and then deciding against a number read outside the lock would leave
+  the race open. It has **four** call sites, not three: the batch-modification
+  path calls it too, on the branch that re-prices a booking whose promo code is
+  not changing (there the multi-id lock is already held, so the call is for the
+  refreshed counter and its re-lock is a no-op; the swap branch instead re-reads
+  the whole promo row under that same lock). Every caller must then validate
+  against the object the wrapper **returns** — validating the snapshot that went
+  in would serialise correctly and still decide on a stale number, so the source
+  contract in `src/lib/__tests__/promo-reprice-cap-exclusion.test.ts` pins that
+  threading at all four sites. A promo **swap** touches two promo rows in one
+  transaction (the outgoing code's counter is refunded, the incoming code's is
+  charged), so the helper sorts the ids and locks them one statement at a time:
+  every caller therefore takes promo row locks in the same global order and two
+  opposite swaps cannot build a cycle. The sort is done in the application
+  rather than by `ORDER BY ... FOR UPDATE`, so the ordering does not depend on
+  the query plan. The lock became load-bearing with #2299: a reprice can now
+  *release* a usage slot as well as take one, so check-then-consume must be
+  serialised. The helper selects only `"id"` and discards the result — it exists
+  purely for its lock and never reads a value out of a raw row, which is the
+  trap #2289 documents.
 - `admin-bed-allocation.ts` locks the owning `LodgeRoom` row with `FOR UPDATE`
   before checking and changing one room's bunk-group membership. This protocol
   is independent of the booking/capacity/credit lock cluster.
@@ -424,6 +457,23 @@ conflict queries and their audit metadata consume that post-lock snapshot, so a
 concurrent date move cannot make the hold apply to one range while reporting
 conflicts for an older range. Its status-guarded SET remains necessary because
 cancel writers use the disjoint global lock and may still race the row update.
+
+Existing bed-allocation moves (`moveBedAllocationsSameDate`, #2366) compose the
+global and per-lodge tiers. They do not change booking status or money, but
+cancellation prunes a cancelled booking's allocation rows under global
+`lock(1)`: a lodge-only move could otherwise read a row, let cancellation
+delete it, and then re-upsert it onto the cancelled booking. The
+pre-transaction read resolves only the destination bed's immutable lodge key.
+The transaction takes **global `lock(1)` first, then that lodge lock**, and
+re-reads the source allocation rows and their persisted lodge nights under
+both before funnelling every selected row through `manuallyAllocateBed`. If
+cancellation won, the post-lock source read returns no row and the move writes
+nothing. The row changes, shared-double partner promotions (with each causal
+moved-allocation id) and audit rows all remain in that transaction; one
+conflict rolls the group back. This writer takes no member lock because it
+preserves every member-night footprint. Its custodian-hold counterpart takes
+the same lodge key, cancellation takes the same global key, and the fixed
+global -> lodge order introduces no inverse.
 
 ### Global-cohort money / status transition → global `lock(1)`
 
