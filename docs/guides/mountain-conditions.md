@@ -34,7 +34,7 @@ permission area.
    updated in DB**). Click **Update from upstream** to pull the latest feed
    immediately.
 
-   ![Mountain Conditions showing the Whakapapa cache panel with the Update from upstream button, the Section visibility checkboxes (Road Status, Lifts, Facilities, Food & Drink, Mountain Conditions), and the Raw JSON editor](../images/admin/admin-mountain-conditions.png)
+   ![Mountain Conditions showing the Whakapapa cache panel with the Update from upstream button, the Section visibility checkboxes (Road Status, Lifts, Facilities, Food & Drink, Mountain Conditions, Trails), the Raw JSON editor, and the Source & selectors card with the Report URL field, the collapsed Advanced element selectors section, and the Preview and Save configuration buttons](../images/admin/admin-mountain-conditions.png)
 
 2. Under **Section visibility**, tick the articles that should appear on the
    public widget — **Road Status**, **Lifts**, **Facilities**, **Food & Drink**,

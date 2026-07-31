@@ -76,6 +76,30 @@ function configToInputJson(config: WhakapapaSourceConfig): Prisma.InputJsonValue
   return config as unknown as Prisma.InputJsonValue;
 }
 
+/**
+ * Shared 400 for a selector override the scraper's own engine cannot compile.
+ * Used by BOTH the save and the preview paths so a malformed selector names the
+ * offending field either way, instead of surfacing as the generic upstream 502.
+ * Returns null when every override compiles.
+ */
+function invalidSelectorResponse(
+  overrides: WhakapapaSourceConfig["selectorOverrides"],
+): NextResponse | null {
+  const invalidSelectors = findInvalidSelectorOverrides(overrides);
+  if (invalidSelectors.length === 0) {
+    return null;
+  }
+  const fields = invalidSelectors
+    .map((key) => WHAKAPAPA_SELECTOR_LABELS[key])
+    .join(", ");
+  return NextResponse.json(
+    {
+      error: `Invalid CSS selector for: ${fields}. Fix the selector so it is valid, or clear the field to use the default.`,
+    },
+    { status: 400 },
+  );
+}
+
 async function saveConfig(rawConfig: unknown): Promise<NextResponse> {
   const rawUrl =
     rawConfig && typeof rawConfig === "object"
@@ -99,19 +123,9 @@ async function saveConfig(rawConfig: unknown): Promise<NextResponse> {
   // cleanly and then throwing on every scrape (a stale public widget and a 500
   // on Update from upstream). This compiles each override against the same
   // engine the scraper uses.
-  const invalidSelectors = findInvalidSelectorOverrides(
-    config.selectorOverrides,
-  );
-  if (invalidSelectors.length > 0) {
-    const fields = invalidSelectors
-      .map((key) => WHAKAPAPA_SELECTOR_LABELS[key])
-      .join(", ");
-    return NextResponse.json(
-      {
-        error: `Invalid CSS selector for: ${fields}. Fix the selector so it is valid, or clear the field to use the default.`,
-      },
-      { status: 400 },
-    );
+  const selectorError = invalidSelectorResponse(config.selectorOverrides);
+  if (selectorError) {
+    return selectorError;
   }
 
   // Preserve the cached report data, its fetch timestamp, and any freeze window;
@@ -274,6 +288,13 @@ export async function POST(request: NextRequest) {
     }
 
     const candidate = coerceWhakapapaSourceConfig(rawConfig);
+    // Same compile check as the save path, so a typo names the field here too
+    // rather than coming back as the generic "Preview failed" 502 below.
+    const selectorError = invalidSelectorResponse(candidate.selectorOverrides);
+    if (selectorError) {
+      return selectorError;
+    }
+
     try {
       const preview = await fetchWhakapapaCurlData({
         sourceUrl: urlCheck.url,

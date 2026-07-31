@@ -17,7 +17,6 @@ const mocks = vi.hoisted(() => ({
   findUnique: vi.fn(),
   upsert: vi.fn(),
   fetchWhakapapaCurlData: vi.fn(),
-  findInvalidSelectorOverrides: vi.fn(() => [] as string[]),
 }));
 
 vi.mock("@/lib/auth", () => ({
@@ -39,9 +38,15 @@ vi.mock("@/lib/prisma", () => ({
   },
 }));
 
-vi.mock("@/lib/whakapapa-report.server", () => ({
+// Only the upstream fetch is mocked. `findInvalidSelectorOverrides` is
+// deliberately left REAL so the malformed-selector cases below compile their
+// selectors against the same engine the scraper uses. A stub returning a
+// hand-written key would pass even if the engine disagreed about what is
+// invalid — and jsdom's engine is lenient in places (it accepts an unclosed
+// `[class*="x`), so that disagreement is a live risk, not a theoretical one.
+vi.mock("@/lib/whakapapa-report.server", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/whakapapa-report.server")>()),
   fetchWhakapapaCurlData: mocks.fetchWhakapapaCurlData,
-  findInvalidSelectorOverrides: mocks.findInvalidSelectorOverrides,
 }));
 
 import { PATCH, POST } from "@/app/api/admin/mountain-conditions/route";
@@ -221,7 +226,6 @@ describe("PATCH config (source URL + selectors)", () => {
     mocks.auth.mockResolvedValue({ user: ADMIN_USER });
     mocks.requireActiveSessionUser.mockResolvedValue(null);
     mocks.findUnique.mockResolvedValue(null);
-    mocks.findInvalidSelectorOverrides.mockReturnValue([]);
     mocks.upsert.mockImplementation(async (args) => ({
       source: args.where.source,
       payload:
@@ -280,10 +284,9 @@ describe("PATCH config (source URL + selectors)", () => {
   });
 
   it("rejects a malformed selector override, naming the field, and never writes", async () => {
-    // The scraper engine reports the offending field(s); the route must refuse
-    // the save rather than store a selector that throws on every scrape.
-    mocks.findInvalidSelectorOverrides.mockReturnValue(["item"]);
-
+    // Compiled for real by the scraper's own engine: this string throws, so
+    // the route must refuse the save rather than store a selector that would
+    // throw on every later scrape.
     const response = await PATCH(
       patchRequest({
         config: {
@@ -349,6 +352,24 @@ describe("POST preview (test config without saving)", () => {
     );
 
     expect(response.status).toBe(400);
+    expect(mocks.fetchWhakapapaCurlData).not.toHaveBeenCalled();
+  });
+
+  it("names the bad selector on preview instead of the generic upstream 502", async () => {
+    const response = await POST(
+      postRequest({
+        preview: true,
+        config: {
+          sourceUrl: "https://www.whakapapa.com/report",
+          // Trailing empty attribute clause — the scraper's own engine throws.
+          selectorOverrides: { conditionRow: '[class*="locationRow_"][' },
+        },
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    // The admin is told WHICH field to fix, by its human-readable label.
+    expect((await response.json()).error).toContain("Conditions: location row");
     expect(mocks.fetchWhakapapaCurlData).not.toHaveBeenCalled();
   });
 });
