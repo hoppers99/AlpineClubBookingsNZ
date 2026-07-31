@@ -1107,13 +1107,19 @@ lobby TV display (fork #54) and the global 404 (#2356).
       the wire to lose. Nothing in `(website)` has a `loading.tsx`, so the page
       is not behind a streaming boundary in the first place.
     - **What was actually measured was an unconfigured site.** On a club that
-      has not completed site-style setup (`ClubTheme.completedAt IS NULL` —
-      the state a freshly seeded database, and therefore the E2E stack, is left
-      in), `(website)/layout.tsx` returns its "Site setup in progress" screen
+      has not completed site-style setup (`ClubTheme.completedAt IS NULL`),
+      `(website)/layout.tsx` returns its "Site setup in progress" screen
       INSTEAD of `{children}`. The page component never runs, its `notFound()`
       never fires, and **every** URL answers 200 — including `/about` and the
       other real pages. Verified directly: zero `PageContent` reads are issued
       for `/definitely-missing` in that state.
+      `prisma/seed.ts` leaves `completedAt` NULL unless `SEED_THEME_COMPLETE=1`
+      is set. CI's E2E stack DOES set it (`.github/workflows/e2e.yml`), as does
+      `.env.staging.example` — but a locally prepared staging stack whose env
+      file predates or omits that flag serves the holding screen for every URL,
+      which is the configuration these 200s were recorded on. Check
+      `ClubTheme.completedAt` before reading a status measurement off a local
+      stack.
     - **With setup complete, every shape above already returns 404** — measured
       on the running app, and independently on a fully configured downstream
       staging build. `/api/*` misses were the genuine defect and were served the
