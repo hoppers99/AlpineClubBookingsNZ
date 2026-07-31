@@ -772,8 +772,26 @@ describe("runInductionBaseline", () => {
       ...BASE_OPTIONS,
       store: fake.store as never,
     });
-    fake.tx.memberInduction.createMany.mockResolvedValueOnce({
-      count: dryRun.toCreate.length - 1,
+    const partialCount = dryRun.toCreate.length - 1;
+    fake.tx.memberInduction.createMany.mockImplementationOnce(async (args) => {
+      const data = (
+        args as {
+          data: Array<{
+            memberId: string;
+            kind: ExistingRow["kind"];
+            status: ExistingRow["status"];
+          }>;
+        }
+      ).data;
+      fake.rows.push(
+        ...data.slice(0, partialCount).map((row, index) => ({
+          id: `partial-${index}`,
+          memberId: row.memberId,
+          kind: row.kind,
+          status: row.status,
+        })),
+      );
+      return { count: partialCount };
     });
 
     await expect(
@@ -785,8 +803,9 @@ describe("runInductionBaseline", () => {
         store: fake.store as never,
       }),
     ).rejects.toThrow(
-      `Atomic apply failed: planned ${dryRun.toCreate.length} row(s) but created ${dryRun.toCreate.length - 1}.`,
+      `Atomic apply failed: planned ${dryRun.toCreate.length} row(s) but created ${partialCount}.`,
     );
+    expect(fake.tx.memberInduction.createMany).toHaveBeenCalledTimes(1);
     expect(fake.tx.auditLog.create).not.toHaveBeenCalled();
     expect(fake.rows).toHaveLength(0);
     expect(fake.auditRows).toHaveLength(0);
