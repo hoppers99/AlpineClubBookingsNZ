@@ -248,6 +248,50 @@ describe("reassignHeldBookingGuests — MG4-D-b consent stamping (#2309)", () =>
     );
   });
 
+  it("PRESERVES a notified member's consent record when the module is switched off mid-flight", async () => {
+    // THE BUG THIS PINS, and it needs no unusual data to reach — just an
+    // officer turning the module off between the hold and the approval.
+    //
+    // With the module off the planner returns every guest untouched, so it
+    // plans no consent columns for ANY row. The clear used to be unconditional,
+    // which meant an approval silently wiped the CONFIRMED record of a member
+    // who had already been emailed at hold time to say they were on this
+    // booking. The row then reads as an ordinary family guest: no trace of who
+    // stood behind the add, and the badge, the audit and the withdrawal notice
+    // all lose the one column they key on.
+    //
+    // Switching a feature off must stop it doing new things, not rewrite what
+    // it already did. The occupant here is UNCHANGED, so the existing columns
+    // still describe this person and are left exactly alone — not rewritten,
+    // not cleared. (The substitution case directly above still clears, which is
+    // the other half of the same rule.)
+    tx.bookingGuest.findMany.mockResolvedValue([
+      { id: "g1", memberId: "m-sam", consentStatus: "CONFIRMED" },
+    ]);
+
+    await reassignHeldBookingGuests(
+      tx as never,
+      "held-1",
+      [guest({ firstName: "Sam", isMember: true, memberId: "m-sam" })],
+      memberGuest(MODULE_OFF),
+    );
+
+    const data = tx.bookingGuest.update.mock.calls[0][0].data as Record<
+      string,
+      unknown
+    >;
+    // ABSENT, not null-valued: an explicit `consentStatus: null` in the update
+    // is precisely the wipe this test exists to forbid.
+    expect(data).not.toHaveProperty("consentStatus");
+    expect(data).not.toHaveProperty("consentRequestedAt");
+    expect(data).not.toHaveProperty("consentRespondedAt");
+    expect(data).not.toHaveProperty("consentRespondedByMemberId");
+    expect(data).not.toHaveProperty("consentExpiresAt");
+    // The rest of the row is still re-stamped from the approval-time list.
+    expect(data.memberId).toBe("m-sam");
+    expect(data.firstName).toBe("Sam");
+  });
+
   it("writes no consent columns and owes no notice while the module is off", async () => {
     tx.bookingGuest.findMany.mockResolvedValue([
       { id: "g1", memberId: null, consentStatus: null },

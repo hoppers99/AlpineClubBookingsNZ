@@ -306,6 +306,77 @@ export function toPipelineGuestCreateData<Guest extends object>(
 }
 
 /**
+ * The member guests on a booking who HAVE BEEN TOLD they are on it.
+ *
+ * MG4 (#2309), and it exists because MG4's first cut only ever notified in one
+ * direction. A held booking notifies its cross-family member guests the moment
+ * the hold is created ("the club has put you on a lodge booking created from
+ * X's booking request"), and several perfectly ordinary things then cancel that
+ * hold — the requester cancels the quote, an officer declines the request —
+ * leaving those members holding an email that has silently stopped being true,
+ * and a person-night quietly consumed on a booking that no longer exists.
+ *
+ * A NON-NULL `consentStatus` IS THE WHOLE TEST, exactly as on the guest-removal
+ * path. It means a consent record exists for this row, which means a message
+ * about it was composed for this member. A family-scope row (NULL) was never the
+ * subject of any message, so releasing it owes nobody an email.
+ *
+ * Call INSIDE the transaction that cancels the hold, or before it: cancelling
+ * does not delete guest rows today, but reading the population first means this
+ * cannot start returning an empty set if that ever changes.
+ */
+export async function collectNotifiedMemberGuestIds(
+  db: Prisma.TransactionClient,
+  bookingId: string
+): Promise<string[]> {
+  const rows = await db.bookingGuest.findMany({
+    where: { bookingId, memberId: { not: null }, consentStatus: { not: null } },
+    select: { memberId: true },
+  });
+  return [
+    ...new Set(rows.map((row) => row.memberId).filter((id): id is string => Boolean(id))),
+  ];
+}
+
+/**
+ * Tell those members the hold has gone — AFTER the commit, and never fatally.
+ *
+ * `BOOKING_REQUEST_REPLACED` is the right one of the three withdrawal contexts
+ * and not merely the closest: its composed sentence is "the club has taken you
+ * off a lodge booking created from a booking request", which is true whether the
+ * request was cancelled, declined, or re-arranged at approval, and it names
+ * nobody — the booking's owner is a non-login contact the reader has never dealt
+ * with, so naming them would introduce a stranger.
+ *
+ * Lazily imported so a club with the module off never pulls the mailer through
+ * these paths, and try/caught because the hold is already released by the time
+ * this runs: a mail failure must not turn into a failed cancellation.
+ */
+export async function notifyMemberGuestsHoldReleased(params: {
+  bookingId: string;
+  targetMemberIds: readonly string[];
+  /** Extra fields for the failure log — the request id, typically. */
+  logContext?: Record<string, unknown>;
+}): Promise<void> {
+  if (params.targetMemberIds.length === 0) return;
+  const { sendMemberGuestWithdrawnNotifications } = await import(
+    "@/lib/member-guest-consent-notifications"
+  );
+  try {
+    await sendMemberGuestWithdrawnNotifications({
+      bookingId: params.bookingId,
+      targetMemberIds: params.targetMemberIds,
+      context: "BOOKING_REQUEST_REPLACED",
+    });
+  } catch (err) {
+    logger.error(
+      { err, bookingId: params.bookingId, ...(params.logContext ?? {}) },
+      "Failed to dispatch member-guest withdrawal notifications for a released hold"
+    );
+  }
+}
+
+/**
  * Fire-and-forget admin email alert that a held booking's owner was invalid at
  * conversion and a fresh non-login contact was substituted (F20 residual #2 /
  * #1377). Best-effort name lookups run outside the caller's transaction; ids are

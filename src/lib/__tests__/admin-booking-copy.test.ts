@@ -418,6 +418,66 @@ describe("copyBookingToDraft — the consent-column matrix (MG4 #2309)", () => {
     },
   );
 
+  it("actually TELLS the copied member guest, on the draft, as an admin add", async () => {
+    // The other half of MG4-D-a, and the half a column matrix cannot see. The
+    // whole point of stamping ADMIN_ASSIGNED is that somebody stood behind the
+    // add; if no mail leaves, the member is on a stranger's booking, holding a
+    // person-night, with nothing to tell them so.
+    //
+    // ON THE DRAFT, DELIBERATELY (declared decision, MG4 review). The ordinary
+    // member create path already notifies straight after `createDraftBooking`,
+    // and a cross-family row on an ask-first club is PENDING — which HOLDS A BED
+    // that the nightly sweep will expire whether or not anybody was asked.
+    // Deferring to "when the copy leaves DRAFT" would make the copy the only
+    // writer behaving differently, and would leave a member holding a bed
+    // nobody had put a question to.
+    crossFamilyBoundary();
+    mocks.bookingFindUnique.mockResolvedValue(
+      sourceWithConsent(SOURCE_STATES[1].columns),
+    );
+
+    await copyBookingToDraft({
+      sourceBookingId: "source-booking",
+      targetCheckIn: "2026-09-10",
+      adminMemberId: "admin-1",
+    });
+
+    expect(mocks.sendMemberGuestAddNotifications).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bookingId: "draft-copy",
+        // The ACTOR decides which of the added notice's three sentences the
+        // member reads. "ADMIN" is what makes it "the club has added you…on
+        // behalf of…" rather than the notify-only wording.
+        actor: { kind: "ADMIN", adminMemberId: "admin-1" },
+      }),
+    );
+    const [call] = mocks.sendMemberGuestAddNotifications.mock.calls;
+    expect(call[0].rows).toEqual([
+      expect.objectContaining({
+        bookingGuestId: "copied-2",
+        targetMemberId: "member-2",
+        notification: "ADDED_NOTICE",
+      }),
+    ]);
+  });
+
+  it("tells nobody when the copied guest is inside the owner's own family", async () => {
+    // D-6: a family-scope copy mints no consent record, so it owes no mail
+    // either. The dispatcher must not even be reached — every copy on a club
+    // with the module off takes this path too.
+    mocks.bookingFindUnique.mockResolvedValue(
+      sourceWithConsent(SOURCE_STATES[1].columns),
+    );
+
+    await copyBookingToDraft({
+      sourceBookingId: "source-booking",
+      targetCheckIn: "2026-09-10",
+      adminMemberId: "admin-1",
+    });
+
+    expect(mocks.sendMemberGuestAddNotifications).not.toHaveBeenCalled();
+  });
+
   it("leaves a family-scope guest with no consent record at all, whatever the source carried", async () => {
     // The boundary is empty here — member-2 is inside the copying owner's
     // family — so D-6 applies and no consent record should be minted. A copy

@@ -47,7 +47,9 @@ import {
 import {
   buildApprovalGuestCreates,
   claimAlreadyConvertedBookingRequest,
+  collectNotifiedMemberGuestIds,
   getCapacityFullNights,
+  notifyMemberGuestsHoldReleased,
   planBookingRequestGuestConsent,
   sendOwnerSubstitutionAdminAlert,
   toPipelineGuestCreateData,
@@ -766,6 +768,15 @@ export async function createMemberWholeLodgeRequest(input: {
  * it to CANCELLED here would strand an AWAITING_REVIEW hold booking forever with
  * no path that releases it — the beds sterilised indefinitely. Such a row must go
  * through admin decline instead, which does release holds.
+ *
+ * MG4 (#2309) ADDS NO WITHDRAWAL NOTICE HERE, and that is a consequence of the
+ * clause above rather than an omission. A member-guest withdrawal notice is owed
+ * when a hold that had ALREADY TOLD somebody they were on a booking goes away —
+ * but this claim refuses to act on any request holding a booking at all, so no
+ * such hold can be released down this path and there is nobody to tell. If the
+ * `heldBookingId: null` guard is ever relaxed, the notice becomes owed with it:
+ * see the decline path, which reads `collectNotifiedMemberGuestIds` before the
+ * hold is cancelled and dispatches after.
  */
 export async function withdrawMemberWholeLodgeRequest(input: {
   requestId: string;
@@ -1191,6 +1202,15 @@ export async function declineBookingRequest(input: {
       select: { id: true, status: true },
     });
     if (held && held.status === BookingStatus.AWAITING_REVIEW) {
+      // MG4 (#2309): read the population BEFORE the hold is released. These are
+      // the members the hold emailed to say the club had put them on a lodge
+      // booking; the decline takes that booking away, and until now took it away
+      // in silence. Read here rather than after, so the answer describes the
+      // hold as it stood rather than whatever the cancel left behind.
+      const notifiedMemberGuestIds = await collectNotifiedMemberGuestIds(
+        prisma,
+        request.heldBookingId
+      );
       const result = await cancelBooking(
         request.heldBookingId,
         input.adminMemberId,
@@ -1237,6 +1257,17 @@ export async function declineBookingRequest(input: {
       }
       // Success: cancelBooking cancelled the held booking, reconciled/freed its
       // beds, and detached `heldBookingId` itself.
+      //
+      // MG4 (#2309): and the people it had put on that booking are told it has
+      // gone. `cancelBooking` runs its own transactions and has committed by
+      // here, so this is a post-commit dispatch like every other one, and it is
+      // failure-safe: the hold is already released, and a mail problem must not
+      // turn a completed decline into an error.
+      await notifyMemberGuestsHoldReleased({
+        bookingId: request.heldBookingId,
+        targetMemberIds: notifiedMemberGuestIds,
+        logContext: { bookingRequestId: request.id },
+      });
     } else {
       // The held pointer is stale or the booking is no longer a live hold
       // (already CANCELLED, or gone). Nothing to cancel — just detach the
@@ -1532,8 +1563,18 @@ export async function reassignHeldBookingGuests(
 
   for (let index = 0; index < planned.length; index += 1) {
     const guest = planned[index];
+    const previous = existing[index];
+    /**
+     * Is this row still the SAME person it was before the swap?
+     *
+     * The whole consent decision below turns on this, and getting it wrong is
+     * not symmetrical: leaving a stale record on a substituted row claims
+     * consent for somebody who was never asked, while clearing one on an
+     * unchanged row erases a record of somebody who WAS told.
+     */
+    const sameOccupant = (guest.memberId ?? null) === previous.memberId;
     await tx.bookingGuest.update({
-      where: { id: existing[index].id },
+      where: { id: previous.id },
       data: {
         firstName: guest.firstName,
         lastName: guest.lastName,
@@ -1548,12 +1589,32 @@ export async function reassignHeldBookingGuests(
         // rows, so overwrite the hold-time snapshot with the other identity
         // fields. Prices stay the admin-set split.
         rateMembershipTypeId: guest.rateMembershipTypeId ?? null,
-        // MG4 (#2309). Written on EVERY row, including as an explicit clear.
-        // The in-place branch reuses a row whose person may have changed, and a
-        // stale ADMIN_ASSIGNED left behind by the previous occupant would claim
-        // consent for somebody who was never asked and never told — the exact
-        // failure `classifyMemberGuestConsent` calls a broken row.
-        ...(guest.memberGuestConsent ?? CONSENT_FREE_GUEST_COLUMNS),
+        /**
+         * MG4 (#2309), and the one case in this function that is NOT "write
+         * whatever the planner said".
+         *
+         * A planned write always wins — the planner has decided this person's
+         * consent afresh, and its answer is the current one.
+         *
+         * When the planner ABSTAINS (`undefined`), what that means depends
+         * entirely on whether the person changed:
+         *
+         *  - SUBSTITUTED. The row is being handed to somebody else, and any
+         *    consent record on it belongs to the person leaving. Left in place
+         *    it would claim consent for somebody who was never asked and never
+         *    told, which is exactly what `classifyMemberGuestConsent` calls a
+         *    broken row. Cleared.
+         *  - UNCHANGED. The columns describe THIS person and are still true, so
+         *    they are left alone — not rewritten, not cleared. The clear was
+         *    unconditional here, and the module being switched off between the
+         *    hold and the approval was enough to reach it: the planner returns
+         *    the guests untouched with the module off, so an approval would
+         *    silently erase the CONFIRMED record of a member who had already
+         *    been emailed to say they were on the booking. Turning a feature off
+         *    must stop it doing new things, not rewrite what it already did.
+         */
+        ...(guest.memberGuestConsent ??
+          (sameOccupant ? {} : CONSENT_FREE_GUEST_COLUMNS)),
       },
     });
   }
