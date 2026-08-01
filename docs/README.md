@@ -291,6 +291,10 @@ module boundaries, data model, integrations, cron jobs, and the mermaid maps.
 
 **Testing, security, and workflow:**
 
+- [`TESTING.md`](TESTING.md) — the Vitest unit harness: the frozen test clock
+  (every run has a fixed "today"), how to write a date-bearing test, the counted
+  opt-out, and the rollover canary. Read before adding any test that mentions a
+  date.
 - [`E2E_PLAYWRIGHT.md`](E2E_PLAYWRIGHT.md) — the Playwright browser E2E suite
   driving the Critical journeys against the staging compose stack.
 - [`SECURITY-ATTACK-SURFACE.md`](SECURITY-ATTACK-SURFACE.md) and

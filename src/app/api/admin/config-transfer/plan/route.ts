@@ -10,7 +10,7 @@ import { configTransferErrorResponse } from "@/lib/config-transfer/route-error";
 
 // POST /api/admin/config-transfer/plan — full-admin only.
 // Dry-run: accepts an uploaded bundle (multipart 'bundle' file, plus mode /
-// categories / resolutions) and returns the import plan (create/update/unchanged
+// categories / resolutions) and returns the import plan (create/update/delete/unchanged
 // per entity + fingerprint + warnings + blocking errors). Read-only. ADR-002.
 
 export async function POST(request: Request) {

@@ -143,7 +143,13 @@ export async function POST(
     }
     if (err instanceof GroupBookingError) {
       return NextResponse.json(
-        { error: err.message, code: err.code, details: err.details },
+        {
+          error: err.message,
+          code: err.code,
+          details: err.details,
+          violations: err.violations,
+          exceptionReview: err.exceptionReview,
+        },
         { status: err.status }
       );
     }

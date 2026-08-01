@@ -116,9 +116,19 @@ export async function saveClubTheme(input: ClubThemeUpdateInput) {
       // Lock the theme row and read its CURRENT logo under that lock, so two
       // concurrent saves serialise instead of both deleting the same stale blob
       // and orphaning the other's new one.
-      const locked = await tx.$queryRaw<Array<{ logoUrl: string | null }>>`
-        SELECT "logoUrl" FROM "ClubTheme" WHERE "id" = ${CLUB_THEME_ID} FOR UPDATE`;
-      const previousLogoImageId = logoImageIdFromUrl(locked[0]?.logoUrl ?? null);
+      //
+      // Lock raw, read typed (#2289): the raw statement selects a constant and
+      // its result is never inspected — it is there for the lock — and the logo
+      // comes back through the Prisma model, which owns the column mapping. The
+      // value this reads decides which image blob gets DELETED, so an unchecked
+      // `$queryRaw<{ logoUrl }>` cast would put a live logo one rename away from
+      // being orphaned or destroyed.
+      await tx.$executeRaw`SELECT 1 FROM "ClubTheme" WHERE "id" = ${CLUB_THEME_ID} FOR UPDATE`;
+      const locked = await tx.clubTheme.findUnique({
+        where: { id: CLUB_THEME_ID },
+        select: { logoUrl: true },
+      });
+      const previousLogoImageId = logoImageIdFromUrl(locked?.logoUrl ?? null);
       const nextLogoImageId = logoImageIdFromUrl(logoFields.logoUrl);
 
       // A stale tab can post a logoUrl whose blob a newer save already deleted.

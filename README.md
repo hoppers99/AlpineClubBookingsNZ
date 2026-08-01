@@ -156,6 +156,10 @@ Caddy blue/green production setup is in [`DEPLOYMENT.md`](DEPLOYMENT.md).
 - **Critical journeys run in real browsers.** Playwright E2E suites cover
   booking, payments, waitlist, two-factor login, bed allocation, and more
   against a seeded staging stack ([`docs/E2E_PLAYWRIGHT.md`](docs/E2E_PLAYWRIGHT.md)).
+- **No test may depend on today's date.** Every unit test file runs with "today"
+  frozen at 1 July 2026, and a canary re-runs the whole suite with the machine's
+  real clock wound forward by a year to catch anything that escapes the freeze
+  ([`docs/TESTING.md`](docs/TESTING.md)).
 - **Migrations are gated for zero-downtime.** Every schema change is classified
   under the blue/green ledger before it can merge
   ([`docs/BLUE_GREEN_MIGRATION_POLICY.md`](docs/BLUE_GREEN_MIGRATION_POLICY.md)).
@@ -193,7 +197,7 @@ by audience. Key entry points:
 | **Club members** | [User guides](docs/user-guide/README.md) — booking a stay, paying, waitlist, family, your account — also on the [project wiki](https://github.com/thatskiff33/AlpineClubBookingsNZ/wiki) |
 | **Adopting clubs** | [`docs/IMPLEMENTATION_GUIDE.md`](docs/IMPLEMENTATION_GUIDE.md) · [`CONFIGURATION.md`](CONFIGURATION.md) · [`DEPLOYMENT.md`](DEPLOYMENT.md) · [`docs/UPGRADING.md`](docs/UPGRADING.md) |
 | **Operators / committee** | [65 illustrated operator guides](docs/README.md) · feature hubs: [finance dashboard](docs/finance-dashboard/README.md), [multi-lodge](docs/multi-lodge/README.md), [lobby display](docs/lobby-display/README.md), [Xero](docs/xero/ARCHITECTURE.md), [config transfer](docs/config-transfer/README.md) · [`docs/CANCELLATIONS.md`](docs/CANCELLATIONS.md) · [`docs/AUTHORITATIVE_FEES.md`](docs/AUTHORITATIVE_FEES.md) |
-| **Developers** | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · [`docs/DOMAIN_INVARIANTS.md`](docs/DOMAIN_INVARIANTS.md) · [`docs/STATE_MACHINES.md`](docs/STATE_MACHINES.md) · [`docs/UX_FLOW_MAP.md`](docs/UX_FLOW_MAP.md) · [`docs/E2E_PLAYWRIGHT.md`](docs/E2E_PLAYWRIGHT.md) · [`docs/MAINTENANCE.md`](docs/MAINTENANCE.md) · [`CONTRIBUTING.md`](CONTRIBUTING.md) |
+| **Developers** | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · [`docs/DOMAIN_INVARIANTS.md`](docs/DOMAIN_INVARIANTS.md) · [`docs/STATE_MACHINES.md`](docs/STATE_MACHINES.md) · [`docs/UX_FLOW_MAP.md`](docs/UX_FLOW_MAP.md) · [`docs/TESTING.md`](docs/TESTING.md) · [`docs/E2E_PLAYWRIGHT.md`](docs/E2E_PLAYWRIGHT.md) · [`docs/MAINTENANCE.md`](docs/MAINTENANCE.md) · [`CONTRIBUTING.md`](CONTRIBUTING.md) |
 | **Maintainers** | [`docs/ONGOING_DEVELOPMENT_WORKFLOW.md`](docs/ONGOING_DEVELOPMENT_WORKFLOW.md) · [`docs/BLUE_GREEN_MIGRATION_POLICY.md`](docs/BLUE_GREEN_MIGRATION_POLICY.md) · [`docs/PRODUCTION_UPGRADE_RUNBOOK.md`](docs/PRODUCTION_UPGRADE_RUNBOOK.md) · [`docs/SECURITY.md`](docs/SECURITY.md) |
 
 ## Community, security, and licence

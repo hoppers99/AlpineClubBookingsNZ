@@ -1,0 +1,171 @@
+name: Clock rollover canary
+
+# Re-runs the unit suite with the machine's REAL clock wound forward, and fails
+# if any test result changes. That is the acceptance criterion of #2481 stated
+# directly: "winding the real system clock forward by a year does not change any
+# test result".
+#
+# Every test file is frozen at 2026-07-01T00:00:00.000Z by vitest.clock-setup.ts,
+# so a properly frozen test cannot notice this job at all. What CAN notice it is
+# anything that escaped the freeze — a file on the opt-out allowlist, or code
+# reaching a date through a path the freeze does not cover. Those are exactly the
+# tests that will go red on their own one day and take `main` and every open PR
+# with them, which has already happened four times (#2426, #2401, #2443, #2479).
+#
+# The clock is shifted with libfaketime rather than by setting the runner's
+# system clock: no VM-wide side effects, no fight with NTP resync, and monotonic
+# clocks are left REAL (FAKETIME_DONT_FAKE_MONOTONIC) so timers, awaited promises
+# and `performance.now()` behave normally.
+#
+# It does NOT wind the FROZEN instant forward (TEST_CLOCK_OFFSET_DAYS). That
+# would test something else entirely — whether fixtures survive a different
+# frozen "today" — and would fail on suites that are perfectly correct, e.g. the
+# #2443 subscription suites book 2026-12-01 and would read as past at +1 year.
+# The frozen instant never advances (owner decision, 2 Aug 2026); that env var
+# exists for reproducing a specific rollover locally, documented in
+# src/lib/__tests__/helpers/clock.ts.
+#
+# DELIBERATELY NOT A PULL-REQUEST CHECK (owner decision, 2 Aug 2026). It has no
+# `pull_request` trigger, so it can never appear as a required check and can
+# never block unrelated work on a problem that is, by construction, not urgent
+# yet. Do not add one — use `workflow_dispatch` to run it on a branch. Branch
+# protection is untouched by this file.
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    # 14:00 UTC = 02:00 NZST — after the day's merges, before anyone starts.
+    - cron: "0 14 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Never cancel: each wound-forward verdict stands on its own, and a cancelled
+  # canary reads as "no problem found" when nothing was actually checked.
+  group: clock-rollover-canary-${{ github.ref }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  wound-forward-suite:
+    name: Unit suite with the real clock ${{ matrix.label }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      # Different horizons expose different fixtures; report all three, never
+      # stop at the first.
+      fail-fast: false
+      matrix:
+        include:
+          - label: a day ahead
+            offset: "+1d"
+            min_shift_days: 1
+          - label: a month ahead
+            offset: "+31d"
+            min_shift_days: 31
+          - label: a year ahead
+            offset: "+366d"
+            min_shift_days: 366
+    env:
+      # Mirrors the `verify` job's environment: the unit suite needs these to
+      # exist, not to be reachable. DATABASE_URL is an unreachable dummy that
+      # only lets prisma.config.ts resolve.
+      AUTH_SECRET: ci-auth-secret
+      NEXTAUTH_SECRET: ci-auth-secret
+      NEXTAUTH_URL: http://localhost:3000
+      AUTH_TRUST_HOST: "false"
+      CRON_SECRET: ci-cron-secret
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/tacbookings
+      STRIPE_SECRET_KEY: sk_test_fake
+      NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: pk_test_fake
+      XERO_ENABLE_DAILY_MEMBERSHIP_REFRESH: "false"
+      XERO_ENABLE_LIVE_MEMBER_GROUP_LOOKUPS: "false"
+      XERO_ENABLE_AUTOLOAD_XERO_CONTACT_GROUPS: "false"
+      # Leave CLOCK_MONOTONIC alone. Faking it as well stalls timers and turns
+      # every awaited promise into a hang, and the freeze deliberately keeps
+      # real timers for exactly that reason.
+      FAKETIME_DONT_FAKE_MONOTONIC: "1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install libfaketime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends faketime
+
+      # A canary whose clock shift silently failed to apply would report green
+      # while testing nothing — the same vacuous-pass failure this whole issue
+      # exists to stop. Prove the shift reaches Node's Date before trusting the
+      # run below.
+      - name: Prove the fake clock reaches Node
+        run: |
+          real_ms=$(node -e 'process.stdout.write(String(Date.now()))')
+          faked_ms=$(faketime -f '${{ matrix.offset }}' node -e 'process.stdout.write(String(Date.now()))')
+          delta_ms=$(( faked_ms - real_ms ))
+          # Compared in milliseconds, with a minute of slack for the gap between
+          # the two process starts. A day-granularity check would pass on a shift
+          # of zero for the +1d job, which is precisely the vacuous green this
+          # step exists to refuse.
+          min_ms=$(( ${{ matrix.min_shift_days }} * 86400000 - 60000 ))
+          echo "real=$real_ms faked=$faked_ms delta_ms=$delta_ms min_ms=$min_ms"
+          if [ "$delta_ms" -lt "$min_ms" ]; then
+            echo "libfaketime did not shift Node's clock — refusing to report a meaningless pass"
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npm run db:generate
+
+      # The timeouts and the retry are the libfaketime tax, not slack. Every
+      # clock call — and every subprocess spawn, which inherits the LD_PRELOAD
+      # shim — goes through the interposer, and on the first real run that alone
+      # tipped four suites past the default 5s test timeout and one React
+      # Testing Library `waitFor` past its own 1s. A timeout here would read as a
+      # date bug and waste the reader's morning, which is the opposite of the
+      # point.
+      #
+      # `--retry` does not soften the signal: a test that reaches the real
+      # calendar fails identically on every attempt, because the clock is shifted
+      # for the whole run. Only a slowness flake passes on the retry.
+      - name: Run the unit suite with the real clock ${{ matrix.label }}
+        run: faketime -f '${{ matrix.offset }}' npm test -- --testTimeout=30000 --hookTimeout=30000 --retry=2
+
+      - name: Explain a red canary
+        if: failure()
+        run: |
+          {
+            echo "## Clock rollover canary failed (real clock ${{ matrix.label }})"
+            echo
+            echo "The unit suite was re-run under \`faketime -f '${{ matrix.offset }}'\`, so the"
+            echo "machine's real clock read ${{ matrix.label }} while the test freeze stayed"
+            echo "pinned at 2026-07-01."
+            echo
+            echo "**This is almost certainly not caused by the commit that triggered it.**"
+            echo "It means a test still reaches the real calendar — through an opt-out, or"
+            echo "through a path the freeze does not cover — so it will go red on its own"
+            echo "one day and take \`main\` and every open PR with it."
+            echo
+            echo "To reproduce locally on Linux:"
+            echo
+            echo '```bash'
+            echo "sudo apt-get install -y faketime"
+            echo "FAKETIME_DONT_FAKE_MONOTONIC=1 faketime -f '${{ matrix.offset }}' \\"
+            echo "  npm test -- --testTimeout=30000 --hookTimeout=30000 --retry=2"
+            echo '```'
+            echo
+            echo "Fix the test so it reads the frozen clock. See docs/TESTING.md,"
+            echo "\"The frozen test clock\"."
+          } >> "$GITHUB_STEP_SUMMARY"

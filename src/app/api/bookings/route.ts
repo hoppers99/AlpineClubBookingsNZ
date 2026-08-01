@@ -88,6 +88,7 @@ import {
   parseDateOnly,
 } from "@/lib/date-only";
 import { resolveOptionalActiveLodgeId } from "@/lib/lodges";
+import { aggregatePolicyExceptionViolations } from "@/lib/booking-policy-exceptions";
 import {
   hasAccessRole,
   hasAdminAccess,
@@ -711,12 +712,16 @@ export async function POST(request: NextRequest) {
     const { validateMinimumStay, formatViolationsDetail } = await import("@/lib/booking-policies");
     const stayResult = await validateMinimumStay(checkIn, checkOut, bookingLodgeId);
     if (!stayResult.valid) {
+      const exceptionReview = aggregatePolicyExceptionViolations(
+        stayResult.violations,
+      );
       return NextResponse.json(
         {
           error: "Booking does not meet minimum stay requirement",
           details: formatViolationsDetail(stayResult.violations),
           code: "MINIMUM_STAY_VIOLATION",
-          violations: stayResult.violations,
+          violations: exceptionReview.violations,
+          exceptionReview,
         },
         { status: 400 }
       );

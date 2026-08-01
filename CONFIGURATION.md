@@ -704,10 +704,20 @@ reusable layout fragments that are not routable pages.
 - The public footer keeps the logo, current year, copyright line, and
   privacy/terms links code-managed. Admins can edit or clear the three column
   HTML fragments; clearing either link column hides that column.
-- The migration backfills starter footer rows with the previous hardcoded
-  footer copy, so deploy-only environments keep the same footer without
-  running the seed. The seed also creates the starter rows when missing and
-  never overwrites existing admin edits.
+- `20260702124500_add_site_content` backfills starter footer rows with the
+  previous hardcoded footer copy, so deploy-only environments keep the same
+  footer without running the seed. The seed also creates the starter rows when
+  missing and never overwrites existing admin edits.
+- **`FOOTER_AFFILIATIONS` is empty on a fresh install (#2490).** A club's
+  affiliations are facts about that club, so this project ships none and the
+  footer hides the column until an admin adds the club's own. The original
+  backfill planted a list naming the Ruapehu Mountain Clubs Association, which
+  every install then published on every public page;
+  `20260802140000_clear_starter_footer_affiliations` clears that value from any
+  database that still holds it byte for byte, leaving an edited column alone.
+  `src/lib/__tests__/seed-account-defaults.test.ts` now runs the
+  founding-club geography guard over `starterSiteContent` as well as
+  `starterPageContent` and the seeded chore templates.
 - Footer section HTML is sanitised on save and again on render with the same
   allowlist as page content (`src/lib/page-content-html.ts`). Footer text
   tokens include `{{club-name}}`, `{{currency}}`, `{{lodge-capacity}}`,
@@ -870,6 +880,23 @@ club-wide tiers. Lodges with no override keep using the club-wide rules. The
 booking flow shows a member the rules for the lodge they booked. Lodge
 opening/closing/day-to-day kiosk instructions follow the same replace-not-merge
 rule per document.
+
+Each minimum-stay row also carries an explicit exception-capacity mode and a
+revision. `HOLD` means a later exception-review request will reserve the
+requested capacity while it waits; `NO_HOLD` means capacity is not reserved
+until approval. Existing rows migrate to `HOLD`, and every new admin/API write
+must choose one. The revision is an optimistic concurrency token: update,
+activate/deactivate, and delete writes that present an older version are refused
+and the admin reloads the current row instead of overwriting it.
+
+Minimum-stay policies are the one destructive config-transfer category. The
+bundle file `booking-policies/minimum-stay.csv` is a complete club-wide and
+lodge-scoped set, not a patch: omitted target rows appear as **Deleted** in the
+dry-run and are removed on Apply, while a valid header-only file explicitly
+clears the set. Malformed or missing headers block Apply. Import takes the
+config-transfer lock and then the minimum-stay policy-set lock, re-plans inside
+the transaction, and relies on the automatic pre-apply database backup for
+rollback. Ordinary config-transfer categories remain non-deleting.
 
 ### 8. Eligibility restrictions and cross-lodge waitlist
 

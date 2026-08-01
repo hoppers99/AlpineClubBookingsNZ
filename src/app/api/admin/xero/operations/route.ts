@@ -5,7 +5,8 @@ import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { resolveFailedXeroOperationStates } from "@/lib/xero-admin-failures";
 import logger from "@/lib/logger";
-import { buildXeroObjectUrl } from "@/lib/xero-links";
+import { applyXeroOrgShortCode, buildXeroObjectUrl } from "@/lib/xero-links";
+import { getXeroOrgShortCode } from "@/lib/xero-link-short-code";
 import { getXeroOperationRetryMeta } from "@/lib/xero-operation-retry";
 import { buildLocalAdminUrl } from "@/lib/xero-record-links";
 import {
@@ -129,6 +130,14 @@ export async function GET(request: NextRequest) {
     const failedOperations = operations.filter((operation) => operation.status === "FAILED");
     const failureResolutions = await resolveFailedXeroOperationStates(failedOperations);
 
+    // #2314: `XeroSyncOperation.xeroObjectUrl` is stored organisation-AGNOSTIC
+    // on purpose (a short code baked into a row is wrong the moment the club
+    // reconnects to a different Xero organisation), so the short code is applied
+    // here at render time — to the stored URL and the rebuilt fallback alike.
+    // Null degrades every link to the generic go.xero.com form; it never hides
+    // one.
+    const shortCode = await getXeroOrgShortCode();
+
     return NextResponse.json({
       data: operations.map((operation) => ({
         ...operation,
@@ -136,11 +145,16 @@ export async function GET(request: NextRequest) {
         failureState: failureResolutions.get(operation.id)?.state ?? null,
         failureStateReason: failureResolutions.get(operation.id)?.reason ?? null,
         failureRootKey: failureResolutions.get(operation.id)?.rootKey ?? null,
-        xeroObjectUrl:
+        xeroObjectUrl: applyXeroOrgShortCode(
           operation.xeroObjectUrl ??
-          (operation.xeroObjectType && operation.xeroObjectId
-            ? buildXeroObjectUrl(operation.xeroObjectType, operation.xeroObjectId)
-            : null),
+            (operation.xeroObjectType && operation.xeroObjectId
+              ? buildXeroObjectUrl(
+                  operation.xeroObjectType,
+                  operation.xeroObjectId,
+                )
+              : null),
+          { shortCode },
+        ),
         localUrl: buildLocalAdminUrl(operation.localModel, operation.localId),
       })),
       total,

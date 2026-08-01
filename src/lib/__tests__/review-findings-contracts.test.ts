@@ -3225,8 +3225,12 @@ describe("review finding source/schema contracts", () => {
   it(
     "keeps the committed migration tree covered by the blue/green safety ledger",
     // Shells out over the full committed migration tree; under a loaded
-    // parallel suite run this regularly exceeds the default 5s.
-    { timeout: 20000 },
+    // parallel suite run this regularly exceeds the default 5s. The 60s ceiling
+    // (rather than the 20s its siblings use) is for the #2481 rollover canary,
+    // which runs the suite under libfaketime — every subprocess spawn inherits
+    // the LD_PRELOAD shim, and this is by far the shelliest test in the repo.
+    // Measured at 34s there; 20s failed.
+    { timeout: 60000 },
     () => {
       // Regression guard for #1359: the real prisma/migrations tree + real ledger
       // must pass the PR-time coverage gate (both backfilled rows present, and no

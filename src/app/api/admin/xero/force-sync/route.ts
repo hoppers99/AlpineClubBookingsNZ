@@ -5,6 +5,7 @@ import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
+import { getXeroOrgShortCode } from "@/lib/xero-link-short-code";
 import {
   checkMembershipStatus,
   findOrCreateXeroContact,
@@ -220,8 +221,12 @@ export async function POST(request: NextRequest) {
         memberEmail: member.email,
         status: result.status,
         xeroInvoiceId: result.xeroInvoiceId ?? null,
+        // #2314: organisation-scoped so a multi-organisation Xero login opens
+        // the invoice in this club's books.
         xeroInvoiceUrl: result.xeroInvoiceId
-          ? buildXeroInvoiceUrl(result.xeroInvoiceId)
+          ? buildXeroInvoiceUrl(result.xeroInvoiceId, {
+              shortCode: await getXeroOrgShortCode(),
+            })
           : null,
       });
     }

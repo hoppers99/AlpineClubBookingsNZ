@@ -186,6 +186,53 @@ describe("buildMemberMergePreview warnings", () => {
     expect(result.warnings.some((w) => w.includes("discarded"))).toBe(false);
   });
 
+  it("warns that the MASTER's own link at the duplicate will be CLEARED, and never counts it as a move (#2437)", async () => {
+    // Step 1 of the merge NULLS a master self-relation column pointing at the
+    // duplicate — the link is deleted, not carried. Counting the master's own
+    // row under "History moved" told the operator the opposite, and the audit
+    // then recorded a move that never happened. The row is excluded from the
+    // move counts (with the same predicate the execute-time token
+    // re-derivation uses, so the digest still verifies) and surfaced as an
+    // explicit clearance warning instead.
+    const master = makeMember(MASTER_ID, { inheritEmailFromId: LOSER_ID });
+    const loser = makeMember(LOSER_ID);
+    const memberDelegate = {
+      ...defaultDelegate(),
+      findUnique: vi.fn(({ where }: { where: { id: string } }) =>
+        Promise.resolve(
+          where.id === MASTER_ID ? master : where.id === LOSER_ID ? loser : null,
+        ),
+      ),
+      count: vi.fn(({ where }: { where?: { id?: unknown } }) =>
+        Promise.resolve(where?.id === ACTOR_ID ? 1 : 0),
+      ),
+    };
+    const result = await preview({
+      master,
+      loser,
+      overrides: { member: memberDelegate },
+    });
+
+    const warning = result.warnings.find((w) => w.includes("CLEARED"));
+    expect(warning).toBeDefined();
+    expect(warning).toContain("inheritEmailFrom");
+    expect(warning).toContain("not moved");
+    expect(
+      result.relationMoves.find((m) => m.model === "Member.inheritEmailFrom"),
+    ).toBeUndefined();
+    // The count predicate excludes the master's own row.
+    expect(
+      memberDelegate.count.mock.calls.map(
+        ([arg]) => (arg as { where: unknown }).where,
+      ),
+    ).toContainEqual({ inheritEmailFromId: LOSER_ID, id: { not: MASTER_ID } });
+  });
+
+  it("does not warn about a clearance when the master holds no link at the duplicate", async () => {
+    const result = await preview({});
+    expect(result.warnings.some((w) => w.includes("CLEARED"))).toBe(false);
+  });
+
   it("adds a specific note when duplicate promo-money allocation rows will be dropped (m5)", async () => {
     const promoRedemptionAllocation = {
       ...defaultDelegate(),

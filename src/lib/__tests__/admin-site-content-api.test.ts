@@ -134,10 +134,34 @@ describe("GET /api/admin/site-content", () => {
     expect(blurb.contentHtml).toBe(starterSiteContent[0].contentHtml);
     expect(blurb.updatedAt).toBeNull();
 
-    // Tokens stay unresolved on the admin editor surface.
+    // #2490: the starter affiliations column is empty — a fresh install lists
+    // no affiliations until the club adds its own — so the fallback is empty
+    // too and names no club-specific body.
     const affiliations = body.documents[2];
-    expect(affiliations.contentHtml).toContain("{{facebook-url}}");
-    expect(affiliations.contentHtml).toContain("Federated Mountain Clubs");
+    expect(affiliations.key).toBe("FOOTER_AFFILIATIONS");
+    expect(affiliations.contentHtml).toBe("");
+    expect(
+      body.documents.map((doc: { contentHtml: string }) => doc.contentHtml).join(""),
+    ).not.toMatch(/RMCA|Ruapehu|Federated Mountain Clubs/i);
+  });
+
+  it("leaves text tokens unresolved on the editor surface", async () => {
+    // Round-trip safety: an admin edits the literal {{facebook-url}}, so the
+    // editor must never be served a resolved value it would then save back.
+    mocks.auth.mockResolvedValue(adminSession);
+    mocks.siteContentFindMany.mockResolvedValue([
+      {
+        key: "FOOTER_AFFILIATIONS",
+        contentHtml:
+          '<ul><li><a href="{{facebook-url}}" target="_blank" rel="noopener noreferrer">Facebook</a></li></ul>',
+        updatedAt: new Date("2026-07-01T00:00:00Z"),
+      },
+    ]);
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(body.documents[2].contentHtml).toContain("{{facebook-url}}");
   });
 
   it("sanitises stored rows again on read", async () => {

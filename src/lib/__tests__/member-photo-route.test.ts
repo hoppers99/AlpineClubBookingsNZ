@@ -13,7 +13,11 @@ const mocks = vi.hoisted(() => ({
   mediaImageFindUnique: vi.fn(),
   mediaImageCreate: vi.fn(),
   mediaImageDeleteMany: vi.fn(),
-  txQueryRaw: vi.fn(),
+  // The locked re-read inside the transaction (#2289): the route takes the
+  // member row lock with $executeRaw and reads the pointer back through the
+  // Prisma model, so this is the mock that decides what it sees.
+  txExecuteRaw: vi.fn(),
+  txMemberFindUnique: vi.fn(),
   transaction: vi.fn(),
   logAudit: vi.fn(),
 }));
@@ -269,7 +273,8 @@ function wireMemberLookups({
   // The upload/remove transaction re-reads the current pointer under a row lock
   // (SELECT ... FOR UPDATE) instead of trusting the pre-transaction read, so a
   // concurrent replace can't orphan a blob. Mirror the current pointer here.
-  mocks.txQueryRaw.mockResolvedValue([{ photoImageId }]);
+  mocks.txExecuteRaw.mockResolvedValue(1);
+  mocks.txMemberFindUnique.mockResolvedValue({ photoImageId });
 }
 
 function servingRequest(id: string, headers?: Record<string, string>) {
@@ -363,15 +368,19 @@ beforeEach(() => {
   }));
   mocks.mediaImageDeleteMany.mockResolvedValue({ count: 1 });
   mocks.memberUpdate.mockResolvedValue({});
-  mocks.txQueryRaw.mockResolvedValue([{ photoImageId: null }]);
+  mocks.txExecuteRaw.mockResolvedValue(1);
+  mocks.txMemberFindUnique.mockResolvedValue({ photoImageId: null });
   mocks.transaction.mockImplementation(async (cb: (tx: unknown) => unknown) =>
     cb({
-      $queryRaw: mocks.txQueryRaw,
+      $executeRaw: mocks.txExecuteRaw,
       mediaImage: {
         create: mocks.mediaImageCreate,
         deleteMany: mocks.mediaImageDeleteMany,
       },
-      member: { update: mocks.memberUpdate },
+      member: {
+        findUnique: mocks.txMemberFindUnique,
+        update: mocks.memberUpdate,
+      },
     }),
   );
 });

@@ -6,13 +6,15 @@ Audience: Operator
 
 A full-admin tool that exports your club's **configuration, site content, and
 lodge setup** as a single portable `.zip` bundle, and imports such a bundle into
-another (or the same) instance through a **preview → apply** flow that never
-deletes. Find it at **Admin → Setup & Configuration → Export & Import**
+another (or the same) instance through a **preview → apply** flow. Ordinary
+categories never delete; minimum-stay policies are the explicit exception and
+are replaced as a complete set. Find it at **Admin → Setup & Configuration → Export & Import**
 (`/admin/config-transfer`).
 
 Only **Full Admins** can open this page (others see a "full administrators only"
-notice). It is **not** a database backup: importing never removes anything added
-since the export, and members, bookings, payments, and other transactional data
+notice). It is **not** a database backup: ordinary imports preserve anything
+added since the export, while an omitted minimum-stay policy is deleted after a
+prominent preview. Members, bookings, payments, and other transactional data
 are never included. The full contract — categories, validation rules, and safety
 model — lives in the [config-transfer feature hub](../config-transfer/README.md).
 
@@ -40,7 +42,8 @@ model — lives in the [config-transfer feature hub](../config-transfer/README.m
 
 1. In **Import**, choose a `.zip` file and click **Preview (dry-run)** — nothing
    is written yet. The plan shows, per entity, what would be **New**, **Updated**,
-   or **Unchanged**, plus any door-code, Xero-org, or edited-bundle warnings.
+   **Deleted**, or **Unchanged**, plus any door-code, Xero-org, or edited-bundle
+   warnings. Every changed or deleted row stays visible even in a long plan.
 2. Pick a **write mode** — **Merge** (recommended; only fields with a value in
    the bundle are written) or **Overwrite** (the bundle fully defines each
    record; blank fields clear it). You can also untick categories or resolve a
@@ -58,6 +61,7 @@ Exportable categories:
 | --- | --- |
 | Site content & appearance | CMS pages, keyed site content, club theme (embedded images travel in the bundle) |
 | Club settings | Club-wide singletons: modules, booking defaults, member fields, club identity, email message settings, etc. |
+| Booking policies | The complete club-wide and lodge-scoped minimum-stay policy set, including whether each soft violation holds capacity or not |
 | Lodge configuration | Lodges, rooms, beds, seasons, season rates, lodge instructions, chore templates |
 | Committee (roles) | `CommitteeRole` definitions only (not member-linked assignments) |
 | Induction checklists | Induction templates with their sections and items |
@@ -72,9 +76,13 @@ Exportable categories:
 | Match picker | Resolve an unmatched season/chore/induction template as *create new* or *match existing* |
 | Reseal edited bundle | Regenerate the manifest after hand-editing a bundle |
 
-Import **never deletes**; the automatic pre-apply `pg_dump` backup is the true
-rollback. Validation errors (bad dates, non-integer money, invalid slugs, unknown
-keys) **block** apply until fixed.
+Ordinary categories **never delete**. Booking policies are the deliberate
+exception: importing replaces the complete minimum-stay set, and every omitted
+policy appears as **Deleted** in the preview. The automatic pre-apply `pg_dump`
+backup is the true rollback. Validation errors (bad dates, non-integer money,
+invalid slugs, unknown keys, or a malformed policy CSV/header) **block** apply
+until fixed. A valid header-only `booking-policies/minimum-stay.csv` explicitly
+clears the set; a blank or malformed file never does.
 
 **Connected provider credentials never travel.** A bundle never carries the
 Xero/Stripe/Google/backup secrets your club has connected — not the encrypted
@@ -133,7 +141,8 @@ where there was none.
 | "This bundle was edited since export" warning | Manifest checksums don't match the files | Advisory only — apply anyway, or **Reseal** to refresh the manifest |
 | Xero org mismatch warning | The Xero config came from a different connected org | Verify the codes, or untick the Xero category before applying |
 | A door-code change warning appears | The bundle would set/change a lodge door code | Confirm it's intended before applying |
-| A "restore" didn't remove stale rows | Import never deletes | Remove them on the owning admin page; the backup is the true rollback |
+| A "restore" didn't remove stale rows | Ordinary categories never delete; only the minimum-stay policy set is replaced | Remove stale ordinary rows on the owning admin page; the backup is the true rollback |
+| A version 1 or 2 bundle is refused | The current app requires exact config-transfer format version 3 because minimum-stay replace semantics are destructive | Re-export from the current app; resealing an older bundle does not upgrade its meaning |
 
 ### Converting a legacy bundle by hand
 

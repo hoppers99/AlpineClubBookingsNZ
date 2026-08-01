@@ -11,6 +11,7 @@ import {
 import { logAudit } from "@/lib/audit";
 import logger from "@/lib/logger";
 import { buildXeroContactUrl } from "@/lib/xero-links";
+import { getXeroOrgShortCode } from "@/lib/xero-link-short-code";
 import { z } from "zod";
 import { getXeroApiErrorInfo } from "@/lib/xero-api-errors";
 import { getSeasonYear } from "@/lib/utils";
@@ -254,7 +255,11 @@ export async function POST(
 
     return NextResponse.json({
       xeroContactId,
-      xeroLink: buildXeroContactUrl(xeroContactId),
+      // #2314: organisation-scoped, so the admin who just pushed lands in this
+      // club's Xero rather than whichever organisation their session last used.
+      xeroLink: buildXeroContactUrl(xeroContactId, {
+        shortCode: await getXeroOrgShortCode(),
+      }),
       entranceFeeInvoiceQueued,
       entranceFeeInvoiceMessage,
       ...(warning ? { warning } : {}),

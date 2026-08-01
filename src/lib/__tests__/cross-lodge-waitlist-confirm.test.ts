@@ -9,6 +9,10 @@ import { BookingStatus } from "@prisma/client";
 const mocks = vi.hoisted(() => ({
   transaction: vi.fn(),
   bookingFindUnique: vi.fn(),
+  // #2363 Phase 0 reads the entry on the MODULE client, outside any
+  // transaction, before the offered lodge's lock is taken.
+  prismaBookingFindUnique: vi.fn(),
+  validateMinimumStay: vi.fn(),
   bookingFindFirst: vi.fn(),
   bookingUpdate: vi.fn(),
   lodgeFindUnique: vi.fn(),
@@ -37,7 +41,13 @@ const txClient = {
 };
 
 vi.mock("@/lib/prisma", () => ({
-  prisma: { $transaction: mocks.transaction },
+  prisma: {
+    $transaction: mocks.transaction,
+    booking: { findUnique: mocks.prismaBookingFindUnique },
+  },
+}));
+vi.mock("@/lib/booking-policies", () => ({
+  validateMinimumStay: mocks.validateMinimumStay,
 }));
 vi.mock("@/lib/capacity", () => ({
   acquireLodgeCapacityLock: mocks.acquireLodgeCapacityLock,
@@ -97,6 +107,8 @@ beforeEach(() => {
     async (cb: (tx: typeof txClient) => unknown) => cb(txClient),
   );
   mocks.bookingFindUnique.mockResolvedValue(offeredEntry());
+  mocks.prismaBookingFindUnique.mockResolvedValue(offeredEntry());
+  mocks.validateMinimumStay.mockResolvedValue({ valid: true, violations: [] });
   mocks.lodgeFindUnique.mockResolvedValue({ active: true });
   mocks.isMemberEligibleToBookLodge.mockResolvedValue(true);
   mocks.acquireLodgeCapacityLock.mockResolvedValue(undefined);
@@ -236,5 +248,134 @@ describe("confirmCrossLodgeWaitlistOffer in-transaction duplicate-stay guard (M2
     expect(result.code).toBeUndefined();
     expect(result.error).toBe("An error occurred while confirming your booking");
     expect(mocks.createConfirmedBooking).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("confirmCrossLodgeWaitlistOffer minimum-stay guard (#2363)", () => {
+  // A cross-lodge offer calls `createConfirmedBooking` directly, so nothing
+  // else on this path applies the minimum-stay rule at all. It also matters
+  // more here than anywhere else: per-lodge policy resolution REPLACES the
+  // club-wide set, so the offered lodge can carry rules the member's own lodge
+  // has never had.
+  const violation = {
+    reasonCode: "MINIMUM_STAY",
+    policyId: "policy-lodge-b",
+    policyVersion: 3,
+    policyName: "Lodge B winter week",
+    resolvedScope: {
+      kind: "LODGE",
+      lodgeId: "lodge-b",
+      effectiveLodgeId: "lodge-b",
+    },
+    affectedNights: ["2026-08-10", "2026-08-11"],
+    exceptionEligible: true,
+    capacityMode: "HOLD",
+    message:
+      "Bookings including a Monday night require a minimum stay of 4 nights (Lodge B winter week). Your booking is 2 nights.",
+    triggerDay: "Monday",
+    minimumNights: 4,
+    actualNights: 2,
+    requirements: {
+      kind: "MINIMUM_STAY",
+      minimumNights: 4,
+      actualNights: 2,
+      triggerDays: [1],
+    },
+  };
+
+  it("refuses an offer the OFFERED lodge's stricter rule rejects, leaves the entry waitlisted, and creates nothing", async () => {
+    mocks.validateMinimumStay.mockResolvedValue({
+      valid: false,
+      violations: [violation],
+    });
+
+    const result = await confirmCrossLodgeWaitlistOffer("entry-1", "member-1");
+
+    expect(result.success).toBe(false);
+    expect(result.code).toBe("MINIMUM_STAY_VIOLATION");
+    // Evaluated against the OFFERED lodge, not the lodge the member queued at.
+    expect(mocks.validateMinimumStay).toHaveBeenCalledWith(
+      CHECK_IN,
+      CHECK_OUT,
+      "lodge-b",
+    );
+    // Nothing was priced, claimed or created for a stay the policy refuses.
+    expect(mocks.createConfirmedBooking).not.toHaveBeenCalled();
+    expect(mocks.checkCapacityForGuestRanges).not.toHaveBeenCalled();
+    // The offer is NOT consumed: the entry goes back on the waitlist under the
+    // offered lodge's lock, exactly as the no-longer-eligible branch does.
+    expect(mocks.acquireLodgeCapacityLock).toHaveBeenCalledWith(
+      expect.anything(),
+      "lodge-b",
+    );
+    expect(mocks.bookingUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "entry-1" },
+        data: expect.objectContaining({ status: BookingStatus.WAITLISTED }),
+      }),
+    );
+    expect(mocks.reconcileBedAllocations).toHaveBeenCalledTimes(1);
+  });
+
+  it("tells the member a plain sentence and never the rule's name or night counts", async () => {
+    mocks.validateMinimumStay.mockResolvedValue({
+      valid: false,
+      violations: [violation],
+    });
+
+    const result = await confirmCrossLodgeWaitlistOffer("entry-1", "member-1");
+    const wire = JSON.stringify(result);
+
+    expect(result.error).toBe(
+      "That lodge's minimum stay for these nights is longer than your stay, so " +
+        "this offer cannot be confirmed. You've been returned to the waitlist.",
+    );
+    // The frozen review snapshot stays server-side: none of the policy's own
+    // identifying detail rides the result the route serialises.
+    expect(wire).not.toContain("Lodge B winter week");
+    expect(wire).not.toContain("policy-lodge-b");
+    expect(wire).not.toContain("minimum stay of 4 nights");
+  });
+
+  it("does not run the check for a stranger, an already-expired offer, or a non-offered entry", async () => {
+    mocks.prismaBookingFindUnique.mockResolvedValue(offeredEntry());
+    await confirmCrossLodgeWaitlistOffer("entry-1", "member-2");
+    expect(mocks.validateMinimumStay).not.toHaveBeenCalled();
+
+    mocks.prismaBookingFindUnique.mockResolvedValue(
+      offeredEntry({ waitlistOfferExpiresAt: new Date(Date.now() - 1_000) }),
+    );
+    await confirmCrossLodgeWaitlistOffer("entry-1", "member-1");
+    expect(mocks.validateMinimumStay).not.toHaveBeenCalled();
+
+    mocks.prismaBookingFindUnique.mockResolvedValue(
+      offeredEntry({ status: BookingStatus.WAITLISTED }),
+    );
+    await confirmCrossLodgeWaitlistOffer("entry-1", "member-1");
+    expect(mocks.validateMinimumStay).not.toHaveBeenCalled();
+  });
+
+  it("leaves a compliant confirm completely unaffected", async () => {
+    mocks.bookingFindFirst.mockResolvedValue(null);
+    mocks.checkCapacityForGuestRanges.mockResolvedValue({ available: true });
+    mocks.seasonFindMany.mockResolvedValue([
+      {
+        id: "season-1",
+        startDate: new Date("2026-08-01"),
+        endDate: new Date("2026-08-31"),
+        type: "STANDARD",
+        membershipTypeRates: [],
+      },
+    ]);
+    mocks.groupDiscountFindUnique.mockResolvedValue(null);
+    mocks.priceBooking.mockResolvedValue({ totalPriceCents: 34_000 });
+    mocks.createConfirmedBooking.mockRejectedValue(new Error("boom"));
+
+    const result = await confirmCrossLodgeWaitlistOffer("entry-1", "member-1");
+
+    // It got all the way to Phase 2, so the guard let it through untouched.
+    expect(mocks.validateMinimumStay).toHaveBeenCalledTimes(1);
+    expect(mocks.createConfirmedBooking).toHaveBeenCalledTimes(1);
+    expect(result.code).toBeUndefined();
   });
 });

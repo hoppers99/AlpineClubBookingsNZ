@@ -4,9 +4,10 @@
 // values as SQL because production deploys run migrations without the seed;
 // src/lib/__tests__/site-content-starter-backfill.test.ts keeps them in sync.
 //
-// The HTML mirrors the previously hardcoded markup in
-// src/components/website-footer.tsx so existing installs see zero visual
-// change when the footer becomes admin-editable.
+// The HTML mirrored the previously hardcoded markup in
+// src/components/website-footer.tsx so existing installs saw zero visual
+// change when the footer became admin-editable. FOOTER_AFFILIATIONS has since
+// been emptied (#2490) — see the comment above its value.
 export type StarterSiteContent = {
   key: "FOOTER_BLURB" | "FOOTER_QUICK_LINKS" | "FOOTER_AFFILIATIONS";
   /** Stable row id used by both the seed and the backfill migration. */
@@ -29,14 +30,22 @@ const footerQuickLinksContentHtml = [
   "</ul>",
 ].join("");
 
-const footerAffiliationsContentHtml = [
-  "<h3>Affiliations</h3>",
-  "<ul>",
-  '<li><a href="https://www.fmc.org.nz/" target="_blank" rel="noopener noreferrer">Federated Mountain Clubs (FMC)</a></li>',
-  '<li><a href="https://rmca.org.nz/" target="_blank" rel="noopener noreferrer">Ruapehu Mountain Clubs Association (RMCA)</a></li>',
-  '<li><a href="{{facebook-url}}" target="_blank" rel="noopener noreferrer">Facebook</a></li>',
-  "</ul>",
-].join("");
+// EMPTY ON PURPOSE (#2490). A club's affiliations are facts about that club,
+// so this project cannot know them: the original value listed Federated
+// Mountain Clubs and the Ruapehu Mountain Clubs Association because this
+// codebase WAS the Tokoroa Alpine Club's live site, and once the repository
+// became a reusable product every fresh install began publishing a regional
+// body it does not belong to on every public page's footer. A fresh install
+// therefore lists no affiliations at all; the footer hides the whole column
+// while this section is empty (src/components/website-footer.tsx), so nothing
+// renders as a heading over an empty list. An admin adds the club's own links
+// under Admin > Site Appearance & Content > Site Content > Footer:
+// affiliations.
+//
+// The historical value is still in 20260702124500_add_site_content, which
+// cannot be edited once applied; 20260802140000_clear_starter_footer_affiliations
+// clears it from any database that still holds it byte for byte.
+const footerAffiliationsContentHtml = "";
 
 export const starterSiteContent: readonly StarterSiteContent[] = [
   {

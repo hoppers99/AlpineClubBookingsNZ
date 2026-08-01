@@ -434,6 +434,22 @@ interface PlannerState {
    * targets to plan-start-free beds makes the apply order-independent.
    */
   occupiedAtStart: Set<string>;
+  /**
+   * Bed-nights taken by an occupancy with NO booking behind it — a custodian
+   * bed hold (#2286) or an exclusive whole-lodge hold (#2317). These keys are
+   * occupied for the whole run and can never be released.
+   *
+   * Why a second set rather than relying on "there is no row to move": the
+   * `occupied` key is `bedId:stayDate`, so a synthesised hold row and a real
+   * `BedAllocation` row on the SAME bed-night collapse to ONE entry. Evicting
+   * the real row (#1677 provisional displacement) used to delete that shared
+   * entry and hand the held bed to the incoming booking — the hold's occupancy
+   * was displaced by proxy even though it owns no row. Keeping the key here and
+   * teaching `evictBooking` (and the two paths that pick eviction candidates
+   * from `occupantByKey` rather than from `occupied`) to respect it is what
+   * makes "non-displaceable" true of the bed-night rather than only of the row.
+   */
+  permanentlyOccupied: Set<string>;
   occupantByKey: Map<string, OccupantInfo>;
   occupantsByBooking: Map<string, Map<string, OccupantInfo>>;
   allocatedGuestNights: Set<string>;
@@ -1274,7 +1290,11 @@ function evictBooking(
   );
   for (const row of rows) {
     const key = occupiedKey(row.bedId, row.stayDate);
-    state.occupied.delete(key);
+    // A bed-night this booking SHARES with an attribution-less hold (custodian
+    // #2286, whole-lodge #2317) stays occupied: the hold keeps the bed whether
+    // or not the co-located booking is displaced. Only the booking's own claim
+    // and its composition contribution are released.
+    if (!state.permanentlyOccupied.has(key)) state.occupied.delete(key);
     state.occupantByKey.delete(key);
     trackRoomNightOccupant(
       state,
@@ -1531,6 +1551,12 @@ function planEvictionsForRoom(
     if (!rows) return;
     for (const row of rows.values()) {
       const deficit = remaining.get(row.stayDate);
+      // A row co-located with an attribution-less hold frees no bed when it is
+      // evicted (#2317 review) — the hold still has the bed-night — so it must
+      // not be credited against the night's shortfall.
+      if (state.permanentlyOccupied.has(occupiedKey(row.bedId, row.stayDate))) {
+        continue;
+      }
       if (row.roomId === room.id && deficit !== undefined) {
         remaining.set(row.stayDate, deficit - 1);
       }
@@ -1556,7 +1582,10 @@ function planEvictionsForRoom(
     for (const [night, deficit] of remaining) {
       if (deficit <= 0) continue;
       for (const bed of room.beds) {
-        const occupant = state.occupantByKey.get(occupiedKey(bed.id, night));
+        const key = occupiedKey(bed.id, night);
+        // Evicting a booking off a permanently-held bed-night frees nothing.
+        if (state.permanentlyOccupied.has(key)) continue;
+        const occupant = state.occupantByKey.get(key);
         if (occupant && occupant.bookingId !== booking.id) {
           candidateIds.add(occupant.bookingId);
         }
@@ -1701,7 +1730,13 @@ function tryDisplaceForHeldGuestNight(
 
   for (const room of orderedRooms) {
     for (const bed of room.beds) {
-      const occupant = state.occupantByKey.get(occupiedKey(bed.id, stayDate));
+      const key = occupiedKey(bed.id, stayDate);
+      // An attribution-less hold (custodian #2286, whole-lodge #2317) shares
+      // this key with any real row on the same bed-night. Evicting that row
+      // would NOT free the bed, so the bed is not a displacement target — the
+      // guest-night stays unallocated instead (#2317 review).
+      if (state.permanentlyOccupied.has(key)) continue;
+      const occupant = state.occupantByKey.get(key);
       if (!occupant || occupant.bookingId === booking.id) continue;
       if (!isBookingWhollyDisplaceable(state, occupant.bookingId)) continue;
       // Evicting this occupant must clear the room-night's composition
@@ -1835,6 +1870,7 @@ export function buildFirstFitBedAllocationPlan({
     allBeds,
     occupied: new Set(),
     occupiedAtStart: new Set(),
+    permanentlyOccupied: new Set(),
     occupantByKey: new Map(),
     occupantsByBooking: new Map(),
     allocatedGuestNights: new Set(),
@@ -1871,6 +1907,11 @@ export function buildFirstFitBedAllocationPlan({
       // Unknown occupant (#1768): tracked under the "" booking key so the
       // composition guards stay conservative — a tierless row counts as an
       // adult (blocks minors, never evictable).
+      //
+      // The bed-night is also pinned as permanently occupied (#2317 review):
+      // a real allocation row may sit on the SAME bed-night, and evicting THAT
+      // booking must not release the hold's claim on the bed along with it.
+      state.permanentlyOccupied.add(occupiedKey(night.bedId, stayDate));
       const roomId = night.roomId ?? bedRoomIds.get(night.bedId) ?? "";
       trackRoomNightOccupant(state, roomId, stayDate, null, night.ageTier, 1);
       if (roomId) {

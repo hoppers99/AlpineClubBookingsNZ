@@ -26,3 +26,8 @@ vi.mock("server-only", () => ({}));
 process.env.EMAIL_FROM ??= SAFE_DEFAULT_CONFIG.supportEmail;
 process.env.AWS_SES_ACCESS_KEY_ID ??= "test-ses-access-key-id";
 process.env.AWS_SES_SECRET_ACCESS_KEY ??= "test-ses-secret-access-key";
+
+// The frozen test clock (#2481) is installed by `vitest.clock-setup.ts`, which
+// `vitest.config.ts` lists BEFORE this file so that "today" is already pinned
+// when this module's own imports evaluate. See that file and
+// `src/lib/__tests__/helpers/clock.ts`.

@@ -486,14 +486,62 @@ describe("public PageContent token view models", () => {
   it("summarizes only customer-facing booking policy fields", async () => {
     mocks.defaults.mockResolvedValue({ nonMemberHoldEnabled: true, nonMemberHoldDays: 7, waitlistCrossLodgeOrder: "MERGED" });
     mocks.periods.mockResolvedValue([{ name: "School holidays", startDate: new Date("2026-09-01"), endDate: new Date("2026-09-10"), nonMemberHoldEnabled: false, nonMemberHoldDays: 3, lodgeId: null, cancellationRules: [{ secret: true }] }]);
-    mocks.minimumStays.mockResolvedValue([{ name: "Weekend", startDate: new Date("2026-07-01"), endDate: new Date("2026-08-01"), minimumNights: 2, triggerDays: [6], lodgeId: null }]);
+    mocks.minimumStays.mockResolvedValue([{ name: "Weekend", startDate: new Date("2026-07-01"), endDate: new Date("2026-08-01"), minimumNights: 2, triggerDays: [6], capacityMode: "NO_HOLD", lodgeId: null }]);
     mocks.discount.mockResolvedValue({ enabled: true, minGroupSize: 5, summerOnly: true, id: "internal" });
     const policy = await loadPublicBookingPolicy();
     expect(policy).toEqual(expect.objectContaining({ hold: expect.stringContaining("7 days"), groupDiscount: expect.stringContaining("5") }));
     expect(policy?.minimumStays[0]?.triggerDays).toBe("Saturday");
+    // #2363 ships the model and the admin card, not the public promise: no
+    // member can request an exception yet, so the token publishes no sentence
+    // about what happens to capacity during a review. #2365 turns it on.
+    expect(policy?.minimumStays[0]?.capacityHandling).toBeNull();
+    expect(mocks.minimumStays).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({ capacityMode: true }),
+      }),
+    );
     expect(JSON.stringify(policy)).not.toContain("waitlistCrossLodgeOrder");
     expect(JSON.stringify(policy)).not.toContain("secret");
     expect(JSON.stringify(policy)).not.toContain("internal");
+  });
+
+  it("publishes no exception-capacity sentence for either mode while the workflow is unshipped", async () => {
+    mocks.minimumStays.mockResolvedValue([
+      {
+        name: "Held",
+        startDate: new Date("2026-07-01"),
+        endDate: new Date("2026-08-01"),
+        minimumNights: 2,
+        triggerDays: [6],
+        capacityMode: "HOLD",
+        lodgeId: null,
+      },
+      {
+        name: "Not held",
+        startDate: new Date("2026-08-02"),
+        endDate: new Date("2026-09-01"),
+        minimumNights: 2,
+        triggerDays: [0],
+        capacityMode: "NO_HOLD",
+        lodgeId: null,
+      },
+    ]);
+
+    const policy = await loadPublicBookingPolicy();
+
+    // Both modes publish nothing: the stored choice still drives the admin card
+    // and configuration transfer, but the public page must not describe an
+    // exception request a member cannot make yet (#2365 owns that).
+    expect(policy?.minimumStays.map((row) => row.capacityHandling)).toEqual([
+      null,
+      null,
+    ]);
+    // The nights and trigger days a member CAN act on are still published.
+    expect(policy?.minimumStays.map((row) => row.name)).toEqual([
+      "Held",
+      "Not held",
+    ]);
+    expect(JSON.stringify(policy)).not.toContain("exception");
   });
 
   it("describes divergent card and credit cancellation terms", async () => {

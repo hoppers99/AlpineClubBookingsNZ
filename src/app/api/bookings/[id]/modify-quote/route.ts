@@ -27,6 +27,11 @@ import {
 import { parseJsonRequestBody } from "@/lib/api-json";
 import { ApiError } from "@/lib/api-error";
 import {
+  aggregatePolicyExceptionViolations,
+  type AggregatedPolicyExceptions,
+} from "@/lib/booking-policy-exceptions";
+import type { MinimumStayViolation } from "@/lib/booking-policies";
+import {
   assertCheckInClearsXeroLockDate,
   assertDateEditClearsXeroLockDate,
   getXeroLockGuardErrorResponse,
@@ -556,6 +561,7 @@ export async function POST(
       capacityAvailable: true,
       minimumStayValid: true,
       minimumStayViolations: [],
+      exceptionReview: { violations: [], capacityMode: null },
       promoStillValid: true,
       // An identity-only edit re-prices nothing, so no cap is re-run.
       promoCoverage: null,
@@ -1069,12 +1075,23 @@ export async function POST(
   // minimum-stay rule (the whole stay is at least as long as the already-valid
   // original), while a genuinely-short whole stay is still reported. Pre-stay
   // (future) edits are unchanged: `newCheckIn` is the requested check-in.
-  let minimumStayViolations: { policyName: string; triggerDay: string; minimumNights: number; actualNights: number }[] = [];
-  if (!isAdmin) {
+  //
+  // #2363: gated on `targetDatesChanged` so this preview reports exactly what
+  // `modifyBookingBatch` will enforce on the save. The two predicates are
+  // deliberately identical — both compare the RESOLVED envelope (after any
+  // `guestStayRanges` widening) against the stored one — because an edit that
+  // moves no night cannot admit a new violation, and the apply path exempts it
+  // rather than hard-blocking an unrelated fix on a booking that already sat
+  // outside the policy. Any change to one of these two gates must change the
+  // other in the same commit, or preview and apply start disagreeing.
+  let minimumStayViolations: MinimumStayViolation[] = [];
+  if (!isAdmin && targetDatesChanged) {
     const { validateMinimumStay } = await import("@/lib/booking-policies");
     const stayResult = await validateMinimumStay(newCheckIn, newCheckOut, bookingLodgeId);
     minimumStayViolations = stayResult.violations;
   }
+  const exceptionReview: AggregatedPolicyExceptions =
+    aggregatePolicyExceptionViolations(minimumStayViolations);
 
   // Load seasons for pricing
   const seasons = await prisma.season.findMany({
@@ -1636,6 +1653,7 @@ export async function POST(
     capacityAvailable: capacity.available,
     minimumStayValid: minimumStayViolations.length === 0,
     minimumStayViolations,
+    exceptionReview,
     promoStillValid,
     promoCoverage,
     promoValidation,
@@ -1825,6 +1843,7 @@ async function buildShiftPreviewResponse({
     capacityAvailable: capacity.available,
     minimumStayValid: true,
     minimumStayViolations: [],
+    exceptionReview: { violations: [], capacityMode: null },
     promoStillValid: true,
     // An admin date SHIFT holds every price as it stands, so no cap is re-run.
     promoCoverage: null,
