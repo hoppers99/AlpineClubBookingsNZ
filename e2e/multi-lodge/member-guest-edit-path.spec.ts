@@ -260,6 +260,14 @@ test("an officer adding on somebody's booking tells the member instead of asking
   await panel.getByRole("button", { name: "Add to booking" }).click();
   await officerPage.getByRole("button", { name: "Save Changes" }).click();
 
+  // An admin save opens the #1668/#1696 notify dialog before anything is
+  // written. Declining the courtesy change-notification here is deliberate:
+  // D-16 says the member-guest ADDED notice is not that tick, so the notice
+  // below must arrive even though the officer chose to send nothing else.
+  await officerPage
+    .getByRole("button", { name: "Save without emailing" })
+    .click();
+
   // Told, not asked: the added-notice subject, never the consent request's.
   await waitForEmail(
     NOMINATOR_TWO.email,
