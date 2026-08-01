@@ -490,6 +490,12 @@ jobs:
     needs:
       - verify
       - migration-drift
+      # #2418: a data-rewriting migration whose fixture fails (a wrong post-state,
+      # or a mutant that goes undetected) must NOT ship an image an operator would
+      # apply to a live club database. The executing job is not yet a required PR
+      # check (branch protection is an owner action), so gate the release on it
+      # here — the same way migration-drift, its sibling schema gate, already is.
+      - data-migration-verification
       - static-analysis
       - gitleaks-full-repo
       - docker-image-security

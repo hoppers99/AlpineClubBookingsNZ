@@ -76,6 +76,21 @@ function migrationSql(name: string): string {
   return readFileSync(path.join(MIGRATIONS_DIR, name, "migration.sql"), "utf8");
 }
 
+/**
+ * The YAML text of one top-level job, from its `  <id>:` line to just before the
+ * next job at the same indent (or end of file). Scoping to the block matters: a
+ * setting that lands in an unrelated job, or a step that lost its env var, must
+ * not read as this job's wiring. Returns "" when the job is absent.
+ */
+function jobBlock(workflow: string, jobId: string): string {
+  const start = workflow.indexOf(`  ${jobId}:`);
+  if (start < 0) return "";
+  const rest = workflow.slice(start + 1).search(/\n {2}[a-z][a-z0-9-]*:\n/);
+  return rest > -1
+    ? workflow.slice(start, start + 1 + rest)
+    : workflow.slice(start);
+}
+
 // ---------------------------------------------------------------------------
 // Structural checks. These run with or without a database, so the arrangement
 // that makes the real checks happen cannot quietly come undone.
@@ -97,32 +112,53 @@ describe("data-migration verification wiring (#2418)", () => {
     ).toBeTruthy();
   });
 
-  it("is executed by CI against a PostgreSQL service", () => {
+  it("is executed by CI against a PostgreSQL service, blocking and unconditional", () => {
     // The job block, not the whole file: a step that lost its env var, or a
     // database URL left behind in an unrelated job, must not read as wiring.
-    const jobStart = workflow.indexOf(`  ${CI_JOB_ID}:`);
-    expect(jobStart, `ci.yml has no ${CI_JOB_ID} job`).toBeGreaterThan(-1);
-    const nextJob = workflow.slice(jobStart + 1).search(/\n {2}[a-z][a-z0-9-]*:\n/);
-    const job =
-      nextJob > -1
-        ? workflow.slice(jobStart, jobStart + 1 + nextJob)
-        : workflow.slice(jobStart);
+    const job = jobBlock(workflow, CI_JOB_ID);
+    expect(job, `ci.yml has no ${CI_JOB_ID} job`).not.toBe("");
     expect(job).toContain("services:");
     expect(job).toContain("image: postgres:16-alpine");
     expect(job).toContain(THIS_SUITE);
     expect(job).toContain(DATABASE_URL_ENV);
+    // A green structural test must also mean the job still BLOCKS. `continue-on-
+    // error: true` turns it advisory — it is the house idiom two jobs below, on
+    // the HIGH-severity trivy step — and a job-level `if:` can make it skip on
+    // pull requests. Either neuters the whole #2418 apparatus with every
+    // assertion above still green, so forbid both (#2418, C2).
+    expect(job, "the executing job must not be continue-on-error").not.toContain(
+      "continue-on-error",
+    );
+    expect(job, "the executing job must not carry a job-level if:").not.toMatch(
+      /\n {4}if:/,
+    );
   });
 
-  it("runs the coverage gate on a required check, so a missing fixture fails a PR", () => {
-    // Twice on purpose: once in migration-drift (a required status check, so
-    // the rule bites the moment it lands) and once in the job that executes the
-    // fixtures (fail fast before standing up a database).
-    const occurrences = workflow.split(COVERAGE_GATE).length - 1;
+  it("runs the coverage gate INSIDE the required migration-drift job", () => {
+    // The no-fixture-no-merge rule only bites if the gate runs on a REQUIRED
+    // check. Assert the gate step lives inside the migration-drift job block —
+    // not merely that it appears somewhere in the file and a job named
+    // migration-drift exists. A file-wide count could stay at two while both
+    // copies moved into the non-required executing job, unblocking a missing
+    // fixture (#2418, C4).
+    const driftJob = jobBlock(workflow, "migration-drift");
+    expect(driftJob, "ci.yml has no migration-drift job").not.toBe("");
+    expect(driftJob).toContain(COVERAGE_GATE);
+    // And a second time in the executing job (fail fast before the DB comes up).
+    expect(jobBlock(workflow, CI_JOB_ID)).toContain(COVERAGE_GATE);
+  });
+
+  it("blocks the release: publish-ghcr-images depends on it", () => {
+    // A fixture that proves a migration corrupts data must stop the image an
+    // operator would deploy. publish-ghcr-images runs on every push to main, so
+    // it must list the executing job in needs:, the way it lists the sibling
+    // migration-drift schema gate (#2418, C1).
+    const publishJob = jobBlock(workflow, "publish-ghcr-images");
+    expect(publishJob, "ci.yml has no publish-ghcr-images job").not.toBe("");
     expect(
-      occurrences,
-      `${COVERAGE_GATE} must run in both migration-drift and data-migration-verification`,
-    ).toBeGreaterThanOrEqual(2);
-    expect(workflow).toContain("  migration-drift:");
+      publishJob,
+      `publish-ghcr-images must list ${CI_JOB_ID} in needs:`,
+    ).toMatch(new RegExp(`\\n {6}- ${CI_JOB_ID}\\b`));
   });
 
   it("registers at least one fixture", () => {
