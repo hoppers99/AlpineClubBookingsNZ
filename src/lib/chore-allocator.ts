@@ -206,6 +206,12 @@ function buildHistoryDateMap(
  * - DAILY: always included
  * - EVERY_X_DAYS: included only if last rostered >= X days ago (or never rostered)
  * - SPECIFIC_DAYS: included only if currentDate's ISO day-of-week is in the array
+ *
+ * MATCHED PAIR: the kiosk setup screen previews this same decision, and has to
+ * explain it ("next due in 1 day"), so it re-implements the rules against
+ * date-only strings in `computeFrequencyInfo`
+ * (src/lib/chore-frequency-preview.ts). A change to the rules here is a change
+ * there.
  */
 export function filterChoresByFrequency(
   chores: ChoreTemplateInput[],
