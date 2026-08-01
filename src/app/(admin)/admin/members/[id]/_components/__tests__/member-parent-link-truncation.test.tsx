@@ -76,15 +76,8 @@ function buildMember(): MemberDetail {
   } as unknown as MemberDetail;
 }
 
-function renderDialog(overrides: Record<string, unknown> = {}) {
-  // The dialog resolves the notification mailbox over the network when a
-  // candidate is selected; nothing here selects one, so an inert fetch is
-  // enough.
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async () => ({ ok: true, json: async () => ({ source: null }) })) as never,
-  );
-  render(
+function dialogElement(overrides: Record<string, unknown> = {}) {
+  return (
     <MemberParentLinkDialog
       open
       onOpenChange={vi.fn()}
@@ -106,8 +99,19 @@ function renderDialog(overrides: Record<string, unknown> = {}) {
       onToggleFamilyGroup={vi.fn()}
       onSubmit={vi.fn()}
       {...overrides}
-    />,
+    />
   );
+}
+
+function renderDialog(overrides: Record<string, unknown> = {}) {
+  // The dialog resolves the notification mailbox over the network when a
+  // candidate is selected; nothing here selects one, so an inert fetch is
+  // enough.
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => ({ ok: true, json: async () => ({ source: null }) })) as never,
+  );
+  return render(dialogElement(overrides));
 }
 
 afterEach(() => {
@@ -125,7 +129,15 @@ describe("#2425 — the parent picker's truncation hint", () => {
 
   it("shows the hint under a page that was cut short", () => {
     renderDialog({ resultsTruncated: true });
-    expect(screen.getByText(HINT)).toBeInTheDocument();
+    // Two nodes carry the sentence since #2460 — the visible hint and the
+    // polite live region that announces it. The visible one is the paragraph
+    // that is not the region.
+    const drawn = screen
+      .getAllByText(HINT)
+      .filter((node) => node !== screen.getByTestId("parent-link-truncation-status"));
+    expect(drawn).toHaveLength(1);
+    expect(drawn[0]!.tagName).toBe("P");
+    expect(drawn[0]!.className).toContain("text-muted-foreground");
   });
 
   it("stays silent when the list holds everyone who matched", () => {
@@ -225,5 +237,164 @@ describe("#2425 — where the truncated flag comes from", () => {
     });
     expect(result.current.parentLinkSearchResults).toHaveLength(7);
     expect(result.current.parentLinkResultsTruncated).toBe(false);
+  });
+});
+
+/*
+  #2460 — the truncation hint is ANNOUNCED, not only drawn.
+
+  #2425 shipped this sentence as a bare paragraph under the list, copied
+  character for character from the #2308 member-guest finder — which had the
+  same defect. An admin using a screen reader typed, the list quietly stopped at
+  eight, and nothing said so. Both surfaces are fixed together, because the
+  shared copy's whole promise is "same words, same shape".
+
+  The shape is the house live-region rule (`AGENTS.md`, `PolicyFeedback`,
+  `DependentNotice`, and the #2244 export-truncation notice): the `role="status"`
+  wrapper is mounted for the whole life of the open dialog and only its CONTENT
+  is gated, because a polite region injected already-populated is silently
+  dropped by some screen-reader/browser pairings. Both halves are pinned below —
+  it must exist and be EMPTY with nothing to say, and be the SAME node once
+  there is, which is what stops anyone moving the role onto the visible
+  paragraph inside the results branch.
+
+  Where it sits is pinned too. The wrapper is invisible, but a `space-y-*` stack
+  in Tailwind v4 hangs its gap off `:not(:last-child)`, so an invisible LAST
+  child still pushes the visible content above it around. It goes above the
+  results, never below them.
+
+  The region and the list are gated by ONE expression (`showingResultsList`), so
+  the announcement can never be made about content that is not drawn; that
+  property is pinned directly rather than left to the shape of the code.
+
+  Mutation probes run against this block, each confirmed to turn it red: drop
+  the `role="status"` attribute; move the wrapper inside the results branch of
+  the ternary; move it below the ternary, where it can end up last; render the
+  wrapper only when truncated; announce a different sentence from the drawn one;
+  drop `resultsTruncated`, `searchResults.length` or `!selected` from the
+  `showTruncationHint` gate; give the ternary its own copy of the conditions and
+  raise its character floor to three.
+*/
+describe("#2460 — the parent picker announces the truncation hint", () => {
+  function region() {
+    return screen.getByTestId("parent-link-truncation-status");
+  }
+
+  it("registers the polite region before there is anything to announce", () => {
+    // The state the dialog opens in: nothing typed, no results, nothing to say.
+    renderDialog({ search: "", searchResults: [], resultsTruncated: false });
+    expect(region()).toHaveAttribute("role", "status");
+    expect(region()).toBeEmptyDOMElement();
+  });
+
+  it("keeps the region mounted and empty when the list holds everyone", () => {
+    renderDialog({ resultsTruncated: false });
+    expect(region()).toBeEmptyDOMElement();
+  });
+
+  it("announces the sentence, verbatim, when the page was cut short", () => {
+    renderDialog({ resultsTruncated: true });
+    // Verbatim, and identical to the sentence on screen: no count is added for
+    // the screen reader, so the pinned copy stays one string.
+    expect(region().textContent).toBe(MEMBER_SEARCH_TRUNCATED_HINT);
+    expect(region().textContent).toBe(HINT);
+  });
+
+  it("says nothing when nobody matched at all", () => {
+    renderDialog({ searchResults: [], resultsTruncated: true });
+    expect(region()).toBeEmptyDOMElement();
+  });
+
+  it("says nothing once a parent is chosen, since the list is gone", () => {
+    renderDialog({ selected: buildCandidate(1), resultsTruncated: true });
+    expect(region()).toBeEmptyDOMElement();
+  });
+
+  it("swaps the content of the region that was already there, never mounts a new one", () => {
+    const { rerender } = renderDialog({
+      search: "k",
+      searchResults: [],
+      resultsTruncated: false,
+    });
+    const before = region();
+    expect(before).toBeEmptyDOMElement();
+
+    rerender(dialogElement({ resultsTruncated: true }));
+
+    // Same DOM node, now populated. A fresh node here would mean the region was
+    // injected already carrying the sentence, which is the case screen readers
+    // drop.
+    expect(region()).toBe(before);
+    expect(region().textContent).toBe(HINT);
+  });
+
+  it("never sits last in the stack, so it cannot open a gap on screen", () => {
+    // The region is invisible but it is still a child of a `space-y-4` stack,
+    // and Tailwind v4 compiles that gap onto `:not(:last-child)` — the element
+    // BEFORE each gap carries it. Put this region last and whatever used to be
+    // last gains a 16px bottom margin it never had, so the dialog grows a dead
+    // strip above its footer and reflows the instant a parent is picked
+    // (#2460 review). Above the results it is always a middle child.
+    renderDialog({ resultsTruncated: true });
+    const stack = region().parentElement;
+    expect(stack?.className).toContain("space-y-4");
+    expect(stack?.lastElementChild).not.toBe(region());
+  });
+
+  it("stays out of the stack's last slot with no parent selected either", () => {
+    // The `{selected && …}` block below the region renders nothing until a
+    // parent is picked, which is every moment from opening the dialog until one
+    // is — the state the gap would be visible in.
+    renderDialog({ selected: null, search: "", searchResults: [] });
+    expect(region().parentElement?.lastElementChild).not.toBe(region());
+  });
+
+  it("never speaks about a list that is not on screen", () => {
+    // The announcement is assembled OUTSIDE the results branch, so "is there a
+    // list?" and "is the region allowed to talk?" are two questions that could
+    // come to disagree — announcing "Keep typing to narrow this down." over
+    // content nobody can see (#2460 review). They are one expression in the
+    // component (`showingResultsList`); this pins the property itself, so a
+    // future change to what puts rows on screen — a three-character floor, say
+    // — has to keep them together or turn this red.
+    const cases: Record<string, unknown>[] = [
+      { search: "", searchResults: [], resultsTruncated: true },
+      { search: "k", resultsTruncated: true },
+      // Exactly at the floor: the case a raised floor would break first.
+      { search: "ki", resultsTruncated: true },
+      { search: "  ", resultsTruncated: true },
+      { search: "kingi", searchResults: [], resultsTruncated: true },
+      { search: "kingi", resultsTruncated: true },
+      { search: "kingi", resultsTruncated: false },
+      { selected: buildCandidate(1), resultsTruncated: true },
+    ];
+    for (const props of cases) {
+      cleanup();
+      renderDialog(props);
+      if (region().textContent === "") continue;
+      // Something was said: the rows it is about must be on screen, and so must
+      // the visible copy of the same sentence.
+      const rows = screen.getAllByRole("button", { name: /Kingi/ });
+      expect(rows.length).toBeGreaterThan(0);
+      expect(
+        screen.getAllByText(HINT).filter((node) => node !== region()),
+      ).toHaveLength(1);
+    }
+  });
+
+  it("keeps the announced copy and the drawn copy an entire list apart", () => {
+    // Both nodes carry the sentence and neither is `aria-hidden`, which is a
+    // deliberate call (#2460 review): the drawn hint is the copy anchored to
+    // the place the list stops, and hiding on-screen text from assistive
+    // technology to tidy a duplicate is the worse trade. What makes it benign
+    // is the ORDER — region first, then every candidate row, then the visible
+    // hint — so browse mode never reads the sentence twice in succession.
+    renderDialog({ resultsTruncated: true });
+    const drawn = screen.getAllByText(HINT).filter((node) => node !== region())[0]!;
+    const rows = screen.getAllByRole("button", { name: /Kingi/ });
+    const before = region().compareDocumentPosition(rows[0]!);
+    const after = drawn.compareDocumentPosition(rows[rows.length - 1]!);
+    expect(before & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(after & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
   });
 });
