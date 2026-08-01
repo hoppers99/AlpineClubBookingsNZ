@@ -1623,6 +1623,25 @@ export function EditBookingPanel({
           );
           return;
         }
+        // #2363: the save path now hard-blocks a member whose edited dates
+        // break a minimum-stay rule, and the 400 carries the frozen review.
+        // Surface the rule itself rather than the bare prose so the member can
+        // see which nights and which policy stopped the change — the advisory
+        // banner above may be stale, or absent entirely if the quote never ran.
+        if (data.code === "MINIMUM_STAY_VIOLATION") {
+          const violationMessages: string[] = Array.isArray(data.violations)
+            ? (data.violations as Array<{ message?: unknown }>)
+                .map((violation) => violation?.message)
+                .filter((message): message is string => typeof message === "string")
+            : [];
+          setSaveError(
+            violationMessages.length > 0
+              ? `These dates do not meet the minimum-stay rules, so the change was not saved. ${violationMessages.join(" ")}`
+              : data.error ||
+                  "These dates do not meet the minimum-stay rules, so the change was not saved.",
+          );
+          return;
+        }
         setSaveError(data.error || "Failed to save changes");
         return;
       }
@@ -2713,9 +2732,14 @@ export function EditBookingPanel({
               </div>
             )}
 
-            {/* #2124: advisory whole-stay minimum-stay warning. Never gates
-                Save (matches the future-edit semantics; the hard block lives
-                on the create path). */}
+            {/* #2124: advisory whole-stay minimum-stay warning — an early,
+                client-side heads-up that never gates Save. #2363: the hard
+                block is on the server. PUT /api/bookings/[id]/modify now
+                refuses a non-admin save that breaks the rule and returns the
+                frozen review, which handleSave surfaces in the save-error slot
+                below; an admin edit (including on-behalf) is not blocked. Save
+                stays enabled here on purpose — the server is authoritative, so
+                a stale or missing quote can never decide the outcome. */}
             {quote && quote.minimumStayValid === false && (
               <div
                 className="rounded-md bg-warning-3 p-3 text-sm text-warning-11"
