@@ -201,6 +201,31 @@ describe("feature route map", () => {
     ).toBe(false);
   });
 
+  it("applies every pattern rule to the trailing-slash and data spellings too", () => {
+    // Symmetric with the consent case (#2435 review): each `$`-anchored rule
+    // must still fire on the spellings Next's matcher lets through the proxy.
+    expect(
+      getRequiredFeaturesForPath("/api/bookings/booking-1/waitlist-confirm/"),
+    ).toEqual(["waitlist"]);
+    expect(
+      getRequiredFeaturesForPath(
+        "/api/admin/bookings/booking-1/force-confirm.json",
+      ),
+    ).toEqual(["waitlist"]);
+    for (const action of ["link", "push", "unlink"]) {
+      expect(
+        getRequiredFeaturesForPath(
+          `/api/admin/members/member-1/xero-${action}`,
+        ),
+      ).toEqual(["xeroIntegration"]);
+      expect(
+        getRequiredFeaturesForPath(
+          `/api/admin/members/member-1/xero-${action}/`,
+        ),
+      ).toEqual(["xeroIntegration"]);
+    }
+  });
+
   it("uses the admin module toggle for effective state", () => {
     // Admin off → disabled.
     expect(
@@ -266,6 +291,23 @@ describe("feature route map", () => {
           memberGuests: false,
         }),
       ).toBe("memberGuests");
+    });
+
+    it("gates the consent endpoint in the spellings the matcher admits", () => {
+      // The proxy runs BEFORE Next's canonicalising 308, and Next's matcher
+      // admits the data-request spellings of every entry — so a `$`-anchored
+      // pattern that only matched the bare path would leave the outer gate
+      // inert for exactly the requests that reach it (#2435 review).
+      for (const path of [
+        "/api/bookings/b1/guests/g1/consent/",
+        "/api/bookings/b1/guests/g1/consent.json",
+        "/api/bookings/b1/guests/g1/consent.rsc",
+      ]) {
+        expect(getRequiredFeaturesForPath(path)).toEqual(["memberGuests"]);
+        expect(
+          getDisabledFeatureForPath(path, { ...allOn, memberGuests: false }),
+        ).toBe("memberGuests");
+      }
     });
 
     it("leaves the shared booking-guest routes alone", () => {
@@ -375,10 +417,22 @@ describe("feature route map", () => {
       ).toBe(true);
     });
 
+    it("exempts the wizard's data-request spelling as well", () => {
+      // The exemption is compared against the same canonical form the rules
+      // are, so the page stays reachable in every spelling that reaches it —
+      // otherwise its own data requests would 404 with the module off.
+      expect(getRequiredFeaturesForPath("/admin/display/setup.rsc")).toEqual([]);
+      expect(getRequiredFeaturesForPath("/admin/display/setup.json")).toEqual(
+        []
+      );
+    });
+
     it("keeps every neighbouring display path gated", () => {
       for (const path of [
         "/admin/display",
         "/admin/display/devices",
+        "/admin/display/devices.rsc",
+        "/admin/display/setup.txt",
         "/admin/display/templates",
         "/admin/display/setup/extra",
         "/admin/display/setupfoo",

@@ -18,10 +18,18 @@ All notable public reference-release changes should be recorded here.
   missing was the second, outer layer that is supposed to sit in front of that
   one. This restores it.
 
-  A new contract test now walks every module route rule — both the plain path
-  prefixes and the pattern-matched ones — and fails if any of them names an
-  address the proxy would never run on, so this particular gap cannot reappear
-  silently the next time a module gates a route by pattern.
+  A new contract test now walks every module route rule and fails if it names an
+  address the proxy would never run on. A rule written as a plain path prefix
+  covers a whole branch of the site, so it is checked at the prefix itself *and*
+  at an address below it; a rule written as a pattern is checked once for every
+  address shape it accepts. That turned up two more addresses — the Xero cron and
+  webhook paths — where anything filed underneath them would have slipped past
+  the module switch, and they are now covered too.
+
+  The rules themselves also now read an address the way a browser can spell it
+  before deciding: a trailing slash, or the internal spelling used when a page's
+  data is fetched rather than the page, no longer walks past a module switch that
+  plainly names that route.
 
 - **The cancellation queue stops spending Xero API calls on questions nobody can
   act on (#2402).** Opening **Admin → Members → Cancellation Requests** asked
