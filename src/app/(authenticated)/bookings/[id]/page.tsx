@@ -84,7 +84,11 @@ import {
 } from "@/lib/admin-bed-allocation";
 import { BED_ALLOCATABLE_BOOKING_STATUSES } from "@/lib/bed-allocation-lifecycle";
 import { formatDateOnly } from "@/lib/date-only";
-import { formatNZDate, formatNZDateTime } from "@/lib/nzst-date";
+import {
+  formatNZDate,
+  formatNZDateTime,
+  formatNZLongDate,
+} from "@/lib/nzst-date";
 import { getBookingProviderMismatches } from "@/lib/booking-provider-mismatches";
 import { loadEmailMessageSettingsForLodge } from "@/lib/email-message-settings";
 import { loadPublicBookingMessages } from "@/lib/booking-message-settings";
@@ -1115,8 +1119,12 @@ export default async function BookingDetailPage({
   const bookingMessageData = {
     bookerFirstName: booking.member.firstName,
     bookerFullName: `${booking.member.firstName} ${booking.member.lastName}`,
-    checkIn: formatNZDate(booking.checkIn),
-    checkOut: formatNZDate(booking.checkOut),
+    // Member-facing: these two land in the booking messages and the emails
+    // built from them, so they keep the long "16 April 2026" form the club has
+    // always sent (owner decision, #2264). Admin-side dates on this page use
+    // the medium `formatNZDate`.
+    checkIn: formatNZLongDate(booking.checkIn),
+    checkOut: formatNZLongDate(booking.checkOut),
     guestCount: booking.guests.length,
     amountDue: formatCents(amountDueAfterCreditCents),
     amountPaid: booking.payment ? formatCents(booking.payment.amountCents) : "",

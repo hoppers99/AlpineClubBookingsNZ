@@ -13,19 +13,30 @@ const NZ_DATE_TIME_FORMATTER = new Intl.DateTimeFormat(APP_LOCALE, {
   timeStyle: "short",
 });
 
-// #2264 — three further shapes, added because the repo kept hand-rolling them.
+// #2264 — four further shapes, added because the repo kept hand-rolling them.
 // Before this, `nzst-date` offered only the two `dateStyle` shapes above, so
-// every screen that legitimately wanted a bare time, a month heading or a
-// weekday-bearing date had to call `toLocaleTimeString`/`toLocaleDateString`
-// itself — and a hand-rolled call is exactly where the club's time zone gets
-// forgotten. Three such sites were rendering in the VIEWER's zone (the lobby
-// clock, the events-calendar time, and the lodge-display date line), so an
-// operator or a TV browser outside New Zealand showed the wrong time.
+// every screen that legitimately wanted a bare time, a month heading, a
+// weekday-bearing date or the long spelled-out date had to call
+// `toLocaleTimeString`/`toLocaleDateString` itself — and a hand-rolled call is
+// exactly where the club's time zone gets forgotten. Three such sites were
+// rendering in the VIEWER's zone (the lobby clock, the events-calendar time,
+// and the lodge-display date line), so an operator or a TV browser outside New
+// Zealand showed the wrong time.
 //
 // Each helper below pins BOTH the locale and the zone, so a caller cannot
-// reintroduce that bug. A screen whose format is none of these five keeps its
+// reintroduce that bug. A screen whose format is none of these six keeps its
 // own module-level `Intl.DateTimeFormat` constant pinned the same way — that,
 // not an eslint-disable, is the escape hatch (see `eslint.config.mjs`).
+
+// The long, spelled-out month form. Owner decision (#2264, 2 Aug 2026): the
+// member-facing surfaces that used to render this — the booking messages and
+// emails a member receives, the lodge/hut-leader "last updated" stamps, and the
+// generated report cover — keep reading "16 April 2026", NOT the "16 Apr 2026"
+// house medium. Admin and internal surfaces stay on `formatNZDate`.
+const NZ_LONG_DATE_FORMATTER = new Intl.DateTimeFormat(APP_LOCALE, {
+  timeZone: NZ_TIME_ZONE,
+  dateStyle: "long",
+});
 
 const NZ_TIME_FORMATTER = new Intl.DateTimeFormat(APP_LOCALE, {
   timeZone: NZ_TIME_ZONE,
@@ -52,6 +63,17 @@ export function formatNZDate(date: Date): string {
 
 export function formatNZDateTime(date: Date): string {
   return NZ_DATE_TIME_FORMATTER.format(date);
+}
+
+/**
+ * Long, spelled-out date in club time — "16 April 2026". Reserved for the
+ * member-facing surfaces the owner asked to keep it on (#2264): booking
+ * messages and the emails built from them, the lodge/hut-leader instruction
+ * "last updated" stamps, and the generated report cover. Everything admin-side
+ * or internal uses `formatNZDate`.
+ */
+export function formatNZLongDate(date: Date): string {
+  return NZ_LONG_DATE_FORMATTER.format(date);
 }
 
 /** Time of day only, in club time — "11:30 am". No date, no seconds. */

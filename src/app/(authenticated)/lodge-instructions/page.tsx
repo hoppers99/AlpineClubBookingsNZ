@@ -11,7 +11,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { useClubIdentity } from "@/components/club-identity-provider";
-import { formatNZDate } from "@/lib/nzst-date";
+import { formatNZLongDate } from "@/lib/nzst-date";
 
 type InstructionDocument = {
   key: "OPEN" | "CLOSE" | "DAY_TO_DAY";
@@ -29,7 +29,9 @@ function formatUpdatedAt(value: string | null): string | null {
   if (!value) {
     return null;
   }
-  return formatNZDate(new Date(value));
+  // Member-facing (#2264, owner decision): the long "16 April 2026" form the
+  // club has always shown here, pinned to club time.
+  return formatNZLongDate(new Date(value));
 }
 
 export default function LodgeInstructionsPage() {

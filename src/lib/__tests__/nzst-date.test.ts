@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   formatNZDate,
   formatNZDateTime,
+  formatNZLongDate,
   formatNZMonthYear,
   formatNZTime,
   formatNZWeekdayDate,
@@ -73,5 +74,23 @@ describe("formatNZWeekdayDate", () => {
   it("renders the NZ weekday and calendar date, not the UTC ones", () => {
     // 15 April 2026 is a Wednesday in UTC; 23:30 UTC is Thursday 16 in NZ.
     expect(formatNZWeekdayDate(INSTANT)).toBe("Thu, 16 Apr 2026");
+  });
+});
+
+// #2264, owner decision (2 Aug 2026): the member-facing surfaces keep the LONG
+// spelled-out month. A regression to the medium house form ("16 Apr 2026")
+// fails here, and the call sites themselves are pinned in
+// `member-facing-long-dates.test.ts`.
+describe("formatNZLongDate", () => {
+  it("renders the long spelled-out month, not the medium abbreviation", () => {
+    expect(formatNZLongDate(INSTANT)).toBe("16 April 2026");
+    expect(formatNZLongDate(INSTANT)).not.toBe(formatNZDate(INSTANT));
+  });
+
+  it("renders the NZ calendar date, not the UTC date", () => {
+    // 23:30 UTC on 15 April is already 16 April in Auckland.
+    expect(formatNZLongDate(new Date("2026-04-15T11:30:00.000Z"))).toBe(
+      "15 April 2026",
+    );
   });
 });

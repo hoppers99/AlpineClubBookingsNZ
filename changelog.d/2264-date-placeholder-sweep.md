@@ -14,12 +14,16 @@
 
   A few dates read slightly differently as a result, all in the house style you
   already see elsewhere: operational email timestamps now say
-  `17 Apr 2026, 10:30 am` instead of `17/04/2026, 10:30:00 am`; some long-form
-  dates shorten from `17 April 2026` to `17 Apr 2026`; and the "last refreshed"
-  indicators on the admin status pages no longer show seconds. Nothing about
-  which night a booking is for has changed — only how the date is written out.
-  Formats that are deliberately different, such as the chore-roster emails and
-  the weekday-bearing lodge display boards, are untouched.
+  `17 Apr 2026, 10:30 am` instead of `17/04/2026, 10:30:00 am`; a handful of
+  admin timestamps drop the leading zero on the hour, so `08:05 am` now reads
+  `8:05 am`; and the "last refreshed" indicators on the admin status pages no
+  longer show seconds. Dates a member sees written out in full — booking
+  messages and the emails built from them, the lodge and hut-leader "last
+  updated" stamps, and the generated report cover — still read
+  `17 April 2026`, exactly as before. Nothing about which night a booking is for
+  has changed — only how the date is written out. Formats that are deliberately
+  different, such as the chore-roster emails and the weekday-bearing lodge
+  display boards, are untouched.
 
 - **Form fields now show their example values as a hint underneath, not as grey
   text inside the box (#2264).** Andy's report was that "greyed out text as
