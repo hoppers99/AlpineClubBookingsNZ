@@ -39,6 +39,13 @@ describe("repository agent workflow contract", () => {
     expect(claude).toContain("PR CI owns the full test, build, migration-drift");
     expect(claude).toContain("Do not duplicate them locally");
     expect(claude).not.toContain("Run the full `npm test` before opening a PR");
+    // #2468: `CLAUDE.md` is the file an interactive session reads instead of all
+    // of `AGENTS.md`, so the two `verify` gates that read the PR body rather than
+    // the code have to be named here — otherwise a lint-clean, typecheck-clean
+    // change fails CI for a reason nothing it was told to read explains.
+    expect(claude).toContain("changelog.d/<pr-number>-<slug>.md");
+    expect(claude).toContain("changelog.d/README.md");
+    expect(claude).toContain("editing the body alone does not re-run Actions");
 
     expect(codex).toContain("Root `AGENTS.md` is authoritative");
     expect(codex).toContain("last 10 merged PRs affecting the subsystem");
@@ -90,5 +97,10 @@ describe("repository agent workflow contract", () => {
     const ci = readRepoFile(".github/workflows/ci.yml");
     expect(ci).toContain("Validate PR concurrency declaration");
     expect(ci).toContain("node scripts/ci/check-pr-concurrency-declaration.mjs");
+    // #2452: the changelog-fragment gate is pinned the same way. A gate whose
+    // step name or command is edited out of ci.yml still has a green unit suite
+    // — nothing else notices that it stopped running on pull requests.
+    expect(ci).toContain("Validate PR changelog entry");
+    expect(ci).toContain("node scripts/ci/check-pr-changelog-fragment.mjs");
   });
 });

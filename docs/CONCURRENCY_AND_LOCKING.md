@@ -414,6 +414,52 @@ do not use unnamespaced `hashtext(<id>)` for new lock families.
   hard-deleted. The fresh locked read supplies the member's current pointer so
   the blob is swept.
 
+  The merge's fresh read is a **whole-row** read of both members, not just
+  `photoImageId`, because the same staleness sinks its field-merge WRITE (#2243).
+  `Member.photoImageId` is a real FK, so a patch derived from the transaction's
+  opening snapshot writes the blob id the racing upload just deleted, and
+  Postgres 23503 / Prisma P2003 rolls the ENTIRE merge back as a bare 500 — with
+  the preview token none the wiser, because it verifies against that same stale
+  snapshot. Both the write patch and the sweep pointer now come from that one
+  fresh read. `familyGroupId` is the patch's other real FK and the same story:
+  a club admin can delete the `FamilyGroup` (`DELETE
+  /api/admin/family-groups/[id]`, behind `requireAdmin`) without taking any
+  member-lifecycle lock.
+
+  **The merge REFUSES mid-transaction drift rather than applying it.** The patch
+  is derived twice — once from the transaction-opening snapshot (the derivation
+  the preview token is verified against) and once from the fresh read — and if
+  the two disagree on any field the merge throws a 409
+  (`merge_drift_in_transaction`) naming those fields, before anything is written.
+  Nothing is saved and the operator re-runs the preview. That keeps the promise
+  the rest of the repo's preview/confirm flows make (config transfer's ADR-002:
+  *what was previewed is exactly what is applied*) and matches this merge's own
+  pre-transaction token check, which already 409s on drift. The original bug
+  stays fixed either way: the stale FK value is detected from the fresh read and
+  never handed to Postgres, so the failure mode is a plain 409, not a bare 500.
+
+  **One new row lock, no new lock family.** Immediately before that fresh read
+  the merge takes `SELECT 1 FROM "Member" WHERE "id" IN (…) ORDER BY "id" FOR
+  UPDATE` over the master and the loser. The loser was already row-locked by
+  `teardownLoserXero`'s unconditional `member.update`; the master was not, and
+  that open window could strand an orphaned `MEMBER_PHOTO` blob (a concurrent
+  on-behalf upload for the MASTER commits blob M2, the merge overwrites the
+  pointer with the loser's absorbed value, and the loser-only sweep never touches
+  M2) as well as producing avoidable drift 409s. Both ids are locked in **one
+  id-ordered statement**, the same ordering rule as the two advisory locks at the
+  top of the transaction, so it cannot deadlock against the mirror merge. Order
+  against `MediaImage` is unchanged: this is a `Member` lock, still taken before
+  any `MediaImage` write.
+
+  What that row lock does **not** close: it protects the two `Member` rows, not
+  the rows their foreign keys point AT. A concurrent `FamilyGroup` delete can
+  still abort the merge — now by deadlocking against this lock (Postgres 40P01)
+  rather than by writing a stale value (23503). Closing that would need the
+  family-group writers to join the member-lifecycle lock family and is out of
+  scope; see #2437 for the related question of locking the master earlier
+  (before the guards and the self-relation pass) rather than only before the
+  field write.
+
 Do not add or compose a row lock without updating this inventory and documenting
 its order against every advisory- and row-lock counterpart.
 
@@ -431,7 +477,11 @@ mutually excludes any archive or delete of either the master or the loser.
 Inside the locks the merge re-reads both members, re-runs the full guard matrix,
 and re-verifies the HMAC preview token (which bakes in both `updatedAt` values)
 before any write, so a stale preview or a concurrent edit fails with a 409
-instead of merging against changed state. There are **no Xero API calls** in or
+instead of merging against changed state. A concurrent edit that lands *after*
+that check, from a writer outside the lock family, is caught by the second
+derivation described under "Member photo writer" above and 409s the same way
+(#2243) — so the sentence holds end to end, not just at the transaction's
+opening. There are **no Xero API calls** in or
 after the transaction — the loser's Xero teardown is DB-only (deactivate
 contact-identity `XeroObjectLink` rows and re-point the active
 `ENTRANCE_FEE_INVOICE` link to the master); the loser's Xero contact is left for

@@ -1798,6 +1798,33 @@ sensitive action lands under a broader prefix. New optional-module surfaces at
 brand-new prefixes must be added to `FEATURE_ROUTE_RULES` by hand — the guard
 only verifies existing feature prefixes still point at real files.
 
+A `FEATURE_ROUTE_RULES` entry for an **API** route usually needs a second edit to
+take effect: `config.matcher` in `src/proxy.ts` excludes the whole of `/api` bar
+an explicit list, so an `/api` path must be *covered by some entry* on that list
+or the proxy never runs on it and the module gate is dead code. A broad existing
+entry may already cover it (anything under `/api/admin/*` is covered by
+`/api/admin/:path*`, `/api/lodge/foo` by `/api/lodge/:path*`); what a new entry
+has to get right is its shape — a rule written as a **prefix** gates the whole
+subtree, so its entry must end in `:path*`, while a bare literal leaves every
+child gated-but-unmatched. That bit the member-guest consent endpoint (#2435),
+whose gate was written as a regex with no matcher entry at all.
+
+`src/lib/__tests__/csp-proxy.test.ts` guards both halves against drift. Every
+gated prefix must be a URL `config.matcher` runs on **at the prefix itself and at
+a child path below it**; every gated pattern must be one too, probed through
+`PATTERN_SAMPLE_PATHS` — a concrete sample per address shape the regex accepts,
+one per alternation branch — and that map is itself asserted, in both
+directions, to be exactly the set of live patterns, so a new pattern rule with no
+sample fails the suite rather than slipping past it.
+
+The rules read a **canonicalised** pathname (`normaliseForRules` in
+`src/config/feature-routes.ts`): one trailing slash and one Next data suffix
+(`.rsc`/`.json`) are stripped first, because the proxy runs before Next's
+canonicalising 308 and the matcher admits those spellings, while the
+`$`-anchored patterns would not. Normalisation is input-only — the comparisons
+stay exact equality or a `/`-anchored prefix — and exemptions are compared
+against the same canonical form.
+
 Managing the definitions themselves is Full-Admin-only: the
 `/api/admin/access-roles` mutation handlers enforce an explicit `isFullAdmin`
 check on top of `requireAdmin()` (an editable role could otherwise widen

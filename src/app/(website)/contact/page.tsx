@@ -6,16 +6,16 @@ import { setupInProgressMetadata } from "@/lib/website-setup-metadata";
 import { getDefaultLodgeId } from "@/lib/lodges";
 import { buildEmbeddedBody } from "@/lib/page-content-embeds";
 import {
-  getSanitizedPageContentByPath,
+  getPublishedPageContentByPath,
   pageContentHtmlToPlainText,
 } from "@/lib/page-content-html";
 import { prisma } from "@/lib/prisma";
 
 export async function generateMetadata(): Promise<Metadata> {
-  // Pre-setup, before any lookup (#2420 F1). This route matters more than most:
-  // its lookup has no `published === false` filter, so without this an
-  // unlaunched club would disclose the title and header text of a contact page
-  // it has explicitly UNPUBLISHED. See setupInProgressMetadata().
+  // Pre-setup, before any lookup (#2420 F1). See setupInProgressMetadata().
+  // Post-setup, the published filter in the lookup below keeps a draft row's
+  // title and header text out of the head (#2440); the code-backed defaults
+  // take over exactly as they do when no row exists.
   const holdingScreen = await setupInProgressMetadata();
 
   if (holdingScreen) {
@@ -23,7 +23,7 @@ export async function generateMetadata(): Promise<Metadata> {
   }
 
   const [page, { name: clubName }] = await Promise.all([
-    getSanitizedPageContentByPath("/contact"),
+    getPublishedPageContentByPath("/contact"),
     getCachedClubIdentity(),
   ]);
 
@@ -71,7 +71,7 @@ async function loadContactRoleKey(): Promise<string | null> {
 
 export default async function ContactPage() {
   const [page, lodge, clubIdentity, contactRoleKey] = await Promise.all([
-    getSanitizedPageContentByPath("/contact"),
+    getPublishedPageContentByPath("/contact"),
     loadDefaultLodgeContact(),
     getCachedClubIdentity(),
     loadContactRoleKey(),

@@ -450,16 +450,99 @@ describe("CSP proxy", () => {
   // code for that route. (An earlier bug shipped feature-routes rules for new
   // modules whose /api paths were missing from the matcher, so disabled modules
   // still served their backend.)
-  it("matcher runs for every feature-gated route prefix", () => {
+  it("matcher runs for every feature-gated route prefix, bare and child", () => {
     const gatedPrefixes = FEATURE_ROUTE_RULES.flatMap(
       (rule) => rule.prefixes ?? [],
     );
 
     for (const prefix of gatedPrefixes) {
-      expect(
-        unstable_doesProxyMatch({ config, nextConfig: {}, url: prefix }),
-        `middleware matcher must run for ${prefix} (feature-gated route)`,
-      ).toBe(true);
+      // A prefix rule gates the whole SUBTREE (`matchesPrefix`), so the bare
+      // path alone is not enough: `/api/cron/xero` and `/api/webhooks/xero`
+      // were literal entries whose children the proxy never ran on, leaving
+      // the xeroIntegration gate dead the moment a child route was added.
+      for (const url of [prefix, `${prefix}/probe-child`]) {
+        expect(
+          unstable_doesProxyMatch({ config, nextConfig: {}, url }),
+          `middleware matcher must run for ${url} (feature-gated route)`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  // The other half of the same invariant, for the rules that gate by REGEX
+  // rather than by prefix (#2435). `/api/bookings/[id]/guests/[guestId]/consent`
+  // shipped a `memberGuests` pattern with no matcher entry at all, so the proxy
+  // never ran on it and that gate could not fire — the endpoint's own module
+  // check was the only thing refusing. A regex cannot be handed to the matcher
+  // directly, so each one carries concrete sample paths here; the map is
+  // asserted to be exactly the set of live patterns, so a NEW pattern rule with
+  // no sample fails this suite rather than slipping past it. Every ALTERNATION
+  // BRANCH gets its own sample: one sample per regex would pass while the
+  // matcher covered only the branch that happened to be sampled.
+  const PATTERN_SAMPLE_PATHS = new Map<string, string[]>([
+    [
+      String(/^\/api\/bookings\/[^/]+\/waitlist-confirm$/),
+      ["/api/bookings/bkg-1/waitlist-confirm"],
+    ],
+    [
+      String(/^\/api\/admin\/bookings\/[^/]+\/force-confirm$/),
+      ["/api/admin/bookings/bkg-1/force-confirm"],
+    ],
+    [
+      String(/^\/api\/admin\/members\/[^/]+\/xero-(link|push|unlink)$/),
+      [
+        "/api/admin/members/mem-1/xero-link",
+        "/api/admin/members/mem-1/xero-push",
+        "/api/admin/members/mem-1/xero-unlink",
+      ],
+    ],
+    [
+      String(/^\/api\/bookings\/[^/]+\/guests\/[^/]+\/consent$/),
+      ["/api/bookings/bkg-1/guests/gst-1/consent"],
+    ],
+  ]);
+
+  it("has a sample path for every feature-gated route pattern, and no stale ones", () => {
+    // Deduplicated on both sides: two rules may legitimately declare the SAME
+    // regex (a second flag gating an existing endpoint), which the map cannot
+    // represent twice and which is not drift.
+    const livePatterns = FEATURE_ROUTE_RULES.flatMap(
+      (rule) => rule.patterns ?? [],
+    ).map(String);
+
+    expect([...new Set(PATTERN_SAMPLE_PATHS.keys())].sort()).toEqual(
+      [...new Set(livePatterns)].sort(),
+    );
+  });
+
+  it("matcher runs for every feature-gated route pattern", () => {
+    for (const rule of FEATURE_ROUTE_RULES) {
+      for (const pattern of rule.patterns ?? []) {
+        const urls = PATTERN_SAMPLE_PATHS.get(String(pattern));
+
+        expect(
+          urls,
+          `${String(pattern)} (${rule.flag}) needs sample paths in PATTERN_SAMPLE_PATHS`,
+        ).toBeDefined();
+        expect(
+          (urls ?? []).length,
+          `${String(pattern)} (${rule.flag}) needs at least one sample path`,
+        ).toBeGreaterThan(0);
+
+        for (const url of urls ?? []) {
+          // The sample has to be a genuine instance of the pattern, or the
+          // matcher assertion below would be testing an unrelated URL.
+          expect(
+            pattern.test(url),
+            `${url} must actually match ${String(pattern)}`,
+          ).toBe(true);
+
+          expect(
+            unstable_doesProxyMatch({ config, nextConfig: {}, url }),
+            `proxy matcher must run for ${url} — without a config.matcher entry the ${rule.flag} module gate never fires there`,
+          ).toBe(true);
+        }
+      }
     }
   });
 

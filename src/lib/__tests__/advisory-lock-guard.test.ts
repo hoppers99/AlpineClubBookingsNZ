@@ -168,6 +168,18 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // advisory lock; disjoint from booking/money writers. See
   // docs/CONCURRENCY_AND_LOCKING.md → "Member photo writer".
   "src/app/api/members/[id]/photo/route.ts": 2,
+  // Member merge (#2243): one id-ordered `SELECT 1 … FOR UPDATE` over BOTH
+  // member rows immediately before the merge's fresh field-patch read, inside
+  // the transaction that already holds both member-lifecycle advisory locks
+  // (order: advisory locks -> row locks; the loser's row was already locked by
+  // teardownLoserXero's update, so this adds only the master's). Counterpart
+  // writers are the member-photo route above (member-row lock, no advisory
+  // lock) and admin member edits — both serialise behind this lock or land a
+  // drift the merge refuses with a 409. Ids are sorted so two merges sharing a
+  // member cannot deadlock. See docs/CONCURRENCY_AND_LOCKING.md →
+  // "Member merge — dual member-lifecycle lock (E11 #1937)" and the #2243
+  // fresh-read/drift-refusal paragraphs above it.
+  "src/lib/member-merge.ts": 1,
 };
 
 const CAPACITY_LOCK_MINT = "src/lib/capacity.ts";

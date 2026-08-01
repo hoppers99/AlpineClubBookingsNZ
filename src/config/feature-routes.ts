@@ -13,7 +13,7 @@ interface FeatureRouteRule {
    * unreachable in the only state it exists to fix, so the operator is sent back
    * to Feature modules — the detour the wizard exists to remove.
    *
-   * Deliberately EXACT-MATCH (after one trailing slash is stripped), never a
+   * Deliberately EXACT-MATCH (against `normaliseForRules()`), never a
    * prefix: an exemption that matched by prefix would silently un-gate every
    * future page below it. The exempted page must therefore be safe with the
    * module off, which means it may render only guidance and controls whose own
@@ -210,13 +210,41 @@ function matchesPrefix(pathname: string, prefix: string): boolean {
   return pathname === prefix || pathname.startsWith(`${prefix}/`);
 }
 
+function stripOneTrailingSlash(pathname: string): string {
+  return pathname.length > 1 && pathname.endsWith("/")
+    ? pathname.slice(0, -1)
+    : pathname;
+}
+
 /**
- * Strip ONE trailing slash from a path longer than "/" before an exemption is
- * compared. This gate runs BEFORE Next's canonicalising 308, so `/x/setup/`
- * would otherwise miss its own exemption and 404. The comparison itself stays
- * exact equality, so a near-miss like `/admin/display/setup/extra` or
- * `/admin/display/setupfoo` keeps the module flag and fails closed (same
- * reasoning as `normalisePathname` in `src/lib/csp.ts`).
+ * Spellings Next's own matcher admits for every `config.matcher` entry (it
+ * appends the data-request alternatives itself), so a request can reach the
+ * proxy wearing one of them. The `$`-anchored patterns above would miss them.
+ */
+const NEXT_DATA_SUFFIXES = [".rsc", ".json"];
+
+/**
+ * Canonicalises a pathname before it is compared against the rules above:
+ * strips ONE trailing slash from a path longer than "/", then ONE Next data
+ * suffix.
+ *
+ * Why both: this gate runs BEFORE Next's canonicalising 308, so
+ * `/api/bookings/x/guests/y/consent/` would otherwise reach the route with its
+ * `$`-anchored rule inert (same reasoning as `normalisePathname` in
+ * `src/lib/csp.ts`), and the matcher admits the `.rsc`/`.json` spellings of
+ * every entry, which those patterns would likewise miss (#2435 review).
+ *
+ * This normalises the INPUT only; every comparison below stays exact equality
+ * or a `/`-anchored prefix, so nothing new is admitted. A near-miss such as
+ * `/admin/display/setup/extra`, `/admin/display/setupfoo` or a doubled trailing
+ * slash still keeps the module flag and fails closed. No route in the app ends
+ * in `.rsc`/`.json` either, so stripping the suffix cannot un-gate a real
+ * address; it can only bring a data request back under the rule its page is
+ * already under.
+ *
+ * Exemptions are compared against the SAME canonical form on purpose: the
+ * wizard that exists to turn a module on must stay reachable with the module
+ * off in every spelling that reaches it, not just the bare one.
  *
  * A doubled leading slash (`//admin/display/setup`) is a different case, and
  * NOT a fail-closed one: it does not start with `/admin/display`, so it matches
@@ -225,31 +253,37 @@ function matchesPrefix(pathname: string, prefix: string): boolean {
  * before a page is resolved — but it is worth stating truthfully rather than
  * claiming a gate that is not being applied.
  */
-function normaliseForExemption(pathname: string): string {
-  return pathname.length > 1 && pathname.endsWith("/")
-    ? pathname.slice(0, -1)
-    : pathname;
+function normaliseForRules(pathname: string): string {
+  const trimmed = stripOneTrailingSlash(pathname);
+  const suffix = NEXT_DATA_SUFFIXES.find(
+    (candidate) =>
+      trimmed.length > candidate.length && trimmed.endsWith(candidate)
+  );
+
+  return suffix
+    ? stripOneTrailingSlash(trimmed.slice(0, -suffix.length))
+    : trimmed;
 }
 
+/** `pathname` must already be `normaliseForRules()`d. */
 function isExemptFromRule(rule: FeatureRouteRule, pathname: string): boolean {
   if (!rule.exemptPaths) return false;
-  return rule.exemptPaths.includes(normaliseForExemption(pathname));
+  return rule.exemptPaths.includes(pathname);
 }
 
 export function getRequiredFeaturesForPath(pathname: string): FeatureFlagKey[] {
   const required = new Set<FeatureFlagKey>();
+  const path = normaliseForRules(pathname);
 
   for (const rule of FEATURE_ROUTE_RULES) {
     // An exemption only ever REMOVES this rule's own flag from the requirement
     // set; a path exempted here still picks up any other rule it matches.
-    if (isExemptFromRule(rule, pathname)) continue;
+    if (isExemptFromRule(rule, path)) continue;
 
     const prefixMatch = rule.prefixes?.some((prefix) =>
-      matchesPrefix(pathname, prefix)
+      matchesPrefix(path, prefix)
     );
-    const patternMatch = rule.patterns?.some((pattern) =>
-      pattern.test(pathname)
-    );
+    const patternMatch = rule.patterns?.some((pattern) => pattern.test(path));
 
     if (prefixMatch || patternMatch) {
       required.add(rule.flag);

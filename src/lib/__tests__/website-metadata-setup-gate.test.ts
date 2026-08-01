@@ -17,8 +17,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * `generateMetadata()` still runs and still emits `<title>` and
  * `<meta name="description">`. Pre-setup that let an anonymous prober with a
  * slug wordlist read an unlaunched club's page inventory, each page's title, and
- * its header text — including pages never published, because `/contact` and
- * `/join` look their content up with no `published === false` filter.
+ * its header text — at the time including pages never published, because
+ * `/contact` and `/join` looked their content up with no `published === false`
+ * filter (closed by #2440's shared published-filtering read).
  *
  * So the property under test is UNIFORMITY, not "misses are hidden": pre-setup,
  * a page that exists, a page that does not, and a page that exists but is
@@ -42,10 +43,15 @@ vi.mock("@/lib/public-layout-config", () => ({
   getCachedClubIdentity: mocks.clubIdentity,
   getCachedWebsiteThemeRenderState: mocks.themeState,
 }));
-vi.mock("@/lib/page-content-html", () => ({
-  getSanitizedPageContentByPath: mocks.getPage,
-  pageContentHtmlToPlainText: (html: string) => html,
-}));
+// Shared factory mirrors the real published filter (#2440).
+vi.mock("@/lib/page-content-html", async () => {
+  const { pageContentHtmlModuleMock } = await import(
+    "@/lib/__tests__/helpers/page-content-html-mock"
+  );
+  return pageContentHtmlModuleMock(mocks.getPage, {
+    pageContentHtmlToPlainText: (html: string) => html,
+  });
+});
 vi.mock("@/lib/page-content-embeds", () => ({
   buildEmbeddedBody: mocks.buildBody,
 }));
