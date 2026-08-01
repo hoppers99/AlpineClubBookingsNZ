@@ -35,6 +35,48 @@ The deploy gate only inspects migrations still pending against the target databa
 
 Add the ledger row (and, for destructive changes, follow the expand/contract sequence above) in the same pull request that adds the migration.
 
+## Data-migration verification
+
+Some migrations do not only change the *shape* of the database — they rewrite data a club has typed in. `Migration drift check` applies every migration to a real PostgreSQL, but the tables are **empty**, so a backfill, repair, or value transform matches no rows: the statement is proven to parse and proven to do nothing. Tests that string-match the SQL, or re-run its patterns in JavaScript, prove the patterns are what the author intended; JavaScript and PostgreSQL regular expressions differ on greediness, on newlines inside character classes, and on backslashes inside brackets, so they cannot prove PostgreSQL executes them the same way. Every defect the three review rounds found in #2269's migration was semantic, and none was reachable from empty tables (issue #2418).
+
+**The rule: a data-rewriting migration ships a verification fixture in the same pull request.** `scripts/check-data-migration-verification.sh` enforces it, and runs both in `migration-drift` (a required check) and in the `Data migration verification` job that executes the fixtures. It is read-only and needs no database.
+
+A migration counts as **data-rewriting** when any top-level statement:
+
+- begins with `UPDATE`, `DELETE`, `TRUNCATE` or `MERGE` — these can only reach rows that already exist;
+- begins with `INSERT` and derives values from existing rows (a `SELECT` anywhere in the statement) or resolves a conflict with `DO UPDATE`;
+- begins with `WITH` and contains an `UPDATE`/`DELETE`/`INSERT`/`MERGE` (a data-modifying CTE);
+- is an `ALTER TABLE ... ALTER COLUMN ... TYPE ... USING ...`, whose `USING` expression transforms every existing value; or
+- is a `DO` block containing any of the above (a PL/pgSQL body is opaque to a line-oriented gate, so it is classified conservatively).
+
+A plain `INSERT ... VALUES` is deliberately **not** data-rewriting: it adds rows and cannot alter anything a club has typed. Neither is a `CREATE FUNCTION` body containing an `UPDATE` — that defines future runtime behaviour (a trigger), which the trigger suites cover instead. Statements are reconstructed with the same dollar-quote-aware splitter the deploy gate uses (`scripts/lib/split-sql-statements.awk`), so both gates grade the same program.
+
+### Writing a fixture
+
+Add `prisma/migration-verification/<migration_name>.ts`, named exactly after the migration directory, and register it in that directory's `index.ts` (an unregistered fixture never runs, so the gate fails on one). A fixture declares, in data:
+
+- `intent` — plain English: what the migration must do, and to whom.
+- `cases` — each a pre-state (`seed` SQL) and the `expectations` that must hold afterwards, as named queries and the exact rows they must return. **The runner replays every earlier migration first**, so a case seeds rows on the real schema rather than inventing tables — and the strongest case seeds nothing at all, because the pre-state is then literally what a real install holds. Select timestamps through `to_char(...)`: a raw naive timestamp is resolved against the *client's* zone and would pass in UTC CI while failing on a Pacific/Auckland machine.
+- `mutants` — deliberate breakages of the migration (an inverted `WHERE`, a dropped predicate, a row-scoped rewrite where the real one is value-scoped), each with the real-world harm it would cause. The runner applies each mutant and **requires at least one case to fail**; a mutant that goes undetected fails the build. It also runs one mutant nobody declares: not applying the migration at all. Without this, a post-state assertion that would pass either way — coverage that does not exist — sits green forever.
+- `idempotentReRun` — true when running the whole migration twice must change nothing (a pure value-scoped repair). The runner then proves it.
+
+`prisma/migration-verification/20260802110000_clear_waldvogel_lodge_address.ts` and `20260802140000_clear_starter_footer_affiliations.ts` are the reference implementations.
+
+Run it locally against any throwaway database (the suite creates and drops its own, so the user needs `CREATEDB`):
+
+```bash
+DATA_MIGRATION_VERIFICATION_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres \
+  npx vitest run src/lib/__tests__/data-migration-verification.realdb.test.ts
+```
+
+Without that variable the real-database checks do not run, but the suite still fails if CI stops running them — and it fails outright inside its own CI job when the variable is missing, so the coverage can never quietly disappear.
+
+**Limitation.** The migration under test is applied inside a transaction so each case can be rolled back, which means a migration that adds an enum value *and uses it* cannot be verified this way (PostgreSQL refuses `ALTER TYPE ... ADD VALUE` followed by use in one transaction block). Split such a change into two migrations, which the expand/contract sequence above wants anyway.
+
+### The grandfather list
+
+`scripts/data-migration-verification-grandfathered.txt` names the 85 data-rewriting migrations that shipped before this gate existed (recorded 2 August 2026). The count is pinned in the script, so the list cannot grow unnoticed. Removing a name is how a historical migration gets retro-fitted: write the fixture, delete the line, drop the pinned count. **Adding** a name means "this data-rewriting migration ships unverified" and needs the same justification a security waiver would, stated in the PR body. A migration cannot be both grandfathered and verified — the gate fails on that, so the list can never decay into decoration.
+
 ## Historical Migrations
 
 The April 2026 migration history contains single-step destructive changes that predate this policy. Those files are not edited retroactively because Prisma records migration checksums after deployment. If any environment still has one of those migrations pending, do not run it through the normal blue/green path; treat it as a bootstrap or maintenance migration with an explicit operator plan.
