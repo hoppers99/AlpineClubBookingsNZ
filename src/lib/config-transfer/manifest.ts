@@ -28,6 +28,7 @@ export const CONFIG_TRANSFER_CATEGORIES = [
   "site-content",
   "club-settings",
   "lodge-config",
+  "booking-policies",
   "committee",
   "induction",
   "membership-fees",

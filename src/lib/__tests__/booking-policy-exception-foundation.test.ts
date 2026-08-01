@@ -171,7 +171,7 @@ describe("minimum-stay policy write contract (#2363)", () => {
     const tx = { $executeRaw: executeRaw };
 
     await lockMinimumStayPolicySet(
-      tx as Parameters<typeof lockMinimumStayPolicySet>[0],
+      tx as unknown as Parameters<typeof lockMinimumStayPolicySet>[0],
     );
 
     expect(MINIMUM_STAY_POLICY_SET_LOCK_KEY).toBe("minimum-stay-policy-set");

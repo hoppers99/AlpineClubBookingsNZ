@@ -21,13 +21,14 @@ import {
 
 // Full-admin Configuration Export & Import page. Export selected categories to a
 // portable zip; import a bundle via a mandatory dry-run before applying (the
-// server takes a database backup and never deletes). Validation errors BLOCK
+// server takes a database backup). Validation errors BLOCK
 // apply; key-weak renames are resolved via the match picker. docs/config-transfer.
 
 const CATEGORY_LABELS: Record<ConfigTransferCategory, string> = {
   "site-content": "Site content & appearance",
   "club-settings": "Club settings",
   "lodge-config": "Lodge configuration",
+  "booking-policies": "Booking policies",
   committee: "Committee (roles)",
   induction: "Induction checklists",
   "membership-fees": "Membership fees (joining & annual)",
@@ -39,7 +40,7 @@ type ImportMode = "merge" | "overwrite";
 type PlanItem = {
   entity: string;
   key: string;
-  action: "create" | "update" | "unchanged";
+  action: "create" | "update" | "delete" | "unchanged";
   changedFields?: string[];
   candidates?: Array<{ id: string; label: string }>;
 };
@@ -49,6 +50,7 @@ type PlanItem = {
 const ACTION_BADGE: Record<PlanItem["action"], { label: string; badge: string }> = {
   create: { label: "New", badge: "bg-success-3 text-success-11" },
   update: { label: "Updated", badge: "bg-warning-3 text-warning-11" },
+  delete: { label: "Deleted", badge: "bg-danger-3 text-danger-11" },
   unchanged: { label: "Unchanged", badge: "bg-muted text-muted-foreground" },
 };
 type CategoryPlan = {
@@ -66,7 +68,7 @@ type ImportPlan = {
   integrityWarnings: string[];
   errors: string[];
   xero: { sourceTenantId: string | null; targetTenantId: string | null; mismatch: boolean };
-  summary: { create: number; update: number; unchanged: number };
+  summary: { create: number; update: number; delete: number; unchanged: number };
 };
 type Resolution = { entity: string; key: string; matchId: string };
 
@@ -395,11 +397,21 @@ export default function ConfigTransferPage() {
                 Plan:{" "}
                 <span className="text-success-11">{plan.summary.create} new</span>,{" "}
                 <span className="text-warning-11">{plan.summary.update} updated</span>,{" "}
+                <span className="text-danger-11">{plan.summary.delete} deleted</span>,{" "}
                 <span className="text-muted-foreground">
                   {plan.summary.unchanged} unchanged
                 </span>
                 .
               </p>
+
+              {plan.selectedCategories.includes("booking-policies") && (
+                <p className="flex items-start gap-2 rounded-md bg-danger-3 p-2 font-medium text-danger-11">
+                  <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+                  Booking policies are a complete replace-set: policies omitted
+                  from the bundle will be deleted, in both Merge and Overwrite
+                  modes. Review every Deleted row above before applying.
+                </p>
+              )}
 
               {plan.errors.length > 0 && (
                 <div className="rounded-md bg-danger-3 p-2">

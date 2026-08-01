@@ -8,6 +8,7 @@ import type { CategoryExporter, MediaCollector, ReadDb } from "./export-types";
 import { siteContentExporter } from "./categories/site-content";
 import { clubSettingsExporter } from "./categories/club-settings";
 import { lodgeConfigExporter } from "./categories/lodge-config";
+import { bookingPoliciesExporter } from "./categories/booking-policies";
 import { lodgeOpsExporter } from "./categories/lodge-ops";
 import { displayExporter } from "./categories/display";
 import { committeeExporter } from "./categories/committee";
@@ -25,6 +26,7 @@ export const CATEGORY_EXPORTERS: CategoryExporter[] = [
   siteContentExporter,
   clubSettingsExporter,
   lodgeConfigExporter,
+  bookingPoliciesExporter,
   lodgeOpsExporter,
   displayExporter,
   committeeExporter,
