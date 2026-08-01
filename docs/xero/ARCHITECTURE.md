@@ -149,6 +149,7 @@ this (#1208). Shared JSON-guard micro-helpers (`asRecord`/`readString`/
 | `xero-api-errors`, `xero-error-shape` | Error classification helpers (status code, body message, headers). |
 | `xero-error-alert` | Ops email on sync errors, deduplicated to one per hour via `EmailLog`. |
 | `xero-links`, `xero-record-links`, `xero-record-types` | Deep links into the Xero UI and into local admin pages; shared record-activity types. See "Deep links into Xero" below for why the tenant GUID cannot be used in a Xero URL. |
+| `xero-link-short-code` | `getXeroOrgShortCode()` — the organisation short code for links built on the SERVER (the twin of the `useXeroOrgShortCode` hook). Never throws; null means "build the generic link". |
 | `xero-feature-flags` | `XERO_ENABLE_DAILY_MEMBERSHIP_REFRESH`, `XERO_ENABLE_LIVE_MEMBER_GROUP_LOOKUPS`, `XERO_ENABLE_AUTOLOAD_XERO_CONTACT_GROUPS`. |
 | `xero-organisation` | Cached connected-org facts: financial-year-end month, org name, lock dates, and the deep-link **short code**. |
 
@@ -690,28 +691,57 @@ bare host still legal and test files excluded (they assert and mock the
 builders' exact output). It cannot see a host assembled from pieces, so it is
 a brake on the obvious drift rather than a proof.
 
-**What "every admin link" does *not* yet cover.** Passing through a builder is
-not the same as carrying the short code. Five admin surfaces render a URL that
-was built on the **server**, by a producer that has no short code to pass, so
-they still open in whichever organisation the Xero session last used:
+**The server-side rule (#2314).** Passing through a builder is not the same as
+carrying the short code, and #2283 only reached the links a *client* component
+renders. Everything built on the server was still short-code-less. The rule now,
+settled by owner decision on 1 and 2 August 2026, is three sentences long:
+
+1. **Every server-side producer resolves the short code**, by calling
+   `getXeroOrgShortCode()` (`src/lib/xero-link-short-code.ts`) — the server-side
+   twin of the `useXeroOrgShortCode` hook, wrapping
+   `getXeroConnectedOrganisation`'s cache. It never throws and never hides a
+   link; a null short code degrades to the generic URL.
+2. **Nothing organisation-specific is ever persisted.**
+   `XeroObjectLink.xeroObjectUrl` and `XeroSyncOperation.xeroObjectUrl`
+   (`prisma/schema.prisma`) stay generic, because a short code baked into a row
+   is wrong the moment the club reconnects to a **different** Xero organisation
+   and nothing would ever correct it. `applyXeroOrgShortCode(url, { shortCode })`
+   scopes a stored URL when it is read — and re-points one that already carries
+   some other organisation's code, so a row written under a previous connection
+   heals itself.
+3. **Emailed links are stamped at send time**, inside the three senders in
+   `src/lib/email/admin-alerts-finance.ts` (manual-settlement conflict, repeated
+   Xero failure, reconciliation report). A screen can re-render and pick up the
+   current organisation; an email cannot, so it is the surface that most needs
+   the organisation named, and the alert is a point-in-time snapshot of
+   everything else it reports anyway.
+
+The producers behind the five server-fed render sites, all covered:
 
 | Render site | URL produced by |
 | --- | --- |
-| `xero/_components/operations-panel.tsx:485` | `api/admin/xero/operations/route.ts:142` |
-| `xero/_components/inbound-events-panel.tsx:286` | `api/admin/xero/inbound-events/route.ts:151` |
-| `xero/_components/setup-panels.tsx:471` (duplicate contacts) | `xero-duplicate-contacts.ts:199` |
-| `components/admin/xero-record-activity-panel.tsx:125,385,566,655` | `xero-record-activity.ts:637,662,690` |
-| `components/admin/xero-suggested-contact-card.tsx:72` | `api/admin/xero/import-member-contact/route.ts:202` |
+| `xero/_components/operations-panel.tsx` | `api/admin/xero/operations/route.ts` |
+| `xero/_components/inbound-events-panel.tsx` | `api/admin/xero/inbound-events/route.ts` |
+| `xero/_components/setup-panels.tsx` (duplicate contacts) | `xero-duplicate-contacts.ts` |
+| `components/admin/xero-record-activity-panel.tsx` | `xero-record-activity.ts` |
+| `components/admin/xero-suggested-contact-card.tsx` | `api/admin/xero/import-member-contact/route.ts` |
 
-Two further paths **persist** a built URL —
-`XeroObjectLink.xeroObjectUrl` and `XeroSyncOperation.xeroObjectUrl`
-(`prisma/schema.prisma:3084,3139`) — which the panels above and the admin
-alert emails render verbatim, so a short code baked in there would also have to
-survive a reconnect to a different organisation. `xero-duplicate-contacts.ts`
-is an in-tree counterexample worth noting: line 199 omits the short code while
-line 255, in the same file, already passes one. All of this is within #2283's
-acceptance criterion (links land in the right organisation **or degrade to the
-generic link**) and is tracked as an owner decision in **#2314**.
+Three write routes also return a link in their JSON response — member
+`xero-link`, member `xero-push`, and Xero `force-sync` — and those returned
+links are scoped, so the admin who has just linked, pushed or force-synced lands
+in the club's books. `import-member-contact` is where both halves of rule 2 meet
+in one handler: it stores the generic URL on the `XeroObjectLink` row and returns
+the scoped one.
+
+`xero-duplicate-contacts.ts` was the in-tree contradiction that made this a
+decision rather than a patch — one function passed a short code and another did
+not. Both now resolve it the same way, and the private `getOrganisations` call
+the first one made has been dropped in favour of the shared cache.
+
+The whole rule is pinned by `src/lib/__tests__/xero-server-deep-links.test.ts`
+(each producer, against the real builders),
+`src/lib/email/__tests__/xero-alert-deep-links.test.ts` (send-time stamping) and
+the `applyXeroOrgShortCode` cases in `src/lib/__tests__/xero-links.test.ts`.
 
 The identifier a Xero URL needs is the organisation **short code** (`!aBc12`),
 *not* the tenant GUID stored on the `XeroToken` row. The GUID is not usable in a
@@ -740,12 +770,18 @@ cache still costs at most one `getOrganisations` call per server process per
 12 hours. The finance dashboard makes the opposite trade and links without a
 short code rather than fetching one.
 
-Two honest bounds on that. First, `/api/admin/xero/**` maps to the **finance**
-permission area (`admin-permissions.ts`), so an admin with membership access
-but not finance gets a 403 from the organisation route and sees the unqualified
-links — degraded, never hidden, which is the documented contract, but it means
-"every admin" above reads "every admin with finance access". Widening the
-route's authz is an open question, not something this convention assumes.
+Two honest bounds on that. First, the organisation route is **finance-only** —
+settled, not open (owner decision, #2314, 2 August 2026): it asks for
+`finance:view` in its own handler rather than leaving the area to be inferred
+from the request path, so the answer no longer depends on a header
+`src/proxy.ts` may or may not have stamped. Widening it to any admin who can
+view settings was considered and declined — it grows the surface for no current
+feature need. So "every admin" above reads "every admin holding the finance
+area", which under the seeded role bundles includes the bookings, membership and
+read-only administrators as well as the finance ones; an admin outside that set
+(a content editor, say) sees the same links unqualified — degraded, never
+hidden, which is the documented contract. `xero-organisation-route-authz.test.ts`
+pins that audience against the real permission matrix.
 Second, the short code arrives from a client fetch, so between mount and
 resolution the links render their degraded `href`; a very fast first click gets
 the session-scoped URL. That window is the pre-existing behaviour of the Xero
