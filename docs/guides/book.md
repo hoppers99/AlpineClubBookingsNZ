@@ -66,6 +66,21 @@ date-only lodge nights. The behaviour and its guardrails are documented in
    the end.
 3. Click **Continue** to price the booking.
 
+**Member guests are added after saving, from the booking's edit panel.** With
+the **Member guests** module on, a member from outside the owner's family group
+can be put on a booking — but there is no **+ Add Member Guest** button on this
+page. Create the booking with the owner's own family and any non-member guests
+first, then open it from **Bookings**, click **Edit**, and use **+ Add Member
+Guest** there.
+
+The reason is worth knowing rather than guessing at: the officer's member finder
+is scoped to a booking, so that the lookup can be gated and audited against a
+booking that exists. During creation there is no booking to scope it to. Adding
+the member guest from the edit panel does exactly the same thing — the same
+consent record naming you, and the same email to the member — one step later.
+The member guide's *Being added to a booking by another member* page describes
+what that member receives.
+
 ### Step 3 — Review & Confirm
 
 1. Check the **Booking Summary** (dates, nights, guests, and per-guest prices).
@@ -94,7 +109,7 @@ This is a wizard, not a settings page. The inputs it collects:
 | No email address | Suppress all owner emails (walk-in/phone) | off | Creates a placeholder-email owner; nothing shared with Xero |
 | Record a past stay | Create a retroactive booking | off | Up to 365 days back; drafts disabled for these |
 | Lodge | Which lodge the booking is at | first/only lodge | Only shown with more than one active lodge |
-| Guests | Who is staying | — | Capped at the lodge's resolved capacity, not live availability |
+| Guests | Who is staying | — | Capped at the lodge's resolved capacity, not live availability. Member guests (members outside the owner's family) are added afterwards from the booking's edit panel — see Step 2 |
 | Apply credit to this booking | Spend the member's account credit | off | Money in integer cents |
 | Notes / Expected Arrival Time | Free-text booking notes | empty | Notes ≤ 1000 characters |
 | Payment method | Card or Internet Banking | Card | Internet Banking option only when the module is on and a balance is due |

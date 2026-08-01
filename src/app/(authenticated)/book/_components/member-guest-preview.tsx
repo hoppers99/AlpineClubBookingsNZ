@@ -14,8 +14,8 @@ import type { MemberGuestConsentColumns } from "@/lib/member-guest-consent";
  * inventing timestamps to satisfy a type is how a fake expiry date ends up on
  * screen.
  *
- * So exactly two shapes are constructed, and both are LEGAL sub-states of the
- * eight-shape table in `member-guest-consent.ts` rather than approximations:
+ * So exactly three shapes are constructed, and all three are LEGAL sub-states of
+ * the eight-shape table in `member-guest-consent.ts` rather than approximations:
  *
  *   * `PENDING` → the `AWAITING_TARGET` shape. `consentExpiresAt` is deliberately
  *     null: the wizard badge does not show a date (see the WIZARD audience note
@@ -25,11 +25,36 @@ import type { MemberGuestConsentColumns } from "@/lib/member-guest-consent";
  *   * `NOTIFY_ONLY` → the `NOTIFY_ONLY_AUTO_CONFIRMED` shape exactly: CONFIRMED
  *     with a null `requestedAt` AND a null `respondedBy`, which is that
  *     sub-state's signature and classifies correctly.
+ *   * `ADMIN_ASSIGNED` → the `ADMIN_ASSIGNED` shape (MG4 #2309), which is what
+ *     the server writes for an officer's add whatever the club's ask-first
+ *     setting says. See `PREVIEW_ADMIN_RESPONDER` for why its two non-null
+ *     columns carry sentinels rather than invented real values.
  *
  * Any guest with no preview — every family add, every non-member guest, every
  * row that predates this feature — returns `null` and gets no badge at all,
  * which keeps the overwhelming majority of guest rows byte-identical to before.
  */
+
+/**
+ * The two non-null columns the `ADMIN_ASSIGNED` shape needs, as SENTINELS.
+ *
+ * `classifyMemberGuestConsent` separates an admin placement from a notify-only
+ * auto-confirm by the presence of a responder, so the preview cannot classify as
+ * ADMIN_ASSIGNED without one — and the panel legitimately does not know either
+ * value: the officer's member id is not in the client payload, and the responded
+ * timestamp does not exist until the server writes the row.
+ *
+ * NEITHER IS EVER RENDERED, which is what makes a sentinel the honest answer
+ * rather than a shortcut. A preview is only ever passed to the `WIZARD`
+ * audience, whose ADMIN_ASSIGNED label is the bare "Added by the club" — the
+ * named-and-dated forms ("Added by Jo Admin") belong to the `ADMIN` audience
+ * reading PERSISTED rows, which a preview never reaches. The epoch date is
+ * chosen over `new Date()` deliberately: a plausible-looking timestamp is the
+ * one that survives a copy-paste into a surface that does render it.
+ */
+const PREVIEW_ADMIN_RESPONDER = "preview-admin";
+const PREVIEW_ADMIN_RESPONDED_AT = new Date(0);
+
 export function memberGuestConsentPreviewColumns(
   guest: Pick<GuestData, "memberGuestConsentPreview">,
 ): MemberGuestConsentColumns | null {
@@ -48,6 +73,15 @@ export function memberGuestConsentPreviewColumns(
       consentRequestedAt: null,
       consentRespondedAt: null,
       consentRespondedByMemberId: null,
+      consentExpiresAt: null,
+    };
+  }
+  if (guest.memberGuestConsentPreview === "ADMIN_ASSIGNED") {
+    return {
+      consentStatus: "CONFIRMED",
+      consentRequestedAt: null,
+      consentRespondedAt: PREVIEW_ADMIN_RESPONDED_AT,
+      consentRespondedByMemberId: PREVIEW_ADMIN_RESPONDER,
       consentExpiresAt: null,
     };
   }
@@ -100,12 +134,35 @@ export function predictMemberGuestConsent(params: {
   familyMembersLoaded: boolean;
   /** `MemberGuestSettings.approvalRequired` — D-3, true is the shipped default. */
   approvalRequired: boolean;
+  /**
+   * WHO IS DOING THE ADDING, and it is required rather than defaulted (MG4
+   * #2309).
+   *
+   * THE BUG THIS PARAMETER EXISTS TO PREVENT, and it is a real one that shipped
+   * inside MG4's own first cut. The server writes `ADMIN_ASSIGNED` — CONFIRMED,
+   * consent-free, always-notify — for any actor of kind `ADMIN`, WHATEVER the
+   * club's ask-first setting says (`buildMemberGuestConsentWrite` takes the
+   * admin branch before it ever looks at `approvalRequired`). A prediction that
+   * read only `approvalRequired` therefore told an officer on a default club
+   * "Waiting for consent — the bed is held until they answer" on the same card
+   * that said "This member will be added immediately and told by email". Two
+   * contradictory statements about one act, and the one drawn beside the guest
+   * row was the false one.
+   *
+   * Defaulting it to `"MEMBER"` would have kept that bug reachable by omission,
+   * which is exactly how it arrived; a required field makes a new surface answer
+   * the question. The create wizard is member-only and passes `"MEMBER"`.
+   */
+  actorKind: "MEMBER" | "ADMIN";
 }): GuestData["memberGuestConsentPreview"] {
   if (!params.familyMembersLoaded) {
     return undefined;
   }
   if (params.familyMemberIds.includes(params.candidateMemberId)) {
     return undefined;
+  }
+  if (params.actorKind === "ADMIN") {
+    return "ADMIN_ASSIGNED";
   }
   return params.approvalRequired ? "PENDING" : "NOTIFY_ONLY";
 }
@@ -140,6 +197,13 @@ export function describeMemberGuestWizardHelper(
   }
   if (guest.memberGuestConsentPreview === "NOTIFY_ONLY") {
     return "Your club adds member guests straight away and emails them to say so.";
+  }
+  if (guest.memberGuestConsentPreview === "ADMIN_ASSIGNED") {
+    // Admin-only, and unreachable from the create wizard (which is member-only).
+    // Both halves are stated because the second is the one an officer is likely
+    // to assume away: an admin add is not a silent administrative action.
+    const name = guest.firstName.trim() || "They";
+    return `Added by the club and told by email. ${name} was not asked first.`;
   }
   return null;
 }

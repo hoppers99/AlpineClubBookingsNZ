@@ -106,6 +106,57 @@ export async function DELETE(
       })
     );
 
+    /**
+     * MG4 (#2309): tell a member guest their place has gone.
+     *
+     * WIRED HERE RATHER THAN IN `removeBookingGuestInTransaction`, and that is
+     * the load-bearing choice. Three callers share that service, and only ONE of
+     * them owes this email:
+     *
+     *   - this route, where a booker or an officer took somebody off;
+     *   - the consent endpoint, where the member (or their delegate) DECLINED —
+     *     they already know, and they already get the decline confirmation;
+     *   - the nightly expiry sweep, where the request lapsed — which has its own
+     *     template saying exactly that, and calling this one too would send the
+     *     same person two different explanations of one event.
+     *
+     * Putting it in the service would have meant a flag the other two remember
+     * to pass, i.e. a duplicate email waiting for whoever forgets.
+     *
+     * The three skips below are each a real case, not defensiveness: a NULL
+     * consent status means no message was ever sent about this row (family
+     * scope, or any pre-feature guest), a null memberId means there is no member
+     * to tell, and a self-removal (#2250) means the reader is the person who
+     * just pressed the button.
+     */
+    const removed = result.removedGuest;
+    if (
+      removed.memberId != null &&
+      removed.consentStatus != null &&
+      removed.memberId !== session.user.id
+    ) {
+      const { sendMemberGuestWithdrawnNotifications } = await import(
+        "@/lib/member-guest-consent-notifications"
+      );
+      try {
+        await sendMemberGuestWithdrawnNotifications({
+          bookingId,
+          targetMemberIds: [removed.memberId],
+          // A request nobody had answered yet was called off; a settled place
+          // was taken off. Two different things to the reader.
+          context:
+            removed.consentStatus === "PENDING"
+              ? "REQUEST_CANCELLED"
+              : "TAKEN_OFF",
+        });
+      } catch (err) {
+        logger.error(
+          { err, bookingId, guestId },
+          "Failed to dispatch a member-guest withdrawal notification",
+        );
+      }
+    }
+
     // A zero-dollar auto-pay supersedes any outstanding primary
     // PaymentIntents inside the transaction; cancel them on Stripe now so a
     // stale checkout tab cannot capture the pre-removal amount (#1041).

@@ -407,15 +407,15 @@ describe("Admin member detail grouped layout", () => {
     expect(screen.getByRole("button", { name: "Save Changes" })).toBeTruthy();
   });
 
-  it("expands and unlocks Contact & Personal for the ?edit=true deep link", async () => {
+  it("ignores a forged legacy ?edit=true query and opens read-only", async () => {
     searchParamsValue = new URLSearchParams("edit=true");
 
     await renderPage();
 
-    // Contact group is open in edit mode: form inputs present.
-    expect(await screen.findByLabelText("First Name *")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Save Changes" })).toBeTruthy();
-    // Transient open: nothing persisted for the contact section.
+    expect(await screen.findByRole("button", { name: /Contact & Personal/ })).toBeTruthy();
+    expect(screen.queryByLabelText("First Name *")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save Changes" })).toBeNull();
+    // The query does not expand, persist, or activate any editor.
     expect(
       window.localStorage.getItem(memberSectionStorageKeys.contact)
     ).not.toBe("true");

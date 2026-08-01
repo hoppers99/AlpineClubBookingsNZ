@@ -4,14 +4,14 @@ import { getCachedClubIdentity } from "@/lib/public-layout-config";
 import { setupInProgressMetadata } from "@/lib/website-setup-metadata";
 import { buildEmbeddedBody } from "@/lib/page-content-embeds";
 import {
-  getSanitizedPageContentByPath,
+  getPublishedPageContentByPath,
   pageContentHtmlToPlainText,
 } from "@/lib/page-content-html";
 
 export async function generateMetadata(): Promise<Metadata> {
-  // Pre-setup, before any lookup (#2420 F1). Like /contact, this lookup carries
-  // no `published === false` filter, so an unpublished join page would
-  // otherwise be disclosed by an unlaunched club. See setupInProgressMetadata().
+  // Pre-setup, before any lookup (#2420 F1). See setupInProgressMetadata().
+  // Post-setup, the published filter in the lookup below keeps a draft row out
+  // of the head (#2440); the code-backed defaults take over.
   const holdingScreen = await setupInProgressMetadata();
 
   if (holdingScreen) {
@@ -19,7 +19,7 @@ export async function generateMetadata(): Promise<Metadata> {
   }
 
   const [page, { name: clubName }] = await Promise.all([
-    getSanitizedPageContentByPath("/join"),
+    getPublishedPageContentByPath("/join"),
     getCachedClubIdentity(),
   ]);
   return {
@@ -32,7 +32,7 @@ export async function generateMetadata(): Promise<Metadata> {
 
 export default async function JoinPage() {
   const [page, clubIdentity] = await Promise.all([
-    getSanitizedPageContentByPath("/join"),
+    getPublishedPageContentByPath("/join"),
     getCachedClubIdentity(),
   ]);
   const embeddedBody = page ? await buildEmbeddedBody(page.contentHtml) : [];

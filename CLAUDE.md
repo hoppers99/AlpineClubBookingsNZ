@@ -121,6 +121,14 @@ the same PR: `README.md`, the relevant `docs/` guides, and any implementation or
 operator notes. Keep code, tests, and docs aligned. Skip doc churn only for
 incidental internal refactors that change no contract or behavior.
 
+Ship the changelog entry as a **new `changelog.d/<pr-number>-<slug>.md`
+fragment** in the same PR — never by editing `CHANGELOG.md`'s `## Unreleased`
+list, which is what made concurrent lanes conflict daily (#2452).
+`changelog.d/README.md` documents the house entry style, the
+`changelog: none — <reason>` marker for a change that genuinely needs no entry,
+and the release-time compile. This is the one item on the lockstep list that CI
+enforces — see "Local validation" below.
+
 ## Safety (see `AGENTS.md` for the full list)
 
 - No production credentials, databases, backups, or live providers (Stripe,
@@ -150,3 +158,17 @@ npm run knip           # when files or exports change
 GitHub Actions runs the full `npm test`, build, migration-drift, E2E,
 static/secret/dependency, and container gates. Do not duplicate them locally
 before push unless diagnosing a CI failure or CI is unavailable.
+
+Two `verify` gates read the PR itself rather than the code, so a lint-clean,
+typecheck-clean PR can still fail on them:
+
+- **Changelog entry** — fails a PR that changes a non-test file under `src/` or
+  `prisma/` and carries neither a `changelog.d/` fragment nor the
+  `changelog: none — <reason>` marker in the PR body.
+- **Concurrency declaration** — cannot be `N/A` when the diff touches a non-test
+  file on a sensitive path (money, capacity, lifecycle, webhook/cron, Xero or
+  Stripe modules, `prisma/schema.prisma`, `prisma/migrations/`), even for a
+  read-only change.
+
+Both parse the PR body, so **editing the body alone does not re-run Actions** —
+push an empty commit after fixing one.

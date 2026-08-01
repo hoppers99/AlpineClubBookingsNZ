@@ -150,7 +150,6 @@ function renderMemberTable(members: Member[]) {
       onToggleSelectAll={vi.fn()}
       onToggleSort={vi.fn()}
       onOpenPasswordActionDialog={vi.fn()}
-      onEditMember={vi.fn()}
     />,
   );
 }

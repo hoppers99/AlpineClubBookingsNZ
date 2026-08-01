@@ -1,0 +1,28 @@
+-- Events calendar module flag (eventsCalendar, #2241).
+--
+-- The club events calendar shipped with no module key and no feature-route
+-- rule, so a club had no way to switch it off. This adds the flag; the matching
+-- route rules live in src/config/feature-routes.ts.
+--
+-- Blue/green EXPAND migration (see docs/BLUE_GREEN_MIGRATION_SAFETY.tsv):
+--  * ALTER TABLE "ClubModuleSettings" ADD COLUMN "eventsCalendar" BOOLEAN NOT
+--    NULL DEFAULT true — a PostgreSQL metadata-only ADD COLUMN with a constant
+--    default (no table rewrite, no row scan), on the cold ClubModuleSettings
+--    catalog singleton, taking a brief ACCESS EXCLUSIVE lock on a one-row table.
+--
+-- Purely additive / expand-safe: the previously deployed (old-colour) Prisma
+-- client reads ClubModuleSettings only through
+-- CLUB_MODULE_SETTINGS_COLUMN_SELECT, which does not name the new column, so the
+-- added flag is invisible to it and the calendar keeps behaving exactly as it
+-- does today through the migrate -> cutover drain. No enum change, no DROP, no
+-- RENAME, no ALTER COLUMN TYPE / SET NOT NULL on existing data, no backfill DML,
+-- no session-clock DML, and no provider call. ClubModuleSettings is absent from
+-- HOT_TABLE_SQL_REGEX. Forward-only expand (no automated rollback needed):
+-- dropping the column on rollback only discards the club's on/off choice.
+--
+-- DEFAULT true is deliberate and is the whole no-behaviour-change guarantee:
+-- every existing club keeps the always-on calendar it has today, and a club that
+-- does not want it switches the module off on Admin -> Modules.
+
+-- AlterTable
+ALTER TABLE "ClubModuleSettings" ADD COLUMN     "eventsCalendar" BOOLEAN NOT NULL DEFAULT true;

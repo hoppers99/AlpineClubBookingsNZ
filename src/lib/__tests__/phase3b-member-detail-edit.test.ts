@@ -343,12 +343,17 @@ describe("Phase 3b: Member Detail Edit — PUT /api/admin/members/[id]", () => {
     });
   });
 
-  // Every shape a unique-constraint failure can arrive in, because which one
-  // Postgres actually sends for the RAW PARTIAL index Member_email_login_unique
-  // is not settled (#2412): `meta.target` is what the old query engine
-  // populated and what the join-code retry still reads, while the pg driver
-  // adapter renders the SQLSTATE 23505 detail into the message instead. The
-  // backstop reads both, so both are pinned.
+  // Every shape a unique-constraint failure can arrive in. Which one the RAW
+  // PARTIAL index Member_email_login_unique sends is settled (#2412, measured):
+  // it reports its COLUMN in `meta.driverAdapterError.cause.constraint.fields`
+  // exactly as a schema-level `@unique` does — the two index kinds are
+  // indistinguishable, and `meta.target` is never populated under the driver
+  // adapter. See docs/ARCHITECTURE.md, "Reading a unique-constraint failure".
+  // The cases below keep the other shapes pinned anyway, because the backstop
+  // still reads them: `meta.target` for a stack without the adapter, the
+  // rendered message for a Postgres that withholds the `Key (…)` detail. The
+  // live adapter shape itself is pinned in
+  // prisma-unique-constraint-target.test.ts.
   const p2002 = (message: string, meta?: { target?: unknown }) =>
     Object.assign(new Error(message), {
       code: "P2002",

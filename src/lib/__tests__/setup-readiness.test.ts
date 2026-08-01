@@ -65,6 +65,7 @@ const completeDatabase: SetupDatabaseSnapshot = {
     lobbyDisplay: false,
     aiAssistant: false,
     memberNotices: true,
+    eventsCalendar: true,
     memberGuests: false,
   },
   ageTierSettingCount: 4,

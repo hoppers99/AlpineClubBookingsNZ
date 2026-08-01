@@ -188,8 +188,12 @@ describe("EditBookingPanel — no-adult review justification (#2104)", () => {
 
     expect(reviewField()).toBeNull();
 
-    // Add a non-member CHILD.
-    fireEvent.click(screen.getByRole("button", { name: "+ Add Guest" }));
+    // Add a non-member CHILD. The control is named "+ Add Non-Member Guest"
+    // since MG4 (#2309) put a second, member-guest button beside it in the
+    // Guests card header — an unqualified "+ Add Guest" no longer exists on
+    // this surface, and on an in-progress edit the same control reads
+    // "+ Add Future Non-Member Guest".
+    fireEvent.click(screen.getByRole("button", { name: "+ Add Non-Member Guest" }));
     fireEvent.change(screen.getByLabelText("First Name"), {
       target: { value: "Tam" },
     });

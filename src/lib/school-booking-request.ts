@@ -59,9 +59,17 @@ import {
   buildApprovalGuestCreates,
   claimAlreadyConvertedBookingRequest,
   getCapacityFullNights,
+  planBookingRequestGuestConsent,
   sendOwnerSubstitutionAdminAlert,
+  toPipelineGuestCreateData,
   type OwnerSubstitution,
 } from "@/lib/booking-request-shared";
+import {
+  loadMemberGuestAddPolicy,
+  matchMemberGuestNotificationRows,
+  type MemberGuestAddNotificationRow,
+} from "@/lib/member-guest-add-policy";
+import type { MemberGuestAddActor } from "@/lib/member-guest-consent";
 import { buildInternetBankingPaymentReference } from "@/lib/booking-payment-methods";
 import {
   acquireLodgeCapacityLock,
@@ -624,6 +632,16 @@ export async function approveSchoolBookingRequest(input: {
       }
     : {};
 
+  // MG4-D-b (#2309). Read before the transaction, per the ordering rule in
+  // `member-guest-add-policy.ts`. A school request routinely carries teacher
+  // rows an officer linked to real member accounts, and until MG4 those landed
+  // on the converted booking with no consent record and no word to the member.
+  const memberGuestPolicy = await loadMemberGuestAddPolicy();
+  const memberGuestActor: MemberGuestAddActor = {
+    kind: "BOOKING_REQUEST",
+    adminMemberId: input.adminMemberId,
+  };
+
   let capacityFullNights: string[] | null = null;
   let conversion: {
     bookingId: string;
@@ -636,6 +654,8 @@ export async function approveSchoolBookingRequest(input: {
       firstName: string;
       pin: string;
     }>;
+    memberGuestNotificationRows: MemberGuestAddNotificationRow[];
+    displacedMemberGuestIds: string[];
     ownerSubstitution:
       | { invalidMemberId: string; substituteMemberId: string; reason: string }
       | null;
@@ -686,6 +706,9 @@ export async function approveSchoolBookingRequest(input: {
           teacherAssignments: [],
           ownerSubstitution: null,
           alreadyConverted: true as const,
+          // A replay wrote no rows and owes no mail.
+          memberGuestNotificationRows: [] as MemberGuestAddNotificationRow[],
+          displacedMemberGuestIds: [] as string[],
         };
       }
 
@@ -800,6 +823,10 @@ export async function approveSchoolBookingRequest(input: {
 
       let booking: { id: string };
       let schoolMember: { id: string };
+      // MG4-D-b (#2309): collected in whichever branch runs, dispatched after
+      // the commit.
+      let memberGuestNotificationRows: MemberGuestAddNotificationRow[] = [];
+      let displacedMemberGuestIds: string[] = [];
       // Set when the held school owner failed re-validation at conversion and a
       // fresh contact was substituted (issue #1255 residual-risk decision 1);
       // drives a post-commit admin alert.
@@ -872,7 +899,19 @@ export async function approveSchoolBookingRequest(input: {
         // update guest rows in place rather than deleteMany+recreate, so an
         // admin's pre-assigned beds (and #713 night sets) survive. CONFIRMED
         // already holds capacity (#709), so the school hold spans send → accept.
-        await reassignHeldBookingGuests(tx, held.id, guestCreates);
+        const reassigned = await reassignHeldBookingGuests(
+          tx,
+          held.id,
+          guestCreates,
+          {
+            bookingOwnerMemberId: ownerId,
+            actor: memberGuestActor,
+            policy: memberGuestPolicy,
+            bookingCheckIn: request.checkIn,
+          }
+        );
+        memberGuestNotificationRows = reassigned.memberGuestNotificationRows;
+        displacedMemberGuestIds = reassigned.displacedMemberIds;
         booking = await tx.booking.update({
           where: { id: held.id },
           data: {
@@ -945,7 +984,14 @@ export async function approveSchoolBookingRequest(input: {
 
         // CONFIRMED holds capacity (issue #709 locked decision); pay-on-account
         // via INTERNET_BANKING so the existing invoice/reconciliation path runs.
-        booking = await tx.booking.create({
+        const consentPlan = await planBookingRequestGuestConsent(tx, {
+          bookingOwnerMemberId: schoolMember.id,
+          guests: guestCreates,
+          actor: memberGuestActor,
+          policy: memberGuestPolicy,
+          bookingCheckIn: request.checkIn,
+        });
+        const createdBooking = await tx.booking.create({
           data: {
             memberId: schoolMember.id,
             lodgeId: bookingLodgeId,
@@ -960,11 +1006,22 @@ export async function approveSchoolBookingRequest(input: {
             // Exclusive whole-lodge hold when the request asked for it (#121).
             ...exclusiveHoldData,
             guests: {
-              create: guestCreates,
+              create: consentPlan.guests.map(toPipelineGuestCreateData),
             },
           },
-          select: { id: true },
+          select: { id: true, guests: { select: { id: true, memberId: true } } },
         });
+        booking = { id: createdBooking.id };
+        // Short-circuited on the plan, not on the rows: an ordinary booking
+        // request owes nothing, and skipping the walk keeps the common path
+        // free of it (the same shape `admin-booking-copy.ts` uses).
+        memberGuestNotificationRows =
+          consentPlan.entriesByMemberId.size === 0
+            ? []
+            : matchMemberGuestNotificationRows({
+                createdGuests: createdBooking.guests,
+                entriesByMemberId: consentPlan.entriesByMemberId,
+              });
       }
 
       // ADR-001 bed-allocation short-circuit (#2285): a hold granted at
@@ -1123,6 +1180,8 @@ export async function approveSchoolBookingRequest(input: {
         teacherAssignments,
         ownerSubstitution,
         alreadyConverted: false as const,
+        memberGuestNotificationRows,
+        displacedMemberGuestIds,
       };
     });
   } catch (err) {
@@ -1146,6 +1205,41 @@ export async function approveSchoolBookingRequest(input: {
   // when a hold was set at approval. Informational only (decision 1).
   let exclusiveHoldConflicts: HoldConflictBooking[] = [];
   if (!conversion.alreadyConverted) {
+    // MG4-D-b (#2309), AFTER the commit and outside both advisory locks. Two
+    // directions, because an approval can do both at once: a swap adds one
+    // member guest and drops another, and telling only the newcomer would leave
+    // the person who was dropped believing they still have a bed.
+    if (
+      conversion.memberGuestNotificationRows.length > 0 ||
+      conversion.displacedMemberGuestIds.length > 0
+    ) {
+      const {
+        sendMemberGuestAddNotifications,
+        sendMemberGuestWithdrawnNotifications,
+      } = await import("@/lib/member-guest-consent-notifications");
+      try {
+        if (conversion.memberGuestNotificationRows.length > 0) {
+          await sendMemberGuestAddNotifications({
+            bookingId: conversion.bookingId,
+            rows: conversion.memberGuestNotificationRows,
+            actor: memberGuestActor,
+          });
+        }
+        if (conversion.displacedMemberGuestIds.length > 0) {
+          await sendMemberGuestWithdrawnNotifications({
+            bookingId: conversion.bookingId,
+            targetMemberIds: conversion.displacedMemberGuestIds,
+            context: "BOOKING_REQUEST_REPLACED",
+          });
+        }
+      } catch (err) {
+        logger.error(
+          { err, bookingId: conversion.bookingId, bookingRequestId: request.id },
+          "Failed to dispatch member-guest notifications after a school booking-request approval",
+        );
+      }
+    }
+
     // Teacher PIN emails (after commit; failures are logged, not fatal).
     for (const assignment of conversion.teacherAssignments) {
       sendHutLeaderAssignmentEmail({

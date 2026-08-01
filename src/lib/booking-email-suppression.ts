@@ -118,7 +118,7 @@ export const ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES: ReadonlySet<string> =
     // bookingId, and these rows by definition have none. No live sender uses
     // this name, so the entry can never withhold current mail.
     "refund-request-resolved",
-    // src/lib/email/member-guest.ts (#2307) — all five take { bookingId }. A
+    // src/lib/email/member-guest.ts (#2307, #2309) — all six take { bookingId }. A
     // member-guest consent request, notice, outcome or lapse notice cannot exist
     // without the booking the guest row hangs off, so `"none"` is not offered by
     // any of the five wrappers. They are member-audience for a load-bearing
@@ -131,6 +131,12 @@ export const ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES: ReadonlySet<string> =
     "member-guest-consent-outcome",
     "member-guest-consent-answered",
     "member-guest-consent-expired",
+    // MG4 (#2309). Named here for the same reason as the other five, and the
+    // reason bites hardest on this one: it tells a member they are OFF a
+    // booking. A silenced booking must withhold it — and then say so on the
+    // withheld-banner record, so an operator can see that somebody was never
+    // told, rather than the send quietly escaping the switch.
+    "member-guest-request-withdrawn",
   ]);
 
 /**

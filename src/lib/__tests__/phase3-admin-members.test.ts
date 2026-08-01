@@ -142,6 +142,10 @@ import { GET as exportMembers } from "@/app/api/admin/members/export/route";
 import { POST as importMembers } from "@/app/api/admin/members/import/route";
 import { POST as bulkUpdate } from "@/app/api/admin/members/bulk-update/route";
 import { GET as getMemberDetail } from "@/app/api/admin/members/[id]/route";
+import {
+  googleSubCollisionError,
+  loginEmailCollisionError,
+} from "@/lib/__tests__/helpers";
 
 const mockedAuth = vi.mocked(auth);
 const mockedSendMemberSetupInviteEmail = vi.mocked(sendMemberSetupInviteEmail);
@@ -347,6 +351,74 @@ describe("Phase 3: Admin Member Management", () => {
       const call = vi.mocked(prisma.member.findMany).mock.calls[0][0]!;
       expect(call.orderBy).toEqual({ email: "desc" });
     });
+
+    it.each([
+      ["asc", 2, ["invited", "can-login"]],
+      ["desc", 1, ["can-login", "invited"]],
+    ])(
+      "sorts and paginates the derived Access stages %s",
+      async (sortDir, page, expectedIds) => {
+        mockedAuth.mockResolvedValue(adminSession);
+        const candidates = [
+          {
+            id: "invited",
+            firstName: "Ivy",
+            lastName: "Invite",
+            canLogin: true,
+            passwordChangedAt: null,
+            lastLoginAt: null,
+            passwordResetTokens: [{ expiresAt: new Date("2999-01-01") }],
+          },
+          {
+            id: "no-login",
+            firstName: "Nora",
+            lastName: "Offline",
+            canLogin: false,
+            passwordChangedAt: null,
+            lastLoginAt: null,
+            passwordResetTokens: [],
+          },
+          {
+            id: "can-login",
+            firstName: "Cara",
+            lastName: "Ready",
+            canLogin: true,
+            passwordChangedAt: new Date("2026-01-01"),
+            lastLoginAt: null,
+            passwordResetTokens: [],
+          },
+          {
+            id: "not-invited",
+            firstName: "Neil",
+            lastName: "Waiting",
+            canLogin: true,
+            passwordChangedAt: null,
+            lastLoginAt: null,
+            passwordResetTokens: [],
+          },
+        ];
+        vi.mocked(prisma.member.findMany)
+          .mockResolvedValueOnce(candidates as any)
+          .mockResolvedValueOnce([]);
+
+        await getMembers(
+          new NextRequest(
+            `http://localhost/api/admin/members?sortBy=access&sortDir=${sortDir}&page=${page}&pageSize=2`,
+          ),
+        );
+
+        const candidateQuery = vi.mocked(prisma.member.findMany).mock.calls[0][0]!;
+        expect(candidateQuery.select?.passwordResetTokens).toMatchObject({
+          where: { used: false, expiresAt: { gt: expect.any(Date) } },
+          take: 1,
+        });
+        const pageQuery = vi.mocked(prisma.member.findMany).mock.calls[1][0]!;
+        expect(pageQuery.where).toEqual({
+          AND: [expect.any(Object), { id: { in: expectedIds } }],
+        });
+        expect(prisma.member.count).not.toHaveBeenCalled();
+      },
+    );
 
     it("rejects invalid sortBy values", async () => {
       mockedAuth.mockResolvedValue(adminSession);
@@ -586,27 +658,62 @@ describe("Phase 3: Admin Member Management", () => {
         )
       );
 
-      expect(searchCalls[0].where?.AND).toEqual(
-        expect.arrayContaining([
-          { id: { notIn: ["child-1"] } },
-          { active: true },
-          // #2282: `archivedAt: null` REPLACES `ageTier: "ADULT"` here. The
-          // write route never accepted an archived parent and this search never
-          // filtered one, so the dialog could offer a candidate the save then
-          // 422'd — the #2254 drift, in the parent direction.
-          { archivedAt: null },
-          // A member with no dependants of their own leaves room for a
-          // candidate parent who is themselves someone's grandchild.
-          ancestorDepthWithinWhere(2),
-        ])
-      );
+      // #2425: the picker now asks for its page in two complementary halves —
+      // adults, then everyone else — so the eligibility clauses are asserted on
+      // BOTH calls. Anything present on one and missing from the other would be
+      // a filter masquerading as a ranking.
+      expect(searchCalls).toHaveLength(2);
+      for (const call of searchCalls) {
+        expect(call.where?.AND).toEqual(
+          expect.arrayContaining([
+            { id: { notIn: ["child-1"] } },
+            { active: true },
+            // #2282: `archivedAt: null` REPLACES `ageTier: "ADULT"` here. The
+            // write route never accepted an archived parent and this search never
+            // filtered one, so the dialog could offer a candidate the save then
+            // 422'd — the #2254 drift, in the parent direction.
+            { archivedAt: null },
+            // A member with no dependants of their own leaves room for a
+            // candidate parent who is themselves someone's grandchild.
+            ancestorDepthWithinWhere(2),
+          ])
+        );
+      }
+
       // #2282 stated as a refusal too, because `arrayContaining` cannot say
-      // "and not this": age must not appear in the parent-candidate filter at
-      // all. Re-adding the ADULT clause fails here rather than silently
-      // narrowing the picker back to adults while the write route accepts more.
-      expect(searchCalls[0].where?.AND).not.toContainEqual({
-        ageTier: "ADULT",
-      });
+      // "and not this": age must not NARROW the parent-candidate set. Since
+      // #2425 an age clause does appear — as the RANKING split — so the refusal
+      // is stated the only way that still means something: the two halves are
+      // exact complements (`in` and `notIn` over the same tiers) on otherwise
+      // IDENTICAL clauses. Deleting the second query, or narrowing either
+      // half's age clause to a subset, fails here rather than silently
+      // returning the picker to adults-only while the write route accepts more.
+      // The tiers themselves are pinned because WHICH side of the split
+      // `NOT_APPLICABLE` lands on is the difference between an age-exempt
+      // person ranking with the adults and ranking below every child (#2425
+      // review) — the tier is age-EXEMPT, and organisations are excluded from
+      // this search by role, so it belongs in the top half.
+      const ageClauses = searchCalls.map((call) =>
+        (call.where?.AND as any[]).filter((clause) => "ageTier" in clause)
+      );
+      expect(ageClauses).toEqual([
+        [{ ageTier: { in: ["ADULT", "NOT_APPLICABLE"] } }],
+        [{ ageTier: { notIn: ["ADULT", "NOT_APPLICABLE"] } }],
+      ]);
+      const withoutAge = searchCalls.map((call) =>
+        (call.where?.AND as any[]).filter((clause) => !("ageTier" in clause))
+      );
+      expect(withoutAge[0]).toEqual(withoutAge[1]);
+      // And the count that drives paging and the truncation hint is the whole
+      // eligible set, not the adult half of it: no age clause at all.
+      const countCalls = vi.mocked(prisma.member.count).mock.calls;
+      for (const [countArgs] of countCalls) {
+        expect(
+          (countArgs?.where?.AND as any[] | undefined)?.some(
+            (clause: any) => "ageTier" in clause
+          ) ?? false
+        ).toBe(false);
+      }
     });
 
     it("combines text search with filters (AND logic)", async () => {
@@ -2535,6 +2642,81 @@ describe("Phase 3: Admin Member Management", () => {
       });
       const res = await createMember(req);
       expect(res.status).toBe(409);
+      // A P2002 that names nothing is still the email clash: on this path no
+      // other unique constraint is reachable, and staying vague would leave an
+      // unexplained failure.
+      await expect(res.json()).resolves.toMatchObject({
+        error: "A member with this email already exists",
+      });
+    });
+
+    // #2412: the create path used to call ANY P2002 an email clash. These use
+    // the errors adapter-pg really raises — captured live against PostgreSQL 16,
+    // see `helpers/p2002-fixtures.ts`.
+    const createMemberRequest = () =>
+      new NextRequest("http://localhost/api/admin/members", {
+        method: "POST",
+        body: JSON.stringify({
+          firstName: "Test",
+          lastName: "User",
+          email: "existing@test.com",
+        }),
+        headers: { "Content-Type": "application/json" },
+      });
+
+    it("blames the email when the login-email partial index really fired", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      vi.mocked(prisma.member.findFirst).mockResolvedValue(null);
+      // The pre-check passed, then a concurrent write claimed the address.
+      vi.mocked(prisma.$transaction).mockRejectedValue(
+        loginEmailCollisionError(),
+      );
+
+      const res = await createMember(createMemberRequest());
+      expect(res.status).toBe(409);
+      await expect(res.json()).resolves.toMatchObject({
+        error: "A member with this email already exists",
+      });
+    });
+
+    it("does not blame the email when a different unique constraint fired", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      vi.mocked(prisma.member.findFirst).mockResolvedValue(null);
+      vi.mocked(prisma.$transaction).mockRejectedValue(
+        googleSubCollisionError(),
+      );
+
+      const res = await createMember(createMemberRequest());
+      expect(res.status).toBe(409);
+      await expect(res.json()).resolves.toMatchObject({
+        error:
+          "Could not create this member: one of their details is already used by another record",
+      });
+    });
+
+    it("does not blame the email for an unnamed collision on a non-login create", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      // No pre-check runs for a non-login member — they may share an address —
+      // and the partial index `WHERE "canLogin" = true` cannot fire on this
+      // insert, so an unidentifiable P2002 must not be called an email clash.
+      vi.mocked(prisma.$transaction).mockRejectedValue({ code: "P2002" });
+
+      const req = new NextRequest("http://localhost/api/admin/members", {
+        method: "POST",
+        body: JSON.stringify({
+          firstName: "Test",
+          lastName: "User",
+          email: "shared@test.com",
+          canLogin: false,
+        }),
+        headers: { "Content-Type": "application/json" },
+      });
+      const res = await createMember(req);
+      expect(res.status).toBe(409);
+      await expect(res.json()).resolves.toMatchObject({
+        error:
+          "Could not create this member: one of their details is already used by another record",
+      });
     });
 
     it("allows shared email when creating a non-login member", async () => {

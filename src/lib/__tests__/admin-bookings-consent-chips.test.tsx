@@ -88,6 +88,7 @@ const MODULES_ON = {
   lobbyDisplay: false,
   aiAssistant: false,
   memberNotices: true,
+  eventsCalendar: true,
   memberGuests: true,
 };
 

@@ -1,8 +1,12 @@
-import { redirect } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { auth } from "@/lib/auth";
-import { canManageCalendarEvents } from "@/lib/calendar-access";
+import {
+  canManageCalendarEvents,
+  canViewCalendarEvents,
+} from "@/lib/calendar-access";
+import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { CalendarView } from "@/components/calendar/calendar-view";
 import { CLUB_NAME } from "@/config/club-identity";
 
@@ -13,6 +17,20 @@ export const metadata = {
 export default async function MemberCalendarPage() {
   const session = await auth();
   if (!session?.user) redirect("/login");
+
+  // LOAD-BEARING, not belt-and-braces (#2241). The proxy's page matcher carries
+  // `missing: [next-router-prefetch]`, so a Next router PREFETCH of /calendar
+  // skips the proxy — and therefore the whole feature-route gate — entirely.
+  // These two guards are what stop a prefetched render from returning the
+  // calendar to an organisation account, or on a club that has the module off.
+  // Do not delete them as duplicated middleware.
+  const modules = await loadEffectiveModuleFlags();
+  if (!modules.eventsCalendar) {
+    notFound();
+  }
+  if (!canViewCalendarEvents(session.user)) {
+    notFound();
+  }
 
   const canManage = await canManageCalendarEvents(session.user);
 

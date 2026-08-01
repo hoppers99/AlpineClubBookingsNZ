@@ -197,6 +197,22 @@ describe("AdminCommandPalette", () => {
     ]);
   });
 
+  it("groups Lobby Display under Lodge Operations with no duplicate", async () => {
+    renderPalette();
+    pressCtrlK();
+
+    const input = await screen.findByPlaceholderText("Search admin features…");
+    fireEvent.change(input, { target: { value: "Lobby Display" } });
+
+    const matches = await screen.findAllByText("Lobby Display");
+    expect(matches).toHaveLength(1);
+    expect(
+      matches[0]
+        .closest("[cmdk-group]")
+        ?.querySelector("[cmdk-group-heading]")?.textContent,
+    ).toBe("Lodge Operations");
+  });
+
   it("does not restore focus to the opener when a selection navigates away", async () => {
     renderPalette();
 

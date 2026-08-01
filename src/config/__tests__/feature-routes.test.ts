@@ -78,6 +78,49 @@ describe("feature route map", () => {
     ]);
   });
 
+  it("gates the whole events-calendar surface on eventsCalendar (#2241)", () => {
+    // The calendar shipped with no module key at all, so every one of its three
+    // prefixes has to be listed: the member page, the admin page, and the shared
+    // API both pages read and write through. There is deliberately no
+    // "/api/admin/calendar" prefix — no admin-only calendar API exists, and
+    // admin-route-map-drift.test.ts fails a prefix matching no real file.
+    expect(getRequiredFeaturesForPath("/calendar")).toEqual(["eventsCalendar"]);
+    expect(getRequiredFeaturesForPath("/api/calendar")).toEqual([
+      "eventsCalendar",
+    ]);
+    expect(getRequiredFeaturesForPath("/admin/calendar")).toEqual([
+      "eventsCalendar",
+    ]);
+
+    // Nested paths under each prefix are gated too — the event detail route and
+    // the meeting-join endpoint included.
+    const off = { ...allOn, eventsCalendar: false };
+    for (const href of [
+      "/calendar",
+      "/api/calendar/events",
+      "/api/calendar/events/event-1",
+      "/api/calendar/events/event-1/join",
+      "/admin/calendar",
+    ]) {
+      expect(getDisabledFeatureForPath(href, off)).toBe("eventsCalendar");
+      expect(isFeatureHrefVisible(href, off)).toBe(false);
+      expect(getDisabledFeatureForPath(href, allOn)).toBeNull();
+    }
+
+    // Lookalike prefixes must not be caught by the gate.
+    expect(getRequiredFeaturesForPath("/calendarx")).toEqual([]);
+    expect(getRequiredFeaturesForPath("/admin/calendarx")).toEqual([]);
+  });
+
+  it("keeps the calendar API inside the proxy matcher (#2241)", async () => {
+    // The rule above is inert for "/api/calendar" unless the proxy actually runs
+    // on those requests: config.matcher's first entry excludes every "/api/…"
+    // path, so each gated API prefix needs its own entry. This asserts the pair
+    // stays together — a rule with no matcher entry is a gate that never fires.
+    const { config } = await import("@/proxy");
+    expect(config.matcher).toContain("/api/calendar/:path*");
+  });
+
   it("gates the AI assistant admin surface but NOT the /api/help/chat route", () => {
     // The admin usage + settings surfaces hard-gate on the module flag.
     expect(getRequiredFeaturesForPath("/api/admin/ai-assistant/usage")).toEqual([
@@ -201,6 +244,31 @@ describe("feature route map", () => {
     ).toBe(false);
   });
 
+  it("applies every pattern rule to the trailing-slash and data spellings too", () => {
+    // Symmetric with the consent case (#2435 review): each `$`-anchored rule
+    // must still fire on the spellings Next's matcher lets through the proxy.
+    expect(
+      getRequiredFeaturesForPath("/api/bookings/booking-1/waitlist-confirm/"),
+    ).toEqual(["waitlist"]);
+    expect(
+      getRequiredFeaturesForPath(
+        "/api/admin/bookings/booking-1/force-confirm.json",
+      ),
+    ).toEqual(["waitlist"]);
+    for (const action of ["link", "push", "unlink"]) {
+      expect(
+        getRequiredFeaturesForPath(
+          `/api/admin/members/member-1/xero-${action}`,
+        ),
+      ).toEqual(["xeroIntegration"]);
+      expect(
+        getRequiredFeaturesForPath(
+          `/api/admin/members/member-1/xero-${action}/`,
+        ),
+      ).toEqual(["xeroIntegration"]);
+    }
+  });
+
   it("uses the admin module toggle for effective state", () => {
     // Admin off → disabled.
     expect(
@@ -266,6 +334,23 @@ describe("feature route map", () => {
           memberGuests: false,
         }),
       ).toBe("memberGuests");
+    });
+
+    it("gates the consent endpoint in the spellings the matcher admits", () => {
+      // The proxy runs BEFORE Next's canonicalising 308, and Next's matcher
+      // admits the data-request spellings of every entry — so a `$`-anchored
+      // pattern that only matched the bare path would leave the outer gate
+      // inert for exactly the requests that reach it (#2435 review).
+      for (const path of [
+        "/api/bookings/b1/guests/g1/consent/",
+        "/api/bookings/b1/guests/g1/consent.json",
+        "/api/bookings/b1/guests/g1/consent.rsc",
+      ]) {
+        expect(getRequiredFeaturesForPath(path)).toEqual(["memberGuests"]);
+        expect(
+          getDisabledFeatureForPath(path, { ...allOn, memberGuests: false }),
+        ).toBe("memberGuests");
+      }
     });
 
     it("leaves the shared booking-guest routes alone", () => {
@@ -375,10 +460,22 @@ describe("feature route map", () => {
       ).toBe(true);
     });
 
+    it("exempts the wizard's data-request spelling as well", () => {
+      // The exemption is compared against the same canonical form the rules
+      // are, so the page stays reachable in every spelling that reaches it —
+      // otherwise its own data requests would 404 with the module off.
+      expect(getRequiredFeaturesForPath("/admin/display/setup.rsc")).toEqual([]);
+      expect(getRequiredFeaturesForPath("/admin/display/setup.json")).toEqual(
+        []
+      );
+    });
+
     it("keeps every neighbouring display path gated", () => {
       for (const path of [
         "/admin/display",
         "/admin/display/devices",
+        "/admin/display/devices.rsc",
+        "/admin/display/setup.txt",
         "/admin/display/templates",
         "/admin/display/setup/extra",
         "/admin/display/setupfoo",

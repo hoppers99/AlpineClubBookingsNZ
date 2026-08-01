@@ -7,6 +7,8 @@
  * treating any of these as routes.
  */
 export * from "./factories";
+export * from "./p2002-fixtures";
+export * from "./page-content-html-mock";
 export * from "./prisma-mocks";
 export * from "./requests";
 export * from "./sessions";

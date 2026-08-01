@@ -258,9 +258,22 @@ export async function GET(
         : [],
   }));
 
+  // Export completeness (#2244). `EXPORT_MAX_ROWS` silently drops everything
+  // past the cap, so a filter matching more than the cap comes back SHORT — and
+  // the CSV built from it would be presented as the complete reconciliation set.
+  // Both conditions are required: hitting the cap alone is not truncation (a
+  // filter matching exactly the cap is complete), and a matched count above the
+  // returned count alone can be a row inserted between the two queries of the
+  // same `Promise.all`. Together they only fire when rows were genuinely cut.
+  const matchedRowCount = filteredAggregate._count._all;
+  const truncated =
+    isExport && rows.length >= EXPORT_MAX_ROWS && matchedRowCount > rows.length;
+
   // Privacy audit: only a full export is recorded (normal paginated browsing is
-  // an unaudited read-GET). Store just the applied filters and row count — never
-  // any redemption row contents.
+  // an unaudited read-GET). Store just the applied filters and row counts —
+  // never any redemption row contents. `rowCount` is what the CSV actually
+  // carries, so it is recorded beside `matchedRowCount` and `truncated`: a bare
+  // row count on a capped export asserts a completeness the file does not have.
   if (isExport) {
     await createAuditLog({
       action: "promoRedemptions.exported",
@@ -268,7 +281,9 @@ export async function GET(
       category: "privacy",
       severity: "info",
       outcome: "success",
-      summary: "Exported promo code redemptions CSV",
+      summary: truncated
+        ? "Exported promo code redemptions CSV (truncated)"
+        : "Exported promo code redemptions CSV",
       metadata: {
         promoCodeId: id,
         filters: {
@@ -277,6 +292,9 @@ export async function GET(
           lodgeId: lodgeId ?? null,
         },
         rowCount: rows.length,
+        matchedRowCount,
+        exportLimit: EXPORT_MAX_ROWS,
+        truncated,
       },
     });
   }
@@ -329,6 +347,18 @@ export async function GET(
       pageSize,
       total: filteredAggregate._count._all,
     },
+    // Export-mode completeness marker (#2244), present only for `?export=1`.
+    // The client builds the CSV from `rows`, so it has to be told when those
+    // rows are only the newest `limit` of `matchedRowCount` — otherwise a
+    // capped file is filed away as a full discount reconciliation.
+    export: isExport
+      ? {
+          truncated,
+          limit: EXPORT_MAX_ROWS,
+          rowCount: rows.length,
+          matchedRowCount,
+        }
+      : null,
     rows,
   });
 }

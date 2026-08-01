@@ -251,9 +251,10 @@ Two consequences worth knowing before you edit one:
 
 ### Consent emails ignore a member's notification preferences
 
-The five member-guest emails — the consent request, the "you have been added"
-notice, the outcome notice to whoever made the booking, the notice that somebody
-in the family answered on a member's behalf, and the lapse notice —
+The six member-guest emails — the consent request, the "you have been added"
+notice, the "you are no longer on that booking" notice, the outcome notice to
+whoever made the booking, the notice that somebody in the family answered on a
+member's behalf, and the lapse notice —
 deliberately do **not** follow a member's own notification-category preferences,
 and they are not affected by the per-action "email the member" choices on admin
 screens. Being asked whether you agree to be on somebody's booking is not a
@@ -263,6 +264,24 @@ then quietly come off the booking days later without ever having heard about it.
 You can still change their wording here like any other template. A booking that an
 admin has silenced does withhold them, along with everything else about that
 booking.
+
+**Three of the six are one template doing several jobs**, because the difference
+between the jobs is one sentence rather than a different message:
+
+- **"You have been added to a lodge booking"** covers a club that adds member
+  guests without asking, an officer adding somebody on a member's behalf, and a
+  place created from an approved booking request. The opening sentence says
+  which, so an admin editing the wording edits one body rather than keeping three
+  near-copies in step.
+- **"You are no longer on that lodge booking"** (#2309) covers a request called
+  off before anybody answered, a member guest taken off a booking, and a
+  booking-request booking that was re-arranged so somebody else has the place.
+  It is *not* sent when a request simply lapses — that has its own lapse notice —
+  and it is not sent to a member who took themselves off.
+- The **removal advice** at the foot of the added notice is composed from the
+  same rule the server enforces, so it never offers a "take yourself off" link
+  the server would refuse. On a booking priced by hand it names the club as the
+  only remedy, because the person who made the booking cannot help.
 
 ## Troubleshooting
 

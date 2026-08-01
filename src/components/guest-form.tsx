@@ -45,7 +45,7 @@ export interface GuestData {
    * PENDING row and still triggers the consent request. `member-guest-add-call-sites`
    * and the wizard's own tests pin that.
    */
-  memberGuestConsentPreview?: "PENDING" | "NOTIFY_ONLY";
+  memberGuestConsentPreview?: "PENDING" | "NOTIFY_ONLY" | "ADMIN_ASSIGNED";
 }
 
 interface GuestFormProps {

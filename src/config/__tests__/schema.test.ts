@@ -231,6 +231,7 @@ describe("featureFlagsSchema", () => {
         hutLeaders: true,
         communications: false,
         memberNotices: true,
+        eventsCalendar: true,
         skifieldConditions: true,
         twoFactor: false,
         magicLink: false,

@@ -23,7 +23,15 @@ import {
   type BookingRequest,
 } from "@prisma/client";
 import { assertNoBookingMemberNightConflicts } from "@/lib/booking-member-night-conflicts";
+import { computeMemberGuestBoundary } from "@/lib/booking-guests";
 import { sendAdminOwnerSubstitutionAlert } from "@/lib/email";
+import {
+  planMemberGuestConsentWrites,
+  type MemberGuestAddPolicy,
+  type MemberGuestConsentGuestFields,
+  type MemberGuestConsentWritePlan,
+} from "@/lib/member-guest-add-policy";
+import type { MemberGuestAddActor } from "@/lib/member-guest-consent";
 import logger from "@/lib/logger";
 import {
   assertMembershipTypeBookingAllowed,
@@ -196,6 +204,176 @@ export async function buildApprovalGuestCreates(
   });
 
   return guestCreates;
+}
+
+/**
+ * MG4-D-b (#2309): decide the consent columns for a booking-request pipeline
+ * guest list, and collect the notifications the caller owes after it commits.
+ *
+ * WHY THE PIPELINE NEEDS ITS OWN ENTRY POINT AT ALL. The other five guest-write
+ * paths reach `planMemberGuestConsentWrites` through
+ * `resolveLinkedBookingMembersWithBoundary`, which resolves member records AND
+ * computes the family boundary in one call. This pipeline has already resolved
+ * its members — an officer picked them by hand at quote time and
+ * `assertLinkedMembersExist` validated them — so all it is missing is the
+ * boundary. Calling the full resolver here would re-read every member for
+ * nothing and would add an eighth entry to a census whose whole purpose is to
+ * enumerate the paths that decide whether a beyond-family member may be
+ * resolved. This path does not make that decision; the officer already did.
+ *
+ * THE BOUNDARY IS COMPUTED, NOT ASSUMED, and that is worth a sentence because
+ * the shortcut is tempting. A converted booking's owner is normally a non-login
+ * contact minted moments earlier, so every linked member is beyond-family by
+ * construction and the answer could be hard-coded. But the owner may instead be
+ * a mapped Organisation or School contact (#1255) that has existed for years and
+ * could share a family group with a linked member — and, more importantly, a
+ * hard-coded boundary is not a boundary. It costs two indexed reads.
+ *
+ * Returns the caller's guests with `memberGuestConsent` attached where it
+ * applies. Callers must strip `crossFamilyMemberGuest` (a display marker, not a
+ * column) before handing rows to Prisma.
+ */
+export async function planBookingRequestGuestConsent<
+  Guest extends { memberId?: string | null },
+>(
+  tx: Prisma.TransactionClient,
+  params: {
+    bookingOwnerMemberId: string;
+    guests: readonly Guest[];
+    actor: MemberGuestAddActor;
+    policy: MemberGuestAddPolicy;
+    bookingCheckIn: Date;
+    now?: Date;
+  }
+): Promise<MemberGuestConsentWritePlan<Guest>> {
+  if (!params.policy.wideningEnabled) {
+    // MODULE OFF — the shipped default (D-2), and the state most clubs stay in
+    // forever. `planMemberGuestConsentWrites` already returns the guests
+    // untouched in this case, so the two `FamilyGroupMember` reads below would
+    // compute a boundary nothing then consults. Skipping them keeps a
+    // non-adopting club's approval pipeline byte-for-byte the query sequence it
+    // was before MG4 — the same reasoning the owner applied to
+    // `markCrossFamilyGuestsOnBooking`'s gate.
+    //
+    // The call is still made, rather than skipped by the caller, so the module
+    // decision lives in one place and the returned shape is identical either
+    // way.
+    return planMemberGuestConsentWrites({
+      guests: params.guests,
+      boundary: { scopeByMemberId: new Map(), beyondFamilyMemberIds: [] },
+      actor: params.actor,
+      now: params.now ?? new Date(),
+      bookingCheckIn: params.bookingCheckIn,
+      policy: params.policy,
+    });
+  }
+
+  const boundary = await computeMemberGuestBoundary(
+    tx,
+    params.bookingOwnerMemberId,
+    params.guests
+      .map((guest) => guest.memberId)
+      .filter((memberId): memberId is string => Boolean(memberId))
+  );
+  return planMemberGuestConsentWrites({
+    guests: params.guests,
+    boundary,
+    actor: params.actor,
+    now: params.now ?? new Date(),
+    bookingCheckIn: params.bookingCheckIn,
+    policy: params.policy,
+  });
+}
+
+/**
+ * Strip the two MG2 planning fields off a planned guest row, leaving exactly the
+ * Prisma-writable shape plus the consent columns.
+ *
+ * `crossFamilyMemberGuest` is a D-8 DISPLAY marker that never had a column, and
+ * spreading a planned guest straight into `bookingGuest.create` would hand
+ * Prisma an unknown field. Doing the strip in one named place means the three
+ * pipeline write points cannot each forget it differently.
+ */
+export function toPipelineGuestCreateData<Guest extends object>(
+  guest: Guest & MemberGuestConsentGuestFields
+): Omit<Guest, keyof MemberGuestConsentGuestFields> {
+  const { memberGuestConsent, crossFamilyMemberGuest, ...rest } = guest;
+  void crossFamilyMemberGuest;
+  return { ...rest, ...(memberGuestConsent ?? {}) } as Omit<
+    Guest,
+    keyof MemberGuestConsentGuestFields
+  >;
+}
+
+/**
+ * The member guests on a booking who HAVE BEEN TOLD they are on it.
+ *
+ * MG4 (#2309), and it exists because MG4's first cut only ever notified in one
+ * direction. A held booking notifies its cross-family member guests the moment
+ * the hold is created ("the club has put you on a lodge booking created from
+ * X's booking request"), and several perfectly ordinary things then cancel that
+ * hold — the requester cancels the quote, an officer declines the request —
+ * leaving those members holding an email that has silently stopped being true,
+ * and a person-night quietly consumed on a booking that no longer exists.
+ *
+ * A NON-NULL `consentStatus` IS THE WHOLE TEST, exactly as on the guest-removal
+ * path. It means a consent record exists for this row, which means a message
+ * about it was composed for this member. A family-scope row (NULL) was never the
+ * subject of any message, so releasing it owes nobody an email.
+ *
+ * Call INSIDE the transaction that cancels the hold, or before it: cancelling
+ * does not delete guest rows today, but reading the population first means this
+ * cannot start returning an empty set if that ever changes.
+ */
+export async function collectNotifiedMemberGuestIds(
+  db: Prisma.TransactionClient,
+  bookingId: string
+): Promise<string[]> {
+  const rows = await db.bookingGuest.findMany({
+    where: { bookingId, memberId: { not: null }, consentStatus: { not: null } },
+    select: { memberId: true },
+  });
+  return [
+    ...new Set(rows.map((row) => row.memberId).filter((id): id is string => Boolean(id))),
+  ];
+}
+
+/**
+ * Tell those members the hold has gone — AFTER the commit, and never fatally.
+ *
+ * `BOOKING_REQUEST_REPLACED` is the right one of the three withdrawal contexts
+ * and not merely the closest: its composed sentence is "the club has taken you
+ * off a lodge booking created from a booking request", which is true whether the
+ * request was cancelled, declined, or re-arranged at approval, and it names
+ * nobody — the booking's owner is a non-login contact the reader has never dealt
+ * with, so naming them would introduce a stranger.
+ *
+ * Lazily imported so a club with the module off never pulls the mailer through
+ * these paths, and try/caught because the hold is already released by the time
+ * this runs: a mail failure must not turn into a failed cancellation.
+ */
+export async function notifyMemberGuestsHoldReleased(params: {
+  bookingId: string;
+  targetMemberIds: readonly string[];
+  /** Extra fields for the failure log — the request id, typically. */
+  logContext?: Record<string, unknown>;
+}): Promise<void> {
+  if (params.targetMemberIds.length === 0) return;
+  const { sendMemberGuestWithdrawnNotifications } = await import(
+    "@/lib/member-guest-consent-notifications"
+  );
+  try {
+    await sendMemberGuestWithdrawnNotifications({
+      bookingId: params.bookingId,
+      targetMemberIds: params.targetMemberIds,
+      context: "BOOKING_REQUEST_REPLACED",
+    });
+  } catch (err) {
+    logger.error(
+      { err, bookingId: params.bookingId, ...(params.logContext ?? {}) },
+      "Failed to dispatch member-guest withdrawal notifications for a released hold"
+    );
+  }
 }
 
 /**

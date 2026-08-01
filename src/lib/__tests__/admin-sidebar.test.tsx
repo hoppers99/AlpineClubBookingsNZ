@@ -132,6 +132,80 @@ describe("AdminSidebar", () => {
     ]);
   });
 
+  it("owns Lobby Display once under Lodge Operations and keeps General intact", () => {
+    const sections = getVisibleAdminNavSections(allOn, undefined, true);
+    const lodgeOperations = sections.find(
+      (section) => section.label === "Lodge Operations",
+    );
+    const lobbyDisplayEntries = sections.flatMap((section) =>
+      section.items.filter((item) => item.href === "/admin/display"),
+    );
+    const generalEntries = sections
+      .filter((section) => section.label === undefined)
+      .flatMap((section) => section.items.map((item) => item.label));
+
+    expect(lodgeOperations?.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          href: "/admin/display",
+          label: "Lobby Display",
+        }),
+      ]),
+    );
+    expect(lobbyDisplayEntries).toHaveLength(1);
+    expect(generalEntries).toEqual(["Admin Dashboard"]);
+  });
+
+  it("hides Lobby Display with Lodge Operations and restores its persisted state", () => {
+    render(<AdminSidebar features={allOn} />);
+
+    const sectionToggle = screen.getByRole("button", {
+      name: "Lodge Operations",
+    });
+    expect(sectionToggle.tagName).toBe("BUTTON");
+    expect(sectionToggle.getAttribute("type")).toBe("button");
+    expect(sectionToggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("link", { name: "Lobby Display" })).not.toBeNull();
+
+    fireEvent.click(sectionToggle);
+
+    expect(sectionToggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("link", { name: "Lobby Display" })).toBeNull();
+    expect(
+      JSON.parse(
+        window.localStorage.getItem(SIDEBAR_COLLAPSE_STORAGE_KEY) ?? "{}",
+      ),
+    ).toMatchObject({ "Lodge Operations": false });
+
+    fireEvent.click(sectionToggle);
+
+    expect(sectionToggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("link", { name: "Lobby Display" })).not.toBeNull();
+    expect(
+      JSON.parse(
+        window.localStorage.getItem(SIDEBAR_COLLAPSE_STORAGE_KEY) ?? "{}",
+      ),
+    ).toMatchObject({ "Lodge Operations": true });
+  });
+
+  it("keeps Lobby Display hidden when its module is off", () => {
+    const lobbyDisplayOff = { ...allOn, lobbyDisplay: false } as FeatureFlags;
+    const sections = getVisibleAdminNavSections(
+      lobbyDisplayOff,
+      undefined,
+      true,
+    );
+
+    expect(
+      sections
+        .flatMap((section) => section.items)
+        .some((item) => item.href === "/admin/display"),
+    ).toBe(false);
+    expect(
+      sections.some((section) => section.label === "Lodge Operations"),
+    ).toBe(true);
+  });
+
   it("retires lodge-scoped Chores/Lockers/Seasons from the sidebar — reached via the lodge hub (#130)", () => {
     const sections = getVisibleAdminNavSections(allOn);
     const allLabels = sections.flatMap((section) =>

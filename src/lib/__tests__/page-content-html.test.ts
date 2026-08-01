@@ -17,6 +17,7 @@ vi.mock("@/lib/prisma", () => ({
 }));
 
 import {
+  getPublishedPageContentByPath,
   getSanitizedPageContentByPath,
   listWebsiteMenuPages,
   pageContentHtmlToPlainText,
@@ -285,6 +286,62 @@ describe("getSanitizedPageContentByPath", () => {
     // from the src filename ("x") so screen readers do not announce the raw src
     // on the header image path (#1947).
     expect(page?.headerText).toBe('<img src="x" alt="x" />Welcome');
+  });
+});
+
+describe("getPublishedPageContentByPath (#2440)", () => {
+  const baseRecord = {
+    id: "page-1",
+    slug: "contact",
+    caption: "Get in touch",
+    menuTitle: "Contact",
+    title: "Draft contact page",
+    headerText: "<p>Draft header</p>",
+    path: "/contact",
+    sortOrder: 10,
+    contentHtml: "<p>Draft body</p>",
+  };
+
+  beforeEach(() => {
+    mocks.pageContentFindUnique.mockReset();
+  });
+
+  it("returns null when no record exists", async () => {
+    mocks.pageContentFindUnique.mockResolvedValue(null);
+    await expect(
+      getPublishedPageContentByPath("/missing"),
+    ).resolves.toBeNull();
+  });
+
+  it("hides an unpublished (draft) page entirely", async () => {
+    mocks.pageContentFindUnique.mockResolvedValue({
+      ...baseRecord,
+      published: false,
+    });
+    await expect(
+      getPublishedPageContentByPath("/contact"),
+    ).resolves.toBeNull();
+  });
+
+  it("returns a published page unchanged", async () => {
+    mocks.pageContentFindUnique.mockResolvedValue({
+      ...baseRecord,
+      published: true,
+    });
+    const page = await getPublishedPageContentByPath("/contact");
+    expect(page?.title).toBe("Draft contact page");
+    expect(page?.published).toBe(true);
+  });
+
+  it("keeps a legacy row with no published value visible", async () => {
+    // Only an explicit false hides a page — rows written before the column
+    // existed default to visible, matching the catch-all's historic semantics.
+    mocks.pageContentFindUnique.mockResolvedValue({
+      ...baseRecord,
+      published: null,
+    });
+    const page = await getPublishedPageContentByPath("/contact");
+    expect(page?.title).toBe("Draft contact page");
   });
 });
 

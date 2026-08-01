@@ -1,9 +1,11 @@
-import { redirect } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import {
   canEditCalendarEvents,
   canManageCalendarEvents,
+  canViewCalendarEvents,
 } from "@/lib/calendar-access";
+import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { CalendarView } from "@/components/calendar/calendar-view";
 
 export const metadata = {
@@ -13,6 +15,20 @@ export const metadata = {
 export default async function AdminCalendarPage() {
   const session = await auth();
   if (!session?.user) redirect("/login");
+
+  // LOAD-BEARING, not belt-and-braces (#2241): the proxy's page matcher carries
+  // `missing: [next-router-prefetch]`, so a Next router prefetch of
+  // /admin/calendar never reaches the feature-route gate. This guard is what
+  // makes the module switch real for a prefetched render.
+  //
+  // The organisation exclusion is here for symmetry with the member page rather
+  // than because an ORG account can reach this route today — the admin layout's
+  // permission gate already refuses one, since ORG confers no admin area access.
+  // It costs one call and means the rule holds wherever the calendar is served.
+  const modules = await loadEffectiveModuleFlags();
+  if (!modules.eventsCalendar || !canViewCalendarEvents(session.user)) {
+    notFound();
+  }
 
   // Create authority is broader than edit/delete: committee members may ADD
   // events, but only lodge administrators may edit or delete them. Passing the

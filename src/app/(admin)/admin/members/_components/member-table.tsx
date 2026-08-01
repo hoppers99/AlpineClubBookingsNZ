@@ -20,15 +20,12 @@ import {
 import {
   MemberPasswordActionButton,
 } from "@/components/admin/member-password-action-button"
+import { MemberLoginStageChip } from "@/components/admin/member-login-stage-chip"
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path"
 import { getLifecycleStatusConfig } from "@/lib/admin-member-badges"
-import {
-  getMemberLoginStage,
-  LOGIN_STAGE_LABELS,
-} from "@/lib/member-login-stage"
-import { deriveUserType, USER_TYPE_LABELS } from "@/lib/access-roles"
 import { CHIP_TONE_CLASSES, type ChipTone } from "@/lib/chip-tones"
 import { memberName } from "@/lib/member-serialization"
+import { getXeroContactGroupTone } from "@/lib/xero-contact-group-tone"
 import { buildXeroContactUrl, buildXeroInvoiceUrl } from "@/lib/xero-links"
 import type { SubscriptionStatus } from "@prisma/client"
 import type { Member } from "../_types"
@@ -55,7 +52,6 @@ interface MemberTableProps {
   onToggleSelectAll: () => void
   onToggleSort: (column: string) => void
   onOpenPasswordActionDialog: (ids: string[], label: string) => void
-  onEditMember: (member: Member) => void
 }
 
 // Selection checkboxes are native inputs (kept for their stable aria-label
@@ -67,7 +63,7 @@ const CHECKBOX_CLASS =
 // keeps one themed, dark-mode-correct surface regardless of state.
 const SURFACE_CLASS = "rounded-lg border border-border bg-card"
 
-/** A themed, non-domain chip for the Access, Family Group and Xero columns. The
+/** A themed, non-domain chip for the Family Group and Xero columns. The
  *  StatusChip `kind` API only covers booking/payment/subscription/lifecycle/
  *  financeAccess, so these signals (login-journey stage, family membership, Xero
  *  linkage/groups) render here through the shared `@/lib/chip-tones` map — the
@@ -105,7 +101,6 @@ export function MemberTable({
   onToggleSelectAll,
   onToggleSort,
   onOpenPasswordActionDialog,
-  onEditMember,
 }: MemberTableProps) {
   if (loading) {
     return (
@@ -154,11 +149,7 @@ export function MemberTable({
           {[
             ["name", "Name"],
             ["email", "Email"],
-            // Access shows the member's derived type plus their single login
-            // stage. The login stage is derived (no sortable DB column), so
-            // this header sorts by the stored `role` — an approximation of
-            // type order — rather than the rendered stage.
-            ["role", "Access"],
+            ["access", "Access"],
           ].map(([column, label]) => (
             <SortHeader
               key={column}
@@ -202,24 +193,13 @@ export function MemberTable({
           >
             Joined
           </SortHeader>
-          {canEdit ? <TableHead className="text-right">Actions</TableHead> : null}
+          <TableHead className="text-right">Actions</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
         {members.map((member) => {
           const lifecycleConfig = getLifecycleStatusConfig(member)
-          // One Access column (#1444): the member's derived type plus their
-          // single login-journey stage. The no-login case renders just "No
-          // login" (no type prefix); every login-on stage renders
-          // "{Type} · {Stage}", e.g. "Admin · Invited".
-          const loginStage = getMemberLoginStage(member)
-          const userType = deriveUserType(member.accessRoles, member.canLogin)
-          const accessTypeLabel =
-            userType === "lodge" ? "Lodge" : USER_TYPE_LABELS[userType]
-          const accessLabel =
-            loginStage === "no-login"
-              ? LOGIN_STAGE_LABELS["no-login"]
-              : `${accessTypeLabel} · ${LOGIN_STAGE_LABELS[loginStage]}`
+          // Access is the four-state login journey, never the member's role.
           // Subscription chip (#1811): reuse the shared StatusChip subscription
           // tones/labels. A member with no subscription record (null) keeps its
           // historical "No Record" label rendered on the neutral fallback tone.
@@ -249,7 +229,7 @@ export function MemberTable({
               <TableCell className="font-medium">
                 <Link
                   href={buildHrefWithReturnTo(`/admin/members/${member.id}`, membersListPath)}
-                  className="text-primary hover:underline"
+                  className="rounded-sm text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   {name}
                 </Link>
@@ -261,12 +241,7 @@ export function MemberTable({
               </TableCell>
               <TableCell className="text-muted-foreground">{member.email}</TableCell>
               <TableCell>
-                {/* Admin access reads blue (info) to stand out from the neutral
-                    non-admin types, restoring the pre-theme-rework affordance
-                    (#156). */}
-                <InfoChip tone={userType === "admin" ? "info" : "neutral"}>
-                  {accessLabel}
-                </InfoChip>
+                <MemberLoginStageChip member={member} />
               </TableCell>
               <TableCell>
                 {/* Display-only combination; data stays separate (#1445). */}
@@ -342,7 +317,10 @@ export function MemberTable({
                   {member.xeroContactGroups.length > 0 && (
                     <div className="flex flex-wrap gap-1">
                       {member.xeroContactGroups.map((group) => (
-                        <InfoChip key={group.id} tone="cat5">
+                        <InfoChip
+                          key={group.id}
+                          tone={getXeroContactGroupTone(group.id)}
+                        >
                           {group.name}
                         </InfoChip>
                       ))}
@@ -360,19 +338,27 @@ export function MemberTable({
                   year: "numeric",
                 })}
               </TableCell>
-              {canEdit ? (
-                <TableCell className="text-right">
-                  <div className="flex justify-end gap-1">
+              <TableCell className="text-right">
+                <div className="flex justify-end gap-1">
+                  {canEdit ? (
                     <MemberPasswordActionButton
                       member={member}
                       onClick={() => onOpenPasswordActionDialog([member.id], name)}
                     />
-                    <Button variant="outline" size="sm" onClick={() => onEditMember(member)}>
-                      Edit
-                    </Button>
-                  </div>
-                </TableCell>
-              ) : null}
+                  ) : null}
+                  <Button variant="outline" size="sm" asChild>
+                    <Link
+                      href={buildHrefWithReturnTo(
+                        `/admin/members/${member.id}`,
+                        membersListPath,
+                      )}
+                      aria-label={`Open ${name}`}
+                    >
+                      Open
+                    </Link>
+                  </Button>
+                </div>
+              </TableCell>
             </TableRow>
           )
         })}

@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   getMemberLoginStage,
+  getMemberLoginStageSortRank,
   getMemberPasswordActionKind,
   LOGIN_STAGE_FILTER_VALUES,
   LOGIN_STAGE_LABELS,
+  LOGIN_STAGE_SORT_ORDER,
   type MemberLoginStage,
   type MemberPasswordActionKind,
   type MemberPasswordActionState,
@@ -110,5 +112,17 @@ describe("login-stage lookup tables", () => {
       if (kind === null) continue;
       expect(LOGIN_STAGE_FILTER_VALUES[stage]).toBe(kind);
     }
+  });
+
+  it("sorts Access in the same four-stage order operators see", () => {
+    expect(LOGIN_STAGE_SORT_ORDER).toEqual([
+      "no-login",
+      "not-invited",
+      "invited",
+      "can-login",
+    ]);
+    expect(cases.map(({ member }) => getMemberLoginStageSortRank(member))).toEqual([
+      0, 1, 2, 3,
+    ]);
   });
 });

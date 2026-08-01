@@ -164,6 +164,12 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   // SPECIAL_ROUTE_AREA_PATTERNS — recording or reversing a cash settlement is a
   // money action, gated finance:edit.
   "/api/admin/bookings/[id]/mark-paid": "finance",
+  // MG4 (#2309): the officer's member-guest picker, scoped to one booking. It
+  // sits in `bookings` because that is what it is FOR — adding a guest to this
+  // booking — and its own handler additionally requires `membership:view`
+  // before it will search by NAME (owner decision D-20, rider (a)), so the
+  // area recorded here is the floor, not the whole gate.
+  "/api/admin/bookings/[id]/member-guest-candidates": "bookings",
   "/api/admin/bookings/[id]/no-emails": "bookings",
   "/api/admin/bookings/[id]/requested-room": "bookings",
   "/api/admin/bookings/[id]/review": "bookings",

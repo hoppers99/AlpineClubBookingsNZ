@@ -51,7 +51,13 @@ const CHECK_IN = parseDateOnly("2026-09-10");
 const CHECK_OUT = parseDateOnly("2026-09-12");
 const EXPIRES = new Date("2026-09-05T12:00:00.000Z");
 
-function db(overrides?: { consentExpiresAt?: Date | null; nights?: Array<{ stayDate: Date }> }) {
+function db(overrides?: {
+  consentExpiresAt?: Date | null;
+  nights?: Array<{ stayDate: Date }>;
+  /** MG4 (#2309): the booking carries a negotiated booking-request price. */
+  heldForBookingRequest?: { id: string } | null;
+  originBookingRequest?: { id: string } | null;
+}) {
   return {
     booking: {
       findUnique: vi.fn(async () => ({
@@ -62,6 +68,8 @@ function db(overrides?: { consentExpiresAt?: Date | null; nights?: Array<{ stayD
         status: "CONFIRMED",
         memberId: "m-booker",
         member: { firstName: "Bev", lastName: "Booker" },
+        originBookingRequest: overrides?.originBookingRequest ?? null,
+        heldForBookingRequest: overrides?.heldForBookingRequest ?? null,
         guests: [
           {
             id: GUEST_ROW,
@@ -277,7 +285,32 @@ describe("the added notice", () => {
       bookingStatus: "CONFIRMED",
       bookingCheckIn: CHECK_IN,
       bookingGuestCount: 2,
+      // MG4 (#2309): the sixth fact. An ordinary booking is not quote priced,
+      // so the notice may honestly offer self-removal — the pipeline case that
+      // cannot is pinned below.
+      isQuotePriced: false,
     });
+  });
+
+  it("tells the predicate the booking is quote priced, so the notice offers what the server would allow (D-14, MG4-D-b)", async () => {
+    // Every row the booking-request pipeline creates lands on a booking that is
+    // quote priced by construction. Before MG4 this fact never reached the
+    // composer, so  defaulted it to false and the
+    // notice offered a self-removal the server refuses with QUOTE_PRICED.
+    await sendMemberGuestAddNotifications({
+      bookingId: BOOKING,
+      rows: [
+        { bookingGuestId: GUEST_ROW, targetMemberId: TARGET, notification: "ADDED_NOTICE" },
+      ],
+      actor: { kind: "BOOKING_REQUEST", adminMemberId: "m-admin" },
+      db: db({ heldForBookingRequest: { id: "req-1" } }),
+      delegateResolver: resolver(TARGET_WITH_LOGIN),
+    });
+
+    expect(h.sendAdded.mock.calls[0][0].selfRemoval.isQuotePriced).toBe(true);
+    // ...and the pipeline gets its OWN sentence, not the notify-only one that
+    // would tell a stranger "this club does not ask first for member guests".
+    expect(h.sendAdded.mock.calls[0][0].context).toBe("BOOKING_REQUEST");
   });
 });
 
