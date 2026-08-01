@@ -88,7 +88,7 @@ as a red flag and check the release notes before deploying.
 
 ### The public "Book Now" button now ships OFF (#2430)
 
-`20260801170000_public_book_now_default_off` flips the **column default** of
+`20260802100000_public_book_now_default_off` flips the **column default** of
 `PublicContentSettings.showBookNow` from true to false. It writes no rows, so
 **every club that has ever saved Admin → Setup & Configuration → Site Appearance
 & Content → Page Content keeps exactly the setting it saved** — ticked stays
