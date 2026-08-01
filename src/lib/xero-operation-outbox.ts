@@ -69,6 +69,28 @@ import {
   type QueuedOutboxPayload,
 } from "@/lib/xero-operation-outbox-payload";
 
+/**
+ * Was this operation REFUSED by one of the process-global Xero cooldowns rather
+ * than attempted against Xero (#2423 review F2)?
+ *
+ * Name-keyed rather than `instanceof`, matching `getXeroApiErrorInfo` and
+ * `classifyOrganisationReadFailure`: it keeps this module decoupled from
+ * `xero-api-client`'s class identities, which differ across the mock/live paths
+ * and under module mocking in tests.
+ *
+ * Both are raised BEFORE any HTTP: `throwIfXeroDailyLimitActive` and
+ * `throwIfXeroTransientOutageActive` are the first two statements of
+ * `withXeroRetry`, and the daily gate is re-checked inside
+ * `getAuthenticatedXeroClient` before a client is even handed out. So an
+ * operation that hits one of them on its first Xero call did nothing at Xero at
+ * all: there is no invoice, credit note or allocation to duplicate, and no
+ * provider-side state for a re-drive to collide with.
+ */
+function isXeroCooldownRefusal(error: unknown): boolean {
+  const name = error instanceof Error ? error.name : "";
+  return name === "XeroTransientOutageError" || name === "XeroDailyLimitError";
+}
+
 async function claimQueuedOutboxOperation(
   operationId: string,
   expectedOperation: QueuedOutboxExpectedOperation
@@ -2239,6 +2261,49 @@ export async function processQueuedXeroOutboxOperations(options?: {
             lastErrorMessage: null,
           },
         });
+        result.skipped += 1;
+        continue;
+      }
+      if (isXeroCooldownRefusal(error)) {
+        // Same shape, same reason (#2423 review F2). A process-global cooldown
+        // — the transient-outage breaker or the daily-limit gate — refused this
+        // operation before any HTTP, so it was never attempted. Marking it
+        // terminal FAILED here is what turned an outage into a pile of
+        // FAILED-unattempted invoices that NOTHING auto-recovers: the retry
+        // scanner only processes operator-created REQUEUE rows, so each one
+        // waits for an admin to notice and press Requeue. Typically the first
+        // operation of a batch fails for real and arms the breaker, and
+        // operations 2..N of the SAME batch are then condemned without ever
+        // reaching Xero.
+        //
+        // Returning them to PENDING is idempotency-neutral: nothing was sent,
+        // so the next cron simply drives the same queued work. The residual is
+        // the narrow case where the cooldown is armed by another caller
+        // MID-operation, after an earlier Xero call in this handler already
+        // succeeded; re-driving is then exactly the re-run an operator's
+        // Requeue performs on the FAILED row today, against handlers written to
+        // short-circuit on an already-linked Xero document.
+        //
+        // Deliberately BEFORE the subscription-charge error exposure below: an
+        // un-attempted operation leaves its charge exactly as the enqueue left
+        // it (QUEUED / INVOICE_CREATED, errors cleared), which is the truth.
+        await prisma.xeroSyncOperation.updateMany({
+          where: { id: queuedOperation.id, status: "RUNNING" },
+          data: {
+            status: "PENDING",
+            startedAt: null,
+            lastErrorCode: null,
+            lastErrorMessage: null,
+          },
+        });
+        logger.warn(
+          {
+            err: error,
+            queueOperationId: queuedOperation.id,
+            queueType: payload?.queueType ?? null,
+          },
+          "Returned un-attempted Xero outbox operation to PENDING: a Xero cooldown refused it before any call"
+        );
         result.skipped += 1;
         continue;
       }
