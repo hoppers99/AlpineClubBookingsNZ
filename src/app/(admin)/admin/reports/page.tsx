@@ -21,13 +21,13 @@ import {
 } from "lucide-react";
 import type { RevenueGranularity } from "@/lib/admin-reports";
 import { getRevenueGranularityLabel } from "@/lib/admin-reports";
-import { formatDollarsDisplay } from "@/lib/finance-format";
 import { bookingStatusLabel } from "@/lib/status-colors";
 import { DateRangeControls } from "@/components/admin/date-range-controls";
 import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
 import { reportsDateRangePresets } from "@/lib/date-range-presets";
 import { todayDateOnlyForTimeZone } from "@/lib/date-only";
 import { escapeCsvCell } from "@/lib/csv";
+import { formatCents } from "@/lib/utils";
 import {
   getReportsDatasetDefaults,
   resetReportsDatasetState,
@@ -65,6 +65,10 @@ interface ReportData {
     // Booking-level net cash from captured Payment.amountCents less refunds;
     // unlike booked revenue, this is not allocated across stay nights.
     netCollectedCents: number;
+    // #2408: aggregate warning only. The API never exposes transaction rows or
+    // affected booking ids to this page.
+    additionalLedgerGapCents: number;
+    additionalLedgerGapBookings: number;
     // #2350: how much of the booked revenue above has not been collected —
     // upward booking changes whose extra is still PENDING or FAILED.
     outstandingAdditionalCents: number;
@@ -127,6 +131,16 @@ function getRevenueDescription(granularity: RevenueGranularity): string {
     return "Booked revenue allocated across selected stay nights and grouped by week for ranges from 15 to 90 days.";
   }
   return "Booked revenue allocated across selected stay nights and grouped by month for ranges longer than 90 days.";
+}
+
+function getAdditionalLedgerGapWarning(summary: {
+  additionalLedgerGapCents: number;
+  additionalLedgerGapBookings: number;
+}): string | null {
+  if (summary.additionalLedgerGapBookings === 0) return null;
+
+  const singular = summary.additionalLedgerGapBookings === 1;
+  return `Net Collected Cash may understate by ${formatCents(summary.additionalLedgerGapCents)}: ${summary.additionalLedgerGapBookings} overlapping booking${singular ? "" : "s"} record${singular ? "s" : ""} an additional payment as collected without a matching captured additional-payment record. Ask a developer to reconcile ${singular ? "that payment's ledger" : "those payments' ledgers"} before trusting this figure.`;
 }
 
 function StatCard({
@@ -232,6 +246,9 @@ export default function ReportsPage() {
     : [];
 
   const occupancyData = data?.occupancy ?? [];
+  const additionalLedgerGapWarning = data
+    ? getAdditionalLedgerGapWarning(data.summary)
+    : null;
   const sampledOccupancy =
     occupancyData.length > 60
       ? occupancyData.filter((_, index) => index % Math.ceil(occupancyData.length / 60) === 0)
@@ -248,6 +265,17 @@ export default function ReportsPage() {
     rows.push(["Total Bookings", String(data.summary.totalBookings)]);
     rows.push(["Booked Revenue", (data.summary.totalRevenueCents / 100).toFixed(2)]);
     rows.push(["Net Collected Cash", (data.summary.netCollectedCents / 100).toFixed(2)]);
+    if (additionalLedgerGapWarning) {
+      rows.push(["Net Collected Cash Warning", additionalLedgerGapWarning]);
+      rows.push([
+        "Possible Additional Ledger Gap",
+        (data.summary.additionalLedgerGapCents / 100).toFixed(2),
+      ]);
+      rows.push([
+        "Bookings With An Additional Ledger Gap",
+        String(data.summary.additionalLedgerGapBookings),
+      ]);
+    }
     rows.push([
       "Outstanding Additions",
       (data.summary.outstandingAdditionalCents / 100).toFixed(2),
@@ -444,6 +472,16 @@ export default function ReportsPage() {
             </p>
           </div>
 
+          {additionalLedgerGapWarning ? (
+            <div
+              role="alert"
+              className="reports-print-card rounded-lg border border-warning-6 bg-warning-3 p-4 text-sm text-warning-11 print:border-warning-6"
+            >
+              <p className="font-semibold">Net Collected Cash needs reconciliation</p>
+              <p className="mt-1">{additionalLedgerGapWarning}</p>
+            </div>
+          ) : null}
+
           <section className="reports-print-section space-y-4">
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 print:gap-3">
               <StatCard
@@ -454,21 +492,19 @@ export default function ReportsPage() {
               />
               <StatCard
                 title="Booked Revenue"
-                value={formatDollarsDisplay(data.summary.totalRevenueCents)}
+                value={formatCents(data.summary.totalRevenueCents)}
                 subtitle="Price allocated to selected stay nights; not collected cash"
                 icon={DollarSign}
               />
               <StatCard
                 title="Net Collected Cash"
-                value={formatDollarsDisplay(data.summary.netCollectedCents)}
+                value={formatCents(data.summary.netCollectedCents)}
                 subtitle="Captured payment cash less refunds for overlapping bookings; not allocated by night"
                 icon={DollarSign}
               />
               <StatCard
                 title="Outstanding Additions"
-                value={formatDollarsDisplay(
-                  data.summary.outstandingAdditionalCents,
-                )}
+                value={formatCents(data.summary.outstandingAdditionalCents)}
                 subtitle={`Still owing across ${data.summary.outstandingAdditionalBookings} overlapping booking${data.summary.outstandingAdditionalBookings === 1 ? "" : "s"}; shown separately from cash`}
                 icon={AlertTriangle}
               />

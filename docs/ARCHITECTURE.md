@@ -2060,9 +2060,14 @@ sliced, so $1.00 over three nights is 34/33/33 cents and a one-night slice keeps
 its original share. Booked revenue is therefore not collected cash. Net
 collected cash is a separate booking-level payment figure derived from captured
 `Payment.amountCents` less refunds (#2408), never rebuilt from transaction rows;
-outstanding additions remain separately visible (#2350). Occupancy intentionally
-keeps the pre-existing PAID/COMPLETED-only utilisation and custodian-exclusion
-semantics.
+outstanding additions remain separately visible (#2350). Reports selects only
+captured `ADDITIONAL` transaction evidence to reuse #2408's consistency guard:
+when a positive additional amount is marked succeeded without such evidence,
+cash arithmetic is unchanged, a bounded server log names the affected booking
+IDs, and the API returns only aggregate possible-gap cents/count for the page,
+CSV, and PDF warning. Money on those report surfaces is rendered to exact cents.
+Occupancy intentionally keeps the pre-existing PAID/COMPLETED-only utilisation
+and custodian-exclusion semantics.
 
 ### Address autocomplete
 

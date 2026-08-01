@@ -3,8 +3,13 @@ import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { resolveOptionalActiveLodgeId } from "@/lib/lodges";
 import { z } from "zod";
-import { BookingStatus, SubscriptionStatus } from "@prisma/client";
+import {
+  BookingStatus,
+  PaymentTransactionKind,
+  SubscriptionStatus,
+} from "@prisma/client";
 import { isAdditionalPaymentOwed } from "@/lib/additional-payment-chase";
+import { summarizeAdditionalLedgerGap } from "@/lib/additional-ledger-gap";
 import { getOccupiedBedsForNight } from "@/lib/capacity";
 import { resolveMetricsCapacityAndScope } from "@/lib/finance-booking-metrics";
 import logger from "@/lib/logger";
@@ -40,6 +45,8 @@ const reportQuerySchema = z.object({
   // is the summed active-lodge capacity); a value scopes to that lodge.
   lodgeId: z.string().min(1).optional(),
 });
+
+const MAX_LOGGED_LEDGER_GAP_BOOKINGS = 20;
 
 export async function GET(request: NextRequest) {
   const guard = await requireAdmin();
@@ -109,7 +116,27 @@ export async function GET(request: NextRequest) {
         },
         include: {
           guests: { include: { nights: true } },
-          payment: true,
+          payment: {
+            select: {
+              status: true,
+              amountCents: true,
+              refundedAmountCents: true,
+              additionalAmountCents: true,
+              additionalPaymentStatus: true,
+              // #2408: the cash figure continues to come from amountCents. We
+              // load only ADDITIONAL ledger evidence so Reports can surface the
+              // same possible-understatement guard as Finance without
+              // rebuilding cash or returning transaction rows.
+              transactions: {
+                where: { kind: PaymentTransactionKind.ADDITIONAL },
+                select: {
+                  kind: true,
+                  status: true,
+                  amountCents: true,
+                },
+              },
+            },
+          },
         },
         orderBy: [{ checkIn: "asc" }, { id: "asc" }],
       }),
@@ -210,6 +237,22 @@ export async function GET(request: NextRequest) {
     const netCollectedCents = summarizeNetCollectedCash(
       bookings.map((booking) => booking.payment),
     );
+    const additionalLedgerGap = summarizeAdditionalLedgerGap(bookings);
+    if (additionalLedgerGap.bookingIds.length > 0) {
+      logger.error(
+        {
+          bookingIds: additionalLedgerGap.bookingIds.slice(
+            0,
+            MAX_LOGGED_LEDGER_GAP_BOOKINGS,
+          ),
+          bookingCount: additionalLedgerGap.additionalLedgerGapBookings,
+          additionalLedgerGapCents:
+            additionalLedgerGap.additionalLedgerGapCents,
+          netCollectedCents,
+        },
+        "Admin Reports: payments record a collected additional payment with no captured ADDITIONAL PaymentTransaction behind it. Net Collected Cash may understate by additionalLedgerGapCents. Reconcile those payments' ledgers (reconcilePaymentAggregates) before trusting the collected figure.",
+      );
+    }
     // #2350: upward changes whose extra was never collected. This booking-level
     // obligation remains visible as its own figure.
     // Do not subtract this booking-level obligation from the selected
@@ -260,6 +303,12 @@ export async function GET(request: NextRequest) {
         totalBookings: bookings.length,
         totalRevenueCents,
         netCollectedCents,
+        // Aggregate warning data only. Transaction rows and booking ids remain
+        // server-side evidence and are never exposed by the Reports API.
+        additionalLedgerGapCents:
+          additionalLedgerGap.additionalLedgerGapCents,
+        additionalLedgerGapBookings:
+          additionalLedgerGap.additionalLedgerGapBookings,
         // #2350: the actionable uncollected addition remains visible beside the
         // separately-derived booked-revenue and collected-cash figures.
         outstandingAdditionalCents: outstandingAdditional.cents,

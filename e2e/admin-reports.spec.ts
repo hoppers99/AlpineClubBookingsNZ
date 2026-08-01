@@ -55,9 +55,12 @@ test("reports overlapping stay nights and keeps booked revenue distinct from cas
   const collectedCashCard = page
     .getByText("Net Collected Cash", { exact: true })
     .locator("xpath=../..");
+  const avgOccupancyCard = page
+    .getByText("Avg Occupancy", { exact: true })
+    .locator("xpath=../..");
   await expect(bookedRevenueCard.getByText("$135.00")).toBeVisible();
   await expect(collectedCashCard.getByText("$135.00")).toBeVisible();
   await expect(page.getByText("Outstanding Additions", { exact: true })).toBeVisible();
   await expect(page.getByText("Booked Revenue by Day", { exact: true })).toBeVisible();
-  await expect(page.getByText("0%", { exact: true })).toBeVisible();
+  await expect(avgOccupancyCard.getByText("0%", { exact: true })).toBeVisible();
 });

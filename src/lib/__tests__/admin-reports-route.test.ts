@@ -9,7 +9,12 @@ import {
   vi,
 } from "vitest";
 import { NextRequest } from "next/server";
-import { BookingStatus, PaymentStatus, type Prisma } from "@prisma/client";
+import {
+  BookingStatus,
+  PaymentStatus,
+  PaymentTransactionKind,
+  type Prisma,
+} from "@prisma/client";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -40,6 +45,12 @@ const mockResolveMetricsCapacityAndScope = vi.fn(
     bookingLodgeWhere: lodgeId ? { lodgeId } : {},
   }),
 );
+const mockLogger = {
+  error: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  debug: vi.fn(),
+};
 
 vi.mock("@/lib/prisma", () => ({ prisma: mockPrisma }));
 vi.mock("@/lib/auth", () => ({ auth: () => mockAuth() }));
@@ -49,7 +60,7 @@ vi.mock("@/lib/session-guards", () => ({
   requireActiveSessionUser: mockRequireActiveSessionUser,
 }));
 vi.mock("@/lib/logger", () => ({
-  default: { error: vi.fn(), info: vi.fn(), warn: vi.fn(), debug: vi.fn() },
+  default: mockLogger,
 }));
 vi.mock("@/lib/finance-booking-metrics", () => ({
   resolveMetricsCapacityAndScope: mockResolveMetricsCapacityAndScope,
@@ -87,6 +98,7 @@ function reportBooking(overrides: Record<string, unknown> = {}) {
       refundedAmountCents: 0,
       additionalAmountCents: 0,
       additionalPaymentStatus: null,
+      transactions: [],
     },
     ...overrides,
   };
@@ -165,6 +177,17 @@ describe("admin reports route", () => {
       status: { in: [...EXPECTED_REPORT_STATUS_VALUES] },
     });
     expect(query.where).not.toHaveProperty("createdAt");
+    expect(query.include.payment.select).toEqual({
+      status: true,
+      amountCents: true,
+      refundedAmountCents: true,
+      additionalAmountCents: true,
+      additionalPaymentStatus: true,
+      transactions: {
+        where: { kind: PaymentTransactionKind.ADDITIONAL },
+        select: { kind: true, status: true, amountCents: true },
+      },
+    });
     expect(mockPrisma.booking.findMany).toHaveBeenCalledTimes(1);
   }, 15_000);
 
@@ -239,6 +262,7 @@ describe("admin reports route", () => {
           refundedAmountCents: 0,
           additionalAmountCents: 21_000,
           additionalPaymentStatus: "PENDING",
+          transactions: [],
         },
       }),
       reportBooking({
@@ -250,6 +274,7 @@ describe("admin reports route", () => {
           refundedAmountCents: 0,
           additionalAmountCents: 4_000,
           additionalPaymentStatus: "FAILED",
+          transactions: [],
         },
       }),
     ]);
@@ -264,6 +289,48 @@ describe("admin reports route", () => {
     expect(data.summary.netCollectedCents).toBe(15_000);
     expect(data.summary.outstandingAdditionalCents).toBe(25_000);
     expect(data.summary.outstandingAdditionalBookings).toBe(2);
+  }, 15_000);
+
+  it("surfaces the exact #2408 additional-ledger gap without changing cash arithmetic", async () => {
+    mockPrisma.booking.findMany.mockResolvedValue([
+      reportBooking({
+        id: "booking-unproven-extra",
+        finalPriceCents: 12_100,
+        payment: {
+          status: PaymentStatus.SUCCEEDED,
+          amountCents: 10_000,
+          refundedAmountCents: 0,
+          additionalAmountCents: 2_100,
+          additionalPaymentStatus: "SUCCEEDED",
+          transactions: [],
+        },
+      }),
+    ]);
+
+    const { GET } = await import("@/app/api/admin/reports/route");
+    const response = await GET(
+      new NextRequest(
+        "http://localhost/api/admin/reports?from=2026-04-07&to=2026-04-09",
+      ),
+    );
+    const data = await response.json();
+
+    expect(data.summary).toMatchObject({
+      netCollectedCents: 10_000,
+      additionalLedgerGapCents: 2_100,
+      additionalLedgerGapBookings: 1,
+    });
+    expect(JSON.stringify(data)).not.toContain("booking-unproven-extra");
+    expect(JSON.stringify(data)).not.toContain("transactions");
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bookingIds: ["booking-unproven-extra"],
+        bookingCount: 1,
+        additionalLedgerGapCents: 2_100,
+        netCollectedCents: 10_000,
+      }),
+      expect.stringContaining("Net Collected Cash may understate"),
+    );
   }, 15_000);
 
   it("rejects an unknown or inactive lodgeId before querying reports", async () => {

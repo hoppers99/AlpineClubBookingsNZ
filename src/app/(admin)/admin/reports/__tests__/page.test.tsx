@@ -38,6 +38,8 @@ const EMPTY_REPORT = {
     totalBookings: 0,
     totalRevenueCents: 0,
     netCollectedCents: 0,
+    additionalLedgerGapCents: 0,
+    additionalLedgerGapBookings: 0,
     outstandingAdditionalCents: 0,
     outstandingAdditionalBookings: 0,
     totalGuests: 0,
@@ -161,9 +163,9 @@ describe("ReportsPage quick ranges", () => {
             summary: {
               ...EMPTY_REPORT.summary,
               totalBookings: 1,
-              totalRevenueCents: 10_000,
-              netCollectedCents: 7_500,
-              outstandingAdditionalCents: 2_500,
+              totalRevenueCents: 33,
+              netCollectedCents: 34,
+              outstandingAdditionalCents: 13_500,
               outstandingAdditionalBookings: 1,
             },
           }),
@@ -173,10 +175,18 @@ describe("ReportsPage quick ranges", () => {
     );
 
     render(<ReportsPage />);
-    expect(await screen.findByText("Booked Revenue")).toBeVisible();
-    expect(screen.getByText("$100")).toBeVisible();
-    expect(screen.getByText("Net Collected Cash")).toBeVisible();
-    expect(screen.getByText("Outstanding Additions")).toBeVisible();
+    const bookedRevenueCard = (await screen.findByText("Booked Revenue")).closest(
+      ".reports-print-card",
+    );
+    const collectedCashCard = screen
+      .getByText("Net Collected Cash")
+      .closest(".reports-print-card");
+    const outstandingAdditionsCard = screen
+      .getByText("Outstanding Additions")
+      .closest(".reports-print-card");
+    expect(bookedRevenueCard).toHaveTextContent("$0.33");
+    expect(collectedCashCard).toHaveTextContent("$0.34");
+    expect(outstandingAdditionsCard).toHaveTextContent("$135.00");
     expect(screen.getByText("Booked Revenue by Month")).toBeVisible();
     expect(screen.getByText(/Price allocated to selected stay nights/)).toBeVisible();
   });
@@ -192,6 +202,8 @@ describe("ReportsPage quick ranges", () => {
               ...EMPTY_REPORT.summary,
               totalRevenueCents: 10_000,
               netCollectedCents: 7_500,
+              additionalLedgerGapCents: 2_100,
+              additionalLedgerGapBookings: 1,
               outstandingAdditionalCents: 2_500,
               outstandingAdditionalBookings: 1,
             },
@@ -216,6 +228,14 @@ describe("ReportsPage quick ranges", () => {
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
 
     render(<ReportsPage />);
+    const warning = await screen.findByRole("alert");
+    expect(warning).toHaveTextContent(
+      "Net Collected Cash may understate by $21.00",
+    );
+    expect(warning).toHaveTextContent(
+      "Ask a developer to reconcile that payment's ledger before trusting this figure.",
+    );
+    expect(warning.closest(".reports-print-root")).not.toBeNull();
     const csvButton = await screen.findByRole("button", { name: "CSV" });
     await waitFor(() => expect(csvButton).toBeEnabled());
     fireEvent.click(csvButton);
@@ -224,6 +244,11 @@ describe("ReportsPage quick ranges", () => {
     const csv = await blob.text();
     expect(csv).toContain("Booked Revenue,100.00");
     expect(csv).toContain("Net Collected Cash,75.00");
+    expect(csv).toContain(
+      "Net Collected Cash Warning,Net Collected Cash may understate by $21.00",
+    );
+    expect(csv).toContain("Possible Additional Ledger Gap,21.00");
+    expect(csv).toContain("Bookings With An Additional Ledger Gap,1");
     expect(csv).toContain("Outstanding Additions,25.00");
     expect(csv).not.toContain("Outstanding Additional Payments");
     expect(csv).toContain("Booked Revenue by Month");

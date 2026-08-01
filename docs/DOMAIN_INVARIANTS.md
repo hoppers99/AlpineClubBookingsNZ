@@ -368,7 +368,12 @@ Future reviews and issues should cite this file when proposing changes.
   booking's complete stay before slicing the report range (100/3 = 34/33/33).
   This is **Booked revenue**, not cash. Net collected cash stays payment-derived
   (`Payment.amountCents` less refunds, with a captured addition already inside
-  that amount; #2408), and outstanding additions remain separate (#2350).
+  that amount; #2408), and outstanding additions remain separate (#2350). The
+  #2408 guard is binding here too: a collected-addition claim without captured
+  `ADDITIONAL` transaction evidence must not change cash arithmetic or leak
+  transaction rows, but must log and expose an aggregate possible-understatement
+  warning in the page, CSV, and PDF. All Reports money presentation preserves
+  exact integer cents.
   Occupancy is the deliberate exception within the page: it stays limited to
   PAID/COMPLETED and continues to exclude custodian occupancy (#2286).
 - Capacity is per lodge. A booking belongs to exactly one lodge

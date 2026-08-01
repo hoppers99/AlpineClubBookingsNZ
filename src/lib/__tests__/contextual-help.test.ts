@@ -144,8 +144,11 @@ describe("contextual help registry", () => {
       "across every lodge night in its complete stay, with any remainder assigned deterministically, before the selected date range is sliced",
     );
     expect(details).toContain("allocated booking value, not collected cash");
+    expect(details).toContain("displayed to exact cents in the page and exports");
     expect(details).toContain("captured payment amount less refunds");
     expect(details).toContain("Outstanding Additions is shown separately");
+    expect(details).toContain("how much Net Collected Cash may understate");
+    expect(details).toContain("included in CSV and PDF exports");
     expect(details).toContain(
       "Pending, Payment Pending, Confirmed, Paid, Awaiting Review, and Completed",
     );

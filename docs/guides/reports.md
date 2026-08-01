@@ -9,7 +9,7 @@ trends, and member-subscription stats over a date range you choose, with CSV and
 PDF export. Find it at **Admin → Finance → Reports** (`/admin/reports`).
 
 This page is a **finance** permission area: you need finance view access to open
-it. Money is stored as integer cents and shown as whole dollars; dates are NZ
+it. Money is stored as integer cents and shown to exact cents; dates are NZ
 date-only lodge nights, interpreted in the club time zone.
 
 ## When you'd use it
@@ -47,6 +47,10 @@ date-only lodge nights, interpreted in the club time zone.
    `[stayStart, stayEnd)` envelope overlaps that range; sparse per-night rows do
    not replace the guest envelope for this total. The second row shows
    member stats (Active, Paid-Up, Unpaid, Overdue, New) for the current season.
+   If payment summary data claims an additional payment was collected without a
+   matching captured additional-payment record, a warning above the cards says
+   how much **Net Collected Cash** may understate and how many bookings need a
+   developer to reconcile their payment ledgers before the figure is trusted.
 2. The charts show **Occupancy Rate**, **Booked Revenue by Day/Week/Month** (the
    granularity is chosen automatically from the range length), **Booking Trends
    (by week)**, **Member vs Non-Member Guests**, and **Booking Status
@@ -55,7 +59,10 @@ date-only lodge nights, interpreted in the club time zone.
 ### Export
 
 1. Click **CSV** to download the figures as a spreadsheet, or **Download PDF**
-   for a printable version. Both are enabled once the data has loaded.
+   for a printable version. Both are enabled once the data has loaded. Any Net
+   Collected Cash reconciliation warning and its aggregate amount/count are
+   included in both exports; individual booking IDs and transaction rows are
+   not exported.
 
 Exports and printing always come out in the light colour scheme — dark text on a
 white page — even when you are browsing the app in dark mode. You do not need to
@@ -90,7 +97,18 @@ A captured later addition is already inside that payment amount and is never
 added again. **Outstanding Additions** remains the booking-level amount still
 owing after an upward change. Do not subtract it from selected stay-night
 revenue and call the result cash — the payment row owns the cash figure. All
-three appear separately in the CSV.
+three appear separately in the CSV. The page cards, revenue chart axis and
+tooltips, CSV, and PDF-rendered page all preserve exact cents, including whole
+dollar values such as `$135.00`.
+
+Reports also preserves the Finance dashboard's #2408 consistency guard. When a
+positive `additionalAmountCents` is marked `SUCCEEDED` but no captured
+`ADDITIONAL` payment transaction supports it, the cash arithmetic does not
+change: **Net Collected Cash** remains `Payment.amountCents` less refunds. The
+page, CSV, PDF, and server log instead flag the aggregate possible shortfall so
+an operator does not silently reconcile against a figure the ledger cannot
+prove. The API returns only the aggregate cents and booking count; affected
+booking IDs remain confined to the bounded server log.
 
 Occupancy deliberately keeps its narrower PAID/COMPLETED meaning and excludes
 custodian bed holds, so a Confirmed booking can appear in bookings/revenue while
@@ -109,6 +127,7 @@ long ranges readable.
 | Booked Revenue looks lower than the booking's full price | Only the booking's price allocation for selected stay nights is included | Expand the range to the booking's complete stay |
 | Booked Revenue and Net Collected Cash differ | They measure different things: selected stay-night price versus booking-level captured cash less refunds | Use the [Payments](payments.md) ledger for the transaction detail |
 | Outstanding Additions is non-zero | A price increase is still owing on an overlapping booking | Chase it from [Bookings](bookings.md#chase-money-still-owed-after-a-booking-change) |
+| "Net Collected Cash needs reconciliation" appears | One or more payments say an addition was collected without a matching captured additional-payment record | Ask a developer to reconcile the affected payment ledgers before trusting Net Collected Cash; the warning states the possible understatement and booking count |
 
 ## Related links
 
