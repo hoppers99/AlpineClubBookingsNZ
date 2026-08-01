@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { MemberDetailLink } from "@/components/admin/member-detail-link";
@@ -29,6 +31,25 @@ describe("shared member Access presentation", () => {
       expect(screen.getByText(label)).toHaveClass(background, foreground);
     },
   );
+});
+
+describe("finance-only E2E boundary", () => {
+  it("uses FINANCE_USER and proves the Subscriptions surface is reachable", () => {
+    const source = readFileSync(
+      resolve(process.cwd(), "e2e/admin-roles.spec.ts"),
+      "utf8",
+    );
+    const financeOnlyBlock = source.match(
+      /test\("finance-only viewer[\s\S]*?(?=\ntest\("lodge role)/,
+    )?.[0];
+
+    expect(financeOnlyBlock).toBeDefined();
+    expect(financeOnlyBlock).toContain("ROLE_PERSONAS.FINANCE_USER.email");
+    expect(financeOnlyBlock).not.toContain("ROLE_PERSONAS.FINANCE_ADMIN.email");
+    expect(financeOnlyBlock).toContain('page.goto("/admin/subscriptions")');
+    expect(financeOnlyBlock).toContain('name: "Subscriptions"');
+    expect(financeOnlyBlock).toContain('a[href^="/admin/members/"]');
+  });
 });
 
 describe("permission-aware member opening", () => {

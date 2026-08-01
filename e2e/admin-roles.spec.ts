@@ -106,30 +106,28 @@ test("treasurer edits finance but is blocked from content", async ({ page }) => 
   await page.goto("/finance");
   await expect(page).toHaveURL(/\/finance/);
 
-  // Subscriptions is finance-readable, but member detail is membership-gated.
-  // A finance-only row therefore shows its member as plain text with no local
-  // member route (and cannot smuggle the retired edit query into one).
-  await page.goto("/admin/subscriptions");
-  await expect(page).toHaveURL(/\/admin\/subscriptions/);
-  await expect(page.getByRole("table", { name: "Subscriptions" })).toBeVisible();
-  await expect(
-    page.locator('a[href^="/admin/members/"]'),
-  ).toHaveCount(0);
-
   // Out-of-area: content = none → redirected to the overview dashboard.
   await page.goto("/admin/page-content");
   await expect(page).toHaveURL(/\/admin\/dashboard/);
 });
 
-test("finance viewer reaches the finance workspace but no admin portal", async ({
+test("finance-only viewer reaches Subscriptions without member links", async ({
   page,
 }) => {
   await loginPersona(page, ROLE_PERSONAS.FINANCE_USER.email);
 
-  // In-area: FINANCE_USER carries no admin bundle, only finance-viewer access,
-  // so its area is the /finance workspace.
+  // In-area: FINANCE_USER carries only finance:view, so the dedicated finance
+  // workspace is available without granting another admin area.
   await page.goto("/finance");
   await expect(page).toHaveURL(/\/finance/);
+
+  // Subscriptions is finance-readable, but member detail is membership-gated.
+  // FINANCE_USER is the bundled finance-only boundary: it can read this table
+  // while each member stays plain text with no local member route.
+  await page.goto("/admin/subscriptions");
+  await expect(page).toHaveURL(/\/admin\/subscriptions/);
+  await expect(page.getByRole("table", { name: "Subscriptions" })).toBeVisible();
+  await expect(page.locator('a[href^="/admin/members/"]')).toHaveCount(0);
 
   // Since #1184, FINANCE_USER carries finance: view in the admin matrix, so
   // an out-of-area admin page bounces to its first accessible admin page (the

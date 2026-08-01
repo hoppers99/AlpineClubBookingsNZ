@@ -143,7 +143,6 @@ function renderMemberTable(members: Member[]) {
       selectedIds={new Set()}
       canEdit
       xeroOrgShortCode={null}
-      xeroContactGroupCatalog={[]}
       sortBy="name"
       sortDir="asc"
       membersListPath="/admin/members"

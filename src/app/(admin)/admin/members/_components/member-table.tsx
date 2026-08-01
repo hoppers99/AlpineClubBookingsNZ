@@ -45,7 +45,6 @@ interface MemberTableProps {
    * Xero URL, they are never hidden (#2283).
    */
   xeroOrgShortCode: string | null
-  xeroContactGroupCatalog: Array<{ id: string }>
   sortBy: string
   sortDir: "asc" | "desc"
   membersListPath: string
@@ -95,7 +94,6 @@ export function MemberTable({
   selectedIds,
   canEdit,
   xeroOrgShortCode,
-  xeroContactGroupCatalog,
   sortBy,
   sortDir,
   membersListPath,
@@ -325,10 +323,7 @@ export function MemberTable({
                       {member.xeroContactGroups.map((group) => (
                         <InfoChip
                           key={group.id}
-                          tone={getXeroContactGroupTone(
-                            group.id,
-                            xeroContactGroupCatalog,
-                          )}
+                          tone={getXeroContactGroupTone(group.id)}
                         >
                           {group.name}
                         </InfoChip>

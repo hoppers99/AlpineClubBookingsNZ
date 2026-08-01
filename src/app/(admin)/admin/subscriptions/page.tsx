@@ -692,7 +692,7 @@ export default function SubscriptionsPage() {
                       {sub.xeroContactGroups.map((group) => (
                         <span
                           key={group.id}
-                          className={`inline-flex items-center rounded-md border border-transparent px-2 py-0.5 text-xs font-medium whitespace-nowrap ${CHIP_TONE_CLASSES[getXeroContactGroupTone(group.id, xeroContactGroupsList)]}`}
+                          className={`inline-flex items-center rounded-md border border-transparent px-2 py-0.5 text-xs font-medium whitespace-nowrap ${CHIP_TONE_CLASSES[getXeroContactGroupTone(group.id)]}`}
                         >
                           {group.name}
                         </span>

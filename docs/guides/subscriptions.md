@@ -38,9 +38,10 @@ configurable — see [Subscription lockout](subscription-lockout.md)).
    Xero invoice link, and paid date. Access uses the same four account-readiness
    states as Members: **No login** (neutral), **Not invited** (warning),
    **Invited** (information), and **Can log in** (success). It does not describe
-   the member's role. Xero group colours are categorical only; the cached group
-   catalog assigns `cat1` through `cat6` in order and wraps after six, so names —
-   not colour — remain the identity.
+   the member's role. Xero group colours are categorical only; stable group
+   identity assigns `cat1` through `cat6` and intentionally reuses a colour when
+   needed, so names — not colour — remain the identity. Filtering, row order,
+   and whether a page loaded the cached catalog do not change that assignment.
 
    A subscription viewer who also has membership view can use the member name
    to open the read-only member detail page. A finance-only viewer sees the same

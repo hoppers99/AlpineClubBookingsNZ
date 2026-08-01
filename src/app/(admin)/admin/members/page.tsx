@@ -392,7 +392,6 @@ export default function MembersPage() {
           selectedIds={selectedIds}
           canEdit={canEditMembership}
           xeroOrgShortCode={xeroOrgShortCode}
-          xeroContactGroupCatalog={xeroContactGroupsList}
           sortBy={sortBy}
           sortDir={sortDir}
           membersListPath={membersListPath}
