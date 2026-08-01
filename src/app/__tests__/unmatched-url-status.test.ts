@@ -64,16 +64,16 @@ const { NotFoundSignal, notFound } = mocks;
 
 vi.mock("server-only", () => ({}));
 vi.mock("next/navigation", () => ({ notFound: mocks.notFound }));
-vi.mock("@/lib/page-content-html", () => ({
-  getSanitizedPageContentByPath: mocks.getPage,
-  // Mirrors the real helper's published filter (#2440) so the route-level
-  // scenarios below keep exercising the same hidden-page semantics.
-  getPublishedPageContentByPath: async (path: string) => {
-    const page = await mocks.getPage(path);
-    return !page || page.published === false ? null : page;
-  },
-  pageContentHtmlToPlainText: (html: string) => html,
-}));
+// The shared factory mirrors the real published filter (#2440) so the
+// route-level scenarios below keep exercising the same hidden-page semantics.
+vi.mock("@/lib/page-content-html", async () => {
+  const { pageContentHtmlModuleMock } = await import(
+    "@/lib/__tests__/helpers/page-content-html-mock"
+  );
+  return pageContentHtmlModuleMock(mocks.getPage, {
+    pageContentHtmlToPlainText: (html: string) => html,
+  });
+});
 vi.mock("@/lib/public-layout-config", () => ({
   getCachedClubIdentity: mocks.clubIdentity,
   getCachedWebsiteThemeRenderState: mocks.themeRenderState,

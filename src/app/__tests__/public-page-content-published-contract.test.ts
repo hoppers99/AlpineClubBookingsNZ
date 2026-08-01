@@ -5,15 +5,26 @@ import { describe, expect, it } from "vitest";
 /**
  * Contract for #2440: every public render path reads PageContent through
  * `getPublishedPageContentByPath()`, which hides unpublished (draft) rows. A
- * route that called the unfiltered `getSanitizedPageContentByPath()` directly
- * would serve an admin's draft to anonymous visitors — that is exactly how
- * /contact and /join regressed. This test bans the unfiltered read from
- * `src/app` outright, so a new route cannot reintroduce the gap; admin/API
- * surfaces that legitimately need drafts use `listEditablePageContent()` or
- * their own queries, not the by-path read.
+ * module that imported or called the unfiltered `getSanitizedPageContentByPath()`
+ * directly could serve an admin's draft to anonymous visitors — that is exactly
+ * how /contact and /join regressed. This test bans the unfiltered read from ALL
+ * application code (src/**, components and lib included, not just route
+ * modules) except the one module that defines it; admin/API surfaces that
+ * legitimately need drafts use `listEditablePageContent()` or their own
+ * queries, not the by-path read.
+ *
+ * Matching is on the IMPORT SPECIFIER or a CALL of the banned name — never a
+ * bare substring — so a comment or doc string may still name the function
+ * without failing CI.
  */
 
-const APP_ROOT = path.join(__dirname, "..");
+const SRC_ROOT = path.join(__dirname, "..", "..");
+
+/** The module that defines and may use the unfiltered read. */
+const ALLOWED = new Set([path.join("lib", "page-content-html.ts")]);
+
+const BANNED_USE_PATTERN =
+  /(?:import\s+(?:type\s+)?\{[^}]*\bgetSanitizedPageContentByPath\b[^}]*\}|\bgetSanitizedPageContentByPath\s*\()/;
 
 async function collectSourceFiles(dir: string): Promise<string[]> {
   const entries = await fs.readdir(dir, { withFileTypes: true });
@@ -36,20 +47,22 @@ async function collectSourceFiles(dir: string): Promise<string[]> {
 }
 
 describe("public PageContent published contract (#2440)", () => {
-  it("no route module under src/app uses the unfiltered by-path read", async () => {
-    const files = await collectSourceFiles(APP_ROOT);
+  it("no module under src/ imports or calls the unfiltered by-path read", async () => {
+    const files = await collectSourceFiles(SRC_ROOT);
     expect(files.length).toBeGreaterThan(0);
 
     const offenders: string[] = [];
     for (const file of files) {
+      const relative = path.relative(SRC_ROOT, file);
+      if (ALLOWED.has(relative)) continue;
       const source = await fs.readFile(file, "utf8");
-      if (source.includes("getSanitizedPageContentByPath")) {
-        offenders.push(path.relative(APP_ROOT, file));
+      if (BANNED_USE_PATTERN.test(source)) {
+        offenders.push(relative);
       }
     }
 
     expect(offenders, [
-      "These src/app modules read PageContent without the published filter.",
+      "These modules read PageContent without the published filter.",
       "Use getPublishedPageContentByPath() from @/lib/page-content-html so",
       "draft pages are never served to the public (#2440):",
       ...offenders,

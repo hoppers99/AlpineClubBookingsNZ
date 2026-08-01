@@ -77,7 +77,9 @@ import ContactPage, {
 import JoinPage, {
   generateMetadata as joinMetadata,
 } from "@/app/(website)/join/page";
-import JoinApplyPage from "@/app/(website)/join/apply/page";
+import JoinApplyPage, {
+  generateMetadata as joinApplyMetadata,
+} from "@/app/(website)/join/apply/page";
 import NotFoundPage from "@/app/not-found";
 
 function draftRow(path: string) {
@@ -141,6 +143,15 @@ describe("unpublished CMS pages are not served to the public (#2440)", () => {
     const metadata = await joinMetadata();
 
     expect(metadata.title).toBe("Join the Club");
+  });
+
+  it("/join/apply metadata falls back to the default title", async () => {
+    mocks.pageContentFindUnique.mockResolvedValue(draftRow("/join/apply"));
+
+    const metadata = await joinApplyMetadata();
+
+    expect(metadata.title).toBe("Apply for Membership");
+    expect(String(metadata.description)).not.toContain("Secret draft");
   });
 
   it("/join/apply falls back to the default application form", async () => {

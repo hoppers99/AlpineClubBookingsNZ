@@ -315,8 +315,9 @@ export async function getSanitizedPageContentByPath(path: string): Promise<{
  * the code-backed routes read (`canUnpublishPage`, enforced by the admin PATCH
  * route and the config-transfer importer), so on those routes this filter is
  * defence in depth against legacy or hand-written rows rather than a state the
- * admin UI can produce. A contract test bans `src/app` from calling the
- * unfiltered read directly so the two can never drift apart again.
+ * admin UI can produce. A contract test bans application code outside this
+ * module from importing or calling the unfiltered read, so the routes cannot
+ * drift apart again.
  */
 export async function getPublishedPageContentByPath(path: string) {
   const page = await getSanitizedPageContentByPath(path);

@@ -16,8 +16,12 @@ All notable public reference-release changes should be recorded here.
   `/join/apply` fall back to their built-in copy and forms exactly as when no
   row exists, the home page and admin-created pages answer 404, and the error
   boundary falls back to its plain "Page Not Found" screen. A contract test
-  bans the unfiltered read from every public route so the gap cannot quietly
-  return.
+  bans the unfiltered read from all application code outside the helper's own
+  module so the gap cannot quietly return. And because a hidden built-in page
+  now genuinely disappears — a hand-edited row could take the home page to a
+  404 — the admin Pages panel gains a matching repair: a built-in page that
+  somehow shows **Hidden** now offers its one-click **Publish** button (hiding
+  it remains impossible).
 
 - **The cancellation queue stops spending Xero API calls on questions nobody can
   act on (#2402).** Opening **Admin → Members → Cancellation Requests** asked
