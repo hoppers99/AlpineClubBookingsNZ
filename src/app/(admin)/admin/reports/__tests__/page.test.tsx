@@ -37,6 +37,9 @@ const EMPTY_REPORT = {
   summary: {
     totalBookings: 0,
     totalRevenueCents: 0,
+    netCollectedCents: 0,
+    additionalLedgerGapCents: 0,
+    additionalLedgerGapBookings: 0,
     outstandingAdditionalCents: 0,
     outstandingAdditionalBookings: 0,
     totalGuests: 0,
@@ -45,12 +48,12 @@ const EMPTY_REPORT = {
     nonMemberGuests: 0,
   },
   statusBreakdown: {
+    pending: 0,
+    paymentPending: 0,
     confirmed: 0,
     paid: 0,
+    awaitingReview: 0,
     completed: 0,
-    pending: 0,
-    cancelled: 0,
-    bumped: 0,
   },
   memberStats: {
     totalActiveMembers: 0,
@@ -74,6 +77,47 @@ afterEach(() => {
 });
 
 describe("ReportsPage quick ranges", () => {
+  it("wraps the full multi-lodge toolbar without changing its keyboard order", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify(EMPTY_REPORT), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    render(<ReportsPage />);
+    const toolbar = await screen.findByRole("group", {
+      name: "Report filters and exports",
+    });
+    const quickRange = screen.getByRole("combobox", { name: "Quick Range" });
+    const from = screen.getByLabelText("From");
+    const to = screen.getByLabelText("To");
+    const lodge = screen.getByDisplayValue("All lodges");
+    const deleted = screen.getByDisplayValue("Hide deleted");
+    const reset = screen.getByRole("button", { name: /^Reset\./ });
+    const update = screen.getByRole("button", { name: "Update" });
+    const csv = await screen.findByRole("button", { name: "CSV" });
+    const pdf = screen.getByRole("button", { name: "Download PDF" });
+
+    expect(toolbar).toHaveClass("w-full", "flex-wrap");
+    expect(reset).toBeDisabled();
+
+    const controls = Array.from(
+      toolbar.querySelectorAll<HTMLElement>("input, select, button"),
+    );
+    expect(controls.indexOf(quickRange)).toBeLessThan(controls.indexOf(from));
+    expect(controls.indexOf(from)).toBeLessThan(controls.indexOf(to));
+    expect(controls.indexOf(to)).toBeLessThan(controls.indexOf(lodge));
+    expect(controls.indexOf(lodge)).toBeLessThan(controls.indexOf(deleted));
+    expect(controls.indexOf(deleted)).toBeLessThan(controls.indexOf(reset));
+    expect(controls.indexOf(reset)).toBeLessThan(controls.indexOf(update));
+    expect(controls.indexOf(update)).toBeLessThan(controls.indexOf(csv));
+    expect(controls.indexOf(csv)).toBeLessThan(controls.indexOf(pdf));
+  });
+
   it("preserves lodge and deleted scope when Next Month changes only the dates", async () => {
     const requests: string[] = [];
     vi.stubGlobal(
@@ -107,5 +151,108 @@ describe("ReportsPage quick ranges", () => {
       expect(latest).toContain("lodgeId=lodge-2");
       expect(latest).toContain("deleted=include");
     });
+  });
+
+  it("renders booked revenue, payment-derived cash, and outstanding additions as distinct figures", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            ...EMPTY_REPORT,
+            summary: {
+              ...EMPTY_REPORT.summary,
+              totalBookings: 1,
+              totalRevenueCents: 33,
+              netCollectedCents: 34,
+              outstandingAdditionalCents: 13_500,
+              outstandingAdditionalBookings: 1,
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    render(<ReportsPage />);
+    const bookedRevenueCard = (await screen.findByText("Booked Revenue")).closest(
+      ".reports-print-card",
+    );
+    const collectedCashCard = screen
+      .getByText("Net Collected Cash")
+      .closest(".reports-print-card");
+    const outstandingAdditionsCard = screen
+      .getByText("Outstanding Additions")
+      .closest(".reports-print-card");
+    expect(bookedRevenueCard).toHaveTextContent("$0.33");
+    expect(collectedCashCard).toHaveTextContent("$0.34");
+    expect(outstandingAdditionsCard).toHaveTextContent("$135.00");
+    expect(screen.getByText("Booked Revenue by Month")).toBeVisible();
+    expect(screen.getByText(/Price allocated to selected stay nights/)).toBeVisible();
+  });
+
+  it("exports stay-night booked revenue and collected cash with unambiguous CSV labels", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            ...EMPTY_REPORT,
+            summary: {
+              ...EMPTY_REPORT.summary,
+              totalRevenueCents: 10_000,
+              netCollectedCents: 7_500,
+              additionalLedgerGapCents: 2_100,
+              additionalLedgerGapBookings: 1,
+              outstandingAdditionalCents: 2_500,
+              outstandingAdditionalBookings: 1,
+            },
+            revenue: [
+              {
+                periodStart: "2026-04-01",
+                periodEnd: "2026-04-30",
+                label: "Apr 2026",
+                tooltipLabel: "April 2026",
+                revenueCents: 10_000,
+                bookingCount: 1,
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+    const createObjectUrl = vi.fn<(blob: Blob) => string>(() => "blob:report");
+    Object.defineProperty(URL, "createObjectURL", { configurable: true, value: createObjectUrl });
+    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: vi.fn() });
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+
+    render(<ReportsPage />);
+    const warning = await screen.findByRole("alert");
+    expect(warning).toHaveTextContent(
+      "Net Collected Cash may understate by $21.00",
+    );
+    expect(warning).toHaveTextContent(
+      "Ask a developer to reconcile that payment's ledger before trusting this figure.",
+    );
+    expect(warning.closest(".reports-print-root")).not.toBeNull();
+    const csvButton = await screen.findByRole("button", { name: "CSV" });
+    await waitFor(() => expect(csvButton).toBeEnabled());
+    fireEvent.click(csvButton);
+
+    const blob = createObjectUrl.mock.calls[0][0] as Blob;
+    const csv = await blob.text();
+    expect(csv).toContain("Booked Revenue,100.00");
+    expect(csv).toContain("Net Collected Cash,75.00");
+    expect(csv).toContain(
+      "Net Collected Cash Warning,Net Collected Cash may understate by $21.00",
+    );
+    expect(csv).toContain("Possible Additional Ledger Gap,21.00");
+    expect(csv).toContain("Bookings With An Additional Ledger Gap,1");
+    expect(csv).toContain("Outstanding Additions,25.00");
+    expect(csv).not.toContain("Outstanding Additional Payments");
+    expect(csv).toContain("Booked Revenue by Month");
+    expect(csv).toContain("Month,Booked Revenue,Distinct Bookings");
+    expect(csv).not.toContain("Booked Revenue Less Outstanding");
   });
 });

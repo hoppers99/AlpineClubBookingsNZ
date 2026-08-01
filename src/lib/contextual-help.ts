@@ -740,7 +740,7 @@ const adminHelpEntries: HelpEntry[] = [
     "/admin/reports",
     help(
       "Reports",
-      "Reports provides admin-facing operational exports and summaries for bookings, members, payments, and lodge activity.",
+      "Reports provides admin-facing operational exports and summaries for stay-night bookings, booked revenue, collected cash, members, and lodge activity.",
       [
         "Choose a Quick Range, including Next Month, or enter From and To dates.",
         "Set the Lodge and Deleted filters, then select Update to refresh the report.",
@@ -762,6 +762,18 @@ const adminHelpEntries: HelpEntry[] = [
           name: "Export",
           description:
             "Downloads the filtered report for offline review.",
+        },
+      ],
+      [],
+      [
+        {
+          title: "How report metrics are counted",
+          details: [
+            "Booked Revenue allocates each booking's integer-cent final price across every lodge night in its complete stay, with any remainder assigned deterministically, before the selected date range is sliced. It is allocated booking value, not collected cash, and money is displayed to exact cents in the page and exports.",
+            "Net Collected Cash is the captured payment amount less refunds for overlapping bookings. It is payment-derived and is not allocated across stay nights; Outstanding Additions is shown separately. If an additional payment is marked collected without a matching captured payment record, a warning names how much Net Collected Cash may understate and tells you to ask a developer to reconcile the affected payment ledgers before trusting the figure; the same warning is included in CSV and PDF exports.",
+            "Booking and revenue totals include only Pending, Payment Pending, Confirmed, Paid, Awaiting Review, and Completed bookings whose stays overlap the selected nights.",
+            "Occupancy keeps its narrower operational meaning: only Paid and Completed bookings occupy beds, and custodian bed holds remain excluded.",
+          ],
         },
       ],
     ),

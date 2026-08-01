@@ -4,6 +4,7 @@ import {
   PaymentTransactionKind,
   Prisma,
 } from "@prisma/client";
+import { summarizeAdditionalLedgerGap } from "@/lib/additional-ledger-gap";
 import { isAdditionalPaymentOwed } from "@/lib/additional-payment-chase";
 import { getDefaultLodgeCapacity, getLodgeCapacity } from "@/lib/lodge-capacity";
 import { getDefaultLodgeId, lodgeNullTolerantScope } from "@/lib/lodges";
@@ -113,8 +114,6 @@ const bookingMetricsSelect = Prisma.validator<Prisma.BookingSelect>()({
 type BookingMetricsRecord = Prisma.BookingGetPayload<{
   select: typeof bookingMetricsSelect;
 }>;
-
-type BookingMetricsPayment = NonNullable<BookingMetricsRecord["payment"]>;
 
 /**
  * How many booking ids to name in the ledger-gap alarm. Enough to act on,
@@ -665,34 +664,15 @@ function getAdditionalPaymentStatusKey(
     : "PENDING";
 }
 
-/**
- * Cash the ledger says was actually captured against this payment's ADDITIONAL
- * leg, as opposed to what the `additionalPaymentStatus` column claims.
- *
- * A missing `transactions` array reads as zero — "no evidence of a capture" —
- * rather than as "assume it is fine". That is the safe direction: it makes the
- * #2408 guard fire on an unproven addition instead of silently trusting it.
- */
-function capturedAdditionalLedgerCents(payment: BookingMetricsPayment): number {
-  const rows = Array.isArray(payment.transactions) ? payment.transactions : [];
-
-  return rows.reduce(
-    (sum, row) =>
-      row.kind === PaymentTransactionKind.ADDITIONAL &&
-      FINANCE_CAPTURED_PAYMENT_STATUSES.has(row.status)
-        ? sum + row.amountCents
-        : sum,
-    0
-  );
-}
-
 function summarizePayments(
   bookings: BookingMetricsRecord[]
 ): FinanceBookingMetricsPaymentSummary {
   const summary = createZeroPaymentSummary();
-  const ledgerGapBookingIds: string[] = [];
+  const ledgerGap = summarizeAdditionalLedgerGap(bookings);
 
   summary.bookingCount = bookings.length;
+  summary.additionalLedgerGapCents = ledgerGap.additionalLedgerGapCents;
+  summary.additionalLedgerGapBookings = ledgerGap.additionalLedgerGapBookings;
 
   for (const booking of bookings) {
     const payment = booking.payment;
@@ -741,22 +721,6 @@ function summarizePayments(
 
     summary.capturedGrossCents += capturedGrossCents;
     summary.capturedAdditionalCents += capturedAdditionalCents;
-    // The guard. Counting the gross alone is right precisely BECAUSE a
-    // collected addition is inside it, which is true whenever a captured
-    // ADDITIONAL ledger row exists. A payment that claims the collection with
-    // no such row is the one shape where the gross does not contain it and this
-    // summary would quietly understate the cash — so it is measured and
-    // shouted about rather than absorbed. An UNCOLLECTED addition (PENDING,
-    // FAILED, legacy null) is not this shape: it is not in the gross, is not
-    // meant to be, and is already reported by `outstandingAdditionalCents`.
-    if (
-      claimsCollectedAdditional &&
-      capturedAdditionalLedgerCents(payment) === 0
-    ) {
-      summary.additionalLedgerGapCents += payment.additionalAmountCents;
-      summary.additionalLedgerGapBookings += 1;
-      ledgerGapBookingIds.push(booking.id);
-    }
     if (
       isAdditionalPaymentOwed({ bookingStatus: booking.status, payment })
     ) {
@@ -773,10 +737,10 @@ function summarizePayments(
     0
   );
 
-  if (ledgerGapBookingIds.length > 0) {
+  if (ledgerGap.bookingIds.length > 0) {
     logger.error(
       {
-        bookingIds: ledgerGapBookingIds.slice(
+        bookingIds: ledgerGap.bookingIds.slice(
           0,
           MAX_LOGGED_LEDGER_GAP_BOOKINGS
         ),
