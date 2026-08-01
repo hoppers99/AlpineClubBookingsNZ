@@ -4502,6 +4502,35 @@ and is hard-deleted at the end. The merge is **additive and master-wins**:
 
 ## Operations
 
+- **Raw SQL never declares its own result shape (#2289).** `$queryRaw<SomeRow[]>`
+  is an unchecked CAST: raw SQL returns the *physical* column names while the
+  type argument declares whatever the author believed, and nothing verifies the
+  two agree — not the compiler (the cast silences it) and not the tests (a mocked
+  Prisma returns the author's own wrong belief). Where they disagreed in a live
+  deployment every property arrived `undefined`, which is quietly falsy in
+  exactly the comparisons that guard money: a promo's total-redemption cap never
+  fired (`undefined !== null` true, `n > undefined` false) and FREE_NIGHTS promos
+  applied no discount at booking creation (`?? 0`), while the quote path — an
+  ordinary mapped Prisma read — showed the member one.
+
+  Two disciplines close it, and both are enforced. **Lock raw, read typed:** a
+  raw statement taken for a row lock selects a CONSTANT through `$executeRaw`
+  (`SELECT 1 … FOR UPDATE`) and the data is read back through the Prisma model
+  under that same lock — behaviour-identical, one extra round trip, and Prisma
+  owns the mapping so the names cannot drift. **Validate what you cannot model:**
+  a statement Prisma genuinely cannot express (only the rate limiter's atomic
+  `CASE … RETURNING` upsert) passes its rows through `decodeRawRows`
+  (`src/lib/raw-sql-rows.ts`), which throws naming the offending column — and
+  which also records what Postgres really sends on this stack, since
+  `COUNT(*)`/`int8` arrive as a **BigInt** (arithmetic on which throws) and
+  `numeric` as a **string**.
+
+  An `eslint` `no-restricted-syntax` rule refuses the type argument and a
+  `SELECT *` in a raw template; `src/lib/__tests__/raw-sql-shape-guard.test.ts`
+  pins the per-file inventory of raw READS, requires each to be validated or
+  carry a documented opt-out (only the two `SELECT 1` connectivity probes), and
+  holds every `FOR UPDATE` to `$executeRaw` over a constant. Full protocol in
+  `docs/CONCURRENCY_AND_LOCKING.md` -> "Lock raw, read typed".
 - Production deployment must respect `docs/BLUE_GREEN_MIGRATION_POLICY.md`.
 - Public CI and local validation must use test/demo credentials or placeholders.
 - Production data, production backups, live provider accounts, and live webhooks
