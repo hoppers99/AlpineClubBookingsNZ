@@ -350,25 +350,51 @@ describe("#2328 booking-confirmed applied-credit note", () => {
     expect(warnMock).not.toHaveBeenCalled();
   });
 
-  it("shouts rather than hides when the netting cannot be stated", async () => {
-    // #2483 keeps one refusal: credit at least as large as the booking's price
-    // on a send that says the booking is UNPAID. Both cannot be true, so no
-    // figure derived from them belongs in a member's inbox — the member gets
-    // the #2444 paragraph and an admin gets the warning.
+  it("states $0.00 without warning when credit covers the booking exactly", async () => {
+    // THE BOUNDARY SPLIT (#2483 review, 2 Aug 2026). Credit EQUAL to the price
+    // used to fall into the refusal below, which rendered the FULL price as
+    // "Total Due" and asked the member to pay it — a 100% overpayment on the
+    // one booking they owe nothing on. Equality is a legitimate ledger state
+    // (the #1887 clamp's documented steady state), so the confirmation states
+    // it: nothing is suppressed, so there is nothing to warn about.
     const { templateData } = await send(
       30000,
       { amountCents: 30000, settlementMethod: "bank_transfer" },
       { paymentDue: { reference: "BOOKING-ABC123", invoiceEmailed: false } },
     );
 
-    expect(templateData.paymentOutcome).toContain("Total Due: $300.00\n\n");
+    expect(templateData.paymentOutcome).toContain(
+      "Booking Total: $300.00\nAccount credit applied: -$300.00\nTotal Due: $0.00\n",
+    );
+    expect(templateData.totalDue).toBe("$0.00");
+    expect(templateData.paymentOutcome).not.toContain("is still owing");
+    expect(warnMock).not.toHaveBeenCalled();
+  });
+
+  it("shouts rather than hides when the netting cannot be stated", async () => {
+    // #2483 keeps one refusal: credit LARGER than the booking's price on a send
+    // that says the booking is UNPAID. Both cannot be true, so no figure
+    // derived from them belongs in a member's inbox — including the gross
+    // price, which an earlier draft printed with the "please pay" imperative
+    // beside it. The member is asked for nothing and an admin gets the warning.
+    const { templateData } = await send(
+      30000,
+      { amountCents: 45000, settlementMethod: "bank_transfer" },
+      { paymentDue: { reference: "BOOKING-ABC123", invoiceEmailed: false } },
+    );
+
+    expect(templateData.paymentOutcome).toContain("Booking Total: $300.00\n\n");
+    expect(templateData.paymentOutcome).not.toContain("Total Due");
     expect(templateData.paymentOutcome).not.toContain("Account credit applied");
+    expect(templateData.paymentOutcome).not.toContain("is still owing");
+    expect(templateData.totalDue).toBe("");
     expect(warnMock).toHaveBeenCalledTimes(1);
     expect(warnMock.mock.calls[0][0]).toMatchObject({
       bookingId: "bk_2328",
-      appliedCreditCents: 30000,
+      appliedCreditCents: 45000,
+      nettingOutcome: "unreconciled",
     });
-    expect(warnMock.mock.calls[0][1]).toContain("suppressed");
+    expect(warnMock.mock.calls[0][1]).toContain("no figure");
   });
 
   it("shouts rather than hides if more credit was applied than the booking is worth", async () => {
@@ -614,10 +640,16 @@ describe("#2328 × #2483 the unpaid branch's live-path premise", () => {
     // BOOKING_APPLIED rows this assertion proves absent, so it always
     // short-circuits and the invoice stands at the full price.
     //
-    // #2483 turns that gating from a hazard into the design. The rows this
-    // assertion proves absent are the SAME rows that decide what Xero will
-    // allocate, which is why the email may net them locally: when they appear,
-    // both the invoice and the email move together, from one fact.
+    // #2483 turns that gating from a hazard into the design — but by a
+    // narrower argument than an earlier draft of this comment made (review, 2
+    // Aug 2026). The email may net these rows locally because
+    // `deriveBookingAppliedCreditCents` is the club's OWN amount-owing law (the
+    // same figure `prepareManualSettlement` derives an effective price from),
+    // so the netted figure is what the club would accept as full settlement.
+    // The allocation gate reads a strict SUBSET of them — only rows with
+    // `xeroCreditNoteId: null` — so it is a work-remaining filter, not the same
+    // predicate; the two agree only while a stamp means the credit really is
+    // off the live invoice. Keeping them in step is #2501's job.
     const source = readFileSync(
       path.join(SRC_ROOT, "lib/school-booking-request.ts"),
       "utf8",

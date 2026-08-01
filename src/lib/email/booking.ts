@@ -5,6 +5,7 @@ import {
   appliedCreditSummaryRows,
   settledByPaymentCents,
   resolveUnpaidCreditNetting,
+  unpaidCreditNoteInput,
   unpaidMoneySummaryRows,
   bookingConfirmedTemplate,
   bookingPendingTemplate,
@@ -245,13 +246,11 @@ export async function sendBookingConfirmedEmail(
         amount: formatMoneyCents(unpaidNetting.toTransferCents),
         reference: paymentDue.reference,
         invoiceEmailed: paymentDue.invoiceEmailed,
-        accountCredit:
-          unpaidNetting.creditCents > 0
-            ? {
-                bookingTotal: formatMoneyCents(totalCents),
-                creditApplied: formatMoneyCents(unpaidNetting.creditCents),
-              }
-            : undefined,
+        accountCredit: unpaidCreditNoteInput(
+          totalCents,
+          unpaidNetting,
+          formatMoneyCents,
+        ),
       })
     : "";
   // #2328 (review): the states in which credit a booking really spent goes
@@ -263,18 +262,21 @@ export async function sendBookingConfirmedEmail(
   // same figures a few lines below.
   if (paymentDue && appliedCreditCents > 0 && unpaidNetting.creditCents === 0) {
     // #2483 replaced the blanket unpaid-branch suppression this used to warn
-    // about: an unpaid confirmation now STATES its netting. What is left is the
-    // case the netting refuses — credit at least as large as the booking's
-    // price on a send that says the booking is unpaid, which cannot both be
-    // true. The member gets the #2444 paragraph rather than a figure derived
-    // from contradictory inputs, and an admin gets this.
+    // about: an unpaid confirmation now STATES its netting, including the
+    // fully-covered case (`"covered"` — credit exactly equal to the price —
+    // which states $0.00 rather than the old refusal's full price). What is
+    // left is credit LARGER than the booking's price on a send that says the
+    // booking is unpaid, which cannot both be true, plus the degenerate
+    // non-positive-price send. The member is asked for no figure at all rather
+    // than one derived from contradictory inputs, and an admin gets this.
     logger.warn(
       {
         bookingId: bookingContext.bookingId,
         appliedCreditCents,
         totalCents,
+        nettingOutcome: unpaidNetting.outcome,
       },
-      "Confirmed-but-unpaid booking confirmation carries applied account credit at least as large as its total; the netting lines were suppressed (#2483)",
+      "Confirmed-but-unpaid booking confirmation carries applied account credit the netting could not state; the email asks the member for no figure (#2483)",
     );
   } else if (!paymentDue && settledCents < 0) {
     // More credit consumed than the booking is now worth. The #1887 reprice
@@ -310,7 +312,8 @@ export async function sendBookingConfirmedEmail(
     .join("");
   // #2483: the unpaid money block, from the SHARED row builder the HTML table
   // uses. One "Total Due" line when no credit applies — byte-for-byte the
-  // pre-#2483 block — or the reconciling trio when it does.
+  // pre-#2483 block — the reconciling trio when it does, and a bare
+  // "Booking Total" when the ledger contradicts the price.
   const unpaidMoneyBlock = unpaidMoneySummaryRows(totalCents, unpaidNetting)
     .map((row) => `${row.label}: ${row.value}\n`)
     .join("");
@@ -381,13 +384,21 @@ export async function sendBookingConfirmedEmail(
       // unpaid send it is the NETTED figure — a saved override that writes its
       // own "Total Due: {{totalDue}}" line asks for the transferable amount
       // with no edit, which is the whole point of not inventing a new token.
+      // On the `"unreconciled"` outcome it is EMPTY, not the gross price: the
+      // whole point of that outcome is that no figure may be asked for, and an
+      // override is the one path that could still print one. Empty is the
+      // token's existing convention on a branch that has no figure to state
+      // (see {{totalPaid}} directly above), and the editor already warns about
+      // a label typed in front of an emptyable token.
       totalPaid: paymentDue
         ? ""
         : formatMoneyCents(
             outstandingBalance ? outstandingPaidCents : totalCents,
           ),
       totalDue: paymentDue
-        ? formatMoneyCents(unpaidNetting.toTransferCents)
+        ? unpaidNetting.outcome === "unreconciled"
+          ? ""
+          : formatMoneyCents(unpaidNetting.toTransferCents)
         : outstandingBalance
           ? formatMoneyCents(outstandingBalance.amountCents)
           : "",

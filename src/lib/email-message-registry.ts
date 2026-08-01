@@ -1072,6 +1072,16 @@ export function sampleValue(token: string): string {
   // price of previewing every pre-composed token in its non-empty shape, and it
   // is the same trade #2263 and #2328 already made for {{totalPaid}}/
   // {{totalDue}} and for the credit pair.
+  //
+  // #2483 gives this token THREE MORE SHAPES the preview does not show, and
+  // one of them closes with the opposite instruction to the sample below (see
+  // the note beside "paymentDueNote" in APPROVED_EMAIL_TEMPLATE_TOKENS, and
+  // docs/guides/email-messages.md). The sample deliberately stays the
+  // no-credit shape: it is what every member on today's one live unpaid path
+  // receives, and previewing the rare netted shape as though it were the norm
+  // would mislead in the other direction. The consequence to be aware of is
+  // that an admin cannot preview the netted copy, so surrounding copy must not
+  // assume the sample's "follow your invoice" ending.
   if (token === "paymentDueNote") {
     return bookingPaymentDueNote({
       amount: "$123.45",
@@ -1506,6 +1516,19 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   // the internet-banking reference — and, since #2444, telling the member to
   // transfer whatever the club's invoice asks for if that differs from the
   // figure above it.
+  //
+  // #2483 makes BOTH of those conditional, and an override author needs to
+  // know it. Where the club's own ledger shows account credit against the
+  // booking, `totalDue` is the NETTED figure (it has always meant "what is
+  // still owed") and `paymentDueNote` states the arithmetic and asks for that
+  // netted figure instead — reversing the deferral above, because the invoice
+  // may not have been reduced yet. Where the ledger contradicts the price
+  // (more credit applied than the booking costs) `totalDue` is EMPTY and the
+  // paragraph asks for nothing at all. The preview sample above shows only the
+  // first, non-netted shape — the one every member on today's live path
+  // receives — so do NOT write surrounding copy that assumes it ("always pay
+  // what your invoice shows" contradicts the netted paragraph beneath it).
+  // docs/guides/email-messages.md describes all three.
   //
   // #2397 adds a third, PARTLY paid state — a cash settlement the admin said
   // did not cover an uncollected price increase — in which BOTH carry a

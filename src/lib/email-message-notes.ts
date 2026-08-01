@@ -138,31 +138,78 @@ export function adminSplitSettlementCancelledLeadParagraph(
  *    opposite and was corrected before merge; do not reinstate it without
  *    making the allocation real).
  *
- * 2. CREDIT APPLIED TO THIS BOOKING (`accountCredit` supplied, #2483) — the
- *    paragraph names the NET figure, shows the arithmetic in words, and inverts
- *    the closing instruction. The caller supplies `accountCredit` only when the
- *    club's own ledger answered cleanly (`resolveUnpaidCreditNetting`), and
- *    that ledger is what DECIDES the Xero allocation, so the netted figure is
- *    the club's real ask.
+ * 2. CREDIT APPLIED TO THIS BOOKING (`accountCredit` supplied, #2483). The
+ *    caller supplies it only from `resolveUnpaidCreditNetting`, and its
+ *    `outcome` picks one of three further shapes — because the one thing this
+ *    paragraph must never do is name a figure the club's own ledger
+ *    contradicts:
  *
- *    Why the closing instruction inverts. Under (1) the email defers to the
- *    invoice. It cannot do that here: the allocation that reduces the invoice
- *    is processed asynchronously on the Xero outbox, so a member reading the
- *    invoice first may still see the full price — and "transfer what the
- *    invoice shows" would then produce exactly the overpayment this whole
- *    change exists to prevent. So the netted figure stands, and a disagreement
- *    is routed to the club rather than acted on by the member. Admins are not
- *    left to notice it by hand: a separate reconciliation checker (#2501)
- *    compares the club's credits against Xero's and warns them on drift. The
- *    sentence promises only that the club will check — never that Xero has
- *    already been updated, which this module cannot know.
+ *    - `"netted"` (credit smaller than the price) — names the NET figure, shows
+ *      the arithmetic in words, and asks for it.
+ *    - `"covered"` (credit equals the price exactly) — asks for NOTHING. This
+ *      is not a corrupt state: it is the documented steady state of the #1887
+ *      reprice clamp, and it is exactly what the club's own amount-owing law
+ *      calls "nothing owing" (`prepareManualSettlement` refuses to take a
+ *      payment for it). Asking for the price here would be a 100% overpayment
+ *      — the single worst outcome this whole change exists to prevent — so the
+ *      paragraph states that nothing further is to be transferred.
+ *    - `"unreconciled"` (more credit applied than the booking costs) — names NO
+ *      figure and issues NO payment instruction at all. Something upstream is
+ *      inconsistent, and a refusal that still printed the gross price and told
+ *      the member to pay it would be the same overpayment wearing a disclaimer.
+ *      The member is asked to wait; the sender logs it for an admin.
+ *
+ *    Why the closing instruction inverts under `"netted"`. Under (1) the email
+ *    defers to the invoice. It cannot do that here: the allocation that reduces
+ *    the invoice is processed asynchronously on the Xero outbox, so a member
+ *    reading the invoice first may still see the full price — and "transfer
+ *    what the invoice shows" would then produce exactly the overpayment this
+ *    whole change exists to prevent. So the netted figure stands where the
+ *    invoice asks for MORE.
+ *
+ *    It is deliberately NOT symmetric (#2483 review, 2 Aug 2026). An invoice
+ *    asking for LESS than the netted figure is the drift direction a hand edit
+ *    in Xero produces, and telling the member to transfer the email's larger
+ *    figure anyway would recreate the very overpayment #2444 was raised to
+ *    stop. So the rule is "pay the smaller of the two, and tell the club":
+ *    underpaying is recoverable by an admin, overpaying is not, and either way
+ *    the disagreement is routed to the club rather than acted on silently.
+ *    Admins are not left to notice it by hand: a separate reconciliation
+ *    checker (#2501) compares the club's credits against Xero's and warns them
+ *    on drift. The sentence promises only that the club will check — never that
+ *    Xero has already been updated, which this module cannot know.
  *
  * `amount`, `reference` and the `accountCredit` figures arrive ALREADY
  * FORMATTED and already escaped for the caller's medium — this module imports
  * nothing (see the file docblock), so money formatting stays with the caller,
  * and the HTML path escapes the club-entered reference at its own edge exactly
- * as it did before.
+ * as it did before. `amount` and `reference` are UNUSED under `"covered"` and
+ * `"unreconciled"`: neither shape may ask for money, so neither may quote a
+ * figure or a payment reference.
  */
+export type BookingPaymentDueCredit =
+  | {
+      /** Credit smaller than the price: the member owes the difference. */
+      outcome: "netted";
+      /** The booking's full price, formatted — "$300.00". */
+      bookingTotal: string;
+      /** Credit applied to it, formatted and UNSIGNED — "$120.00". */
+      creditApplied: string;
+    }
+  | {
+      /** Credit equals the price exactly: nothing further is owed. */
+      outcome: "covered";
+      bookingTotal: string;
+      creditApplied: string;
+    }
+  | {
+      /**
+       * More credit applied than the booking costs. No figure may be stated
+       * and no payment may be asked for.
+       */
+      outcome: "unreconciled";
+    };
+
 export function bookingPaymentDueNote({
   amount,
   reference,
@@ -180,15 +227,9 @@ export function bookingPaymentDueNote({
   invoiceEmailed: boolean;
   /**
    * #2483 — present ONLY when the club's own credit ledger says credit is
-   * applied to this booking and the figures reconcile. Absent renders the
-   * #2444 paragraph unchanged.
+   * applied to this booking. Absent renders the #2444 paragraph unchanged.
    */
-  accountCredit?: {
-    /** The booking's full price, formatted — "$300.00". */
-    bookingTotal: string;
-    /** Credit applied to it, formatted and UNSIGNED — "$120.00". */
-    creditApplied: string;
-  };
+  accountCredit?: BookingPaymentDueCredit;
 }): string {
   const invoiceSentence = invoiceEmailed
     ? " An invoice has been emailed to you separately."
@@ -202,10 +243,29 @@ export function bookingPaymentDueNote({
     );
   }
 
+  if (accountCredit.outcome === "unreconciled") {
+    return (
+      "This booking is confirmed. The club is checking its record of the account credit held against this booking and will confirm what, if anything, is left to pay." +
+      (invoiceEmailed
+        ? " An invoice has been emailed to you separately — please wait to hear from the club before transferring anything against it."
+        : " Please wait to hear from the club before transferring anything.")
+    );
+  }
+
+  if (accountCredit.outcome === "covered") {
+    return (
+      `This booking is confirmed and there is nothing further to transfer — the booking's price of ${accountCredit.bookingTotal} is fully covered by the ${accountCredit.creditApplied} of account credit the club has put towards it.` +
+      (invoiceEmailed
+        ? " An invoice has been emailed to you separately."
+        : " The club will send you an invoice for the booking.") +
+      " If the invoice asks for a payment, please let the club know rather than paying it, and the club will check its own record of your credit against the invoice."
+    );
+  }
+
   return (
     `This booking is confirmed, but payment of ${amount} is still owing — the booking's price of ${accountCredit.bookingTotal} less the ${accountCredit.creditApplied} of account credit the club has put towards it. Please pay ${amount} by internet banking quoting reference ${reference}.` +
     invoiceSentence +
-    ` If the invoice asks for a different amount, please transfer ${amount} and let the club know, and the club will check its own record of your credit against the invoice.`
+    ` If the invoice asks for more than that, please still transfer ${amount}; if it asks for less, please pay what the invoice asks. Either way, let the club know, and the club will check its own record of your credit against the invoice.`
   );
 }
 
