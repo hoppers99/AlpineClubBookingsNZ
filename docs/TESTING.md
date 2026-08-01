@@ -202,7 +202,8 @@ sudo apt-get install -y faketime
 # and every subprocess spawn goes through the LD_PRELOAD shim. A test that really
 # reaches the real calendar fails on every retry, so this does not soften the
 # signal; only a slowness flake passes.
-FAKETIME_DONT_FAKE_MONOTONIC=1 faketime -f '+366d'   npm test -- --testTimeout=30000 --hookTimeout=30000 --retry=2
+FAKETIME_DONT_FAKE_MONOTONIC=1 faketime -f '+366d' \
+  npm test -- --testTimeout=30000 --hookTimeout=30000 --retry=2
 ```
 
 ### Moving the frozen instant locally
