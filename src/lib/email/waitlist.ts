@@ -10,13 +10,14 @@ import {
 } from "../nzst-date";
 import { formatCents as formatMoneyCents } from "@/lib/utils";
 import { sendEmail } from "./core";
+import { bookingOwnerEmailContext } from "@/lib/booking-email-contract";
 
 // ---- Waitlist emails ----
 
 export async function sendWaitlistConfirmationEmail(
   // Waitlist entry's booking (#2258): a waitlist entry IS a booking row, so the
   // per-booking "No emails" switch must be able to withhold these too.
-  bookingContext: { bookingId: string },
+  bookingContext: { bookingId: string; recipientMemberId: string },
   email: string,
   firstName: string,
   checkIn: Date,
@@ -36,7 +37,10 @@ export async function sendWaitlistConfirmationEmail(
       guestCount,
       position,
     ),
-    bookingContext,
+    bookingContext: bookingOwnerEmailContext(
+      bookingContext.bookingId,
+      bookingContext.recipientMemberId,
+    ),
     templateName: "waitlist-confirmation",
     templateData: {
       firstName,
@@ -52,7 +56,7 @@ export async function sendWaitlistConfirmationEmail(
 export async function sendWaitlistOfferEmail(
   // Waitlist entry's booking (#2258): a waitlist entry IS a booking row, so the
   // per-booking "No emails" switch must be able to withhold these too.
-  bookingContext: { bookingId: string },
+  bookingContext: { bookingId: string; recipientMemberId: string },
   email: string,
   firstName: string,
   checkIn: Date,
@@ -85,7 +89,10 @@ export async function sendWaitlistOfferEmail(
       priceCents,
       crossLodgeOffer,
     ),
-    bookingContext,
+    bookingContext: bookingOwnerEmailContext(
+      bookingContext.bookingId,
+      bookingContext.recipientMemberId,
+    ),
     templateName: "waitlist-offer",
     templateData: {
       firstName,
@@ -107,7 +114,7 @@ export async function sendWaitlistOfferEmail(
 export async function sendWaitlistOfferExpiredEmail(
   // Waitlist entry's booking (#2258): a waitlist entry IS a booking row, so the
   // per-booking "No emails" switch must be able to withhold these too.
-  bookingContext: { bookingId: string },
+  bookingContext: { bookingId: string; recipientMemberId: string },
   email: string,
   firstName: string,
   checkIn: Date,
@@ -120,7 +127,10 @@ export async function sendWaitlistOfferExpiredEmail(
     to: email,
     subject: `Waitlist Offer Expired - ${EMAIL_DEFAULT_LODGE_NAME}`,
     html: waitlistOfferExpiredTemplate(firstName, checkIn, checkOut, position),
-    bookingContext,
+    bookingContext: bookingOwnerEmailContext(
+      bookingContext.bookingId,
+      bookingContext.recipientMemberId,
+    ),
     templateName: "waitlist-offer-expired",
     templateData: {
       firstName,

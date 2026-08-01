@@ -294,7 +294,7 @@ export async function applyManualBookingPayment(
         // contradiction #2397 exists to remove, stated to the member rather
         // than only to the admin.
         const outcome = await sendBookingConfirmedEmail(
-          { bookingId: input.bookingId },
+          { bookingId: input.bookingId, recipientMemberId: recipient.memberId },
           recipient.member.email,
           recipient.member.firstName,
           recipient.checkIn,

@@ -230,6 +230,7 @@ export async function sendMemberGuestAddNotifications(params: {
         if (row.notification === "CONSENT_REQUEST") {
           await sendMemberGuestConsentRequestEmail({
             bookingId,
+            recipient: { kind: "member", memberId: recipient.memberId },
             lodgeId: context.lodgeId,
             email: recipient.email,
             firstName: recipient.firstName,
@@ -256,6 +257,7 @@ export async function sendMemberGuestAddNotifications(params: {
         } else {
           await sendMemberGuestAddedEmail({
             bookingId,
+            recipient: { kind: "member", memberId: recipient.memberId },
             lodgeId: context.lodgeId,
             email: recipient.email,
             // The recipient's OWN first name, so the greeting is right for a
@@ -641,6 +643,7 @@ export async function sendMemberGuestWithdrawnNotifications(params: {
       try {
         await sendMemberGuestRequestWithdrawnEmail({
           bookingId,
+          recipient: { kind: "member", memberId: recipient.memberId },
           lodgeId: booking.lodgeId,
           email: recipient.email,
           firstName: recipient.firstName,

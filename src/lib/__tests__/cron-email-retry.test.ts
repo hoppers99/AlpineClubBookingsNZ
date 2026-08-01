@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   update: vi.fn(),
   updateMany: vi.fn(),
   memberFindMany: vi.fn(),
+  memberFindUnique: vi.fn(),
   sendMail: vi.fn(),
   resolveEmailDeliveryConfig: vi.fn(),
   sendEmail: vi.fn(),
@@ -21,6 +22,7 @@ vi.mock("@/lib/prisma", () => ({
     },
     member: {
       findMany: mocks.memberFindMany,
+      findUnique: mocks.memberFindUnique,
     },
     // #2258: the retry cron re-reads the booking's "No emails" switch before
     // every replay.
@@ -32,6 +34,7 @@ vi.mock("@/lib/prisma", () => ({
 
 vi.mock("@/lib/email-suppression", () => ({
   getActiveEmailSuppression: mocks.getActiveEmailSuppression,
+  normalizeEmailAddress: (value: string) => value.trim().toLowerCase(),
 }));
 
 vi.mock("nodemailer", () => ({
@@ -73,6 +76,10 @@ function failedEmail(overrides: Record<string, unknown> = {}) {
     // #2258: rows written since the migration carry their booking. The
     // NULL-bookingId cases (pre-migration rows) are exercised explicitly below.
     bookingId: "bk_1",
+    bookingRecipientMemberId: "member_1",
+    bookingBodyOverrideApplied: false,
+    bookingDetailLinkIncluded: false,
+    bookingRetryHtmlBody: null,
     attempts: 0,
     ...overrides,
   };
@@ -90,7 +97,23 @@ describe("retryFailedEmails (issue #820)", () => {
     mocks.updateMany.mockResolvedValue({ count: 1 });
     mocks.memberFindMany.mockResolvedValue([]);
     mocks.getActiveEmailSuppression.mockResolvedValue(null);
-    mocks.bookingFindUnique.mockResolvedValue({ noEmails: false });
+    mocks.bookingFindUnique.mockImplementation(
+      async (args: { select?: { noEmails?: boolean } }) =>
+        args.select?.noEmails
+          ? { noEmails: false }
+          : { memberId: "member_1", deletedAt: null, guests: [] },
+    );
+    mocks.memberFindUnique.mockResolvedValue({
+      email: "member@example.test",
+      inheritEmailFromId: null,
+      inheritEmailFrom: null,
+      role: "USER",
+      financeAccessLevel: "NONE",
+      active: true,
+      archivedAt: null,
+      canLogin: true,
+      accessRoles: [],
+    });
   });
 
   it("only queries retryable failures: FAILED, under max attempts, with a retained HTML body", async () => {
@@ -103,7 +126,10 @@ describe("retryFailedEmails (issue #820)", () => {
         where: expect.objectContaining({
           status: "FAILED",
           attempts: { lt: 3 },
-          htmlBody: { not: null },
+          OR: [
+            { htmlBody: { not: null } },
+            { bookingRetryHtmlBody: { not: null } },
+          ],
         }),
       }),
     );
@@ -119,7 +145,13 @@ describe("retryFailedEmails (issue #820)", () => {
     // The row is claimed atomically (FAILED -> QUEUED, attempts incremented)
     // before the send so a concurrent/interrupted run cannot double-send (F33).
     expect(mocks.updateMany).toHaveBeenCalledWith({
-      where: { id: "email_1", status: "FAILED" },
+      where: {
+        id: "email_1",
+        status: "FAILED",
+        attempts: 1,
+        htmlBody: "<p>hello</p>",
+        bookingRetryHtmlBody: null,
+      },
       data: expect.objectContaining({ status: "QUEUED", attempts: 2 }),
     });
     expect(mocks.sendMail).toHaveBeenCalledTimes(1);
@@ -170,6 +202,7 @@ describe("retryFailedEmails (issue #820)", () => {
       data: {
         status: "BOUNCED",
         htmlBody: null,
+        bookingRetryHtmlBody: null,
         errorMessage: "Email suppressed after SES bounce feedback",
       },
     });
@@ -255,7 +288,23 @@ describe('retryFailedEmails and the per-booking "No emails" switch (#2258)', () 
     mocks.updateMany.mockResolvedValue({ count: 1 });
     mocks.memberFindMany.mockResolvedValue([]);
     mocks.getActiveEmailSuppression.mockResolvedValue(null);
-    mocks.bookingFindUnique.mockResolvedValue({ noEmails: false });
+    mocks.bookingFindUnique.mockImplementation(
+      async (args: { select?: { noEmails?: boolean } }) =>
+        args.select?.noEmails
+          ? { noEmails: false }
+          : { memberId: "member_1", deletedAt: null, guests: [] },
+    );
+    mocks.memberFindUnique.mockResolvedValue({
+      email: "member@example.test",
+      inheritEmailFromId: null,
+      inheritEmailFrom: null,
+      role: "USER",
+      financeAccessLevel: "NONE",
+      active: true,
+      archivedAt: null,
+      canLogin: true,
+      accessRoles: [],
+    });
     mocks.sendMail.mockResolvedValue({ messageId: "msg_1" });
   });
 
@@ -303,6 +352,227 @@ describe('retryFailedEmails and the per-booking "No emails" switch (#2258)', () 
     });
     expect(mocks.sendMail).toHaveBeenCalledTimes(1);
     expect(result.succeeded).toBe(1);
+  });
+
+  it("removes a retained booking-detail CTA when the member's authority was revoked", async () => {
+    mocks.findMany.mockResolvedValue([
+      failedEmail({
+        htmlBody:
+          '<table role="presentation" cellpadding="0" cellspacing="0"><tr><td><a href="http://localhost:3000/bookings/bk_1">View booking</a></td></tr></table><p>Operational update</p>',
+        bookingDetailLinkIncluded: true,
+      }),
+    ]);
+    mocks.bookingFindUnique.mockImplementation(
+      async (args: { select?: { noEmails?: boolean } }) =>
+        args.select?.noEmails
+          ? { noEmails: false }
+          : { memberId: "different_owner", deletedAt: null, guests: [] },
+    );
+
+    const result = await retryFailedEmails();
+
+    expect(result).toEqual({ retried: 1, succeeded: 1, failed: 0 });
+    expect(mocks.sendMail).toHaveBeenCalledTimes(1);
+    const retry = mocks.sendMail.mock.calls[0][0];
+    expect(retry.html).toContain("Operational update");
+    expect(retry.html).not.toContain("/bookings/bk_1");
+    expect(retry.html).not.toContain("View booking");
+    expect(mocks.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          htmlBody: retry.html,
+          bookingDetailLinkIncluded: false,
+        }),
+      }),
+    );
+  });
+
+  it("sanitizes a stored override delivery copy after authority is revoked", async () => {
+    const storedOverride =
+      '<p>Club-authored body</p><a href="http://localhost:3000/bookings/bk_1">Open booking</a>';
+    mocks.findMany.mockResolvedValue([
+      failedEmail({
+        htmlBody: storedOverride,
+        bookingBodyOverrideApplied: true,
+        bookingDetailLinkIncluded: true,
+      }),
+    ]);
+    mocks.bookingFindUnique.mockImplementation(
+      async (args: { select?: { noEmails?: boolean } }) =>
+        args.select?.noEmails
+          ? { noEmails: false }
+          : { memberId: "different_owner", deletedAt: null, guests: [] },
+    );
+
+    const result = await retryFailedEmails();
+
+    expect(result).toEqual({ retried: 1, succeeded: 1, failed: 0 });
+    expect(mocks.sendMail).toHaveBeenCalledTimes(1);
+    expect(mocks.sendMail.mock.calls[0][0].html).toContain("Club-authored body");
+    expect(mocks.sendMail.mock.calls[0][0].html).not.toContain(
+      "/bookings/bk_1",
+    );
+    expect(mocks.updateMany.mock.calls[0][0].data).toMatchObject({
+      bookingDetailLinkIncluded: false,
+    });
+  });
+
+  it("removes the detail link when the member no longer owns the retained destination", async () => {
+    mocks.findMany.mockResolvedValue([
+      failedEmail({
+        to: "old-mailbox@example.test",
+        htmlBody:
+          '<table role="presentation" cellpadding="0" cellspacing="0"><tr><td><a href="http://localhost:3000/bookings/bk_1">View booking</a></td></tr></table><p>Operational update</p>',
+        bookingDetailLinkIncluded: true,
+      }),
+    ]);
+
+    const result = await retryFailedEmails();
+
+    expect(result).toEqual({ retried: 1, succeeded: 1, failed: 0 });
+    expect(mocks.sendMail.mock.calls[0][0].to).toBe(
+      "old-mailbox@example.test",
+    );
+    expect(mocks.sendMail.mock.calls[0][0].html).not.toContain(
+      "/bookings/bk_1",
+    );
+    expect(mocks.updateMany.mock.calls[0][0].data).toMatchObject({
+      bookingDetailLinkIncluded: false,
+    });
+  });
+
+  it("retries new booking rows from rollback-isolated storage", async () => {
+    const quarantinedHtml = "<p>rollback-isolated booking update</p>";
+    mocks.findMany.mockResolvedValue([
+      failedEmail({
+        htmlBody: null,
+        bookingRetryHtmlBody: quarantinedHtml,
+      }),
+    ]);
+
+    const result = await retryFailedEmails();
+
+    expect(result).toEqual({ retried: 1, succeeded: 1, failed: 0 });
+    expect(mocks.sendMail.mock.calls[0][0].html).toContain(quarantinedHtml);
+    expect(mocks.sendMail.mock.calls[0][0].html).toContain(
+      "/bookings/bk_1",
+    );
+    expect(mocks.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          htmlBody: null,
+          bookingRetryHtmlBody: quarantinedHtml,
+        }),
+      }),
+    );
+  });
+
+  it("retries an authorized stored override byte-for-byte", async () => {
+    const storedOverride =
+      '<p>Club-authored body</p><a href="http://localhost:3000/bookings/bk_1">Open booking</a>';
+    mocks.findMany.mockResolvedValue([
+      failedEmail({
+        htmlBody: storedOverride,
+        bookingBodyOverrideApplied: true,
+        bookingDetailLinkIncluded: true,
+      }),
+    ]);
+
+    const result = await retryFailedEmails();
+
+    expect(result).toEqual({ retried: 1, succeeded: 1, failed: 0 });
+    expect(mocks.sendMail.mock.calls[0][0].html).toBe(storedOverride);
+    expect(mocks.updateMany.mock.calls[0][0].data).not.toHaveProperty(
+      "htmlBody",
+    );
+  });
+
+  it("preserves a public recipient's bearer consent action during retry", async () => {
+    const bearerHtml =
+      '<p>Please answer</p><a href="http://localhost:3000/bookings/consent/guest_1">Answer for this member</a>';
+    mocks.findMany.mockResolvedValue([
+      failedEmail({
+        htmlBody: bearerHtml,
+        bookingRecipientMemberId: null,
+        bookingDetailLinkIncluded: false,
+      }),
+    ]);
+
+    const result = await retryFailedEmails();
+
+    expect(result).toEqual({ retried: 1, succeeded: 1, failed: 0 });
+    expect(mocks.sendMail.mock.calls[0][0].html).toBe(bearerHtml);
+  });
+
+  it("fails closed when a known retained detail link cannot be located after URL drift", async () => {
+    mocks.findMany.mockResolvedValue([
+      failedEmail({
+        htmlBody:
+          '<a href="https://old-bookings.example.nz/bookings/bk_1">Open booking</a>',
+        bookingDetailLinkIncluded: true,
+      }),
+    ]);
+
+    const result = await retryFailedEmails();
+
+    expect(result).toEqual({ retried: 0, succeeded: 0, failed: 0 });
+    expect(mocks.sendMail).not.toHaveBeenCalled();
+    expect(mocks.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({ id: "email_1", status: "FAILED" }),
+      data: expect.objectContaining({
+        attempts: 3,
+        htmlBody: null,
+        errorMessage: expect.stringContaining("current application URL"),
+      }),
+    });
+  });
+
+  it("retires a legacy booking row whose recipient authority context is unknown", async () => {
+    mocks.findMany.mockResolvedValue([
+      failedEmail({
+        bookingRecipientMemberId: null,
+        bookingBodyOverrideApplied: null,
+        bookingDetailLinkIncluded: null,
+      }),
+    ]);
+
+    const result = await retryFailedEmails();
+
+    expect(result).toEqual({ retried: 0, succeeded: 0, failed: 0 });
+    expect(mocks.sendMail).not.toHaveBeenCalled();
+    expect(mocks.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({ id: "email_1", status: "FAILED" }),
+      data: expect.objectContaining({
+        attempts: 3,
+        htmlBody: null,
+        errorMessage: expect.stringContaining("recipient authorization context"),
+      }),
+    });
+  });
+
+  it("guards fail-closed retirement against a concurrent row claim", async () => {
+    mocks.findMany.mockResolvedValue([
+      failedEmail({
+        bookingBodyOverrideApplied: null,
+        bookingDetailLinkIncluded: null,
+      }),
+    ]);
+    mocks.updateMany.mockResolvedValue({ count: 0 });
+
+    const result = await retryFailedEmails();
+
+    expect(result).toEqual({ retried: 0, succeeded: 0, failed: 0 });
+    expect(mocks.sendMail).not.toHaveBeenCalled();
+    expect(mocks.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "email_1",
+        status: "FAILED",
+        attempts: 0,
+        htmlBody: "<p>hello</p>",
+        bookingRetryHtmlBody: null,
+      },
+      data: expect.objectContaining({ attempts: 3, htmlBody: null }),
+    });
   });
 
   // #2258 review finding: EmailLog.bookingId did not exist before the migration,

@@ -168,6 +168,7 @@ describe("#2320 review — senders supply the composed notes their defaults rend
   it("split-guest-portion-cancelled: {{ownBookingNote}} is supplied and renders its reassurance sentence", async () => {
     await sendSplitGuestPortionCancelledEmail({
       bookingId: "booking_1",
+      recipientMemberId: "member_1",
       email: "member@example.org",
       firstName: "Alice",
       checkIn: new Date("2026-07-10"),

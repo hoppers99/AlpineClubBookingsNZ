@@ -36,6 +36,7 @@ import {
 import { formatCents as formatMoneyCents } from "@/lib/utils";
 import { loadEmailMessageSettingsForLodge } from "@/lib/email-message-settings";
 import { sendEmail } from "./core";
+import { bookingOwnerEmailContext } from "@/lib/booking-email-contract";
 
 /**
  * #2328 (review): what the confirmation renders when the applied-credit read
@@ -54,7 +55,7 @@ export async function sendBookingConfirmedEmail(
   // string arguments. Every message in this file is unambiguously
   // booking-scoped, so `"none"` is not offered here: the per-booking "No
   // emails" switch must be able to withhold all of them.
-  bookingContext: { bookingId: string },
+  bookingContext: { bookingId: string; recipientMemberId: string },
   email: string,
   firstName: string,
   checkIn: Date,
@@ -306,7 +307,10 @@ export async function sendBookingConfirmedEmail(
         appliedCredit,
       },
     ),
-    bookingContext,
+    bookingContext: bookingOwnerEmailContext(
+      bookingContext.bookingId,
+      bookingContext.recipientMemberId,
+    ),
     templateName: "booking-confirmed",
     templateData: {
       firstName,
@@ -371,7 +375,7 @@ export async function sendBookingConfirmedEmail(
 
 export async function sendBookingPendingEmail(
   // Booking this message belongs to (#2258); see sendBookingConfirmedEmail.
-  bookingContext: { bookingId: string },
+  bookingContext: { bookingId: string; recipientMemberId: string },
   email: string,
   firstName: string,
   checkIn: Date,
@@ -391,7 +395,7 @@ export async function sendBookingPendingEmail(
       guestCount,
       holdUntil,
     ),
-    bookingContext,
+    bookingContext: bookingOwnerEmailContext(bookingContext.bookingId, bookingContext.recipientMemberId),
     templateName: "booking-pending",
     templateData: {
       firstName,
@@ -406,7 +410,7 @@ export async function sendBookingPendingEmail(
 
 export async function sendBookingBumpedEmail(
   // Booking this message belongs to (#2258); see sendBookingConfirmedEmail.
-  bookingContext: { bookingId: string },
+  bookingContext: { bookingId: string; recipientMemberId: string },
   email: string,
   firstName: string,
   checkIn: Date,
@@ -419,7 +423,7 @@ export async function sendBookingBumpedEmail(
     to: email,
     subject: `Booking Update - ${EMAIL_DEFAULT_LODGE_NAME}`,
     html: bookingBumpedTemplate(firstName, checkIn, checkOut, guestCount),
-    bookingContext,
+    bookingContext: bookingOwnerEmailContext(bookingContext.bookingId, bookingContext.recipientMemberId),
     templateName: "booking-bumped",
     templateData: {
       firstName,
@@ -433,7 +437,7 @@ export async function sendBookingBumpedEmail(
 
 export async function sendBookingGuestsCancelledEmail(
   // Booking this message belongs to (#2258); see sendBookingConfirmedEmail.
-  bookingContext: { bookingId: string },
+  bookingContext: { bookingId: string; recipientMemberId: string },
   email: string,
   firstName: string,
   checkIn: Date,
@@ -445,7 +449,7 @@ export async function sendBookingGuestsCancelledEmail(
     to: email,
     subject: `Booking Cancelled - ${EMAIL_DEFAULT_LODGE_NAME}`,
     html: bookingGuestsCancelledTemplate(firstName, checkIn, checkOut),
-    bookingContext,
+    bookingContext: bookingOwnerEmailContext(bookingContext.bookingId, bookingContext.recipientMemberId),
     templateName: "booking-guests-cancelled",
     templateData: {
       firstName,
@@ -458,7 +462,7 @@ export async function sendBookingGuestsCancelledEmail(
 
 export async function sendBookingCancelledEmail(
   // Booking this message belongs to (#2258); see sendBookingConfirmedEmail.
-  bookingContext: { bookingId: string },
+  bookingContext: { bookingId: string; recipientMemberId: string },
   email: string,
   firstName: string,
   checkIn: Date,
@@ -481,7 +485,7 @@ export async function sendBookingCancelledEmail(
       refundMethod,
       creditRestoredCents,
     ),
-    bookingContext,
+    bookingContext: bookingOwnerEmailContext(bookingContext.bookingId, bookingContext.recipientMemberId),
     templateName: "booking-cancelled",
     templateData: {
       firstName,
@@ -520,6 +524,7 @@ export async function sendBookingCancelledEmail(
 export async function sendSplitGuestPortionCancelledEmail(params: {
   // Booking this message belongs to (#2258); see sendBookingConfirmedEmail.
   bookingId: string;
+  recipientMemberId: string;
   email: string;
   firstName: string;
   checkIn: Date;
@@ -539,7 +544,7 @@ export async function sendSplitGuestPortionCancelledEmail(params: {
       parentConfirmed: params.parentConfirmed,
       parentBookingReference: params.parentBookingReference ?? null,
     }),
-    bookingContext: { bookingId: params.bookingId },
+    bookingContext: bookingOwnerEmailContext(params.bookingId, params.recipientMemberId),
     templateName: "split-guest-portion-cancelled",
     templateData: {
       firstName: params.firstName,
@@ -571,6 +576,7 @@ export async function sendBookingReviewApprovedEmail(params: {
   checkOut: Date;
   adminNotes: string;
   bookingId: string;
+  recipientMemberId: string;
   // Booking's lodge (multi-lodge phase 8); omitted/null resolves the
   // default lodge identity — always thread the booking's own lodgeId.
   lodgeId?: string | null;
@@ -585,7 +591,7 @@ export async function sendBookingReviewApprovedEmail(params: {
       params.adminNotes,
       params.bookingId,
     ),
-    bookingContext: { bookingId: params.bookingId },
+    bookingContext: bookingOwnerEmailContext(params.bookingId, params.recipientMemberId),
     templateName: "booking-review-approved",
     lodgeId: params.lodgeId,
     templateData: {
@@ -607,6 +613,7 @@ export async function sendBookingReviewApprovedEmail(params: {
 export async function sendBookingReviewRejectedEmail(params: {
   // Booking this message belongs to (#2258); see sendBookingConfirmedEmail.
   bookingId: string;
+  recipientMemberId: string;
   email: string;
   firstName: string;
   checkIn: Date;
@@ -625,7 +632,7 @@ export async function sendBookingReviewRejectedEmail(params: {
       params.checkOut,
       params.adminNotes,
     ),
-    bookingContext: { bookingId: params.bookingId },
+    bookingContext: bookingOwnerEmailContext(params.bookingId, params.recipientMemberId),
     templateName: "booking-review-rejected",
     lodgeId: params.lodgeId,
     templateData: {
@@ -645,7 +652,7 @@ export async function sendBookingReviewRejectedEmail(params: {
 // N-01: Check-in reminder
 export async function sendCheckinReminderEmail(
   // Booking this message belongs to (#2258); see sendBookingConfirmedEmail.
-  bookingContext: { bookingId: string },
+  bookingContext: { bookingId: string; recipientMemberId: string },
   email: string,
   firstName: string,
   checkIn: Date,
@@ -665,7 +672,7 @@ export async function sendCheckinReminderEmail(
     to: email,
     subject: `Check-in Reminder - ${EMAIL_DEFAULT_LODGE_NAME}`,
     html: checkinReminderTemplate(firstName, checkIn, checkOut, guests, chores),
-    bookingContext,
+    bookingContext: bookingOwnerEmailContext(bookingContext.bookingId, bookingContext.recipientMemberId),
     templateName: "checkin-reminder",
     templateData: {
       firstName,
@@ -729,6 +736,7 @@ export async function sendCheckinReminderEmail(
 export async function sendPreArrivalReminderEmail(params: {
   // Booking this message belongs to (#2258); see sendBookingConfirmedEmail.
   bookingId: string;
+  recipientMemberId: string;
   email: string;
   firstName: string;
   checkIn: Date;
@@ -756,7 +764,7 @@ export async function sendPreArrivalReminderEmail(params: {
       lodgeTravelNote: settings.lodgeTravelNote,
       doorCode: settings.doorCode,
     }),
-    bookingContext: { bookingId: params.bookingId },
+    bookingContext: bookingOwnerEmailContext(params.bookingId, params.recipientMemberId),
     templateName: "pre-arrival-reminder",
     templateData: {
       firstName: params.firstName,
@@ -801,6 +809,7 @@ export async function sendPreArrivalReminderEmail(params: {
  */
 export async function sendAdditionalPaymentReminderEmail(params: {
   bookingId: string;
+  recipientMemberId: string;
   email: string;
   firstName: string;
   additionalAmountCents: number;
@@ -817,7 +826,7 @@ export async function sendAdditionalPaymentReminderEmail(params: {
     to: params.email,
     subject: `Payment Still Needed - ${EMAIL_DEFAULT_LODGE_NAME}`,
     html: additionalPaymentReminderTemplate(params),
-    bookingContext: { bookingId: params.bookingId },
+    bookingContext: bookingOwnerEmailContext(params.bookingId, params.recipientMemberId),
     templateName: "additional-payment-reminder",
     templateData: {
       firstName: params.firstName,
@@ -834,6 +843,7 @@ export async function sendAdditionalPaymentReminderEmail(params: {
 export async function sendBookingModifiedEmail(params: {
   // Booking this message belongs to (#2258); see sendBookingConfirmedEmail.
   bookingId: string;
+  recipientMemberId: string;
   email: string;
   firstName: string;
   modificationType: string;
@@ -890,7 +900,7 @@ export async function sendBookingModifiedEmail(params: {
     to: params.email,
     subject: `Booking Modified - ${EMAIL_DEFAULT_LODGE_NAME}`,
     html: bookingModifiedTemplate(params),
-    bookingContext: { bookingId: params.bookingId },
+    bookingContext: bookingOwnerEmailContext(params.bookingId, params.recipientMemberId),
     templateName: "booking-modified",
     templateData: {
       firstName: params.firstName,
@@ -928,6 +938,7 @@ export async function sendBookingModifiedEmail(params: {
 export async function sendSetupIntentFailedEmail(params: {
   // Booking this message belongs to (#2258); see sendBookingConfirmedEmail.
   bookingId: string;
+  recipientMemberId: string;
   email: string;
   firstName: string;
   checkIn: Date;
@@ -939,7 +950,7 @@ export async function sendSetupIntentFailedEmail(params: {
     to: params.email,
     subject: `Card Setup Failed - ${EMAIL_DEFAULT_LODGE_NAME}`,
     html: setupIntentFailedTemplate(params),
-    bookingContext: { bookingId: params.bookingId },
+    bookingContext: bookingOwnerEmailContext(params.bookingId, params.recipientMemberId),
     templateName: "setup-intent-failed",
     templateData: {
       firstName: params.firstName,

@@ -809,6 +809,7 @@ async function notifyDelegateAnswer(params: {
     try {
       await sendMemberGuestConsentAnsweredEmail({
         bookingId,
+        recipient: { kind: "member", memberId: recipient.memberId },
         email: recipient.email,
         firstName: recipient.firstName,
         target,
@@ -931,6 +932,7 @@ async function notifyMemberGuestConsentOutcome(params: {
       try {
         await sendMemberGuestConsentOutcomeEmail({
           bookingId,
+          recipient: { kind: "member", memberId: booking.member.id },
           email: booking.member.email,
           firstName: booking.member.firstName ?? "",
           checkIn: booking.checkIn,
@@ -1024,6 +1026,7 @@ async function notifyMemberGuestConsentOutcome(params: {
         try {
           await sendMemberGuestConsentExpiredEmail({
             bookingId,
+            recipient: { kind: "member", memberId: recipient.memberId },
             email: recipient.email,
             firstName: recipient.firstName,
             bookerName,

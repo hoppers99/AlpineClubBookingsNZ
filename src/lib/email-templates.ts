@@ -4060,11 +4060,13 @@ export function memberGuestConsentExpiredTemplate(data: {
  * off, or the booking-request pipeline swaps them out at approval — and all
  * three leave a member holding an email that has stopped being true.
  *
- * NO ACTION LINK AND NO PARTY LISTING, deliberately, and neither is an oversight.
- * There is nothing for the reader to do, and by the time this lands they are not
- * on the booking, so a "view this booking" button would 403 and a party listing
- * would disclose a party they are no longer part of. MG2-D-a's listing is the
- * price of being asked to join; it is not owed to somebody who has been removed.
+ * NO BEARER/SELF-SERVICE ACTION AND NO PARTY LISTING, deliberately. The core
+ * mail finalizer may add the canonical booking-detail action only when this
+ * exact recipient independently retains route authority (for example, a
+ * bookings-view admin). An ordinary removed member or family delegate gets no
+ * booking link, because it would 403 or disclose a party they are no longer
+ * part of. MG2-D-a's listing is the price of being asked to join; it is not owed
+ * to somebody who has been removed.
  *
  * NO MONEY either, on the same rule as the request and added notices.
  *

@@ -62,6 +62,7 @@ export async function sendSchoolAttendeeConfirmationPrompts(
       convertedBooking: {
         select: {
           id: true,
+          memberId: true,
           checkIn: true,
           checkOut: true,
           guests: { select: { id: true } },
@@ -102,7 +103,10 @@ export async function sendSchoolAttendeeConfirmationPrompts(
 
     try {
       await sendSchoolAttendeeConfirmationEmail({
-        bookingContext: { bookingId: booking.id },
+        bookingContext: {
+          bookingId: booking.id,
+          recipientMemberId: booking.memberId,
+        },
         email: request.contactEmail,
         firstName: request.contactFirstName,
         schoolName: request.schoolName,
@@ -445,6 +449,7 @@ export async function resendSchoolAttendeeConfirmation({
       convertedBooking: {
         select: {
           id: true,
+          memberId: true,
           status: true,
           deletedAt: true,
           checkIn: true,
@@ -500,7 +505,10 @@ export async function resendSchoolAttendeeConfirmation({
   });
 
   await sendSchoolAttendeeConfirmationEmail({
-    bookingContext: { bookingId: booking.id },
+    bookingContext: {
+      bookingId: booking.id,
+      recipientMemberId: booking.memberId,
+    },
     email: request.contactEmail,
     firstName: request.contactFirstName,
     schoolName: request.schoolName,

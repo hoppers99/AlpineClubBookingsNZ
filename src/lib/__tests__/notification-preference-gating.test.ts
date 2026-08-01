@@ -247,7 +247,7 @@ describe("#1285 must-send transactional mail is never suppressible", () => {
 
     const { sendBookingCancelledEmail } = await import("../email");
     await sendBookingCancelledEmail(
-      { bookingId: "bk_test" },
+      { bookingId: "bk_test", recipientMemberId: "member_1" },
       "mia@example.com",
       "Mia",
       new Date("2026-04-10T00:00:00.000Z"),

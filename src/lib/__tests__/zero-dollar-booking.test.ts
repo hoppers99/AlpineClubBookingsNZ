@@ -634,7 +634,7 @@ describe("Cron Confirm Pending: zero-dollar handling", () => {
     await confirmPendingBookings();
 
     expect(sendBookingConfirmedEmail).toHaveBeenCalledWith(
-      { bookingId: "b1" },
+      { bookingId: "b1", recipientMemberId: "member_b1" },
       "b1@example.com",
       "Test",
       booking.checkIn,
