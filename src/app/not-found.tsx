@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { buildBookingLoginPath } from "@/lib/auth-redirect";
-import { getSanitizedPageContentByPath } from "@/lib/page-content-html";
+import { getPublishedPageContentByPath } from "@/lib/page-content-html";
 import { buildEmbeddedBody } from "@/lib/page-content-embeds";
 import { getCachedClubIdentity } from "@/lib/public-layout-config";
 import { EmbeddedPageContentParts } from "@/components/website/embedded-page-content-parts";
@@ -17,7 +17,7 @@ import { EmbeddedPageContentParts } from "@/components/website/embedded-page-con
  *
  * It removes two more defects that lived in the same artefact, both caused by
  * the build-time render having no database and no request:
- *  • `getSanitizedPageContentByPath("/404")` failed at build and was swallowed
+ *  • the `/404` page-content lookup failed at build and was swallowed
  *    by the surrounding catch (see `loadNotFoundContent()` below), so the
  *    admin-authored `/404` CMS page could not appear in it — the hardcoded
  *    fallback was frozen into the HTML.
@@ -55,7 +55,10 @@ function pageSlugFromPath(path: string) {
  */
 async function loadNotFoundContent() {
   try {
-    const page = await getSanitizedPageContentByPath("/404");
+    // Published filter (#2440): an unpublished /404 row (only reachable by a
+    // hand-written row — the admin routes refuse to unpublish system pages)
+    // degrades to the hardcoded fallback below, same as a missing row.
+    const page = await getPublishedPageContentByPath("/404");
     if (!page) return null;
 
     const [embeddedBody, clubIdentity] = await Promise.all([
