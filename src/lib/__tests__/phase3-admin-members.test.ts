@@ -654,27 +654,62 @@ describe("Phase 3: Admin Member Management", () => {
         )
       );
 
-      expect(searchCalls[0].where?.AND).toEqual(
-        expect.arrayContaining([
-          { id: { notIn: ["child-1"] } },
-          { active: true },
-          // #2282: `archivedAt: null` REPLACES `ageTier: "ADULT"` here. The
-          // write route never accepted an archived parent and this search never
-          // filtered one, so the dialog could offer a candidate the save then
-          // 422'd — the #2254 drift, in the parent direction.
-          { archivedAt: null },
-          // A member with no dependants of their own leaves room for a
-          // candidate parent who is themselves someone's grandchild.
-          ancestorDepthWithinWhere(2),
-        ])
-      );
+      // #2425: the picker now asks for its page in two complementary halves —
+      // adults, then everyone else — so the eligibility clauses are asserted on
+      // BOTH calls. Anything present on one and missing from the other would be
+      // a filter masquerading as a ranking.
+      expect(searchCalls).toHaveLength(2);
+      for (const call of searchCalls) {
+        expect(call.where?.AND).toEqual(
+          expect.arrayContaining([
+            { id: { notIn: ["child-1"] } },
+            { active: true },
+            // #2282: `archivedAt: null` REPLACES `ageTier: "ADULT"` here. The
+            // write route never accepted an archived parent and this search never
+            // filtered one, so the dialog could offer a candidate the save then
+            // 422'd — the #2254 drift, in the parent direction.
+            { archivedAt: null },
+            // A member with no dependants of their own leaves room for a
+            // candidate parent who is themselves someone's grandchild.
+            ancestorDepthWithinWhere(2),
+          ])
+        );
+      }
+
       // #2282 stated as a refusal too, because `arrayContaining` cannot say
-      // "and not this": age must not appear in the parent-candidate filter at
-      // all. Re-adding the ADULT clause fails here rather than silently
-      // narrowing the picker back to adults while the write route accepts more.
-      expect(searchCalls[0].where?.AND).not.toContainEqual({
-        ageTier: "ADULT",
-      });
+      // "and not this": age must not NARROW the parent-candidate set. Since
+      // #2425 an age clause does appear — as the RANKING split — so the refusal
+      // is stated the only way that still means something: the two halves are
+      // exact complements (`in` and `notIn` over the same tiers) on otherwise
+      // IDENTICAL clauses. Deleting the second query, or narrowing either
+      // half's age clause to a subset, fails here rather than silently
+      // returning the picker to adults-only while the write route accepts more.
+      // The tiers themselves are pinned because WHICH side of the split
+      // `NOT_APPLICABLE` lands on is the difference between an age-exempt
+      // person ranking with the adults and ranking below every child (#2425
+      // review) — the tier is age-EXEMPT, and organisations are excluded from
+      // this search by role, so it belongs in the top half.
+      const ageClauses = searchCalls.map((call) =>
+        (call.where?.AND as any[]).filter((clause) => "ageTier" in clause)
+      );
+      expect(ageClauses).toEqual([
+        [{ ageTier: { in: ["ADULT", "NOT_APPLICABLE"] } }],
+        [{ ageTier: { notIn: ["ADULT", "NOT_APPLICABLE"] } }],
+      ]);
+      const withoutAge = searchCalls.map((call) =>
+        (call.where?.AND as any[]).filter((clause) => !("ageTier" in clause))
+      );
+      expect(withoutAge[0]).toEqual(withoutAge[1]);
+      // And the count that drives paging and the truncation hint is the whole
+      // eligible set, not the adult half of it: no age clause at all.
+      const countCalls = vi.mocked(prisma.member.count).mock.calls;
+      for (const [countArgs] of countCalls) {
+        expect(
+          (countArgs?.where?.AND as any[] | undefined)?.some(
+            (clause: any) => "ageTier" in clause
+          ) ?? false
+        ).toBe(false);
+      }
     });
 
     it("combines text search with filters (AND logic)", async () => {
