@@ -399,8 +399,31 @@ Recorded as the children landed, to keep the design of record accurate:
 
       A first-class "link placeholder → member with in-place re-rate" is a
       separate, owner-scoped piece of work (it widens the money surface of the
-      modify engine and deliberately reverses that refusal); it is filed as its
+      modify engine and deliberately reverses that refusal); it was filed as its
       own `needs-decision` issue (#2337).
+
+      **UPDATE — 2 Aug 2026 (#2337, owner decision 1 Aug 2026): the in-place link
+      is now BUILT, and remove-and-re-add is no longer the only route.** The owner
+      chose to build the first-class "link this placeholder to a member" action,
+      quote-first. It is a NEW sibling operation, not a loosened rename: the rename
+      refusal above (`booking-modify-plan.ts:250-252`) is untouched — a rename
+      still cannot reach isMember/memberId/rateMembershipTypeId. The link is a new
+      `linkGuestToMember` input resolved by `resolveGuestMemberLinks`, gated
+      narrowly to **admin/officer actors, MEMBER whole-lodge bookings only
+      (`isMemberWholeLodgeBooking` — never a SCHOOL whole-lodge booking, whose
+      negotiated flat-split price must not be disturbed), and UNLINKED
+      placeholders only (never member→member)**, and reusing the full member-add
+      eligibility (subscription/membership-type/night-conflict/family-boundary +
+      MG2/MG3 consent). The linked row enters pricing with the member identity and
+      its booked non-member `lockedNightPrices` cleared, so it re-rates at the
+      member rate; the delta settles through the ordinary `BookingModification`
+      refund/re-charge path, quoted first (the officer sees old price, new price,
+      delta, and how it settles before committing). A member whole-lodge booking
+      is "quote-priced" (its placeholders were flat-split at approval), so a
+      link-only request is exempt from the standard quote-priced edit block — the
+      link IS the sanctioned re-rate. A `GUEST_MEMBER_LINK` modification records
+      the identity change. Remove-and-re-add still works and settles identically;
+      the link is the one-click equivalent.
 
       No
       `nonMemberHoldUntil` is stamped: the hold clock belongs to the PENDING
