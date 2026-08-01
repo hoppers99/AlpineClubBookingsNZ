@@ -3,7 +3,7 @@ import { createHash } from "crypto";
 import { prisma } from "./prisma";
 import { getXeroErrorStatusCode } from "./xero-error-shape";
 import { asRecord, readString } from "./xero-json";
-import { buildXeroObjectUrl } from "./xero-links";
+import { buildXeroObjectUrl, stripXeroOrgShortCode } from "./xero-links";
 import {
   redactSensitiveJson,
   redactSensitiveText,
@@ -545,9 +545,20 @@ async function upsertXeroObjectLinkWithClient(
 ) {
   const normalizedLink = await normalizePaymentRefundLinkWithClient(client, link);
   await deactivateOtherCanonicalLinksWithClient(client, normalizedLink);
-  const xeroObjectUrl =
+  // #2314: what this column HOLDS is organisation-agnostic, always. A short
+  // code baked into a row is wrong the moment the club reconnects to a
+  // different Xero organisation, and nothing would ever correct it; the
+  // organisation is applied when the row is read instead
+  // (`applyXeroOrgShortCode`). Enforcing it at this single funnel means no
+  // caller has to remember, and a legacy row that already carries one is
+  // normalised the next time it is written.
+  const xeroObjectUrl = stripXeroOrgShortCode(
     normalizedLink.xeroObjectUrl ??
-    buildXeroObjectUrl(normalizedLink.xeroObjectType, normalizedLink.xeroObjectId);
+      buildXeroObjectUrl(
+        normalizedLink.xeroObjectType,
+        normalizedLink.xeroObjectId,
+      ),
+  );
 
   let metadataForUpdate: unknown = normalizedLink.metadata;
   if (normalizedLink.mergeMetadata) {
@@ -648,11 +659,14 @@ export async function completeXeroSyncOperation(
   operationId: string,
   completion: XeroSyncOperationCompletion
 ) {
-  const xeroObjectUrl =
+  // #2314: organisation-agnostic in the column, organisation applied on read —
+  // see the note on the object-link funnel above.
+  const xeroObjectUrl = stripXeroOrgShortCode(
     completion.xeroObjectUrl ??
-    (completion.xeroObjectType && completion.xeroObjectId
-      ? buildXeroObjectUrl(completion.xeroObjectType, completion.xeroObjectId)
-      : null);
+      (completion.xeroObjectType && completion.xeroObjectId
+        ? buildXeroObjectUrl(completion.xeroObjectType, completion.xeroObjectId)
+        : null),
+  );
 
   const operation = await prisma.$transaction(async (tx) => {
     const operation = await tx.xeroSyncOperation.update({

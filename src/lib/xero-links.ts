@@ -139,6 +139,38 @@ export function applyXeroOrgShortCode(
   return buildXeroUrl(path, options);
 }
 
+/**
+ * The inverse: strip any organisation from a Xero URL, leaving the generic
+ * form (#2314).
+ *
+ * This is what makes "stored URLs stay organisation-agnostic" an invariant of
+ * the two write funnels (`upsertXeroObjectLink` and `completeXeroSyncOperation`
+ * in `xero-sync.ts`) rather than a rule every one of the ~50 call sites that
+ * builds a `xeroObjectUrl` has to remember. Applying it there also normalises a
+ * legacy row that already carries a short code the next time that row is
+ * written, so the columns converge on the invariant instead of only holding it
+ * going forward.
+ *
+ * A URL that is not an organisation-scoped Xero link comes back untouched.
+ */
+export function stripXeroOrgShortCode(url: string): string;
+export function stripXeroOrgShortCode(
+  url: string | null | undefined
+): string | null;
+export function stripXeroOrgShortCode(
+  url: string | null | undefined
+): string | null {
+  if (!url) return url ?? null;
+  if (!url.startsWith(`${XERO_ORIGIN}${ORGANISATION_LOGIN_PATH}?`)) return url;
+
+  const redirect = new URLSearchParams(
+    url.slice(url.indexOf("?") + 1)
+  ).get("redirecturl");
+  // Same posture as applyXeroOrgShortCode: an organisation-login URL with
+  // nothing to redirect to is left alone rather than turned into a worse guess.
+  return redirect ? buildXeroUrl(redirect) : url;
+}
+
 export function buildXeroObjectUrl(
   objectType: string,
   objectId: string,

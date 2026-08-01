@@ -7,6 +7,7 @@ import {
   buildXeroInvoiceUrl,
   buildXeroObjectUrl,
   buildXeroReportsUrl,
+  stripXeroOrgShortCode,
 } from "@/lib/xero-links";
 
 // #2261: the "Go to Xero" button in the Xero Sync page header. Both forms must
@@ -202,6 +203,52 @@ describe("applyXeroOrgShortCode", () => {
       expect(
         applyXeroOrgShortCode(generic, { shortCode: "!aBc12" }),
       ).toContain("shortcode=!aBc12");
+    }
+  });
+});
+
+// #2314: the inverse of applyXeroOrgShortCode, applied at the two write funnels
+// in `xero-sync.ts` so "stored URLs stay organisation-agnostic" is an invariant
+// of the column rather than a rule ~50 call sites have to remember.
+describe("stripXeroOrgShortCode", () => {
+  it("reduces an organisation-scoped URL to the generic one", () => {
+    expect(
+      stripXeroOrgShortCode(
+        buildXeroInvoiceUrl("inv-1", { shortCode: "!aBc12" }),
+      ),
+    ).toBe(buildXeroInvoiceUrl("inv-1"));
+  });
+
+  it("round-trips with applyXeroOrgShortCode for every object type", () => {
+    for (const [type, id] of [
+      ["CONTACT", "contact-1"],
+      ["INVOICE", "inv-1"],
+      ["CREDIT_NOTE", "cn-1"],
+      ["CONTACT", "a/b c"],
+    ] as const) {
+      const generic = buildXeroObjectUrl(type, id);
+      const scoped = applyXeroOrgShortCode(generic, { shortCode: "!aBc12" });
+      expect(stripXeroOrgShortCode(scoped)).toBe(generic);
+    }
+  });
+
+  it("leaves an already-generic URL untouched", () => {
+    const generic = buildXeroContactUrl("contact-1");
+    expect(stripXeroOrgShortCode(generic)).toBe(generic);
+  });
+
+  it("passes null and undefined through as null", () => {
+    expect(stripXeroOrgShortCode(null)).toBeNull();
+    expect(stripXeroOrgShortCode(undefined)).toBeNull();
+  });
+
+  it("leaves anything that is not a Xero organisation link untouched", () => {
+    for (const other of [
+      "https://bookings.example.org/admin/payments",
+      "https://in.xero.com/abc123",
+      "https://go.xero.com/organisationlogin/default.aspx?shortcode=!aBc12",
+    ]) {
+      expect(stripXeroOrgShortCode(other)).toBe(other);
     }
   });
 });

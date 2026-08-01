@@ -708,7 +708,13 @@ settled by owner decision on 1 and 2 August 2026, is three sentences long:
    and nothing would ever correct it. `applyXeroOrgShortCode(url, { shortCode })`
    scopes a stored URL when it is read — and re-points one that already carries
    some other organisation's code, so a row written under a previous connection
-   heals itself.
+   heals itself. This is an **invariant of the columns, not a convention**: both
+   have exactly one write funnel in `xero-sync.ts` (`upsertXeroObjectLink` and
+   `completeXeroSyncOperation`), and each passes the value through
+   `stripXeroOrgShortCode` on the way in. So none of the ~50 call sites that
+   build a `xeroObjectUrl` has to remember the rule, and a legacy row carrying a
+   short code is normalised the next time it is written. No migration was needed
+   or written: reads already neutralise a stale code, and writes converge.
 3. **Emailed links are stamped at send time**, inside the three senders in
    `src/lib/email/admin-alerts-finance.ts` (manual-settlement conflict, repeated
    Xero failure, reconciliation report). A screen can re-render and pick up the
