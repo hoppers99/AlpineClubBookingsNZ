@@ -9,6 +9,7 @@ interface Preferences {
   bookingReminder: boolean;
   bookingBumped: boolean;
   bookingCancelled: boolean;
+  bookingAddedByFamily: boolean;
   choreRoster: boolean;
   marketingEmails: boolean;
 }
@@ -25,6 +26,11 @@ const PREFERENCE_LABELS: Record<keyof Preferences, { label: string; description:
   bookingBumped: {
     label: "Booking Updates",
     description: "Notifications if your pending booking is bumped",
+  },
+  bookingAddedByFamily: {
+    label: "Added to a Booking by Family",
+    description:
+      "A heads-up when someone in your family group puts you (or a family member you look after) on a booking",
   },
   bookingCancelled: {
     label: "Cancellation Notices",
@@ -45,6 +51,10 @@ const PREFERENCE_LABELS: Record<keyof Preferences, { label: string; description:
 // Club Communications (marketing) is honored by the bulk-send recipient filter.
 const TOGGLEABLE_KEYS: Array<keyof Preferences> = [
   "bookingReminder",
+  // #2284 (S2): an FYI, not an essential transactional email, so it is
+  // genuinely toggleable and honoured on the send path (the dispatcher checks
+  // it before sending).
+  "bookingAddedByFamily",
   "choreRoster",
   "marketingEmails",
 ];
