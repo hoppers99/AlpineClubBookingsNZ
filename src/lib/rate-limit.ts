@@ -10,8 +10,11 @@
  * degraded window cannot be used to multiply a brute-force budget.
  */
 
+import { z } from "zod";
+
 import { prisma } from "@/lib/prisma";
 import logger from "@/lib/logger";
+import { decodeRawRows, rawIntColumn } from "@/lib/raw-sql-rows";
 
 interface RateLimitEntry {
   count: number;
@@ -140,6 +143,36 @@ let lastRateLimitDbErrorLogAt = 0;
 const RATE_LIMIT_DB_ERROR_LOG_INTERVAL_MS = 60 * 1000;
 
 /**
+ * The shape the upsert below actually RETURNS, checked at runtime (#2289).
+ *
+ * This is the one raw statement in `src/` whose result is read and which cannot
+ * be expressed through a Prisma model — the whole point is the atomic
+ * `CASE ... RETURNING` upsert, which restarts an expired window and increments a
+ * live one in a single statement with no read-modify-write race. So it keeps its
+ * raw SQL and gets a decoder instead: a renamed or retyped column now throws
+ * naming itself, rather than yielding `undefined` and letting `Number(undefined)`
+ * become `NaN` — under which `NaN > config.limit` is false and EVERY request is
+ * allowed. A rate limiter that silently stops limiting is the exact failure this
+ * class produces, and the fallback below would never see it, because there is no
+ * error to catch.
+ *
+ * `count` is an `int4` column, so it arrives as a number; `rawIntColumn` also
+ * accepts the BigInt a future `COUNT(*)`-style rewrite would return.
+ *
+ * WHERE THE THROW LANDS, deliberately: inside the existing `try`, so a shape
+ * mismatch is treated as exactly what it is — the shared store failing to answer
+ * usefully — and the request drops to the per-process fallback at the DEGRADED
+ * budget, with the error logged. That keeps the limiter's standing decision that
+ * a store-local fault must not become a login outage (see `authSensitive`),
+ * while still turning a mismatch into a visible error instead of a silent `NaN`
+ * that waves everything through.
+ */
+const RATE_LIMIT_UPSERT_ROW = z.object({
+  count: rawIntColumn,
+  resetAt: z.date(),
+});
+
+/**
  * Check the shared rate limit for a given key (typically IP address). One
  * atomic upsert: expired windows restart, live windows increment. Falls back
  * to the per-process in-memory limiter when the database is unavailable.
@@ -153,9 +186,7 @@ export async function checkRateLimit(
   const newResetAt = new Date(now.getTime() + config.windowSeconds * 1000);
 
   try {
-    const rows = await prisma.$queryRaw<
-      Array<{ count: number; resetAt: Date }>
-    >`
+    const returned = await prisma.$queryRaw`
       INSERT INTO "RateLimitCounter" ("id", "count", "resetAt")
       VALUES (${storeKey}, 1, ${newResetAt})
       ON CONFLICT ("id") DO UPDATE SET
@@ -170,11 +201,12 @@ export async function checkRateLimit(
       RETURNING "count", "resetAt"
     `;
 
+    const rows = decodeRawRows(returned, RATE_LIMIT_UPSERT_ROW, "rate-limit upsert");
     const row = rows[0];
     if (!row) {
       throw new Error("Rate limit upsert returned no row");
     }
-    const count = Number(row.count);
+    const count = row.count;
     const resetAt = row.resetAt.getTime();
     scheduleSharedCleanup();
 

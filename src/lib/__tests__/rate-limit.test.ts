@@ -228,6 +228,40 @@ describe("shared rate-limit store (#1039)", () => {
     expect(r2.success).toBe(true);
     expect(r3.success).toBe(false);
   });
+
+  // #2289. The upsert's result is read, so a renamed or retyped column used to
+  // arrive as `undefined`: `Number(undefined)` is `NaN`, `NaN > limit` is false,
+  // and the limiter waved EVERY request through with no error to catch. The
+  // decoder turns that into a throw, which the existing catch treats as the
+  // store failing — degraded per-process limiting, which still limits.
+  //
+  // `resetAt` is deliberately left CORRECT and only `count` renamed: that is the
+  // sharp version of the bug. Get `resetAt` wrong too and the old code threw a
+  // TypeError on `undefined.getTime()` anyway, which would make this test pass
+  // with the decoder removed. With only `count` missing, the undecoded path
+  // returns success for all four requests.
+  it("does not stop limiting when the shared store returns the wrong column shape", async () => {
+    const resetAt = new Date(Date.now() + 60_000);
+    mockQueryRaw.mockResolvedValue([{ counter: 1, resetAt }]);
+
+    const results = [];
+    for (let i = 0; i < 4; i += 1) {
+      results.push(await checkSharedRateLimit(config, "renamed-column-ip"));
+    }
+
+    expect(results.map((r) => r.success)).toEqual([true, true, false, false]);
+  });
+
+  it("does not treat a bigint counter as unlimited", async () => {
+    const resetAt = new Date(Date.now() + 60_000);
+    // int8 / COUNT(*) come back as BigInt; `NaN`-free arithmetic must survive it.
+    mockQueryRaw.mockResolvedValueOnce([{ count: 3n, resetAt }]);
+
+    const result = await checkSharedRateLimit(config, "bigint-ip");
+
+    expect(result.success).toBe(false);
+    expect(result.remaining).toBe(0);
+  });
 });
 
 describe("degraded-mode policy for auth-sensitive limiters (#1142)", () => {
