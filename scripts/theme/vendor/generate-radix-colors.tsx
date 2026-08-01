@@ -8,10 +8,26 @@
  *
  * This is the unmodified upstream custom-palette generator, retained verbatim
  * for provenance. The production copy that actually ships is the hand-transpiled
- * TS→ESM port at src/lib/theme/generate-radix-colors.ts, which must stay
- * behaviourally identical to this file. The golden-value tests
- * (src/lib/theme/__tests__/generator-goldens.test.ts) pin the numeric output so
- * any drift between the two is a failing test, not a silent ship.
+ * TS→ESM port at src/lib/theme/generate-radix-colors.ts. That port tracks this
+ * file's behaviour with ONE deliberate, documented divergence:
+ *
+ *   - `getScaleFromColor`'s chroma rescale. Upstream divides by the closest
+ *     reference ramp's chroma, which is exactly 0 whenever Radix's perfectly
+ *     achromatic `gray` ramp is the closest one. That worked only because
+ *     colorjs.io 0.5.x left ~1e-16 of float noise there instead of a true zero;
+ *     under >= 0.6 it is a real 0/0 and every step serialises to the literal
+ *     string "#NaNNaNNaN" (#2303). The port takes the `sourceC * 1.5` cap
+ *     directly — the limit 0.5.x's noise landed on — so the behaviour is
+ *     preserved and the divide disappears. Running THIS file under colorjs
+ *     >= 0.6 will produce "#NaNNaNNaN" for any low-chroma seed; that is
+ *     expected, and it is why the port diverges.
+ *
+ * The golden-value tests (src/lib/theme/__tests__/generator-goldens.test.ts) pin
+ * the numeric output for the SHIPPING DEFAULT seeds, which are chromatic enough
+ * never to reach that branch — so they catch unintended drift on the default
+ * palette but say nothing about the divergence above. The divergence itself is
+ * pinned by src/lib/theme/__tests__/colorjs-coords.test.ts. Any OTHER difference
+ * between this file and the port is a bug in the port.
  */
 /* eslint-disable -- verbatim vendored upstream source; not linted, not shipped (the
    ported src/lib/theme/generate-radix-colors.ts is what compiles into the app).
