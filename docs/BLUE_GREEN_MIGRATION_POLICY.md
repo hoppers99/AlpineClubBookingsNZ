@@ -39,7 +39,9 @@ Add the ledger row (and, for destructive changes, follow the expand/contract seq
 
 Some migrations do not only change the *shape* of the database — they rewrite data a club has typed in. `Migration drift check` applies every migration to a real PostgreSQL, but the tables are **empty**, so a backfill, repair, or value transform matches no rows: the statement is proven to parse and proven to do nothing. Tests that string-match the SQL, or re-run its patterns in JavaScript, prove the patterns are what the author intended; JavaScript and PostgreSQL regular expressions differ on greediness, on newlines inside character classes, and on backslashes inside brackets, so they cannot prove PostgreSQL executes them the same way. Every defect the three review rounds found in #2269's migration was semantic, and none was reachable from empty tables (issue #2418).
 
-**The rule: a data-rewriting migration ships a verification fixture in the same pull request.** `scripts/check-data-migration-verification.sh` enforces it, and runs both in `migration-drift` (a required check) and in the `Data migration verification` job that executes the fixtures. It is read-only and needs no database.
+**The rule: a data-rewriting migration ships a verification fixture in the same pull request.** `scripts/check-data-migration-verification.sh` — the read-only coverage gate, no database needed — enforces that a fixture *exists and is registered*. It runs as a step in `migration-drift`, a **required** status check, so a migration that rewrites club data without a fixture cannot merge. It runs a second time inside the `Data migration verification` job (fail-fast before the database comes up).
+
+The `Data migration verification` job is the half that *executes* the fixtures against a real PostgreSQL and runs the mutants. **It is not yet a required PR status check** — adding it to branch protection is an owner action (see "Enforcement" below). Until then a *failing* fixture (a wrong post-state, an undetected mutant) does not block a PR from merging on its own — but it **does** block the release: `publish-ghcr-images`, which pushes the image an operator deploys, lists the job in `needs:`, so a red fixture stops the image (#2418).
 
 A migration counts as **data-rewriting** when any top-level statement:
 
@@ -70,7 +72,15 @@ DATA_MIGRATION_VERIFICATION_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:
   npx vitest run src/lib/__tests__/data-migration-verification.realdb.test.ts
 ```
 
-Without that variable the real-database checks do not run, but the suite still fails if CI stops running them — and it fails outright inside its own CI job when the variable is missing, so the coverage can never quietly disappear.
+Without that variable the real-database checks do not run, but the suite still fails if CI stops running them — and it fails outright inside its own CI job when the variable is missing, so the arrangement that runs the fixtures cannot quietly come undone.
+
+### Enforcement
+
+Two things are enforced today, and one is a pending owner action:
+
+- **Coverage** (a fixture exists and is registered) rides on the **required** `Migration drift check`, so no-fixture-no-merge bites immediately, before this or any executing job is added to branch protection.
+- **A failing fixture blocks the release**: `publish-ghcr-images` depends on the `Data migration verification` job, so a red fixture stops the image an operator would deploy.
+- **Owner action — make the executing job a required PR check.** The `Data migration verification` job is not yet in the required-status-check list on `main` (`verify`, `Migration drift check`, `Playwright E2E`, `E2E multi-lodge`, `Static analysis gate` — see `AGENTS.md`). Until an owner adds it, a *failing* fixture does not block a PR merge on its own (branch protection also has `enforce_admins` off). Add `Data migration verification` to branch protection and to that list to close the gap.
 
 **Limitation.** The migration under test is applied inside a transaction so each case can be rolled back, which means a migration that adds an enum value *and uses it* cannot be verified this way (PostgreSQL refuses `ALTER TYPE ... ADD VALUE` followed by use in one transaction block). Split such a change into two migrations, which the expand/contract sequence above wants anyway.
 
