@@ -26,10 +26,12 @@ export const MEMBER_BOOK_NOW_LABEL = "Book Now";
  * The label a SIGNED-OUT visitor sees (#2430, owner decision 1 Aug 2026).
  *
  * "Book Now" on a public page reads as walk-in commercial accommodation, which
- * this club is not: an anonymous visitor pressing it is sent to the MEMBER
- * login (`buildBookingLoginPath`), never to a bookable page. Naming the
- * audience up front is the whole point — the button says who it is for before
- * it is pressed rather than after.
+ * this club is not: there is no public booking to press. Whatever the button
+ * points at, an anonymous visitor cannot book from it — the BOOKING_FLOW target
+ * sends them to the MEMBER login (`buildBookingLoginPath`), and a PAGE target
+ * sends them to a content page that is, at best, an explanation of how member
+ * booking works. Naming the audience up front is the whole point: the button
+ * says who it is for before it is pressed rather than after.
  *
  * ONE label across desktop and mobile, deliberately. The longer
  * "Members: book a stay" fits the full-width mobile drawer button but not the

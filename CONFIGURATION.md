@@ -600,10 +600,12 @@ Admin > Page Content panel (`PublicContentSettings`):
   booking flow, so the button is never dead. The authenticated dashboard's own
   Book Now action is unaffected — a signed-in member can always book.
 - **The label follows the visitor, not the target** (#2430). A signed-out
-  visitor sees **Member booking**, because the button sends them to the member
-  login rather than to a bookable page; a signed-in member sees **Book Now**.
-  Both surfaces (desktop header and mobile drawer) take the label from
-  `getBookNowConfig`, so they cannot disagree. Not configurable.
+  visitor sees **Member booking**, because booking here is for members: with the
+  booking-flow target the button sends them to the member login, and with a page
+  target it sends them to a content page — neither is a booking they can make.
+  A signed-in member sees **Book Now**. Both surfaces (desktop header and mobile
+  drawer) take the label from `getBookNowConfig`, so they cannot disagree. The
+  label is not configurable, and it does not change when you change the target.
 
 ## Website Site Content
 

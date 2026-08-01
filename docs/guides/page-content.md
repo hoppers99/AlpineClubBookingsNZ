@@ -76,7 +76,7 @@ button. Page Content is edited under the **content** permission area.
 | A fee token shows nothing on the public page | Its family isn't enabled under Public fee and policy blocks | Tick the family and **Save visibility**; also mark the membership types public |
 | The Book Now button goes to the booking flow, not my page | The target page is unpublished or was removed | Publish the target page, or re-select it |
 | The button vanished after an upgrade | This panel had never been saved, so the button followed the shipped default, which is now off | Tick **Show the Book Now button** and **Save visibility** |
-| Visitors see "Member booking", not "Book Now" | Expected: a signed-out visitor is sent to the member login, so the button names its audience. Signed-in members still see **Book Now** | Nothing to do — it is not configurable |
+| Visitors see "Member booking", not "Book Now" | Expected: the label follows the visitor, not the target. Nobody who is signed out can book from that button — booking flow means the member login — so it names its audience, including when you have pointed it at a page of your own. Signed-in members still see **Book Now** | Nothing to do — it is not configurable |
 | I can't unpublish a page | It's a **System** page | System pages can't be unpublished by design |
 | Save is rejected | A field exceeds `PAGE_CONTENT_LIMITS`, or the slug is invalid/reserved | Fix the flagged field; keep slugs valid and non-reserved |
 | Everything is read-only | Your admin role can view but not edit under the content area | Ask a full admin for content edit access |

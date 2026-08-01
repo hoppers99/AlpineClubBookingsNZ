@@ -40,9 +40,10 @@ export async function WebsiteHeader({
   ];
   // Configurable public Book Now (E3 #1929): hidden, custom page, or the default
   // booking flow (fail-open). The authenticated dashboard CTA is out of scope.
-  // #2430: the LABEL is resolved there too — a signed-out visitor is sent to the
-  // member login, so the button names its audience rather than promising a
-  // walk-in booking.
+  // #2430: the LABEL is resolved there too, from the SESSION rather than the
+  // target — a signed-out visitor cannot book from this button whichever target
+  // is configured, so it names its audience rather than promising a walk-in
+  // booking.
   const bookingsHref = bookNow.href;
   const showBookNow = bookNow.show;
   const bookNowLabel = bookNow.label;

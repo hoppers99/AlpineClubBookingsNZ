@@ -9,9 +9,10 @@ All notable public reference-release changes should be recorded here.
   commercial lodge taking bookings off the street.
 
   **The header button names its audience.** A visitor who is not signed in now
-  sees **Member booking** where it used to say **Book Now**. Pressing it always
-  did the same thing — send them to the member login — so the old wording
-  promised a booking the button could not give. A signed-in member still sees
+  sees **Member booking** where it used to say **Book Now**. Pressing it never
+  did give them a booking — the booking flow opens the member login, and a
+  club-chosen content page is only ever a page to read — so the old wording
+  promised something the button could not deliver. A signed-in member still sees
   **Book Now**, because for them it is one click to the booking page. Desktop
   header and mobile drawer take the same label from one place, so they cannot
   drift apart, and the label follows the *visitor*, not the destination: an

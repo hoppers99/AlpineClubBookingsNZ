@@ -105,9 +105,12 @@ change of the shipped default.
 
 **The button is also renamed for signed-out visitors.** Where it is shown, a
 visitor who is not signed in now sees **Member booking** instead of **Book Now**,
-because pressing it sends them to the member login rather than to a bookable
-page. A signed-in member still sees **Book Now**. Nothing is configurable here
-and no setting changed.
+because booking at this club is for members and nothing behind that button lets
+a visitor make one: with the booking-flow target it opens the member login, and
+with a content-page target it opens that page. A signed-in member still sees
+**Book Now**. The rename follows the visitor, not the target, so it applies even
+if you have pointed the button at a page of your own. Nothing is configurable
+here and no setting changed.
 
 ### The bumped-booking email now points non-members somewhere they can go (#2430)
 

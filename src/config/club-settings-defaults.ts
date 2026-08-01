@@ -135,10 +135,10 @@ export const DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS = {
  * "Book Now" button: a fresh install advertises no public booking CTA until an
  * admin ticks it on (`getBookNowConfig`, `src/lib/book-now-config.ts`). Absence
  * is the ONLY thing this constant governs — a club that has saved its choice
- * keeps it, saved-true and saved-false alike. Only the portable policy fields are declared
- * here — `bookNowTarget`/`bookNowPageId` are instance-local (they reference a
- * specific install's `PageContent` id) and never travel, so they have no
- * effective-default to carry. These match the schema column defaults, which is
+ * keeps it, saved-true and saved-false alike. Only the portable policy fields
+ * are declared here — `bookNowTarget`/`bookNowPageId` are instance-local (they
+ * reference a specific install's `PageContent` id) and never travel, so they
+ * have no effective-default to carry. These match the schema column defaults, which is
  * asserted against `prisma/schema.prisma` by a config-transfer test.
  */
 export const DEFAULT_PUBLIC_CONTENT_SETTINGS = {
