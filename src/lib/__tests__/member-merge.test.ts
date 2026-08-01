@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   MEMBER_MERGE_RELATION_SPECS,
   MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS,
+  MEMBER_SELF_RELATION_COLUMNS,
+  describeFamilyLinkDrift,
   diffFieldMergePatches,
+  diffSelfRelationLinkState,
   maxFamilyRole,
   memberMergeConfirmationPhrase,
   mergeMemberFields,
@@ -373,6 +376,172 @@ describe("patch derivation from a snapshot versus a fresh read (#2243)", () => {
     expect(diffFieldMergePatches(fromSnapshot, fromFresh)).toEqual(
       Object.keys(populated).sort(),
     );
+  });
+});
+
+describe("family-link drift under the lock (#2437, diffSelfRelationLinkState)", () => {
+  // The four self-relation columns are written by admin paths that take no
+  // member-lifecycle lock, so a family link can land mid-merge. #2445 keeps the
+  // master's own row out of the moves (no self-parent); this differ closes the
+  // remaining arm — the SILENT LOSS of a concurrently-saved link, which the
+  // loser's hard-delete would otherwise null via onDelete: SetNull with no
+  // error and no audit. Expected values mirror the merge's OWN rewrites (step 1
+  // nulls a master self-cycle; step 3 re-points non-master rows), so an
+  // uncontended merge reads clean and every outside interleaving is drift.
+  const M = "master-id";
+  const L = "loser-id";
+
+  function links(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      parentMemberId: null,
+      secondaryParentId: null,
+      inheritEmailFromId: null,
+      detailsConfirmedByMemberId: null,
+      ...overrides,
+    };
+  }
+
+  function drift(
+    overrides: Partial<Parameters<typeof diffSelfRelationLinkState>[0]> = {},
+  ) {
+    return diffSelfRelationLinkState({
+      masterId: M,
+      loserId: L,
+      masterSnapshot: links(),
+      loserSnapshot: links(),
+      masterAtWrite: links(),
+      loserAtWrite: links(),
+      inboundAtWrite: [],
+      ...overrides,
+    });
+  }
+
+  it("covers exactly the four self-relation columns, derived from the spec table", () => {
+    expect([...MEMBER_SELF_RELATION_COLUMNS]).toEqual([
+      "parentMemberId",
+      "secondaryParentId",
+      "inheritEmailFromId",
+      "detailsConfirmedByMemberId",
+    ]);
+  });
+
+  it("reports nothing when the under-lock state matches the snapshot", () => {
+    expect(drift()).toEqual([]);
+    // Links to uninvolved third members are carried through unchanged.
+    expect(
+      drift({
+        masterSnapshot: links({ parentMemberId: "p-1" }),
+        masterAtWrite: links({ parentMemberId: "p-1" }),
+        loserSnapshot: links({ inheritEmailFromId: "p-2" }),
+        loserAtWrite: links({ inheritEmailFromId: "p-2" }),
+      }),
+    ).toEqual([]);
+  });
+
+  it("treats an absent column like a null one (narrow selects, mock rows)", () => {
+    expect(
+      drift({
+        masterSnapshot: {},
+        loserSnapshot: {},
+        masterAtWrite: links(),
+        loserAtWrite: links(),
+      }),
+    ).toEqual([]);
+  });
+
+  it.each([...MEMBER_SELF_RELATION_COLUMNS])(
+    "flags the silent-loss shape on %s: the master gains a link to the duplicate mid-merge",
+    (column) => {
+      // applyMoves rightly leaves the master's own row alone (#2445), so
+      // without this the hard-delete's SET NULL would quietly erase the link.
+      expect(drift({ masterAtWrite: links({ [column]: L }) })).toEqual([
+        { column, where: "master" },
+      ]);
+    },
+  );
+
+  it("recognises step 1's own nulling as expected, not as drift", () => {
+    // A snapshot self-cycle (master -> loser) is nulled by
+    // nullSelfRelationCycles; the fresh read returning null is the merge's own
+    // write and must not refuse the merge.
+    expect(
+      drift({
+        masterSnapshot: links({ inheritEmailFromId: L }),
+        masterAtWrite: links({ inheritEmailFromId: null }),
+      }),
+    ).toEqual([]);
+    // The same snapshot with the pointer STILL set at write time means a
+    // writer re-set it after step 1 ran — that IS drift.
+    expect(
+      drift({
+        masterSnapshot: links({ inheritEmailFromId: L }),
+        masterAtWrite: links({ inheritEmailFromId: L }),
+      }),
+    ).toEqual([{ column: "inheritEmailFromId", where: "master" }]);
+  });
+
+  it("refuses a directly-written self-link, so a committed merge can never carry one", () => {
+    // A writer sets master.parentMemberId = the master itself mid-merge.
+    // Nothing in the merge writes that value, so it can only be drift — and
+    // refusing it is what makes the no-self-link invariant hold at commit time
+    // for ANY interleaving: the moves exclude the master's row (#2445), the
+    // re-pointed inbound rows can only gain the MASTER's id (never their own),
+    // and every divergence on the two locked rows lands here.
+    expect(drift({ masterAtWrite: links({ parentMemberId: M }) })).toEqual([
+      { column: "parentMemberId", where: "master" },
+    ]);
+  });
+
+  it("flags a link moved between two third members (what was previewed is what is applied)", () => {
+    expect(
+      drift({
+        masterSnapshot: links({ secondaryParentId: "p-1" }),
+        masterAtWrite: links({ secondaryParentId: "p-2" }),
+      }),
+    ).toEqual([{ column: "secondaryParentId", where: "master" }]);
+  });
+
+  it("covers the duplicate's own outgoing links, including step 3's degenerate re-point", () => {
+    // A link saved ON the duplicate mid-merge would otherwise be discarded
+    // with the row, unseen by the operator who previewed without it.
+    expect(
+      drift({ loserAtWrite: links({ detailsConfirmedByMemberId: "p-9" }) }),
+    ).toEqual([{ column: "detailsConfirmedByMemberId", where: "duplicate" }]);
+    // A (pre-existing, corrupt) self-pointing duplicate row is re-pointed to
+    // the master by applyMoves — the merge's own write, not drift.
+    expect(
+      drift({
+        loserSnapshot: links({ parentMemberId: L }),
+        loserAtWrite: links({ parentMemberId: M }),
+      }),
+    ).toEqual([]);
+  });
+
+  it.each([...MEMBER_SELF_RELATION_COLUMNS])(
+    "flags an inbound %s still pointing at the duplicate after the moves",
+    (column) => {
+      expect(
+        drift({ inboundAtWrite: [links({ id: "third-1", [column]: L })] }),
+      ).toEqual([{ column, where: "inbound" }]);
+    },
+  );
+
+  it("ignores inbound rows that reference someone else", () => {
+    expect(
+      drift({ inboundAtWrite: [links({ id: "third-1", parentMemberId: "p-1" })] }),
+    ).toEqual([]);
+  });
+
+  it("names each drift for the 409 in plain English", () => {
+    expect(
+      describeFamilyLinkDrift({ column: "parentMemberId", where: "master" }),
+    ).toBe("parentMemberId (on the surviving member)");
+    expect(
+      describeFamilyLinkDrift({ column: "inheritEmailFromId", where: "duplicate" }),
+    ).toBe("inheritEmailFromId (on the duplicate)");
+    expect(
+      describeFamilyLinkDrift({ column: "secondaryParentId", where: "inbound" }),
+    ).toBe("secondaryParentId (another member now links to the duplicate)");
   });
 });
 
