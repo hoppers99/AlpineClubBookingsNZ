@@ -42,33 +42,6 @@ export interface ResolvedPromo {
     | null;
 }
 
-type LockedPromoRow = {
-  id: string;
-  active: boolean;
-  validFrom: Date | null;
-  validUntil: Date | null;
-  bookingStartFrom: Date | null;
-  bookingStartUntil: Date | null;
-  maxRedemptionsTotal: number | null;
-  maxUniqueMembersTotal: number | null;
-  maxUsesPerMember: number | null;
-  currentRedemptions: number;
-  membersOnly: boolean;
-  memberGuestsOnly: boolean;
-  type: PromoCodeType;
-  valueCents: number | null;
-  percentOff: number | null;
-  freeNightsPerIndividual: number | null;
-  lifetimeFreeNightsCap: number | null;
-  fixedNightlyPriceCents: number | null;
-  fixedNightlyMode: FixedNightlyMode | null;
-  maxGuestsPerBooking: number | null;
-  maxNightlyValueCents: number | null;
-  code: string;
-  assignedMembersOnlyOwnNights: boolean;
-  internal: boolean;
-};
-
 export function getPromoTargetBookingGuestIds(
   bookingGuests: BookingGuest[],
   selectedGuestIndexes: number[] | undefined
@@ -116,10 +89,59 @@ export async function resolvePromoInTransaction(
     lodgeId,
   } = options;
   const normalizedCode = promoCodeStr.toUpperCase().trim();
-  const lockedRows = await tx.$queryRaw<LockedPromoRow[]>`
-    SELECT * FROM "PromoCode" WHERE "code" = ${normalizedCode} FOR UPDATE
-  `;
-  const promoCode = lockedRows.length > 0 ? lockedRows[0] : null;
+
+  // LOCK RAW, READ TYPED (#2289). The raw statement exists ONLY to take the row
+  // lock, so it selects a constant, returns an affected-row count through
+  // `$executeRaw`, and is never read; the promo itself is then read back through
+  // the Prisma model, under that lock, in the same transaction.
+  //
+  // This used to be `$queryRaw<LockedPromoRow[]>\`SELECT * FROM "PromoCode" …\``,
+  // and that is the single most expensive line this repository has written. The
+  // generic is an unchecked CAST: raw SQL returns the PHYSICAL column names while
+  // the hand-written type declared the Prisma ones, and where a deployment's
+  // columns differed the properties simply arrived `undefined` —
+  // `maxRedemptionsTotal` undefined made `!== null` true and `n > undefined`
+  // false, so the total-redemption cap never fired, and
+  // `freeNightsPerIndividual` undefined made `?? 0` yield zero, so FREE_NIGHTS
+  // promos applied NO discount at booking creation while the quote path (an
+  // ordinary mapped Prisma read) showed the member one. Members were quoted a
+  // discount and charged without it, for months, with nothing logged: the cast
+  // silenced the compiler and the mocked tests returned the same wrong shape the
+  // author believed.
+  //
+  // The model read cannot repeat that. Prisma owns the column mapping, so the
+  // names can never drift from what the schema says, and a genuinely missing
+  // column is a startup/query error rather than a silent `undefined`. The cost
+  // is one extra round trip inside a transaction that already makes many.
+  //
+  // THE ZERO-MATCH GUARD IS LOAD-BEARING, not defensive tidiness. Splitting one
+  // statement into two is only behaviour-identical while the lock actually
+  // matches something. `FOR UPDATE` locks NOTHING when it matches nothing, and
+  // this repository runs at PostgreSQL's default READ COMMITTED deliberately
+  // (`member-merge.ts` documents the reliance), so the `findUnique` below takes
+  // a FRESH statement snapshot and can see a `PromoCode` that was INSERTED — or
+  // whose `code` was renamed to this one — after the lock statement ran. That
+  // row would be read, validated and have its redemption slot consumed with no
+  // lock held on it, so two concurrent bookings could both see
+  // `currentRedemptions = 0` and both redeem a `maxRedemptionsTotal: 1` code:
+  // exactly the check-then-consume race the lock exists to close. `code` is the
+  // only MUTABLE natural key any converted site locks on — every other site
+  // keys on an immutable cuid, or materialises its singleton before locking —
+  // so this is the one place it can happen.
+  //
+  // The old single `SELECT * … FOR UPDATE` could not do this: a row it had not
+  // locked could not appear in its result set, so the same interleaving refused
+  // with "Promo code not found". Reproduce that exactly rather than inventing a
+  // new outcome — no lock, no promo. Re-locking by the now-known id would also
+  // be correct, but it adds a second raw statement and a retry path to buy an
+  // outcome (a promo created DURING this transaction being honoured by it) that
+  // the code never had and nobody has asked for.
+  const lockedRowCount =
+    await tx.$executeRaw`SELECT 1 FROM "PromoCode" WHERE "code" = ${normalizedCode} FOR UPDATE`;
+  const promoCode =
+    lockedRowCount > 0
+      ? await tx.promoCode.findUnique({ where: { code: normalizedCode } })
+      : null;
 
   if (promoCode?.internal && !allowInternal) {
     throw new BookingPromoError("Promo code not found");

@@ -173,6 +173,76 @@ model AttributeFirstThing {
   });
 
   // ---------------------------------------------------------------------
+  // #2437: the `selfRelation` flag routes a Member->Member FK into BOTH
+  // #2445's master-row exclusion / id-bounded sweep and the under-lock
+  // family-link drift re-check. The flag is hand-written on the spec, and
+  // before this test NOTHING failed when it was omitted: the completeness
+  // tests only force a spec to exist, and the frozen four-name lists punish
+  // ADDING the flag (two tests to update) while omission passed every gate —
+  // silently reopening the #2445 corruption arm (an unbounded,
+  // master-inclusive sweep of the new column can make the master its own
+  // guardian/parent) and skipping the drift re-check entirely. The expected
+  // set is derived from the schema itself, so the omission now fails CI.
+  // ---------------------------------------------------------------------
+
+  /** Singular Member-typed FK-owning relations declared ON model Member. */
+  function singularMemberSelfFkKeys(
+    typeTokens: ReadonlyMap<string, string>,
+    ownerKeys: ReadonlySet<string>,
+  ): string[] {
+    return [...typeTokens.keys()]
+      .filter(
+        (key) =>
+          key.startsWith("Member.") &&
+          typeTokens.get(key) !== "Member[]" &&
+          ownerKeys.has(key),
+      )
+      .sort();
+  }
+
+  it("flags every singular Member->Member FK-owning relation `selfRelation`, and only those, all bucket move (#2437)", () => {
+    const expectedKeys = singularMemberSelfFkKeys(
+      memberFieldTypeTokens(schemaText),
+      new Set(parseMemberRelationOwnerKeys(schemaText)),
+    );
+    // Sanity: the schema derivation really sees today's four self-FKs.
+    expect(expectedKeys.length).toBeGreaterThanOrEqual(4);
+
+    const flagged = MEMBER_MERGE_RELATION_SPECS.filter((s) => s.selfRelation);
+    // Omitting the flag on a Member self-FK fails here...
+    expect(flagged.map((s) => s.key).sort()).toEqual(expectedKeys);
+    // ...as does flagging anything that is not a Member self-FK, or classifying
+    // a Member-model spec that is somehow not one.
+    expect(
+      MEMBER_MERGE_RELATION_SPECS.filter((s) => s.model === "Member")
+        .map((s) => s.key)
+        .sort(),
+    ).toEqual(expectedKeys);
+    // The drift differ's expected-value model and the id-bounded sweep both
+    // assume the `move` transform for every flagged column.
+    for (const s of flagged) {
+      expect(s.bucket, `${s.key} must be bucket "move"`).toBe("move");
+    }
+  });
+
+  it("FAILS when a fifth Member self-FK arrives without the flag (fixture proof)", () => {
+    // Simulate the omission: the schema gains Member.guardian but the spec
+    // table's flagged set is unchanged. The equality above must reject it.
+    const ownerKeys = new Set(parseMemberRelationOwnerKeys(schemaText));
+    ownerKeys.add("Member.guardian");
+    const typeTokens = new Map(memberFieldTypeTokens(schemaText));
+    typeTokens.set("Member.guardian", "Member?");
+
+    const expectedKeys = singularMemberSelfFkKeys(typeTokens, ownerKeys);
+    const flaggedKeys = MEMBER_MERGE_RELATION_SPECS.filter((s) => s.selfRelation)
+      .map((s) => s.key)
+      .sort();
+
+    expect(expectedKeys).toContain("Member.guardian");
+    expect(flaggedKeys).not.toEqual(expectedKeys);
+  });
+
+  // ---------------------------------------------------------------------
   // #2243: FK-less member-id columns. The relation walk above is exact but
   // structurally blind to a bare `String` column holding a member id, and the
   // documented snapshot list used to be hand-kept and self-described as

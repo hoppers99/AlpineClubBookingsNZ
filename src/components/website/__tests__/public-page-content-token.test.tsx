@@ -165,4 +165,64 @@ describe("public PageContent token rendering", () => {
     expect(booking).toContain("No public information is currently available.");
     expect(cancellation).toContain("No public information is currently available.");
   });
+
+  it("renders a minimum-stay rule cleanly when no exception-capacity sentence is published", () => {
+    // The #2363 shipped state: the loader supplies `null` because no member can
+    // request an exception yet. The row must read as a complete sentence, with
+    // no stray punctuation where the copy would go.
+    const html = renderToStaticMarkup(
+      <BookingPolicyToken
+        policy={{
+          lodge: null,
+          hold: null,
+          periods: [],
+          minimumStays: [{
+            name: "Winter weekends",
+            dateRange: "1 Jun 2026 to 30 Sep 2026",
+            minimumNights: 2,
+            triggerDays: "Saturday",
+            capacityHandling: null,
+          }],
+          groupDiscount: null,
+        }}
+      />,
+    );
+
+    expect(html).toContain("applies to Saturday");
+    expect(html).not.toContain("exception");
+    expect(html).not.toContain("Saturday.");
+  });
+
+  it("renders the exception-capacity sentence when one IS published (#2365)", () => {
+    // The renderer half of the plumbing #2365 re-enables: flip the loader flag
+    // and both branches of the copy come through unchanged.
+    const html = renderToStaticMarkup(
+      <BookingPolicyToken
+        policy={{
+          lodge: null,
+          hold: null,
+          periods: [],
+          minimumStays: [{
+            name: "Winter weekends",
+            dateRange: "1 Jun 2026 to 30 Sep 2026",
+            minimumNights: 2,
+            triggerDays: "Saturday",
+            capacityHandling:
+              "An exception request does not reserve capacity until the club approves it.",
+          }, {
+            name: "Summer holidays",
+            dateRange: "1 Dec 2026 to 31 Jan 2027",
+            minimumNights: 3,
+            triggerDays: "Friday",
+            capacityHandling:
+              "If an exception is requested, the requested capacity is held while the club reviews it.",
+          }],
+          groupDiscount: null,
+        }}
+      />,
+    );
+
+    expect(html).toContain("An exception request does not reserve capacity");
+    expect(html).toContain("requested capacity is held while the club reviews it");
+  });
 });

@@ -1385,11 +1385,13 @@ describe("bed type + bunk pairing (#1675)", () => {
     const findUnique = vi
       .fn()
       .mockResolvedValue(overrides.existingBed ?? null);
-    // The room-row lock is a tagged-template $queryRaw; a plain mock suffices.
-    const queryRaw = vi.fn().mockResolvedValue([]);
+    // The room-row lock is a tagged-template $executeRaw (#2289: it exists
+    // only for the lock, so it returns an affected-row count and is never
+    // read); a plain mock suffices.
+    const executeRaw = vi.fn().mockResolvedValue(1);
     return {
       db: {
-        $queryRaw: queryRaw,
+        $executeRaw: executeRaw,
         lodgeBed: { create, update, findMany, findUnique },
         bedAllocation: {
           findMany: vi.fn().mockResolvedValue([]),
@@ -1403,13 +1405,13 @@ describe("bed type + bunk pairing (#1675)", () => {
       update,
       findMany,
       findUnique,
-      queryRaw,
+      executeRaw,
     };
   }
 
   it("creates each bed type; ungrouped beds skip the room lock", async () => {
     for (const bedType of ["SINGLE", "DOUBLE", "BUNK_TOP", "BUNK_BOTTOM"] as const) {
-      const { db, create, findMany, queryRaw } = buildBunkDb();
+      const { db, create, findMany, executeRaw } = buildBunkDb();
       const bed = await createBedAllocationBed({
         roomId: "room-1",
         name: "Bed",
@@ -1419,7 +1421,7 @@ describe("bed type + bunk pairing (#1675)", () => {
       expect(bed).toMatchObject({ bedType, bunkGroup: null });
       // No bunkGroup => no membership check and no serialising lock.
       expect(findMany).not.toHaveBeenCalled();
-      expect(queryRaw).not.toHaveBeenCalled();
+      expect(executeRaw).not.toHaveBeenCalled();
       expect(create).toHaveBeenCalledWith({
         data: expect.objectContaining({ bedType, bunkGroup: null }),
       });
@@ -1427,7 +1429,7 @@ describe("bed type + bunk pairing (#1675)", () => {
   });
 
   it("pairs a bunk-bottom into a group that already holds a bunk-top", async () => {
-    const { db, create, findMany, queryRaw } = buildBunkDb({
+    const { db, create, findMany, executeRaw } = buildBunkDb({
       groupMembers: [{ id: "top", bedType: "BUNK_TOP" }],
     });
 
@@ -1440,7 +1442,7 @@ describe("bed type + bunk pairing (#1675)", () => {
     });
 
     // Serialised under the room lock, scoped to this room + group.
-    expect(queryRaw).toHaveBeenCalledTimes(1);
+    expect(executeRaw).toHaveBeenCalledTimes(1);
     expect(findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
@@ -1769,7 +1771,7 @@ describe("bed type + bunk pairing (#1675)", () => {
     // still takes the room lock and runs the membership check against "Bunk A".
     // If the existing.bunkGroup fallback regressed to null, nextBunkGroup would
     // be null and neither the lock nor findMany would run, failing this test.
-    const { db, update, findMany, queryRaw } = buildBunkDb({
+    const { db, update, findMany, executeRaw } = buildBunkDb({
       existingBed: { roomId: "room-1", bedType: "BUNK_TOP", bunkGroup: "Bunk A" },
       // The bed being edited is excluded from the membership query, so an empty
       // result means "no other bed in this group yet".
@@ -1782,7 +1784,7 @@ describe("bed type + bunk pairing (#1675)", () => {
       db: db as never,
     });
 
-    expect(queryRaw).toHaveBeenCalledTimes(1);
+    expect(executeRaw).toHaveBeenCalledTimes(1);
     expect(findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
@@ -1850,7 +1852,7 @@ describe("bunk write transaction self-wrap (#1675)", () => {
 
   it("self-wraps a grouped create and runs the lock, membership check, and write on the tx client", async () => {
     const tx = {
-      $queryRaw: vi.fn().mockResolvedValue([]),
+      $executeRaw: vi.fn().mockResolvedValue(1),
       lodgeBed: {
         findMany: vi.fn().mockResolvedValue([{ id: "top", bedType: "BUNK_TOP" }]),
         create: vi
@@ -1870,7 +1872,7 @@ describe("bunk write transaction self-wrap (#1675)", () => {
 
       expect(txnMock).toHaveBeenCalledTimes(1);
       // Lock, membership check, and write all ran on the tx client.
-      expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
+      expect(tx.$executeRaw).toHaveBeenCalledTimes(1);
       expect(tx.lodgeBed.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: expect.objectContaining({
@@ -1892,7 +1894,7 @@ describe("bunk write transaction self-wrap (#1675)", () => {
 
   it("self-wraps a bunk-affecting update and runs the lock, membership check, and write on the tx client", async () => {
     const tx = {
-      $queryRaw: vi.fn().mockResolvedValue([]),
+      $executeRaw: vi.fn().mockResolvedValue(1),
       lodgeBed: {
         findUnique: vi
           .fn()
@@ -1918,7 +1920,7 @@ describe("bunk write transaction self-wrap (#1675)", () => {
       });
 
       expect(txnMock).toHaveBeenCalledTimes(1);
-      expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
+      expect(tx.$executeRaw).toHaveBeenCalledTimes(1);
       expect(tx.lodgeBed.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: expect.objectContaining({

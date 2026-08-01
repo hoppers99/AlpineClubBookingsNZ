@@ -97,6 +97,19 @@ vi.mock("@/lib/pricing", () => ({
   calculateBookingPrice: mockCalculateBookingPrice,
 }));
 
+// #2363: the save path now consults the minimum-stay policy set for non-admin
+// actors. This suite is about money and mocks `@/lib/prisma` and `@/lib/pricing`
+// down to the members it needs, so the real evaluator cannot run here (it reads
+// `minimumStayPolicy` and `getStayNights`). A compliant answer keeps every case
+// below on the subject it was written for; the enforcement itself is pinned in
+// booking-batch-modification-minimum-stay.test.ts and modify-minimum-stay.test.ts.
+vi.mock("@/lib/booking-policies", () => ({
+  validateMinimumStay: vi
+    .fn()
+    .mockResolvedValue({ valid: true, violations: [] }),
+  formatViolationsDetail: vi.fn(() => ""),
+}));
+
 vi.mock("@/lib/change-fee", () => ({
   calculateChangeFee: vi.fn().mockReturnValue({ feeCents: 0 }),
 }));
@@ -325,7 +338,8 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
     $executeRaw: vi.fn().mockResolvedValue(undefined),
     $executeRawUnsafe: vi.fn().mockResolvedValue(undefined),
     // #2299 — the promo path row-locks each PromoCode it may charge or refund
-    // with SELECT "id" ... FOR UPDATE before reading or writing any cap.
+    // before reading or writing any cap. Since #2289 that lock is
+    // `$executeRaw`SELECT 1 … FOR UPDATE``: a constant, never a raw read.
     $queryRaw: vi.fn().mockResolvedValue([]),
     lodge: {
       findFirst: vi.fn().mockResolvedValue({ id: "lodge-1" }),

@@ -213,7 +213,7 @@ describe("config-transfer age-tier files-first tolerance (#2200)", () => {
     const { tx, spy } = txStub([]);
     spy.findMany.mockClear();
     const result = await ageTierImporter.apply(applyCtx(new Map(), tx));
-    expect(result).toEqual({ created: 0, updated: 0, unchanged: 0, skipped: 0 });
+    expect(result).toEqual({ created: 0, updated: 0, deleted: 0, unchanged: 0, skipped: 0 });
     expect(spy.findMany).not.toHaveBeenCalled();
   });
 });

@@ -46,8 +46,17 @@ vi.mock("@/lib/prisma", () => ({
   },
 }));
 
+// This suite is about SCOPE building — which records a panel gathers — so the
+// URL builder stays a recognisable stub. The organisation short code #2314
+// applies to these same links is pinned against the real builders in
+// `xero-server-deep-links.test.ts`; here it is stubbed out of the way.
 vi.mock("@/lib/xero-links", () => ({
   buildXeroObjectUrl: (objectType: string, objectId: string) => `https://xero.test/${objectType}/${objectId}`,
+  applyXeroOrgShortCode: (url: string | null) => url,
+}));
+
+vi.mock("@/lib/xero-link-short-code", () => ({
+  getXeroOrgShortCode: async () => null,
 }));
 
 vi.mock("@/lib/xero-operation-retry", () => ({

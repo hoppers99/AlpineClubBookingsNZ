@@ -14,9 +14,28 @@ import { getXeroConnectedOrganisation } from "@/lib/xero-organisation";
  * Retry-After. Without it a null name is ambiguous ("Xero has no name for you"
  * vs "we never got to ask"), and the setup wizard hung on
  * "Confirming the organisation name…" indefinitely after one transient failure.
- * Admin-only disclosure, like the lock-date guard's `reason`; this route is
- * already behind `requireAdmin` and the finance area. Callers that only want
- * the values (the deep-link short code, the lockout panel) ignore the field.
+ * Admin-only disclosure, like the lock-date guard's `reason`. Callers that only
+ * want the values (the deep-link short code, the lockout panel) ignore the
+ * field.
+ *
+ * **Finance-admin-only** (#2314, owner decision 2 Aug 2026). Only an admin
+ * holding the finance area may read this route, matching the audience of the
+ * Xero deep links the short code feeds. The alternative considered — widening it
+ * to any admin who can view settings — was declined: it grows the surface for no
+ * current feature need, and an admin who cannot read this route still sees every
+ * deep link, only unqualified (they degrade to the live generic `go.xero.com`
+ * form), so nothing is hidden from anyone.
+ *
+ * The requirement is stated EXPLICITLY rather than left to inference, which is a
+ * change of MECHANISM, not of who gets in. `requireAdmin` otherwise derives the
+ * area from the served path (`/api/admin/xero` → finance) via a header
+ * `src/proxy.ts` stamps, and derives NOTHING when that header is absent —
+ * falling back to `hasAdminAccess`, i.e. Full Admin only. So the inferred gate
+ * was never wider than this one; it was merely conditional on a header, and it
+ * shut a legitimate finance viewer out whenever the header went missing. Naming
+ * the requirement here makes the owner's decision independent of request
+ * plumbing, stable against a future edit to the route-area map, and directly
+ * testable (`xero-organisation-route-authz.test.ts`).
  *
  * The short code lives here rather than on `/api/admin/xero/status` on purpose:
  * status is a pure token-row read that every admin surface gating on Xero hits
@@ -27,7 +46,9 @@ import { getXeroConnectedOrganisation } from "@/lib/xero-organisation";
  * page's deep links, and the subscription-lockout settings panel.
  */
 export async function GET(request?: NextRequest) {
-  const guard = await requireAdmin();
+  const guard = await requireAdmin({
+    permission: { area: "finance", level: "view" },
+  });
   if (!guard.ok) return guard.response;
 
   const forceRefresh = request?.nextUrl.searchParams.get("refresh") === "1";

@@ -5,8 +5,12 @@ import { DEFAULT_CLUB_THEME_VALUES } from "@/lib/club-theme-schema";
 const mocks = vi.hoisted(() => ({
   requireAdmin: vi.fn(),
   clubThemeFindUnique: vi.fn(),
+  // The LOCKED re-read inside the transaction (#2289): saveClubTheme takes
+  // the row lock with $executeRaw and reads the current logo back through
+  // the Prisma model, so this is the mock that decides what it sees.
+  txClubThemeFindUnique: vi.fn(),
   clubThemeUpsert: vi.fn(),
-  queryRaw: vi.fn(),
+  executeRaw: vi.fn(),
   mediaImageDeleteMany: vi.fn(),
   mediaImageFindFirst: vi.fn(),
   clubThemeCreateMany: vi.fn(),
@@ -36,7 +40,7 @@ vi.mock("@/lib/email-theme", () => ({
 // transaction (#2322), so the mock hands the callback a tx with the same shape.
 const txClient = {
   clubTheme: {
-    findUnique: mocks.clubThemeFindUnique,
+    findUnique: mocks.txClubThemeFindUnique,
     upsert: mocks.clubThemeUpsert,
     update: mocks.clubThemeUpsert,
     createMany: mocks.clubThemeCreateMany,
@@ -45,7 +49,7 @@ const txClient = {
     deleteMany: mocks.mediaImageDeleteMany,
     findFirst: mocks.mediaImageFindFirst,
   },
-  $queryRaw: mocks.queryRaw,
+  $executeRaw: mocks.executeRaw,
 };
 
 vi.mock("@/lib/prisma", () => ({
@@ -58,7 +62,7 @@ vi.mock("@/lib/prisma", () => ({
     auditLog: {
       create: mocks.auditLogCreate,
     },
-    $queryRaw: mocks.queryRaw,
+    $executeRaw: mocks.executeRaw,
     $transaction: (
       fn: (tx: typeof txClient) => unknown,
       options?: unknown,
@@ -106,8 +110,9 @@ describe("site style admin API", () => {
       });
     });
     mocks.auditLogCreate.mockResolvedValue({});
+    mocks.executeRaw.mockResolvedValue(1);
     // No previously-stored logo unless a test says otherwise.
-    mocks.queryRaw.mockResolvedValue([{ logoUrl: null }]);
+    mocks.txClubThemeFindUnique.mockResolvedValue({ logoUrl: null });
     mocks.mediaImageDeleteMany.mockResolvedValue({ count: 0 });
     mocks.clubThemeCreateMany.mockResolvedValue({ count: 0 });
     // The referenced logo blob exists unless a test says otherwise.
@@ -160,7 +165,7 @@ describe("site style admin API", () => {
   });
 
   it("deletes the previous LOGO blob when the logo is replaced (#2322)", async () => {
-    mocks.queryRaw.mockResolvedValue([{ logoUrl: "/api/images/old-logo" }]);
+    mocks.txClubThemeFindUnique.mockResolvedValue({ logoUrl: "/api/images/old-logo" });
 
     const response = await PUT(
       request({
@@ -177,7 +182,7 @@ describe("site style admin API", () => {
   });
 
   it("does not delete the logo blob when it is unchanged (#2322)", async () => {
-    mocks.queryRaw.mockResolvedValue([{ logoUrl: "/api/images/same-logo" }]);
+    mocks.txClubThemeFindUnique.mockResolvedValue({ logoUrl: "/api/images/same-logo" });
 
     await PUT(
       request({
@@ -271,7 +276,7 @@ describe("site style admin API", () => {
     // Two-tab sequence: tab B saved logo B (deleting A). Tab A, still open, now
     // saves referencing A. Writing it would dangle the theme, and on the next
     // save would delete B — a blob that IS still referenced.
-    mocks.queryRaw.mockResolvedValue([{ logoUrl: "/api/images/logo-b" }]);
+    mocks.txClubThemeFindUnique.mockResolvedValue({ logoUrl: "/api/images/logo-b" });
     mocks.mediaImageFindFirst.mockResolvedValue(null); // logo A no longer exists
 
     const response = await PUT(
@@ -290,7 +295,7 @@ describe("site style admin API", () => {
   });
 
   it("accepts a save whose logo blob is still present (#2322)", async () => {
-    mocks.queryRaw.mockResolvedValue([{ logoUrl: "/api/images/logo-a" }]);
+    mocks.txClubThemeFindUnique.mockResolvedValue({ logoUrl: "/api/images/logo-a" });
     mocks.mediaImageFindFirst.mockResolvedValue({ id: "logo-b" });
 
     const response = await PUT(
@@ -332,7 +337,7 @@ describe("site style admin API", () => {
   it("serialises a first-ever save by materialising the singleton first (#2322)", async () => {
     // FOR UPDATE locks nothing when the row is absent, so the transaction
     // creates the row before locking it.
-    mocks.queryRaw.mockResolvedValue([]);
+    mocks.txClubThemeFindUnique.mockResolvedValue(null);
 
     const response = await PUT(request({ ...DEFAULT_CLUB_THEME_VALUES }));
 

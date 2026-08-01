@@ -27,6 +27,101 @@ const NO_BARE_TO_LOCALE_STRING = {
     "Use formatNZDateTime/formatNZDate from @/lib/nzst-date, or a module-level Intl.DateTimeFormat pinned to APP_LOCALE + APP_TIME_ZONE. A bare toLocaleString on a Date renders in the viewer's zone and locale (#2256, #2264). Formatting a NUMBER? Add the file to the Number-formatting block in this config with a one-line reason.",
 };
 
+// #2289 — the two shapes of raw SQL that can lie about their own result.
+//
+// `prisma.$queryRaw<SomeRow[]>` is an UNCHECKED CAST. Raw SQL returns the
+// PHYSICAL column names; the type argument declares whatever the author
+// believed. Nothing verifies the two agree — not the compiler (the cast silences
+// it) and not the tests (a mocked Prisma returns the shape the author believed,
+// which is the same wrong belief). Where they disagreed in a real deployment,
+// every property arrived `undefined`: `maxRedemptionsTotal` undefined made
+// `!== null` true and `n > undefined` false, so a promo's total-redemption cap
+// never fired, and `freeNightsPerIndividual` undefined made `?? 0` yield zero,
+// so FREE_NIGHTS promos applied no discount at booking creation while the quote
+// path showed the member one. Members were quoted a discount and charged without
+// it, for months, with nothing logged.
+//
+// The type argument IS the hazard, so it is the thing banned. It cannot tell you
+// a column name is wrong — only that somebody asserted a shape without checking
+// it. Two honest alternatives remain, and the message names both.
+//
+// BOTH CALL FORMS ARE COVERED, deliberately. Prisma accepts a raw statement as a
+// tagged template (``$queryRaw`SELECT …` ``) AND as an ordinary call taking a
+// composed `Prisma.Sql` (`$queryRaw(Prisma.sql`SELECT …`)`) — and the second is
+// this repository's own idiom for anything longer than a one-liner
+// (`src/lib/audit-retention.ts` builds its archive statements that way). A rule
+// that only matched the tagged template would leave the exact banned pattern —
+// typed cast, `SELECT *`, `FOR UPDATE` on a read — passing lint in the style the
+// codebase already uses, which is worse than no rule because it reads as covered.
+const RAW_SQL_METHOD = "/^\\$(queryRaw|executeRaw)(Unsafe)?$/";
+const RESULT_CAST_MESSAGE =
+  "Do not type a raw-SQL result: `$queryRaw<T>` is an unchecked cast and a wrong column name arrives as `undefined`, not as an error (#2289). Taking a row lock? Use `$executeRaw` on a statement selecting a constant (`SELECT 1 … FOR UPDATE`) and read what you need through the Prisma model. Genuinely cannot express it as a model read? Validate the rows with `decodeRawRows` from @/lib/raw-sql-rows.";
+const SELECT_STAR_MESSAGE =
+  "Do not `SELECT *` in a raw statement (#2289): the returned column set becomes whatever the database currently has, so a migration changes the result shape with nothing in the source to review. Name the columns — or, if the statement is only there for a row lock, select a constant (`SELECT 1 … FOR UPDATE`).";
+
+// `$queryRaw<T>`…`` — the tagged-template cast.
+const NO_RAW_SQL_RESULT_CAST = {
+  selector: `TaggedTemplateExpression[typeArguments][tag.property.name=${RAW_SQL_METHOD}]`,
+  message: RESULT_CAST_MESSAGE,
+};
+
+// `$queryRaw<T>(Prisma.sql`…`)` and `$queryRawUnsafe<T>("…")` — the same cast
+// written as a call. One selector covers all four methods.
+const NO_RAW_SQL_CALL_RESULT_CAST = {
+  selector: `CallExpression[typeArguments][callee.property.name=${RAW_SQL_METHOD}]`,
+  message: RESULT_CAST_MESSAGE,
+};
+
+// `SELECT *` in a raw statement is the same hazard one step earlier: it makes the
+// returned column set whatever the DATABASE currently happens to have, so the
+// statement silently changes shape when a migration does — and there is nothing
+// in the source to review it against. Name the columns you actually want.
+//
+// Four selectors because the SQL text can reach the driver four ways, and the
+// three below the first are precisely the ones the tagged-template rule missed.
+const NO_SELECT_STAR_IN_RAW_SQL = {
+  selector: `TaggedTemplateExpression[tag.property.name=${RAW_SQL_METHOD}] TemplateElement[value.raw=/SELECT\\s+\\*/i]`,
+  message: SELECT_STAR_MESSAGE,
+};
+
+// `$queryRawUnsafe(`SELECT * …`)` — a template literal passed as an argument.
+// The child combinator keeps this off `Prisma.sql`…`` arguments, which the
+// composition rule below reports instead, so nothing is flagged twice.
+const NO_SELECT_STAR_IN_RAW_SQL_CALL = {
+  selector: `CallExpression[callee.property.name=${RAW_SQL_METHOD}] > TemplateLiteral TemplateElement[value.raw=/SELECT\\s+\\*/i]`,
+  message: SELECT_STAR_MESSAGE,
+};
+
+// `$queryRawUnsafe("SELECT * …")` — a plain string argument.
+const NO_SELECT_STAR_IN_RAW_SQL_STRING = {
+  selector: `CallExpression[callee.property.name=${RAW_SQL_METHOD}] > Literal[value=/SELECT\\s+\\*/i]`,
+  message: SELECT_STAR_MESSAGE,
+};
+
+// ``Prisma.sql`SELECT * …` `` — anchored on the composition helper rather than on
+// the call, so a statement built into a variable and passed to `$queryRaw` on a
+// later line is still caught. `Prisma.sql` exists only to build SQL, so there is
+// no false-positive surface here.
+const NO_SELECT_STAR_IN_PRISMA_SQL = {
+  selector:
+    'TaggedTemplateExpression[tag.object.name="Prisma"][tag.property.name="sql"] TemplateElement[value.raw=/SELECT\\s+\\*/i]',
+  message: SELECT_STAR_MESSAGE,
+};
+
+// Flat config REPLACES a rule's whole option list rather than merging it, so
+// every block that sets `no-restricted-syntax` for its own reasons has to
+// re-state these. Keeping them in one array is what stops a future exemption
+// block from silently dropping the raw-SQL guard along with the rule it meant to
+// lift (#2289).
+const RAW_SQL_RESTRICTIONS = [
+  NO_RAW_SQL_RESULT_CAST,
+  NO_RAW_SQL_CALL_RESULT_CAST,
+  NO_SELECT_STAR_IN_RAW_SQL,
+  NO_SELECT_STAR_IN_RAW_SQL_CALL,
+  NO_SELECT_STAR_IN_RAW_SQL_STRING,
+  NO_SELECT_STAR_IN_PRISMA_SQL,
+];
+
 const eslintConfig = defineConfig([
   ...fixupConfigRules(nextVitals),
   ...fixupConfigRules(nextTs),
@@ -144,17 +239,48 @@ const eslintConfig = defineConfig([
         NO_BARE_TO_LOCALE_DATE_STRING,
         NO_BARE_TO_LOCALE_TIME_STRING,
         NO_BARE_TO_LOCALE_STRING,
+        ...RAW_SQL_RESTRICTIONS,
       ],
     },
   },
   {
-    // The helpers themselves, and the one documented format exclusion.
+    // The raw-SQL guard (#2289) is NOT an `src/`-only rule, even though the date
+    // rules above are. Operator CLIs and seed/migration helpers are where
+    // hand-written SQL is most likely — Prisma cannot express a bulk correlated
+    // update, and these files run against production data with an operator
+    // watching a row count. `scripts/` alone holds the money-adjacent
+    // `backfill-orphaned-applied-credits.ts`,
+    // `backfill-cancel-flattened-payments.ts`,
+    // `backfill-finance-monthly-facts.ts` and `xero-booking-repair.ts`. Neither
+    // directory contains any raw SQL today, so this costs nothing now and is
+    // purely about what may be written next — and it makes the unqualified
+    // promise in CONTRIBUTING.md and docs/DOMAIN_INVARIANTS.md true rather than
+    // aspirational.
+    //
+    // `e2e/**` is deliberately NOT here: it is entirely Playwright tests, which
+    // are exempt for the same reason `src/**/__tests__/**` is (see the last
+    // block) — a test's raw statement runs against a throwaway database and its
+    // result is asserted on the spot.
+    files: ["scripts/**/*.{ts,tsx}", "prisma/**/*.{ts,tsx}"],
+    rules: {
+      "no-restricted-syntax": ["error", ...RAW_SQL_RESTRICTIONS],
+    },
+  },
+  {
+    // The date helpers themselves, and the one documented format exclusion.
+    // Flat config replaces a rule's whole option list rather than merging it, so
+    // this block re-states the raw-SQL restrictions (#2289) instead of switching
+    // `no-restricted-syntax` off outright: none of these three files contains
+    // raw SQL, and the exemption they need is from the DATE rules only. Same
+    // reasoning in the Number-formatting block below.
     files: [
       "src/lib/nzst-date.ts",
       "src/lib/date-only.ts",
       "src/lib/email-templates.ts",
     ],
-    rules: { "no-restricted-syntax": "off" },
+    rules: {
+      "no-restricted-syntax": ["error", ...RAW_SQL_RESTRICTIONS],
+    },
   },
   {
     // Number formatting, not dates: these three call
@@ -173,11 +299,19 @@ const eslintConfig = defineConfig([
         "error",
         NO_BARE_TO_LOCALE_DATE_STRING,
         NO_BARE_TO_LOCALE_TIME_STRING,
+        ...RAW_SQL_RESTRICTIONS,
       ],
     },
   },
   {
     // Test expectation builders mirror the component format under test.
+    //
+    // The raw-SQL restrictions (#2289) are off here too, deliberately. A test's
+    // raw statement runs against a throwaway database and its result is
+    // asserted on the spot, so a wrong shape fails the test rather than
+    // silently mispricing a booking — `concurrency-lock-races.realdb.test.ts`
+    // reads counts that way on purpose. What must never regress is PRODUCTION
+    // code, and `raw-sql-shape-guard.test.ts` pins that inventory file by file.
     files: ["src/**/__tests__/**/*.{ts,tsx}", "src/**/*.test.{ts,tsx}"],
     rules: { "no-restricted-syntax": "off" },
   },

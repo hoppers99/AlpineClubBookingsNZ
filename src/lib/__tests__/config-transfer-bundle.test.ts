@@ -5,6 +5,7 @@ vi.mock("server-only", () => ({}));
 
 import {
   buildBundle,
+  assertConfigTransferFormatVersion,
   readBundle,
   resealBundle,
   sha256Hex,
@@ -121,6 +122,35 @@ describe("config-transfer bundle codec", () => {
       [CONFIG_TRANSFER_MANIFEST_PATH]: strToU8(JSON.stringify(manifest)),
     });
     expect(() => readBundle(zip)).toThrow(/newer than this app/i);
+  });
+
+  it("treats v3 booking-policy replace semantics as an exact capability boundary", () => {
+    expect(CONFIG_TRANSFER_FORMAT_VERSION).toBe(3);
+    // A deployed v2 reader safely refuses a v3 bundle instead of ignoring the
+    // unknown destructive category; the v3 reader likewise refuses v2 because
+    // no translation can invent the namespaced scope/replace contract.
+    expect(() => assertConfigTransferFormatVersion(3, 2)).toThrow(
+      /newer than this app/i,
+    );
+    expect(() => assertConfigTransferFormatVersion(2, 3)).toThrow(
+      /predates this app/i,
+    );
+    expect(() => assertConfigTransferFormatVersion(3, 3)).not.toThrow();
+  });
+
+  it("refuses a v2 bundle in the v3 reader and asks for a current re-export", () => {
+    const manifest = {
+      formatVersion: 2,
+      generatedAt: GENERATED_AT,
+      app: { version: "0.12.0", prismaMigration: null },
+      includedCategories: ["site-content"],
+      files: [],
+      doorCodesIncluded: false,
+    };
+    const zip = zipSync({
+      [CONFIG_TRANSFER_MANIFEST_PATH]: strToU8(JSON.stringify(manifest)),
+    });
+    expect(() => readBundle(zip)).toThrow(/predates.*re-export/i);
   });
 
   it("rejects invalid zip bytes", () => {

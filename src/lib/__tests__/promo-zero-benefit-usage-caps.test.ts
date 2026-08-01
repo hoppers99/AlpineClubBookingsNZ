@@ -93,11 +93,12 @@ function makeTx(options: { existingAllocationCount?: number } = {}) {
         return {};
       }),
     },
-    $queryRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+    $executeRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
       calls.push("lock");
       lockedStatements.push(strings.join("?"));
       lockedIds.push(String(values[0]));
-      return [];
+      // $executeRaw returns an affected-row count, never rows (#2289).
+      return 1;
     }),
   };
   const lockedIds: string[] = [];
@@ -885,9 +886,10 @@ describe("lockPromoCodeRowsForUpdate", () => {
     expect(lockedIds).toEqual(["promo-a", "promo-m", "promo-z"]);
     for (const statement of lockedStatements) {
       expect(statement).toContain("FOR UPDATE");
-      // Only "id" is selected and the result is discarded: the statement
-      // exists for its lock, never for its shape (#2289).
-      expect(statement).toContain('SELECT "id" FROM "PromoCode"');
+      // A CONSTANT is selected through $executeRaw and the result is discarded:
+      // the statement exists for its lock, never for its shape (#2289). Naming
+      // a column here would make it look like a read somebody could trust.
+      expect(statement).toContain('SELECT 1 FROM "PromoCode"');
     }
   });
 
@@ -910,7 +912,7 @@ describe("lockPromoCodeRowsForUpdate", () => {
 
     await lockPromoCodeRowsForUpdate(asTx(tx), [null, undefined]);
 
-    expect(tx.$queryRaw).not.toHaveBeenCalled();
+    expect(tx.$executeRaw).not.toHaveBeenCalled();
   });
 });
 

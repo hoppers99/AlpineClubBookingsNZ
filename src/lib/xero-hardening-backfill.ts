@@ -4,7 +4,7 @@
 // item 5). Import xero source modules directly, never the @/lib/xero facade
 // (#1208).
 import { prisma } from "@/lib/prisma";
-import { buildXeroObjectUrl } from "@/lib/xero-links";
+import { buildXeroObjectUrl, stripXeroOrgShortCode } from "@/lib/xero-links";
 import type {
   XeroHistoricalBackfillResult,
   XeroLinkBackfillCategoryResult,
@@ -143,6 +143,12 @@ async function backfillCanonicalLinkTargets(
     .filter((target) => !existingOperationKeys.has(buildBackfillCorrelationKey(target)))
     .map((target) => buildBackfillOperationData(target, now));
 
+  // #2314: the backfill writes both columns in bulk, so it cannot go through
+  // `upsertXeroObjectLink` / `completeXeroSyncOperation` — a per-row upsert is
+  // the wrong shape for a `createMany({ skipDuplicates })` reconstruction of
+  // thousands of historical rows. It carries the organisation-agnostic
+  // invariant itself instead: the strip happens AT the write, where
+  // `xero-object-url-write-guard.test.ts` can see it, not in the row builders.
   const createdLinks =
     linksToCreate.length > 0
       ? (
@@ -153,9 +159,10 @@ async function backfillCanonicalLinkTargets(
               xeroObjectType: target.xeroObjectType,
               xeroObjectId: target.xeroObjectId,
               xeroObjectNumber: target.xeroObjectNumber ?? null,
-              xeroObjectUrl:
+              xeroObjectUrl: stripXeroOrgShortCode(
                 target.xeroObjectUrl ??
-                buildXeroObjectUrl(target.xeroObjectType, target.xeroObjectId),
+                  buildXeroObjectUrl(target.xeroObjectType, target.xeroObjectId),
+              ),
               role: target.role,
               active: true,
               metadata: target.metadata ?? undefined,
@@ -169,7 +176,10 @@ async function backfillCanonicalLinkTargets(
     operationsToCreate.length > 0
       ? (
           await prisma.xeroSyncOperation.createMany({
-            data: operationsToCreate,
+            data: operationsToCreate.map((operation) => ({
+              ...operation,
+              xeroObjectUrl: stripXeroOrgShortCode(operation.xeroObjectUrl),
+            })),
             skipDuplicates: true,
           })
         ).count
