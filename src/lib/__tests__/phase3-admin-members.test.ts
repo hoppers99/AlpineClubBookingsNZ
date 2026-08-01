@@ -142,6 +142,10 @@ import { GET as exportMembers } from "@/app/api/admin/members/export/route";
 import { POST as importMembers } from "@/app/api/admin/members/import/route";
 import { POST as bulkUpdate } from "@/app/api/admin/members/bulk-update/route";
 import { GET as getMemberDetail } from "@/app/api/admin/members/[id]/route";
+import {
+  googleSubCollisionError,
+  loginEmailCollisionError,
+} from "@/lib/__tests__/helpers";
 
 const mockedAuth = vi.mocked(auth);
 const mockedSendMemberSetupInviteEmail = vi.mocked(sendMemberSetupInviteEmail);
@@ -2535,6 +2539,56 @@ describe("Phase 3: Admin Member Management", () => {
       });
       const res = await createMember(req);
       expect(res.status).toBe(409);
+      // A P2002 that names nothing is still the email clash: on this path no
+      // other unique constraint is reachable, and staying vague would leave an
+      // unexplained failure.
+      await expect(res.json()).resolves.toMatchObject({
+        error: "A member with this email already exists",
+      });
+    });
+
+    // #2412: the create path used to call ANY P2002 an email clash. These use
+    // the errors adapter-pg really raises — captured live against PostgreSQL 16,
+    // see `helpers/p2002-fixtures.ts`.
+    const createMemberRequest = () =>
+      new NextRequest("http://localhost/api/admin/members", {
+        method: "POST",
+        body: JSON.stringify({
+          firstName: "Test",
+          lastName: "User",
+          email: "existing@test.com",
+        }),
+        headers: { "Content-Type": "application/json" },
+      });
+
+    it("blames the email when the login-email partial index really fired", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      vi.mocked(prisma.member.findFirst).mockResolvedValue(null);
+      // The pre-check passed, then a concurrent write claimed the address.
+      vi.mocked(prisma.$transaction).mockRejectedValue(
+        loginEmailCollisionError(),
+      );
+
+      const res = await createMember(createMemberRequest());
+      expect(res.status).toBe(409);
+      await expect(res.json()).resolves.toMatchObject({
+        error: "A member with this email already exists",
+      });
+    });
+
+    it("does not blame the email when a different unique constraint fired", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      vi.mocked(prisma.member.findFirst).mockResolvedValue(null);
+      vi.mocked(prisma.$transaction).mockRejectedValue(
+        googleSubCollisionError(),
+      );
+
+      const res = await createMember(createMemberRequest());
+      expect(res.status).toBe(409);
+      await expect(res.json()).resolves.toMatchObject({
+        error:
+          "Could not create this member: one of their details is already used by another record",
+      });
     });
 
     it("allows shared email when creating a non-login member", async () => {

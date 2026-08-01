@@ -29,6 +29,10 @@ import { copyStreetAddressToPostal } from "@/lib/member-address";
 import { PLACEHOLDER_CONTACT_EMAIL_DOMAINS } from "@/lib/placeholder-contact-email";
 import { validateInheritEmailSource } from "@/lib/member-email-inheritance";
 import {
+  isLoginEmailUniqueConflict,
+  MEMBER_LOGIN_EMAIL_TAKEN_MESSAGE,
+} from "@/lib/member-email";
+import {
   buildParentLinks,
   NO_INHERITABLE_EMAIL_SOURCE_MESSAGE,
   resolveInheritedEmailSourceId,
@@ -1325,7 +1329,7 @@ export async function createAdminMember(
     });
     if (existing) {
       return jsonResult(
-        { error: "A member with this email already exists" },
+        { error: MEMBER_LOGIN_EMAIL_TAKEN_MESSAGE },
         { status: 409 },
       );
     }
@@ -1492,9 +1496,31 @@ export async function createAdminMember(
       { status: 201 },
     );
   } catch (error) {
+    // Backstop for the race the pre-check above cannot close: the uniqueness
+    // query runs before the transaction, so a concurrent write can claim the
+    // address in between and the partial unique index `Member_email_login_unique`
+    // rejects this create. Narrowed from "any P2002 here means the email is
+    // taken" (#2412, matching what #2385 did for the member edit): a collision
+    // on some other unique constraint is still a 409, because something really
+    // is already taken, but it no longer sends the admin off to fix an address
+    // that is fine. It is logged either way, since on this path no other unique
+    // constraint should be reachable at all.
     if (isPrismaUniqueConstraintError(error)) {
+      if (isLoginEmailUniqueConflict(error)) {
+        return jsonResult(
+          { error: MEMBER_LOGIN_EMAIL_TAKEN_MESSAGE },
+          { status: 409 },
+        );
+      }
+      logger.error(
+        { err: error },
+        "Member create hit an unexpected unique constraint",
+      );
       return jsonResult(
-        { error: "A member with this email already exists" },
+        {
+          error:
+            "Could not create this member: one of their details is already used by another record",
+        },
         { status: 409 },
       );
     }
