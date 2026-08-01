@@ -4,6 +4,43 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **The cancellation queue stops spending Xero API calls on questions nobody can
+  act on (#2402).** Opening **Admin → Members → Cancellation Requests** asked
+  Xero, for every participant on the page, whether that member's contact still
+  owed the club money — on every page load, every filter change and every
+  refresh, whoever was looking. Xero meters those calls daily, and most of them
+  bought nothing: they were asked for participants who had already been rejected
+  or cancelled, and for admins whose role cannot approve a cancellation at all.
+
+  The check now runs only where its answer can still change what somebody does:
+  for an admin whose role has **edit** access to membership — the same permission
+  the Approve and Reject buttons need — and for a participant that is genuinely
+  still awaiting approval, meaning the request is open, the member has confirmed,
+  and the membership has not since been deactivated or cancelled.
+
+  Only the Xero half is affected. Outstanding **bookings and guest appearances**
+  come from ordinary database reads that cost nothing external, so they are still
+  loaded and still shown to everyone, including view-only admins.
+
+  There is a real cost to this and it was accepted deliberately: a **view-only**
+  membership admin is no longer told that money is owing on a participant. They
+  are not left to guess. A request holding affected rows now carries a short blue
+  note — *The money-owing check was not run for … below* — with each affected
+  member marked, because an absent warning panel and "nothing is owing" look
+  identical on screen and only one of them would have been true. The note says
+  plainly that the question was not asked, not that the answer was no.
+
+  The **Approve** button now follows the same rule the server does, rather than
+  the looser approximation it carried before. A membership deactivated after its
+  cancellation was raised no longer offers an Approve that the server would
+  refuse — the button is disabled and a line beneath it says why. That is what
+  makes the saving safe: a row is only left unchecked when an approval of it
+  would have been refused anyway.
+
+  Nothing about approving itself changed. Pressing **Approve** still asks Xero
+  live, every time, for everyone, still refuses while anything is owing, and
+  still refuses when Xero cannot be asked at all — as does the second check made
+  immediately before a Xero contact is archived.
 - **A club's website now says "not ready yet" until its setup is finished,
   instead of quietly answering as though everything were fine (#2420).** Before
   a club saves its site style for the first time, every public web address shows
