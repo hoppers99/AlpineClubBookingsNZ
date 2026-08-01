@@ -4,20 +4,6 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
-- **Booking emails now open the booking they are about, without exposing a
-  private booking link to the wrong reader (#2362).** A signed-in booking owner,
-  linked member, or Booking Officer/read-only bookings admin can follow **View
-  this booking** straight to the encoded booking detail page. Public contacts
-  without a login and aggregate operator emails do not receive that
-  authenticated link; their secure payment, quote, consent, or response links
-  remain unchanged. Clubs may use the optional `{{bookingUrl}}` chip in each
-  concrete-booking template. Existing saved wording is not rewritten, and a
-  recipient who is no longer authorized gets no dangling or dead link line.
-  Failed delivery retries repeat that authorization check and confirm the
-  destination is still the member's current direct/inherited mailbox before
-  replay. New retry bodies also fail closed across an application rollback;
-  consent links still land on the exact consent action rather than the top of
-  the booking page.
 <!-- changelog-pointer-note:start -->
 
 Entries for the next release are written as one file per pull request in
