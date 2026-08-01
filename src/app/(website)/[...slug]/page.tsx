@@ -5,7 +5,7 @@ import { EmbeddedPageContentParts } from "@/components/website/embedded-page-con
 import { getCachedClubIdentity } from "@/lib/public-layout-config";
 import { setupInProgressMetadata } from "@/lib/website-setup-metadata";
 import {
-  getSanitizedPageContentByPath,
+  getPublishedPageContentByPath,
   pageContentHtmlToPlainText,
 } from "@/lib/page-content-html";
 import { isReservedPageSlug, isValidPageSlug } from "@/lib/page-content";
@@ -24,7 +24,7 @@ type DynamicPageProps = {
 //
 // Wrapped in React `cache()` so the one lookup is shared by `generateMetadata()`
 // and the page component within a single request (#2405). Both call it and
-// `getSanitizedPageContentByPath()` carries no request memo of its own, so the
+// `getPublishedPageContentByPath()` carries no request memo of its own, so the
 // row was fetched twice. #2405 assumed that lookup was "already cached per
 // request"; it was not — what was covering for it is Prisma's automatic
 // `findUnique` batching, which folds same-tick reads of the same key into one
@@ -33,18 +33,16 @@ type DynamicPageProps = {
 // it explicit. Keyed on the resolved slug string rather than the props object,
 // because Next hands `generateMetadata` and the component separate `params`
 // promises, so a per-object memo would never hit.
+//
+// Unpublished (hidden) admin pages 404 for the public, just like a missing
+// page — the published filter lives in the shared helper (#2440) so every
+// public route hides drafts the same way.
 const loadPublishedPage = cache(async (slug: string) => {
   if (!isValidPageSlug(slug) || isReservedPageSlug(slug)) {
     return null;
   }
 
-  const page = await getSanitizedPageContentByPath(`/${slug}`);
-  // Unpublished (hidden) admin pages 404 for the public, just like a missing
-  // page; only an explicit false hides it, so legacy rows stay visible.
-  if (!page || page.published === false) {
-    return null;
-  }
-  return page;
+  return getPublishedPageContentByPath(`/${slug}`);
 });
 
 async function getPageForParams(props: DynamicPageProps) {
@@ -172,7 +170,7 @@ export default async function DynamicWebsitePage(props: DynamicPageProps) {
           <h1 className="font-heading text-4xl font-bold tracking-tight sm:text-5xl">
             {page.title}
           </h1>
-          {/* headerText is returned by getSanitizedPageContentByPath. */}
+          {/* headerText is sanitised on read by the page-content helper. */}
           <div
             className="mt-4 max-w-2xl text-lg text-brand-snow/80"
             dangerouslySetInnerHTML={headerHtml}

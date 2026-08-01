@@ -4,7 +4,7 @@ import { EmbeddedPageContentParts } from "@/components/website/embedded-page-con
 import { getCachedClubIdentity } from "@/lib/public-layout-config";
 import { setupInProgressMetadata } from "@/lib/website-setup-metadata";
 import {
-  getSanitizedPageContentByPath,
+  getPublishedPageContentByPath,
   pageContentHtmlToPlainText,
 } from "@/lib/page-content-html";
 import { buildEmbeddedBody } from "@/lib/page-content-embeds";
@@ -23,7 +23,7 @@ export async function generateMetadata(): Promise<Metadata> {
   }
 
   const [page, { name: clubName }] = await Promise.all([
-    getSanitizedPageContentByPath("/home"),
+    getPublishedPageContentByPath("/home"),
     getCachedClubIdentity(),
   ]);
 
@@ -42,8 +42,11 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export default async function HomePage() {
+  // `/home` cannot be unpublished through any supported write path (it is a
+  // system page), so the published filter only matters for a hand-written row —
+  // which then 404s here, same as a missing row (#2440).
   const [page, clubIdentity] = await Promise.all([
-    getSanitizedPageContentByPath("/home"),
+    getPublishedPageContentByPath("/home"),
     getCachedClubIdentity(),
   ]);
 

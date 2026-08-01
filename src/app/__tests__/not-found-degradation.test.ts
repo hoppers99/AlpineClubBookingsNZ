@@ -30,6 +30,11 @@ const mocks = vi.hoisted(() => ({
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/page-content-html", () => ({
   getSanitizedPageContentByPath: mocks.getPage,
+  // Mirrors the real helper's published filter (#2440).
+  getPublishedPageContentByPath: async (path: string) => {
+    const page = await mocks.getPage(path);
+    return !page || page.published === false ? null : page;
+  },
   pageContentHtmlToPlainText: () => "",
 }));
 vi.mock("@/lib/page-content-embeds", () => ({

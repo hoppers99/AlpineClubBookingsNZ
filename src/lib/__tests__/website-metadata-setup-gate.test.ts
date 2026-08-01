@@ -44,6 +44,11 @@ vi.mock("@/lib/public-layout-config", () => ({
 }));
 vi.mock("@/lib/page-content-html", () => ({
   getSanitizedPageContentByPath: mocks.getPage,
+  // Mirrors the real helper's published filter (#2440).
+  getPublishedPageContentByPath: async (path: string) => {
+    const page = await mocks.getPage(path);
+    return !page || page.published === false ? null : page;
+  },
   pageContentHtmlToPlainText: (html: string) => html,
 }));
 vi.mock("@/lib/page-content-embeds", () => ({

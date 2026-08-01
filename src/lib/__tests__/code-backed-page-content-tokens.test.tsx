@@ -46,6 +46,11 @@ vi.mock("@/lib/prisma", () => ({
 
 vi.mock("@/lib/page-content-html", () => ({
   getSanitizedPageContentByPath: mocks.getSanitizedPageContentByPath,
+  // Mirrors the real helper's published filter (#2440).
+  getPublishedPageContentByPath: async (path: string) => {
+    const page = await mocks.getSanitizedPageContentByPath(path);
+    return !page || page.published === false ? null : page;
+  },
   pageContentHtmlToPlainText: () => "",
 }));
 

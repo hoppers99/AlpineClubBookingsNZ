@@ -304,6 +304,30 @@ export async function getSanitizedPageContentByPath(path: string): Promise<{
   };
 }
 
+/**
+ * The read every PUBLIC render path must use (#2440): identical to
+ * `getSanitizedPageContentByPath()` but treating an unpublished row as absent,
+ * so a draft is never served to an anonymous visitor. Only an explicit `false`
+ * hides a page — legacy rows written before the column existed stay visible
+ * (same semantics as the `(website)/[...slug]` catch-all always had).
+ *
+ * Every supported write path already refuses to unpublish the built-in pages
+ * the code-backed routes read (`canUnpublishPage`, enforced by the admin PATCH
+ * route and the config-transfer importer), so on those routes this filter is
+ * defence in depth against legacy or hand-written rows rather than a state the
+ * admin UI can produce. A contract test bans `src/app` from calling the
+ * unfiltered read directly so the two can never drift apart again.
+ */
+export async function getPublishedPageContentByPath(path: string) {
+  const page = await getSanitizedPageContentByPath(path);
+
+  if (!page || page.published === false) {
+    return null;
+  }
+
+  return page;
+}
+
 export async function listEditablePageContent() {
   const records = await prisma.pageContent.findMany({
     orderBy: [{ sortOrder: "asc" }, { title: "asc" }],
