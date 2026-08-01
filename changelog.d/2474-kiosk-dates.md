@@ -11,9 +11,12 @@
   the club.
 
   A kiosk left running on the wall also moves onto the new day by itself when
-  the club's midnight passes, so nobody has to reload it in the morning. A
-  screen someone has flicked to another night stays on that night — only a
-  kiosk still sitting on "today" follows the club over.
+  the club's midnight passes, so nobody has to reload it in the morning. Only a
+  screen still sitting on the week strip for today does that: a night someone
+  has flicked to, and any day's list they have opened, stay exactly where they
+  are — a list of arrivals must never re-point itself at a different night
+  while someone is checking a late party in. Pressing **Today** always jumps to
+  the club's current day.
 
   Nothing an operator does changes, and no existing booking, roster or check-in
   is affected — this is only which night the kiosk shows. Fixing a lodge

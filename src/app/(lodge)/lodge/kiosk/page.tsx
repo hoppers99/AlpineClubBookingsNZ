@@ -298,19 +298,33 @@ export default function KioskPage() {
   }, [failCount, fetchData]);
 
   // #2474 — a kiosk is a wall tablet nobody reloads, so the club's new day has
-  // to arrive on its own. Watch for the rollover and carry the view across WITH
-  // it, so the chip and the night being served never disagree.
+  // to arrive on its own. Watch for the rollover and carry the strip across WITH
+  // it, so the "Today" chip and the night being served never disagree.
   //
-  // Only while the view is still parked on what was today, though: a hut leader
-  // who navigated to another night keeps the night they chose, and the strip
-  // they navigated to keeps its week. The effect re-arms on `clubToday`, so it
-  // is rebuilt once a day, not once a tick.
+  // Two things it deliberately will NOT do, because 00:00 NZ is the check-in
+  // hour and not a quiet moment:
+  //
+  //  - it never moves a view somebody chose. Only a strip still parked on what
+  //    was today follows the club over; a night or a week a hut leader browsed
+  //    to stays exactly where they left it.
+  //  - it never touches the DAY view. Reaching a day list takes a deliberate
+  //    tap, and it is where arrivals are marked off — a list that re-pointed
+  //    itself at the new night mid-check-in would send the next tap to the
+  //    wrong lodge night. It waits for **Today**, or for a tap back to the
+  //    strip.
+  //
+  // `clubToday` itself always advances, so the chip is right the moment the
+  // strip is shown again. The effect re-arms on `clubToday` (once a day) and on
+  // `view`, so a tick restarts while somebody is actively moving around — which
+  // is the behaviour we want anyway.
   useEffect(() => {
     const timer = setInterval(() => {
       const nextClubDay = todayDateOnlyForTimeZone();
       if (nextClubDay === clubToday) return;
 
       setClubToday(nextClubDay);
+      if (view !== "week") return;
+
       setDate((current) => (current === clubToday ? nextClubDay : current));
       setWeekStart((current) =>
         current === getWeekStartDateKey(clubToday)
@@ -319,7 +333,7 @@ export default function KioskPage() {
       );
     }, CLUB_DAY_TICK_MS);
     return () => clearInterval(timer);
-  }, [clubToday]);
+  }, [clubToday, view]);
 
   const refreshNow = async () => {
     setRefreshing(true);

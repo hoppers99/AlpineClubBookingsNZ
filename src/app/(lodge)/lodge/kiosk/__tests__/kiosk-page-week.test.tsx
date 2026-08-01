@@ -417,6 +417,56 @@ describe("KioskPage club-time dates (#2474)", () => {
     expect(screen.getAllByText("Today", { selector: "p" })).toHaveLength(1);
   });
 
+  it("does not re-point an open day list at the new night mid-check-in", async () => {
+    /*
+      The dangerous variant: the kiosk is on TODAY's day list — the arrivals
+      screen — when the club rolls over. Advancing it would move the list, and
+      the next **Arrived** tap, onto a different lodge night at the exact hour a
+      late party is being checked in. The day list waits to be asked.
+    */
+    vi.useRealTimers();
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    vi.setSystemTime(new Date("2026-08-02T11:59:00.000Z"));
+    const { accessDates } = installKioskFetchMock();
+
+    render(<KioskPage />);
+    await settleKiosk();
+
+    // Drill into the club's CURRENT day, so only the view — not the night —
+    // distinguishes this from the rollover case above.
+    fireEvent.click(screen.getByRole("button", { name: "Open Sunday, 2 August" }));
+    await settleKiosk();
+    expect(
+      screen.getByRole("heading", { name: "Sunday, 2 August 2026" })
+    ).toBeVisible();
+
+    vi.setSystemTime(new Date("2026-08-02T12:00:30.000Z"));
+    await act(async () => {
+      vi.advanceTimersByTime(60000);
+    });
+    await settleKiosk();
+
+    expect(
+      screen.getByRole("heading", { name: "Sunday, 2 August 2026" })
+    ).toBeVisible();
+    expect(accessDates).not.toContain("2026-08-03");
+
+    // Back on the strip, the week shown is the one around the night that was
+    // opened — Mon 27 Jul to Sun 2 Aug — which no longer holds the club's day,
+    // so nothing is marked Today. Nothing is mismarked either: the chip is
+    // never on a day that is not today. **Today** is what jumps across.
+    fireEvent.click(screen.getByRole("button", { name: /Week$/ }));
+    await settleKiosk();
+    expect(screen.queryAllByText("Today", { selector: "p" })).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Today" }));
+    await settleKiosk();
+    expect(accessDates).toContain("2026-08-03");
+    expect(
+      screen.getByRole("button", { name: "Open Monday, 3 August" })
+    ).toHaveTextContent("Today");
+  });
+
   it("leaves a hut leader's chosen night alone when the club day turns over", async () => {
     // Same rollover, but the kiosk has been navigated off "today" first. The
     // club day advancing must not yank the screen out from under whoever is
