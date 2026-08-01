@@ -64,14 +64,26 @@ const SKIPPED_DIRECTORIES = new Set([
 
 const TEST_FILE_NAME = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
 
-function walkTestFiles(dir: string): string[] {
+/**
+ * Every module Vitest could evaluate — NOT just the collected suites.
+ *
+ * `optOutOfFrozenClock` is an ordinary function whose effect is module state, so
+ * it takes effect wherever it is called during a test file's module evaluation.
+ * A call in a shared helper under `__tests__/helpers/` opts out every suite that
+ * imports it, silently. Scanning only `*.test.ts`/`*.spec.ts` filenames would
+ * see none of that, and both the list and the count assertions below would stay
+ * green while the freeze had been switched off for an unbounded set of files.
+ */
+const SOURCE_FILE_NAME = /\.[cm]?[jt]sx?$/;
+
+function walkSourceFiles(dir: string): string[] {
   if (!fs.existsSync(dir)) return [];
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     if (entry.isDirectory()) {
       if (SKIPPED_DIRECTORIES.has(entry.name)) return [];
-      return walkTestFiles(path.join(dir, entry.name));
+      return walkSourceFiles(path.join(dir, entry.name));
     }
-    return TEST_FILE_NAME.test(entry.name)
+    return SOURCE_FILE_NAME.test(entry.name)
       ? [path.join(dir, entry.name)]
       : [];
   });
@@ -81,7 +93,8 @@ function repoRelative(absolutePath: string): string {
   return path.relative(process.cwd(), absolutePath).split(path.sep).join("/");
 }
 
-const TEST_FILES = walkTestFiles(process.cwd());
+const SOURCE_FILES = walkSourceFiles(process.cwd()).map(repoRelative);
+const TEST_FILES = SOURCE_FILES.filter((file) => TEST_FILE_NAME.test(file));
 
 /**
  * This file names the helper (and calls it with bad input to prove it refuses),
@@ -90,6 +103,9 @@ const TEST_FILES = walkTestFiles(process.cwd());
  */
 const SELF_PATH = "src/lib/__tests__/frozen-test-clock.test.ts";
 
+/** The module that DEFINES the opt-out, so it necessarily names it. */
+const HELPER_PATH = "src/lib/__tests__/helpers/clock.ts";
+
 describe("frozen test clock", () => {
   it("collects the test files it is meant to govern", () => {
     // A broken walker would make every assertion below vacuous — the exact
@@ -97,12 +113,19 @@ describe("frozen test clock", () => {
     expect(TEST_FILES.length).toBeGreaterThan(500);
     // …including the suites that live outside src/, which an opt-out could
     // otherwise hide in.
-    expect(TEST_FILES.map(repoRelative)).toContain(
-      "scripts/__tests__/quality-report.test.ts"
-    );
-    expect(TEST_FILES.map(repoRelative)).toContain(
+    expect(TEST_FILES).toContain("scripts/__tests__/quality-report.test.ts");
+    expect(TEST_FILES).toContain(
       "scripts/ci/check-pr-changelog-fragment.test.mjs"
     );
+  });
+
+  it("also collects the non-test modules a suite could import", () => {
+    // The opt-out's effect is module state, so a call in a shared helper opts
+    // out every importing suite. The allowlist below has to see those too.
+    expect(SOURCE_FILES.length).toBeGreaterThan(TEST_FILES.length * 2);
+    expect(SOURCE_FILES).toContain(HELPER_PATH);
+    expect(SOURCE_FILES).toContain("src/lib/date-only.ts");
+    expect(SOURCE_FILES).toContain("vitest.clock-setup.ts");
   });
 
   it("pins 'today' for this file", () => {
@@ -295,15 +318,29 @@ describe("a suite that pins its own instant AND hands the clock back", () => {
 });
 
 describe("frozen test clock opt-out allowlist", () => {
-  const filesCallingOptOut = TEST_FILES.filter(
+  const filesCallingOptOut = SOURCE_FILES.filter(
     (file) =>
-      OPT_OUT_MENTION.test(fs.readFileSync(file, "utf8")) &&
-      repoRelative(file) !== SELF_PATH
-  ).map(repoRelative);
+      file !== SELF_PATH &&
+      file !== HELPER_PATH &&
+      OPT_OUT_MENTION.test(
+        fs.readFileSync(path.join(process.cwd(), file), "utf8")
+      )
+  );
 
   it("matches the reviewed allowlist exactly", () => {
-    expect(filesCallingOptOut.sort()).toEqual(
+    expect(filesCallingOptOut.slice().sort()).toEqual(
       Object.keys(REAL_CLOCK_OPT_OUT_FILES).sort()
+    );
+  });
+
+  it("finds no opt-out hiding in a shared non-test module", () => {
+    // The bypass the filename-only scan allowed: a helper under `__tests__/`
+    // calling the opt-out at module top level switches the freeze off for every
+    // suite that imports it, while the list and count assertions above still
+    // report exactly the reviewed set. Only the module that DEFINES the opt-out
+    // may name it outside a test file.
+    expect(filesCallingOptOut.filter((f) => !TEST_FILE_NAME.test(f))).toEqual(
+      []
     );
   });
 
