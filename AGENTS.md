@@ -57,17 +57,20 @@ before changing Next.js APIs or conventions.
   lifecycle changes must update tests and relevant docs.
 - **Never write a test that depends on the real calendar.** Every unit test file
   runs with "today" frozen at `2026-07-01T00:00:00.000Z` (midday NZ, so UTC and
-  NZ agree on the date), installed for all files in `vitest.setup.ts`. Write
-  fixtures relative to that instant — `2026-08-01` is future, `2026-06-01` is
-  past, permanently. A suite that needs a *different* fixed instant pins its own
-  with `vi.setSystemTime` in its own hook, which runs after the freeze is
-  installed and therefore wins; that is not an opt-out. A file that needs the *real* wall clock
-  calls `optOutOfFrozenClock("<reason>")` at module top level and must be added
-  to the counted allowlist in `src/lib/__tests__/frozen-test-clock.test.ts` —
-  expect to justify it, and split a file that mixes both rather than opting it
-  out wholesale. The `Clock rollover canary` workflow re-runs the suite with the
-  machine's *real* clock wound forward on `main` pushes and nightly; it is
-  deliberately not a PR check. Full convention in `docs/TESTING.md`. This exists because four separate
+  NZ agree on the date), installed for every file by
+  `vitest.clock-setup.ts`. Write fixtures relative to that instant —
+  `2026-08-01` is future, `2026-06-01` is past, permanently. Note `Date.now()` is
+  therefore no longer a stopwatch: measure elapsed time with
+  `process.hrtime.bigint()`. A suite that needs a *different* fixed instant pins
+  its own with `vi.setSystemTime` in its own hook, which runs after the freeze is
+  installed and therefore wins; that is not an opt-out. A file that needs the
+  *real* wall clock calls `optOutOfFrozenClock("<reason>")` at module top level
+  and must be added to the counted allowlist in
+  `src/lib/__tests__/frozen-test-clock.test.ts` — expect to justify it, and split
+  a file that mixes both rather than opting it out wholesale. The
+  `Clock rollover canary` workflow re-runs the suite with the machine's *real*
+  clock wound forward on `main` pushes and nightly; it is deliberately not a PR
+  check. Full convention in `docs/TESTING.md`. This exists because four separate
   rollovers (#2426, #2401, #2443, #2479) turned `main` and every open PR red at
   once, and one of them made an assertion pass *vacuously* rather than fail.
 - Whenever a feature is added, changed, or removed, update all documentation it

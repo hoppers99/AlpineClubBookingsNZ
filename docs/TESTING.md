@@ -16,33 +16,39 @@ the full local gate.
 
 ## Shared setup
 
-`vitest.config.ts` points every test file at `vitest.setup.ts`, which:
+`vitest.config.ts` points every test file at two setup files, in order —
+`vitest.clock-setup.ts` then `vitest.setup.ts`. Between them they:
 
-- stubs `server-only` (a Next.js guard with no meaning in the Node test
+- **freeze the clock** — the rest of this page;
+- stub `server-only` (a Next.js guard with no meaning in the Node test
   environment) so server-side modules can be imported at all;
-- supplies fake email-delivery environment values, because
+- supply fake email-delivery environment values, because
   `src/lib/email-delivery.ts` refuses to build a transport without them
-  (nodemailer is mocked, so nothing is ever sent);
-- **freezes the clock** — the rest of this page.
+  (nodemailer is mocked, so nothing is ever sent).
 
 ## The frozen test clock
 
 Plain English: tests are not allowed to know what today's real date is. Every
 test file starts with "today" pinned to **1 July 2026**, and it stays there.
 
-Precisely: `vitest.setup.ts` calls
+Precisely: `vitest.clock-setup.ts` calls
 `vi.useFakeTimers({ toFake: ["Date"] })` and
 `vi.setSystemTime(2026-07-01T00:00:00.000Z)` in its own module body, for every
 file. The mechanism lives in
 [`../src/lib/__tests__/helpers/clock.ts`](../src/lib/__tests__/helpers/clock.ts).
 
-The module body, not a `beforeAll`, is load-bearing. Setup files evaluate before
-the test file is imported, whereas a `beforeAll` runs only after every module in
-the file's import graph has already been evaluated. Module-level date constants
-are real code — `src/components/admin-sidebar.tsx:123` builds its
-unpaid-finished-stays deep link from today's date at import time — and a
-hook-based freeze left those on the real clock while the tests checking them saw
-the frozen one.
+Two details there are load-bearing rather than stylistic:
+
+- **A module body, not a `beforeAll`.** A `beforeAll` runs only after every
+  module in the file's import graph has already been evaluated. Module-level date
+  constants are real code — `src/components/admin-sidebar.tsx:123` builds its
+  unpaid-finished-stays deep link from today's date at import time — and a
+  hook-based freeze left those on the real clock while the tests checking them
+  saw the frozen one.
+- **Its own setup file, listed first.** A module's imports evaluate before its
+  body, so an install inside `vitest.setup.ts` would still be too late for
+  everything `vitest.setup.ts` imports. Vitest evaluates `setupFiles` in order,
+  so a dedicated first file freezes the clock before any other module in the run.
 
 ### Why
 

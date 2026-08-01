@@ -103,7 +103,7 @@ live production site.
 `npm test` runs with "today" frozen at **1 July 2026**
 (`2026-07-01T00:00:00.000Z` — midday in NZ, so a UTC runner and an NZ club agree
 on the calendar day). It is installed once for every test file in
-`vitest.setup.ts`, and only `Date` is faked, so real timers still drive awaited
+`vitest.clock-setup.ts`, and only `Date` is faked, so real timers still drive awaited
 promises.
 
 Write date fixtures relative to that instant and they stay correct for good:

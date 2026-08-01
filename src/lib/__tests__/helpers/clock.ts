@@ -54,12 +54,16 @@
  *
  * ## When it installs, and why that matters
  *
- * `vitest.setup.ts` installs this during its own MODULE EVALUATION, not in a
- * `beforeAll`. Setup files evaluate before the test file is imported, and a
- * `beforeAll` runs after every module in the file's graph has already been
- * evaluated — so a `beforeAll` install leaves module-level constants reading the
- * REAL clock. That is not hypothetical: `src/components/admin-sidebar.tsx:123`
- * computes `UNPAID_FINISHED_STAYS_HREF` from today's date at import time, and a
+ * `vitest.clock-setup.ts` — the FIRST entry in `vitest.config.ts`'s
+ * `setupFiles`, ahead of `vitest.setup.ts` — installs this during its own module
+ * evaluation, not in a `beforeAll`. Both halves matter. A `beforeAll` runs only
+ * after every module in the file's graph has been evaluated, so it leaves
+ * module-level constants reading the REAL clock; and a module's imports evaluate
+ * before its body, so an install inside the main setup file would still be too
+ * late for anything that file imports.
+ *
+ * That is not hypothetical: `src/components/admin-sidebar.tsx:123` computes
+ * `UNPAID_FINISHED_STAYS_HREF` from today's date at import time, and a
  * hook-based freeze left the component on the real date while the test that
  * checked it saw the frozen one.
  *

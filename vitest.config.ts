@@ -7,7 +7,11 @@ export default defineConfig({
     environment: "node",
     // Provide fake email-delivery env so the delivery-config gate is satisfied
     // in tests (nodemailer is mocked, so nothing is actually sent).
-    setupFiles: ["./vitest.setup.ts"],
+    // ORDER MATTERS. vitest.clock-setup.ts freezes "today" (#2481) and must be
+    // first: setup files are evaluated in order, and a module's imports are
+    // evaluated before its own body, so anything the second setup file imports
+    // would otherwise capture the real clock at import time.
+    setupFiles: ["./vitest.clock-setup.ts", "./vitest.setup.ts"],
     // Never descend into agent git worktrees (.claude/worktrees/*): they hold
     // stale snapshots of the repo whose test files would otherwise be collected
     // and run against the main source via the "@" alias. e2e/ holds Playwright

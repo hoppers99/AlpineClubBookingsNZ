@@ -14,7 +14,7 @@ import { todayDateOnlyForTimeZone } from "@/lib/date-only";
 // The frozen test clock's contract (#2481, absorbing #2443).
 //
 // Every test file runs with "today" pinned to FROZEN_TEST_CLOCK_BASE_ISO, set
-// once in vitest.setup.ts, so a calendar rollover can never again turn `main`
+// once in vitest.clock-setup.ts, so a calendar rollover can never again turn `main`
 // and every open PR red at once (#2426, #2401, #2443, #2479).
 //
 // The opt-out is per file and counted. A file that genuinely needs the real
