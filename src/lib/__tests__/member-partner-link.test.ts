@@ -100,8 +100,13 @@ const nonLoginAdultC = {
   active: true,
   canLogin: false,
   ageTier: "ADULT",
-  // #2284 (S4): Alice (adultA) is the recorded voucher for Cora's details, so
-  // she — and only she — may one-step declare a partnership over Cora.
+  // #2284 (S4): Alice (adultA) is CURRENTLY the recorded voucher for Cora's
+  // details, so she may one-step declare a partnership over Cora. This is not a
+  // lone designation: the voucher pointer is self-assignable by any adult login
+  // co-member sharing Cora's group (via the delegated-details route), so any such
+  // adult can become the voucher and gain the same one-step power — the equal
+  // "all adults in a family group" boundary #2284 recorded. The gate keys on the
+  // pointer's CURRENT value; these fixtures fix it at member-a.
   detailsConfirmedByMemberId: "member-a" as string | null,
 };
 

@@ -51,8 +51,14 @@ const PARTNER_MEMBER_SELECT = {
   active: true,
   canLogin: true,
   ageTier: true,
-  // #2284 (S4): the deliberate "responsible adult" pointer the one-step partner
+  // #2284 (S4): the `detailsConfirmedByMemberId` voucher the one-step partner
   // declaration is now gated on, replacing the free-text FamilyGroupMember.role.
+  // This pointer is SELF-ASSIGNABLE by any adult login co-member sharing the
+  // family group (PUT .../family/[memberId]/details stamps it to the requester),
+  // so the one-step power is not a single designated adult's — it is open to
+  // every adult login co-member, matching #2284's "all adults in a family group
+  // are equal" boundary. The gate is real (voucher + shared group); it is only
+  // the *framing* of a lone "responsible adult" that would be false.
   detailsConfirmedByMemberId: true,
 } as const;
 
@@ -304,10 +310,15 @@ export async function getPartnerLinkState(memberId: string): Promise<PartnerLink
  *
  * #2284 (S4): re-anchored off the free-text `FamilyGroupMember.role` ADMIN
  * value — which was an accident of which flow created the group — onto the
- * deliberate responsible-adult pointer `detailsConfirmedByMemberId`, the same
- * condition `requestPartnerLink`'s one-step path now enforces. The
- * shared-family-group conjunct is retained so a stale voucher pointer left
- * behind after a member leaves the group grants nothing.
+ * `detailsConfirmedByMemberId` voucher pointer, the same condition
+ * `requestPartnerLink`'s one-step path now enforces. Because that pointer is
+ * self-assignable by any adult login co-member sharing the group (the
+ * delegated-details route stamps it to whoever confirms the member's details),
+ * this candidate list is not one designated adult's privilege — any adult login
+ * co-member can become the voucher and see the same candidates, consistent with
+ * #2284's "all adults are equal" boundary. The shared-family-group conjunct is
+ * retained so a stale voucher pointer left behind after a member leaves the
+ * group grants nothing.
  */
 export async function listOneStepPartnerCandidates(
   memberId: string
@@ -421,9 +432,15 @@ function checkPartnerEligibility(
  *   ADULT_INVITE consent flow).
  * - targetMemberId: a member of the initiator's own family group. If the
  *   target has a login this still creates a PENDING link (they must consent
- *   themselves). If the target has NO login, the initiator must be a
- *   family-group ADMIN of a group containing the target — the "one login
- *   manages the family" case — and the link is created CONFIRMED in one step.
+ *   themselves). If the target has NO login, the initiator must be the adult
+ *   currently recorded as the target's details voucher
+ *   (`detailsConfirmedByMemberId`) AND still share a family group with them —
+ *   the "one login manages the family" case — and the link is created CONFIRMED
+ *   in one step. That voucher pointer is self-assignable by any adult login
+ *   co-member (see the delegated-details route), so this one-step path is open
+ *   to EVERY adult login co-member, not a designated group admin: #2284 (S4)
+ *   retired the old `FamilyGroupMember.role` ADMIN gate in favour of the equal
+ *   "all adults in a family group" boundary.
  */
 export async function requestPartnerLink(params: {
   initiatorMemberId: string;
@@ -476,17 +493,21 @@ export async function requestPartnerLink(params: {
   if (targetIneligible) return { ok: false, ...targetIneligible };
 
   // One-step "one login manages the family": only when the target has no
-  // login of their own to consent with AND the initiator is the DELIBERATE
-  // responsible adult for them — the person recorded as having vouched for the
-  // target's details (`detailsConfirmedByMemberId`) — and still shares a family
-  // group with them. A login-holding target always consents personally.
+  // login of their own to consent with AND the initiator is the adult currently
+  // recorded as having vouched for the target's details
+  // (`detailsConfirmedByMemberId`) AND still shares a family group with them. A
+  // login-holding target always consents personally.
   //
   // #2284 (S4): re-anchored off the free-text `FamilyGroupMember.role` ADMIN
   // value, which was distributed by accident of which flow created the group,
-  // onto `detailsConfirmedByMemberId`, an action-derived responsible-adult
-  // signal. `initiator.id !== target.id` is already enforced above, so a
-  // self-confirmed target (`detailsConfirmedByMemberId === target.id`) can never
-  // satisfy this gate.
+  // onto `detailsConfirmedByMemberId`. Note this is NOT a lone designated
+  // "responsible adult": that pointer is self-assignable by ANY adult login
+  // co-member sharing the group (the delegated-details route stamps it to
+  // whoever confirms the member's details), so every adult login co-member can
+  // reach this gate — the equal "all adults in a family group" boundary #2284
+  // recorded, not a role privilege. `initiator.id !== target.id` is already
+  // enforced above, so a self-confirmed target
+  // (`detailsConfirmedByMemberId === target.id`) can never satisfy this gate.
   let oneStep = false;
   if (!target.canLogin) {
     const isRecordedVoucher =
@@ -641,7 +662,7 @@ export async function requestPartnerLink(params: {
     category: "family",
     outcome: "success",
     summary: oneStep
-      ? "Partner link declared one-step by family-group admin"
+      ? "Partner link declared one-step by the recorded details voucher"
       : "Partner link requested",
     details: JSON.stringify({
       initiatorMemberId: initiator.id,

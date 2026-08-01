@@ -3979,10 +3979,14 @@ and active; consent is required from the other member unless (a) an admin
 assigns the link directly (`assignedByAdminId` recorded, CONFIRMED
 immediately; both members are then emailed unless the assigning admin chose
 not to notify — the suppression is audited `notifyMember: false`, #1769a),
-(b) the target has **no login** and the initiator is a
-family-group ADMIN of a group containing the target ("one login manages the
-family" — a login-holding target always consents personally, and the no-login
-target's address is emailed that the link was recorded), or (c) the link
+(b) the target has **no login** and the initiator is the adult currently
+recorded as the target's details voucher (`detailsConfirmedByMemberId`) in a
+group containing the target ("one login manages the family" — #2284 (S4)
+replaced the old family-group-ADMIN gate; that voucher is self-assignable by any
+adult login co-member sharing the group, so this one-step path is open to every
+adult in the group, not a designated one. A login-holding target always consents
+personally, and the no-login target's address is emailed that the link was
+recorded), or (c) the link
 forms on a `PartnerInviteToken` claim minted with `createPartnerLink` — the
 claim itself is the consent, so the claim page discloses the partnership
 before the claimer accepts, and both parties' eligibility (including the
@@ -4174,19 +4178,28 @@ The four powers over a non-login member, and how #2284 settled each:
   `detailsConfirmedAt` (`src/lib/member-family-service.ts`), added to the
   member-facing payload by the same deliberate whitelist the #2424 rule uses —
   the confirmer's NAME only, and they are already a listed family adult.
-- **The one role-differentiated power: the one-step partner declaration (S4,
-  owner decision: retire the role reliance).** Declaring a CONFIRMED partner link
-  over a non-login adult co-member in one step was the *only* thing that ever read
+- **The one-step partner declaration (S4, owner decision: retire the role
+  reliance) — formerly the one role-differentiated power, now aligned with the
+  equal-adults boundary.** Declaring a CONFIRMED partner link over a non-login
+  adult co-member in one step was the *only* thing that ever read
   `FamilyGroupMember.role` (it required the actor to hold `role: "ADMIN"`), and
   who held ADMIN was an accident of which flow created the group. It is now
-  re-anchored onto the deliberate responsible-adult signal
-  `Member.detailsConfirmedByMemberId` — the adult recorded as having vouched for
-  that member's details — plus a still-shared family group
-  (`src/lib/member-partner-link.ts`). With that reader gone, **`FamilyGroupMember.role`
-  no longer gates authorisation anywhere**; its misleading schema comment is
-  corrected and the column is retained pending a dedicated removal migration.
-  Relatedly, the family-group join request no longer materialises a group around a
-  consentless target as `ADMIN` — it seeds `MEMBER`
+  re-anchored onto `Member.detailsConfirmedByMemberId` — the adult recorded as
+  having vouched for that member's details — plus a still-shared family group
+  (`src/lib/member-partner-link.ts`). **That voucher pointer is self-assignable
+  by any adult login co-member sharing the group**: `PUT
+  /api/members/family/[memberId]/details` stamps it to whoever confirms the
+  member's details, gated only on being an active adult login co-member with a
+  complete profile (no admin or group-lead requirement) and overwriting any prior
+  voucher. So the one-step power is **not** a lone designated "responsible
+  adult" — it is available to every adult login co-member, which is exactly the
+  "every login-holding adult in the group is equal" boundary above, and
+  deliberately so; no code may treat `detailsConfirmedByMemberId` as naming a
+  single, lead-appointed responsible adult. With the role reader gone,
+  **`FamilyGroupMember.role` no longer gates authorisation anywhere**; its
+  misleading schema comment is corrected and the column is retained pending a
+  dedicated removal migration. Relatedly, the family-group join request no longer
+  materialises a group around a consentless target as `ADMIN` — it seeds `MEMBER`
   (`src/app/api/members/family/request-join/route.ts`). Member-merge's
   `maxFamilyRole` upgrade is now vestigial rather than load-bearing.
 

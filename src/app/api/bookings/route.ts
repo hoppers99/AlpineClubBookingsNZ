@@ -963,6 +963,7 @@ export async function POST(request: NextRequest) {
 
     if (outcome.type === "created") {
       await notifyMemberGuestAdds(outcome.booking);
+      await notifyFamilyAdds(outcome.booking);
       return NextResponse.json(outcome.booking, { status: 201 });
     }
 
@@ -1001,6 +1002,7 @@ export async function POST(request: NextRequest) {
         notifyMember: parsed.data.notifyMember,
       });
       await notifyMemberGuestAdds(waitlisted.booking);
+      await notifyFamilyAdds(waitlisted.booking);
       return NextResponse.json(waitlisted.booking, { status: 201 });
     } catch (waitlistErr) {
       if (waitlistErr instanceof BookingGuestValidationError) {
