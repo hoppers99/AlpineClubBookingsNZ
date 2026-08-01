@@ -31,6 +31,7 @@ export interface PreparedEmailMessage {
   html: string;
   settings: EmailMessageSettings;
   overrideApplied: boolean;
+  bodyOverrideApplied: boolean;
 }
 
 interface EmailTemplateValidationIssue {
@@ -342,12 +343,209 @@ export function validateEmailTemplateContent({
   };
 }
 
+const BOOKING_URL_TOKEN_SOURCE = String.raw`\{\{\s*bookingUrl\s*\}\}`;
+const BOOKING_URL_TOKEN = new RegExp(BOOKING_URL_TOKEN_SOURCE, "i");
+const BOOKING_URL_CTA_LABEL_TEXT_SOURCE = String.raw`(?:(?:view|open|manage|review|see)\s+(?:(?:this|the|your)\s+)?booking(?:\s+(?:details?|online))?(?:\s+here)?|booking(?:\s+(?:details?|link))?)`;
+const BOOKING_URL_CTA_LABEL_SOURCE = String.raw`\b${BOOKING_URL_CTA_LABEL_TEXT_SOURCE}`;
+const BOOKING_URL_INLINE_SEPARATOR =
+  /(\s*(?:\||\u2022|\u00b7|\u2014|\u2013|;(?=\s)|&bull;|&middot;|<br\s*\/?>)\s*)/gi;
+const BOOKING_URL_CTA = new RegExp(
+  String.raw`(?:\s+(?:and|then)\s+|\s*)?${BOOKING_URL_CTA_LABEL_SOURCE}\s*(?::|[-\u2013\u2014])?\s*${BOOKING_URL_TOKEN_SOURCE}`,
+  "gi",
+);
+const BOOKING_URL_CTA_LABEL_CORE = String.raw`${BOOKING_URL_CTA_LABEL_SOURCE}[ \t]*(?::|[-\u2013\u2014])?`;
+const BOOKING_URL_CTA_EMPHASIZED_LABEL_CORE = String.raw`${BOOKING_URL_CTA_LABEL_TEXT_SOURCE}[ \t]*(?::|[-\u2013\u2014])?`;
+const BOOKING_URL_CTA_LABEL_WITH_OPTIONAL_EMPHASIS = String.raw`(?:${BOOKING_URL_CTA_LABEL_CORE}|\*\*${BOOKING_URL_CTA_EMPHASIZED_LABEL_CORE}\*\*|__${BOOKING_URL_CTA_EMPHASIZED_LABEL_CORE}__)`;
+const BOOKING_URL_CTA_LABEL_SUFFIX = new RegExp(
+  String.raw`(?:^|[ \t]*(?:\||\u2022|\u00b7|\u2014|\u2013|;|&bull;|&middot;)[ \t]*)${BOOKING_URL_CTA_LABEL_WITH_OPTIONAL_EMPHASIS}[ \t]*$`,
+  "i",
+);
+const BOOKING_URL_TOKEN_ONLY_LINE = new RegExp(
+  String.raw`^[ \t]*${BOOKING_URL_TOKEN_SOURCE}[ \t]*$`,
+  "i",
+);
+const BOOKING_URL_HTML_ANCHOR = new RegExp(
+  String.raw`<a\b(?=[^>]*${BOOKING_URL_TOKEN_SOURCE})[^>]*>.*?<\/a\s*>`,
+  "gi",
+);
+const BOOKING_URL_HTML_ANCHOR_TEXT = new RegExp(
+  String.raw`<a\b[^>]*>[^<]*${BOOKING_URL_TOKEN_SOURCE}[^<]*<\/a\s*>`,
+  "gi",
+);
+const BOOKING_URL_MARKDOWN_LINK = new RegExp(
+  String.raw`\[[^\]\r\n]*\]\(\s*${BOOKING_URL_TOKEN_SOURCE}\s*\)`,
+  "gi",
+);
+
+function findLastProtectedBookingSiblingEnd(value: string): number {
+  const patterns = [
+    /\{\{[^{}]+\}\}/g,
+    /(?:https?:\/\/|mailto:|\/(?=[A-Za-z0-9]))[^\s<>"']+/gi,
+    /[.!?](?=\s|$)/g,
+  ];
+  let lastEnd = 0;
+
+  for (const pattern of patterns) {
+    for (const match of value.matchAll(pattern)) {
+      if (BOOKING_URL_TOKEN.test(match[0])) continue;
+      lastEnd = Math.max(lastEnd, (match.index ?? 0) + match[0].length);
+    }
+  }
+
+  return lastEnd;
+}
+
+function findFirstProtectedBookingSiblingStart(value: string): number | null {
+  const patterns = [
+    /\{\{[^{}]+\}\}/g,
+    /(?:https?:\/\/|mailto:|\/(?=[A-Za-z0-9]))[^\s<>"']+/gi,
+  ];
+  let firstStart: number | null = null;
+
+  for (const pattern of patterns) {
+    for (const match of value.matchAll(pattern)) {
+      if (BOOKING_URL_TOKEN.test(match[0])) continue;
+      firstStart = Math.min(firstStart ?? (match.index ?? 0), match.index ?? 0);
+    }
+  }
+
+  return firstStart;
+}
+
+function stripRemainingBookingUrlTokens(fragment: string): string {
+  let rendered = fragment;
+  let tokenMatch = BOOKING_URL_TOKEN.exec(rendered);
+
+  while (tokenMatch?.index !== undefined) {
+    const before = rendered.slice(0, tokenMatch.index);
+    const after = rendered.slice(tokenMatch.index + tokenMatch[0].length);
+    const prefixEnd = findLastProtectedBookingSiblingEnd(before);
+    const prefix = before.slice(0, prefixEnd).trimEnd();
+    const siblingStart = findFirstProtectedBookingSiblingStart(after);
+    let suffix = "";
+
+    if (siblingStart !== null) {
+      const lead = after.slice(0, siblingStart);
+      const boundaries = Array.from(
+        lead.matchAll(
+          /(?:\||\u2022|\u00b7|\u2014|\u2013|,|;|\b(?:and|then)\b)\s*/gi,
+        ),
+      );
+      const lastBoundary = boundaries.at(-1);
+      suffix = after
+        .slice(
+          lastBoundary
+            ? (lastBoundary.index ?? 0) + lastBoundary[0].length
+            : 0,
+        )
+        .trimStart();
+    } else {
+      const nextSentence = after.match(/^[^.!?]*[.!?]\s*([\s\S]+)$/);
+      suffix = nextSentence?.[1]?.trimStart() ?? "";
+    }
+
+    rendered = prefix && suffix ? `${prefix} ${suffix}` : prefix + suffix;
+    tokenMatch = BOOKING_URL_TOKEN.exec(rendered);
+  }
+
+  return rendered;
+}
+
+function stripBookingUrlFromFragment(fragment: string): string {
+  const withoutKnownCta = fragment
+    .replace(BOOKING_URL_HTML_ANCHOR, "")
+    .replace(BOOKING_URL_HTML_ANCHOR_TEXT, "")
+    .replace(BOOKING_URL_MARKDOWN_LINK, "")
+    .replace(BOOKING_URL_CTA, "");
+  return stripRemainingBookingUrlTokens(withoutKnownCta);
+}
+
+function stripUnavailableBookingUrlLine(line: string): string | null {
+  if (!BOOKING_URL_TOKEN.test(line)) return line;
+
+  const parts = line.split(BOOKING_URL_INLINE_SEPARATOR);
+  const content = parts.filter((_part, index) => index % 2 === 0);
+  const separators = parts.filter((_part, index) => index % 2 === 1);
+  const renderedContent = content.map((part) =>
+    BOOKING_URL_TOKEN.test(part) ? stripBookingUrlFromFragment(part) : part,
+  );
+  const keptIndexes = renderedContent
+    .map((part, index) => (part.trim() ? index : -1))
+    .filter((index) => index >= 0);
+
+  const firstKeptIndex = keptIndexes[0];
+  if (firstKeptIndex === undefined) return null;
+
+  let rendered = renderedContent[firstKeptIndex] ?? "";
+  for (let index = 1; index < keptIndexes.length; index += 1) {
+    const contentIndex = keptIndexes[index];
+    if (contentIndex === undefined) continue;
+    // If one optional CTA was removed between two authored fragments, retain
+    // the separator that introduced the next surviving fragment. This keeps
+    // HTML breaks as breaks and avoids leaving a trailing pipe or bullet.
+    rendered += separators[contentIndex - 1] ?? "";
+    rendered += renderedContent[contentIndex];
+  }
+  return rendered.trimEnd();
+}
+
+function stripUnavailableBookingUrl(template: string): string {
+  const parts = template.split(/(\r\n|\n|\r)/);
+  const replacementLines = new Map<number, string | null>();
+  let rendered = "";
+
+  for (let index = 0; index + 2 < parts.length; index += 2) {
+    const line = parts[index] ?? "";
+    const nextLine = parts[index + 2] ?? "";
+    if (
+      parts[index + 1] !== undefined &&
+      BOOKING_URL_TOKEN_ONLY_LINE.test(nextLine)
+    ) {
+      const withoutCta = line.replace(BOOKING_URL_CTA_LABEL_SUFFIX, "").trimEnd();
+      if (withoutCta !== line.trimEnd()) {
+        // The relationship is deliberately exact and local: only a recognized
+        // booking CTA suffix immediately followed by a token-only line is
+        // removed. The suffix must start the line or follow a recognized action
+        // separator, so unrelated prose cannot be truncated; a bearer-action
+        // prefix remains on its line.
+        replacementLines.set(index, withoutCta || null);
+        replacementLines.set(index + 2, null);
+      }
+    }
+  }
+
+  for (let index = 0; index < parts.length; index += 2) {
+    const line = parts[index] ?? "";
+    const lineEnding = parts[index + 1] ?? "";
+    if (replacementLines.has(index)) {
+      const replacement = replacementLines.get(index);
+      if (replacement !== null && replacement !== undefined) {
+        rendered += replacement + lineEnding;
+      }
+      continue;
+    }
+    const stripped = stripUnavailableBookingUrlLine(line);
+    if (stripped !== null) rendered += stripped + lineEnding;
+  }
+
+  return rendered;
+}
+
 // test seam
 export function renderTemplateString(
   template: string,
   data: EmailTemplateData,
 ): string {
-  return template.replace(/\{\{([^{}]+)\}\}/g, (_match, tokenName: string) => {
+  // `bookingUrl` is deliberately optional: public contacts, aggregate messages,
+  // and members without detail-page authority must not receive a dead or
+  // privacy-leaking authenticated URL. Remove only its CTA when the authority
+  // resolver supplied no URL. A club-authored override may put a bearer
+  // payment/respond/consent action on the same line, and that action must
+  // survive. A dedicated booking-link line is still removed as one clean unit.
+  const renderable = data.bookingUrl
+    ? template
+    : stripUnavailableBookingUrl(template);
+  return renderable.replace(/\{\{([^{}]+)\}\}/g, (_match, tokenName: string) => {
     const key = tokenName.trim();
     const value = data[key];
     if (value === null || value === undefined) return "";
@@ -457,6 +655,7 @@ export async function prepareEmailMessage({
   let nextSubject = subject;
   let nextHtml = html;
   let overrideApplied = false;
+  let bodyOverrideApplied = false;
 
   if (override?.subject?.trim()) {
     // Subjects render without sensitive values so a stored override can never
@@ -473,6 +672,7 @@ export async function prepareEmailMessage({
       renderTemplateString(override.bodyText.trim(), data),
     );
     overrideApplied = true;
+    bodyOverrideApplied = true;
   }
 
   return {
@@ -483,6 +683,7 @@ export async function prepareEmailMessage({
     html: applyEmailMessageSettingsToHtml(nextHtml, settings),
     settings,
     overrideApplied,
+    bodyOverrideApplied,
   };
 }
 

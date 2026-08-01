@@ -515,6 +515,9 @@ export async function updateAdminRosterForDate(params: {
         // resolve the effective choreRoster preference (Option C hybrid).
         memberId: string | null
         inheritEmailFromId: string | null
+        // The member whose inbox actually receives this email. This differs
+        // from memberId for a dependent who inherits an adult's address.
+        recipientMemberId: string | null
         name: string
         chores: Array<{ name: string; description: string | null }>
       }>()
@@ -531,6 +534,9 @@ export async function updateAdminRosterForDate(params: {
             bookingId: a.bookingId,
             memberId: a.bookingGuest.member?.id ?? null,
             inheritEmailFromId: a.bookingGuest.member?.inheritEmailFromId ?? null,
+            recipientMemberId: a.bookingGuest.member?.inheritEmailFrom
+              ? a.bookingGuest.member.inheritEmailFromId
+              : (a.bookingGuest.member?.id ?? null),
             name: `${a.bookingGuest.firstName} ${a.bookingGuest.lastName}`,
             chores: [],
           })
@@ -576,7 +582,12 @@ export async function updateAdminRosterForDate(params: {
             const token = await createGuestChoreToken(guestId, date)
             const choreLink = `${baseUrl}/chores/${token}`
             await sendChoreRosterEmail(
-              { bookingId: guest.bookingId },
+              {
+                bookingId: guest.bookingId,
+                recipient: guest.recipientMemberId
+                  ? { kind: "member", memberId: guest.recipientMemberId }
+                  : { kind: "non-login-public-contact" },
+              },
               recipientEmail,
               guest.name,
               dateStr,

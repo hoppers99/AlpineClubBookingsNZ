@@ -1,7 +1,8 @@
 // Authoritative editor-safe defaults for the admin editor and server-side
 // render path. Keep template keys and wording aligned when the registry changes.
+import { BOOKING_URL_TEMPLATE_NAMES } from "@/lib/booking-email-template-contract";
 
-export const EMAIL_AUDIT_DEFAULTS = {
+const EMAIL_AUDIT_DEFAULTS_BASE = {
   "password-reset": {
     "defaultSubject": "Reset your {{CLUB_NAME}} password",
     "defaultBody": "Password Reset\n\nYou requested a password reset for your {{CLUB_NAME}} booking account.\n\nClick the button below to set a new password. This link expires in 1 hour.\n\nReset Password: {{BASE_URL}}/reset-password?token={{token}}\n\nIf you didn't request this, you can safely ignore this email. Your password will remain unchanged."
@@ -456,4 +457,47 @@ export const EMAIL_AUDIT_DEFAULTS = {
   }
 } as const;
 
-export type EmailAuditTemplateName = keyof typeof EMAIL_AUDIT_DEFAULTS;
+export type EmailAuditTemplateName = keyof typeof EMAIL_AUDIT_DEFAULTS_BASE;
+
+type EmailAuditDefaults = Record<
+  EmailAuditTemplateName,
+  { defaultSubject: string; defaultBody: string }
+>;
+
+function removeLegacyAuthenticatedBookingLines(body: string): string {
+  return body
+    .split("\n")
+    .map((line) => {
+      const urlIndex = line.indexOf("{{BASE_URL}}/bookings");
+      if (urlIndex < 0) return line;
+      // Preserve any composed optional token before the old link label. For
+      // example booking-review-approved starts its action line with
+      // {{adminNotesLine}}, whose independent note must remain in the default.
+      return line.slice(0, urlIndex).match(/^(?:\{\{[^{}]+\}\})*/)?.[0] ?? "";
+    })
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trimEnd();
+}
+
+/**
+ * Add the optional canonical booking link to every live concrete-booking
+ * default. Stored overrides are separate database rows and are never rewritten;
+ * an override that omits `bookingUrl` therefore remains byte-for-byte intact.
+ */
+export const EMAIL_AUDIT_DEFAULTS = Object.fromEntries(
+  Object.entries(EMAIL_AUDIT_DEFAULTS_BASE).map(([key, defaults]) => {
+    if (!BOOKING_URL_TEMPLATE_NAMES.has(key)) return [key, defaults];
+
+    const withoutLegacyBookingLink = removeLegacyAuthenticatedBookingLines(
+      defaults.defaultBody,
+    );
+    return [
+      key,
+      {
+        ...defaults,
+        defaultBody: `${withoutLegacyBookingLink}\n\nView this booking: {{bookingUrl}}`,
+      },
+    ];
+  }),
+) as EmailAuditDefaults;

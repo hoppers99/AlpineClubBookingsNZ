@@ -279,7 +279,7 @@ export async function POST(
       await audit("paid_zero", false);
       if (notifyMember !== false) {
         sendBookingConfirmedEmail(
-          { bookingId: booking.id },
+          { bookingId: booking.id, recipientMemberId: booking.memberId },
           booking.member.email,
           booking.member.firstName,
           booking.checkIn,
@@ -666,7 +666,7 @@ export async function POST(
     await audit("paid_charged", true);
     if (notifyMember !== false) {
       sendBookingConfirmedEmail(
-        { bookingId: booking.id },
+        { bookingId: booking.id, recipientMemberId: booking.memberId },
         booking.member.email,
         booking.member.firstName,
         booking.checkIn,

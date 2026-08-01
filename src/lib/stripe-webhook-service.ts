@@ -546,7 +546,7 @@ async function handlePaymentIntentSucceeded(
           memberId: booking.memberId,
         });
         await sendBookingConfirmedEmail(
-          { bookingId: booking.id },
+          { bookingId: booking.id, recipientMemberId: booking.memberId },
           booking.member.email,
           booking.member.firstName,
           booking.checkIn,
@@ -905,6 +905,7 @@ async function handleSetupIntentFailed(
   if (booking?.member?.email) {
     sendSetupIntentFailedEmail({
       bookingId: booking.id,
+      recipientMemberId: booking.memberId,
       email: booking.member.email,
       firstName: booking.member.firstName,
       checkIn: booking.checkIn,
