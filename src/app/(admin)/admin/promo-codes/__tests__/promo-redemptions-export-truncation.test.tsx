@@ -32,7 +32,22 @@ const ROW = {
   freeNightsUsed: 0,
   gaveBenefit: true,
   memberUseIndex: 1,
-  allocations: [],
+  // Two allocations so the row carries an expander: Reset clears the truncation
+  // notice but must NOT collapse open rows (see promo-redemptions-reset.test.tsx).
+  allocations: [
+    {
+      memberId: "member-1",
+      name: "Jane Doe",
+      discountCents: 1000,
+      freeNightsUsed: 0,
+    },
+    {
+      memberId: "member-2",
+      name: "John Doe",
+      discountCents: 1000,
+      freeNightsUsed: 0,
+    },
+  ],
 };
 
 const TOTALS = {
@@ -146,11 +161,14 @@ describe("PromoRedemptionsPanel export truncation (#2244)", () => {
     // assertion is on its CONTENT arriving, not on the region appearing.
     await screen.findByText(/Incomplete export/);
     const notice = screen.getByRole("status");
+    // Counts are digit-grouped: the operator is being asked to compare two
+    // five-figure numbers, so "10,000 of 12,345" is the readable form and it
+    // matches how the operator guide states the cap.
     expect(notice).toHaveTextContent(
-      "Incomplete export: 10000 of 12345 matching redemptions",
+      "Incomplete export: 10,000 of 12,345 matching redemptions",
     );
     // The counts an operator needs to act on: the cap, and what to do instead.
-    expect(notice).toHaveTextContent("capped at 10000 rows");
+    expect(notice).toHaveTextContent("capped at 10,000 rows");
     expect(notice).toHaveTextContent(/narrow the redeemed-date range/i);
 
     // The file is still delivered — a partial export beats none — but it is
@@ -191,5 +209,34 @@ describe("PromoRedemptionsPanel export truncation (#2244)", () => {
     await waitFor(() =>
       expect(screen.queryByText(/Incomplete export/)).toBeNull(),
     );
+  });
+
+  // Reset is the documented way to restore all dates, all lodges and page 1, so
+  // it is a filter change too: leaving the notice up would have it quote the
+  // count matched by the filter the operator has just cleared.
+  it("clears the notice when the filters are reset", async () => {
+    stubFetch(true);
+    renderPanel();
+    await screen.findByText("ABC123");
+
+    // Reset only becomes available once a filter is set, so filter first, then
+    // export under that filter, then reset.
+    fireEvent.change(screen.getByLabelText("Redeemed from"), {
+      target: { value: "2026-07-01" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /CSV/ }));
+    await screen.findByText(/Incomplete export/);
+    fireEvent.click(screen.getByRole("button", { name: "Show member split" }));
+    expect(screen.getByText("Per-member split (2 members)")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reset" }));
+    await waitFor(() =>
+      expect(screen.queryByText(/Incomplete export/)).toBeNull(),
+    );
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
+    // Reset clears the notice WITHOUT collapsing open rows — the distinction
+    // #2358 established and this fix must not undo by routing Reset through
+    // the ordinary filter-change path.
+    expect(screen.getByText("Per-member split (2 members)")).toBeVisible();
   });
 });

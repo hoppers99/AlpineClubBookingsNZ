@@ -21,7 +21,10 @@ All notable public reference-release changes should be recorded here.
   matched, the cap, and whether it was truncated. An export that matched exactly
   10,000 rows is complete and is not flagged. The CSV contents are unchanged —
   no warning row was added, because that would break every spreadsheet and
-  parser that reads it.
+  parser that reads it. The notice belongs to the filter that produced the file,
+  so changing a filter — or clicking **Reset** — clears it rather than leaving it
+  quoting a count that no longer matches what is on screen; from then on the
+  file's own `-partial` name is what carries the shortfall.
 
   Two smaller corrections ship alongside. Editing a calendar event that somebody
   else deleted a moment earlier now reports **Event not found** instead of a

@@ -125,7 +125,10 @@ and stored as integer cents; dates are NZ date-only lodge nights.
    discounts from a partial file: narrow the redeemed-date range (or pick one
    lodge at a time) and export each window separately. The audit entry records
    the same shortfall, so a later reviewer can tell a partial export from a
-   complete one.
+   complete one. The notice describes the file you just downloaded under the
+   filters that were set at the time, so changing a filter — or clicking
+   **Reset** — clears it; after that the `-partial` in the file's name is what
+   tells you the file is short.
 
 ### What happens when a booking is edited and the code has run out
 

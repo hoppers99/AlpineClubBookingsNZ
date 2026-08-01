@@ -22,6 +22,7 @@ import { AdminDataTable } from "@/components/admin/admin-data-table";
 import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
 import { DateRangeControls } from "@/components/admin/date-range-controls";
 import { auditAndPaymentsDateRangePresets } from "@/lib/date-range-presets";
+import { APP_LOCALE } from "@/config/operational";
 import { formatCents } from "@/lib/utils";
 import { useLodgeOptions } from "@/components/lodge-select";
 import {
@@ -139,6 +140,13 @@ function formatStayDate(value: string): string {
   });
 }
 
+// The truncation notice asks an operator to compare two five-figure counts, so
+// they are grouped the way the rest of the site groups numbers (and the way the
+// operator guide states the cap): "10,000 of 12,345", not "10000 of 12345".
+function formatCount(value: number): string {
+  return value.toLocaleString(APP_LOCALE);
+}
+
 // A downloaded file outlives the on-screen notice, so a capped export (#2244)
 // says so in its own name. The suffix is the only truncation marker outside the
 // UI: the CSV body stays a plain row set, since a trailing "truncated" line
@@ -252,14 +260,24 @@ export function PromoRedemptionsPanel({
     void fetchRedemptions();
   }, [fetchRedemptions]);
 
-  // Any filter change resets to the first page and collapses open rows. The
-  // truncation notice describes the file the PREVIOUS filter produced, so it is
-  // cleared too rather than left to describe a set it no longer matches.
+  // What EVERY change to the filtered set invalidates, whether it came from a
+  // filter control or from Reset. Page 1 because the row set is different; the
+  // truncation notice because it describes the file the PREVIOUS filter
+  // produced, and left up it would quote a matched count for a set that is no
+  // longer on screen (#2244). Open rows are deliberately NOT included — Reset
+  // keeps them, and that distinction is pinned by
+  // `promo-redemptions-reset.test.tsx`.
+  function resetDatasetView() {
+    setPage(1);
+    setExportTruncation(null);
+  }
+
+  // A filter control additionally collapses open rows, since the expanded
+  // splits belong to rows the new filter may not return.
   function applyFilterChange(mutator: () => void) {
     mutator();
-    setPage(1);
+    resetDatasetView();
     setExpanded(new Set());
-    setExportTruncation(null);
   }
 
   function toggleExpanded(id: string) {
@@ -408,15 +426,17 @@ export function PromoRedemptionsPanel({
         {exportTruncation ? (
           <div className="rounded-md border border-warning-6 bg-warning-3 px-4 py-3 text-sm text-warning-11">
             <p className="font-medium">
-              Incomplete export: {exportTruncation.rowCount} of{" "}
-              {exportTruncation.matchedRowCount} matching redemptions
+              Incomplete export: {formatCount(exportTruncation.rowCount)} of{" "}
+              {formatCount(exportTruncation.matchedRowCount)} matching
+              redemptions
             </p>
             <p className="mt-1">
-              A single export is capped at {exportTruncation.limit} rows, so the
-              downloaded file holds only the {exportTruncation.rowCount} most
-              recent. Do not reconcile discounts from it as though it were
-              complete — narrow the redeemed-date range (or the lodge) and
-              export each window separately to cover every row.
+              A single export is capped at {formatCount(exportTruncation.limit)}{" "}
+              rows, so the downloaded file holds only the{" "}
+              {formatCount(exportTruncation.rowCount)} most recent. Do not
+              reconcile discounts from it as though it were complete — narrow
+              the redeemed-date range (or the lodge) and export each window
+              separately to cover every row.
             </p>
           </div>
         ) : null}
@@ -540,13 +560,21 @@ export function PromoRedemptionsPanel({
               </select>
             </div>
           ) : null}
+          {/*
+            Reset changes the filtered set, so it goes through
+            `resetDatasetView` rather than clearing the fields and page by hand:
+            clearing them alone left the truncation notice up, still quoting the
+            matched count of the filter just cleared (#2244). It stops short of
+            `applyFilterChange` on purpose — Reset keeps open rows expanded,
+            pinned by `promo-redemptions-reset.test.tsx`.
+          */}
           <DatasetResetButton
             disabled={!filterActive && page === 1}
             onReset={() => {
               setFrom("");
               setTo("");
               setLodgeId("");
-              setPage(1);
+              resetDatasetView();
             }}
           />
         </CardContent>
