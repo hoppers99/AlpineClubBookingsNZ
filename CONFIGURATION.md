@@ -220,14 +220,19 @@ unpaid send's payment instructions and still does not — add `{{paymentDueNote}
 to such a body, or its members are told a `Total Due:` figure and never told how
 to pay it. The sentence renders on the unpaid send and nowhere else; on every
 other send `{{paymentDueNote}}` is empty, so it is declared emptyable and the
-editor warns if you type a label in front of it. Note that nothing nets account
-credit off such an invoice automatically: an admin who wants a member's credit
-applied does it in Xero, which is why the sentence describes a possibility
-rather than promising one.
+editor warns if you type a label in front of it. Where the booking app's own
+records show **no** account credit against the booking — which is every unpaid
+confirmation the system sends today — nothing nets credit off such an invoice
+for you, and an admin who wants a member's credit applied does it in Xero, which
+is why the sentence describes a possibility rather than promising one.
 
-Where the booking app's OWN records say account credit has been applied to that
-booking, the unpaid send states the netting instead of the sentence above
-(#2483). `{{paymentOutcome}}` then renders three reconciling lines —
+Where the booking app's OWN records DO say account credit has been applied to
+that booking, two things change. The invoice is netted **for you** — the
+allocate-existing engine (#1620) allocates the member's credit against it
+automatically the moment those records exist — so do **not** allocate credit to
+that invoice by hand in Xero as well, or the member's credit is spent twice. And
+the unpaid send states the netting instead of the sentence above (#2483).
+`{{paymentOutcome}}` then renders three reconciling lines —
 `Booking Total: $300.00`, `Account credit applied: -$120.00`,
 `Total Due: $180.00` — and `{{paymentDueNote}}` names the netted figure, states
 the arithmetic in words, and asks the member to transfer that figure and tell
@@ -238,10 +243,23 @@ with no edit at all; again, no new token was added. `{{creditNote}}` stays empty
 here — it explains where the money came from on a booking that has been settled,
 and an unpaid one has no such story. The figure comes from the club's own credit
 records, not from Xero, so the email never waits on your accounting system to
-catch up; a separate reconciliation check warns admins if the two ever disagree.
-The netting is stated only when those records answer cleanly: with no applied
-credit, or with credit that would leave nothing to transfer, the conditional
+catch up; a separate reconciliation check (#2501) is being built to warn admins
+if the two ever disagree — until it lands, that comparison is a manual check.
+
+Two edge cases behave differently, and both err towards asking a member for
+**less** rather than more. When the credit covers the booking exactly, the same
+three lines render and land on `Total Due: $0.00`, and the paragraph says there
+is nothing further to transfer — it never asks for the full price. When the
+records hold **more** credit than the booking costs, the two cannot both be
+true, so the email names no figure at all: it states the `Booking Total` as a
+fact, `{{totalDue}}` is **empty**, and the member is asked to wait while the
+club confirms what, if anything, is left to pay. An admin gets a log entry for
+that case. A booking with no applied credit is unchanged — the conditional
 sentence above renders exactly as before.
+
+When the Xero module is off and you invoice by hand, the "Whole-lodge booking
+needs a manual invoice" alert quotes the same netted amount the member was asked
+to transfer, so invoice what the alert says rather than the booking's price.
 
 Account credit spent on the booking is explained by the pre-composed
 `{{creditNote}}` block, on the same convention again. When a member put account

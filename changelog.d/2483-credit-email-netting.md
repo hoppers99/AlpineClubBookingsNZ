@@ -13,26 +13,40 @@
 
   The figure comes from the club's own credit records, not from Xero, so the
   email is sent immediately and never waits on the accounting system to catch
-  up. Those are the same records that decide what Xero will take off the
-  invoice, so the two agree by construction — what can still put them out of
-  step is someone editing a credit note in Xero by hand, and a separate
-  reconciliation check (issue #2501) is being built to warn admins whenever the
-  two disagree, rather than letting a member be the one who notices.
+  up. Those records are the club's own law about what a member owes — the same
+  figure the "record a payment" screen works out — so the amount asked for is
+  exactly what the club would accept as settlement in full. Keeping them in step
+  with Xero afterwards is a separate job: a hand-edited credit note, or an
+  allocation the accounting system never finished processing, can still put the
+  two out of step, and a reconciliation check (issue #2501) is being built to
+  warn admins whenever that happens rather than letting a member be the one who
+  notices.
 
   Because of that timing, the wording changes direction when the netting is
   shown: instead of "transfer the amount the invoice shows", it asks the member
-  to transfer the figure in the email and let the club know if their invoice
-  says something different. An invoice that has not been reduced yet would
-  otherwise cause the very overpayment this fixes.
+  to hold the email's figure if their invoice asks for **more**, pay the invoice
+  if it asks for **less**, and tell the club either way. An invoice that has not
+  been reduced yet would otherwise cause the very overpayment this fixes, and
+  chasing an invoice that asks for more than the club wants would cause it in
+  the other direction.
+
+  Two edge cases both err towards asking for less rather than more. When the
+  credit covers the booking exactly, the confirmation says so and asks for
+  nothing — it never quotes the full price. When the records somehow hold more
+  credit than the booking costs, the two cannot both be true, so the email names
+  no figure at all: it states the booking's price as a fact, asks the member to
+  wait while the club works out what is left to pay, and logs the contradiction
+  for an admin.
+
+  Clubs that invoice by hand (the accounting module switched off) get the same
+  figure in their "needs a manual invoice" alert, so the invoice the club raises
+  and the amount the member was asked for can never disagree.
 
   Nothing else about the email changed. A booking with no credit against it —
   which is every unpaid confirmation the system sends today — is exactly as
   #2444 left it, word for word, and so are confirmations that are paid, partly
-  paid, or covered entirely by credit. The system also declines to state a
-  netting it cannot make sense of (credit as large as the whole booking on a
-  booking that is still unpaid, or a credit record it could not read): the
-  member gets the #2444 wording and an admin gets a log entry, because a precise
-  figure that is wrong would be worse than none. No new token was added, so a
-  club with customised wording gets all of this without editing anything —
+  paid, or covered entirely by credit. A credit record the system could not read
+  falls back to the #2444 wording too. No new token was added, so a club with
+  customised wording gets all of this without editing anything —
   `{{totalDue}}` simply carries the netted amount, which is what it has always
   meant.

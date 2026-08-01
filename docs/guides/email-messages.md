@@ -269,9 +269,13 @@ Two consequences worth knowing before you edit one:
   booking's own price; the invoice is a separate document you can adjust in
   Xero, so the email tells the member to follow the invoice rather than the
   email. The sentence is conditional on purpose — for most members the two
-  agree — and it states no second amount. Nothing puts a member's account credit
-  towards such an invoice for you; if you want that, do it in Xero, and the
-  member has already been told to pay what the invoice asks. No new token was
+  agree — and it states no second amount. Where the booking system holds **no**
+  account credit against the booking, which is every unpaid confirmation it
+  sends today, nothing puts a member's credit towards such an invoice for you;
+  if you want that, do it in Xero, and the member has already been told to pay
+  what the invoice asks. (Where it **does** hold credit against the booking,
+  that allocation is made for you — see the next point — so doing it by hand as
+  well spends the member's credit twice.) No new token was
   added, so if your wording keeps `{{paymentOutcome}}` (or uses
   `{{paymentDueNote}}` on its own) the sentence arrives with no edit at all — but
   the same caveat as `{{creditNote}}` above applies: a body that writes its own
@@ -291,14 +295,27 @@ Two consequences worth knowing before you edit one:
   club if their invoice says something different. `{{totalDue}}` carries the
   netted `$180.00`, so a body that writes its own money lines gets the right
   figure without you touching it; `{{creditNote}}` stays empty, because that
-  block explains a booking that has already been paid for. Two things are worth
-  knowing. The figure comes from the booking system's own credit records, so the
-  email never waits on your accounting system — and if the invoice has not caught
-  up yet, the member is told to pay the email's figure, not the invoice's, which
-  is the opposite of the conditional sentence above and is deliberate. And it is
-  stated only when those records answer cleanly: a booking with no credit against
-  it, or one whose credit would leave nothing to transfer, gets the conditional
-  sentence exactly as before.
+  block explains a booking that has already been paid for. The invoice itself is
+  netted for you at the same time (the club's own credit records are what drive
+  that allocation), so there is nothing to do in Xero by hand — doing it anyway
+  spends the member's credit twice.
+
+  Three things are worth knowing. The figure comes from the booking system's own
+  credit records, so the email never waits on your accounting system — and if
+  the invoice has not caught up yet, the member is told to pay the email's
+  figure rather than a **larger** invoice. That is the opposite of the
+  conditional sentence above and is deliberate; it is also one-directional, so
+  an invoice asking for **less** is still the one the member pays, and either
+  way they are asked to tell the club. Next, the two edge cases: credit that
+  covers the booking exactly renders the same three lines ending in
+  `Total Due: $0.00` and asks for nothing, and credit **larger** than the
+  booking's price makes the email name no figure at all — it states the
+  `Booking Total`, leaves `{{totalDue}}` empty, asks the member to wait while
+  the club works out what is left to pay, and logs it for an admin. A booking
+  with no credit against it gets the conditional sentence exactly as before.
+  Finally, if you invoice by hand because the Xero module is off, the
+  "Whole-lodge booking needs a manual invoice" alert quotes the netted amount
+  the member was asked for — invoice that, not the booking's price.
 
 ### Consent emails ignore a member's notification preferences
 
