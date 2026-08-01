@@ -42,17 +42,37 @@ const REAL_CLOCK_OPT_OUT_FILES: Record<string, string> = {
 /** Guards against an entry being added to the map without a reviewed count. */
 const REAL_CLOCK_OPT_OUT_COUNT = 1;
 
-const SRC_ROOT = path.join(process.cwd(), "src");
-
 const OPT_OUT_CALL = /optOutOfFrozenClock\(\s*(["'`])([\s\S]*?)\1\s*\)/g;
 const OPT_OUT_MENTION = /optOutOfFrozenClock\s*\(/;
+
+/**
+ * Mirrors what Vitest actually collects, so the allowlist cannot be dodged by
+ * putting an opt-out outside `src/` — `scripts/` carries six suites of its own.
+ * `e2e/` and `.claude/` are the two directories `vitest.config.ts` excludes.
+ */
+const SKIPPED_DIRECTORIES = new Set([
+  "node_modules",
+  ".git",
+  ".next",
+  ".claude",
+  "e2e",
+  "coverage",
+  "playwright-report",
+  "test-results",
+]);
+
+const TEST_FILE_NAME = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
 
 function walkTestFiles(dir: string): string[] {
   if (!fs.existsSync(dir)) return [];
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-    const entryPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) return walkTestFiles(entryPath);
-    return /\.test\.tsx?$/.test(entry.name) ? [entryPath] : [];
+    if (entry.isDirectory()) {
+      if (SKIPPED_DIRECTORIES.has(entry.name)) return [];
+      return walkTestFiles(path.join(dir, entry.name));
+    }
+    return TEST_FILE_NAME.test(entry.name)
+      ? [path.join(dir, entry.name)]
+      : [];
   });
 }
 
@@ -60,7 +80,7 @@ function repoRelative(absolutePath: string): string {
   return path.relative(process.cwd(), absolutePath).split(path.sep).join("/");
 }
 
-const TEST_FILES = walkTestFiles(SRC_ROOT);
+const TEST_FILES = walkTestFiles(process.cwd());
 
 /**
  * This file names the helper (and calls it with bad input to prove it refuses),
@@ -74,6 +94,14 @@ describe("frozen test clock", () => {
     // A broken walker would make every assertion below vacuous — the exact
     // failure mode this whole issue is about.
     expect(TEST_FILES.length).toBeGreaterThan(500);
+    // …including the suites that live outside src/, which an opt-out could
+    // otherwise hide in.
+    expect(TEST_FILES.map(repoRelative)).toContain(
+      "scripts/__tests__/quality-report.test.ts"
+    );
+    expect(TEST_FILES.map(repoRelative)).toContain(
+      "scripts/ci/check-pr-changelog-fragment.test.mjs"
+    );
   });
 
   it("pins 'today' for this file", () => {

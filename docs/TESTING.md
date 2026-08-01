@@ -144,8 +144,22 @@ never what the date is.
 The freeze is not airtight by construction: a file can opt out, and code can
 reach a date through a path the freeze does not cover. So
 `.github/workflows/clock-rollover-canary.yml` re-runs the whole unit suite with
-"today" wound forward by **1 day, 1 month (30 days) and 1 year (365 days)** as
-three parallel matrix jobs.
+the machine's **real** clock wound forward by **a day, a month and a year**, as
+three parallel matrix jobs, and fails if any test result changes.
+
+That is the acceptance criterion stated directly: winding the real system clock
+forward by a year must not change any test result. A properly frozen test cannot
+notice the canary at all — it still sees 1 July 2026. What notices is anything
+that escaped the freeze, which is exactly the population that will go red on its
+own one day.
+
+The shift uses [libfaketime](https://github.com/wolfcw/libfaketime) rather than
+setting the runner's system clock: no VM-wide side effects, no fight with NTP
+resync, and `FAKETIME_DONT_FAKE_MONOTONIC=1` leaves monotonic clocks real so
+timers, awaited promises and `performance.now()` behave normally. A dedicated
+step proves the shift actually reaches Node's `Date` before the suite runs,
+because a canary whose clock shift silently failed would report green while
+checking nothing.
 
 - It runs on **pushes to `main`** and on a **nightly schedule** (14:00 UTC =
   02:00 NZST), plus manual `workflow_dispatch`.
@@ -156,30 +170,36 @@ three parallel matrix jobs.
   and cannot block unrelated work on a problem that is, by construction, not
   urgent yet.
 
-A red canary means some test still depends on the calendar and will go red on its
-own one day, taking `main` and every open PR with it. Fix the fixture; do not
-opt the file out.
+A red canary means some test still reaches the real calendar. Fix the test so it
+reads the frozen clock; do not opt the file out.
 
-### Winding the clock locally
+Reproduce a canary job locally on Linux:
 
-Two environment variables, read by `src/lib/__tests__/helpers/clock.ts`:
+```bash
+sudo apt-get install -y faketime
+FAKETIME_DONT_FAKE_MONOTONIC=1 faketime '+366d' npm test
+```
+
+### Moving the frozen instant locally
+
+Separately from the canary, two environment variables move the **frozen** instant
+itself. They are a local diagnostic — the canary does not use them, because
+moving the frozen date tests something else entirely (whether fixtures survive a
+different "today") and would fail suites that are perfectly correct.
 
 | Variable | Meaning |
 | --- | --- |
-| `TEST_CLOCK_OFFSET_DAYS` | Whole days added to the frozen instant. May be negative. What the canary sets. |
+| `TEST_CLOCK_OFFSET_DAYS` | Whole days added to the frozen instant. May be negative. |
 | `TEST_CLOCK_ISO` | An absolute ISO-8601 instant replacing the frozen one entirely. |
 
 ```bash
-# Reproduce a canary job.
-TEST_CLOCK_OFFSET_DAYS=365 npm test
-
 # Reproduce a specific rollover — this is the date #2443 predicted would break
-# the two subscription-gate suites.
+# the two subscription-gate suites, and it does.
 TEST_CLOCK_ISO=2026-12-02T00:00:00.000Z npx vitest run \
   src/lib/__tests__/phase2-guest-subscription.test.ts
 ```
 
 A malformed value fails the run rather than falling back to the frozen instant —
-a canary that quietly tested the default clock would report green while checking
-nothing, which is the same vacuous-pass failure this whole convention exists to
+falling back would report green while checking something other than what you
+asked for, which is the same vacuous-pass failure this whole convention exists to
 prevent.
