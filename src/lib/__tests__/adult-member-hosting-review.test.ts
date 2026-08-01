@@ -1,7 +1,11 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { AdminReviewStatus, AgeTier } from "@prisma/client";
+import {
+  AdminReviewStatus,
+  AgeTier,
+  type MemberGuestConsentStatus,
+} from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
@@ -45,7 +49,7 @@ function guest(
   id: string,
   nights: string[],
   memberRow: ReturnType<typeof member> | null = null,
-  consentStatus: string | null = null,
+  consentStatus: MemberGuestConsentStatus | null = null,
 ) {
   return {
     id,
@@ -677,6 +681,7 @@ describe("participant construction (#2364)", () => {
           lastName: "Row",
           stayStart: new Date("2026-07-04T00:00:00.000Z"),
           stayEnd: new Date("2026-07-06T00:00:00.000Z"),
+          consentStatus: null,
           nights: [],
           member: null,
         },
