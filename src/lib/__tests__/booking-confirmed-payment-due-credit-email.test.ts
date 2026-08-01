@@ -117,7 +117,7 @@ async function send(
 ): Promise<{ templateData: EmailTemplateData; html: string }> {
   const { sendBookingConfirmedEmail } = await import("@/lib/email/booking");
   await sendBookingConfirmedEmail(
-    { bookingId: "bk_2444" },
+    { bookingId: "bk_2444", recipientMemberId: "member_2444" },
     "member@example.org",
     "Sam",
     CHECK_IN,
