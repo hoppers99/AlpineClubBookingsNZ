@@ -17,6 +17,18 @@
   does less work per stray request, because it no longer builds and throws away
   a full page for a robot.
 
+  The protection is deliberately doubled up rather than left to one mechanism.
+  As well as not building a page for these requests, the site now applies its
+  usual security instructions to them too. It used to skip that work for anything
+  that looked like a picture, on the assumption that pictures do not need it —
+  and measuring the assumption showed it was not saving anything: the check is
+  fractionally faster than it was, the genuinely heavy traffic (the site's own
+  program files) is still skipped, and the club's own logos and photographs are
+  now served with the same protective headers every page carries. Two of those
+  exceptions turned out to be for files the site has never had — leftovers naming
+  a logo and an icon that do not exist — so they were removed rather than kept as
+  two addresses nobody was protecting.
+
   A second, quieter fault was found while measuring this and is fixed with it. A
   few ordinary addresses were being mistaken for the site's internal machinery
   because they merely began with the same letters, and they were being served
