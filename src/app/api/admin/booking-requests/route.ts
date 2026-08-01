@@ -5,7 +5,7 @@ import {
   buildBookingRequestListWhere,
   serializeBookingRequestForAdmin,
 } from "@/lib/booking-request";
-import { parseBookingRequestQuoteOptions } from "@/lib/booking-request-quotes";
+import { readBookingRequestQuoteOptionsForDisplay } from "@/lib/booking-request-quotes";
 import { loadSchoolGroupSoftCap } from "@/lib/lodge-settings";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
@@ -102,34 +102,49 @@ export async function GET(req: NextRequest) {
     )
   );
 
-  const data = requests.map((request) => ({
-    ...serializeBookingRequestForAdmin(request),
-    schoolGroupSoftCap: softCapByLodgeId.get(request.lodgeId)!,
-    pricedByMemberName: request.pricedByMemberId
-      ? reviewerNames.get(request.pricedByMemberId) ?? null
-      : null,
-    reviewedByMemberName: request.reviewedByMemberId
-      ? reviewerNames.get(request.reviewedByMemberId) ?? null
-      : null,
-    requestedByMemberName: request.requestedByMemberId
-      ? reviewerNames.get(request.requestedByMemberId) ?? null
-      : null,
-    latestQuote: latestQuoteByRequestId.has(request.id)
-      ? {
-          id: latestQuoteByRequestId.get(request.id)!.id,
-          version: latestQuoteByRequestId.get(request.id)!.version,
-          status: latestQuoteByRequestId.get(request.id)!.status,
-          pricingMode: latestQuoteByRequestId.get(request.id)!.pricingMode,
-          sentAt: latestQuoteByRequestId.get(request.id)!.sentAt?.toISOString() ?? null,
-          responseTokenExpiresAt:
-            latestQuoteByRequestId.get(request.id)!.responseTokenExpiresAt?.toISOString() ??
-            null,
-          options: parseBookingRequestQuoteOptions(
-            latestQuoteByRequestId.get(request.id)!.options
-          ),
-        }
-      : null,
-  }));
+  const data = requests.map((request) => {
+    const quote = latestQuoteByRequestId.get(request.id) ?? null;
+    // #2342: the third stored blob this page parses per row, and — once the
+    // guest list and the member links were made tolerant — the last one that
+    // could still 500 every filter on the whole page over a single corrupt
+    // row. Same display tolerance: the row serialises with its quote details
+    // OMITTED and a needs-attention flag, instead of throwing. Everything that
+    // ACTS on a quote (send, hold, the requester's accept, the expiry cron)
+    // keeps using the strict parseBookingRequestQuoteOptions and keeps
+    // refusing.
+    const quoteDisplay = quote
+      ? readBookingRequestQuoteOptionsForDisplay(quote.options)
+      : null;
+    return {
+      ...serializeBookingRequestForAdmin(request),
+      schoolGroupSoftCap: softCapByLodgeId.get(request.lodgeId)!,
+      pricedByMemberName: request.pricedByMemberId
+        ? reviewerNames.get(request.pricedByMemberId) ?? null
+        : null,
+      reviewedByMemberName: request.reviewedByMemberId
+        ? reviewerNames.get(request.reviewedByMemberId) ?? null
+        : null,
+      requestedByMemberName: request.requestedByMemberId
+        ? reviewerNames.get(request.requestedByMemberId) ?? null
+        : null,
+      latestQuote:
+        quote && quoteDisplay
+          ? {
+              id: quote.id,
+              version: quote.version,
+              status: quote.status,
+              pricingMode: quote.pricingMode,
+              sentAt: quote.sentAt?.toISOString() ?? null,
+              responseTokenExpiresAt:
+                quote.responseTokenExpiresAt?.toISOString() ?? null,
+              options: quoteDisplay.options,
+            }
+          : null,
+      // Emitted only when THIS blob failed, alongside the serialiser's own
+      // per-blob guest/link flags, so the panel states exactly what is wrong.
+      ...(quoteDisplay?.needsAttention ? { quoteDataNeedsAttention: true } : {}),
+    };
+  });
 
   return NextResponse.json({ data, page, pageSize, total });
 }

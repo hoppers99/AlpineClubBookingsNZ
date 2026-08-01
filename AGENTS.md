@@ -284,6 +284,15 @@ an orchestrator with subagents, not a single agent doing everything inline:
   worktree. They commit on the branch but never push, never touch GitHub, and
   never run the full test suite locally (lint + typecheck + targeted tests
   only; PR CI arbitrates the full suite).
+- **Per-worktree runtime isolation:** before an implementor runs any `npm`
+  command, the orchestrator verifies the Node major required by `package.json`
+  and prepares a physical `node_modules` inside that issue's worktree using the
+  Windows-safe procedure in `docs/agents/CODEX_WORKFLOW.md`. Never junction or
+  symlink `node_modules` between active branches: `npm run db:generate` writes a
+  branch-specific Prisma Client there, so sharing it creates cross-lane type
+  drift. Share npm's content-addressed cache, not installed dependency trees.
+  The orchestrator coordinates installs; an implementor runs one only when
+  explicitly authorised and never falls back to an implicit `npx` download.
 - **Adversarial-review subagents** attack the diff before the PR opens, using
   distinct lenses (for example correctness/domain-invariants versus
   drift/consistency/UX). The orchestrator triages findings and dispatches
@@ -308,6 +317,13 @@ an orchestrator with subagents, not a single agent doing everything inline:
   overlap, resolved at merge time. Before claiming a lane, check open PRs and
   issue comments for other active agents and coordinate on-issue instead of
   colliding.
+- **Durable lane state and throughput:** every long-running implementor keeps a
+  checkpoint outside the worktree and commits coherent stages locally, so a
+  session or usage limit cannot erase the only record of progress. During a
+  multi-issue wave, keep available agent slots on independent,
+  dependency-ready implementation or review work while the orchestrator waits
+  on CI. Do not manufacture parallelism across colliding files or unresolved
+  dependencies merely to fill a slot.
 
 ## Done Criteria
 
@@ -425,6 +441,10 @@ handed an epic-with-children or asked to run several related issues at once.
 - Run up to ~4 **parallel lanes**, each in its own **git worktree** (never share
   a checkout — parallel branches entangle HEAD). One lane per group of issues
   whose code surfaces do not clash.
+- Each lane keeps a physical, isolated `node_modules`; sharing only npm's cache
+  lets installs reuse downloaded packages without sharing generated Prisma
+  state. Run the complete Windows runtime/dependency preflight in
+  `docs/agents/CODEX_WORKFLOW.md` before delegating validation.
 - Within a lane, **stack** dependent issues: cut each branch from its parent
   branch and set the PR's **base to the parent branch**; GitHub retargets to
   `main` as parents merge. State the base branch + merge order in every PR body.
@@ -433,6 +453,10 @@ handed an epic-with-children or asked to run several related issues at once.
   (base = a feature branch), open a short-lived **draft "CI probe" PR of the
   same commit against `main`**, record its result on the real PR, and close it —
   this is the only way to get true CI signal before the parent merges.
+- Before removing a merged worktree, inspect its `node_modules` entry. A legacy
+  junction must be verified and unlinked non-recursively before `git worktree
+  remove`; otherwise Windows cleanup can traverse the junction and erase its
+  shared target. Follow the fail-closed cleanup in `CODEX_WORKFLOW.md`.
 
 ### 3. Orchestrator + subagents
 
@@ -530,14 +554,16 @@ handed an epic-with-children or asked to run several related issues at once.
 For each issue: **implement → review → fix → verify-fix → validate → PR →
 CI-green → evidence**.
 
-- **Validate before push:** `npm run lint && npm run db:generate && npm run
-  typecheck && npm test && npm run build`, plus `npm run db:check-drift` for
-  schema issues. Run the **full** `npm test` before opening the PR, not just the
-  targeted subset — a subagent's targeted run routinely misses failures its diff
-  caused in adjacent suites (frozen-snapshot pins, mock stubs a new call needs,
-  route-area matrices, dead-code/knip, the blue/green migration-safety ledger).
-  Distinguish those real regressions from the repo's known-environmental failures
-  by comparing against `main`'s own latest CI.
+- **Split local validation from CI.** Before push, run `npm run db:generate`,
+  `npm run lint`, `npm run typecheck`, focused tests for the touched and adjacent
+  contracts, and mutation checks for every new guard. Run
+  `npm run docs:linkcheck` when docs change and `npm run knip` when files or
+  exports change. Then push a draft PR: PR CI owns the full `npm test`, build,
+  migration-drift, E2E, static/secret/dependency, and container gates. Do not
+  delay a draft PR merely to repeat those full gates on the same commit locally.
+  Run a full suite locally only to diagnose a CI failure or when CI is
+  unavailable, and record that reason and result. Compare unexpected failures
+  with `main`'s latest CI before classifying them as branch regressions.
 - **Validation traps that have produced confident false results here.** Every one
   of these has already cost a wave real time; treat a clean result that skipped
   them as unverified.
@@ -548,7 +574,8 @@ CI-green → evidence**.
   - **`npm test` does not typecheck, and `tsc --noEmit` without
     `-p tsconfig.test.json` skips every test file.** Run `npm run typecheck`,
     which covers both configs — that is what CI runs.
-  - **Known-environmental failures**, so nobody rediscovers them: `backup.test.ts`
+  - **Known-environmental failures**, for targeted diagnosis when CI fails:
+    `backup.test.ts`
     (Windows path separators in `gunzip`/`aws` argument assertions),
     `page-content-starter-backfill.test.ts` (seed-copy drift), and
     `review-findings-contracts.test.ts` (timeouts — it shells out over the whole
