@@ -50,6 +50,10 @@
   "ignore": ["load/**"],
   "ignoreBinaries": [
     // Runtime shell-outs; these binaries live on the host/container, not node_modules.
+    // #2418: the data-migration gate's contract test runs the shared awk statement
+    // splitter (scripts/lib/split-sql-statements.awk) directly, to prove it agrees
+    // with the TypeScript splitter the runner executes with.
+    "awk",
     "psql", // src/lib/backup.ts + scripts/audit-access-role-membership-cleanup.ts
     "pg_dump", // src/lib/backup.ts logical backups
     "gunzip", // src/lib/backup.ts restore path
