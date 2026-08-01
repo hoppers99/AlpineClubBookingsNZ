@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * #2307 (epic #2305, MG2) — what does and does NOT withhold the four
+ * #2307 (epic #2305, MG2) — what does and does NOT withhold the covered
  * member-guest emails.
  *
  * OWNER DECISION D-16, stated as two halves that must BOTH hold:
@@ -114,6 +114,7 @@ import {
   sendMemberGuestConsentExpiredEmail,
   sendMemberGuestConsentOutcomeEmail,
   sendMemberGuestConsentRequestEmail,
+  sendMemberGuestRequestWithdrawnEmail,
 } from "@/lib/email/member-guest";
 
 const CHECK_IN = parseDateOnly("2026-08-08");
@@ -125,7 +126,7 @@ const PARTY = [
 ];
 
 /**
- * All four senders, each already bound to the same booking. Driven as a table so
+ * The covered senders, each already bound to the same booking. Driven as a table so
  * every assertion below is exhaustive over the set rather than over whichever
  * one somebody remembered.
  */
@@ -197,6 +198,20 @@ const SENDERS: Array<{ templateName: string; send: () => Promise<unknown> }> = [
         email: "priya@example.nz",
         firstName: "Priya",
         bookerName: "Dave Ngata",
+        checkIn: CHECK_IN,
+        checkOut: CHECK_OUT,
+      }),
+  },
+  {
+    templateName: "member-guest-request-withdrawn",
+    send: () =>
+      sendMemberGuestRequestWithdrawnEmail({
+        bookingId: "bkg_1",
+        recipient: { kind: "member", memberId: "removed_1" },
+        email: "priya@example.nz",
+        firstName: "Priya",
+        bookerName: "Dave Ngata",
+        context: "TAKEN_OFF",
         checkIn: CHECK_IN,
         checkOut: CHECK_OUT,
       }),
@@ -275,7 +290,7 @@ describe("registry classification the switch depends on (#2307)", () => {
   );
 });
 
-describe('the per-booking "No emails" switch withholds all four (#2307, D-16 + D10)', () => {
+describe('the per-booking "No emails" switch withholds every covered sender (#2307, D-16 + D10)', () => {
   it.each(TEMPLATE_NAMES.map((name, index) => [name, index] as const))(
     "withholds %s and records it on the booking's withheld list",
     async (templateName, index) => {
@@ -410,4 +425,37 @@ describe("a muted member is still asked (#2307, D-16)", () => {
       bookingDetailLinkIncluded: false,
     });
   });
+
+  it.each([
+    ["removed member", "removed_1", "priya@example.nz"],
+    ["family delegate", "delegate_1", "delegate@example.nz"],
+  ])(
+    "does not expose the withdrawn booking to an ordinary %s",
+    async (_label, memberId, email) => {
+      await sendMemberGuestRequestWithdrawnEmail({
+        bookingId: "bkg_1",
+        recipient: { kind: "member", memberId },
+        email,
+        firstName: "Priya",
+        bookerName: "Dave Ngata",
+        context: "TAKEN_OFF",
+        audience:
+          memberId === "delegate_1"
+            ? {
+                kind: "DELEGATE",
+                guest: { firstName: "Priya", lastName: "Kaur" },
+              }
+            : { kind: "TARGET" },
+        checkIn: CHECK_IN,
+        checkOut: CHECK_OUT,
+      });
+
+      const html = mocks.sendMail.mock.calls[0][0].html as string;
+      expect(html).not.toContain("/bookings/bkg_1");
+      expect(mocks.emailLogCreate.mock.calls[0][0].data).toMatchObject({
+        bookingRecipientMemberId: memberId,
+        bookingDetailLinkIncluded: false,
+      });
+    },
+  );
 });

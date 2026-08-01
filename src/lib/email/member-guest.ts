@@ -281,7 +281,7 @@ export async function sendMemberGuestRequestWithdrawnEmail(
       checkIn: params.checkIn,
       checkOut: params.checkOut,
     }),
-    bookingContext: { bookingId: params.bookingId },
+    bookingContext: { bookingId: params.bookingId, recipient: params.recipient },
     templateName: "member-guest-request-withdrawn",
     templateData: {
       firstName: params.firstName,

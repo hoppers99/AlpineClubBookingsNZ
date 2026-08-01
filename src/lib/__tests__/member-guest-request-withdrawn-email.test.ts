@@ -57,6 +57,7 @@ import { sendMemberGuestRequestWithdrawnEmail } from "@/lib/email/member-guest";
 const TEMPLATE = "member-guest-request-withdrawn";
 const SEND_PARAMS = {
   bookingId: "bkg_1",
+  recipient: { kind: "member" as const, memberId: "member_removed" },
   email: "priya@example.nz",
   firstName: "Priya",
   bookerName: "Dave Ngata",
@@ -256,7 +257,10 @@ describe("sendMemberGuestRequestWithdrawnEmail (#2309)", () => {
     await sendMemberGuestRequestWithdrawnEmail(SEND_PARAMS);
 
     const call = sendEmailMock.mock.calls[0][0];
-    expect(call.bookingContext).toEqual({ bookingId: "bkg_1" });
+    expect(call.bookingContext).toEqual({
+      bookingId: "bkg_1",
+      recipient: { kind: "member", memberId: "member_removed" },
+    });
     expect(call.templateName).toBe(TEMPLATE);
     expect(call.to).toBe("priya@example.nz");
     expect(call.lodgeId).toBe("lodge_1");

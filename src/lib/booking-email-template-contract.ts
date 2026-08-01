@@ -39,6 +39,7 @@ export const BOOKING_URL_TEMPLATE_NAMES: ReadonlySet<string> = new Set([
   "member-guest-added",
   "member-guest-consent-outcome",
   "member-guest-consent-answered",
+  "member-guest-request-withdrawn",
   "member-guest-consent-expired",
 ]);
 

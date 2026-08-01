@@ -643,6 +643,7 @@ export async function sendMemberGuestWithdrawnNotifications(params: {
       try {
         await sendMemberGuestRequestWithdrawnEmail({
           bookingId,
+          recipient: { kind: "member", memberId: recipient.memberId },
           lodgeId: booking.lodgeId,
           email: recipient.email,
           firstName: recipient.firstName,
