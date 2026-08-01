@@ -22,7 +22,7 @@ import {
   lockAdultMemberHostingPolicySet,
 } from "@/lib/adult-member-hosting-policy-set";
 
-const MIGRATION = "20260802140000_add_adult_member_hosting_policy";
+const MIGRATION = "20260802160000_add_adult_member_hosting_policy";
 
 function repoFile(path: string): string {
   return readFileSync(join(process.cwd(), path), "utf8");
