@@ -19,6 +19,7 @@ vi.mock("@/lib/logger", () => ({
   default: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 
+import type { MeteredXeroCallOptions } from "@/lib/xero-api-client";
 import {
   getXeroConnectedOrganisation,
   getXeroFinancialYearEndMonth,
@@ -611,6 +612,37 @@ describe("financial year-end month: single flight + retry caps (#2283)", () => {
     );
   }
 
+  /**
+   * Same live client, but `callXeroApi` hands the read's OWN option object to
+   * the REAL `withXeroRetry` (#2423) instead of just invoking the call.
+   *
+   * The process-global transient breaker is module state inside
+   * `xero-api-client`, which this file mocks wholesale, so a test that wants to
+   * assert on the breaker has to reach past the mock with `vi.importActual` —
+   * one real module instance, so the state the read touches is the state the
+   * assertions read. Every option that decides whether the breaker ARMS is the
+   * read's own; only `maxWaitSec` is overridden, so the retry backoff sleeps for
+   * nothing instead of really waiting a second.
+   *
+   * Callers must call `resetXeroRateLimitStateForTests()` on the returned module
+   * afterwards — the cooldown is process-global and would otherwise leak.
+   */
+  async function stubLiveClientThroughRealRetry() {
+    const real = await vi.importActual<typeof import("@/lib/xero-api-client")>(
+      "@/lib/xero-api-client",
+    );
+    real.resetXeroRateLimitStateForTests();
+    live.getAuthenticatedXeroClient.mockResolvedValue({
+      xero: { accountingApi: { getOrganisations: live.getOrganisations } },
+      tenantId: "tenant-1",
+    });
+    live.callXeroApi.mockImplementation(
+      async (fn: () => Promise<unknown>, options: MeteredXeroCallOptions) =>
+        real.withXeroRetry(fn, { ...options, maxWaitSec: 0 }),
+    );
+    return real;
+  }
+
   beforeEach(() => {
     vi.stubEnv("NODE_ENV", "test");
     // The year-end read has no mock-Xero branch: it is always the live path.
@@ -693,12 +725,17 @@ describe("financial year-end month: single flight + retry caps (#2283)", () => {
     );
   });
 
-  // `maxTransientRetries` defaults to `min(maxRetries, 1)`, so `maxRetries: 0`
-  // alone would ALSO zero the transient budget — and exhausting that budget
-  // arms `rememberXeroTransientOutage`, the process-global breaker that fails
-  // every Xero call (invoicing and sync included) for two minutes. The
-  // year-end read must not be one 5xx away from stopping invoicing.
-  it("keeps the transient budget so one 5xx cannot trip the global outage breaker", async () => {
+  // #2423. Two options, one posture. `maxTransientRetries` defaults to
+  // `min(maxRetries, 1)`, so `maxRetries: 0` alone would ALSO zero the
+  // transient budget — the read keeps its second attempt. What it must NOT
+  // keep is the ability to ARM `rememberXeroTransientOutage`, the
+  // process-global breaker that fails every Xero call (invoicing, sync,
+  // webhook replay) for two minutes. This read sits on unattended
+  // member-facing traffic bounded only by the 15-second throttle above, so one
+  // member request every 15 seconds could hold that cooldown open
+  // indefinitely. Detection is unaffected: arming stays on by default for
+  // every call that matters.
+  it("keeps the transient budget but never arms the global outage breaker", async () => {
     stubLiveClient();
     live.getOrganisations.mockResolvedValue({
       body: { organisations: [{ financialYearEndMonth: 6 }] },
@@ -708,8 +745,66 @@ describe("financial year-end month: single flight + retry caps (#2283)", () => {
 
     expect(live.callXeroApi).toHaveBeenCalledWith(
       expect.any(Function),
-      expect.objectContaining({ maxTransientRetries: 1 }),
+      expect.objectContaining({
+        maxTransientRetries: 1,
+        armTransientBreaker: false,
+      }),
     );
+  });
+
+  // The assertion above pins the OPTIONS; these two pin the CONSEQUENCE, by
+  // running the year-end read's own option object through the REAL retry loop
+  // (this file mocks `callXeroApi`, so the breaker it owns is reached past that
+  // mock). Without them, deleting `armTransientBreaker: false` would fail one
+  // literal-value assertion and nothing that describes what actually happens.
+  it("does not arm the breaker when the year-end read exhausts its transient budget", async () => {
+    const real = await stubLiveClientThroughRealRetry();
+    try {
+      // Xero is 5xx-ing: the initial attempt and the one retry both fail, which
+      // is exactly the moment arming would otherwise happen.
+      live.getOrganisations.mockRejectedValue({
+        response: { statusCode: 503 },
+        message: "Xero unavailable",
+      });
+
+      expect(await getXeroFinancialYearEndMonth()).toBeNull();
+      expect(live.getOrganisations).toHaveBeenCalledTimes(2);
+
+      // Invoicing's next Xero call is untouched — no cooldown was started, so
+      // it is attempted and succeeds rather than being refused up front.
+      const invoicePush = vi.fn(async () => "posted");
+      await expect(real.withXeroRetry(invoicePush)).resolves.toBe("posted");
+      expect(invoicePush).toHaveBeenCalledTimes(1);
+    } finally {
+      real.resetXeroRateLimitStateForTests();
+    }
+  });
+
+  // Opting out of ARMING is not opting out of RESPECTING: a cooldown started by
+  // a call that matters must still stop this one, and the read must degrade the
+  // way any other failure does rather than reaching Xero.
+  it("still refuses while a breaker armed by another caller is active", async () => {
+    const real = await stubLiveClientThroughRealRetry();
+    try {
+      // Invoicing (default posture) hits repeated 5xx and arms the breaker.
+      const outage = { response: { statusCode: 503 }, message: "Xero down" };
+      await expect(
+        real.withXeroRetry(() => Promise.reject(outage), {
+          maxRetries: 2,
+          maxWaitSec: 0,
+        }),
+      ).rejects.toBe(outage);
+
+      live.getOrganisations.mockResolvedValue({
+        body: { organisations: [{ financialYearEndMonth: 6 }] },
+      });
+
+      // Xero would answer, but the cooldown refuses before any HTTP.
+      expect(await getXeroFinancialYearEndMonth()).toBeNull();
+      expect(live.getOrganisations).not.toHaveBeenCalled();
+    } finally {
+      real.resetXeroRateLimitStateForTests();
+    }
   });
 
   it("does NOT negative-cache the VALUE: the first call past the throttle tries again", async () => {

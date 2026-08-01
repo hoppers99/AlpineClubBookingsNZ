@@ -155,20 +155,37 @@ async function readXeroFinancialYearEndMonth(): Promise<number | null> {
         // minute budget the failing sync needs. One attempt, immediate
         // degrade, fresh attempt a few seconds later.
         maxRetries: 0,
-        // But KEEP the transient (5xx/408) budget at withXeroRetry's default
-        // of 1 — `maxRetries: 0` alone would zero it via the
-        // `min(maxRetries, 1)` default, and exhausting the transient budget
-        // arms `rememberXeroTransientOutage`, the PROCESS-GLOBAL breaker that
-        // fails every Xero call (invoicing and sync included) for two
-        // minutes. This read must not be able to trip that on its own first
-        // 5xx, so it takes two consecutive transient failures (#2283).
-        //
-        // Deliberately NOT the summary read's posture below: that one is
-        // driven by an operator-facing Try again button, so #2394 opted it out
-        // of arming the breaker entirely. This one has no button — it is
-        // member-facing serial traffic bounded by the throttle above — and
-        // keeps the #2283 decision unchanged.
+        // KEEP the transient (5xx/408) budget at withXeroRetry's default of 1
+        // — `maxRetries: 0` alone would zero it via the `min(maxRetries, 1)`
+        // default. That half of #2283 is unchanged: one 5xx is worth a second
+        // attempt before the read degrades.
         maxTransientRetries: 1,
+        // But this read may NEVER ARM the process-global transient breaker
+        // (#2423). Exhausting the transient budget otherwise calls
+        // `rememberXeroTransientOutage`, which fails EVERY Xero call in this
+        // process for two minutes — invoicing, sync and webhook replay
+        // included.
+        //
+        // #2283 kept the arming capability here as a FREQUENCY bound ("it
+        // takes two consecutive 5xx"), not as a decision that this read should
+        // hold it. The frequency argument does not survive contact with where
+        // this read actually sits: unattended member-facing traffic (the
+        // subscription gate), so it fires with nobody choosing to trigger it.
+        // Failures cache nothing, so while Xero is 5xx-ing only the 15-second
+        // throttle above bounds it — one member request every 15 seconds keeps
+        // a 120-second cooldown permanently armed, and queued invoicing turns
+        // into FAILED-unattempted rows that nothing auto-recovers. One member
+        // page view must not be able to stop the club's invoicing.
+        //
+        // Nothing is lost in DETECTION: arming stays on by default for every
+        // call that matters — invoicing, sync, webhook replay, the lock-date
+        // read below — so a genuine Xero outage still trips the breaker, just
+        // never from here. And opting out of ARMING is not opting out of
+        // RESPECTING it: while a cooldown armed by one of those calls is
+        // active, `withXeroRetry` refuses this read before any HTTP and it
+        // degrades to {@link yearEndFallbackMonth} exactly as any other
+        // failure does.
+        armTransientBreaker: false,
       },
     );
     const raw = response.body.organisations?.[0]?.financialYearEndMonth;

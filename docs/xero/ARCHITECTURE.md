@@ -893,9 +893,9 @@ it refuses before any HTTP and reports the remaining wait — it just may not
 start one. A page decoration must never be able to stop invoicing, however
 often a human presses.
 
-Note the year-end read below keeps `maxTransientRetries: 1` and the default
-breaker behaviour: it has no button in front of it, and its storm control is the
-short post-failure throttle instead.
+Since #2423 the year-end read below takes the same `armTransientBreaker: false`
+opt-out, for a different reason — it is unattended member traffic rather than a
+button — while keeping `maxTransientRetries: 1`.
 
 `getXeroFinancialYearEndMonth` (same module, feeding membership
 financial-year resolution) is **single-flight but deliberately not
@@ -905,14 +905,29 @@ of N, at the cost only that a joiner shares the leader's outcome rather than
 making its own attempt. Negative caching is the half that is not free here —
 this is a money-adjacent value, so a connection an admin has just fixed must be
 picked up by the very next call, not up to a minute later. What it **does**
-share with the summary read (#2283) is `maxRetries: 0` and the transient posture
-the summary read had *before* #2394 — `maxTransientRetries: 1`, so two
-consecutive transient failures are needed to arm the process-global breaker. A
-read that degrades immediately and re-attempts shortly gains nothing by waiting
-out a 429 inside the call. It does **not** take the summary read's
-`armTransientBreaker: false`: that opt-out exists because a human-pressed button
-sits in front of the summary read, and this one is ordinary member-facing
-traffic bounded by the throttle below.
+share with the summary read (#2283) is `maxRetries: 0` — a read that degrades
+immediately and re-attempts shortly gains nothing by waiting out a 429 inside
+the call — and, since #2423, `armTransientBreaker: false`. It keeps
+`maxTransientRetries: 1`, so one 5xx is still worth a second attempt.
+
+The arming opt-out is the same mechanism as the summary read's, reached from the
+opposite direction. #2283 left the capability here on a **frequency** argument
+("it takes two consecutive 5xx"), not on a finding that this read should be able
+to stop the rest of the integration. That argument does not hold where the read
+actually sits: it is on **unattended member-facing traffic** (the subscription
+gate), so it fires with nobody choosing to trigger it, and failures cache
+nothing — while Xero is 5xx-ing, only the 15-second throttle below bounds it, so
+one member request every 15 seconds would have kept a 120-second cooldown
+permanently armed. Meanwhile the read's own failure costs nothing (it degrades
+to the fallback month), where the breaker it armed turned queued invoicing into
+FAILED-unattempted rows that nothing auto-recovers — sharply enough that a single
+member `confirm-draft` request could arm the cooldown and then have its **own**
+invoice refused by it. Detection is untouched: arming remains the default for
+every call that matters — invoicing, sync, webhook replay and the lock-date read
+— so a genuine Xero outage still trips the breaker, just never from here. And as
+on the summary read, opting out of **arming** is not opting out of
+**respecting**: a cooldown armed by one of those calls still refuses this read
+before any HTTP, and it degrades exactly as any other failure does.
 
 Capping the retries removed something the waiting did as a side effect, so
 #2283's review restored both halves explicitly:
