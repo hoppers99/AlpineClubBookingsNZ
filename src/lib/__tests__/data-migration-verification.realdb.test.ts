@@ -129,6 +129,29 @@ describe("data-migration verification wiring (#2418)", () => {
     expect(DATA_MIGRATION_VERIFICATIONS.length).toBeGreaterThan(0);
   });
 
+  it("runs every fixture file in the directory — imported is not registered", () => {
+    // The shell gate proves a fixture is IMPORTED by index.ts, but the runner
+    // executes DATA_MIGRATION_VERIFICATIONS, not the imports. A fixture imported
+    // yet left out of the array runs zero cases — coverage that does not exist,
+    // the exact failure #2418 was filed about — so cross-check true MEMBERSHIP
+    // here against the real array, using the same 14-digit filter the gate uses
+    // to tell a fixture apart from the registry/types/splitter support files
+    // (#2418, F2).
+    const fixtureDir = path.join(REPO_ROOT, "prisma", "migration-verification");
+    const registered = new Set(
+      DATA_MIGRATION_VERIFICATIONS.map((fixture) => fixture.migration),
+    );
+    const onDisk = readdirSync(fixtureDir)
+      .filter((name) => /^[0-9]{14}_.*\.ts$/.test(name))
+      .map((name) => name.replace(/\.ts$/, ""));
+    expect(onDisk.length).toBeGreaterThan(0);
+    const unregistered = onDisk.filter((name) => !registered.has(name));
+    expect(
+      unregistered,
+      `fixture file(s) present but absent from DATA_MIGRATION_VERIFICATIONS, so they never run: ${unregistered.join(", ")}`,
+    ).toEqual([]);
+  });
+
   it.each(DATA_MIGRATION_VERIFICATIONS.map((f) => [f.migration, f] as const))(
     "%s is a well-formed fixture",
     (_name, fixture: DataMigrationVerification) => {

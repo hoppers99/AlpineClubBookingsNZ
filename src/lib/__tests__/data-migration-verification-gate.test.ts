@@ -82,12 +82,23 @@ function createTree(
     );
   }
   if (options.registry !== null) {
-    const imports = (options.fixtures ?? [])
-      .map((fixture, index) => `import f${index} from "./${fixture}";`)
-      .join("\n");
+    // Mirror the real index.ts: import each fixture AND export the array the
+    // runner executes. A registry that only imports is coverage that does not
+    // exist (#2418, F2) — the earlier default modelled exactly that loophole, so
+    // the "passes when registered" case blessed it. The membership cross-check in
+    // the realdb suite is what proves an imported-but-unlisted fixture never runs.
+    const fixtures = options.fixtures ?? [];
+    const generated = [
+      ...fixtures.map(
+        (fixture, index) => `import f${index} from "./${fixture}";`,
+      ),
+      `export const DATA_MIGRATION_VERIFICATIONS = [${fixtures
+        .map((_fixture, index) => `f${index}`)
+        .join(", ")}];`,
+    ].join("\n");
     writeFileSync(
       path.join(fixturesDir, "index.ts"),
-      `${options.registry ?? imports}\n`,
+      `${options.registry ?? generated}\n`,
     );
   }
 
