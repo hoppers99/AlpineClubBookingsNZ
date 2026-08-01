@@ -28,8 +28,14 @@ const mocks = vi.hoisted(() => ({
       create: vi.fn(),
       findUnique: vi.fn(),
     },
+    // #2364: the hosting review is reconciled inside the approving/holding
+    // transaction, so every prisma/tx double a booking-writing path runs
+    // against needs this client. `findUnique` answering undefined is the
+    // "booking not found" branch, which writes nothing.
+    adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
     booking: {
       findUnique: vi.fn(),
+      findMany: vi.fn().mockResolvedValue([]),
       create: vi.fn(),
       update: vi.fn(),
     },
@@ -1343,6 +1349,68 @@ describe("holdBookingRequestSlots owner role", () => {
     >;
     expect(memberArgs.role).toBe("SCHOOL");
     expect(memberArgs.firstName).toBe("New Plymouth Primary School");
+  });
+
+  it("records the adult-member hosting review on the hold itself (#2364)", async () => {
+    // A hold is a capacity-holding booking carrying the requested party — every
+    // guest a non-member, owned by a non-login contact — so it is a hazard from
+    // the moment it exists, on the same terms as a WAITLISTED booking. An
+    // officer looking at the board should not have to wait for the requester to
+    // pay before the club's own rule becomes visible.
+    vi.mocked(prisma.bookingRequest.findUnique).mockResolvedValue(
+      baseRequest({
+        type: BookingRequestType.GENERAL,
+        priceCents: 12000,
+        quotes: [],
+      }) as never
+    );
+    vi.mocked(prisma.adultMemberHostingPolicy.findMany).mockResolvedValue([
+      {
+        id: "policy-club",
+        scopeKey: "club-wide",
+        lodgeId: null,
+        mode: "ADMIN_REVIEW_REQUIRED",
+        capacityMode: "NO_HOLD",
+        version: 2,
+      },
+    ] as never);
+    vi.mocked(prisma.booking.findUnique).mockResolvedValue({
+      id: "held-1",
+      memberId: "owner-1",
+      parentBookingId: null,
+      lodgeId: "lodge-1",
+      checkIn: new Date("2026-08-01T00:00:00.000Z"),
+      checkOut: new Date("2026-08-02T00:00:00.000Z"),
+      adultMemberHostingReview: null,
+      adultMemberHostingReviewStatus: null,
+      guests: [
+        {
+          id: "guest-1",
+          firstName: "Non",
+          lastName: "Member",
+          stayStart: new Date("2026-08-01T00:00:00.000Z"),
+          stayEnd: new Date("2026-08-02T00:00:00.000Z"),
+          consentStatus: null,
+          nights: [{ stayDate: new Date("2026-08-01T00:00:00.000Z") }],
+          member: null,
+        },
+      ],
+    } as never);
+
+    await holdBookingRequestSlots({ requestId: "req-1", adminMemberId: "admin-1" });
+
+    const call = vi
+      .mocked(prisma.booking.update)
+      .mock.calls.find(
+        (entry) =>
+          (entry[0].data as Record<string, unknown>)
+            .adultMemberHostingReviewStatus !== undefined,
+      );
+    expect(call).toBeDefined();
+    expect(call![0].where).toEqual({ id: "held-1" });
+    expect(
+      (call![0].data as Record<string, unknown>).adultMemberHostingReviewStatus,
+    ).toBe("PENDING");
   });
 
   it("holds the booking at the request's lodge instead of the default lodge", async () => {

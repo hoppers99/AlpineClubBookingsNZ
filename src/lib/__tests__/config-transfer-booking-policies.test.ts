@@ -10,6 +10,7 @@ import {
   bookingPoliciesImporter,
   MINIMUM_STAY_POLICIES_FILE,
 } from "@/lib/config-transfer/categories/booking-policies";
+import { ADULT_MEMBER_HOSTING_FILE } from "@/lib/config-transfer/categories/adult-member-hosting";
 import {
   ConfigTransferBundleError,
   readBundle,
@@ -43,11 +44,32 @@ function db(policies: unknown[] = [policy], lodges: unknown[] = [lodge]): ReadDb
   return {
     lodge: { findMany: vi.fn().mockResolvedValue(lodges) },
     minimumStayPolicy: { findMany: vi.fn().mockResolvedValue(policies) },
+    // #2364 shares this category. These tests are about the minimum-stay
+    // replace-set, so the hosting side is empty on both sides throughout and
+    // contributes nothing to any plan, summary or apply asserted below; its own
+    // behaviour is covered in adult-member-hosting-config-transfer.test.ts.
+    adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
   } as unknown as ReadDb;
 }
 
+/** Mutation-capable hosting client for an apply context. */
+function hostingTx() {
+  return {
+    findMany: vi.fn().mockResolvedValue([]),
+    create: vi.fn(),
+    updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+    deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+  };
+}
+
+/** The header-only hosting file every booking-policies bundle must carry. */
+const EMPTY_HOSTING_CSV = "scope,mode,capacityMode\n";
+
 function files(csv: string): Map<string, Uint8Array> {
-  return new Map([[MINIMUM_STAY_POLICIES_FILE, strToU8(csv)]]);
+  return new Map([
+    [MINIMUM_STAY_POLICIES_FILE, strToU8(csv)],
+    [ADULT_MEMBER_HOSTING_FILE, strToU8(EMPTY_HOSTING_CSV)],
+  ]);
 }
 
 function planContext(
@@ -57,7 +79,11 @@ function planContext(
 ): PlanContext {
   return {
     db: target,
-    files: new Map([[MINIMUM_STAY_POLICIES_FILE, strToU8(csv)], ...extraFiles]),
+    files: new Map([
+      [MINIMUM_STAY_POLICIES_FILE, strToU8(csv)],
+      [ADULT_MEMBER_HOSTING_FILE, strToU8(EMPTY_HOSTING_CSV)],
+      ...extraFiles,
+    ]),
     manifest: {} as never,
     mode: "merge",
     resolutions: new Map(),
@@ -130,6 +156,9 @@ describe("config-transfer booking policies (#2363)", () => {
     expect(exported.categories).toEqual(["booking-policies"]);
     expect(parsed.manifest.includedCategories).toEqual(["booking-policies"]);
     expect(parsed.files.has(MINIMUM_STAY_POLICIES_FILE)).toBe(true);
+    // #2364: the category carries BOTH files, and a bundle missing either is
+    // refused rather than half-applied.
+    expect(parsed.files.has(ADULT_MEMBER_HOSTING_FILE)).toBe(true);
 
     const plan = await buildImportPlan(db(), exported.zip, { mode: "merge" });
     expect(plan.errors).toEqual([]);
@@ -219,6 +248,9 @@ describe("config-transfer booking policies (#2363)", () => {
         updateMany: vi.fn(),
         deleteMany,
       },
+      // #2364 travels in the same category, so every apply context needs its
+      // client too. Header-only file + no target rows means it does nothing.
+      adultMemberHostingPolicy: hostingTx(),
     } as unknown as TxDb;
     await expect(
       bookingPoliciesImporter.apply({
@@ -249,6 +281,9 @@ describe("config-transfer booking policies (#2363)", () => {
         updateMany: vi.fn(),
         deleteMany: vi.fn(),
       },
+      // #2364 travels in the same category, so every apply context needs its
+      // client too. Header-only file + no target rows means it does nothing.
+      adultMemberHostingPolicy: hostingTx(),
     } as unknown as TxDb;
     await bookingPoliciesImporter.apply({
       tx,
@@ -398,6 +433,9 @@ describe("config-transfer booking policies (#2363)", () => {
     const tx = {
       lodge: { findMany: vi.fn().mockResolvedValue([lodge]) },
       minimumStayPolicy: { findMany, create, updateMany, deleteMany },
+      // #2364 travels in the same category, so every apply context needs its
+      // client too. Header-only file + no target rows means it does nothing.
+      adultMemberHostingPolicy: hostingTx(),
     } as unknown as TxDb;
     const csv = csvRow({ capacityMode: "NO_HOLD" }) +
       "club-wide,New club rule,2027-01-01,2027-02-01,0,2,HOLD,true\n";

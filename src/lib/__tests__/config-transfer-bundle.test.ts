@@ -124,18 +124,26 @@ describe("config-transfer bundle codec", () => {
     expect(() => readBundle(zip)).toThrow(/newer than this app/i);
   });
 
-  it("treats v3 booking-policy replace semantics as an exact capability boundary", () => {
-    expect(CONFIG_TRANSFER_FORMAT_VERSION).toBe(3);
-    // A deployed v2 reader safely refuses a v3 bundle instead of ignoring the
-    // unknown destructive category; the v3 reader likewise refuses v2 because
-    // no translation can invent the namespaced scope/replace contract.
+  it("treats each booking-policy capability change as an exact version boundary", () => {
+    // v3 (#2363) introduced the destructive replace-set; v4 (#2364) added a
+    // SECOND required file to that category. Both directions are unsafe at every
+    // step, which is why the number moves each time instead of a file being made
+    // optional: an older reader would silently ignore a file it does not know
+    // while reporting a complete replacement.
+    expect(CONFIG_TRANSFER_FORMAT_VERSION).toBe(4);
     expect(() => assertConfigTransferFormatVersion(3, 2)).toThrow(
       /newer than this app/i,
     );
     expect(() => assertConfigTransferFormatVersion(2, 3)).toThrow(
       /predates this app/i,
     );
-    expect(() => assertConfigTransferFormatVersion(3, 3)).not.toThrow();
+    expect(() => assertConfigTransferFormatVersion(4, 3)).toThrow(
+      /newer than this app/i,
+    );
+    expect(() => assertConfigTransferFormatVersion(3, 4)).toThrow(
+      /predates this app/i,
+    );
+    expect(() => assertConfigTransferFormatVersion(4, 4)).not.toThrow();
   });
 
   it("refuses a v2 bundle in the v3 reader and asks for a current re-export", () => {

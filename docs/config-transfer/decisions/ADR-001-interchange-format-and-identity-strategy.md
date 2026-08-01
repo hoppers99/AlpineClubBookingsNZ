@@ -107,12 +107,17 @@ means deletion, `booking-policies/minimum-stay.csv` requires its exact ordered
 header and any empty, malformed, missing, extra, or reordered schema blocks the
 entire policy plan. Only a valid header-only file means "clear this set".
 
+The same strictness covers `booking-policies/adult-member-hosting.csv` (#2364),
+the second file in that category, for the same reason.
+
 The manifest version is an exact capability boundary, not a semver range:
 `readBundle` accepts only `formatVersion === CONFIG_TRANSFER_FORMAT_VERSION`.
-Version 3 introduces the destructive minimum-stay replace-set category, so both
-v3-into-v2 and v2-into-v3 are refused with a clear re-export message. That keeps
-an old reader from overlooking deletions and a new reader from interpreting an
-old bundle as a complete policy set.
+Version 3 introduces the destructive minimum-stay replace-set category and
+version 4 adds the adult-member hosting file to it, so v3-into-v2, v2-into-v3,
+v4-into-v3 and v3-into-v4 are all refused with a clear re-export message. That
+keeps an old reader from overlooking deletions — or from ignoring a file it does
+not know while reporting a complete replacement — and a new reader from
+interpreting an old bundle as a complete policy set.
 
 ### Category layout (per the feature issue)
 

@@ -27,6 +27,9 @@ vi.mock("@/lib/prisma", () => ({
       return Promise.resolve();
     },
     member: { count: mockMemberCount, findUnique: mockMemberFindUnique },
+    // #2364: the hosting review is reconciled inside the booking write, so
+    // every prisma/tx double a booking path runs against needs this client.
+    adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
     booking: {
       // The ordinary-edit Xero lock-date guard's advisory pre-transaction
       // read (#1729); null skips the guard (the in-transaction re-read owns
@@ -326,6 +329,9 @@ function makeTx(
           : [{ memberId: booking.memberId, familyGroupId: "fg-fixture" }],
       ),
     },
+    // #2364: the hosting review is reconciled inside the booking write, so
+    // every prisma/tx double a booking path runs against needs this client.
+    adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
     booking: {
       findUnique: vi.fn().mockResolvedValue(booking),
       findMany: vi.fn().mockResolvedValue([]),

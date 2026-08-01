@@ -37,6 +37,7 @@ import {
 import { z } from "zod";
 import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
 import { issueActionToken } from "@/lib/action-tokens";
+import { reconcileAdultMemberHostingReviewWithSiblings } from "@/lib/adult-member-hosting-review";
 import { createAuditLog, logAudit } from "@/lib/audit";
 import { formatDateOnly } from "@/lib/date-only";
 import {
@@ -1105,6 +1106,16 @@ export async function approveSchoolBookingRequest(input: {
         }
       }
 
+      // #2364. A school party is every non-member guest and no member
+      // participant, so at a club running the rule it always carries uncovered
+      // guest-nights. Recorded in the approving transaction — covering the
+      // fresh create and the held conversion alike — so the hazard is on the
+      // booking from the moment it exists rather than appearing months later on
+      // the first unrelated edit. PENDING, never APPROVED: approving the
+      // REQUEST is not the explicit, reasoned acceptance of a hosting exception
+      // that D-R4 requires, and approval is never blocked by it.
+      await reconcileAdultMemberHostingReviewWithSiblings(booking.id, tx);
+
       await tx.payment.create({
         data: {
           bookingId: booking.id,
@@ -1994,6 +2005,15 @@ export async function approveMemberWholeLodgeRequest(input: {
           tx,
         );
       }
+
+      // #2364. The requesting member owns this booking but is NOT a guest row on
+      // it, and ownership never proves attendance — so a whole-lodge party of
+      // NON_MEMBER-rated placeholder guests (OD-A) has nobody hosting it, and at
+      // a club running the rule that is a real hazard an admin should see. It
+      // opens PENDING and never blocks the approval; if the member adds
+      // themselves or another adult member to the party, the next reconciliation
+      // clears it with no admin action.
+      await reconcileAdultMemberHostingReviewWithSiblings(booking.id, tx);
 
       // Receivable for the finance surfaces. Pay-on-account via the existing
       // INTERNET_BANKING source; NO PaymentLink row is created, so no tokenised

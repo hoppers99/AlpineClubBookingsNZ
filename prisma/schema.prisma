@@ -648,6 +648,11 @@ model Member {
   adminCreditAdjustmentRequestsReviewed      AdminCreditAdjustmentRequest[]             @relation("AdminCreditAdjustmentRequestsReviewed")
   bookingsCreatedOnBehalf                    Booking[]                                  @relation("BookingsCreatedBy")
   bookingsAdminReviewed                      Booking[]                                  @relation("BookingsAdminReviewed")
+  // #2364: hosting exceptions this admin accepted (D-R4 attribution). A real
+  // relation rather than a bare id column, exactly like its sibling above, so
+  // member merge repoints it and member deletion nulls it — the DMMF
+  // completeness guard in member-merge only sees Member-TYPED fields.
+  bookingsAdultMemberHostingReviewed         Booking[]                                  @relation("BookingsAdultMemberHostingReviewed")
   bookingsAdminCapacityHeld                  Booking[]                                  @relation("BookingsAdminCapacityHeld")
   bookingsCapacityOverridden                 Booking[]                                  @relation("BookingsCapacityOverridden")
   bookingsWholeLodgeHeld                     Booking[]                                  @relation("BookingsWholeLodgeHeld")
@@ -1635,6 +1640,44 @@ model Booking {
   adminReviewNotes          String?            @db.VarChar(2000)
   adminReviewedById         String?
   adminReviewedAt           DateTime?
+  // Adult-member hosting review (#2364, epic decisions D-R3/D-R4).
+  //
+  // DELIBERATELY ITS OWN SET OF COLUMNS rather than more meanings loaded onto
+  // `requiresAdminReview` / `adminReviewReason` / `adminReviewStatus` above.
+  // Those carry the minors-only rule (#1372/#1422), which several booking paths
+  // WIPE whenever that rule stops applying — and a hosting hazard can be live at
+  // the same moment, on the same booking, with a completely different lifecycle
+  // (hosting clears itself the instant an adult member covers the nights; the
+  // minors rule does not). Sharing one status column would make an unrelated
+  // guest edit silently discard an admin's hosting decision. The two hazards are
+  // reported together as structured codes by `bookingReviewReasonCodes`
+  // (src/lib/booking-review.ts) instead of being merged into storage.
+  //
+  // `adultMemberHostingReview` is the frozen violation snapshot produced by
+  // `evaluateAdultMemberHostingWithPolicy`: policy id/version, resolved scope,
+  // affected NZ nights, the exact uncovered guest-night evidence, the qualifying
+  // member ids per candidate night, and the capacity mode. NULL means no
+  // uncovered hosting hazard is recorded. It is never the authority for
+  // anything — the live guest, night, member and policy rows are. Its job is
+  // comparison: the reconciler re-derives the CURRENT snapshot and compares, so
+  // a pending review can clear, stay, or reopen on a materially different one.
+  //
+  // The three decision columns record WHO accepted the hazard and WHY, which is
+  // what makes D-R4's "never silently auto-approved" checkable after the fact.
+  // The durable member-request / admin-execution workflow is #2365's; these
+  // columns are the state it will drive, not that workflow.
+  //
+  // `adultMemberHostingReviewedById` is backed by the real
+  // `adultMemberHostingReviewedBy` relation below (SetNull) and registered in
+  // `member-merge.ts`, on the same terms as `adminReviewedById`. An attribution
+  // column that outlives the member it names is not attribution, and a bare
+  // String would be invisible to the DMMF completeness guard that is this
+  // repo's stated safety net for merge.
+  adultMemberHostingReview         Json?
+  adultMemberHostingReviewStatus   AdminReviewStatus?
+  adultMemberHostingReviewReason   String?           @db.VarChar(500)
+  adultMemberHostingReviewedById   String?
+  adultMemberHostingReviewedAt     DateTime?
   waitlistPosition          Int?
   waitlistOfferedAt         DateTime?
   waitlistOfferExpiresAt    DateTime?
@@ -1735,6 +1778,7 @@ model Booking {
   createdBy                   Member?                         @relation("BookingsCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   deletedBy                   Member?                         @relation("BookingsDeletedBy", fields: [deletedById], references: [id], onDelete: SetNull)
   adminReviewedBy             Member?                         @relation("BookingsAdminReviewed", fields: [adminReviewedById], references: [id], onDelete: SetNull)
+  adultMemberHostingReviewedBy Member?                        @relation("BookingsAdultMemberHostingReviewed", fields: [adultMemberHostingReviewedById], references: [id], onDelete: SetNull)
   adminCapacityHoldBy         Member?                         @relation("BookingsAdminCapacityHeld", fields: [adminCapacityHoldByMemberId], references: [id], onDelete: SetNull)
   capacityOverriddenBy        Member?                         @relation("BookingsCapacityOverridden", fields: [capacityOverriddenByMemberId], references: [id], onDelete: SetNull)
   wholeLodgeHoldBy            Member?                         @relation("BookingsWholeLodgeHeld", fields: [wholeLodgeHoldByMemberId], references: [id], onDelete: SetNull)
@@ -3082,6 +3126,61 @@ model MinimumStayPolicy {
 }
 
 // ---------------------------------------------------------------------------
+// Adult-member hosting policy (#2364, epic decision D-R3/D-R4)
+// ---------------------------------------------------------------------------
+
+// Whether non-member guest-nights must overlap an adult member participant.
+//
+// INHERIT is a LODGE-ONLY value: it is how a lodge says "use the club default"
+// while still owning a row (so config transfer and the admin screen can state
+// the choice explicitly rather than inferring it from an absent row). The
+// migration's CHECK constraint refuses INHERIT on the club-wide row, which is
+// what makes resolution terminate.
+enum AdultMemberHostingMode {
+  INHERIT
+  DISABLED
+  ADMIN_REVIEW_REQUIRED
+}
+
+model AdultMemberHostingPolicy {
+  id String @id @default(cuid())
+
+  // Null = the club-wide default row; a lodgeId is that lodge's override.
+  // Permanently nullable, like the other policy tables (ADR-001).
+  lodgeId String?
+
+  // Denormalised scope identity: `COALESCE(lodgeId, 'club-wide')`, enforced by
+  // a CHECK constraint so it can never drift from lodgeId. It exists because
+  // PostgreSQL treats NULLs as distinct in a unique index, so a plain
+  // `@unique` on lodgeId would happily admit a SECOND club-wide row and make
+  // resolution non-deterministic. A partial unique index would also work, but
+  // this column additionally IS the config-transfer natural key and the audit
+  // key, so one column earns all three. Lodge ids are cuids, so a real lodge id
+  // can never collide with the 'club-wide' literal.
+  scopeKey String @unique
+
+  mode AdultMemberHostingMode
+
+  // Frozen onto every violation/review snapshot. Deliberately carries NO
+  // database default (D-R6: capacity mode is explicit for new policies) — the
+  // table is created empty by the same migration, so there is no row to back-
+  // fill and no draining old colour that could insert without naming it.
+  capacityMode PolicyExceptionCapacityMode
+
+  // Stable policy revision and compare-and-swap token, managed by the
+  // AdultMemberHostingPolicy_version trigger. Same contract as
+  // MinimumStayPolicy.version (#2363): timestamps are not a version.
+  version Int @default(1)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  lodge Lodge? @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
+
+  @@index([lodgeId])
+}
+
+// ---------------------------------------------------------------------------
 // Xero OAuth Token (single row)
 // ---------------------------------------------------------------------------
 
@@ -3883,6 +3982,7 @@ model Lodge {
   cancellationPolicies     CancellationPolicy[]
   bookingPeriods           BookingPeriod[]
   minimumStayPolicies      MinimumStayPolicy[]
+  adultMemberHostingPolicy AdultMemberHostingPolicy[]
   hutLeaderAssignments     HutLeaderAssignment[]
   memberAccess             MemberLodgeAccess[]
   promoCodes               PromoCodeLodge[]

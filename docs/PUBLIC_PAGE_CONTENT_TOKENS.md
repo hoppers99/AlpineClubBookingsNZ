@@ -185,6 +185,21 @@ never the policy id/version or the internal capacity-mode enum. The **admin**
 Minimum Night Stay card is unaffected and has always stated the stored mode: an
 operator configuring the rule needs to see what they chose.
 
+`{{booking-policies}}` also publishes one sentence for the adult-member hosting
+rule (#2364) when that rule is in force for the page's scope. Unlike the
+capacity sentence above, this one IS published, and the difference is the point:
+the hosting rule applies today and a visitor planning a stay needs to know it,
+whereas the capacity sentence describes an exception workflow nobody can reach.
+The copy stops at the same line — it states the rule and that the club looks at a
+booking without an adult member, and never invites anyone to request an exception
+or promises an outcome.
+
+A page with no lodge in its URL is answered by the club-wide row alone, so one
+lodge's relaxation cannot soften the club's stated rule on a page that is not
+about that lodge. Nothing internal is published: not the policy id, not its
+revision, not the capacity-mode enum, and not the fact that a scope override
+exists at all.
+
 Content-area view roles can inspect visibility but cannot change it. Content
 edit roles can save it. Saves are audited with before/after state and invalidate
 all PageContent-backed public routes. Authority editors for fees, seasons, and

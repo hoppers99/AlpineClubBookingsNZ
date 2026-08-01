@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   defaults: vi.fn(),
   minimumStays: vi.fn(),
   discount: vi.fn(),
+  hostingPolicies: vi.fn(),
 }));
 vi.mock("@/lib/prisma", () => ({ prisma: {
   publicContentSettings: { findUnique: mocks.settings },
@@ -28,6 +29,7 @@ vi.mock("@/lib/prisma", () => ({ prisma: {
   ageTierSetting: { findMany: mocks.ageTiers },
   bookingDefaults: { findUnique: mocks.defaults },
   minimumStayPolicy: { findMany: mocks.minimumStays },
+  adultMemberHostingPolicy: { findMany: mocks.hostingPolicies },
   groupDiscountSetting: { findUnique: mocks.discount },
   cancellationPolicy: { findMany: mocks.cancellation },
   bookingPeriod: { findMany: mocks.periods },
@@ -52,6 +54,7 @@ describe("public PageContent token view models", () => {
     mocks.minimumStays.mockResolvedValue([]);
     mocks.discount.mockResolvedValue(null);
     mocks.defaults.mockResolvedValue(null);
+    mocks.hostingPolicies.mockResolvedValue([]);
   });
 
   it("keeps every block hidden when its persisted opt-in row is absent", async () => {
@@ -542,6 +545,81 @@ describe("public PageContent token view models", () => {
       "Not held",
     ]);
     expect(JSON.stringify(policy)).not.toContain("exception");
+  });
+
+  it("publishes the adult-member hosting rule only when it is actually in force (#2364)", async () => {
+    const clubRow = {
+      id: "hosting-club",
+      scopeKey: "club-wide",
+      lodgeId: null,
+      mode: "ADMIN_REVIEW_REQUIRED",
+      capacityMode: "HOLD",
+      version: 2,
+    };
+
+    mocks.hostingPolicies.mockResolvedValue([]);
+    expect((await loadPublicBookingPolicy())?.adultMemberHosting).toBeNull();
+
+    mocks.hostingPolicies.mockResolvedValue([{ ...clubRow, mode: "DISABLED" }]);
+    expect((await loadPublicBookingPolicy())?.adultMemberHosting).toBeNull();
+
+    mocks.hostingPolicies.mockResolvedValue([clubRow]);
+    const on = await loadPublicBookingPolicy();
+    expect(on?.adultMemberHosting).toMatch(/adult member on the same\s+booking/);
+    // Says what the rule IS; never invites an exception request, and never
+    // leaks the policy id, revision or capacity mode.
+    expect(on?.adultMemberHosting).not.toMatch(/exception|request/i);
+    expect(JSON.stringify(on)).not.toContain("hosting-club");
+    expect(JSON.stringify(on)).not.toContain("HOLD");
+  });
+
+  it("answers a lodge page from that lodge's override, and a club page from the club row (#2364)", async () => {
+    mocks.lodge.mockResolvedValue({ id: "lodge-1", name: "Lodge One", slug: "one" });
+    const clubOn = {
+      id: "hosting-club",
+      scopeKey: "club-wide",
+      lodgeId: null,
+      mode: "ADMIN_REVIEW_REQUIRED",
+      capacityMode: "HOLD",
+      version: 1,
+    };
+    const lodgeOff = {
+      id: "hosting-lodge",
+      scopeKey: "lodge-1",
+      lodgeId: "lodge-1",
+      mode: "DISABLED",
+      capacityMode: "NO_HOLD",
+      version: 1,
+    };
+    mocks.hostingPolicies.mockResolvedValue([clubOn, lodgeOff]);
+
+    // The lodge relaxed it, so its own page says nothing.
+    expect((await loadPublicBookingPolicy("one"))?.adultMemberHosting).toBeNull();
+
+    // A page with no lodge in the URL is answered by the CLUB row alone, so one
+    // lodge's relaxation cannot soften the club's stated rule elsewhere.
+    mocks.hostingPolicies.mockResolvedValue([clubOn]);
+    expect((await loadPublicBookingPolicy())?.adultMemberHosting).not.toBeNull();
+  });
+
+  it("scopes the hosting policy READ, not just the resolution (#2364)", async () => {
+    // The resolver re-filters whatever comes back, so a drift in this predicate
+    // is invisible to every other test here: the double answers the same rows
+    // regardless of `where`. Assert the query itself, or a one-token change to
+    // the scope filter ships green.
+    mocks.lodge.mockResolvedValue({ id: "lodge-1", name: "Lodge One", slug: "one" });
+    await loadPublicBookingPolicy("one");
+    expect(mocks.hostingPolicies.mock.calls[0][0].where).toEqual({
+      OR: [{ lodgeId: "lodge-1" }, { lodgeId: null }],
+    });
+
+    mocks.hostingPolicies.mockClear();
+    await loadPublicBookingPolicy();
+    // No lodge in the URL: the club row alone, never a lodge override that
+    // would let one lodge's setting speak for the whole club.
+    expect(mocks.hostingPolicies.mock.calls[0][0].where).toEqual({
+      lodgeId: null,
+    });
   });
 
   it("describes divergent card and credit cancellation terms", async () => {

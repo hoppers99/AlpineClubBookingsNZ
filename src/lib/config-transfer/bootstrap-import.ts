@@ -640,6 +640,27 @@ export async function runConfigBootstrapImport(
       },
     });
 
+    // #2511: the unattended DR path has no interactive preview, so surface the
+    // plan's behaviour-change warnings — including the cleaned-literal re-plant
+    // skips this guard exists for — in the boot log. Without this a stale bundle
+    // whose guest-booking hero / RMCA footer / lodge address was skipped would
+    // leave the operator no signal that re-planting was prevented, so they would
+    // never re-export the archived bundle and the silent skip would recur on
+    // every rebuild. `plan.categories[].warnings` is where each category planner
+    // (including the site-content cleaned-literal warnings) records them.
+    const planWarnings = plan.categories.flatMap((cat) => cat.warnings);
+    if (planWarnings.length > 0) {
+      log.warn(
+        { scope, bundleSha256, provenance, warnings: planWarnings.slice(0, 20) },
+        `Config bundle auto-import applied with ${planWarnings.length} ` +
+          `warning(s); the first: ${planWarnings[0]}` +
+          `${planWarnings.length > 1 ? ` (and ${planWarnings.length - 1} more — see the "warnings" field).` : ""} ` +
+          `A cleaned-literal warning means a stale bundle value was skipped, not ` +
+          `written — re-export the bundle after upgrading and replace the ` +
+          `archived copy to clear it.`,
+      );
+    }
+
     log.info(
       {
         scope,

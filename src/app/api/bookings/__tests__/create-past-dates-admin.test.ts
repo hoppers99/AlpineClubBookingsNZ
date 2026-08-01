@@ -71,6 +71,9 @@ vi.mock("@/lib/prisma", () => ({
     groupDiscountSetting: { findUnique: h.groupDiscountFindUnique },
     // Member self-books (no admin bypass) run the minimum-stay policy check.
     minimumStayPolicy: { findMany: vi.fn().mockResolvedValue([]) },
+    // #2364: an on-behalf create evaluates the hosting policy over the submitted
+    // party before the transaction. No rows configured, so it never trips.
+    adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
   },
 }));
 vi.mock("@/lib/booking-guests", () => ({

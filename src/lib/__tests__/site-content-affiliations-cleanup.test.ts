@@ -17,6 +17,15 @@ import { starterSiteContent } from "../../../prisma/starter-site-content";
  * or merely deleted the offending line — is never touched. They read both SQL
  * files rather than restating the markup, so the two can never drift apart
  * silently.
+ *
+ * WHAT THIS PROVES, AND WHAT IT DOES NOT (#2418). Everything below is a
+ * STRING comparison of two migration files. It proves the cleanup quotes the
+ * planted markup byte for byte and that the statement is shaped the way the
+ * safety argument claims. It cannot prove PostgreSQL executes it that way, and
+ * a neutered statement can keep every assertion here green. That half is
+ * `prisma/migration-verification/20260802140000_clear_starter_footer_affiliations.ts`,
+ * which runs this migration for real against a database holding a club's rows
+ * and then re-runs it against deliberately broken copies of itself.
  */
 const MIGRATIONS_DIR = join(process.cwd(), "prisma", "migrations");
 const BACKFILL_MIGRATION = "20260702124500_add_site_content";

@@ -27,6 +27,7 @@ import {
   minorsReviewAlertShouldFire,
   requiresAdultSupervisionReview,
 } from "@/lib/booking-review";
+import { reconcileAdultMemberHostingReviewWithSiblings } from "@/lib/adult-member-hosting-review";
 import {
   getBookingEditPolicy,
   usesActiveBookingEditLifecycle,
@@ -692,6 +693,12 @@ export async function removeBookingGuestInTransaction({
       booking.payment?.id,
     );
   }
+
+  // #2364. Removing a guest cuts both ways: taking out the only adult member
+  // opens a hosting review, and taking out the last non-member guest closes one.
+  // Both are derived from the rows this transaction just wrote, using its own
+  // client because it holds the global booking lock and the per-lodge lock.
+  await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx);
 
   return {
     booking: updatedBooking,

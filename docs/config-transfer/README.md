@@ -26,10 +26,10 @@ deeper reference for what each category contains and the import safety model.
   `pg_dump` backup first, then in ONE transaction takes the single-flight
   advisory lock, re-plans against in-lock state, refuses on any drift, and
   applies; success and refused/failed attempts are both audited. Ordinary
-  categories **never delete**. The deliberate exception is minimum-stay booking
-  policy transfer: that category replaces the complete exported policy set and
-  previews every deletion before Apply. The pre-apply backup is the true
-  rollback.
+  categories **never delete**. The deliberate exception is the booking-policy
+  category: it replaces the complete exported minimum-stay and adult-member
+  hosting sets and previews every deletion before Apply. The pre-apply backup is
+  the true rollback.
 - **Validation blocks apply:** every row is strictly validated at plan time —
   malformed dates, unknown enum values, non-integer/negative money, and
   invalid or reserved page slugs (the same rules the admin page editor
@@ -291,6 +291,21 @@ deeper reference for what each category contains and the import safety model.
   header-only file is the explicit way to clear the set. An empty, malformed,
   missing-column, extra-column, or reordered-header file blocks Apply and can
   never be interpreted as a clear.
+
+  The category carries a SECOND required file, `booking-policies/adult-member-hosting.csv`
+  (#2364), under the same replace-set rules and the same exact-header
+  discipline. Its ordered header is `scope,mode,capacityMode`; `scope` uses the
+  same `club-wide` / `lodge:<slug>` vocabulary, `mode` is `INHERIT`, `DISABLED`
+  or `ADMIN_REVIEW_REQUIRED`, and `INHERIT` is refused for `club-wide`, which has
+  nothing to inherit from. A scope omitted from the file is previewed as
+  **Deleted** and removed on Apply, returning it to its built-in default — the
+  club to "allowed", a lodge to inheriting. Deleting a scope's row is NOT the
+  same as storing `DISABLED`: both behave identically, but only the second
+  survives as a decision an admin can see they made. Both files are planned
+  before either can classify a deletion, so one malformed file cannot let the
+  other read as an intentional clear. Adding this file is why bundles are format
+  version 4; a version 3 reader would ignore it while reporting that it had
+  replaced the club's complete booking-policy set.
 - **lodge-config** — lodges, rooms, beds, seasons, season rates, lodge
   instructions (content images bundled + remapped), and chore templates. Each
   lodge is a **self-contained folder**, `lodge-config/lodges/<slug>/` with a
@@ -492,9 +507,68 @@ Intentionally excluded / deferred:
   the apply is refused and the admin re-runs the dry-run (ADR-002). No schema
   migration is required.
 - Lock order is `pg_advisory_xact_lock(hashtext('config-transfer-import'))`
-  first, then the shared minimum-stay policy-set lock when the booking-policy
-  category is selected. Planning is repeated after both locks are held (see
+  first, then the shared minimum-stay policy-set lock, then the adult-member
+  hosting policy-set lock, when the booking-policy category is selected.
+  Planning is repeated after every lock is held (see
   `docs/CONCURRENCY_AND_LOCKING.md`).
+
+## Cleaned-literal re-plant guard (#2511)
+
+A bundle exported **before** a value-scoped "cleanup" migration still carries the
+old value: the exporter selects the DB column verbatim, and the applier writes it
+straight back — in **Merge** mode as well as **Overwrite**, because Merge only
+skips fields the bundle leaves blank. Because the boot auto-import runs *after*
+migrations (see the order in the next section), a disaster-recovery rebuild or an
+interactive restore of a pre-cleanup bundle would re-plant the removed value
+**permanently** — the one-shot migration has already run and never corrects the
+row again.
+
+`src/lib/config-transfer/cleaned-literals.ts` is the single source of truth for
+the removed byte-strings and the migration that removed each. On import (boot and
+interactive alike) the site-content planner/applier consult it:
+
+- when a bundle field **byte-matches** a cleaned literal for that entity/key, the
+  applier **skips writing that one field**, leaving the cleaned state the
+  migration established, and the dry-run surfaces a **named warning row**
+  ("this bundle would restore … that a cleanup migration removed");
+- every **other** field in the same bundle imports normally, and a club's **own**
+  customised value never byte-matches, so it is imported untouched — value-scoped,
+  exactly like the migrations themselves;
+- the boot auto-import is unattended, so "skip" is fail-safe **by construction**:
+  it cannot re-plant and needs no operator decision. It has no dry-run preview, so
+  it instead writes the same warnings to the **boot log** at `WARN`
+  (`bootstrap-import.ts`), naming each skipped literal — the DR operator learns a
+  stale bundle was cleaned rather than silently re-planted.
+
+The registry currently covers the front-page hero (#2431) and the footer
+affiliations (#2490), which the bundle round-trips, plus the lodge address
+(#2484) as a **dormant** entry — `Lodge.address` is not part of the bundle today
+(absent from `LODGE_FIELDS`), so nothing can carry it. The lodge planner/applier
+**already route their write through the guard** (`categories/lodge-config.ts`),
+so the entry is **live-by-construction** — a guaranteed no-op until `address`
+becomes portable, and an active strip the instant it does. Adding `address` to
+`LODGE_FIELDS` does not silently reopen the exposure: the contract test in
+`config-transfer-cleaned-literals.test.ts` keys on the entry's `dormant` flag and
+**fails the build** the moment the field becomes exportable, forcing a deliberate
+transition (drop `dormant`, add a behavioural strip test).
+
+The literals are asserted byte-for-byte against the migrations by
+`config-transfer-cleaned-literals.test.ts`, so registry and migration cannot
+drift apart. That same test also enforces the **reverse** link as far as is
+mechanically sound: any migration whose `UPDATE … WHERE` clause **pins the byte
+value** of an exportable content column (`headerText`, `contentHtml`, `address`)
+must either register a `CLEANED_LITERALS` entry or sit on a small, self-checked
+exempt list — so a future value-scoped cleanup of exportable content cannot land
+un-registered without turning CI red.
+
+**Authoring rule (for migration authors).** When you write a value-scoped cleanup
+migration that clears or replaces an **exportable** content value a config bundle
+round-trips — any `PageContent`/`SiteContent` value, or a `Lodge` field once it is
+in `LODGE_FIELDS` — add a matching entry to
+`src/lib/config-transfer/cleaned-literals.ts` so restoring a pre-cleanup bundle
+cannot put the old value back. A rewrite matched only by `slug`/`key` (not by the
+old value) round-trips nothing removable and needs no entry. Operators should
+still **re-export bundles after upgrading** — see `docs/UPGRADING.md`.
 
 ## Boot-time bootstrap auto-import (DR / clone, ADR-003, #1988)
 
@@ -541,8 +615,8 @@ validated pipeline (`src/lib/config-transfer/bootstrap-import.ts`).
   positive empty-target probe can mint, so no other caller compiles. Every
   other ADR-002 safeguard (validation, allowlist, DMMF type-checks,
   single-flight lock, fingerprint drift refusal, atomic transaction, audit)
-  still applies. On a fresh target the minimum-stay replace-set has nothing to
-  delete; malformed or ambiguous policy input still refuses the whole import.
+  still applies. On a fresh target both booking-policy replace-sets have nothing
+  to delete; malformed or ambiguous policy input still refuses the whole import.
 - **Audited + idempotent.** A success writes a `configuration.bootstrap_imported`
   audit row in the apply transaction (system/deploy actor, bundle sha256,
   outcome; shown as "System" in the admin audit log); a second boot with the

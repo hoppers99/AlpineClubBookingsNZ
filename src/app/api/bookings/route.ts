@@ -89,6 +89,7 @@ import {
 } from "@/lib/date-only";
 import { resolveOptionalActiveLodgeId } from "@/lib/lodges";
 import { aggregatePolicyExceptionViolations } from "@/lib/booking-policy-exceptions";
+import { evaluateProposedAdultMemberHosting } from "@/lib/adult-member-hosting-review";
 import {
   hasAccessRole,
   hasAdminAccess,
@@ -145,6 +146,13 @@ const createBookingSchema = z.object({
   applyCreditCents: z.number().int().min(0).max(100_000_000).optional(),
   forMemberId: z.string().optional(),
   memberReviewJustification: z.string().trim().min(1).max(1000).optional(),
+  // The admin's explicit on-behalf confirmation that they are accepting an
+  // adult-member hosting exception (#2364, epic decision D-R4). Honoured ONLY
+  // on an authorised on-behalf booking, and only as a reason — never as a bare
+  // boolean, because "an admin ticked a box" is not an answer anybody can audit.
+  // A dual-hat admin booking for themselves is a member here, exactly as #1442
+  // decided for minimum stay, and this field does nothing for them.
+  adultMemberHostingReason: z.string().trim().min(1).max(500).optional(),
   paymentMethod: z
     .enum(BOOKING_PAYMENT_METHOD_VALUES)
     .optional()
@@ -324,6 +332,7 @@ export async function POST(request: NextRequest) {
     requestedRoomId,
     cancelIfGuestsBumped,
     memberReviewJustification,
+    adultMemberHostingReason,
     paymentMethod,
   } = parsed.data;
   let guestInputs: BookingGuestInput[] = [];
@@ -764,6 +773,47 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  // Adult-member hosting policy (#2364, epic decisions D-R3/D-R4).
+  //
+  // Unlike minimum stay this is NOT a refusal for a member: the club chose
+  // "admin review required", so the booking is made and an admin decides
+  // afterwards. The check here exists for the one case where silence would be
+  // wrong — an ADMIN booking on somebody's behalf. D-R4 says hosting is always
+  // administratively overridable through an explicit reason, and the mirror of
+  // that is that an admin must not override it by accident. So an on-behalf
+  // booking that trips the rule is refused until the admin states a reason, and
+  // that reason is then persisted against the approval.
+  //
+  // Deliberately pre-transaction, like every other booking check here, and
+  // deliberately NOT the source of the stored snapshot: the snapshot the
+  // reconciler writes inside the transaction is derived from the persisted guest
+  // rows, so it references real BookingGuest ids and stays comparable with every
+  // later evaluation.
+  if (isAuthorizedOnBehalf && !adultMemberHostingReason) {
+    const hostingViolation = await evaluateProposedAdultMemberHosting(prisma, {
+      lodgeId: bookingLodgeId,
+      checkIn,
+      checkOut,
+      guests: guestInputs,
+    });
+    if (hostingViolation) {
+      const exceptionReview = aggregatePolicyExceptionViolations([
+        hostingViolation,
+      ]);
+      return NextResponse.json(
+        {
+          error:
+            "This booking has non-member guests on nights when no adult member is staying. Give a reason to record with the booking, then submit again.",
+          details: hostingViolation.message,
+          code: "ADULT_MEMBER_HOSTING_CONFIRM_REQUIRED",
+          violations: exceptionReview.violations,
+          exceptionReview,
+        },
+        { status: 409 },
+      );
+    }
+  }
+
   const gds = await prisma.groupDiscountSetting.findUnique({ where: { id: "default" } });
   const groupDiscount = toGroupDiscountConfig(gds);
 
@@ -794,6 +844,7 @@ export async function POST(request: NextRequest) {
         applyCreditCents: parsed.data.applyCreditCents,
         groupDiscount,
         memberReviewJustification,
+        adultMemberHostingReason,
         lodgeId: parsed.data.lodgeId,
       });
       await notifyMemberGuestAdds(newBooking);
@@ -954,6 +1005,7 @@ export async function POST(request: NextRequest) {
       paymentMethod,
       internetBankingSettings,
       memberReviewJustification,
+      adultMemberHostingReason,
       lodgeId: parsed.data.lodgeId,
       allowPastDates: retroactiveCreate,
       confirmOverCapacity: parsed.data.confirmOverCapacity,
@@ -997,6 +1049,7 @@ export async function POST(request: NextRequest) {
         requestedRoomId,
         groupDiscount,
         memberReviewJustification,
+        adultMemberHostingReason,
         lodgeId: parsed.data.lodgeId,
         alternateLodgeIds: parsed.data.alternateLodgeIds,
         notifyMember: parsed.data.notifyMember,

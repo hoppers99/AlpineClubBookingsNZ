@@ -1,0 +1,266 @@
+// @vitest-environment jsdom
+
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const LODGES = vi.hoisted(() => [
+  { id: "lodge-1", name: "Lodge One" },
+  { id: "lodge-2", name: "Lodge Two" },
+]);
+
+const access = vi.hoisted(() => ({ canEdit: true }));
+
+vi.mock("@/hooks/use-admin-area-edit-access", () => ({
+  useAdminAreaEditAccess: () => access.canEdit,
+  ADMIN_VIEW_ONLY_ACTION_REASON: "View-only reason",
+}));
+
+// The real control is a portalled, pointer-driven Radix Select; the subject
+// here is the section's reaction to a scope CHANGE, and a native select drives
+// the same onChange contract.
+vi.mock("../policy-scope-select", () => ({
+  PolicyScopeSelect: ({
+    value,
+    onChange,
+  }: {
+    value: string | null;
+    onChange: (lodgeId: string | null) => void;
+    id?: string;
+  }) => (
+    <select
+      aria-label="Rules for"
+      value={value ?? ""}
+      onChange={(event) => onChange(event.target.value || null)}
+    >
+      <option value="">Club-wide rules (default)</option>
+      {LODGES.map((lodge) => (
+        <option key={lodge.id} value={lodge.id}>
+          {lodge.name}
+        </option>
+      ))}
+    </select>
+  ),
+  usePolicyScopeLodgeName: (lodgeId: string | null) =>
+    LODGES.find((lodge) => lodge.id === lodgeId)?.name ?? null,
+}));
+
+import { AdultMemberHostingSection } from "../adult-member-hosting-section";
+
+const UNCONFIGURED_CLUB = {
+  scopeKey: "club-wide",
+  lodgeId: null,
+  mode: "DISABLED",
+  capacityMode: null,
+  version: 0,
+  configured: false,
+};
+
+const CONFIGURED_CLUB = {
+  scopeKey: "club-wide",
+  lodgeId: null,
+  mode: "ADMIN_REVIEW_REQUIRED",
+  capacityMode: "HOLD",
+  version: 4,
+  configured: true,
+};
+
+function json(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), { status });
+}
+
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
+
+beforeEach(() => {
+  access.canEdit = true;
+});
+
+async function renderWith(
+  handler: (url: string, init?: RequestInit) => Promise<Response>,
+) {
+  const fetchMock = vi.fn(handler);
+  vi.stubGlobal("fetch", fetchMock);
+  render(<AdultMemberHostingSection />);
+  await screen.findByText(/Adult Member Hosting/);
+  return fetchMock;
+}
+
+describe("adult-member hosting settings card (#2364)", () => {
+  it("loads read-only, and Edit reveals Save/Cancel", async () => {
+    await renderWith(async () => json(CONFIGURED_CLUB));
+    const mode = (await screen.findByLabelText(
+      /Non-member guests without an adult member/,
+    )) as HTMLSelectElement;
+    expect(mode.disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: /Save Hosting Policy/ })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    expect(mode.disabled).toBe(false);
+    expect(
+      screen.getByRole("button", { name: /Save Hosting Policy/ }),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
+  });
+
+  it("keeps Save disabled until the FIRST save has something to say (D-R6)", async () => {
+    await renderWith(async () => json(UNCONFIGURED_CLUB));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    // Unconfigured counts as dirty (there is nothing to be unchanged from), but
+    // no capacity mode has been chosen, so the write is still not valid.
+    const save = screen.getByRole("button", { name: /Save Hosting Policy/ });
+    expect(save.hasAttribute("disabled")).toBe(true);
+
+    fireEvent.change(screen.getByLabelText(/Exception capacity handling/), {
+      target: { value: "NO_HOLD" },
+    });
+    expect(
+      screen.getByRole("button", { name: /Save Hosting Policy/ }).hasAttribute("disabled"),
+    ).toBe(false);
+  });
+
+  it("refuses to re-PUT an unchanged configured policy (#2143)", async () => {
+    await renderWith(async () => json(CONFIGURED_CLUB));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    expect(
+      screen.getByRole("button", { name: /Save Hosting Policy/ }).hasAttribute("disabled"),
+    ).toBe(true);
+  });
+
+  it("sends the loaded revision and re-seeds from the server's answer", async () => {
+    const fetchMock = await renderWith(async (url, init) => {
+      if (init?.method === "PUT") {
+        return json({ ...CONFIGURED_CLUB, mode: "DISABLED", version: 5 });
+      }
+      return json(CONFIGURED_CLUB);
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.change(
+      screen.getByLabelText(/Non-member guests without an adult member/),
+      { target: { value: "DISABLED" } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Save Hosting Policy/ }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/Adult-member hosting policy saved/)).toBeTruthy(),
+    );
+    const put = fetchMock.mock.calls.find(([, init]) => init?.method === "PUT")!;
+    expect(JSON.parse(String(put[1]!.body))).toEqual({
+      mode: "DISABLED",
+      capacityMode: "HOLD",
+      version: 4,
+    });
+    // Re-seeded from the RESPONSE: revision 5, not the 4 that was submitted.
+    await waitFor(() => expect(screen.getByText(/Revision 5\./)).toBeTruthy());
+  });
+
+  it("omits the revision on a first save, so the route can refuse a resurrection", async () => {
+    const fetchMock = await renderWith(async (url, init) => {
+      if (init?.method === "PUT") {
+        return json({ ...UNCONFIGURED_CLUB, capacityMode: "HOLD", version: 1, configured: true });
+      }
+      return json(UNCONFIGURED_CLUB);
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText(/Exception capacity handling/), {
+      target: { value: "HOLD" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Save Hosting Policy/ }));
+
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([, init]) => init?.method === "PUT"),
+      ).toBe(true),
+    );
+    const put = fetchMock.mock.calls.find(([, init]) => init?.method === "PUT")!;
+    expect(JSON.parse(String(put[1]!.body))).toEqual({
+      mode: "DISABLED",
+      capacityMode: "HOLD",
+    });
+  });
+
+  it("scopes the GET by lodge and offers Inherit only there", async () => {
+    const fetchMock = await renderWith(async (url) =>
+      url.includes("lodgeId=lodge-1")
+        ? json({
+            scopeKey: "lodge-1",
+            lodgeId: "lodge-1",
+            mode: "INHERIT",
+            capacityMode: "NO_HOLD",
+            version: 2,
+            configured: true,
+          })
+        : json(CONFIGURED_CLUB),
+    );
+    // Club-wide has no Inherit option: there is nothing above it.
+    expect(screen.queryByText("Use the club-wide setting")).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("Rules for"), {
+      target: { value: "lodge-1" },
+    });
+    await screen.findByText(/Adult Member Hosting — Lodge One/);
+    expect(screen.getByText("Use the club-wide setting")).toBeTruthy();
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).includes("lodgeId=lodge-1")),
+    ).toBe(true);
+  });
+
+  it("shows UNKNOWN rather than another scope's values when a switch fails", async () => {
+    await renderWith(async (url) =>
+      url.includes("lodgeId=lodge-1")
+        ? new Response("{}", { status: 500 })
+        : json(CONFIGURED_CLUB),
+    );
+    await screen.findByRole("button", { name: "Edit" });
+
+    fireEvent.change(screen.getByLabelText("Rules for"), {
+      target: { value: "lodge-1" },
+    });
+    await screen.findByText(
+      /Could not load the adult-member hosting policy for Lodge One/,
+    );
+    // No editor, and nothing that could write the previous scope's values.
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Save Hosting Policy/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+  });
+
+  it("explains view-only access and offers no Edit to a bookings:view admin", async () => {
+    access.canEdit = false;
+    await renderWith(async () => json(CONFIGURED_CLUB));
+    expect(
+      screen.getByText(/can view the adult-member hosting policy but cannot change it/),
+    ).toBeTruthy();
+    const edit = await screen.findByRole("button", { name: "Edit" });
+    expect(edit.hasAttribute("disabled")).toBe(true);
+  });
+
+  it("surfaces a 409 and reloads the authoritative row", async () => {
+    let loads = 0;
+    await renderWith(async (url, init) => {
+      if (init?.method === "PUT") {
+        return json({ error: "This hosting policy changed since you opened it" }, 409);
+      }
+      loads += 1;
+      return json(loads === 1 ? CONFIGURED_CLUB : { ...CONFIGURED_CLUB, version: 9 });
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.change(
+      screen.getByLabelText(/Non-member guests without an adult member/),
+      { target: { value: "DISABLED" } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Save Hosting Policy/ }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/changed since you opened it/)).toBeTruthy(),
+    );
+    await waitFor(() => expect(screen.getByText(/Revision 9\./)).toBeTruthy());
+  });
+});

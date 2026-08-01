@@ -63,6 +63,9 @@ vi.mock("@/lib/prisma", () => ({
       findUnique: mockPaymentFindUnique,
       update: mockPaymentUpdate,
     },
+    // #2364: the hosting review is reconciled inside the booking write, so
+    // every prisma/tx double a booking path runs against needs this client.
+    adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
     booking: {
       findUnique: mockBookingFindUnique,
       update: mockBookingUpdate,
@@ -344,6 +347,9 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
     },
     // #1982: default lodge capacity is a self-healed DB override.
     lodgeSettings: { findUnique: async () => ({ capacity: 100 }) },
+    // #2364: the hosting review is reconciled inside the booking write, so
+    // every prisma/tx double a booking path runs against needs this client.
+    adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
     booking: {
       findUnique: vi.fn().mockResolvedValue(booking),
       update: vi.fn().mockImplementation(({ data }) => {

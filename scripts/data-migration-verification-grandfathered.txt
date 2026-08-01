@@ -1,0 +1,154 @@
+# Grandfathered historical data-rewriting migrations (#2418).
+#
+# Recorded 2 Aug 2026, the day scripts/check-data-migration-verification.sh was
+# introduced. Every name below is a migration that ALREADY SHIPPED without an
+# executable verification fixture: it rewrites rows a club already had, and no
+# CI job has ever run it against a real PostgreSQL holding realistic pre-state.
+#
+# They are listed rather than exempted by a baseline date on purpose. A date
+# cutoff hides how much is uncovered; a list states it, one line per migration,
+# and shrinks visibly as fixtures are written. Retro-fitting all 87 would be
+# archaeology on databases that applied them months ago — the point of the gate
+# is that the NEXT one cannot ship unverified.
+#
+# (Recorded as 85. It grew to 87 when the classifier was tightened to treat an
+# ALTER COLUMN ... SET DATA TYPE without a USING clause as data-rewriting — an
+# implicit cast still recasts every stored value — which surfaced two historical
+# type-change migrations that had slipped the old rule; see #2418, R5.)
+#
+# RULES
+#   * This list only ever SHRINKS in normal work. Removing a name means its
+#     fixture now exists (prisma/migration-verification/<name>.ts); drop
+#     EXPECTED_GRANDFATHERED_COUNT in check-data-migration-verification.sh by one
+#     in the same commit.
+#   * A NEW migration can never be added here. Every name predates the gate; the
+#     gate refuses any entry whose 14-digit timestamp prefix is at or after the
+#     day it was introduced (20260802150000), so a fresh data-rewriting migration
+#     cannot buy its way out of shipping a fixture (#2418, R7). Growing the list
+#     is only legitimate for a historical migration a tightened classifier newly
+#     recognises, as the two #2418/R5 type changes above were.
+#   * A name here that also has a fixture is a hard failure — the two states are
+#     mutually exclusive, so the list can never drift into decoration.
+#   * A name here that no longer classifies as data-rewriting is a hard failure
+#     too: either the row is stale or the classifier has regressed.
+#
+# Blank lines and lines beginning with "#" are ignored.
+
+# ---------------------------------------------------------------------------
+# April–June 2026: the pre-product history. Backfills and repairs written while
+# this codebase was the live Tokoroa Alpine Club site, before the blue/green
+# ledger and before any migration gate existed.
+# ---------------------------------------------------------------------------
+20260406020000_add_phase1_4_5_6_9_models
+20260406180000_add_phase7_and_xero_fields
+20260406230000_add_family_groups
+20260407120000_add_family_group_member_join_table
+20260407200000_add_missing_schema_changes
+20260408010000_add_can_login_field
+20260408020000_migrate_dependents_to_family_groups
+20260408040000_extend_family_group_join_request
+20260408070000_fix_zero_dollar_confirmed_bookings
+20260408090000_add_credit_system_and_fix_drift
+20260409010000_add_booking_created_by
+20260409020000_add_waitlist_and_fk_fixes
+20260410010000_structured_phone_and_addresses
+20260411143000_add_promo_code_assignments_and_archival
+20260411183500_redact_sensitive_email_log_html
+20260411203000_add_infant_age_tier_and_family_group_notification_pref
+20260412190000_backfill_infant_age_tier_settings
+# Surfaced by the tightened classifier (#2418, R5): an ALTER COLUMN ... SET DATA
+# TYPE recasts every stored value even with no USING clause — here "GuestChoreToken"
+# and "BookingGuestStayRange" date columns are recast timestamp -> DATE, dropping
+# the time component in place. Historical, already applied; grandfathered.
+20260413000000_reconcile_remaining_schema_drift
+20260413193000_add_issue_reports_and_booking_review_flags
+20260426131500_hash_action_tokens_at_rest
+20260509090000_enrich_payment_refund_ledger
+20260510120000_hash_nomination_tokens_at_rest
+20260511113000_backfill_payment_pending_booking_status
+20260511124500_promote_paid_confirmed_bookings
+20260511133000_add_issue_report_retention
+20260512090000_add_age_tier_booking_subscription_requirement
+20260523113000_add_payment_recovery_operations
+20260524090000_add_booking_guest_stay_ranges
+20260526120000_promo_code_per_individual_redesign
+20260527090000_add_family_group_request_member_creation_setting
+20260527120000_add_promo_redemption_allocations
+20260528100000_add_lifetime_free_nights_cap
+20260528120000_add_booking_admin_review_workflow
+20260607130000_add_fixed_nightly_promo_adjustments
+20260608103000_add_promo_redemption_guest_targets
+20260611123000_add_club_theme
+20260612100000_add_work_party_events
+20260613090000_update_starter_home_page_content
+20260614090000_add_booking_guest_night
+20260615110000_add_lodge_induction_signoff
+# Surfaced by the tightened classifier (#2418, R5): ALTER COLUMN "name" TYPE
+# VARCHAR(200) recasts every existing locker name in place. Historical; grandfathered.
+20260622100000_harden_locker_names
+20260627120000_core_module_defaults_off
+20260628133000_add_nomination_reminder_state
+20260628170000_add_seasonal_membership_types
+20260629130000_add_committee_roles_assignments
+20260629160000_access_roles_membership_type_cleanup
+20260630120000_rename_member_role_to_user
+20260701130000_add_committee_role_contact_email
+20260702090000_backfill_policy_page_content
+20260702100000_induction_workflow_types
+
+# ---------------------------------------------------------------------------
+# July–August 2026: the multi-lodge, fee-authority, Xero-grouping and
+# genericisation work. Three of these DO have executable real-PostgreSQL
+# coverage already, written one-off in the pre-#2418 convention (a bespoke suite
+# plus a hand-wired CI step with its own env var):
+#
+#   20260716140000_xero_member_grouping
+#     -> src/lib/__tests__/xero-member-grouping-migration.test.ts
+#   20260801150000_strip_email_override_bracket_annotations
+#     -> src/lib/__tests__/email-message-annotation-strip.test.ts
+#   20260802100000_public_book_now_default_off
+#     -> src/lib/__tests__/public-book-now-default-off-migration.test.ts
+#
+# They stay listed here because this gate tracks ONE thing — does the migration
+# ship a fixture the shared runner executes — and hand-wired steps are exactly
+# the arrangement #2418 was filed to replace (each needs a reviewer to notice a
+# missing CI step). Porting those three onto the fixture convention and deleting
+# these three lines is tracked as follow-up work, not done here.
+# ---------------------------------------------------------------------------
+20260702120000_update_starter_faq_accordion
+20260702144000_update_privacy_for_analytics_consent
+20260703180000_group_join_member_uniqueness
+20260704150000_add_access_role_definitions
+20260704150000_backfill_booking_guest_nights
+20260705120000_bump_sub_aa_club_theme_gold
+20260705130000_add_non_member_hold_enabled
+20260706120000_xero_operation_queue_type_column
+20260707000100_backfill_org_age_tier_not_applicable
+20260708000000_add_lodge_entity_and_multi_lodge_module
+20260708000100_add_lodge_id_scoping_expand
+20260708000200_add_member_lodge_access_and_hut_leader_lodge
+20260708001100_multi_lodge_entity_lodge_id_not_null
+20260708220000_fix_seed_lodge_created_at_tz_skew
+20260709000100_add_clubwide_policy_partial_unique_indexes
+20260709120000_add_lodge_is_default
+20260709130000_drop_email_message_setting_lodge_identity_columns
+20260710000100_redact_audit_log_door_codes
+20260710140000_add_bed_allocation_second_occupant
+20260712100000_reseed_untouched_club_theme_teal
+20260713110000_authoritative_fee_schedules
+20260715140000_add_processed_webhook_event_lease
+20260716140000_xero_member_grouping
+20260717140000_pricing_rekey_by_membership_type
+20260717160100_add_lodge_address
+20260717170000_joining_fee_model
+20260717180000_genericise_starter_lodge_copy
+20260717195000_annual_fee_components_and_billing_family
+20260717200000_public_content_annual_fees
+20260719170000_xero_grouping_age_tiers_multiselect
+20260720120000_contract_drop_entrance_fee_and_agetier_xero_group
+20260720180000_seed_admin_lodge_membership_types
+20260721130000_contract_drop_ismember_and_agetier_xero_columns
+20260731130100_seed_whakapapa_selector_defaults
+20260731140000_repair_zero_benefit_promo_allocations
+20260801150000_strip_email_override_bracket_annotations
+20260802100000_public_book_now_default_off
