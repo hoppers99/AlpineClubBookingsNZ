@@ -138,6 +138,16 @@ chosen for maximum separation from cat1-5 and the four semantic hues — and
 retired the legacy `--hue-*` accent pairs entirely; every categorical chip now
 reaches a generated cat scale.)
 
+The Members and Subscriptions tables are a worked identity-versus-state case.
+Their **Access** chip is semantic state from `member-login-stage.ts`: No login →
+neutral, Not invited → warning, Invited → info, Can log in → success. Role is
+deliberately absent. Xero contact groups are identities, not severity, so both
+tables call `getXeroContactGroupTone`, which selects `cat1..cat6` from a
+stable-id hash modulo six. Catalog availability, filtering, and row order do
+not participate, so pages with different catalog-loading policies cannot
+drift. Collisions are intentional and the visible group name remains
+authoritative.
+
 The same rule applies to raw NEUTRALS, though for a narrower reason than the
 brand accent — and the reason is worth stating precisely, because a safety net
 already exists.
@@ -694,7 +704,7 @@ Use these ownership boundaries when adding new code:
 | Shared UI | `src/components/` | Reusable view pieces live here; route-specific view state can stay beside the page until it is reused. |
 | Booking lifecycle | `src/lib/booking-create.ts`, `src/lib/booking-create-types.ts`, `src/lib/booking-create-promo.ts`, `src/lib/booking-create-guests.ts`, `src/lib/booking-modify.ts` (barrel over `booking-modify-validation` / `booking-modify-plan` / `booking-modify-settlement`), `src/lib/booking-payment-cleanup.ts`, `src/lib/payment-recovery.ts` | Keep route handlers thin; booking orchestration and durable payment recovery live behind these services. |
 | Bed allocation | `src/lib/bed-allocation.ts`, `src/lib/bed-allocation-lifecycle.ts`, `src/lib/admin-bed-allocation.ts` | Room/bed inventory, family-aware allocation planning, lifecycle reconciliation, manual admin allocation, and approval state live behind focused services. Each `LodgeBed` carries a descriptive **bed type** (`SINGLE` / `BUNK_TOP` / `BUNK_BOTTOM` / `DOUBLE`) and an optional `bunkGroup` label; a group holds at most two beds — one top and one bottom — enforced in `admin-bed-allocation.ts` (serialised by a room-row lock, no partial index) and shown as an icon on the setup list and allocation board (#1675). Bed type is mostly descriptive, with one capacity exception (#1701): a **DOUBLE** bed may hold **two** occupants for a night when they are declared partners (two `ADULT` members holding a **CONFIRMED** `MemberPartnerLink` (#1742/#1744), the single-source `mayShareDoubleBed()` rule in `double-bed-sharing.ts`), added by an admin on the board onto a bed whose primary already holds capacity. Every other bed type stays one person per night. The bed-night uniqueness is `@@unique([bedId, stayDate, isSecondOccupant])` (≤1 primary + ≤1 second occupant) plus a raw-SQL partial unique index capping non-DOUBLE beds at exactly one (`WHERE "bedType" <> 'DOUBLE'`, in `prisma/partial-unique-indexes.tsv`); `BedAllocation.bedType` is a denormalized copy the partial index reads. The **base** capacity figure is unchanged — a shared double is still **one bed** of `activeBedCount` and each occupant is a full person-night — but each active DOUBLE adds one reserved, bounded **partner-shared admission slot** above it (#1745: `getLodgePartnerSharedCapacityStatus` + `checkCapacityForPartnerSharedAdmission`, admin-initiated only, never visible to public availability; see docs/CAPACITY_MODEL.md); auto-allocation never creates a second occupant. Beds may be pre-assigned on provisional statuses (`BED_ALLOCATABLE_BOOKING_STATUSES`) before a booking holds capacity, so the admin board tags each bed **Held** vs **Provisional** (#1251). The state is a server-computed flag from `bookingHoldsCapacity` (booking-status.ts) — not a per-row status check — because holding is no longer purely status-based: an accepted-but-unpaid quote is `PENDING` but holds (#1254). In the AUTOMATIC on-payment/confirmation reconcile (`bed-allocation-lifecycle.ts` → the planner's `prioritizeCapacityHolding` mode), **capacity-holding bookings get first claim**: they are allocated before provisional ones, and a held booking blocked only by a **Provisional** allocation moves that provisional aside (to a free bed) — or, if the night is otherwise full, unallocates it back to the awaiting-allocation queue — then takes the freed bed. A **Held** or admin-**approved** (#776 lock) allocation is never displaced, and displacement never strands a same-booking minor; each displacement is applied atomically and writes a `lodge` audit row on the displaced provisional booking (#1387). The planner enforces the cross-booking age-mix invariant on every placement path (#1768): a room-night holding one booking's minors never also holds another booking's adult (in either direction), minors may fill rooms of their own once the booking has an adult on-site that night (the adult count no longer caps the rooms a large group fills), a SCHOOL-request booking rooms its adults together and its students separately (`isSchoolGroup`), and persisted violations surface as `MINOR_ADULT_MIX` board warnings. That automatic reconcile auto-places **only the reconciled booking's own** guests on its current nights (#1686): editing, confirming, promoting, or cancelling one booking never opportunistically drafts *other* bookings' guests into idle or freed beds — a cancellation's freed beds stay in the awaiting-allocation queue rather than being auto-refilled. It still loads lodge-wide occupancy so it can seat that booking whole-stay and displace blocking provisionals to seat a held booking (#1387/#1677); opportunistic lodge-wide re-planning of *everyone* is exclusively the explicit board action below. The manual board **Run auto-allocation** button (`runAutoBedAllocation`) runs pure first-fit and does NOT displace — only the automatic reconcile does. One further occupancy class has **no `BedAllocation` row at all** (#2286): a `HutLeaderAssignment` carrying a `bedId` is a **custodian bed hold**, which takes that bed out of both the bookable and the allocatable pool for every night from `startDate` to `endDate` *inclusive*, with no `Booking`, no `BookingGuest` and no allocation row anywhere (`src/lib/custodian-occupancy.ts` read side, `src/lib/custodian-assignment.ts` write side). It is counted as an **occupant** rather than as a smaller lodge, so `occupiedBeds + availableBeds === lodgeCapacity` still holds; it is fed to the planner as a #1768 blocking, never-evictable unknown occupant; and because nothing in the database enforces it, every placing write re-reads the live holds on its own client immediately before writing, inside the per-lodge advisory lock where it owns the transaction. `custodian-write-path-contract.test.ts` scans the whole `src/` tree and fails CI when a `bedAllocation.create*` site appears undeclared. See docs/CAPACITY_MODEL.md and DOMAIN_INVARIANTS.md. |
-| Member-guest consent | `src/lib/member-guest-consent.ts`, `src/lib/member-guest-settings.ts`, `src/lib/booking-guests.ts` | Adding another club member as a guest ("+ Add Member Guest", epic #2305). `member-guest-consent.ts` is the pure model: the named widening predicate `MEMBER_GUEST_WIDENING_ENABLED`, the `FAMILY` / `BEYOND_FAMILY` boundary types, and the eight-shape consent sub-state table with its classifier. `booking-guests.ts` computes each prospective guest's boundary scope on **every** path — the admin `skipAuthorization` paths included — so no caller can end up persisting a consent-free cross-family row by default. Policy lives in the `MemberGuestSettings` singleton (`member-guest-settings.ts`, lazily created, read through the shared defaults in `src/config/club-settings-defaults.ts`) alongside the other club-settings singletons; its two open-search privacy toggles are excluded from config transfer. **This release ships the feature dark**: the widening predicate is `false`, cross-family adds are refused with the identical pre-existing error in every module state, and no code path writes a non-null `BookingGuest.consentStatus`. |
+| Member-guest consent | `src/lib/member-guest-consent.ts`, `src/lib/member-guest-settings.ts`, `src/lib/booking-guests.ts` | Adding another club member as a guest ("+ Add Member Guest", epic #2305). `member-guest-consent.ts` is the pure model: the named widening predicate `MEMBER_GUEST_WIDENING_ENABLED`, the `FAMILY` / `BEYOND_FAMILY` boundary types, and the eight-shape consent sub-state table with its classifier. `booking-guests.ts` computes each prospective guest's boundary scope on **every** path — the admin `skipAuthorization` paths included — so no caller can end up persisting a consent-free cross-family row by default. Policy lives in the `MemberGuestSettings` singleton (`member-guest-settings.ts`, lazily created, read through the shared defaults in `src/config/club-settings-defaults.ts`) alongside the other club-settings singletons; its two open-search privacy toggles are excluded from config transfer. **The feature is live behind the `memberGuests` module** (MG2 #2307 turned MG1's dark constant into the per-club flag; MG3 #2308 added the finder; MG4 #2309 covered the edit path, admin parity and the booking-request pipeline). With the module off — the shipped default — a cross-family add is refused with the byte-for-byte pre-existing error and nothing writes a non-null `BookingGuest.consentStatus`, so a club that never opts in sees no change. Every persisting path plans its consent columns through the single writer in `member-guest-consent.ts` by way of `member-guest-add-policy.ts`, and every one of them dispatches its notifications AFTER the transaction commits. |
 | Policy rules | `src/lib/policies/` | Pricing, age-tier, cancellation, change-fee, minimum-stay, member-credit, and booking-route decisions live as testable policy helpers. |
 | Operational Xero | `src/lib/xero-*.ts`, `src/lib/xero.ts` | `src/lib/xero.ts` is a compatibility facade. New code should import from the focused module that owns the behavior, not from the facade. |
 | Admin/member services | `src/lib/admin-member-xero-actions.ts`, `src/lib/member-serialization.ts`, `src/lib/member-lifecycle-actions.ts`, `src/lib/membership-cancellation-*.ts` | Shared admin/member request wrappers, DTO shape, lifecycle actions, and cancellation workflows live outside page files. |
@@ -797,7 +807,7 @@ tree** (#2160, extended by #2168 and #2324) — not a claim that nothing is left
 Measured
 on the current tree by `view-only-banner-contract.test.ts`, which asserts these
 figures rather than trusting a hand count: **80 components render a banner, and
-252 of the 299 `ViewOnlyActionButton` call sites opt out** of the per-button
+252 of the 301 `ViewOnlyActionButton` call sites opt out** of the per-button
 reason. (Earlier revisions of this page published 76/232/264/211 — those were
 upstream-historical and had drifted; the numbers here are the ones the contract
 test currently pins, which is the only authority.) Those 252 split by WHICH rule
@@ -807,7 +817,7 @@ pass `describeReason={!ancestorRendersViewOnlyBanner}` and are covered by a
 verified vouching parent — 21 by a parent's own JSX render site (#2168), 5 by the
 guided-setup shell (#2324); see *Vouching for a child's coverage* and *Vouching
 through the wizard shell* below. The
-remaining **47 controls across 25 files deliberately keep the per-button
+remaining **49 controls across 26 files deliberately keep the per-button
 default** (`describeReason` left at `true`), in three shapes:
 
 - **Controls inside a dialog, sheet, popover, or dropdown menu.** These live in
@@ -821,7 +831,7 @@ default** (`describeReason` left at `true`), in three shapes:
   the booking capacity/exclusive hold controls, the family-group login-holder
   and request-review sub-sections, and the non-member contact form). Nothing
   local proves an ancestor renders a banner above them, so the reason stays on
-  the control. (34 controls across 20 files.) Nine of those 34 sit inside a
+  the control. (36 controls across 21 files.) Nine of those 36 sit inside a
   setup wizard and are **scope** exceptions rather than indirection ones: each is
   gated on a permission NARROWER than the banner its shell renders, so an admin
   who has the wizard's area but not that narrower one meets no banner at all.
@@ -1395,6 +1405,49 @@ The source of truth is `prisma/schema.prisma`. Key domains are:
 - `SiteBanner` records: admin-managed plain-text notices with
   `URGENT`/`WARNING`/`NOTIFY` priority and an inclusive NZ date-only display
   window, rendered above the public and member site headers.
+
+### Reading a unique-constraint failure (P2002) — measured, not assumed
+
+Prisma 7 reaches PostgreSQL through the `pg` driver adapter (`PrismaPg`, wired
+in `src/lib/prisma-adapter.ts`), and that changes the shape of a P2002 from what
+most Prisma documentation and older code assume. Measured on 1 Aug 2026 against
+PostgreSQL 16 with Prisma 7.9.0 and this repo's real migration tree:
+
+- **`meta.target` is never populated.** It was the old Rust query engine's
+  field. Any code that reads only `meta.target` to decide which constraint fired
+  is dead code on this stack — that is exactly how the join-code collision retry
+  in `src/lib/group-booking.ts` silently stopped firing (#2412).
+- **The colliding columns arrive at
+  `meta.driverAdapterError.cause.constraint.fields`.** The adapter parses them
+  out of the `Key (…)` detail of the SQLSTATE 23505 error, so the list holds
+  COLUMN names, never the index name. The index name appears only inside
+  `cause.originalMessage`.
+- **Column names keep whatever quoting Postgres used.** A camelCase column comes
+  back as `"joinCode"` with literal double quotes; a lowercase one as `email`.
+  Compare case-insensitively and strip quotes.
+- **A raw partial index is indistinguishable from a schema-level `@unique`.**
+  `Member_email_login_unique` (hand-written SQL, `WHERE "canLogin" = true`)
+  reports its column `email` exactly the way `GroupBooking.joinCode`
+  (`@unique` in the schema) reports `"joinCode"`. The long-assumed "the two
+  index kinds surface differently" distinction is not real, and cost two
+  separate sessions' reasoning before it was measured.
+
+Do not re-derive this by reading adapter source. Use
+`describeUniqueConstraintTarget` in `src/lib/prisma-errors.ts`, which reads every
+shape most-trustworthy-first (so it keeps working if the adapter is ever dropped
+and `meta.target` returns, or if Postgres withholds the `Key (…)` detail and only
+the rendered message is left) and normalises the quoting, case and composite
+separator away, so one constraint always describes itself the same way whichever
+shape carried it. Verbatim captured errors live in
+`src/lib/__tests__/helpers/p2002-fixtures.ts`.
+
+Two limits on that advice. All of the above is about **unique** constraints
+(SQLSTATE 23505) only: for a CHECK or trigger violation the adapter drops the
+Postgres `constraint` field altogether, so the helper has nothing to return and
+the booking-envelope triggers are matched on their `RAISE EXCEPTION` text instead
+(`src/lib/booking-envelope-invariants.ts`). And the rendered message echoes the
+call arguments, so any match against it is made on Prisma's whole sentence —
+member free text can otherwise supply a convincing-looking field list of its own.
 
 ## Booking and Payment Flow
 
@@ -2071,6 +2124,30 @@ invoice datasets, bank balances, and chart-of-accounts snapshots through that
 connection, then stores `FinanceSnapshot` and `FinanceSyncRun` rows for page
 rendering. There is no separate finance Xero OAuth app, token store, callback
 route, or usage-metering table.
+
+The simpler Base Reports page at `/admin/reports` is first-party and stay-night
+based (#2368). One overlap query applies the selected lodge and deleted scope to
+the explicit positive current-status cohort `PENDING`, `PAYMENT_PENDING`,
+`CONFIRMED`, `PAID`, `AWAITING_REVIEW`, and `COMPLETED`; that same cohort owns
+distinct booking/guest totals, weekly trends, current-status breakdown, and
+booked revenue. Booking stay dates are `checkIn` inclusive / `checkOut`
+exclusive, while the selected From/To dates are inclusive. Guest totals use each
+guest row's own half-open `[stayStart, stayEnd)` envelope; sparse explicit guest
+night rows do not override that envelope for this metric.
+`Booking.finalPriceCents` is allocated
+deterministically over the booking's complete stay before the selected range is
+sliced, so $1.00 over three nights is 34/33/33 cents and a one-night slice keeps
+its original share. Booked revenue is therefore not collected cash. Net
+collected cash is a separate booking-level payment figure derived from captured
+`Payment.amountCents` less refunds (#2408), never rebuilt from transaction rows;
+outstanding additions remain separately visible (#2350). Reports selects only
+captured `ADDITIONAL` transaction evidence to reuse #2408's consistency guard:
+when a positive additional amount is marked succeeded without such evidence,
+cash arithmetic is unchanged, a bounded server log names the affected booking
+IDs, and the API returns only aggregate possible-gap cents/count for the page,
+CSV, and PDF warning. Money on those report surfaces is rendered to exact cents.
+Occupancy intentionally keeps the pre-existing PAID/COMPLETED-only utilisation
+and custodian-exclusion semantics.
 
 ### Address autocomplete
 

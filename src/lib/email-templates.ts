@@ -4052,6 +4052,53 @@ export function memberGuestConsentExpiredTemplate(data: {
 }
 
 /**
+ * "You are no longer on that booking" — MG4 (#2309).
+ *
+ * The counterpart to `memberGuestAddedTemplate`, and it exists because MG2 told
+ * a member they had a bed. Three things can take that back — the booker calls
+ * off a request nobody has answered yet, the club takes a settled member guest
+ * off, or the booking-request pipeline swaps them out at approval — and all
+ * three leave a member holding an email that has stopped being true.
+ *
+ * NO ACTION LINK AND NO PARTY LISTING, deliberately, and neither is an oversight.
+ * There is nothing for the reader to do, and by the time this lands they are not
+ * on the booking, so a "view this booking" button would 403 and a party listing
+ * would disclose a party they are no longer part of. MG2-D-a's listing is the
+ * price of being asked to join; it is not owed to somebody who has been removed.
+ *
+ * NO MONEY either, on the same rule as the request and added notices.
+ *
+ * THE LAST PARAGRAPH IS THE ONE DOING REAL WORK (mockup panel 8). The reader is
+ * holding an earlier email with a button in it — "Answer this request", or
+ * "View this booking" — and that button now leads nowhere. Saying so BEFORE they
+ * press it is the difference between a closed loop and an error page, so it is
+ * stated here and in the editable default body in the same words; the closing
+ * contact line carries the support address in both for the same reason.
+ */
+export function memberGuestRequestWithdrawnTemplate(data: {
+  firstName: string;
+  withdrawnHeading: string;
+  withdrawnContextNote: string;
+  lodgeName: string;
+  checkIn: Date;
+  checkOut: Date;
+}): string {
+  return layout(`
+    ${heading(escapeHtml(data.withdrawnHeading))}
+    ${paragraph(`Hi ${escapeHtml(data.firstName)}, ${escapeHtml(data.withdrawnContextNote)}`)}
+    ${infoTable([
+      { label: "Lodge", value: escapeHtml(data.lodgeName) },
+      {
+        label: "Stay",
+        value: `${escapeHtml(formatNZDate(data.checkIn))} - ${escapeHtml(formatNZDate(data.checkOut))}`,
+      },
+    ])}
+    ${supportContactSentence("You do not need to do anything. If you think this is a mistake, contact the club at ")}
+    ${paragraph("The link in the earlier email no longer works. If plans change, you can be added to a booking again later.")}
+  `);
+}
+
+/**
  * "Someone answered for you" — after a DELEGATE answered on a member's behalf.
  *
  * The one transition nobody downstream would otherwise hear about. The booking's

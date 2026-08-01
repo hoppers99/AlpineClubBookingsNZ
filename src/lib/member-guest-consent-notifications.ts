@@ -3,6 +3,7 @@ import { eachDateOnlyInRange } from "@/lib/date-only";
 import {
   sendMemberGuestAddedEmail,
   sendMemberGuestConsentRequestEmail,
+  sendMemberGuestRequestWithdrawnEmail,
 } from "@/lib/email/member-guest";
 import logger from "@/lib/logger";
 import {
@@ -11,6 +12,10 @@ import {
 } from "@/lib/member-guest-delegate";
 import type { MemberGuestAddNotificationRow } from "@/lib/member-guest-add-policy";
 import type { MemberGuestAddActor } from "@/lib/member-guest-consent";
+import type {
+  MemberGuestAddedContext,
+  MemberGuestWithdrawnContext,
+} from "@/lib/member-guest-email-notes";
 import { prisma } from "@/lib/prisma";
 
 /**
@@ -269,10 +274,11 @@ export async function sendMemberGuestAddNotifications(params: {
                   kind: "DELEGATE" as const,
                   guest: { firstName: guest.firstName, lastName: guest.lastName },
                 },
-            // ONE template, told apart by this value (MG4 reuses it for the
-            // pipeline add). Taken from the actor, not re-derived from the
-            // columns.
-            context: actor.kind === "ADMIN" ? ("ADMIN" as const) : ("NOTIFY_ONLY" as const),
+            // ONE template, told apart by this value. Taken from the actor, not
+            // re-derived from the columns — a `switch` rather than a ternary so
+            // a fourth actor kind is a compile error here instead of silently
+            // falling through to the notify-only sentence (MG4 #2309).
+            context: memberGuestAddedContextFor(actor),
             bookerName: context.bookerName,
             checkIn: context.checkIn,
             checkOut: context.checkOut,
@@ -288,6 +294,15 @@ export async function sendMemberGuestAddNotifications(params: {
               bookingStatus: context.bookingStatus,
               bookingCheckIn: context.checkIn,
               bookingGuestCount: context.party.length,
+              // D-14, and the fact that makes this notice honest on the whole
+              // MG4-D-b population (#2309). `evaluateGuestSelfRemoval` defaults
+              // `isQuotePriced` to false — "not known to be quote priced" — and
+              // every row the booking-request pipeline creates sits on a booking
+              // that IS, by construction. Without this read the pipeline's own
+              // notice would have offered "you can take yourself off from your
+              // account" to the one population that provably cannot, which is
+              // exactly the promise the D-14 sweep exists to delete.
+              isQuotePriced: context.isQuotePriced,
             },
           });
         }
@@ -317,6 +332,30 @@ export async function sendMemberGuestAddNotifications(params: {
   }
 
   return result;
+}
+
+/**
+ * Which of the added-notice's three sentences this actor owes the target.
+ *
+ * A total function over `MemberGuestAddActor`, kept beside the send rather than
+ * inline, because it is the ONE place the actor model and the copy model meet.
+ * `composeMemberGuestAdded` has carried three contexts since MG2; before MG4
+ * only two of them were reachable, and the third was selected by a ternary whose
+ * else-branch would have quietly mailed a pipeline target the notify-only
+ * sentence ("this club does not ask first for member guests") — which is not
+ * what happened to them at all.
+ */
+function memberGuestAddedContextFor(
+  actor: MemberGuestAddActor,
+): MemberGuestAddedContext {
+  switch (actor.kind) {
+    case "ADMIN":
+      return "ADMIN";
+    case "BOOKING_REQUEST":
+      return "BOOKING_REQUEST";
+    case "MEMBER":
+      return "NOTIFY_ONLY";
+  }
 }
 
 /**
@@ -351,6 +390,13 @@ type NotificationContext = {
   checkOut: Date;
   bookingStatus: string;
   bookingOwnerMemberId: string;
+  /**
+   * Whether this booking carries an officer-negotiated booking-request price —
+   * the same question `isQuotePricedBooking` answers, read from the booking's
+   * own two request relations so the dispatch needs no second query (MG4 #2309,
+   * D-14).
+   */
+  isQuotePriced: boolean;
   bookerName: string;
   /** Every guest on the booking, names only — MG2-D-a's party listing, no money. */
   party: Array<{ firstName: string; lastName: string }>;
@@ -382,6 +428,20 @@ async function loadNotificationContext(
       status: true,
       memberId: true,
       member: { select: { firstName: true, lastName: true } },
+      // D-14, and the fact that makes the added notice honest for the whole
+      // MG4-D-b population (#2309). `evaluateGuestSelfRemoval` defaults
+      // `isQuotePriced` to false — "not known to be quote priced" — and every
+      // row the booking-request pipeline creates sits on a booking that IS, by
+      // construction. Without this the pipeline's own notice would offer "you
+      // can take yourself off from your account" to the one population that
+      // provably cannot.
+      //
+      // Read as two relations on the booking already being fetched rather than
+      // through `isQuotePricedBooking`, which asks the same question from the
+      // other side and would cost a second round trip after the commit. Both
+      // arms are unique FKs on BookingRequest, so each is at most one row.
+      originBookingRequest: { select: { id: true } },
+      heldForBookingRequest: { select: { id: true } },
       guests: {
         select: {
           id: true,
@@ -405,6 +465,9 @@ async function loadNotificationContext(
     checkOut: booking.checkOut,
     bookingStatus: booking.status,
     bookingOwnerMemberId: booking.memberId,
+    isQuotePriced: Boolean(
+      booking.originBookingRequest ?? booking.heldForBookingRequest,
+    ),
     bookerName: `${booking.member.firstName} ${booking.member.lastName}`.trim(),
     party: booking.guests.map((guest) => ({
       firstName: guest.firstName,
@@ -431,4 +494,188 @@ async function loadNotificationContext(
         ]),
     ),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Withdrawal — the other direction (MG4 #2309)
+// ---------------------------------------------------------------------------
+
+export interface MemberGuestWithdrawnNotificationResult {
+  /** Members where at least one recipient was emailed successfully. */
+  sentMemberIds: string[];
+  /** Members where every send failed. */
+  failedMemberIds: string[];
+  /** Members with nobody to tell (see the note in the add dispatcher). */
+  unreachableMemberIds: string[];
+}
+
+/**
+ * Tell a member — or their family delegate — that they have come OFF a booking
+ * they were told about.
+ *
+ * WHY IT IS A SEPARATE DISPATCHER RATHER THAN A FLAG ON THE ADD ONE. The add
+ * dispatcher's whole shape depends on the guest ROW still existing: it reads the
+ * row back after the commit so the email quotes the expiry the sweep will act
+ * on, the guest's own nights, and the party they are joining. By the time a
+ * withdrawal is dispatched the row is gone — that is what "withdrawn" means — so
+ * there is nothing to read back and nothing of that to say. Sharing one function
+ * would mean every field on it becoming conditional on a direction, which is how
+ * a notice ends up quoting a bed that no longer exists.
+ *
+ * IT NEEDS THE MEMBER, NOT THE ROW. The recipient set comes from the same
+ * delegate resolver the add uses (so who is told about being added and who is
+ * told about being removed can never drift), and the guest's own name — needed
+ * only for the delegate wording — is read from the `Member` record rather than
+ * from the vanished guest row.
+ *
+ * Never rejects, for the same reason the add dispatcher does not: it runs after
+ * a committed booking write, and a mail failure must not surface as one.
+ */
+export async function sendMemberGuestWithdrawnNotifications(params: {
+  bookingId: string;
+  /** Member ids that were told they were on this booking and are not any more. */
+  targetMemberIds: readonly string[];
+  context: MemberGuestWithdrawnContext;
+  db?: typeof prisma;
+  delegateResolver?: MemberGuestConsentDelegateResolver;
+}): Promise<MemberGuestWithdrawnNotificationResult> {
+  const {
+    bookingId,
+    context,
+    db = prisma,
+    delegateResolver = familyAdultDelegateResolver,
+  } = params;
+  const targetMemberIds = [...new Set(params.targetMemberIds)];
+
+  const result: MemberGuestWithdrawnNotificationResult = {
+    sentMemberIds: [],
+    failedMemberIds: [],
+    unreachableMemberIds: [],
+  };
+  if (targetMemberIds.length === 0) return result;
+
+  const booking = await db.booking.findUnique({
+    where: { id: bookingId },
+    select: {
+      lodgeId: true,
+      checkIn: true,
+      checkOut: true,
+      member: { select: { firstName: true, lastName: true } },
+    },
+  });
+  if (!booking) {
+    logger.error(
+      { bookingId, targetMemberIds },
+      "Member-guest withdrawal notifications skipped: booking not found after commit",
+    );
+    result.failedMemberIds.push(...targetMemberIds);
+    return result;
+  }
+  const bookerName =
+    `${booking.member.firstName} ${booking.member.lastName}`.trim();
+
+  const targets = await db.member.findMany({
+    where: { id: { in: targetMemberIds } },
+    select: { id: true, firstName: true, lastName: true },
+  });
+  const targetById = new Map(targets.map((member) => [member.id, member]));
+
+  for (const targetMemberId of targetMemberIds) {
+    const target = targetById.get(targetMemberId);
+    if (!target) {
+      // The member row itself has gone — a hard delete between the commit and
+      // this send. Nothing to tell and nobody to tell it to.
+      logger.error(
+        { bookingId, targetMemberId },
+        "Member-guest withdrawal notification skipped: member not found",
+      );
+      result.failedMemberIds.push(targetMemberId);
+      continue;
+    }
+
+    let recipients;
+    try {
+      recipients = await delegateResolver.resolveNotificationRecipients({
+        targetMemberId,
+        db,
+      });
+    } catch (err) {
+      logger.error(
+        { err, bookingId, targetMemberId },
+        "Failed to resolve member-guest withdrawal recipients",
+      );
+      result.failedMemberIds.push(targetMemberId);
+      continue;
+    }
+
+    if (recipients.length === 0) {
+      // Same real state of the club's data as on the add path, and made visible
+      // the same way. It matters slightly less here — nobody is left holding a
+      // bed nobody asked about — but a member who was told they were coming and
+      // is never told they are not is exactly the sort of silence an operator
+      // should be able to find later.
+      logger.error(
+        { bookingId, targetMemberId, context },
+        "Member-guest withdrawal notification has no recipient: the target has no login and no family adult delegate",
+      );
+      logAudit({
+        action: "booking.member_guest.notification_unreachable",
+        targetId: bookingId,
+        subjectMemberId: targetMemberId,
+        entityType: "Booking",
+        entityId: bookingId,
+        category: "communication",
+        severity: "important",
+        outcome: "blocked",
+        summary: "Member guest could not be told they came off a booking",
+        details:
+          "The member has no login of their own and no active adult in a family group who could be told, so no withdrawal notice could be sent.",
+        metadata: { bookingId, targetMemberId, context },
+      });
+      result.unreachableMemberIds.push(targetMemberId);
+      continue;
+    }
+
+    let anySent = false;
+    for (const recipient of recipients) {
+      try {
+        await sendMemberGuestRequestWithdrawnEmail({
+          bookingId,
+          lodgeId: booking.lodgeId,
+          email: recipient.email,
+          firstName: recipient.firstName,
+          bookerName,
+          context,
+          audience: recipient.isTarget
+            ? { kind: "TARGET" as const }
+            : {
+                kind: "DELEGATE" as const,
+                guest: { firstName: target.firstName, lastName: target.lastName },
+              },
+          checkIn: booking.checkIn,
+          checkOut: booking.checkOut,
+        });
+        anySent = true;
+      } catch (err) {
+        logger.error(
+          {
+            err,
+            bookingId,
+            targetMemberId,
+            recipientMemberId: recipient.memberId,
+            context,
+          },
+          "Failed to send member-guest withdrawal notification",
+        );
+      }
+    }
+
+    if (anySent) {
+      result.sentMemberIds.push(targetMemberId);
+    } else {
+      result.failedMemberIds.push(targetMemberId);
+    }
+  }
+
+  return result;
 }

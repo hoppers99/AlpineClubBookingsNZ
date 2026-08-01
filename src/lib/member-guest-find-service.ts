@@ -133,8 +133,31 @@ export async function resolveMemberGuestCandidatesByEmail(params: {
  * order would let the same query return different tenths of the roll on repeat,
  * which is a slow way of paging past the cap.
  */
+export type MemberGuestSearchAudience = "MEMBER" | "ADMIN";
+
 export async function searchMemberGuestCandidatesByName(params: {
   q: string;
+  /**
+   * Who is searching, and therefore whether the club's minors switch applies.
+   *
+   * MG4 (#2309), owner decision D-20. Defaults to `"MEMBER"`, which is the
+   * behaviour every caller had before MG4: the type-ahead shows children only
+   * where a club has opted them in. `"ADMIN"` ignores the switch, because an
+   * officer holding `membership:view` can already see every member including
+   * minors from `/admin/members`, and a member-facing privacy setting is not an
+   * access-control mechanism — pressing it into service as one would leave a
+   * club that later turns name search ON with no way to say "browsable to
+   * officers, not to members".
+   *
+   * THE AUDIENCE IS DECIDED HERE RATHER THAN BY THE ADMIN ROUTE, and that is the
+   * whole reason this parameter exists instead of the route simply passing a
+   * doctored settings object. This file is the ONE place either open-search
+   * value becomes a decision about who is discoverable; a route that forced the
+   * minors flag itself would be a second such place, which is exactly how two
+   * surfaces come to disagree about whether the roll is browsable. A dedicated
+   * census test asserts the property directly.
+   */
+  audience?: MemberGuestSearchAudience;
   /**
    * The whole settings object, NOT a pre-read `includeMinors` boolean.
    *
@@ -157,7 +180,8 @@ export async function searchMemberGuestCandidatesByName(params: {
   }
 
   const ageTiers: AgeTier[] = memberGuestSearchAgeTiers(
-    params.settings.openMemberSearchIncludesMinors,
+    params.audience === "ADMIN" ||
+      params.settings.openMemberSearchIncludesMinors,
   );
   const insensitive = { mode: "insensitive" } as const;
 

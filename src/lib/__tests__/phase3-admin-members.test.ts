@@ -142,6 +142,10 @@ import { GET as exportMembers } from "@/app/api/admin/members/export/route";
 import { POST as importMembers } from "@/app/api/admin/members/import/route";
 import { POST as bulkUpdate } from "@/app/api/admin/members/bulk-update/route";
 import { GET as getMemberDetail } from "@/app/api/admin/members/[id]/route";
+import {
+  googleSubCollisionError,
+  loginEmailCollisionError,
+} from "@/lib/__tests__/helpers";
 
 const mockedAuth = vi.mocked(auth);
 const mockedSendMemberSetupInviteEmail = vi.mocked(sendMemberSetupInviteEmail);
@@ -347,6 +351,74 @@ describe("Phase 3: Admin Member Management", () => {
       const call = vi.mocked(prisma.member.findMany).mock.calls[0][0]!;
       expect(call.orderBy).toEqual({ email: "desc" });
     });
+
+    it.each([
+      ["asc", 2, ["invited", "can-login"]],
+      ["desc", 1, ["can-login", "invited"]],
+    ])(
+      "sorts and paginates the derived Access stages %s",
+      async (sortDir, page, expectedIds) => {
+        mockedAuth.mockResolvedValue(adminSession);
+        const candidates = [
+          {
+            id: "invited",
+            firstName: "Ivy",
+            lastName: "Invite",
+            canLogin: true,
+            passwordChangedAt: null,
+            lastLoginAt: null,
+            passwordResetTokens: [{ expiresAt: new Date("2999-01-01") }],
+          },
+          {
+            id: "no-login",
+            firstName: "Nora",
+            lastName: "Offline",
+            canLogin: false,
+            passwordChangedAt: null,
+            lastLoginAt: null,
+            passwordResetTokens: [],
+          },
+          {
+            id: "can-login",
+            firstName: "Cara",
+            lastName: "Ready",
+            canLogin: true,
+            passwordChangedAt: new Date("2026-01-01"),
+            lastLoginAt: null,
+            passwordResetTokens: [],
+          },
+          {
+            id: "not-invited",
+            firstName: "Neil",
+            lastName: "Waiting",
+            canLogin: true,
+            passwordChangedAt: null,
+            lastLoginAt: null,
+            passwordResetTokens: [],
+          },
+        ];
+        vi.mocked(prisma.member.findMany)
+          .mockResolvedValueOnce(candidates as any)
+          .mockResolvedValueOnce([]);
+
+        await getMembers(
+          new NextRequest(
+            `http://localhost/api/admin/members?sortBy=access&sortDir=${sortDir}&page=${page}&pageSize=2`,
+          ),
+        );
+
+        const candidateQuery = vi.mocked(prisma.member.findMany).mock.calls[0][0]!;
+        expect(candidateQuery.select?.passwordResetTokens).toMatchObject({
+          where: { used: false, expiresAt: { gt: expect.any(Date) } },
+          take: 1,
+        });
+        const pageQuery = vi.mocked(prisma.member.findMany).mock.calls[1][0]!;
+        expect(pageQuery.where).toEqual({
+          AND: [expect.any(Object), { id: { in: expectedIds } }],
+        });
+        expect(prisma.member.count).not.toHaveBeenCalled();
+      },
+    );
 
     it("rejects invalid sortBy values", async () => {
       mockedAuth.mockResolvedValue(adminSession);
@@ -2570,6 +2642,81 @@ describe("Phase 3: Admin Member Management", () => {
       });
       const res = await createMember(req);
       expect(res.status).toBe(409);
+      // A P2002 that names nothing is still the email clash: on this path no
+      // other unique constraint is reachable, and staying vague would leave an
+      // unexplained failure.
+      await expect(res.json()).resolves.toMatchObject({
+        error: "A member with this email already exists",
+      });
+    });
+
+    // #2412: the create path used to call ANY P2002 an email clash. These use
+    // the errors adapter-pg really raises — captured live against PostgreSQL 16,
+    // see `helpers/p2002-fixtures.ts`.
+    const createMemberRequest = () =>
+      new NextRequest("http://localhost/api/admin/members", {
+        method: "POST",
+        body: JSON.stringify({
+          firstName: "Test",
+          lastName: "User",
+          email: "existing@test.com",
+        }),
+        headers: { "Content-Type": "application/json" },
+      });
+
+    it("blames the email when the login-email partial index really fired", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      vi.mocked(prisma.member.findFirst).mockResolvedValue(null);
+      // The pre-check passed, then a concurrent write claimed the address.
+      vi.mocked(prisma.$transaction).mockRejectedValue(
+        loginEmailCollisionError(),
+      );
+
+      const res = await createMember(createMemberRequest());
+      expect(res.status).toBe(409);
+      await expect(res.json()).resolves.toMatchObject({
+        error: "A member with this email already exists",
+      });
+    });
+
+    it("does not blame the email when a different unique constraint fired", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      vi.mocked(prisma.member.findFirst).mockResolvedValue(null);
+      vi.mocked(prisma.$transaction).mockRejectedValue(
+        googleSubCollisionError(),
+      );
+
+      const res = await createMember(createMemberRequest());
+      expect(res.status).toBe(409);
+      await expect(res.json()).resolves.toMatchObject({
+        error:
+          "Could not create this member: one of their details is already used by another record",
+      });
+    });
+
+    it("does not blame the email for an unnamed collision on a non-login create", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      // No pre-check runs for a non-login member — they may share an address —
+      // and the partial index `WHERE "canLogin" = true` cannot fire on this
+      // insert, so an unidentifiable P2002 must not be called an email clash.
+      vi.mocked(prisma.$transaction).mockRejectedValue({ code: "P2002" });
+
+      const req = new NextRequest("http://localhost/api/admin/members", {
+        method: "POST",
+        body: JSON.stringify({
+          firstName: "Test",
+          lastName: "User",
+          email: "shared@test.com",
+          canLogin: false,
+        }),
+        headers: { "Content-Type": "application/json" },
+      });
+      const res = await createMember(req);
+      expect(res.status).toBe(409);
+      await expect(res.json()).resolves.toMatchObject({
+        error:
+          "Could not create this member: one of their details is already used by another record",
+      });
     });
 
     it("allows shared email when creating a non-login member", async () => {

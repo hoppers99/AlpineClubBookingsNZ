@@ -10,12 +10,23 @@ two places:
 
 - **Admin → Lodge Operations → Calendar** (`/admin/calendar`) — for admins.
 - The member **Events** card on the dashboard → **Events Calendar** (`/calendar`)
-  — for every logged-in member.
+  — for every logged-in member except organisation accounts (see below).
 
 Both surfaces render the same calendar; what differs is whether the viewer can
 change anything.
 
-The calendar itself is always on — there is no module toggle to enable it.
+The calendar is a module: **Admin → Modules → Events calendar**
+(`eventsCalendar`). It ships **on**, which is exactly how the calendar behaved
+before it had a switch, so nothing changes for a club that wants it. Turning it
+off makes `/calendar`, `/admin/calendar`, and the calendar API return **Not
+Found**, and removes the **Events** card from the member dashboard. Events
+already in the calendar are kept and reappear if you switch it back on.
+
+**Organisation accounts never see the calendar.** An organisation (a school,
+scout group, or similar body with its own self-service login) is not a club
+member, so it gets no Events card, the calendar pages and the events list answer
+**Not Found** for it, and any attempt to add or change an event is refused —
+whether the module is on or off.
 
 > **Video meetings are not out-of-the-box.** Creating events and viewing the
 > calendar work with zero setup, but the **MiroTalk video meeting** attached to
@@ -29,17 +40,22 @@ The calendar itself is always on — there is no module toggle to enable it.
 
 ## Who can do what
 
-| Action                  | Members (ordinary) | Committee members | Admins |
-| ----------------------- | ------------------ | ----------------- | ------ |
-| View read-only calendar | ✅ read-only       | ✅                | ✅     |
-| Create an event         | ❌                 | ✅                | ✅     |
-| Edit an event           | ❌                 | ❌                | ✅     |
-| Delete an event         | ❌                 | ❌                | ✅     |
-| Open video-meeting link | ❌                 | ✅                | ✅     |
+| Action                  | Organisations | Members (ordinary) | Committee members | Admins |
+| ----------------------- | ------------- | ------------------ | ----------------- | ------ |
+| View read-only calendar | ❌            | ✅ read-only       | ✅                | ✅     |
+| Create an event         | ❌            | ❌                 | ✅                | ✅     |
+| Edit an event           | ❌            | ❌                 | ❌                | ✅     |
+| Delete an event         | ❌            | ❌                 | ❌                | ✅     |
+| Open video-meeting link | ❌            | ❌                 | ✅                | ✅     |
 
-- **Everyone who can log in** sees the calendar. Ordinary members get a
-  read-only view: opening an event shows its details with only a **Close**
-  button — no Save or Delete.
+- **Everyone who can log in** sees the calendar, **except organisation
+  accounts**. Ordinary members get a read-only view: opening an event shows its
+  details with only a **Close** button — no Save or Delete.
+- **Organisation accounts** are excluded from every column: no dashboard card,
+  no calendar page, no events list. The exclusion is decided in one place
+  (`canViewCalendarEvents`) and applied to reading and writing alike, so an
+  organisation account that also held a committee assignment still cannot add
+  an event.
 - **Committee members** may add events only. "Committee member"
   means the member holds at least one **active** committee assignment under an
   active committee role (**Admin → Members → [member] → Committee**, managed on
@@ -247,6 +263,8 @@ Leave these unset to keep the plain link (MiroTalk shows its own login prompt).
 
 | Symptom                                               | Likely cause                                                                                    | Fix                                                                                                                               |
 | ----------------------------------------------------- | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| **Calendar** and the dashboard **Events** card have vanished for everyone | The **Events calendar** module was switched off | Turn it back on at **Admin → Modules**; your events are still there |
+| One person gets **Not Found** on `/calendar` while everyone else is fine | That account is an **organisation**, which never sees the calendar | Confirm with `npx tsx scripts/diagnose-calendar-access.ts their@email` (it prints the module switch and the organisation check ahead of the write gates); working as designed, but if they should be a member, change their user type on **Admin → Members → [member]** |
 | A member sees **Save**/**Delete** on events           | That account is a lodge-edit admin (only admins can edit or delete; committee members see **New event** but not Save/Delete)      | Confirm with `npx tsx scripts/diagnose-calendar-access.ts their@email`; if they should not edit, remove their lodge-edit role     |
 | A member should be able to **create** but cannot       | They have no active committee assignment and no lodge-edit role                                 | Add a committee assignment (**Admin → Members → [member] → Committee**) or grant lodge edit                                       |
 | A committee member cannot **edit or delete** an event  | Working as designed — committee members are create-only; only lodge-edit admins may edit/delete | Grant the member the lodge-edit admin role if they need to edit or delete events                                                 |
@@ -260,4 +278,6 @@ Leave these unset to keep the plain link (MiroTalk shows its own login prompt).
 - Back to the [documentation hub](../README.md).
 - Sibling guides: [Committee](committee.md), [Work Parties](work-parties.md),
   [Hut Leaders](hut-leaders.md), [Lodges](lodges.md).
+- [Modules](modules.md) — turn the Events calendar module on or off.
+- [Access Roles](access-roles.md) — what an organisation account is.
 - Reference: [Admin and Lodge](../ARCHITECTURE.md#admin-and-lodge).

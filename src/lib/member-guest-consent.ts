@@ -166,15 +166,33 @@ export function computeMemberGuestConsentExpiry(params: {
  * Who is doing the adding, which is what decides whether anyone is ASKED.
  *
  * `ADMIN` covers every path that can pass `skipAuthorization` — an admin or
- * booking officer adding on a member's behalf, the admin booking-copy, and (from
- * MG4) the booking-request pipeline. Owner decision MG4-D-a makes those adds
- * consent-free and always-notify, and the coherence review moved that rule
- * forward into MG2 so there is never a released state where a copy mints a
- * `PENDING` row that MG4 would then have had to migrate away.
+ * booking officer adding on a member's behalf, and the admin booking-copy. Owner
+ * decision MG4-D-a makes those adds consent-free and always-notify, and the
+ * coherence review moved that rule forward into MG2 so there is never a released
+ * state where a copy mints a `PENDING` row that MG4 would then have had to
+ * migrate away.
+ *
+ * `BOOKING_REQUEST` is MG4 (#2309) honouring owner decision MG4-D-b, and it is a
+ * THIRD kind rather than a reuse of `ADMIN` for one reason: the two write the
+ * SAME consent columns but owe the target a DIFFERENT sentence. An officer
+ * placing somebody on a member's booking and the public booking-request pipeline
+ * converting a stranger's enquiry are not the same event to the person being
+ * told, and `composeMemberGuestAdded` has carried separate `"ADMIN"` and
+ * `"BOOKING_REQUEST"` wording since MG2 precisely so MG4 would not have to
+ * invent a second template. Modelling the difference in the actor — the value
+ * both the column writer and the notifier already take — means neither of them
+ * re-derives it from anything, and a future path that forgets to say which it is
+ * fails to compile rather than silently mailing the wrong sentence.
+ *
+ * `adminMemberId` on both admin-ish kinds is the officer who stood behind the
+ * add, and it is what lands in `consentRespondedByMemberId` (the `ADMIN_ASSIGNED`
+ * sub-state). For the pipeline that is the approving officer, not the requester —
+ * the requester is a non-login contact who cannot stand behind anything.
  */
 export type MemberGuestAddActor =
   | { kind: "MEMBER" }
-  | { kind: "ADMIN"; adminMemberId: string };
+  | { kind: "ADMIN"; adminMemberId: string }
+  | { kind: "BOOKING_REQUEST"; adminMemberId: string };
 
 /** What the add path must send after the transaction commits. */
 export type MemberGuestAddNotification =
@@ -222,10 +240,14 @@ export function buildMemberGuestConsentWrite(params: {
     };
   }
 
-  // MG4-D-a, brought forward: an admin (or copy, or pipeline) add is
-  // consent-free and always-notify. `respondedAt` + `respondedByMemberId` name
-  // the admin who stood behind it, which is where MG4's audit rides.
-  if (actor.kind === "ADMIN") {
+  // MG4-D-a (admin, copy) and MG4-D-b (the booking-request pipeline) are ONE
+  // column rule and two sentences: both are consent-free and always-notify, and
+  // both record the officer who stood behind them. `respondedAt` +
+  // `respondedByMemberId` name that officer, which is where MG4's audit rides.
+  // The two kinds are kept apart only so the NOTIFICATION can say which happened
+  // — see `MemberGuestAddActor`. If a third admin-ish path ever appears, it
+  // belongs in this branch too, and TypeScript will say so.
+  if (actor.kind === "ADMIN" || actor.kind === "BOOKING_REQUEST") {
     return {
       columns: {
         consentStatus: "CONFIRMED",

@@ -3,7 +3,10 @@ import { requireActiveSession } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { parseJsonRequestBody } from "@/lib/api-json";
 import { logAudit } from "@/lib/audit";
-import { canManageCalendarEvents } from "@/lib/calendar-access";
+import {
+  canManageCalendarEvents,
+  canViewCalendarEvents,
+} from "@/lib/calendar-access";
 import { createCalendarEvent } from "@/lib/calendar-service";
 import {
   calendarEventInputSchema,
@@ -24,14 +27,22 @@ function parseRangeParam(value: string | null): Date | null {
 
 /**
  * List calendar events. Readable by any active member (the calendar is
- * club-wide, read-only for ordinary members). Accepts `from` / `to` ISO bounds
- * (the visible month's grid range); defaults to a broad window around now when
- * omitted. Also returns `canManage` so the client renders edit controls only
- * for committee members and lodge-edit admins.
+ * club-wide, read-only for ordinary members) EXCEPT organisation accounts, who
+ * are excluded from the calendar entirely (#2241, canViewCalendarEvents).
+ * Accepts `from` / `to` ISO bounds (the visible month's grid range); defaults to
+ * a broad window around now when omitted. Also returns `canManage` so the client
+ * renders edit controls only for committee members and lodge-edit admins.
  */
 export async function GET(req: NextRequest) {
   const guard = await requireActiveSession();
   if (!guard.ok) return guard.response;
+
+  // 404 rather than 403, matching what the whole prefix answers when the
+  // eventsCalendar module is off: for an organisation account the calendar does
+  // not exist, and the two states stay indistinguishable.
+  if (!canViewCalendarEvents(guard.session.user)) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
 
   const url = new URL(req.url);
   const now = Date.now();

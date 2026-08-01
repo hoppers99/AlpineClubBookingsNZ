@@ -123,6 +123,12 @@ type BatchModificationTransactionResult =
     // MG2 #2307: cross-family member guests added by this edit, to be told after
     // the commit. Empty on every family-scope modification.
     memberGuestNotificationRows: MemberGuestAddNotificationRow[];
+    // MG4 #2309: cross-family member guests this edit took OFF the booking, to
+    // be told after the commit. Empty on every family-scope modification.
+    withdrawnMemberGuests: Array<{
+      targetMemberId: string;
+      context: "REQUEST_CANCELLED" | "TAKEN_OFF";
+    }>;
   };
 
 export type BatchModificationResponse = {
@@ -753,6 +759,38 @@ export async function modifyBookingBatch({
         createdGuests,
         entriesByMemberId: guestPlan.memberGuestEntries,
       }),
+      /**
+       * MG4 (#2309): the cross-family member guests this modification took OFF
+       * the booking, carried out for the same post-commit dispatch.
+       *
+       * A NON-NULL `consentStatus` IS THE WHOLE TEST, and it is the right one:
+       * it means a consent record exists for this row, which means the member
+       * was told something — either asked (PENDING) or told they were on it
+       * (CONFIRMED) — and that is precisely the population for whom being
+       * removed silently would leave a false belief standing. A family-scope
+       * row (NULL) was never the subject of any message, so removing it owes
+       * nobody an email, exactly as before MG4.
+       *
+       * The ACTOR is excluded: a member using #2250 self-removal does not need
+       * an email telling them what they just did.
+       */
+      withdrawnMemberGuests: guestPlan.removedGuests
+        .filter(
+          (guest) =>
+            guest.memberId != null &&
+            guest.consentStatus != null &&
+            guest.memberId !== actor.id,
+        )
+        .map((guest) => ({
+          targetMemberId: guest.memberId as string,
+          // A request nobody has answered yet is "called off"; a settled place
+          // is "taken off". Two different things to the reader, so the composed
+          // sentence tells them apart.
+          context:
+            guest.consentStatus === "PENDING"
+              ? ("REQUEST_CANCELLED" as const)
+              : ("TAKEN_OFF" as const),
+        })),
     } satisfies BatchModificationTransactionResult;
   });
 
@@ -781,6 +819,34 @@ export async function modifyBookingBatch({
       logger.error(
         { err, bookingId },
         "Failed to dispatch member-guest add notifications",
+      );
+    }
+  }
+
+  // MG4 (#2309): and the other direction, on the same rules — after the commit,
+  // lazily imported, never allowed to fail an already-committed edit.
+  if (result.withdrawnMemberGuests.length > 0) {
+    const { sendMemberGuestWithdrawnNotifications } = await import(
+      "@/lib/member-guest-consent-notifications"
+    );
+    try {
+      // Grouped by context so each reader gets the sentence that matches what
+      // actually happened to them, rather than one message covering both.
+      for (const context of ["REQUEST_CANCELLED", "TAKEN_OFF"] as const) {
+        const targetMemberIds = result.withdrawnMemberGuests
+          .filter((entry) => entry.context === context)
+          .map((entry) => entry.targetMemberId);
+        if (targetMemberIds.length === 0) continue;
+        await sendMemberGuestWithdrawnNotifications({
+          bookingId,
+          targetMemberIds,
+          context,
+        });
+      }
+    } catch (err) {
+      logger.error(
+        { err, bookingId },
+        "Failed to dispatch member-guest withdrawal notifications",
       );
     }
   }

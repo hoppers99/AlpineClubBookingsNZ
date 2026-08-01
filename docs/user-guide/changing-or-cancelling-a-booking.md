@@ -43,6 +43,24 @@ at the end.
    settle the extra (see [Paying for your stay](paying-for-your-stay.md)); if it
    costs less, you may be due a refund or credit.
 
+If your club has **member guests** turned on, the Guests heading carries two
+buttons — **+ Add Member Guest** and **+ Add Non-Member Guest** — exactly as it
+does when you first make a booking: find
+another club member by email address (or by name, if your club has switched that
+on) and add them without cancelling and starting again. Before you save, the new
+person's row tells you what saving will do — whether they will be emailed and
+asked, with their bed held until they answer, or simply told. See
+[Booking a stay](booking-a-stay.md) for how the finder works, and
+[When somebody adds you to a booking](being-added-to-a-booking.md) for what the
+other person sees.
+
+**Two things worth knowing before you change a booking somebody has agreed to.**
+Once a member has said yes, they are not asked again: moving the dates, adding
+nights, changing lodge or changing who else is coming all carry their agreement
+over, and they are not told. And if you take a member guest OFF the booking,
+they get one email saying so — that email is not optional and is not something
+you can turn off.
+
 A member editing their own booking always triggers the standard change-notice
 email, so you have a record of what changed. (Edits that only fix a guest's
 name or only change your saved credit choice don't email — nothing about the

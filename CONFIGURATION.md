@@ -1603,13 +1603,14 @@ cannot be read, optional modules fail closed.
 | Promo codes | on | Promo-code administration and promo-aware booking flows. |
 | Hut leaders | on | Hut-leader assignments, kiosk access, and auto-assignment. |
 | Communications | on | Admin bulk email to members. Transactional notifications are unaffected. |
+| Events calendar | on | Club events calendar for meetings, working bees, and social events, with recurring events and optional MiroTalk video-meeting links. Defaults on, which is exactly how the calendar behaved before it had a module at all, so an existing club sees no change. Switching it off makes `/calendar`, `/admin/calendar`, and `/api/calendar/*` return Not Found and removes the dashboard Events card; existing events are kept and reappear if it is switched back on. Organisation accounts never see the calendar whether the module is on or off. |
 | Ski-field conditions | on | Live mountain/road status panel, public API routes, and admin cache controls. |
 | Two-factor authentication | off | Requires users to complete authenticator-app, email-code, or recovery-code verification after password login. |
 | Email sign-in link | off | Lets members request a single-use email link to sign in without their password (additive to password login, never a replacement). Only ever works for existing active members with a verified email; the `magic-link-login` link expiry defaults to 15 minutes (stored on the Login & Security settings, range 5–60) and is read by the sign-in request flow. |
 | Google sign-in | off | Lets members sign in with a Google account they have linked from their profile (additive to password login, never a replacement). Credentials are entered and verified **in-app** on the Google sign-in setup page (Admin → Integrations → Google) — no env vars, no restart. The module cannot be turned on until a real Google OAuth round-trip verifies (hard gate), and replacing a credential re-locks it until re-verified. The "Continue with Google" button appears only when the module is on AND credentials resolve. No account is ever created from Google, and an unlinked Google account is refused with a friendly message. See the Google sign-in section below. |
 | Google Analytics | off | Consent-gated GA4 tracking on public website and public account pages. Requires `NEXT_PUBLIC_GA_MEASUREMENT_ID`; GA scripts load only after a visitor accepts the analytics banner. |
 | AI help assistant | off | Free-text help questions answered by a paid AI model (Anthropic Claude Haiku), grounded strictly in each page's curated help content. The Anthropic API key is entered **in-app** on Admin → Integrations (encrypted vault, never an env var). Unlike Google sign-in there is **no** enable-gate on a present key — with the module on but no key, the ask box degrades to a structured fallback and curated page help still works. A monthly spend cap (default NZ$10) hard-stops AI answers for the rest of the month once reached. See the AI help assistant section below. |
-| Add another member as a guest | off | Lets a member add another club member, outside their own family group, as a guest on their booking. With the module off, a cross-family add is refused exactly as it was before this feature existed, so an existing club sees no change until an admin turns it on. With it on, the other member is emailed and asked first by default, and a bed is held for them until they answer or the request lapses. A member who has been asked but has not answered holds a bed and is deliberately kept off the kiosk arrivals list, the chore roster, bed allocation and the arrival emails until they accept. See the member-guest settings section below. |
+| Add another member as a guest | off | Lets a member add another club member, outside their own family group, as a guest on their booking. With the module off, a cross-family add is refused exactly as it was before this feature existed, so an existing club sees no change until an admin turns it on. With it on, the other member is emailed and asked first by default, and a bed is held for them until they answer or the request lapses. A member who has been asked but has not answered holds a bed and is deliberately kept off the kiosk arrivals list, the chore roster, bed allocation and the arrival emails until they accept. The surface exists both when a booking is created and when it is edited, and admins get the same section on a member's booking page. Turning the module on also brings admin adds, the admin booking-copy and the booking-request pipeline under the always-notify rule; with it off, none of those write a consent record or send anything. See the member-guest settings section below. |
 
 ### Member-guest settings
 
@@ -1631,6 +1632,17 @@ running on the defaults below and nothing has been written.
 | Pending hold expiry (days) | 7 (range 1–60) | yes | How long a bed stays held for a member who has been asked and has not answered. After that the hold is released. |
 | Open member search | off | **no** | Off means a booker can only find another member by typing their exact email address. On makes the club's member name list browsable to anyone who can start a booking. |
 | Include minors in open member search | off | **no** | Off means minors are excluded from that browsable list even when open member search is on. |
+
+**Who the settings do and do not bind.** The two search settings are about what
+MEMBERS can see. An admin's own member picker on a booking is not bound by
+either: an admin holding membership view access can already browse the whole roll
+from Admin → Members, so gating their booking-side picker on a member-facing
+privacy switch would protect nothing and only slow an officer down. The rider is
+that the admin name search is gated on the **membership** permission area rather
+than on bookings — a Booking Officer whose role has membership access removed
+gets the exact-email box instead, which preserves the guarantee that such a role
+never sees a member directory. Every admin lookup is written to the audit log
+against the officer who made it, exactly as a member's is.
 
 The two search settings deliberately **never travel** in a club config transfer
 (owner decision D-18): importing another club's bundle must not widen this

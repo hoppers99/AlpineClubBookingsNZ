@@ -1,8 +1,7 @@
 "use client";
 
 import type { AgeTier, SubscriptionStatus } from "@prisma/client";
-import Link from "next/link";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import type { ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { format } from "date-fns";
@@ -33,10 +32,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
 import { Alert } from "@/components/ui/alert";
+import { MemberLoginStageChip } from "@/components/admin/member-login-stage-chip";
+import { MemberDetailLink } from "@/components/admin/member-detail-link";
 import { AdminPageHeader } from "@/components/admin/admin-page-header";
 import { AdminDataTable } from "@/components/admin/admin-data-table";
+import { ViewOnlyActionButton } from "@/components/admin/view-only-action";
 import {
   AdminFilterBar,
   type AdminFilterChip,
@@ -58,10 +59,15 @@ import {
   Clock,
   type LucideIcon,
 } from "lucide-react";
-import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
+import {
+  useAdminAreaEditAccess,
+  useAdminAreaViewAccess,
+} from "@/hooks/use-admin-area-edit-access";
 import { useXeroStatus } from "@/hooks/use-xero-status";
 import { useXeroOrgShortCode } from "@/hooks/use-xero-org-short-code";
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
+import { CHIP_TONE_CLASSES } from "@/lib/chip-tones";
+import { getXeroContactGroupTone } from "@/lib/xero-contact-group-tone";
 import { useConfirm } from "@/components/confirm-dialog";
 import { SubscriptionBillingPanel } from "./_components/subscription-billing-panel";
 import {
@@ -95,6 +101,9 @@ interface Subscription {
     lastName: string;
     email: string;
     ageTier: AgeTier;
+    canLogin: boolean;
+    hasCompletedAccountSetup: boolean;
+    pendingInviteExpiresAt: string | null;
     xeroContactId: string | null;
   };
 }
@@ -191,6 +200,7 @@ export default function SubscriptionsPage() {
   const searchParams = useSearchParams();
   const ageTierOptions = useAgeTierOptions();
   const canEditFinance = useAdminAreaEditAccess("finance");
+  const canViewMembership = useAdminAreaViewAccess("membership");
   // Org short code for the Xero invoice deep links (#2283). One mount per
   // page; served from the server-side 12h org cache, and null degrades the
   // links to the generic Xero URL rather than hiding them.
@@ -214,31 +224,39 @@ export default function SubscriptionsPage() {
   const [summary, setSummary] = useState<Summary>({ total: 0, paid: 0, unpaid: 0, overdue: 0, notInvoiced: 0, notRequired: 0 });
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState<MembershipSyncMode | null>(null);
+  const [syncActionPending, setSyncActionPending] = useState(false);
+  const syncActionInFlight = useRef(false);
   const [syncMessage, setSyncMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [xeroContactGroupsList, setXeroContactGroupsList] = useState<XeroContactGroup[]>([]);
   const [xeroContactGroupsLoaded, setXeroContactGroupsLoaded] = useState(true);
 
   async function handleSync(mode: MembershipSyncMode) {
+    // The ref closes the same-tick double-dispatch window before React can
+    // paint the disabled state. The permission check is defense in depth for a
+    // stale/forged client event; the route independently requires finance:edit.
+    if (canEditFinance !== true || syncActionInFlight.current) return;
+    syncActionInFlight.current = true;
+    setSyncActionPending(true);
     // #2260: the last browser confirm() on this page. Plain confirmation with
     // no email choice, so the shared useConfirm helper is the right idiom here.
-    const confirmed = await confirm(
-      mode === "incremental"
-        ? {
-            title: "Run the incremental Xero refresh?",
-            description: `This re-reads paid status from Xero for linked members in the ${seasonYear} season.`,
-            confirmLabel: "Run refresh",
-          }
-        : {
-            title: "Run the repair backfill?",
-            description:
-              "This checks a broader stale-member set for linked members still showing Not Invoiced, and may take longer.",
-            confirmLabel: "Run repair",
-          },
-    );
-    if (!confirmed) return;
-    setSyncing(mode);
-    setSyncMessage(null);
     try {
+      const confirmed = await confirm(
+        mode === "incremental"
+          ? {
+              title: "Run the incremental Xero refresh?",
+              description: `This re-reads paid status from Xero for linked members in the ${seasonYear} season.`,
+              confirmLabel: "Run refresh",
+            }
+          : {
+              title: "Run the repair backfill?",
+              description:
+                "This checks a broader stale-member set for linked members still showing Not Invoiced, and may take longer.",
+              confirmLabel: "Run repair",
+            },
+      );
+      if (!confirmed) return;
+      setSyncing(mode);
+      setSyncMessage(null);
       const res = await fetch(
         `/api/admin/xero/sync-memberships?seasonYear=${seasonYear}&mode=${mode}`,
         { method: "POST" }
@@ -260,6 +278,8 @@ export default function SubscriptionsPage() {
       setSyncMessage({ type: "error", text: "Sync failed — check Xero connection" });
     } finally {
       setSyncing(null);
+      setSyncActionPending(false);
+      syncActionInFlight.current = false;
     }
   }
 
@@ -379,7 +399,7 @@ export default function SubscriptionsPage() {
   useEffect(() => { fetchData(); }, [fetchData]);
   const totalPages = Math.ceil(total / pageSize);
   // The manual mark-paid action column only exists for finance-edit users.
-  const columnCount = canEditFinance ? 8 : 7;
+  const columnCount = canEditFinance ? 9 : 8;
 
   function toggleSort(column: SubscriptionSortBy) {
     setPage(1);
@@ -472,22 +492,24 @@ export default function SubscriptionsPage() {
         description="Track member subscription status by season"
         actions={
           <>
-            <Button
+            <ViewOnlyActionButton
+              canEdit={canEditFinance}
               variant="outline"
               onClick={() => handleSync("incremental")}
-              disabled={syncing !== null}
+              disabled={syncActionPending}
             >
               <RefreshCw className={`h-4 w-4 mr-1 ${syncing ? "animate-spin" : ""}`} />
               {syncing === "incremental" ? "Syncing..." : "Incremental Sync"}
-            </Button>
-            <Button
+            </ViewOnlyActionButton>
+            <ViewOnlyActionButton
+              canEdit={canEditFinance}
               variant="outline"
               onClick={() => handleSync("backfill")}
-              disabled={syncing !== null}
+              disabled={syncActionPending}
             >
               <RefreshCw className={`h-4 w-4 mr-1 ${syncing ? "animate-spin" : ""}`} />
               {syncing === "backfill" ? "Repairing..." : "Repair Stale Linked Members"}
-            </Button>
+            </ViewOnlyActionButton>
           </>
         }
       />
@@ -629,6 +651,7 @@ export default function SubscriptionsPage() {
           <TableRow>
             <SubscriptionSortHeader column="member">Member</SubscriptionSortHeader>
             <SubscriptionSortHeader column="email">Email</SubscriptionSortHeader>
+            <TableHead>Access</TableHead>
             <SubscriptionSortHeader column="ageTier">Age Group</SubscriptionSortHeader>
             <SubscriptionSortHeader column="xeroContactGroup">Xero Contact Group</SubscriptionSortHeader>
             <SubscriptionSortHeader column="status">Status</SubscriptionSortHeader>
@@ -660,22 +683,32 @@ export default function SubscriptionsPage() {
             data.map((sub) => (
               <TableRow key={sub.id}>
                 <TableCell className="font-medium">
-                  <Link
-                    href={buildHrefWithReturnTo(`/admin/members/${sub.memberId}?edit=true`, currentSubscriptionsPath)}
+                  <MemberDetailLink
+                    canViewMembership={canViewMembership}
+                    href={buildHrefWithReturnTo(
+                      `/admin/members/${sub.memberId}`,
+                      currentSubscriptionsPath,
+                    )}
                     className="rounded-sm text-foreground hover:text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     {sub.member.lastName}, {sub.member.firstName}
-                  </Link>
+                  </MemberDetailLink>
                 </TableCell>
                 <TableCell className="text-sm">{sub.member.email}</TableCell>
+                <TableCell>
+                  <MemberLoginStageChip member={sub.member} />
+                </TableCell>
                 <TableCell className="text-sm">{getAgeTierLabel(ageTierOptions, sub.member.ageTier)}</TableCell>
                 <TableCell>
                   {sub.xeroContactGroups.length > 0 ? (
                     <div className="flex flex-wrap gap-1">
                       {sub.xeroContactGroups.map((group) => (
-                        <Badge key={group.id} variant="secondary">
+                        <span
+                          key={group.id}
+                          className={`inline-flex items-center rounded-md border border-transparent px-2 py-0.5 text-xs font-medium whitespace-nowrap ${CHIP_TONE_CLASSES[getXeroContactGroupTone(group.id)]}`}
+                        >
                           {group.name}
-                        </Badge>
+                        </span>
                       ))}
                     </div>
                   ) : sub.member.xeroContactId && !sub.xeroContactGroupsLoaded ? (

@@ -402,3 +402,43 @@ export function describeHouseholdCandidatePrompt(count: number): string {
       : String(count);
   return `${word} members use that address. Which one are you adding?`;
 }
+
+/**
+ * May THIS reader search members by NAME on a booking's guest surface?
+ *
+ * MG4 (#2309). ONE FUNCTION FOR BOTH READERS, because the bug it exists to
+ * close was two answers to one question. The booking page decided the flag from
+ * `bookings:VIEW` while the edit panel decided which routes to call from
+ * `bookings:EDIT`, and a real, shipped persona sits between them — a read-only
+ * bookings viewer:
+ *
+ *  - holding `membership:view`, they were handed the name type-ahead while the
+ *    panel sent them down the MEMBER routes, where the name search 404s unless
+ *    the club turned open search on. A search box that silently fails.
+ *  - without it, they lost the name search on a club that had deliberately
+ *    turned it on for every member — including them.
+ *
+ * So the caller passes ONE `actingAsAdmin`, the same value that chooses the
+ * routes, and whoever is not in admin mode is a member for this purpose and
+ * gets exactly the club's member-facing answer.
+ *
+ * DECORATION ONLY, on both branches. This decides which box is DRAWN; the
+ * routes re-read the module, the setting and the permission themselves, so a
+ * browser that flips this in its own memory gets a 404 rather than a directory.
+ * That is why it takes three plain booleans rather than the settings object:
+ * this is not the place either open-search value becomes a decision about who
+ * is discoverable — `loadMemberGuestFindGate` and
+ * `searchMemberGuestCandidatesByName` still are, and a census test enforces it.
+ */
+export function resolveMemberGuestNameSearchAccess(params: {
+  /** Is this viewer in admin mode — i.e. does the panel call the ADMIN routes? */
+  actingAsAdmin: boolean;
+  /** `membership:view`. D-20 rider (a): the #1376 officer falls back to exact email. */
+  hasMembershipView: boolean;
+  /** The club's member-facing "members may search by name" setting. */
+  clubNameSearchEnabled: boolean;
+}): boolean {
+  return params.actingAsAdmin
+    ? params.hasMembershipView
+    : params.clubNameSearchEnabled;
+}
