@@ -325,7 +325,8 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
     $executeRaw: vi.fn().mockResolvedValue(undefined),
     $executeRawUnsafe: vi.fn().mockResolvedValue(undefined),
     // #2299 — the promo path row-locks each PromoCode it may charge or refund
-    // with SELECT "id" ... FOR UPDATE before reading or writing any cap.
+    // before reading or writing any cap. Since #2289 that lock is
+    // `$executeRaw`SELECT 1 … FOR UPDATE``: a constant, never a raw read.
     $queryRaw: vi.fn().mockResolvedValue([]),
     lodge: {
       findFirst: vi.fn().mockResolvedValue({ id: "lodge-1" }),

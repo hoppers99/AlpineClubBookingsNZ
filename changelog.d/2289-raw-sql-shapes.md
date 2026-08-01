@@ -27,5 +27,13 @@
   The same protection covers the member photo and club logo screens, where the
   value being read decides which stored image gets deleted.
 
+  Promo codes are also now held slightly more firmly while a booking is being
+  created. Reserving the code and reading it are two steps rather than one, and
+  in the split second between them a newly created code could have slipped
+  through unreserved — enough, in principle, for two bookings made at the same
+  instant to both use a single-use code. Booking creation now confirms it really
+  did reserve the code before applying it, and otherwise treats it as not found,
+  which is exactly what happened before.
+
   For anyone working on the code: a new check refuses this pattern in future, and
   `CONTRIBUTING.md` and the concurrency guide explain what to write instead.

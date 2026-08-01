@@ -145,7 +145,7 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   "src/lib/admin-bed-allocation.ts": 1,
   "src/lib/booking-create-promo.ts": 1,
   // Promo usage caps (#2299): `lockPromoCodeRowsForUpdate` takes a
-  // `SELECT "id" … FOR UPDATE` on the promo row for the modification paths,
+  // `SELECT 1 … FOR UPDATE` on the promo row for the modification paths,
   // which can now RELEASE a cap slot as well as take one. One raw statement
   // serves all four of them — the batch-modification path calls it directly
   // (it may lock two codes for a swap), and adding guests / changing dates /
@@ -161,8 +161,8 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // statement at a time so a promo swap (outgoing + incoming code in one
   // transaction) can never build a lock cycle with another swap; callers hold
   // the per-lodge capacity lock first, so the order stays lodge -> promo row.
-  // Only "id" is selected and the result discarded — a lock, never a read. See
-  // docs/CONCURRENCY_AND_LOCKING.md -> "Narrow row-lock protocols".
+  // A CONSTANT is selected and the result discarded — a lock, never a read. See
+  // docs/CONCURRENCY_AND_LOCKING.md -> "Narrow row- and table-lock protocols".
   "src/lib/promo.ts": 1,
   // Site-style save (#2322) locks the ClubTheme singleton
   // (`SELECT 1 … FOR UPDATE`) so concurrent saves serialise and never

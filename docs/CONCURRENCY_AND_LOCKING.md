@@ -241,13 +241,31 @@ do not use unnamespaced `hashtext(<id>)` for new lock families.
 
 ### Narrow row- and table-lock protocols
 
-**Lock raw, read typed (#2289).** Every row lock below takes its lock with
-`$executeRaw` on a statement that selects a **constant** (`SELECT 1 … FOR
+**Lock raw, read typed (#2289).** Every **raw** row lock below takes its lock
+with `$executeRaw` on a statement that selects a **constant** (`SELECT 1 … FOR
 UPDATE`), and then reads whatever it needs through the ordinary Prisma model,
-inside the same transaction and therefore under that same lock. The lock is held
-for the rest of the transaction, so the two statements are behaviour-identical to
-one `SELECT the-columns … FOR UPDATE`, at the cost of one extra round trip in a
+inside the same transaction and therefore under that same lock. (Not every row
+lock in this document is raw — the member-photo cleanup writers acquire the
+`Member` row lock through an ordinary `member.update`, as that protocol
+describes. The rule below is about raw statements.) The lock is held for the rest
+of the transaction, so the two statements are behaviour-identical to one
+`SELECT the-columns … FOR UPDATE`, at the cost of one extra round trip in a
 transaction that already makes several.
+
+**With one exception that every raw lock on a MUTABLE key must handle.** The
+equivalence holds only while the lock statement matches at least one row.
+`FOR UPDATE` locks nothing when it matches nothing, and this repository runs at
+READ COMMITTED deliberately (see `src/lib/member-merge.ts`), so the follow-up
+model read takes a **fresh statement snapshot** and can return a row that was
+inserted — or renamed onto that key — after the lock ran, with no lock held on
+it. A single `SELECT * … FOR UPDATE` could not do that: an unlocked row could
+never be in its result set. `$executeRaw` returns the affected-row count, so the
+zero-match case is detectable for free; treat it as **not found**, which is
+exactly what the single-statement form produced for that interleaving. This bites
+only where the lock key can change under you: `booking-create-promo.ts` locks on
+`PromoCode.code` and checks the count for this reason, while every other site
+below keys on an immutable cuid (or materialises its singleton before locking)
+and cannot see a row appear between the two statements.
 
 The reason is not tidiness. `$queryRaw<SomeRow[]>` is an **unchecked cast**: raw
 SQL returns the *physical* column names and the generic declares whatever the
@@ -261,11 +279,16 @@ without it, for months, with nothing logged. Prisma owns the mapping, so a model
 read cannot drift that way.
 
 A statement that genuinely cannot be a model read — the rate limiter's atomic
-`CASE … RETURNING` upsert is the only one in `src/` — validates its rows with
-`decodeRawRows` from `src/lib/raw-sql-rows.ts` instead. Both halves are enforced:
-an ESLint rule refuses a `$queryRaw<…>` generic or a `SELECT *` in a raw
-template, and `src/lib/__tests__/raw-sql-shape-guard.test.ts` pins the whole
-raw-SQL call-site inventory so a new one has to be classified.
+`CASE … RETURNING` upsert is the only one in production code — validates its rows
+with `decodeRawRows` from `src/lib/raw-sql-rows.ts` instead. Both halves are
+enforced across non-test code in `src/`, `scripts/` and `prisma/`: ESLint rules
+refuse a `$queryRaw<…>` generic or a `SELECT *` in a raw statement, written
+either as a tagged template or as a `Prisma.sql` composition passed to the call;
+and `src/lib/__tests__/raw-sql-shape-guard.test.ts` pins the whole raw-SQL
+call-site inventory so a new one has to be classified. Tests are deliberately
+exempt from both — `concurrency-lock-races.realdb.test.ts` reads raw counts on
+purpose, and a test's wrong shape fails the test on the spot rather than
+mispricing a booking.
 
 - **Trusted legacy induction baseline** —
   `src/lib/induction-baseline.ts` (`runInductionBaseline`, #2361): apply takes
@@ -329,7 +352,12 @@ raw-SQL call-site inventory so a new one has to be classified.
 
 - `booking-create-promo.ts` locks the selected `PromoCode` row with `FOR UPDATE`
   and then reads it through `tx.promoCode.findUnique` (lock raw, read typed —
-  #2289) before validating and consuming its use count. Booking creation has
+  #2289) before validating and consuming its use count. It is the only site that
+  locks on a **mutable** key (`PromoCode.code`), so it also checks the
+  affected-row count `$executeRaw` returns: a lock that matched nothing is
+  treated as "Promo code not found" rather than reading a row it does not hold —
+  see the zero-match exception under "Lock raw, read typed" above. Booking
+  creation has
   already taken the per-lodge capacity lock, so the current order is lodge ->
   promo row; no counterpart writer may take the promo row and then a lodge lock.
 - **Every booking-modification path that may write `currentRedemptions`** takes
@@ -362,9 +390,12 @@ raw-SQL call-site inventory so a new one has to be classified.
   rather than by `ORDER BY ... FOR UPDATE`, so the ordering does not depend on
   the query plan. The lock became load-bearing with #2299: a reprice can now
   *release* a usage slot as well as take one, so check-then-consume must be
-  serialised. The helper selects only `"id"` and discards the result — it exists
-  purely for its lock and never reads a value out of a raw row, which is the
-  trap #2289 documents.
+  serialised. The helper selects a **constant** through `$executeRaw`
+  (`SELECT 1 … FOR UPDATE`) and discards the result — it exists purely for its
+  lock and never reads a value out of a raw row, which is the trap #2289
+  documents. Because it keys on the immutable `PromoCode.id`, it needs no
+  affected-row check: a missing id simply locks nothing and the caller's own
+  lookup reports "Promo code not found".
   #2390 added one more read under the same lock and changed what the decision
   produces. The reprice paths pass `capOverflow: "coverExisting"`, which makes
   `validateAndCalculatePromoDiscount` read — still under the lock, and still
@@ -386,8 +417,9 @@ raw-SQL call-site inventory so a new one has to be classified.
   is independent of the booking/capacity/credit lock cluster.
 - **Club-theme logo writer** — `src/lib/club-theme.ts` (`saveClubTheme`, #2322):
   the site-style save transaction locks the `ClubTheme` singleton
-  (`SELECT "logoUrl" FROM "ClubTheme" WHERE "id" = 'default' FOR UPDATE`) and
-  reads the currently-stored logo under that lock, so two concurrent saves
+  (`$executeRaw`SELECT 1 FROM "ClubTheme" WHERE "id" = 'default' FOR UPDATE``)
+  and reads the currently-stored logo back through `tx.clubTheme.findUnique`
+  under that lock (lock raw, read typed — #2289), so two concurrent saves
   serialise and can never both delete the same replaced `LOGO` blob (or orphan
   each other's new one). Because `FOR UPDATE` locks nothing when the row is
   absent, the transaction first materialises the singleton with a
@@ -424,9 +456,11 @@ raw-SQL call-site inventory so a new one has to be classified.
     table-disjoint for locking purposes.
 
 - **Member photo writer** — `src/app/api/members/[id]/photo/route.ts` (epic #171):
-  the upload (POST) and remove (DELETE) transactions each `SELECT "photoImageId"
-  FROM "Member" WHERE "id" = $1 FOR UPDATE` before creating/repointing the blob,
-  so two concurrent replace/remove requests for the same member serialise on the
+  the upload (POST) and remove (DELETE) transactions each take
+  `$executeRaw`SELECT 1 FROM "Member" WHERE "id" = $1 FOR UPDATE`` and then read
+  the existing `photoImageId` back through the Prisma model under that lock
+  (lock raw, read typed — #2289) before creating/repointing the blob, so two
+  concurrent replace/remove requests for the same member serialise on the
   member row and can never leave a `MEMBER_PHOTO` blob orphaned. Member-id keyed;
   no advisory lock; disjoint from the booking/capacity/credit and money lock
   clusters. The counterpart cleanup writer `deleteOwnedMemberPhotoBlobs` runs
