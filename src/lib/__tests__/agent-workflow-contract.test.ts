@@ -40,6 +40,7 @@ describe("repository agent workflow contract", () => {
     expect(codex).toContain("npm ci --ignore-scripts");
     expect(codex).toContain("[IO.Directory]::Delete($modules)");
     expect(codex).toContain("Refusing unexpected junction target");
+    expect(codex).toContain("expected target sentinel is missing");
     expect(codex).toContain("### 5. Split fast local evidence from full CI gates");
     expect(codex).toContain("GitHub Actions owns the full");
 

@@ -151,12 +151,20 @@ if (Test-Path -LiteralPath $modules) {
       throw "Refusing to unlink non-junction reparse point at $modules"
     }
     $actualTarget = [IO.Path]::GetFullPath(($modulesItem.Target | Select-Object -First 1))
+    if (-not [IO.Path]::IsPathFullyQualified($actualTarget)) {
+      throw "Refusing non-absolute junction target $actualTarget"
+    }
     $separator = [IO.Path]::DirectorySeparatorChar
     if ($actualTarget.TrimEnd($separator) -ne $expectedTarget.TrimEnd($separator)) {
       throw "Refusing unexpected junction target $actualTarget"
     }
+    $targetSentinel = Join-Path $expectedTarget ".bin/prisma.cmd"
+    if (-not (Test-Path -LiteralPath $targetSentinel)) {
+      throw "Refusing to unlink: expected target sentinel is missing"
+    }
     [IO.Directory]::Delete($modules)
-    if (Test-Path -LiteralPath $modules -or -not (Test-Path -LiteralPath $expectedTarget)) {
+    if ((Test-Path -LiteralPath $modules) -or
+        -not (Test-Path -LiteralPath $targetSentinel)) {
       throw "Junction unlink failed or damaged its target"
     }
   }

@@ -142,7 +142,7 @@ draft PR is:
 npm run db:generate
 npm run lint
 npm run typecheck
-npm test -- <focused touched-and-adjacent test paths>
+npm test -- src/path/to/touched.test.ts # replace with focused test paths
 npm run docs:linkcheck # when docs change
 npm run knip           # when files or exports change
 ```
