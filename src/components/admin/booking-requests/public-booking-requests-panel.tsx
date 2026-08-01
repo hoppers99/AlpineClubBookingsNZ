@@ -6,6 +6,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
+import { buildBookingRequestDatasetPath } from "@/lib/admin-dataset-reset-state";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
@@ -341,22 +343,20 @@ const FILTER_LABELS: Record<PublicRequestFilter, string> = {
 
 function buildPublicRequestsPath(
   basePath: string,
+  currentSearch: string,
   fixedSearchParams: Record<string, string>,
   status: PublicRequestFilter,
   requestId: string | null,
 ) {
-  const params = new URLSearchParams(fixedSearchParams);
-
-  if (requestId) {
-    params.set("requestId", requestId);
-  }
-
-  if (status !== "QUEUE") {
-    params.set("status", status);
-  }
-
-  const query = params.toString();
-  return query ? `${basePath}?${query}` : basePath;
+  return buildBookingRequestDatasetPath({
+    basePath,
+    currentSearch,
+    fixedSearchParams,
+    status,
+    defaultStatus: "QUEUE",
+    recordKey: "requestId",
+    recordId: requestId,
+  });
 }
 
 export function PublicBookingRequestsPanel({
@@ -447,7 +447,13 @@ export function PublicBookingRequestsPanel({
     const choice = ownerChoiceFor(request.id);
     return choice.mode === "map" && !choice.memberId;
   }
-  const currentPath = buildPublicRequestsPath(basePath, fixedSearchParams, filter, requestId);
+  const currentPath = buildPublicRequestsPath(
+    basePath,
+    searchParams.toString(),
+    fixedSearchParams,
+    filter,
+    requestId,
+  );
 
   useEffect(() => {
     router.replace(currentPath, { scroll: false });
@@ -1084,6 +1090,10 @@ export function PublicBookingRequestsPanel({
             {FILTER_LABELS[status]}
           </Button>
         ))}
+        <DatasetResetButton
+          disabled={filter === "QUEUE"}
+          onReset={() => setFilter("QUEUE")}
+        />
       </div>
 
       {loading ? (

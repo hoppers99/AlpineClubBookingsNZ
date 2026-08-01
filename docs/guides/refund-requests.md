@@ -28,7 +28,8 @@ a refund is capped at the remaining refundable amount on the payment.
 
 1. Go to **Admin → Finance → Refunds & Credits**. Filter by **Pending** (the
    default), **Approved**, **Rejected**, or **All**. The page shows **Refund
-   Appeals** and **Manual Credit Approvals**.
+   Appeals** and **Manual Credit Approvals**. **Reset** restores Pending while
+   preserving unrelated URL context.
 
    ![Refunds & Credits page: the status filter, the Refund Appeals section, and the Manual Credit Approvals section](../images/admin/admin-refund-requests.png)
 
@@ -74,6 +75,7 @@ This is a review queue — its per-review inputs:
 | Control | What it does | Notes / constraints |
 | --- | --- | --- |
 | Status filter | Pending / Approved / Rejected / All | Default is Pending; synced to the URL |
+| Reset | Restore Pending | Always visible; disabled at defaults; preserves unrelated URL context |
 | Refund Amount ($) | The amount to refund | Entered in dollars; capped at the remaining refundable amount |
 | Admin Notes | Note visible to the member | Optional |
 | Notify choice (approve/reject) | Whether the member is emailed | Recorded in the audit log either way |

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { EmbeddedPageContentParts } from "@/components/website/embedded-page-content-parts";
 import { getCachedClubIdentity } from "@/lib/public-layout-config";
+import { setupInProgressMetadata } from "@/lib/website-setup-metadata";
 import {
   getSanitizedPageContentByPath,
   pageContentHtmlToPlainText,
@@ -13,6 +14,14 @@ function pageSlugFromPath(path: string) {
 }
 
 export async function generateMetadata(): Promise<Metadata> {
+  // Pre-setup, before any lookup: the head must not describe a page the visitor
+  // is not being shown (#2420 F1). See setupInProgressMetadata().
+  const holdingScreen = await setupInProgressMetadata();
+
+  if (holdingScreen) {
+    return holdingScreen;
+  }
+
   const [page, { name: clubName }] = await Promise.all([
     getSanitizedPageContentByPath("/home"),
     getCachedClubIdentity(),

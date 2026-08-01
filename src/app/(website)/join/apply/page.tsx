@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { JoinApplyPageClient } from "@/app/(website)/join/apply/join-apply-page-client";
 import { EmbeddedPageContentParts } from "@/components/website/embedded-page-content-parts";
 import { getCachedClubIdentity } from "@/lib/public-layout-config";
+import { setupInProgressMetadata } from "@/lib/website-setup-metadata";
 import { buildEmbeddedBody } from "@/lib/page-content-embeds";
 import {
   getSanitizedPageContentByPath,
@@ -9,6 +10,13 @@ import {
 } from "@/lib/page-content-html";
 
 export async function generateMetadata(): Promise<Metadata> {
+  // Pre-setup, before any lookup (#2420 F1). See setupInProgressMetadata().
+  const holdingScreen = await setupInProgressMetadata();
+
+  if (holdingScreen) {
+    return holdingScreen;
+  }
+
   const [page, { name: clubName }] = await Promise.all([
     getSanitizedPageContentByPath("/join/apply"),
     getCachedClubIdentity(),

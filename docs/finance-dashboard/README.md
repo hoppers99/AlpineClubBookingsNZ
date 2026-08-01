@@ -67,6 +67,11 @@ The default dashboard state is:
 - compare: Previous Period
 - forward: Next Month
 
+The always-visible **Reset** action restores those range, comparison, forward,
+and expense-filter defaults. It keeps the current reporting **View**, lodge
+scope, Ratio Explorer inputs, and unknown query keys, and replaces the current
+URL entry so Reset does not add another step to browser history.
+
 The dashboard renders visual summaries only: KPI cards, trend charts (one
 point per month, with the comparison period overlaid as a second series), mix
 charts, reconciliation/status panels, compact source notes (the Xero-derived

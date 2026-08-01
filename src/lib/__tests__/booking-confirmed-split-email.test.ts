@@ -13,6 +13,16 @@ vi.mock("@/lib/email/core", () => ({
   sendEmail: sendEmailMock,
 }));
 
+// #2328: the confirmation now reads its own applied account credit before
+// composing. These cases are about the split-parent section, so the loader is
+// stubbed to "no credit was used" — the shape #2328 leaves byte-for-byte
+// unchanged. Its own behaviour is covered in booking-confirmed-credit-email.
+vi.mock("@/lib/booking-confirmation-credit", () => ({
+  loadBookingAppliedCredit: vi
+    .fn()
+    .mockResolvedValue({ amountCents: 0, settlementMethod: "card" }),
+}));
+
 vi.mock("@/lib/email-message-settings", () => ({
   EMAIL_DEFAULT_LODGE_NAME: "Example Club Lodge",
   // Search key the email `<title>` bakes (C6 #1985); required alongside

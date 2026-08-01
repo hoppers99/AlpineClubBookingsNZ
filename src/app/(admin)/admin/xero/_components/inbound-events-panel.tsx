@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { Button } from "@/components/ui/button"
+import { DatasetResetButton } from "@/components/admin/dataset-reset-button"
 import {
   AdminViewOnlySectionBanner,
   ViewOnlyActionButton,
@@ -10,6 +11,7 @@ import {
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { resetXeroInboundDatasetSearchParams } from "@/lib/admin-dataset-reset-state"
 import { fetchJson, postJson } from "./api"
 import {
   FilterSelect,
@@ -138,6 +140,34 @@ export function InboundEventsPanel({
     setPage(1)
   }
 
+  const isDatasetDefault =
+    statusFilter === "all" &&
+    categoryFilter === "all" &&
+    localModelFilter === "all" &&
+    localIdFilter === "" &&
+    resourceIdFilter === "" &&
+    eventTypeFilter === "all" &&
+    createdFrom === "" &&
+    createdTo === "" &&
+    page === 1
+
+  const resetDataset = () => {
+    const params = resetXeroInboundDatasetSearchParams(
+      searchParamsRef.current.toString(),
+    )
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false })
+    setUrlSyncEnabled(true)
+    setStatusFilter("all")
+    setCategoryFilter("all")
+    setLocalModelFilter("all")
+    setLocalIdFilter("")
+    setResourceIdFilter("")
+    setEventTypeFilter("all")
+    setCreatedFrom("")
+    setCreatedTo("")
+    setPage(1)
+  }
+
   const fetchEvents = useCallback(async () => {
     setLoading(true)
     setError("")
@@ -240,6 +270,7 @@ export function InboundEventsPanel({
           <FilterSelect label="Status" value={statusFilter} onValueChange={(value) => { setStatusFilter(value); resetPage() }} values={["all", "FAILED", "RECEIVED", "PROCESSING", "PROCESSED"]} />
           <FilterSelect label="Category" value={categoryFilter} onValueChange={(value) => { setCategoryFilter(value); resetPage() }} values={["all", "CONTACT", "INVOICE", "PAYMENT", "CREDIT_NOTE"]} />
           <FilterSelect label="Local Model" value={localModelFilter} onValueChange={(value) => { setLocalModelFilter(value); resetPage() }} values={["all", "Member", "Booking", "Payment", "BookingModification", "MemberSubscription"]} />
+          <DatasetResetButton disabled={isDatasetDefault} onReset={resetDataset} />
         </div>
         <div className="grid gap-3 md:grid-cols-5">
           <div className="space-y-1">

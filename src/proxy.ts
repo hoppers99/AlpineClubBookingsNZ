@@ -16,6 +16,7 @@ import {
   REQUEST_METHOD_HEADER,
   REQUEST_PATH_HEADER,
 } from "./lib/internal-return-path";
+import { getSetupInProgressResponse } from "./lib/setup-gate";
 
 /**
  * Public pages a shared cache may store for anonymous visitors (#2322).
@@ -211,6 +212,27 @@ export async function proxy(request: NextRequest) {
     selfOrigin: request.nextUrl.origin,
   });
   const pageSlug = pathname === "/" ? "home" : pathname.replace(/^\//, "");
+
+  // Ahead of the module gate on purpose (#2420). Until site setup is complete
+  // the whole public website answers "not ready yet", and that outranks "this
+  // module is switched off" — a 404 for a module-gated website path would
+  // otherwise tell an anonymous prober which modules an unconfigured install has
+  // on. For a gated PUBLIC-WEBSITE path it also means the module read never
+  // happens; every other path (the admin area, the member areas, the `/api`
+  // matcher entries) falls straight through to the module gate below exactly as
+  // before, in both setup states. `/api/*` is never gated here — the matcher
+  // drops it and `isPublicWebsitePath()` refuses it again — so
+  // `api/[[...unmatched]]` keeps answering JSON 404, and the bare 400 for a
+  // non-standard verb keeps matching it, whether or not setup is complete
+  // (#2405).
+  const setupInProgressResponse = await getSetupInProgressResponse(request);
+
+  if (setupInProgressResponse) {
+    setupInProgressResponse.headers.set(CSP_HEADER, csp);
+    setSecurityHeaders(setupInProgressResponse.headers, pathname);
+    return setupInProgressResponse;
+  }
+
   const featureFlagBlockResponse = await getEffectiveModuleBlockResponse(
     request.nextUrl.pathname,
     request.method,
@@ -258,11 +280,30 @@ export async function proxy(request: NextRequest) {
 
 export default proxy;
 
+/**
+ * The first matcher entry's negative lookahead decides which requests the proxy
+ * runs on at all — and therefore which requests the #2420 setup gate can answer.
+ * A URL excluded here is a URL the gate never sees.
+ *
+ * Three of the alternatives were bare PREFIXES, and that was a bug rather than a
+ * choice (#2420 review finding F3). Measured on the pre-fix matcher: `/apiary`
+ * and `/api-docs` were excluded by `api`, `/logo.pngs` by `logo.png`, and
+ * `/favicon.icons` by `favicon.ico` — whose unescaped dot also excluded
+ * `/faviconXico`. All are ordinary website addresses. They skipped the proxy
+ * entirely, so pre-setup they answered 200 instead of 503, and at all times they
+ * were served with no CSP header. Anchored now: `api` must be followed by `/`
+ * or end the path, and the two filenames must end it.
+ *
+ * The image-extension alternative is deliberately left as a whole-path suffix —
+ * those are `public/` asset shapes and running the proxy on them would mint a
+ * nonce per image. `isPublicWebsitePath()` is aligned to agree, and
+ * `csp-proxy.test.ts` asserts the two definitions cannot drift apart again.
+ */
 export const config = {
   matcher: [
     {
       source:
-        "/((?!api|_next/static|_next/image|favicon.ico|logo.png|.*\\.(?:png|jpg|jpeg|gif|webp|svg|ico)$).*)",
+        "/((?!api(?:/|$)|_next/static|_next/image|favicon\\.ico$|logo\\.png$|.*\\.(?:png|jpg|jpeg|gif|webp|svg|ico)$).*)",
       missing: [
         { type: "header", key: "next-router-prefetch" },
         { type: "header", key: "purpose", value: "prefetch" },

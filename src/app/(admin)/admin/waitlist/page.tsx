@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AdminPageHeader } from "@/components/admin/admin-page-header";
 import { AdminDataTable } from "@/components/admin/admin-data-table";
+import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
 import {
   AdminViewOnlySectionBanner,
   ViewOnlyActionButton,
@@ -383,10 +384,16 @@ export default function AdminWaitlistPage() {
     updateQuery((params) => {
       params.delete("from");
       params.delete("to");
-      params.set("page", "1");
-      params.set("pageSize", String(pagination.pageSize));
+      params.delete("page");
+      params.delete("pageSize");
     });
   }
+
+  const isDatasetDefault =
+    from === "" &&
+    to === "" &&
+    queryPage === 1 &&
+    queryPageSize === 25;
 
   function handlePageSizeChange(nextPageSize: string) {
     updateQuery((params) => {
@@ -607,9 +614,10 @@ export default function AdminWaitlistPage() {
             </div>
             <div className="flex flex-wrap gap-2">
               <Button type="submit">Apply</Button>
-              <Button type="button" variant="outline" onClick={handleClearFilters}>
-                Clear
-              </Button>
+              <DatasetResetButton
+                disabled={isDatasetDefault}
+                onReset={handleClearFilters}
+              />
             </div>
           </form>
         </CardContent>

@@ -12,7 +12,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({
-    push: mocks.routerPush,
+    replace: mocks.routerPush,
   }),
   useSearchParams: () => new URLSearchParams(mocks.currentSearch),
 }));
@@ -65,6 +65,64 @@ describe("BookingFilters", () => {
     // Give the debounce a chance to fire.
     await new Promise((resolve) => setTimeout(resolve, 500));
     expect(mocks.routerPush).not.toHaveBeenCalled();
+  });
+
+  it("keeps Reset visible and disabled at the true dataset default", () => {
+    render(<BookingFilters />);
+
+    expect((
+      screen.getByRole("button", {
+        name: /Reset\. Search, filters, sort, and page are already at their defaults\./,
+      }) as HTMLButtonElement
+    ).disabled).toBe(true);
+  });
+
+  it.each([
+    ["search-only", "search=Aroha"],
+    ["filter-only", "status=PAID"],
+    ["sort-only", "sortBy=member&sortDir=asc"],
+    ["page-only", "page=2"],
+    ["combined", "status=PAID&sortBy=member&sortDir=desc&page=3"],
+  ])("enables Reset for %s dataset state", (_label, query) => {
+    mocks.currentSearch = query;
+    setLocation(query);
+
+    render(<BookingFilters />);
+
+    expect((screen.getByRole("button", { name: "Reset" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("resets the whole dataset while preserving lodge and unknown context keys", () => {
+    const query =
+      "lodgeId=lodge-2&futureContext=keep&search=Aroha&status=PAID&consentState=waiting&upcoming=7&sortBy=member&sortDir=desc&page=3";
+    mocks.currentSearch = query;
+    setLocation(query);
+
+    render(
+      <BookingFilters
+        lodgeOptions={[
+          { id: "lodge-1", name: "North" },
+          { id: "lodge-2", name: "South" },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Reset" }));
+
+    const url = pushedBookingsUrl();
+    expect(url.searchParams.get("lodgeId")).toBe("lodge-2");
+    expect(url.searchParams.get("futureContext")).toBe("keep");
+    for (const key of [
+      "search",
+      "status",
+      "consentState",
+      "upcoming",
+      "sortBy",
+      "sortDir",
+      "page",
+    ]) {
+      expect(url.searchParams.has(key)).toBe(false);
+    }
   });
 
   it("preserves the dashboard upcoming check-ins deep link", async () => {

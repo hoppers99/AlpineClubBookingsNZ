@@ -52,6 +52,12 @@ export E2E_BASE_URL="${E2E_BASE_URL:-http://localhost:${STAGING_HTTP_PORT}}"
 export E2E_MAILPIT_URL="${E2E_MAILPIT_URL:-http://localhost:${MAILPIT_HTTP_PORT}}"
 # Host-side view of the compose-internal database, for migrate + seeds.
 HOST_DATABASE_URL="postgresql://tac:${DB_PASSWORD}@localhost:${STAGING_POSTGRES_PORT}/tacbookings"
+# Same view, exported for the Playwright process (#2420). The pre-setup project
+# has to put the stack into a state no admin API can reach: `saveClubTheme()`
+# deliberately never clears `ClubTheme.completedAt`, so setup can be completed
+# through the app but never un-completed. Only the `pre-setup` project uses it,
+# and it restores the row afterwards; every other spec drives the app over HTTP.
+export E2E_DATABASE_URL="$HOST_DATABASE_URL"
 
 compose() {
   docker compose --env-file "$ENV_FILE" -p "$COMPOSE_PROJECT" \

@@ -4,11 +4,16 @@ import type { PaymentStatus } from "@prisma/client";
 import { useState, useEffect, useCallback } from "react";
 import type { ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { format, subMonths } from "date-fns";
+import { format } from "date-fns";
 import { todayDateOnlyForTimeZone } from "@/lib/date-only";
+import {
+  getPaymentsDatasetDefaults,
+  PAYMENT_DATASET_QUERY_KEYS,
+  resetPaymentsDatasetSearchParams,
+  withoutDatasetQueryKeys,
+} from "@/lib/admin-dataset-reset-state";
 import { Alert } from "@/components/ui/alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import {
   ADMIN_VIEW_ONLY_ACTION_REASON,
   useAdminAreaEditAccess,
@@ -38,7 +43,6 @@ import {
   BarChart2,
   ExternalLink,
   FileText,
-  X,
   Landmark,
   Receipt,
   CheckCircle2,
@@ -62,6 +66,7 @@ import {
   AdminFilterBar,
   type AdminFilterChip,
 } from "@/components/admin/admin-filter-bar";
+import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
 import { SortHeader } from "@/components/admin/sort-header";
 import { Pagination } from "@/components/admin/admin-pagination";
 import { StatusChip } from "@/components/ui/status-chip";
@@ -342,11 +347,8 @@ export default function PaymentsPage() {
   // operators whose clock trails NZ). Derive the "3 months ago" bound from the
   // same club-day so both ends stay consistent.
   const clubToday = todayDateOnlyForTimeZone();
-  const [clubYear, clubMonth, clubDay] = clubToday.split("-").map(Number);
-  const defaultLastUpdatedFrom = format(
-    subMonths(new Date(clubYear, clubMonth - 1, clubDay), 3),
-    "yyyy-MM-dd"
-  );
+  const paymentDefaults = getPaymentsDatasetDefaults(clubToday);
+  const defaultLastUpdatedFrom = paymentDefaults.lastUpdatedFrom;
   const [lastUpdatedFrom, setLastUpdatedFrom] = useState(
     searchParams.get("lastUpdatedFrom") || defaultLastUpdatedFrom
   );
@@ -369,7 +371,10 @@ export default function PaymentsPage() {
   const [loading, setLoading] = useState(false);
 
   const buildPaymentsSearchParams = useCallback(() => {
-    const params = new URLSearchParams();
+    const params = withoutDatasetQueryKeys(
+      searchParams.toString(),
+      PAYMENT_DATASET_QUERY_KEYS,
+    );
     if (status !== "all") params.set("status", status);
     if (source !== "all") params.set("source", source);
     if (xeroState !== "all") params.set("xeroState", xeroState);
@@ -402,6 +407,7 @@ export default function PaymentsPage() {
     sortBy,
     sortDir,
     page,
+    searchParams,
   ]);
 
   const paymentsQuery = buildPaymentsSearchParams().toString();
@@ -497,13 +503,30 @@ export default function PaymentsPage() {
     setPage(1);
   }
 
-  function clearFilters() {
+  const isDatasetDefault =
+    status === "all" &&
+    source === "all" &&
+    xeroState === "all" &&
+    settlement === "all" &&
+    lastUpdatedFrom === defaultLastUpdatedFrom &&
+    lastUpdatedTo === clubToday &&
+    checkInFrom === "" &&
+    checkInTo === "" &&
+    search === "" &&
+    amountExact === "" &&
+    amountMin === "" &&
+    amountMax === "" &&
+    sortBy === "lastUpdated" &&
+    sortDir === "desc" &&
+    page === 1;
+
+  function resetDataset() {
     setStatus("all");
     setSource("all");
     setXeroState("all");
     setSettlement("all");
-    setLastUpdatedFrom("");
-    setLastUpdatedTo("");
+    setLastUpdatedFrom(defaultLastUpdatedFrom);
+    setLastUpdatedTo(clubToday);
     setCheckInFrom("");
     setCheckInTo("");
     setSearch("");
@@ -513,6 +536,11 @@ export default function PaymentsPage() {
     setSortBy("lastUpdated");
     setSortDir("desc");
     setPage(1);
+    const params = resetPaymentsDatasetSearchParams(searchParams.toString(), clubToday);
+    const query = params.toString();
+    router.replace(query ? `/admin/payments?${query}` : "/admin/payments", {
+      scroll: false,
+    });
   }
 
   function toggleSort(column: PaymentSortBy) {
@@ -739,10 +767,7 @@ export default function PaymentsPage() {
           </>
         }
         actions={
-          <Button onClick={clearFilters} variant="outline" size="sm">
-            <X className="mr-1 h-4 w-4" />
-            Clear
-          </Button>
+          <DatasetResetButton disabled={isDatasetDefault} onReset={resetDataset} />
         }
         advanced={
           <>

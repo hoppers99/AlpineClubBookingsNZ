@@ -11,11 +11,16 @@ import { expect, test } from "@playwright/test";
 // scanner asks for, so no login is used.
 //
 // This stack is seeded with SEED_THEME_COMPLETE=1 (.github/workflows/e2e.yml),
-// so it renders the real public site. That matters here: without it
-// (website)/layout.tsx serves its "Site setup in progress" holding screen
-// INSTEAD of the page, the page's notFound() never runs, and every URL below
-// would answer 200. Measuring a stack that lacked the flag is how #2405 came to
-// report a soft 404 that a configured club does not have.
+// so it renders the real public site. That matters here: without it the site is
+// pre-setup, and since #2420 the proxy answers EVERY public address with 503 and
+// the "Site setup in progress" holding screen — so every expectation below would
+// fail loudly rather than, as before #2420, passing a status-blind read of a
+// holding screen that answered 200. Measuring a stack that lacked the flag is
+// how #2405 came to report a soft 404 that a configured club does not have.
+//
+// These cases double as the "setup complete" half of #2420's contract on a real
+// server: 404 for a miss and 200 for /about are only reachable if the gate is
+// genuinely inert once setup is done.
 
 const unmatchedPageUrls = [
   "/definitely-missing",

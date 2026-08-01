@@ -2,10 +2,8 @@ import { cache } from "react";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { EmbeddedPageContentParts } from "@/components/website/embedded-page-content-parts";
-import {
-  getCachedClubIdentity,
-  getCachedWebsiteThemeRenderState,
-} from "@/lib/public-layout-config";
+import { getCachedClubIdentity } from "@/lib/public-layout-config";
+import { setupInProgressMetadata } from "@/lib/website-setup-metadata";
 import {
   getSanitizedPageContentByPath,
   pageContentHtmlToPlainText,
@@ -104,35 +102,41 @@ function pageSlugFromPath(path: string) {
  * own `getPageForParams()` call below reuses this result rather than repeating
  * the query.
  *
- * Pre-setup is deliberately left alone. On a club whose `ClubTheme.completedAt`
- * is NULL, `(website)/layout.tsx` returns its "Site setup in progress" screen
- * instead of `{children}`, so today EVERY URL answers 200 — real pages and
- * misses alike. `notFound()` here would escape that, because the root
- * not-found boundary sits ABOVE the layout: unknown paths would start answering
- * 404 while published pages still answered 200, which hands an anonymous
- * visitor a way to enumerate an unlaunched site's page list and renders
- * database-backed 404 content before the site is meant to be visible. Deciding
- * what an unconfigured site should answer is #2420's job (503 for everything,
- * decided separately); until it lands this keeps pre-setup exactly as it was.
- * The theme read is the layout's own tagged cache, so it costs no extra query,
- * and it only runs on the miss path.
+ * Pre-setup, NOTHING about this page is disclosed — not the miss, and not the
+ * hit either. `setupInProgressMetadata()` runs FIRST and short-circuits both
+ * paths (#2420 review finding F1).
+ *
+ * The earlier version of this guard consulted the setup state only inside
+ * `if (!page)`. That was the enumeration oracle it was written to prevent,
+ * merely inverted: pre-setup a miss returned the bare club name while a HIT
+ * still returned the page's own title and header text, so an anonymous prober —
+ * who reaches this code by putting `Purpose: prefetch` on an ordinary request,
+ * which skips the proxy matcher — could read an unlaunched club's whole page
+ * inventory. Suppressing `{children}` in the layout does not help: the document
+ * head is a separate flight slot from the page's seed data in next@16.2.11, so
+ * metadata is produced even though the component never runs.
+ *
+ * `notFound()` is therefore unreachable pre-setup, which is still the right
+ * answer for the reason it always was: the root not-found boundary sits ABOVE
+ * `(website)/layout.tsx`, so a 404 raised here escapes the holding screen and
+ * would serve database-backed 404 content from a site that has not opened.
  */
 export async function generateMetadata(
   props: DynamicPageProps,
 ): Promise<Metadata> {
+  const holdingScreen = await setupInProgressMetadata();
+
+  if (holdingScreen) {
+    return holdingScreen;
+  }
+
   const [page, { name: clubName }] = await Promise.all([
     getPageForParams(props),
     getCachedClubIdentity(),
   ]);
 
   if (!page) {
-    const { isComplete } = await getCachedWebsiteThemeRenderState();
-
-    if (isComplete) {
-      notFound();
-    }
-
-    return { title: clubName };
+    notFound();
   }
 
   return {

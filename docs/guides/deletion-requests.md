@@ -32,6 +32,7 @@ to read the queues and membership **edit** to approve or reject.
 1. Go to **Admin → Monitoring & Support → Deletion Requests**. The page shows
    **Member self-service requests** and **Admin-initiated deletion requests**,
    sharing one status selector (**Pending**, **Approved**, **Rejected**, **All**).
+   **Reset** restores Pending and page 1 in both queues together.
 
    ![Deletion Requests page: the status selector, the Member self-service requests card, and the Admin-initiated deletion requests card](../images/admin/admin-deletion-requests.png)
 
@@ -64,6 +65,7 @@ inputs.
 | Control | What it does | Notes / constraints |
 | --- | --- | --- |
 | Status selector | Pending / Approved / Rejected / All | Applies to both queues; resets to page 1 |
+| Reset | Restore Pending and page 1 in both queues | Always visible; disabled only when both queues are at defaults |
 | Note / reason | Internal note or member-facing rejection reason | Optional |
 | Notify choice (self-service reject) | Whether the member is emailed the rejection | Recorded either way; hidden when no email on file |
 | Approve & Delete Account | Anonymises the member, cancels future bookings, deactivates login | Cannot be undone; blocked if future **paid** bookings exist |

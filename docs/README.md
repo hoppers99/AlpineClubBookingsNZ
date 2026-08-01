@@ -265,6 +265,8 @@ policy, runbook, and architecture detail.
 
 ## Developers
 
+- [Dataset Reset inventory](agents/DATASET_RESET_INVENTORY.md) - included admin/finance datasets, true defaults, preserved context, and exclusions.
+
 Changing the code.
 
 **Start here:** [`ARCHITECTURE.md`](ARCHITECTURE.md) for the runtime shape,
