@@ -164,6 +164,17 @@ than with a screenshot:
   edit or confirm their details, or answer a consent request for them; those
   need an active adult with a login who shares a family group with them, which
   the parent link neither grants nor is consulted for.
+  **Searching for the parent: adults come first** (#2425). The Link Parent box
+  lists eight people at a time, and because a parent may now be any age, a
+  family that shares a surname could fill all eight with the children — leaving
+  the adult you were looking for off the list with nothing to say so. The list
+  now puts the grown-ups at the top and children and youth below them; nobody is
+  left out, they are simply further down. An age-exempt member (an honorary or
+  life member who carries no age tier) counts as a grown-up here and is listed
+  with the adults. When more people matched than the list can show,
+  it says **"Keep typing to narrow this down."** underneath — the same sentence
+  the booking screens use when a member search is cut short. If you see it, add
+  another letter or two, or type the person's email address or member ID.
   **Who the club emails is decided separately, and always resolves to an adult.**
   A dependent's club email goes to the nearest adult at or above them in the
   family who has a real address, so a dependent added under a young parent has

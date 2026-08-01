@@ -858,6 +858,86 @@ export async function listAdminMembers(
     },
   };
 
+  const skip = (page - 1) * pageSize;
+
+  // #2425: the parent picker lists ADULTS FIRST. This is a PRESENTATION rule and
+  // nothing else — the `where` both halves run against is the same eligibility
+  // predicate assembled above, so every candidate the search offered before is
+  // still offered, at the same page size, and the write route's contract (the
+  // #2254 no-drift rule) is untouched. #2282 removed the adults-only clause
+  // because a 16 or 17 year old can genuinely be a parent; the side effect was
+  // that a surname shared by a family put the CHILDREN — sorted by the same
+  // lastName/firstName order — in every one of the eight slots before the adult
+  // the admin was actually looking for, who was then unreachable without extra
+  // typing they had no way of knowing was needed.
+  //
+  // Two complementary queries rather than one, because the ranking cannot be
+  // expressed as an `orderBy`: Prisma has no computed sort key, and sorting on
+  // `ageTier` itself would depend on the enum's DECLARATION order. Splitting the
+  // set in two and concatenating is exact, and stays correct for pages beyond
+  // the first — the picker only ever asks for page 1, but this endpoint is a
+  // general list API and a ranking that silently reshuffled on page 2 would drop
+  // and duplicate rows.
+  //
+  // The line is drawn at "is this candidate a MINOR", not at "is this candidate
+  // an ADULT" (#2425 review). `NOT_APPLICABLE` is the age-EXEMPT tier, not the
+  // organisation tier: `resolveEnforcedAgeTier` gives it to a real person on a
+  // FORCED membership type, and preserves an admin's hand-picked N/A while the
+  // type ALLOWS it (`src/lib/age-tier-enforcement.ts`, #1440/#2106). Since the
+  // picker excludes organisations by ROLE and never by tier
+  // (`dependentParentEligibleWhere`), every N/A row that reaches this ranking is
+  // one of those age-exempt PEOPLE — an honorary or life member, typically an
+  // adult — and ranking them below the household's children would leave them
+  // crowded off exactly the page this issue exists to fix. They join the top
+  // block instead, where they sort among the adults by name; nothing here
+  // claims they ARE adults, only that they are not minors.
+  const NON_MINOR_AGE_TIERS: AgeTier[] = ["ADULT", "NOT_APPLICABLE"];
+  async function findParentLinkCandidatesNonMinorsFirst() {
+    const rankedWhere = (ageClause: Prisma.MemberWhereInput) => ({
+      ...where,
+      AND: [...andConditions, ageClause],
+    });
+    // `in` / `notIn` are exact complements here because `Member.ageTier` is NOT
+    // NULL (`prisma/schema.prisma`, `AgeTier @default(ADULT)`), so every
+    // eligible row lands in exactly one half and the two together are the same
+    // set — and the same count — an unranked query would return.
+    const nonMinorClause: Prisma.MemberWhereInput = {
+      ageTier: { in: NON_MINOR_AGE_TIERS },
+    };
+    const minorClause: Prisma.MemberWhereInput = {
+      ageTier: { notIn: NON_MINOR_AGE_TIERS },
+    };
+    // Page 1 needs no boundary: the top block starts at row 0. A deeper page has
+    // to know where that block ENDS before it can slice across it, and only then
+    // is the extra count worth issuing.
+    const nonMinorTotal =
+      skip > 0
+        ? await prisma.member.count({ where: rankedWhere(nonMinorClause) })
+        : null;
+    const nonMinors =
+      nonMinorTotal === null || skip < nonMinorTotal
+        ? await prisma.member.findMany({
+            where: rankedWhere(nonMinorClause),
+            orderBy,
+            select,
+            skip,
+            take: pageSize,
+          })
+        : [];
+    if (nonMinors.length >= pageSize) return nonMinors;
+    const minors = await prisma.member.findMany({
+      where: rankedWhere(minorClause),
+      orderBy,
+      select,
+      // Once the top block is exhausted the remainder of the window continues
+      // into the minors, so the offset is whatever the window overshot it by
+      // (zero whenever the page started inside the top block).
+      skip: nonMinorTotal === null ? 0 : Math.max(0, skip - nonMinorTotal),
+      take: pageSize - nonMinors.length,
+    });
+    return [...nonMinors, ...minors];
+  }
+
   let members;
   let total: number;
   if (sortBy === "access") {
@@ -905,7 +985,7 @@ export async function listAdminMembers(
     });
     total = accessCandidates.length;
     const pageIds = accessCandidates
-      .slice((page - 1) * pageSize, page * pageSize)
+      .slice(skip, skip + pageSize)
       .map(({ id }) => id);
     const pageOrder = new Map(pageIds.map((id, index) => [id, index]));
     const unsortedMembers = pageIds.length
@@ -922,13 +1002,15 @@ export async function listAdminMembers(
     );
   } else {
     [members, total] = await Promise.all([
-      prisma.member.findMany({
-        where,
-        orderBy,
-        select,
-        skip: (page - 1) * pageSize,
-        take: pageSize,
-      }),
+      parentLinkEligibleFor
+        ? findParentLinkCandidatesNonMinorsFirst()
+        : prisma.member.findMany({
+            where,
+            orderBy,
+            select,
+            skip,
+            take: pageSize,
+          }),
       prisma.member.count({ where }),
     ]);
   }
