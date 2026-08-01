@@ -64,6 +64,8 @@ const SKIPPED_DIRECTORIES = new Set([
 
 const TEST_FILE_NAME = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
 
+const SOURCE_FILE_NAME = /\.[cm]?[jt]sx?$/;
+
 /**
  * Every module Vitest could evaluate — NOT just the collected suites.
  *
@@ -74,8 +76,6 @@ const TEST_FILE_NAME = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
  * see none of that, and both the list and the count assertions below would stay
  * green while the freeze had been switched off for an unbounded set of files.
  */
-const SOURCE_FILE_NAME = /\.[cm]?[jt]sx?$/;
-
 function walkSourceFiles(dir: string): string[] {
   if (!fs.existsSync(dir)) return [];
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
