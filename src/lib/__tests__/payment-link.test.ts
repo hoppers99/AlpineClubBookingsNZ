@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { BookingStatus, PaymentStatus } from "@prisma/client";
 
 vi.mock("@/lib/prisma", () => ({
@@ -135,6 +135,30 @@ function baseLink(overrides: Partial<Record<string, unknown>> = {}) {
     ...overrides,
   };
 }
+
+/**
+ * This suite's bookings check in on 2026-08-01, and `reissuePaymentLinkForToken`
+ * refuses a stay whose dates have already passed — read from the REAL clock. Left
+ * unpinned the whole file went red on 2 August 2026 with nothing in any diff to
+ * blame, which is the signature that gets written off as an environment flake
+ * (#2426, #2401, #2443 are the same class; this is the fourth instance).
+ *
+ * Pin the clock a comfortable distance before the fixtures so "these dates are
+ * still in the future" stays the intended scenario for good. Only `Date` is
+ * faked, so real timers still drive any awaited promise. 2026-07-01T00:00:00Z
+ * reads as 1 July in NZ (12:00 NZST) and in UTC alike, so the pinned "today"
+ * does not depend on the runner's own zone.
+ */
+const FIXED_NOW = new Date("2026-07-01T00:00:00.000Z");
+
+beforeAll(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(FIXED_NOW);
+});
+
+afterAll(() => {
+  vi.useRealTimers();
+});
 
 function baseBooking(overrides: Partial<Record<string, unknown>> = {}) {
   return {
