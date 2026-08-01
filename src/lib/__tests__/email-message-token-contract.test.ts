@@ -60,6 +60,20 @@ function renderWithLegacyWholeLineBookingUrlRemoval(
     });
 }
 
+function renderWithPerLineOnlyBookingUrlRemoval(
+  template: string,
+  data: Record<string, string>,
+): string {
+  return template
+    .replace(
+      /^[ \t]*\{\{\s*bookingUrl\s*\}\}[ \t]*(?:\r\n|\n|\r|$)/gm,
+      "",
+    )
+    .replace(/\{\{([^{}]+)\}\}/g, (_match, tokenName: string) => {
+      return data[tokenName.trim()] ?? "";
+    });
+}
+
 describe("#2362 booking detail URL template contract", () => {
   it("classifies exactly the live registered booking-scoped inventory", () => {
     expect(
@@ -198,6 +212,85 @@ describe("#2362 booking detail URL template contract", () => {
     ).toBe("Keep the payment instructions.\r\nKeep the consent instructions.");
   });
 
+  it("removes an immediately preceding standalone CTA label with a token-only CRLF line", () => {
+    const template =
+      "View this booking:\r\n{{bookingUrl}}\r\nKeep this operational sentence.";
+
+    expect(renderTemplateString(template, { bookingUrl: "" })).toBe(
+      "Keep this operational sentence.",
+    );
+  });
+
+  it.each([
+    {
+      name: "unrelated preceding copy",
+      template:
+        "Payment instructions:\r\n{{bookingUrl}}\r\nKeep this operational sentence.",
+      data: { bookingUrl: "" },
+      expected:
+        "Payment instructions:\r\nKeep this operational sentence.",
+    },
+    {
+      name: "unrelated prose before a recognized CTA suffix",
+      template:
+        "Payment remains due — View this booking:\r\n{{bookingUrl}}\r\nKeep this operational sentence.",
+      data: { bookingUrl: "" },
+      expected:
+        "Payment remains due\r\nKeep this operational sentence.",
+    },
+    {
+      name: "a bearer action before a recognized CTA suffix",
+      template:
+        "Pay now: {{paymentUrl}} | View this booking:\r\n{{bookingUrl}}\r\nKeep this operational sentence.",
+      data: {
+        bookingUrl: "",
+        paymentUrl: "https://pay.example.test/p/bearer-previous-line",
+      },
+      expected:
+        "Pay now: https://pay.example.test/p/bearer-previous-line\r\nKeep this operational sentence.",
+    },
+    {
+      name: "a preceding line where the CTA words are not a standalone suffix",
+      template:
+        "View this booking: call support if it fails.\r\n{{bookingUrl}}\r\nKeep this operational sentence.",
+      data: { bookingUrl: "" },
+      expected:
+        "View this booking: call support if it fails.\r\nKeep this operational sentence.",
+    },
+    {
+      name: "a non-adjacent CTA label",
+      template:
+        "View this booking:\r\n\r\n{{bookingUrl}}\r\nKeep this operational sentence.",
+      data: { bookingUrl: "" },
+      expected:
+        "View this booking:\r\n\r\nKeep this operational sentence.",
+    },
+    {
+      name: "a next line that also carries a bearer action",
+      template:
+        "View this booking:\r\n{{bookingUrl}} | Pay now: {{paymentUrl}}\r\nKeep this operational sentence.",
+      data: {
+        bookingUrl: "",
+        paymentUrl: "https://pay.example.test/p/bearer-near-miss",
+      },
+      expected:
+        "View this booking:\r\nPay now: https://pay.example.test/p/bearer-near-miss\r\nKeep this operational sentence.",
+    },
+  ])("does not delete $name", ({ template, data, expected }) => {
+    expect(renderTemplateString(template, data)).toBe(expected);
+  });
+
+  it("keeps the authorized two-line CTA byte-for-byte apart from token substitution", () => {
+    expect(
+      renderTemplateString(
+        "View this booking:\r\n{{bookingUrl}}\r\nKeep this operational sentence.",
+        { bookingUrl: "https://book.example.test/bookings/bk_1" },
+      ),
+    ).toBe(
+      "View this booking:\r\nhttps://book.example.test/bookings/bk_1\r\nKeep this operational sentence.",
+    );
+  });
+
   it("preserves unrelated subject text when the optional booking CTA is unavailable", () => {
     expect(
       renderTemplateString(
@@ -232,6 +325,19 @@ describe("#2362 booking detail URL template contract", () => {
     expect(renderWithLegacyWholeLineBookingUrlRemoval(template, data)).toBe("");
     expect(renderTemplateString(template, data)).toBe(
       "Pay now: https://pay.example.test/p/bearer-payment",
+    );
+  });
+
+  it("would leave the preceding CTA label under the per-line-only implementation", () => {
+    const template =
+      "View this booking:\r\n{{bookingUrl}}\r\nKeep this operational sentence.";
+    const data = { bookingUrl: "" };
+
+    expect(renderWithPerLineOnlyBookingUrlRemoval(template, data)).toBe(
+      "View this booking:\r\nKeep this operational sentence.",
+    );
+    expect(renderTemplateString(template, data)).toBe(
+      "Keep this operational sentence.",
     );
   });
 });

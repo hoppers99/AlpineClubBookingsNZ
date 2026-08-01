@@ -292,6 +292,8 @@ describe("booking override delivery-copy URL sanitation", () => {
         `Pay now: ${paymentAction} | View this booking: {{bookingUrl}}`,
         `Respond: ${respondAction} • Open booking details: {{bookingUrl}}`,
         `Consent: ${CONSENT_ACTION}<br><a href="{{bookingUrl}}">View booking</a>`,
+        "Manage your booking:",
+        "{{bookingUrl}}",
         "Keep this operational sentence unchanged.",
       ].join("\n"),
     };
@@ -310,6 +312,7 @@ describe("booking override delivery-copy URL sanitation", () => {
     expect(delivery.html).not.toContain("View this booking");
     expect(delivery.html).not.toContain("Open booking details");
     expect(delivery.html).not.toContain("View booking");
+    expect(delivery.html).not.toContain("Manage your booking");
     expect(delivery.html).not.toContain('href=&quot;&quot;');
   });
 

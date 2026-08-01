@@ -345,11 +345,20 @@ export function validateEmailTemplateContent({
 
 const BOOKING_URL_TOKEN_SOURCE = String.raw`\{\{\s*bookingUrl\s*\}\}`;
 const BOOKING_URL_TOKEN = new RegExp(BOOKING_URL_TOKEN_SOURCE, "i");
+const BOOKING_URL_CTA_LABEL_SOURCE = String.raw`\b(?:(?:view|open|manage|review|see)\s+(?:(?:this|the|your)\s+)?booking(?:\s+(?:details?|online))?(?:\s+here)?|booking(?:\s+(?:details?|link))?)`;
 const BOOKING_URL_INLINE_SEPARATOR =
   /(\s*(?:\||\u2022|\u00b7|\u2014|\u2013|;(?=\s)|&bull;|&middot;|<br\s*\/?>)\s*)/gi;
 const BOOKING_URL_CTA = new RegExp(
-  String.raw`(?:\s+(?:and|then)\s+|\s*)?(?:(?:view|open|manage|review|see)\s+(?:(?:this|the|your)\s+)?booking(?:\s+(?:details?|online))?(?:\s+here)?|booking(?:\s+(?:details?|link))?)\s*(?::|[-\u2013\u2014])?\s*${BOOKING_URL_TOKEN_SOURCE}`,
+  String.raw`(?:\s+(?:and|then)\s+|\s*)?${BOOKING_URL_CTA_LABEL_SOURCE}\s*(?::|[-\u2013\u2014])?\s*${BOOKING_URL_TOKEN_SOURCE}`,
   "gi",
+);
+const BOOKING_URL_CTA_LABEL_SUFFIX = new RegExp(
+  String.raw`(?:[ \t]*(?:\||\u2022|\u00b7|\u2014|\u2013|;|&bull;|&middot;)[ \t]*)?${BOOKING_URL_CTA_LABEL_SOURCE}[ \t]*(?::|[-\u2013\u2014])?[ \t]*$`,
+  "i",
+);
+const BOOKING_URL_TOKEN_ONLY_LINE = new RegExp(
+  String.raw`^[ \t]*${BOOKING_URL_TOKEN_SOURCE}[ \t]*$`,
+  "i",
 );
 const BOOKING_URL_HTML_ANCHOR = new RegExp(
   String.raw`<a\b(?=[^>]*${BOOKING_URL_TOKEN_SOURCE})[^>]*>.*?<\/a\s*>`,
@@ -478,11 +487,38 @@ function stripUnavailableBookingUrlLine(line: string): string | null {
 
 function stripUnavailableBookingUrl(template: string): string {
   const parts = template.split(/(\r\n|\n|\r)/);
+  const replacementLines = new Map<number, string | null>();
   let rendered = "";
+
+  for (let index = 0; index + 2 < parts.length; index += 2) {
+    const line = parts[index] ?? "";
+    const nextLine = parts[index + 2] ?? "";
+    if (
+      parts[index + 1] !== undefined &&
+      BOOKING_URL_TOKEN_ONLY_LINE.test(nextLine)
+    ) {
+      const withoutCta = line.replace(BOOKING_URL_CTA_LABEL_SUFFIX, "").trimEnd();
+      if (withoutCta !== line.trimEnd()) {
+        // The relationship is deliberately exact and local: only a recognized
+        // booking CTA suffix immediately followed by a token-only line is
+        // removed. Any unrelated prefix or bearer action stays on its line;
+        // arbitrary preceding prose never matches this anchored suffix.
+        replacementLines.set(index, withoutCta || null);
+        replacementLines.set(index + 2, null);
+      }
+    }
+  }
 
   for (let index = 0; index < parts.length; index += 2) {
     const line = parts[index] ?? "";
     const lineEnding = parts[index + 1] ?? "";
+    if (replacementLines.has(index)) {
+      const replacement = replacementLines.get(index);
+      if (replacement !== null && replacement !== undefined) {
+        rendered += replacement + lineEnding;
+      }
+      continue;
+    }
     const stripped = stripUnavailableBookingUrlLine(line);
     if (stripped !== null) rendered += stripped + lineEnding;
   }
