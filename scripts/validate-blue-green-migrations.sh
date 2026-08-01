@@ -54,7 +54,42 @@ session_clock_acknowledged() {
 }
 
 HOT_TABLE_SQL_REGEX='(ALTER TABLE|UPDATE|DELETE FROM|TRUNCATE|CREATE[[:space:]]+(UNIQUE[[:space:]]+)?INDEX|DROP INDEX|CREATE[[:space:]]+(CONSTRAINT[[:space:]]+)?TRIGGER|DROP TRIGGER|ADD CONSTRAINT|DROP CONSTRAINT|REFERENCES)[^;]*"(Member|MemberSubscription|MemberApplication|MemberCredit|FamilyGroup|FamilyGroupMember|FamilyGroupJoinRequest|Booking|BookingGuest|BookingModification|Payment|PaymentTransaction|PaymentRefund|RefundRequest|PasswordResetToken|EmailVerificationToken|EmailChangeToken|GuestChoreToken|NominationToken|XeroToken|FinanceXeroToken)"'
-BREAKING_SQL_REGEX='(^|[^A-Z_])(DROP TABLE|DROP COLUMN|DROP TYPE|DROP CONSTRAINT|ALTER TABLE .* RENAME|RENAME COLUMN|ALTER COLUMN .* TYPE|ALTER COLUMN .* SET NOT NULL)'
+# Breaking for a blue/green cutover: the draining old colour still speaks the old
+# shape, so any of these can make its reads/writes error between migrate and
+# cutover.
+#
+# "RENAME VALUE" (#2288) is an enum-value rename, ALTER TYPE ... RENAME VALUE. It
+# is genuinely breaking — the old colour keeps sending the old label and Postgres
+# answers "invalid input value for enum" — but nothing in this list saw it before:
+# it is not an ALTER TABLE, not a DROP TYPE, not an ALTER COLUMN. A migration that
+# ONLY renamed enum values therefore sailed through the gate as harmless. The real
+# 20260525010000_align_booking_change_request_with_review_queues tripped the gate
+# only because it renamed columns as well.
+#
+# It is matched BARE, exactly like the sibling "RENAME COLUMN" alternative, rather
+# than as "ALTER TYPE .* RENAME VALUE": this scan is line-oriented, so a statement
+# split as
+#     ALTER TYPE "BookingChangeRequestStatus"
+#       RENAME VALUE 'PENDING' TO 'REQUESTED';
+# would otherwise slip past (that exact split is how 20260525010000 writes its
+# ALTER INDEX statements). "RENAME VALUE" appears in no other PostgreSQL
+# statement, so the bare form costs no false positives beyond a line comment that
+# quotes the phrase — which fails closed, the safe direction.
+#
+# Deliberately NOT matched:
+#   * ALTER TYPE ... ADD VALUE — additive. The old colour never sends the new
+#     label, and every value it does send still exists. 43 committed migrations
+#     add enum values; matching them would make the gate noise.
+#   * ALTER INDEX ... RENAME TO — genuinely old-code compatible, because no
+#     application code references an index by name. Matching it would generate
+#     false positives forever and train operators to reach for the override.
+BREAKING_SQL_REGEX='(^|[^A-Z_])(DROP TABLE|DROP COLUMN|DROP TYPE|DROP CONSTRAINT|ALTER TABLE .* RENAME|RENAME COLUMN|RENAME VALUE|ALTER COLUMN .* TYPE|ALTER COLUMN .* SET NOT NULL)'
+# Destructive removals additionally have to be sequenced: phase=contract naming
+# the previous expand release. An enum-value rename is deliberately NOT on this
+# list (#2288 scope) — it is breaking, and must therefore be acknowledged as
+# yes/windowed and cleared by the override, but it is not required to carry the
+# expand/contract paperwork on its own. In practice an enum rename that matters
+# travels with the column renames/drops that already put the migration here.
 DESTRUCTIVE_REMOVAL_SQL_REGEX='(^|[^A-Z_])(DROP TABLE|DROP COLUMN|DROP TYPE|ALTER TABLE .* RENAME|RENAME COLUMN)'
 # A "SET DEFAULT <value>" whose value is semantically NULL fills nothing, so it
 # cannot waive a paired SET NOT NULL (see unsafe_breaking_lines). This matches the
@@ -382,9 +417,49 @@ validate_ledger_entry() {
     failed=1
   fi
 
-  if [ "$requires_breaking_ack" = "1" ] && [ "$old_code_compatible" != "yes" ]; then
-    echo "${migration_name}: breaking migrations must declare old_code_compatible=yes in the safety ledger." >&2
+  # old_code_compatible is a closed vocabulary (#2288). It was previously
+  # unvalidated, so a typo ("Yes", "true", "n/a") silently read as "not yes" and
+  # only ever surfaced on a breaking migration.
+  #
+  #   yes      - genuinely old-code compatible, because the migration carries a
+  #              compensating pattern (e.g. SET NOT NULL paired with a same-column
+  #              non-NULL SET DEFAULT, so an old colour's omitted-column INSERT
+  #              still succeeds).
+  #   windowed - NOT old-code compatible. The previous colour WILL error between
+  #              migrate and cutover. Needs a maintenance window and the
+  #              ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS override.
+  #   no       - non-breaking migration; nothing to acknowledge.
+  if [[ ! "$old_code_compatible" =~ ^(yes|no|windowed)$ ]]; then
+    echo "${migration_name}: safety ledger old_code_compatible must be yes, no, or windowed." >&2
     failed=1
+  fi
+
+  # Before `windowed` existed the gate hard-required `yes`, so every breaking
+  # migration asserted it whether or not it was true and the field carried no
+  # information for exactly the migrations that most need scrutiny. The policy
+  # already anticipated the case (BLUE_GREEN_MIGRATION_POLICY.md: "If that cannot
+  # be true, the migration ... needs a separate maintenance/bootstrap plan"); this
+  # is how that plan gets declared instead of being asserted falsely.
+  if [ "$requires_breaking_ack" = "1" ] &&
+    [ "$old_code_compatible" != "yes" ] &&
+    [ "$old_code_compatible" != "windowed" ]; then
+    echo "${migration_name}: breaking migrations must declare old_code_compatible=yes (genuinely compatible via a compensating pattern) or windowed (not compatible; needs a maintenance window and the ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS override) in the safety ledger." >&2
+    failed=1
+  fi
+
+  # `windowed` asserts that an outage is planned, so it must be justified in
+  # writing rather than becoming a quieter way to say `yes`.
+  if [ "$old_code_compatible" = "windowed" ] && [ -z "$lock_impact_plan" ]; then
+    echo "${migration_name}: windowed migrations must document the incompatibility and the maintenance-window plan in the safety ledger's lock impact plan column." >&2
+    failed=1
+  fi
+
+  # Reported back to the caller (this runs in the current shell, not a subshell)
+  # so a windowed declaration still demands the deploy-time override even when no
+  # SQL pattern matched — a data-only migration can break the old colour without
+  # any breaking DDL, and the ledger is the only place that knows.
+  if [ "$old_code_compatible" = "windowed" ]; then
+    ledger_declared_windowed=1
   fi
 
   if [ "$requires_hot_table_plan" = "1" ] && [ -z "$lock_impact_plan" ]; then
@@ -454,6 +529,9 @@ for migration_sql in "$@"; do
   fi
 
   ledger_entry="$(ledger_entry_for_migration "$migration_name" || true)"
+  # Set by validate_ledger_entry when this migration's row declares
+  # old_code_compatible=windowed; reset per migration.
+  ledger_declared_windowed=0
   if [ -z "$ledger_entry" ]; then
     echo "${migration_name}: missing ${MIGRATION_SAFETY_LEDGER} entry for blue/green migration safety review." >&2
     found_failure=1
@@ -490,6 +568,19 @@ for migration_sql in "$@"; do
       printf 'Reviewed no-outage NOT NULL (SET NOT NULL paired with a same-column SET DEFAULT): %s\n' "$migration_sql" >&2
     fi
   fi
+
+  # A windowed declaration (#2288) is the ledger saying, in writing, that the
+  # draining old colour WILL error between migrate and cutover. Require the
+  # operator override for it even when no SQL pattern matched — a data-only
+  # migration (an UPDATE flipping rows to a value the old Prisma client cannot
+  # deserialize, say) breaks the old colour with no breaking DDL at all, and the
+  # ledger row is the only place that knows. It also overrides the
+  # reviewed-no-outage waiver above: if the row says the outage is real, the gate
+  # believes the row.
+  if [ "$ledger_declared_windowed" = "1" ]; then
+    found_breaking=1
+    printf 'Ledger declares this migration windowed (old colour NOT kept compatible; deploy-window only): %s\n' "$migration_sql" >&2
+  fi
 done
 
 if [ "$found_failure" = "1" ]; then
@@ -498,8 +589,8 @@ if [ "$found_failure" = "1" ]; then
 fi
 
 if [ "$found_breaking" = "1" ] && [ "$ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS" != "1" ]; then
-  echo "Pending migrations contain potentially breaking SQL for blue/green rollout." >&2
-  echo "Set ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1 and BLUE_GREEN_MIGRATION_OVERRIDE_REASON only after the safety ledger proves old-code compatibility." >&2
+  echo "Pending migrations contain potentially breaking SQL for blue/green rollout, or a ledger row declaring a windowed migration." >&2
+  echo "Set ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1 and BLUE_GREEN_MIGRATION_OVERRIDE_REASON only after the safety ledger proves old-code compatibility (old_code_compatible=yes), or the maintenance window for a declared windowed migration (old_code_compatible=windowed) is in place." >&2
   exit 1
 fi
 
