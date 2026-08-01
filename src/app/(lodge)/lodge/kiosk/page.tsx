@@ -82,13 +82,33 @@ type KioskView = "week" | "day";
   the kiosk agrees with the server guards it calls and with the week strip it
   renders.
 
-  What this replaced: a local `formatDate(new Date())` that read the DISPLAY
-  DEVICE's calendar day. A kiosk tablet left on a foreign zone — or simply set
-  wrong, which is the common case on a lodge device nobody administers — opened
-  on the wrong night, and the day-stepping helpers round-tripped through
-  `new Date(key + "T00:00:00")`, a LOCAL-midnight instant, so the same device
-  could also step across a DST boundary onto the wrong day.
+  What this replaced was two different things, and only one of them was a bug.
+
+  THE BUG: `formatDate(new Date())` read the DISPLAY DEVICE's calendar day. A
+  kiosk tablet left on a foreign zone — or simply set wrong, which is the common
+  case on a lodge device nobody administers — opened on the wrong night, while
+  every server route the page calls resolves the night in New Zealand.
+
+  THE SEAM ALIGNMENT: the day-stepping helpers used to round-trip through
+  `new Date(key + "T00:00:00")` + `setDate` + local getters. That was NOT
+  broken. Writing and reading with the same local getters is a closed round
+  trip: swept over every IANA zone and every day from 2008 to 2030, it agrees
+  with `addDaysToDateKey` on every DST transition, month end and year end (the
+  only divergence in the whole space is the 2011 Samoa dateline skip, where a
+  calendar day was deleted outright). It moved onto `addDaysToDateKey` so the
+  page speaks ONE date-only encoding end to end — the same UTC-midnight seam the
+  week strip and `src/lib/date-only.ts` use — and so no later edit can
+  reintroduce a device-local `Date` here by copying the pattern the file used to
+  set. Do not cite this file as prior art for a DST defect: there wasn't one.
 */
+
+// How often the page asks the club's calendar whether the day has turned over.
+// A minute is the coarsest interval a hut leader would not notice at midnight,
+// and the check itself is one `Intl` format — far cheaper than the two-minute
+// data refresh it sits alongside. Deliberately NOT exported — this is an App
+// Router page file, and a named export here is an invalid page export; the
+// suite advances its fake clock by this many ms with a comment pointing back.
+const CLUB_DAY_TICK_MS = 60000;
 
 // Not one of the shared helpers: the kiosk header names the DAY OF THE WEEK in
 // full ("Wednesday, 15 April 2026") because that is what a hut leader scans for.
@@ -141,11 +161,16 @@ export default function KioskPage() {
     },
     [previewAccount]
   );
-  const [date, setDate] = useState(() => todayDateOnlyForTimeZone());
+  // #2474 — the club's day is HELD, not re-read in the render, and the night
+  // shown is seeded from that one snapshot. Reading it inline where the week
+  // strip is rendered would let the "Today" chip roll at NZ midnight while
+  // `date` — the night every fetch, every roster write and every check-in is
+  // keyed on — stayed on yesterday. That divergence would open at 00:00 NZ, the
+  // exact hour a late arrival is being checked in.
+  const [clubToday, setClubToday] = useState(() => todayDateOnlyForTimeZone());
+  const [date, setDate] = useState(clubToday);
   const [view, setView] = useState<KioskView>("week");
-  const [weekStart, setWeekStart] = useState(() =>
-    getWeekStartDateKey(todayDateOnlyForTimeZone())
-  );
+  const [weekStart, setWeekStart] = useState(() => getWeekStartDateKey(clubToday));
   const [weekDays, setWeekDays] = useState<KioskWeekDaySummary[]>([]);
   const [bookings, setBookings] = useState<BookingGroup[]>([]);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
@@ -272,6 +297,30 @@ export default function KioskPage() {
     return () => clearInterval(timer);
   }, [failCount, fetchData]);
 
+  // #2474 — a kiosk is a wall tablet nobody reloads, so the club's new day has
+  // to arrive on its own. Watch for the rollover and carry the view across WITH
+  // it, so the chip and the night being served never disagree.
+  //
+  // Only while the view is still parked on what was today, though: a hut leader
+  // who navigated to another night keeps the night they chose, and the strip
+  // they navigated to keeps its week. The effect re-arms on `clubToday`, so it
+  // is rebuilt once a day, not once a tick.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const nextClubDay = todayDateOnlyForTimeZone();
+      if (nextClubDay === clubToday) return;
+
+      setClubToday(nextClubDay);
+      setDate((current) => (current === clubToday ? nextClubDay : current));
+      setWeekStart((current) =>
+        current === getWeekStartDateKey(clubToday)
+          ? getWeekStartDateKey(nextClubDay)
+          : current
+      );
+    }, CLUB_DAY_TICK_MS);
+    return () => clearInterval(timer);
+  }, [clubToday]);
+
   const refreshNow = async () => {
     setRefreshing(true);
     try {
@@ -330,7 +379,12 @@ export default function KioskPage() {
   };
 
   const showToday = () => {
+    // Re-read rather than trusting `clubToday`: the rollover tick can be up to
+    // a minute behind the club at midnight, and **Today** must never send a hut
+    // leader to yesterday. Setting all three together keeps the chip, the
+    // served night and the week on the same day.
     const today = todayDateOnlyForTimeZone();
+    setClubToday(today);
     setDate(today);
     setWeekStart(getWeekStartDateKey(today));
     setView("week");
@@ -716,7 +770,7 @@ export default function KioskPage() {
         <KioskWeekView
           days={weekDays}
           weekStart={weekStart}
-          todayDate={todayDateOnlyForTimeZone()}
+          todayDate={clubToday}
           selectedDate={date}
           lodgeName={access?.lodgeName}
           readOnly={effectiveTier === "staying-guest" || effectiveTier === "none"}
