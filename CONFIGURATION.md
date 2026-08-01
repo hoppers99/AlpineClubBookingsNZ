@@ -704,10 +704,20 @@ reusable layout fragments that are not routable pages.
 - The public footer keeps the logo, current year, copyright line, and
   privacy/terms links code-managed. Admins can edit or clear the three column
   HTML fragments; clearing either link column hides that column.
-- The migration backfills starter footer rows with the previous hardcoded
-  footer copy, so deploy-only environments keep the same footer without
-  running the seed. The seed also creates the starter rows when missing and
-  never overwrites existing admin edits.
+- `20260702124500_add_site_content` backfills starter footer rows with the
+  previous hardcoded footer copy, so deploy-only environments keep the same
+  footer without running the seed. The seed also creates the starter rows when
+  missing and never overwrites existing admin edits.
+- **`FOOTER_AFFILIATIONS` is empty on a fresh install (#2490).** A club's
+  affiliations are facts about that club, so this project ships none and the
+  footer hides the column until an admin adds the club's own. The original
+  backfill planted a list naming the Ruapehu Mountain Clubs Association, which
+  every install then published on every public page;
+  `20260802140000_clear_starter_footer_affiliations` clears that value from any
+  database that still holds it byte for byte, leaving an edited column alone.
+  `src/lib/__tests__/seed-account-defaults.test.ts` now runs the
+  founding-club geography guard over `starterSiteContent` as well as
+  `starterPageContent` and the seeded chore templates.
 - Footer section HTML is sanitised on save and again on render with the same
   allowlist as page content (`src/lib/page-content-html.ts`). Footer text
   tokens include `{{club-name}}`, `{{currency}}`, `{{lodge-capacity}}`,
