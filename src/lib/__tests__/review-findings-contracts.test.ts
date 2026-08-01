@@ -178,6 +178,17 @@ function createTempMigration(
   return { tempDir, migrationPath, ledgerPath };
 }
 
+// A `windowed` ledger row requires the policy's reverse script beside the
+// migration (#2288), enforced as a documentation failure the ALLOW_BREAKING
+// override cannot rescue. Any fixture that expects a windowed migration to PASS
+// therefore has to ship one.
+function writeRollbackScript(migrationPath: string) {
+  writeFileSync(
+    path.join(path.dirname(migrationPath), "rollback.sql"),
+    "-- Reverse script for the fixture's windowed migration.\n"
+  );
+}
+
 // The migration-safety gates are bash scripts, so every fixture path handed to
 // them crosses a shell boundary. On Windows that shell is MSYS/Git-Bash, which
 // strips the backslashes out of an argv element ("C:\Users\x" arrives as
@@ -1622,6 +1633,7 @@ describe("review finding source/schema contracts", () => {
           "20990101000000_test_migration\texpand\tn/a\twindowed\tNOT old-code compatible: the draining colour keeps sending PENDING and gets invalid input value for enum. Deploy inside an announced maintenance window, keep migrate-to-cutover short, and take the verified backup immediately before migrate because the rollback boundary is the migrate step.",
         ].join("\n")
       );
+      writeRollbackScript(fixture.migrationPath);
 
       try {
         const blocked = runMigrationSafetyValidator(
@@ -1774,6 +1786,7 @@ describe("review finding source/schema contracts", () => {
           "20990101000000_test_migration\texpand\tn/a\twindowed\tNOT old-code compatible: the previous colour cannot deserialize the values this migration writes. Announced maintenance window; cut over promptly.",
         ].join("\n")
       );
+      writeRollbackScript(fixture.migrationPath);
 
       try {
         const blocked = runMigrationSafetyValidator(
@@ -1819,6 +1832,7 @@ describe("review finding source/schema contracts", () => {
           "20990101000000_test_migration\texpand\tn/a\twindowed\tNOT old-code compatible: the previous colour cannot deserialize the flipped value. Announced maintenance window; cut over promptly.",
         ].join("\n")
       );
+      writeRollbackScript(declared.migrationPath);
 
       try {
         const blocked = runMigrationSafetyValidator(
@@ -1871,7 +1885,7 @@ describe("review finding source/schema contracts", () => {
     { timeout: 20000 },
     () => {
       // The boundary of the new pattern. ALTER TYPE ... ADD VALUE is additive
-      // (43 committed migrations do it) and ALTER INDEX ... RENAME TO is
+      // (29 committed migrations do it, 44 statements) and ALTER INDEX ... RENAME TO is
       // genuinely old-code compatible because no application code references an
       // index by name. Matching either would generate false positives forever
       // and train operators to reach for the override.
@@ -1939,6 +1953,317 @@ describe("review finding source/schema contracts", () => {
       );
 
       expect(allowed.status, allowed.stderr).toBe(0);
+    }
+  );
+
+  it(
+    "enforces the closed vocabulary on a migration whose SQL matches nothing (#2288)",
+    { timeout: 20000 },
+    () => {
+      // The gap the vocabulary lint closes. Validating old_code_compatible inside
+      // validate_ledger_entry only reaches rows the migration loop actually opens,
+      // and the loop skips any migration whose SQL matches no hot-table/breaking
+      // pattern unless its value is EXACTLY "windowed". So on a data-only
+      // migration every near-miss spelling was simultaneously (a) not recognised
+      // as windowed and (b) never validated: measured before the fix, each of
+      // these exited 0 with "safety check passed" — on exactly the #1440 AgeTier
+      // shape the windowed value exists for. A capitalisation silently cancelled
+      // the maintenance window the operator wrote the row to demand.
+      const nearMisses = ["Windowed", "WINDOWED", "windowed.", "maybe", "true", ""];
+
+      for (const value of nearMisses) {
+        const fixture = createTempMigration(
+          "UPDATE \"OrgAgeTier\" SET \"tier\" = 'NOT_APPLICABLE' WHERE \"tier\" IS NULL;\n",
+          [
+            LEDGER_HEADER,
+            `20990101000000_test_migration\texpand\tn/a\t${value}\tNOT old-code compatible: pre-#1440 clients cannot deserialize NOT_APPLICABLE. Announced maintenance window.`,
+          ].join("\n")
+        );
+
+        try {
+          // With the override set, so this proves the lint is a documentation
+          // failure the operator flag cannot rescue.
+          const result = runMigrationSafetyValidator(
+            fixture.migrationPath,
+            fixture.ledgerPath,
+            {
+              ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+              BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+                "the override must not rescue an unrecognised value",
+            }
+          );
+
+          expect(result.status, `${value || "(empty)"}: ${result.stderr}`).not.toBe(
+            0
+          );
+          expect(result.stderr).toContain(
+            "old_code_compatible must be yes, no, or windowed"
+          );
+          expect(result.stderr).toContain(`(found "${value}")`);
+          expect(result.stderr).not.toContain("safety check passed");
+        } finally {
+          rmSync(fixture.tempDir, { recursive: true, force: true });
+        }
+      }
+
+      // The boundary: the three accepted values on the same clean SQL still pass
+      // (or, for windowed, fail only for the reasons windowed is meant to).
+      const accepted = createTempMigration(
+        "UPDATE \"OrgAgeTier\" SET \"tier\" = 'NOT_APPLICABLE' WHERE \"tier\" IS NULL;\n",
+        [
+          LEDGER_HEADER,
+          "20990101000000_test_migration\texpand\tn/a\tyes\tCold-table backfill; nothing for the draining colour to trip over.",
+        ].join("\n")
+      );
+
+      try {
+        const result = runMigrationSafetyValidator(
+          accepted.migrationPath,
+          accepted.ledgerPath
+        );
+        expect(result.status, result.stderr).toBe(0);
+      } finally {
+        rmSync(accepted.tempDir, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it(
+    "fails the PR-time coverage gate on a near-miss old_code_compatible value (#2288)",
+    { timeout: 20000 },
+    () => {
+      // The lint has to bite at PR time, not only at deploy time — a mistyped
+      // `windowed` that reaches a production host has already cost the operator
+      // the window. The coverage gate runs the validator with no migration
+      // arguments precisely so the ledger is linted whole, independently of which
+      // migrations are in scope for the coverage sweep. This fixture's migration
+      // matches no regex, so the sweep itself would never open the row.
+      const fixture = createTempMigrationsTree(
+        [
+          {
+            name: "20990101000000_data_only",
+            sql: "UPDATE \"PageContent\" SET \"body\" = 'x' WHERE \"id\" = 'y';\n",
+          },
+        ],
+        [
+          LEDGER_HEADER,
+          "20260507000000_base\texpand\tn/a\tyes\tbaseline row",
+          "20990101000000_data_only\texpand\tn/a\tWindowed\tNOT old-code compatible: announced maintenance window.",
+        ].join("\n")
+      );
+
+      try {
+        const result = runMigrationSafetyCoverage({
+          MIGRATIONS_DIR: fixture.migrationsDir,
+          MIGRATION_SAFETY_LEDGER: fixture.ledgerPath,
+        });
+
+        expect(result.status, result.stderr).not.toBe(0);
+        expect(result.stderr).toContain("Ledger well-formedness check FAILED");
+        expect(result.stderr).toContain(
+          "old_code_compatible must be yes, no, or windowed"
+        );
+      } finally {
+        rmSync(fixture.tempDir, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it(
+    "rejects a duplicate ledger row instead of silently shadowing it (#2288)",
+    { timeout: 20000 },
+    () => {
+      // First-row-wins matches ledger_entry_for_migration, but the consequence is
+      // that a second row is discarded with no diagnostic — and the row a silent
+      // discard is most likely to delete is a `windowed` declaration, because the
+      // ledger is append-only hand-edited TSV and two lanes appending rows for the
+      // same migration merge cleanly with no conflict. Measured before the fix:
+      // yes-then-windowed exited 0 ("safety check passed"), windowed-then-yes
+      // exited 1 — the same file, opposite outcomes, decided by line order.
+      const orders: [string, string][] = [
+        ["yes", "windowed"],
+        ["windowed", "yes"],
+      ];
+
+      for (const [first, second] of orders) {
+        const fixture = createTempMigration(
+          "UPDATE \"PageContent\" SET \"body\" = 'x' WHERE \"id\" = 'y';\n",
+          [
+            LEDGER_HEADER,
+            `20990101000000_test_migration\texpand\tn/a\t${first}\tPlan written by the first lane.`,
+            `20990101000000_test_migration\texpand\tn/a\t${second}\tPlan written by the second lane.`,
+          ].join("\n")
+        );
+
+        try {
+          const result = runMigrationSafetyValidator(
+            fixture.migrationPath,
+            fixture.ledgerPath,
+            {
+              ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+              BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+                "the override must not rescue a shadowed declaration",
+            }
+          );
+
+          expect(result.status, `${first}/${second}: ${result.stderr}`).not.toBe(0);
+          expect(result.stderr).toContain(
+            "duplicate safety ledger row for 20990101000000_test_migration"
+          );
+        } finally {
+          rmSync(fixture.tempDir, { recursive: true, force: true });
+        }
+      }
+    }
+  );
+
+  it(
+    "catches a type rename wrapped after the verb, and a whole-type rename (#2288)",
+    { timeout: 20000 },
+    () => {
+      // "RENAME VALUE" is matched bare, so it cannot survive a wrap between the
+      // two words. Its sibling "RENAME COLUMN" never had that problem because
+      // "ALTER TABLE .* RENAME" catches the first line on its own; "RENAME VALUE"
+      // had no such partner until "ALTER TYPE .* RENAME" was added. Measured
+      // before the fix: fixture A exited 0 (evaded entirely, no ledger row and no
+      // override demanded) while the identically-shaped ALTER TABLE wrap exited 1.
+      const wrapped = createTempMigration(
+        [
+          'ALTER TYPE "BookingChangeRequestStatus" RENAME',
+          "  VALUE 'PENDING' TO 'REQUESTED';",
+          "",
+        ].join("\n"),
+        `${LEDGER_HEADER}\n`
+      );
+
+      try {
+        const result = runMigrationSafetyValidator(
+          wrapped.migrationPath,
+          wrapped.ledgerPath
+        );
+
+        expect(result.status, result.stderr).not.toBe(0);
+        expect(result.stderr).toContain(
+          "Potentially blue/green-incompatible migration detected"
+        );
+        expect(result.stderr).toContain("blue/green migration safety review");
+        expect(result.stderr).toMatch(
+          /ALTER TYPE "BookingChangeRequestStatus" RENAME/
+        );
+      } finally {
+        rmSync(wrapped.tempDir, { recursive: true, force: true });
+      }
+
+      // Same absence left a standalone rename of the whole type uncaught — a
+      // spelling this repo actually writes, at
+      // 20260411203000_add_infant_age_tier_and_family_group_notification_pref:4.
+      const wholeType = createTempMigration(
+        'ALTER TYPE "BookingStatus" RENAME TO "BookingState";\n',
+        `${LEDGER_HEADER}\n`
+      );
+
+      try {
+        const result = runMigrationSafetyValidator(
+          wholeType.migrationPath,
+          wholeType.ledgerPath
+        );
+
+        expect(result.status, result.stderr).not.toBe(0);
+        expect(result.stderr).toContain(
+          "Potentially blue/green-incompatible migration detected"
+        );
+        expect(result.stderr).toMatch(
+          /ALTER TYPE "BookingStatus" RENAME TO "BookingState"/
+        );
+      } finally {
+        rmSync(wholeType.tempDir, { recursive: true, force: true });
+      }
+
+      // And the partner pattern must not swallow the additive case: ALTER TYPE
+      // ... ADD VALUE contains no RENAME, so the 29 committed additive enum
+      // migrations stay clean.
+      const additive = createTempMigration(
+        [
+          'ALTER TYPE "BookingStatus"',
+          "  ADD VALUE IF NOT EXISTS 'PAID' AFTER 'CONFIRMED';",
+          "",
+        ].join("\n"),
+        `${LEDGER_HEADER}\n`
+      );
+
+      try {
+        const result = runMigrationSafetyValidator(
+          additive.migrationPath,
+          additive.ledgerPath
+        );
+
+        expect(result.status, result.stderr).toBe(0);
+      } finally {
+        rmSync(additive.tempDir, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it(
+    "requires a rollback.sql beside a windowed migration (#2288)",
+    { timeout: 20000 },
+    () => {
+      // The policy mandates the reverse script and the runbook offers it as one of
+      // only three recovery paths once the migrate step commits — but nothing
+      // created, checked or verified it, so a windowed row could merge with an
+      // empty folder and the operator would discover that mid-window. It is a
+      // documentation failure, so the ALLOW_BREAKING override cannot rescue it.
+      const ledger = [
+        LEDGER_HEADER,
+        "20990101000000_test_migration\texpand\tn/a\twindowed\tNOT old-code compatible: the previous colour cannot deserialize the flipped value. Announced maintenance window; cut over promptly.",
+      ].join("\n");
+
+      const missing = createTempMigration(
+        "UPDATE \"PageContent\" SET \"body\" = 'x' WHERE \"id\" = 'y';\n",
+        ledger
+      );
+
+      try {
+        const result = runMigrationSafetyValidator(
+          missing.migrationPath,
+          missing.ledgerPath,
+          {
+            ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+            BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+              "the override must not rescue a missing reverse script",
+          }
+        );
+
+        expect(result.status, result.stderr).not.toBe(0);
+        expect(result.stderr).toContain(
+          "windowed migrations must ship a reverse script"
+        );
+      } finally {
+        rmSync(missing.tempDir, { recursive: true, force: true });
+      }
+
+      const present = createTempMigration(
+        "UPDATE \"PageContent\" SET \"body\" = 'x' WHERE \"id\" = 'y';\n",
+        ledger
+      );
+
+      writeRollbackScript(present.migrationPath);
+
+      try {
+        const result = runMigrationSafetyValidator(
+          present.migrationPath,
+          present.ledgerPath,
+          {
+            ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+            BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+              "maintenance window agreed for the declared windowed migration",
+          }
+        );
+
+        expect(result.status, result.stderr).toBe(0);
+      } finally {
+        rmSync(present.tempDir, { recursive: true, force: true });
+      }
     }
   );
 
