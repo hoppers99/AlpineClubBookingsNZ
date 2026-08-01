@@ -15,8 +15,9 @@
 # dq="` argument survives a POSIX shell but is mangled by Windows argv quoting
 # when a Node test spawns awk directly, and the program is identical either way.
 #
-# The splitter tracks single-, double-, and dollar-quote state and strips "--"
-# line comments, splitting only on a ";" seen outside every quote.
+# The splitter tracks single-, double-, and dollar-quote state, strips "--" line
+# comments and "/* */" block comments (nested, multi-line), and splits only on a
+# ";" seen outside every quote and comment.
 #
 # Dollar-quote awareness (#2038): ARBITRARY dollar-quote tags are recognised —
 # $$, $cms$, $previous$, $do$, etc. A ";" inside a $tag$...$tag$ body is NOT a
@@ -31,12 +32,19 @@
 # exits 2 and the caller must record a hard failure rather than silently passing
 # an unparsed file.
 #
-# Limitations (documented, consistent with strip_sql_comment in the validator):
-# C-style /* */ comments and a literal 'CURRENT_TIMESTAMP'/'UPDATE' inside a
-# quoted string are not modelled. Dollar-quoted bodies are emitted verbatim
-# inside their enclosing statement, so a statement nested in a DO-block or
-# function body is not surfaced as a statement of its own — callers that care
-# (the data-rewrite classifier does) inspect the DO body themselves.
+# Block comments (#2418): "/* ... */" is skipped, including nested and multi-line
+# ones, exactly as prisma/migration-verification/split-statements.ts does. A
+# statement hidden behind a block-comment header — "/* repair */ UPDATE ..." — is
+# therefore still surfaced with its true leading keyword, so neither gate can be
+# blinded into grading a data-rewriting statement as shape-only by a comment
+# style. A "--" or "/*" inside a quoted or dollar-quoted string is literal, not a
+# comment.
+#
+# Limitations: a literal 'CURRENT_TIMESTAMP'/'UPDATE' inside a quoted string is
+# not interpreted as SQL. Dollar-quoted bodies are emitted verbatim inside their
+# enclosing statement, so a statement nested in a DO-block or function body is not
+# surfaced as a statement of its own — callers that care (the data-rewrite
+# classifier does) inspect the DO body themselves.
 
 BEGIN {
   sq = "\047" # single quote
@@ -74,6 +82,14 @@ function flush() {
   n = length(line)
   i = 1
   while (i <= n) {
+    if (in_block > 0) {
+      # Inside a (possibly nested, multi-line) "/* */" comment: consume until the
+      # matching close, tracking nesting the way PostgreSQL does. Comment bytes are
+      # dropped, never added to the statement.
+      if (substr(line, i, 2) == "*/") { in_block--; i += 2; continue }
+      if (substr(line, i, 2) == "/*") { in_block++; i += 2; continue }
+      i++; continue
+    }
     if (in_dollar) {
       tlen = length(dollar_tag)
       if (substr(line, i, tlen) == dollar_tag) {
@@ -102,6 +118,7 @@ function flush() {
     if (c == sq) { in_s = 1; stmt = stmt c; i++; continue }
     if (c == dq) { in_d = 1; stmt = stmt c; i++; continue }
     if (c == "-" && substr(line, i + 1, 1) == "-") { break }
+    if (c == "/" && substr(line, i + 1, 1) == "*") { in_block = 1; i += 2; continue }
     if (c == ";") { flush(); i++; continue }
     stmt = stmt c
     i++

@@ -159,6 +159,18 @@ describe("data-migration classifier (#2418)", () => {
       "a DO block that rewrites rows",
       `DO $$ BEGIN UPDATE "Member" SET "canLogin" = true; END $$;`,
     ],
+    [
+      // #2418 F1: a block-comment header must not hide the UPDATE. The awk
+      // splitter used to keep "/* ... */" glued to the front of the statement,
+      // so the classifier anchored on "/*" and matched nothing — exit 0, no
+      // fixture demanded. The shared splitter now skips block comments.
+      "an UPDATE hidden behind a block-comment header",
+      `/* Repair addresses corrupted by #1234 */\nUPDATE "Lodge" SET "address" = NULL WHERE "address" = 'x';`,
+    ],
+    [
+      "an UPDATE behind a nested, multi-line block comment",
+      `/* repair /* see #1234 */ addresses */\nUPDATE "Lodge" SET "address" = NULL WHERE "address" = 'x';`,
+    ],
   ];
 
   it.each(rewrites)(
@@ -358,11 +370,16 @@ describe("the two statement splitters agree (#2418)", () => {
         continue;
       }
       for (let index = 0; index < awkStatements.length; index += 1) {
-        const awkHead = leadingKeyword(awkStatements[index]);
-        const tsHead = leadingKeyword(stripSqlComments(tsStatements[index]));
-        if (awkHead !== tsHead) {
+        // Compare the WHOLE statement — comment-stripped and whitespace-collapsed
+        // — not just its first two words. A divergence that preserves the count
+        // AND the leading keyword (a block comment one splitter drops mid-
+        // statement while the other keeps it, say) must still be caught; the
+        // leading-keyword check that shipped first could not see it (#2418, F1).
+        const awkText = canonicalize(awkStatements[index]);
+        const tsText = canonicalize(tsStatements[index]);
+        if (awkText !== tsText) {
           disagreements.push(
-            `${name} #${index + 1}: awk read "${awkHead}", TypeScript read "${tsHead}"`,
+            `${name} #${index + 1}: awk read <${awkText}>, TypeScript read <${tsText}>`,
           );
         }
       }
@@ -371,17 +388,116 @@ describe("the two statement splitters agree (#2418)", () => {
   }, GATE_TIMEOUT_MS);
 });
 
-/** The first two words of a statement, uppercased — enough to identify it. */
-function leadingKeyword(statement: string): string {
-  return statement.trim().toUpperCase().split(/\s+/).slice(0, 2).join(" ");
+/**
+ * A statement reduced to what PostgreSQL actually executes: comments removed and
+ * every run of whitespace collapsed to one space. The awk splitter already
+ * strips comments and folds each statement onto one line, so canonicalising both
+ * sides makes their outputs directly comparable — and compares the executable
+ * text of every statement rather than only its leading keyword (#2418, F1).
+ *
+ * The one deliberate contract difference between the splitters is the terminator:
+ * awk flushes a statement WITHOUT its closing `;`, while the TypeScript splitter
+ * keeps the source verbatim (`;` included). That is not a tokenisation divergence,
+ * so a single trailing `;` is normalised away here; a genuine boundary
+ * disagreement still surfaces as a different statement COUNT.
+ */
+function canonicalize(statement: string): string {
+  return stripSqlComments(statement)
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/;$/, "");
 }
 
-/** Drop whole-line `--` comments, the way the awk splitter does. */
-function stripSqlComments(statement: string): string {
-  return statement
-    .split("\n")
-    .filter((line) => !line.trimStart().startsWith("--"))
-    .join("\n");
+/**
+ * Remove SQL `--` line comments and C-style block comments (nested), leaving
+ * every single-quoted, double-quoted and dollar-quoted body untouched — a
+ * comment token inside a string is data, not a comment. Mirrors the quote/comment
+ * handling both splitters implement, so it strips exactly what they strip.
+ */
+function stripSqlComments(sql: string): string {
+  let out = "";
+  let i = 0;
+  while (i < sql.length) {
+    const ch = sql[i];
+    // Single-quoted string, honouring '' doubling and E'...' backslash escapes.
+    if (ch === "'") {
+      const escapeAware =
+        (sql[i - 1] === "E" || sql[i - 1] === "e") &&
+        !/[A-Za-z0-9_]/.test(sql[i - 2] ?? "");
+      out += ch;
+      i += 1;
+      while (i < sql.length) {
+        if (escapeAware && sql[i] === "\\") {
+          out += sql.slice(i, i + 2);
+          i += 2;
+          continue;
+        }
+        if (sql[i] === "'" && sql[i + 1] === "'") {
+          out += "''";
+          i += 2;
+          continue;
+        }
+        out += sql[i];
+        if (sql[i] === "'") {
+          i += 1;
+          break;
+        }
+        i += 1;
+      }
+      continue;
+    }
+    // Double-quoted identifier.
+    if (ch === '"') {
+      out += ch;
+      i += 1;
+      while (i < sql.length) {
+        out += sql[i];
+        if (sql[i] === '"') {
+          i += 1;
+          break;
+        }
+        i += 1;
+      }
+      continue;
+    }
+    // Dollar-quoted body: $tag$ ... $tag$ (tag empty or [A-Za-z_][A-Za-z0-9_]*).
+    const tag = sql.slice(i).match(/^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/)?.[0];
+    if (tag) {
+      const close = sql.indexOf(tag, i + tag.length);
+      const end = close === -1 ? sql.length : close + tag.length;
+      out += sql.slice(i, end);
+      i = end;
+      continue;
+    }
+    // `--` line comment: drop through the end of the line, keeping the newline.
+    if (ch === "-" && sql[i + 1] === "-") {
+      const newline = sql.indexOf("\n", i);
+      i = newline === -1 ? sql.length : newline;
+      continue;
+    }
+    // `/* */` block comment, nested and multi-line.
+    if (ch === "/" && sql[i + 1] === "*") {
+      let depth = 1;
+      i += 2;
+      while (i < sql.length && depth > 0) {
+        if (sql[i] === "/" && sql[i + 1] === "*") {
+          depth += 1;
+          i += 2;
+          continue;
+        }
+        if (sql[i] === "*" && sql[i + 1] === "/") {
+          depth -= 1;
+          i += 2;
+          continue;
+        }
+        i += 1;
+      }
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
 }
 
 describe("the shell gates share one awk program (#2418)", () => {
