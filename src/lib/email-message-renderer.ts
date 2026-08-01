@@ -345,15 +345,19 @@ export function validateEmailTemplateContent({
 
 const BOOKING_URL_TOKEN_SOURCE = String.raw`\{\{\s*bookingUrl\s*\}\}`;
 const BOOKING_URL_TOKEN = new RegExp(BOOKING_URL_TOKEN_SOURCE, "i");
-const BOOKING_URL_CTA_LABEL_SOURCE = String.raw`\b(?:(?:view|open|manage|review|see)\s+(?:(?:this|the|your)\s+)?booking(?:\s+(?:details?|online))?(?:\s+here)?|booking(?:\s+(?:details?|link))?)`;
+const BOOKING_URL_CTA_LABEL_TEXT_SOURCE = String.raw`(?:(?:view|open|manage|review|see)\s+(?:(?:this|the|your)\s+)?booking(?:\s+(?:details?|online))?(?:\s+here)?|booking(?:\s+(?:details?|link))?)`;
+const BOOKING_URL_CTA_LABEL_SOURCE = String.raw`\b${BOOKING_URL_CTA_LABEL_TEXT_SOURCE}`;
 const BOOKING_URL_INLINE_SEPARATOR =
   /(\s*(?:\||\u2022|\u00b7|\u2014|\u2013|;(?=\s)|&bull;|&middot;|<br\s*\/?>)\s*)/gi;
 const BOOKING_URL_CTA = new RegExp(
   String.raw`(?:\s+(?:and|then)\s+|\s*)?${BOOKING_URL_CTA_LABEL_SOURCE}\s*(?::|[-\u2013\u2014])?\s*${BOOKING_URL_TOKEN_SOURCE}`,
   "gi",
 );
+const BOOKING_URL_CTA_LABEL_CORE = String.raw`${BOOKING_URL_CTA_LABEL_SOURCE}[ \t]*(?::|[-\u2013\u2014])?`;
+const BOOKING_URL_CTA_EMPHASIZED_LABEL_CORE = String.raw`${BOOKING_URL_CTA_LABEL_TEXT_SOURCE}[ \t]*(?::|[-\u2013\u2014])?`;
+const BOOKING_URL_CTA_LABEL_WITH_OPTIONAL_EMPHASIS = String.raw`(?:${BOOKING_URL_CTA_LABEL_CORE}|\*\*${BOOKING_URL_CTA_EMPHASIZED_LABEL_CORE}\*\*|__${BOOKING_URL_CTA_EMPHASIZED_LABEL_CORE}__)`;
 const BOOKING_URL_CTA_LABEL_SUFFIX = new RegExp(
-  String.raw`(?:[ \t]*(?:\||\u2022|\u00b7|\u2014|\u2013|;|&bull;|&middot;)[ \t]*)?${BOOKING_URL_CTA_LABEL_SOURCE}[ \t]*(?::|[-\u2013\u2014])?[ \t]*$`,
+  String.raw`(?:^|[ \t]*(?:\||\u2022|\u00b7|\u2014|\u2013|;|&bull;|&middot;)[ \t]*)${BOOKING_URL_CTA_LABEL_WITH_OPTIONAL_EMPHASIS}[ \t]*$`,
   "i",
 );
 const BOOKING_URL_TOKEN_ONLY_LINE = new RegExp(
@@ -501,8 +505,9 @@ function stripUnavailableBookingUrl(template: string): string {
       if (withoutCta !== line.trimEnd()) {
         // The relationship is deliberately exact and local: only a recognized
         // booking CTA suffix immediately followed by a token-only line is
-        // removed. Any unrelated prefix or bearer action stays on its line;
-        // arbitrary preceding prose never matches this anchored suffix.
+        // removed. The suffix must start the line or follow a recognized action
+        // separator, so unrelated prose cannot be truncated; a bearer-action
+        // prefix remains on its line.
         replacementLines.set(index, withoutCta || null);
         replacementLines.set(index + 2, null);
       }

@@ -74,6 +74,43 @@ function renderWithPerLineOnlyBookingUrlRemoval(
     });
 }
 
+function renderWithSplitLineSuffixPattern(
+  template: string,
+  data: Record<string, string>,
+  suffixPattern: RegExp,
+): string {
+  const parts = template.split(/(\r\n|\n|\r)/);
+  const replacements = new Map<number, string | null>();
+  const tokenOnly = /^[ \t]*\{\{\s*bookingUrl\s*\}\}[ \t]*$/i;
+  let rendered = "";
+
+  for (let index = 0; index + 2 < parts.length; index += 2) {
+    const line = parts[index] ?? "";
+    const nextLine = parts[index + 2] ?? "";
+    if (parts[index + 1] === undefined || !tokenOnly.test(nextLine)) continue;
+    const withoutCta = line.replace(suffixPattern, "").trimEnd();
+    if (withoutCta !== line.trimEnd()) {
+      replacements.set(index, withoutCta || null);
+      replacements.set(index + 2, null);
+    }
+  }
+
+  for (let index = 0; index < parts.length; index += 2) {
+    const line = parts[index] ?? "";
+    const lineEnding = parts[index + 1] ?? "";
+    if (replacements.has(index)) {
+      const replacement = replacements.get(index);
+      if (replacement) rendered += replacement + lineEnding;
+    } else if (!tokenOnly.test(line)) {
+      rendered += line + lineEnding;
+    }
+  }
+
+  return rendered.replace(/\{\{([^{}]+)\}\}/g, (_match, tokenName: string) => {
+    return data[tokenName.trim()] ?? "";
+  });
+}
+
 describe("#2362 booking detail URL template contract", () => {
   it("classifies exactly the live registered booking-scoped inventory", () => {
     expect(
@@ -278,6 +315,92 @@ describe("#2362 booking detail URL template contract", () => {
     },
   ])("does not delete $name", ({ template, data, expected }) => {
     expect(renderTemplateString(template, data)).toBe(expected);
+  });
+
+  it.each([
+    "The committee will review this booking:",
+    "If the request is withdrawn, do not review this booking:",
+  ])(
+    "preserves unrelated split-line prose: %s",
+    (prose) => {
+      const template = `${prose}\n{{bookingUrl}}\nKeep this operational sentence.`;
+      expect(renderTemplateString(template, { bookingUrl: "" })).toBe(
+        `${prose}\nKeep this operational sentence.`,
+      );
+    },
+  );
+
+  it.each([
+    "**View this booking:**",
+    "__Open your booking details:__",
+  ])("removes an emphasized split-line CTA: %s", (label) => {
+    expect(
+      renderTemplateString(
+        `${label}\r\n{{bookingUrl}}\r\nKeep this operational sentence.`,
+        { bookingUrl: "" },
+      ),
+    ).toBe("Keep this operational sentence.");
+  });
+
+  it("keeps a bearer action before an emphasized split-line CTA", () => {
+    expect(
+      renderTemplateString(
+        "Pay now: {{paymentUrl}} | **View this booking:**\n{{bookingUrl}}\nKeep this operational sentence.",
+        {
+          bookingUrl: "",
+          paymentUrl: "https://pay.example.test/p/bearer-emphasis",
+        },
+      ),
+    ).toBe(
+      "Pay now: https://pay.example.test/p/bearer-emphasis\nKeep this operational sentence.",
+    );
+  });
+
+  it("keeps an authorized emphasized split-line CTA byte-for-byte", () => {
+    expect(
+      renderTemplateString(
+        "**View this booking:**\r\n{{bookingUrl}}\r\nKeep this operational sentence.",
+        { bookingUrl: "https://book.example.test/bookings/bk_1" },
+      ),
+    ).toBe(
+      "**View this booking:**\r\nhttps://book.example.test/bookings/bk_1\r\nKeep this operational sentence.",
+    );
+  });
+
+  it("would truncate prose if the split-line suffix lost its start/separator boundary", () => {
+    const template =
+      "The committee will review this booking:\n{{bookingUrl}}\nKeep this operational sentence.";
+    const mutatedUnboundedSuffix =
+      /\b(?:review\s+(?:this\s+)?booking)[ \t]*:[ \t]*$/i;
+
+    expect(
+      renderWithSplitLineSuffixPattern(
+        template,
+        { bookingUrl: "" },
+        mutatedUnboundedSuffix,
+      ),
+    ).toBe("The committee will\nKeep this operational sentence.");
+    expect(renderTemplateString(template, { bookingUrl: "" })).toBe(
+      "The committee will review this booking:\nKeep this operational sentence.",
+    );
+  });
+
+  it("would leave emphasis dangling if the split-line suffix dropped its balanced variants", () => {
+    const template =
+      "**View this booking:**\n{{bookingUrl}}\nKeep this operational sentence.";
+    const mutatedPlainOnlySuffix =
+      /(?:^|[ \t]*\|[ \t]*)\bview\s+(?:this\s+)?booking[ \t]*:[ \t]*$/i;
+
+    expect(
+      renderWithSplitLineSuffixPattern(
+        template,
+        { bookingUrl: "" },
+        mutatedPlainOnlySuffix,
+      ),
+    ).toBe("**View this booking:**\nKeep this operational sentence.");
+    expect(renderTemplateString(template, { bookingUrl: "" })).toBe(
+      "Keep this operational sentence.",
+    );
   });
 
   it("keeps the authorized two-line CTA byte-for-byte apart from token substitution", () => {
