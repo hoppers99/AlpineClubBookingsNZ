@@ -18,4 +18,4 @@
 
   Finance-view-only users can still read Subscriptions, but the two Xero sync
   actions are now disabled with the standard view-only explanation; the POST
-  route continues to require finance edit access.
+  route continues to require **Finance edit** access.
