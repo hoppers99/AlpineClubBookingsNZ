@@ -14,8 +14,9 @@
   the old one, and the import preview shows a warning saying so. Everything else
   in the bundle imports normally, and a value your club has customised itself is
   never affected — only a byte-for-byte match of the specific removed text is
-  skipped. The rebuild-from-bundle path is protected the same way, so a recovery
-  can no longer silently reintroduce the old content.
+  skipped. The unattended rebuild-from-bundle path is protected the same way and
+  now writes the same warning to the boot log naming what it skipped, so a
+  recovery can no longer silently reintroduce the old content.
 
   You should still re-export your configuration bundle after upgrading and
   replace any archived copy you would restore from; doing so also clears the

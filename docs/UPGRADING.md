@@ -290,8 +290,10 @@ Since #2511 the import path also guards this **mechanically**: when a bundle's
 value byte-matches one of these three removed literals (this hero, the footer
 affiliations, or the lodge address), the importer **skips writing that field**,
 leaves the cleaned value in place, and shows a warning row in the import preview.
-So a stale bundle can no longer silently put the old value back — but re-exporting
-after upgrading is still the right habit, and clears the warning.
+The unattended rebuild-from-bundle path has no preview, so it writes that same
+warning to the **boot log** instead (a `WARN` naming the skipped literal). So a
+stale bundle can no longer silently put the old value back on either path — but
+re-exporting after upgrading is still the right habit, and clears the warning.
 
 **A hero you edited yourself is never touched.** The cleanup matches that one
 exact sentence and nothing else, so a club that has written its own front-page

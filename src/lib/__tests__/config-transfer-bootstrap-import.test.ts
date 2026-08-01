@@ -343,6 +343,86 @@ describe("runConfigBootstrapImport — fresh empty target", () => {
   });
 });
 
+describe("runConfigBootstrapImport — cleaned-literal warnings on the unattended path (#2511 F1)", () => {
+  it("logs the plan's warnings (a skipped cleaned literal) at WARN before the success line", async () => {
+    const h = harness();
+    // The cleaned-literal warning the site-content planner emits when a stale
+    // bundle would re-plant the pre-#2431 guest-booking hero.
+    const heroWarning =
+      "This bundle would restore the front-page hero that advertised guest " +
+      "booking, which a cleanup migration " +
+      "(20260802150000_update_starter_home_guest_copy, #2431) removed. That " +
+      "value is being skipped and the current content kept — re-export the " +
+      "bundle after upgrading to clear this warning.";
+    const plan = {
+      errors: [],
+      selectedCategories: ["site-content"],
+      fingerprint: "fp",
+      categories: [
+        {
+          category: "site-content",
+          items: [
+            { entity: "page-content", key: "home", action: "unchanged" },
+          ],
+          warnings: [heroWarning],
+          errors: [],
+          fingerprintParts: [],
+        },
+      ],
+    } as unknown as ImportPlan;
+    const planImpl = vi.fn(async () => plan) as unknown as never;
+    // A stub apply so the run reaches the success log with a totals object.
+    const applyImpl = vi.fn(async () => ({
+      totals: { created: 0, updated: 0, unchanged: 1, deleted: 0, skipped: 0 },
+      selectedCategories: ["site-content"],
+      doorCodesWritten: [],
+    })) as unknown as never;
+
+    const result = await runConfigBootstrapImport({
+      db: h.db,
+      path: "/deploy/bundle.zip",
+      log: silentLog,
+      ...fileSeams(() => committeeBundle()),
+      planImpl,
+      applyImpl,
+    });
+
+    expect(result.outcome).toBe("applied");
+    // The DR path emits a WARN naming the skipped literal — the signal the
+    // interactive preview gives, that the unattended path previously dropped.
+    const warnCall = silentLog.warn.mock.calls.find(
+      ([, message]) => typeof message === "string" && message.includes("#2431"),
+    );
+    expect(warnCall).toBeDefined();
+    const [structured, message] = warnCall as [
+      { warnings: string[] },
+      string,
+    ];
+    expect(structured.warnings).toContain(heroWarning);
+    expect(message).toContain("skipped");
+    // And it still logs the success line — the warning does not replace it.
+    expect(silentLog.info).toHaveBeenCalled();
+  });
+
+  it("emits no warning when the plan carries none (a clean bundle)", async () => {
+    const h = harness();
+    const bytes = committeeBundle();
+
+    const result = await runConfigBootstrapImport({
+      db: h.db,
+      path: "/deploy/bundle.zip",
+      log: silentLog,
+      ...fileSeams(() => bytes),
+      applyImpl: applyConfigImport,
+    });
+
+    expect(result.outcome).toBe("applied");
+    // The committee bundle produces no behaviour-change warnings, so the boot
+    // path stays quiet (no spurious WARN on the happy path).
+    expect(silentLog.warn).not.toHaveBeenCalled();
+  });
+});
+
 describe("runConfigBootstrapImport — fail-closed refusals", () => {
   it("refuses a non-empty target (steady state) without any file I/O, planning, or applying", async () => {
     const h = harness({ bootstrapImports: 1 });
