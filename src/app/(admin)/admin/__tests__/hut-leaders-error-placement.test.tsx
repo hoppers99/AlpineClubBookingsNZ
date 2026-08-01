@@ -249,7 +249,12 @@ describe("custodian bed hold controls (#2286)", () => {
     // Announced, not merely rendered — and it holds focus, because it appeared
     // below the control the admin just used.
     expect(card).toHaveAttribute("role", "alert");
-    expect(card).toHaveFocus();
+    // The page focuses the card from an effect, which runs after the node is in
+    // the DOM — so `findByTestId` resolving is not proof the effect has flushed.
+    // Asserting focus directly races it on a loaded runner.
+    await waitFor(() => {
+      expect(card).toHaveFocus();
+    });
     expect(card).toHaveTextContent("2099-07-11");
 
     // #2286 review M5: the per-night figures count only capacity-HOLDING
