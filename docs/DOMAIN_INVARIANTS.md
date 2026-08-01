@@ -4347,7 +4347,20 @@ and is hard-deleted at the end. The merge is **additive and master-wins**:
   point at, so a concurrent `FamilyGroup` delete can still abort the merge (as a
   deadlock rather than a stale-value error); the master is still unlocked during
   the guards and the self-relation pass, which is why the Member self-relation
-  moves exclude the master's own row (see #2437).
+  moves exclude the master's own row. The same under-lock re-read also
+  re-checks the four **family-link** columns (`parentMemberId`,
+  `secondaryParentId`, `inheritEmailFromId`, `detailsConfirmedByMemberId`) in
+  both directions — either member's own outgoing links beyond the merge's own
+  step-1 nulling and step-3 re-pointing, and any other row still referencing
+  the loser after the moves — and refuses with the same 409 on any drift
+  (#2437). Two invariants follow: a merge never commits a member as its own
+  parent / second parent / email source / details confirmer (no self-relation
+  column can come to equal its own row's id through a merge), and a family
+  link saved while the merge runs is never silently nulled by the loser's
+  hard-delete — the merge refuses, nothing is written, and the operator's
+  re-run previews the link from the start (owner decision on #2437, 1 Aug
+  2026: detect and refuse; no new advisory-lock participants, no DB CHECK
+  constraint).
 - **Relation buckets.** Every Member-referencing relation is classified into
   exactly one bucket by `MEMBER_MERGE_RELATION_SPECS`, enforced complete by a
   DMMF/schema test that fails CI if a new relation is added unclassified:
