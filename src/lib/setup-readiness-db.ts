@@ -58,6 +58,7 @@ export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot>
         hutLeaders: true,
         communications: true,
         memberNotices: true,
+        eventsCalendar: true,
         skifieldConditions: true,
         twoFactor: true,
         magicLink: true,

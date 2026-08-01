@@ -148,6 +148,22 @@ export const FEATURE_ROUTE_RULES: FeatureRouteRule[] = [
     ],
   },
   {
+    // Events calendar (#2241). The whole surface goes when the module is off:
+    // the member page, the admin page, and the shared API all 404.
+    //
+    // There is deliberately NO "/api/admin/calendar" prefix — the admin page
+    // reads and writes through the same /api/calendar/events routes as the
+    // member page, so no admin-only calendar API exists, and
+    // admin-route-map-drift.test.ts fails a prefix that matches no real file.
+    //
+    // "/api/calendar" only gates once the proxy actually RUNS on those paths:
+    // the matcher's first entry excludes every "/api/..." request, so
+    // src/proxy.ts carries an explicit "/api/calendar/:path*" matcher entry
+    // alongside this rule. Without it the rule would be dead for the API.
+    flag: "eventsCalendar",
+    prefixes: ["/calendar", "/api/calendar", "/admin/calendar"],
+  },
+  {
     flag: "skifieldConditions",
     prefixes: [
       "/admin/mountain-conditions",

@@ -217,7 +217,8 @@ multi-lodge management, and the lobby display):
 - [Work Parties](guides/work-parties.md) — working-bee events and their automatic
   booking discount.
 - [Events Calendar](guides/calendar.md) — the club events calendar, recurring
-  events, per-instance vs series edits, and MiroTalk video meetings.
+  events, per-instance vs series edits, MiroTalk video meetings, and the
+  Events calendar module switch.
 - [Lodge Kiosk](guides/lodge.md) — the shared lodge-tablet sign-in for check-in
   and lodge info.
 - [Lodge Instructions](guides/lodge-instructions.md) — the protected opening,

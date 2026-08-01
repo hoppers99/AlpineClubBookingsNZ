@@ -1603,6 +1603,7 @@ cannot be read, optional modules fail closed.
 | Promo codes | on | Promo-code administration and promo-aware booking flows. |
 | Hut leaders | on | Hut-leader assignments, kiosk access, and auto-assignment. |
 | Communications | on | Admin bulk email to members. Transactional notifications are unaffected. |
+| Events calendar | on | Club events calendar for meetings, working bees, and social events, with recurring events and optional MiroTalk video-meeting links. Defaults on, which is exactly how the calendar behaved before it had a module at all, so an existing club sees no change. Switching it off makes `/calendar`, `/admin/calendar`, and `/api/calendar/*` return Not Found and removes the dashboard Events card; existing events are kept and reappear if it is switched back on. Organisation accounts never see the calendar whether the module is on or off. |
 | Ski-field conditions | on | Live mountain/road status panel, public API routes, and admin cache controls. |
 | Two-factor authentication | off | Requires users to complete authenticator-app, email-code, or recovery-code verification after password login. |
 | Email sign-in link | off | Lets members request a single-use email link to sign in without their password (additive to password login, never a replacement). Only ever works for existing active members with a verified email; the `magic-link-login` link expiry defaults to 15 minutes (stored on the Login & Security settings, range 5–60) and is read by the sign-in request flow. |
