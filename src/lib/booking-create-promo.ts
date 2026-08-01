@@ -42,33 +42,6 @@ export interface ResolvedPromo {
     | null;
 }
 
-type LockedPromoRow = {
-  id: string;
-  active: boolean;
-  validFrom: Date | null;
-  validUntil: Date | null;
-  bookingStartFrom: Date | null;
-  bookingStartUntil: Date | null;
-  maxRedemptionsTotal: number | null;
-  maxUniqueMembersTotal: number | null;
-  maxUsesPerMember: number | null;
-  currentRedemptions: number;
-  membersOnly: boolean;
-  memberGuestsOnly: boolean;
-  type: PromoCodeType;
-  valueCents: number | null;
-  percentOff: number | null;
-  freeNightsPerIndividual: number | null;
-  lifetimeFreeNightsCap: number | null;
-  fixedNightlyPriceCents: number | null;
-  fixedNightlyMode: FixedNightlyMode | null;
-  maxGuestsPerBooking: number | null;
-  maxNightlyValueCents: number | null;
-  code: string;
-  assignedMembersOnlyOwnNights: boolean;
-  internal: boolean;
-};
-
 export function getPromoTargetBookingGuestIds(
   bookingGuests: BookingGuest[],
   selectedGuestIndexes: number[] | undefined
@@ -116,10 +89,34 @@ export async function resolvePromoInTransaction(
     lodgeId,
   } = options;
   const normalizedCode = promoCodeStr.toUpperCase().trim();
-  const lockedRows = await tx.$queryRaw<LockedPromoRow[]>`
-    SELECT * FROM "PromoCode" WHERE "code" = ${normalizedCode} FOR UPDATE
-  `;
-  const promoCode = lockedRows.length > 0 ? lockedRows[0] : null;
+
+  // LOCK RAW, READ TYPED (#2289). The raw statement exists ONLY to take the row
+  // lock, so it selects a constant, returns an affected-row count through
+  // `$executeRaw`, and is never read; the promo itself is then read back through
+  // the Prisma model, under that lock, in the same transaction.
+  //
+  // This used to be `$queryRaw<LockedPromoRow[]>\`SELECT * FROM "PromoCode" …\``,
+  // and that is the single most expensive line this repository has written. The
+  // generic is an unchecked CAST: raw SQL returns the PHYSICAL column names while
+  // the hand-written type declared the Prisma ones, and where a deployment's
+  // columns differed the properties simply arrived `undefined` —
+  // `maxRedemptionsTotal` undefined made `!== null` true and `n > undefined`
+  // false, so the total-redemption cap never fired, and
+  // `freeNightsPerIndividual` undefined made `?? 0` yield zero, so FREE_NIGHTS
+  // promos applied NO discount at booking creation while the quote path (an
+  // ordinary mapped Prisma read) showed the member one. Members were quoted a
+  // discount and charged without it, for months, with nothing logged: the cast
+  // silenced the compiler and the mocked tests returned the same wrong shape the
+  // author believed.
+  //
+  // The model read cannot repeat that. Prisma owns the column mapping, so the
+  // names can never drift from what the schema says, and a genuinely missing
+  // column is a startup/query error rather than a silent `undefined`. The cost
+  // is one extra round trip inside a transaction that already makes many.
+  await tx.$executeRaw`SELECT 1 FROM "PromoCode" WHERE "code" = ${normalizedCode} FOR UPDATE`;
+  const promoCode = await tx.promoCode.findUnique({
+    where: { code: normalizedCode },
+  });
 
   if (promoCode?.internal && !allowInternal) {
     throw new BookingPromoError("Promo code not found");

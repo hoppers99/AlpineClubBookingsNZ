@@ -241,6 +241,32 @@ do not use unnamespaced `hashtext(<id>)` for new lock families.
 
 ### Narrow row- and table-lock protocols
 
+**Lock raw, read typed (#2289).** Every row lock below takes its lock with
+`$executeRaw` on a statement that selects a **constant** (`SELECT 1 … FOR
+UPDATE`), and then reads whatever it needs through the ordinary Prisma model,
+inside the same transaction and therefore under that same lock. The lock is held
+for the rest of the transaction, so the two statements are behaviour-identical to
+one `SELECT the-columns … FOR UPDATE`, at the cost of one extra round trip in a
+transaction that already makes several.
+
+The reason is not tidiness. `$queryRaw<SomeRow[]>` is an **unchecked cast**: raw
+SQL returns the *physical* column names and the generic declares whatever the
+author believed, so where the two disagree every property arrives `undefined` —
+and `undefined` is quietly falsy in exactly the comparisons that guard money.
+Booking creation used to read its locked promo that way, and in a deployment
+whose columns differed it silently disabled the total-redemption cap
+(`undefined !== null` is true, `n > undefined` is false) and zeroed the
+FREE_NIGHTS discount (`?? 0`), so members were quoted a discount and charged
+without it, for months, with nothing logged. Prisma owns the mapping, so a model
+read cannot drift that way.
+
+A statement that genuinely cannot be a model read — the rate limiter's atomic
+`CASE … RETURNING` upsert is the only one in `src/` — validates its rows with
+`decodeRawRows` from `src/lib/raw-sql-rows.ts` instead. Both halves are enforced:
+an ESLint rule refuses a `$queryRaw<…>` generic or a `SELECT *` in a raw
+template, and `src/lib/__tests__/raw-sql-shape-guard.test.ts` pins the whole
+raw-SQL call-site inventory so a new one has to be classified.
+
 - **Trusted legacy induction baseline** —
   `src/lib/induction-baseline.ts` (`runInductionBaseline`, #2361): apply takes
   `LOCK TABLE "MemberInduction" IN SHARE ROW EXCLUSIVE MODE` as the **first
@@ -302,9 +328,10 @@ do not use unnamespaced `hashtext(<id>)` for new lock families.
   `MemberInduction`.
 
 - `booking-create-promo.ts` locks the selected `PromoCode` row with `FOR UPDATE`
-  before validating and consuming its use count. Booking creation has already
-  taken the per-lodge capacity lock, so the current order is lodge -> promo row;
-  no counterpart writer may take the promo row and then a lodge lock.
+  and then reads it through `tx.promoCode.findUnique` (lock raw, read typed —
+  #2289) before validating and consuming its use count. Booking creation has
+  already taken the per-lodge capacity lock, so the current order is lodge ->
+  promo row; no counterpart writer may take the promo row and then a lodge lock.
 - **Every booking-modification path that may write `currentRedemptions`** takes
   the same protocol via `lockPromoCodeRowsForUpdate` / the reprice wrapper
   `lockAndRefreshPromoCodeUsage` (both `src/lib/promo.ts`), *before* its first
@@ -862,3 +889,9 @@ excuse the invoice again.
   side effect.
 - **Composing two locks in one transaction?** Global `lock(1)` before any
   per-lodge lock; multiple same-family locks in sorted key order.
+- **Writing raw SQL for a row lock?** Take it with `$executeRaw` on a statement
+  that selects a constant, then read what you need through the Prisma model
+  under that lock (#2289). Never type a `$queryRaw` result and read it: the
+  generic is an unchecked cast and a column that does not exist arrives
+  `undefined`, not as an error. If a statement genuinely cannot be a model read,
+  validate its rows with `decodeRawRows` (`src/lib/raw-sql-rows.ts`).

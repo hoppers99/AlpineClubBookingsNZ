@@ -255,7 +255,7 @@ describe("shared rate-limit store (#1039)", () => {
   it("does not treat a bigint counter as unlimited", async () => {
     const resetAt = new Date(Date.now() + 60_000);
     // int8 / COUNT(*) come back as BigInt; `NaN`-free arithmetic must survive it.
-    mockQueryRaw.mockResolvedValueOnce([{ count: 3n, resetAt }]);
+    mockQueryRaw.mockResolvedValueOnce([{ count: BigInt(3), resetAt }]);
 
     const result = await checkSharedRateLimit(config, "bigint-ip");
 
