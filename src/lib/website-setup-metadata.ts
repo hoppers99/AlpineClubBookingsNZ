@@ -10,11 +10,17 @@ import { SETUP_IN_PROGRESS_COPY } from "@/lib/setup-in-progress-screen";
  * ## The hole this closes
  *
  * `src/proxy.ts` answers every public-website address with 503 until setup is
- * complete — but its matcher carries a `missing:` clause that skips any request
- * bearing `next-router-prefetch` or `purpose: prefetch`. Those are ORDINARY
- * REQUEST HEADERS. `curl -H 'Purpose: prefetch' https://club/about` is enough to
- * skip the proxy entirely; nothing about the bypass is internal to the app, and
- * the earlier framing of it as "a prefetch issued from an admin page" was wrong.
+ * complete — but its matcher skips a flight prefetch, and a flight prefetch is
+ * nothing but ORDINARY REQUEST HEADERS.
+ * `curl -H 'Purpose: prefetch' -H 'RSC: 1' https://club/about` is enough to skip
+ * the proxy entirely; nothing about the bypass is internal to the app, and the
+ * earlier framing of it as "a prefetch issued from an admin page" was wrong.
+ *
+ * #2404 raised the price and did not remove it: the matcher used to skip on
+ * `next-router-prefetch` or `purpose: prefetch` ALONE, so a single crafted header
+ * was enough. It now requires `RSC` alongside one of those, because a real Next
+ * router prefetch always sends both. Two headers instead of one is not a
+ * defence — everything below still stands.
  *
  * `(website)/layout.tsx` catches those requests and substitutes the holding
  * screen for `{children}`, so the page component never runs. That suppresses the

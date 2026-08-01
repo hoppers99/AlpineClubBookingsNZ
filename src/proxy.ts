@@ -85,10 +85,11 @@ const SESSION_COOKIE_PATTERN =
  * SAME URL, so caching it beside the HTML risks a shared cache that ignores
  * `Vary` serving flight bytes to a browser asking for a page.
  *
- * `RSC` and `Next-Router-State-Tree` are the ones that actually reach here; the
- * two prefetch headers are already excluded by `config.matcher`'s `missing:`
- * clause, and are listed for symmetry so this stays correct if the matcher
- * changes.
+ * All four can reach here. Since #2404 the matcher only skips a prefetch that
+ * also carries `RSC` — a genuine flight prefetch — so a request carrying
+ * `Next-Router-Prefetch` or `Purpose: prefetch` and nothing else now runs the
+ * proxy, and this list is what keeps such a request out of the anonymous page
+ * cache rather than merely documenting the matcher.
  */
 const RSC_REQUEST_HEADERS = [
   "RSC",
@@ -323,6 +324,31 @@ export default proxy;
  * worked around. Keep the two in step: an extension added to the alternation
  * above must be added there too, and `src/lib/__tests__/asset-url-404.test.ts`
  * fails if they diverge.
+ *
+ * **Why the same source appears twice (#2404).** Matcher entries are OR-ed — the
+ * proxy runs if ANY entry matches — so the pair below reads as one rule: run
+ * unless the request is a real flight prefetch. The prefetch exemption exists
+ * because Next's router prefetches whole route trees on hover and minting a
+ * nonce for a response the user may never see is waste. But `missing:` on its
+ * own made that exemption depend on a header ANYONE can set: a bare
+ * `GET /anything` carrying `Purpose: prefetch` skipped the proxy on EVERY URL,
+ * and so was served with no nonce, no `Content-Security-Policy` and no #2420
+ * setup gate — the same end state as the asset-URL class, reachable on any
+ * address rather than only the asset-shaped ones.
+ *
+ * A genuine prefetch is never bare: Next's app router sends `RSC` alongside
+ * `Next-Router-Prefetch`. So entry one runs when NO prefetch header is present,
+ * and entry two runs when NO `RSC` header is present. Their union skips the proxy
+ * only when a prefetch header and `RSC` arrive TOGETHER, which is exactly the
+ * flight prefetch the exemption was for; a header-only probe now pays the nonce
+ * mint and meets the setup gate like any other document request. Ordinary RSC
+ * navigations (an `RSC` header with no prefetch header) still match entry one, so
+ * nothing about them changes. The cost is one extra regex evaluation on prefetch
+ * traffic only — every other request matches entry one first.
+ *
+ * The source string is repeated LITERALLY because Next extracts `export const
+ * config` from the middleware source statically and cannot evaluate a shared
+ * constant. `csp-proxy.test.ts` pins both copies and asserts they are identical.
  */
 export const config = {
   matcher: [
@@ -333,6 +359,11 @@ export const config = {
         { type: "header", key: "next-router-prefetch" },
         { type: "header", key: "purpose", value: "prefetch" },
       ],
+    },
+    {
+      source:
+        "/((?!api(?:/|$)|_next/static/|_next/image$|favicon\\.ico$|logo\\.png$|.*\\.(?:png|jpg|jpeg|gif|webp|svg|ico)$).*)",
+      missing: [{ type: "header", key: "RSC" }],
     },
     "/api/admin/:path*",
     "/api/admin/bed-allocation/:path*",

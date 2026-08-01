@@ -30,8 +30,24 @@ All notable public reference-release changes should be recorded here.
   is the same kind of fault that was fixed for a different set of addresses in
   the previous release note about the setup screen.
 
+  A third fault, found the same way, mattered more and is fixed here too.
+  Browsers can tell a site "I am only fetching this ahead of time, in case the
+  visitor clicks" — and the site skipped its usual security work for those
+  requests, which is a reasonable saving when the request really is that. But it
+  took the claim at face value, and anything can make that claim about any
+  address. So a request that simply said "this is a look-ahead" was handed pages
+  without their security instructions, and could also slip past the "site setup
+  in progress" screen on a club that has not launched yet. The site now checks
+  that the request really is a browser look-ahead — genuine ones carry a second
+  marker that cannot be faked usefully — and treats everything else as the
+  ordinary page request it is. **Operators should expect one visible change:**
+  on a club that has not finished setup, these requests now correctly get the
+  "site setup in progress" screen where they previously got a page.
+
   Nothing about how the site looks, how members use it, or how anything is
-  stored has changed.
+  stored has changed. Pictures uploaded through **Admin → Content → Images**
+  are served exactly as before — that is checked automatically now, on a real
+  uploaded file, because an earlier draft of this fix would have hidden them.
 - **The cancellation queue stops spending Xero API calls on questions nobody can
   act on (#2402).** Opening **Admin → Members → Cancellation Requests** asked
   Xero, for every participant on the page, whether that member's contact still

@@ -299,11 +299,87 @@ describe("CSP proxy", () => {
     expect(
       unstable_doesProxyMatch({
         config,
-        headers: { purpose: "prefetch" },
+        headers: { purpose: "prefetch", rsc: "1" },
         nextConfig: {},
         url: "/",
       })
     ).toBe(false);
+  });
+
+  /**
+   * The prefetch exemption, header by header (#2404).
+   *
+   * **The pinned expectation for a bare `Purpose: prefetch` changed in #2404, on
+   * purpose.** It used to be `false`, and that was the finding: `missing:` alone
+   * made the exemption depend on a header ANYONE can set, so a plain
+   * `GET /anything` carrying `Purpose: prefetch` skipped the proxy on EVERY URL
+   * and was answered with no nonce, no `Content-Security-Policy` and no #2420
+   * setup gate — the asset-URL class again, reachable on any address rather than
+   * only asset-shaped ones.
+   *
+   * The INTENT the old pin recorded is unchanged and is still asserted below: a
+   * genuine flight prefetch must not pay a nonce mint. What narrowed is which
+   * requests count as one. Next's app router always sends `RSC` alongside its
+   * prefetch header, so the matcher now skips only when the two arrive together;
+   * a header-only probe is treated as the ordinary document request it is.
+   */
+  const prefetchMatrix: ReadonlyArray<
+    readonly [string, Record<string, string>, boolean]
+  > = [
+    ["an ordinary request", {}, true],
+    ["a bare Purpose: prefetch probe", { purpose: "prefetch" }, true],
+    [
+      "a bare Next-Router-Prefetch probe",
+      { "next-router-prefetch": "1" },
+      true,
+    ],
+    // Unchanged: an RSC navigation is not a prefetch and has always run.
+    ["an RSC navigation", { rsc: "1" }, true],
+    // The exemption the matcher exists for: a real Next router prefetch.
+    [
+      "a true flight prefetch",
+      { "next-router-prefetch": "1", rsc: "1" },
+      false,
+    ],
+    [
+      "a true flight prefetch (Purpose form)",
+      { purpose: "prefetch", rsc: "1" },
+      false,
+    ],
+    // A value other than "prefetch" was never the exemption and still is not.
+    ["Purpose: preload", { purpose: "preload" }, true],
+  ];
+
+  it.each(prefetchMatrix)(
+    "%s: the proxy runs = %o -> %s",
+    (_label, headers, expected) => {
+      expect(
+        unstable_doesProxyMatch({ config, headers, nextConfig: {}, url: "/" }),
+      ).toBe(expected);
+    },
+  );
+
+  it("expresses the prefetch rule as two entries over one identical source", () => {
+    // Matcher entries are OR-ed, so "run unless this is a real flight prefetch"
+    // needs two: one that runs when no prefetch header is present, one that runs
+    // when no `RSC` header is present. Their union skips only when both arrive.
+    //
+    // The source is repeated LITERALLY because Next extracts `export const
+    // config` from the middleware source statically and cannot evaluate a shared
+    // constant, so the two copies are pinned as identical here — a hand-edit to
+    // one and not the other would otherwise open a matcher hole on exactly the
+    // requests this pair is meant to cover.
+    const [first, second] = config.matcher as Array<{
+      source: string;
+      missing?: Array<{ type: string; key: string; value?: string }>;
+    }>;
+
+    expect(second.source).toBe(first.source);
+    expect(first.missing).toEqual([
+      { type: "header", key: "next-router-prefetch" },
+      { type: "header", key: "purpose", value: "prefetch" },
+    ]);
+    expect(second.missing).toEqual([{ type: "header", key: "RSC" }]);
   });
 
   it("emits a single enforced CSP header with a per-request nonce and no report-only header", async () => {

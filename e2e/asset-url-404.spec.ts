@@ -1,4 +1,6 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type APIRequestContext } from "@playwright/test";
+import { storageStatePath } from "./helpers/auth";
+import { E2E_ADMIN } from "./helpers/fixtures";
 
 /**
  * Static-asset URLs on the wire (#2404).
@@ -154,6 +156,95 @@ test("an ordinary page miss is unchanged: the club's own 404 screen, fully nonce
   const body = await response.text();
   expect(body).toContain("Page Not Found");
   expect(unnoncedInlineScripts(body)).toEqual([]);
+});
+
+/**
+ * The half of #2404 that a routing table cannot state: a rule written to catch
+ * misses must not swallow the URLs a real route exists to SERVE.
+ *
+ * `src/app/api/images/uploaded/[...path]/route.ts` is the production URL for
+ * every admin-uploaded image — `imagePublicUrl()` in `src/lib/image-storage.ts`
+ * mints `/api/images/uploaded/…`, and `Caddyfile` rewrites `/images/*` onto the
+ * same route. Every one of those URLs ends in an image extension, so the first
+ * cut of this fix routed them all to the `/api` JSON 404 and every uploaded
+ * picture in the app disappeared. The image is UPLOADED here rather than assumed
+ * present because the uploads directory is a container volume (`image_uploads`
+ * in docker-compose.yml) and the seeds put nothing in it.
+ *
+ * The `/images/*` shape is NOT asserted: `caddy` is behind the
+ * `production-caddy` compose profile and the Playwright base URL is the app's own
+ * port, so that rewrite has no edge to run at in this stack. It resolves to the
+ * URL asserted below, which is the one the app actually has to serve.
+ */
+test.describe("an uploaded image is still served — the rewrites must not shadow it", () => {
+  let admin: APIRequestContext;
+  const filename = `e2e-asset-url-404-${Date.now()}.png`;
+  // A 1x1 transparent PNG. Small on purpose: this measures routing, not upload.
+  const pngBytes = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+    "base64",
+  );
+
+  test.beforeAll(async ({ playwright, baseURL }) => {
+    admin = await playwright.request.newContext({
+      baseURL,
+      storageState: storageStatePath(E2E_ADMIN.email),
+    });
+  });
+
+  test.afterAll(async () => {
+    // Best effort: the volume outlives the spec, so do not leave litter behind.
+    await admin
+      .delete("/api/admin/image-manager/images", {
+        data: { dir: "", filename },
+      })
+      .catch(() => undefined);
+    await admin.dispose();
+  });
+
+  test("serves the uploaded bytes at its own /api/images/uploaded URL", async ({
+    request,
+  }) => {
+    const upload = await admin.post("/api/admin/image-manager/upload", {
+      multipart: {
+        dir: "",
+        files: { name: filename, mimeType: "image/png", buffer: pngBytes },
+      },
+    });
+
+    expect(upload.status(), await upload.text()).toBe(200);
+    expect((await upload.json()).results).toEqual([{ filename, ok: true }]);
+
+    // Fetched ANONYMOUSLY, through the default `request` fixture: these URLs are
+    // embedded in public website pages, so the serving path must not depend on
+    // the admin session that uploaded the file.
+    const served = await request.get(`/api/images/uploaded/${filename}`);
+
+    expect(
+      served.status(),
+      "the uploaded image must be served, not answered as an asset miss",
+    ).toBe(200);
+    expect(served.headers()["content-type"]).toBe("image/png");
+    expect(await served.body()).toEqual(pngBytes);
+
+    // The failure mode this guards is specific and quiet — a JSON 404 with the
+    // same body an unmatched /api URL gets — so it is ruled out by name.
+    expect(served.headers()["content-type"]).not.toContain("application/json");
+  });
+
+  test("still answers a MISSING uploaded image without a document", async ({
+    request,
+  }) => {
+    // The exemption must not turn the uploads route into a hole in #2404: a file
+    // that is not there gets the route's own JSON 404, never the club's HTML.
+    const response = await request.get(
+      "/api/images/uploaded/definitely-not-uploaded.png",
+    );
+
+    expect(response.status()).toBe(404);
+    expect(response.headers()["content-type"]).toContain("application/json");
+    expect(await response.json()).toEqual({ error: "Not found" });
+  });
 });
 
 test("unmatched /api URLs still answer JSON — the asset rewrite must not claim them", async ({

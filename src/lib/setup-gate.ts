@@ -100,10 +100,23 @@ export const NON_WEBSITE_ROOT_SEGMENTS: ReadonlySet<string> = new Set([
   "display",
   // The terminal 404 asset-shaped misses are rewritten to (#2404). Not a
   // website page in any setup state: it exists to answer a machine that asked
-  // for an image or a script with an empty 404 and no document. Left out of
-  // this set it would answer the "Site setup in progress" screen — a 503 HTML
-  // document — to every missing image on a club that has not launched yet,
-  // which is both wrong for the caller and the opposite of the point.
+  // for an image or a script with an empty 404 and no document.
+  //
+  // Two independent reasons it has to be listed, and NEITHER is "missing images
+  // would get a 503" — they would not. The rewrites run in `afterFiles`, which
+  // is AFTER middleware, so the gate only ever sees the ORIGINAL URL
+  // (`/foo.png`), and the matcher skips that shape anyway. A rewritten request
+  // never reaches this function at all.
+  //
+  //  1. `/asset-not-found` is a REAL, directly reachable URL, and a direct
+  //     request for it does run the proxy — it has no extension, so the matcher
+  //     matches it. Unlisted, it would be classified as a public-website path
+  //     and answered pre-setup with the "Site setup in progress" screen: a 503
+  //     HTML document, from the one route whose entire purpose is to answer
+  //     without a document.
+  //  2. `setup-gate.test.ts` walks `src/app` and requires every top-level route
+  //     segment to be classified one way or the other, so an unlisted new
+  //     segment fails the suite by construction rather than by review.
   "asset-not-found",
 ]);
 

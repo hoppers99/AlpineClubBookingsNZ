@@ -110,9 +110,11 @@ function pageSlugFromPath(path: string) {
  * `if (!page)`. That was the enumeration oracle it was written to prevent,
  * merely inverted: pre-setup a miss returned the bare club name while a HIT
  * still returned the page's own title and header text, so an anonymous prober —
- * who reaches this code by putting `Purpose: prefetch` on an ordinary request,
- * which skips the proxy matcher — could read an unlaunched club's whole page
- * inventory. Suppressing `{children}` in the layout does not help: the document
+ * who reaches this code by putting a prefetch header AND `RSC` on an ordinary
+ * request, which skips the proxy matcher (#2404 narrowed that from either header
+ * alone to both together; it is still nothing but headers) — could read an
+ * unlaunched club's whole page inventory. Suppressing `{children}` in the layout
+ * does not help: the document
  * head is a separate flight slot from the page's seed data in next@16.2.11, so
  * metadata is produced even though the component never runs.
  *

@@ -55,10 +55,12 @@ export default async function WebsiteLayout({
     // FALLBACK, not the main path (#2420). `src/proxy.ts` answers every
     // public-website address with 503 and this same screen while setup is
     // incomplete, so an ordinary request never gets here. What still does are
-    // the request shapes the proxy matcher deliberately skips — anything
-    // carrying `purpose: prefetch` or `next-router-prefetch`, which are plain
-    // request headers and so are craftable by anyone, not just by our own
-    // client. This branch is what stops those seeing the real site. Those
+    // the request shapes the proxy matcher deliberately skips: a flight
+    // prefetch, i.e. `purpose: prefetch` or `next-router-prefetch` TOGETHER with
+    // `RSC`. (#2404 narrowed that — a bare prefetch header on its own no longer
+    // skips the matcher — but it did not close it: all three are plain request
+    // headers and so are craftable by anyone, not just by our own client.) This
+    // branch is what stops those seeing the real site. Those
     // responses are still 200, because a layout cannot set a status; that is the
     // whole reason the authoritative decision moved to the proxy.
     //

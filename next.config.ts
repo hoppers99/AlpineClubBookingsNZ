@@ -13,9 +13,11 @@ const nextConfig: NextConfig = {
   },
   /**
    * Static-asset URLs nothing serves are answered without a document (#2404).
-   * The rules, their ORDER (load-bearing — the `/api` rule must come first, or
-   * #2405's module-state parity breaks), and why `_next/image` is absent are all
-   * documented in `src/lib/asset-url-404.ts`.
+   * The rules, their ORDER (load-bearing — the uploaded-images exemption must
+   * precede the `/api` rule or every uploaded picture 404s as JSON, and the
+   * `/api` rule must precede the general one or #2405's module-state parity
+   * breaks), and why `_next/image` is absent are all documented in
+   * `src/lib/asset-url-404.ts`.
    *
    * `afterFiles` is the only stage that works here: Next checks `public/`,
    * `_next/static` and the non-dynamic routes BEFORE it consults these rules, so

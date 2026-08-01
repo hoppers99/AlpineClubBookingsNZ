@@ -211,11 +211,19 @@ describe("a published CMS page still answers 200", () => {
  * Stricter how: the guard used to consult the setup state only INSIDE
  * `if (!page)`, and that half-measure was the same oracle inverted. Pre-setup a
  * miss returned the bare club name while a HIT still returned the page's own
- * title and header text — and a request reaches this code by carrying
- * `Purpose: prefetch`, an ordinary header anyone can set, which the proxy
- * matcher skips. Suppressing `{children}` in the layout does not help, because
- * next@16.2.11 builds the document head as a separate flight slot from the
- * page's seed data, so metadata is produced even when the component never runs.
+ * title and header text — and a request could reach this code by skipping the
+ * proxy matcher's prefetch exemption. Suppressing `{children}` in the layout does
+ * not help, because next@16.2.11 builds the document head as a separate flight
+ * slot from the page's seed data, so metadata is produced even when the component
+ * never runs.
+ *
+ * #2404 narrowed HOW that exemption is reached but did not close this class, so
+ * every case below still stands. A bare `Purpose: prefetch` — an ordinary header
+ * anyone can set — no longer skips the matcher; the proxy now skips only a real
+ * flight prefetch, which carries `RSC` as well. That is still a request any
+ * client can make (both headers are just headers), and it still lands here with
+ * no gate in front of it. The point of this suite is that the answer must be
+ * uniform whether or not the gate ran.
  *
  * The property is therefore UNIFORMITY, not "misses are hidden": pre-setup,
  * hit, miss and unpublished must be indistinguishable. Full coverage of that
