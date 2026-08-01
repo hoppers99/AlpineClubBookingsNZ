@@ -162,6 +162,25 @@ export function parentLinkTypeLabel(type?: "PRIMARY" | "SECONDARY") {
   return type === "SECONDARY" ? "Second parent" : "Primary parent"
 }
 
+/**
+ * What the parent picker says when its eight slots did not hold everyone who
+ * matched (#2425).
+ *
+ * The wording is the member-guest finder's own truncation sentence
+ * (`MEMBER_GUEST_FIND_COPY.truncated`, #2308), character for character, so the
+ * product says the same thing in the same words wherever a search is cut short.
+ * It is a COPY of that string rather than an import: the member-guest sentence
+ * is load-bearing privacy copy — it must never grow a count, because there the
+ * count would describe members the booker is not being shown — and coupling the
+ * two would let a change made for one surface's reasons silently land on the
+ * other. A test pins the two equal, so they cannot drift apart unnoticed either.
+ *
+ * Note what it does NOT say: no count. Here that is only consistency, not
+ * privacy — an admin may see the whole roll — but "keep typing" is the useful
+ * instruction whether five or five hundred were left out.
+ */
+export const MEMBER_SEARCH_TRUNCATED_HINT = "Keep typing to narrow this down."
+
 export function dedupeParentOptions<T extends { id: string }>(parents: T[]) {
   const seen = new Set<string>()
   return parents.filter((parent) => {
