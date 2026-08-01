@@ -8,10 +8,13 @@
  * This is a faithful TS→ESM port of the vendored upstream generator kept at
  * scripts/theme/vendor/generate-radix-colors.tsx. It produces Radix-style 12-step
  * light/dark scales from an accent + gray seed against a background colour. The
- * algorithm is UNCHANGED from upstream; only the module shape (typed public
- * signature, ESM export) differs. Behavioural parity with the vendored source is
- * pinned by the golden-value tests in ./__tests__/generator-goldens.test.ts,
- * which run on Node 24 (the production image, node:24.17-alpine) in CI.
+ * algorithm is UNCHANGED from upstream save for two documented colorjs.io >= 0.6
+ * adaptations (#2303): the missing-coordinate handling described below
+ * `Appearance`, and the achromatic-reference-ramp guard on `ratioC` in
+ * `getScaleFromColor`. Otherwise only the module shape (typed public signature,
+ * ESM export) differs. Behavioural parity with the vendored source is pinned by
+ * the golden-value tests in ./__tests__/generator-goldens.test.ts, which run on
+ * Node 24 (the production image, node:24.17-alpine) in CI.
  *
  * DO NOT hand-tune output here. The theme substrate (src/lib/theme/tokens.ts) and
  * the guarantee sweep depend on this producing byte-identical hexes across runs.
@@ -22,6 +25,36 @@ import Color from "colorjs.io";
 import BezierEasing from "bezier-easing";
 
 export type Appearance = "light" | "dark";
+
+/*
+ * colorjs.io >= 0.6 types every colour coordinate as `number | null`, where
+ * `null` is a CSS Color 4 "none" (missing) component. Inside this generator the
+ * only coordinate that is ever actually missing is the HUE of an achromatic
+ * colour: 0.5.x surfaced that as `NaN`, 0.7.x surfaces it as `null`.
+ *
+ * CSS Color 4 defines a missing component as 0 wherever it is consumed as a
+ * number, JavaScript already coerces `null` to 0 in arithmetic, and colorjs
+ * renders `oklch(L C none)` byte-identically to `oklch(L C 0)` — so coalescing a
+ * missing coordinate to 0 is the behaviour-preserving read at every arithmetic
+ * site below, not a convenience cast. The golden-value tests pin that claim: no
+ * coalescing site moves a single hex across the 0.5.2 -> 0.7.1 bump.
+ *
+ * Two sites must NOT simply coalesce. `getButtonHoverColor` asks "is the hue
+ * defined at all?" — see `hueIsMissing`. `getScaleFromColor` divides BY a chroma
+ * that can now legitimately be 0 — see the `ratioC` guard there, the one place
+ * the bump moves an output.
+ */
+const num = (coord: number | null | undefined): number => coord ?? 0;
+
+/** Every coordinate of a colour as a plain number, missing components as 0. */
+const numericCoords = (color: Color): number[] => color.coords.map(num);
+
+/**
+ * True when a hue is absent rather than zero — colorjs 0.5.x said `NaN`, 0.7.x
+ * says `null`, and both mean "this colour has no hue" (it is achromatic).
+ */
+const hueIsMissing = (hue: number | null | undefined): boolean =>
+  hue === null || hue === undefined || Number.isNaN(hue);
 
 export interface GenerateRadixColorsOptions {
   appearance: Appearance;
@@ -195,7 +228,11 @@ function getStep9Colors(scale: any[], accentBaseColor: any): [any, any] {
 function getButtonHoverColor(source: any, scales: any[][]): any {
   const [L, C, H] = source.coords;
   const newL = L > 0.4 ? L - 0.03 / (L + 0.1) : L + 0.03 / (L + 0.1);
-  const newC = L > 0.4 && !isNaN(H) ? C * 0.93 + 0 : C;
+  // Upstream wrote `!isNaN(H)` — "only damp the chroma when the hue is actually
+  // defined". Under colorjs 0.7 an achromatic hue is `null`, and `isNaN(null)`
+  // is false, so the literal port would silently start damping the chroma of
+  // greys. `hueIsMissing` keeps the original meaning under both spellings.
+  const newC = L > 0.4 && !hueIsMissing(H) ? C * 0.93 + 0 : C;
   const buttonHoverColor = new Color("oklch", [newL, newC, H]);
   let closestColor = buttonHoverColor;
   let minDistance = Infinity;
@@ -252,13 +289,33 @@ function getScaleFromColor(source: any, scales: any, backgroundColor: any): any[
   const baseColor = scale
     .slice()
     .sort((a2, b2) => source.deltaEOK(a2) - source.deltaEOK(b2))[0];
-  const ratioC = source.coords[1] / baseColor.coords[1];
+  /*
+   * #2303 — the one place the 0.5.2 -> 0.7.x bump changes an OUTPUT, not just a
+   * type. Upstream rescales the reference ramp's chroma so its closest step
+   * carries the seed's chroma. Radix's `gray` ramp is perfectly achromatic, and
+   * when it is the closest ramp (a seed with almost no chroma of its own) every
+   * step's chroma is zero. colorjs 0.5.2 did not quite say zero — its
+   * OKLab->OKLCh conversion left ~1e-16 of float noise on each step, so the
+   * division produced a ~1e14 ratio and the ramp came out tinted by whatever
+   * the noise happened to be. 0.7.x reports a true 0, so the ratio becomes
+   * Infinity, `0 * Infinity` is NaN, and the ramp serialises to the literal
+   * string "#NaNNaNNaN" — which then throws when it is re-parsed.
+   *
+   * An achromatic reference ramp has no chroma structure to rescale, so the
+   * identity ratio is the correct reading: the ramp stays grey, which is what a
+   * grey seed asked for. The tint 0.5.2 produced was float noise, not a design.
+   * Only a neutral-character seed with r == g == b reaches this branch.
+   */
+  const baseChroma = num(baseColor.coords[1]);
+  const ratioC = baseChroma === 0 ? 1 : source.coords[1] / baseChroma;
   scale.forEach((color) => {
-    color.coords[1] = Math.min(source.coords[1] * 1.5, color.coords[1] * ratioC);
+    color.coords[1] = Math.min(source.coords[1] * 1.5, num(color.coords[1]) * ratioC);
+    // The hue is copied across verbatim, missing or not: a missing hue on the
+    // source means the whole scale is achromatic, exactly as under 0.5.x.
     color.coords[2] = source.coords[2];
   });
-  if (scale[0].coords[0] > 0.5) {
-    const lightnessScale2 = scale.map(({ coords }) => coords[0]);
+  if (num(scale[0].coords[0]) > 0.5) {
+    const lightnessScale2 = scale.map(({ coords }) => num(coords[0]));
     const backgroundL2 = Math.max(0, Math.min(1, backgroundColor.coords[0]));
     const newLightnessScale2 = transposeProgressionStart(
       backgroundL2,
@@ -272,7 +329,7 @@ function getScaleFromColor(source: any, scales: any, backgroundColor: any): any[
     return scale;
   }
   const ease: [number, number, number, number] = [...darkModeEasing];
-  const referenceBackgroundColorL = scale[0].coords[0];
+  const referenceBackgroundColorL = num(scale[0].coords[0]);
   const backgroundColorL = Math.max(0, Math.min(1, backgroundColor.coords[0]));
   const ratioL = backgroundColorL / referenceBackgroundColorL;
   if (ratioL > 1) {
@@ -282,7 +339,7 @@ function getScaleFromColor(source: any, scales: any, backgroundColor: any): any[
       ease[i] = ratioL > maxRatio ? 0 : Math.max(0, ease[i] * (1 - metaRatio));
     }
   }
-  const lightnessScale = scale.map(({ coords }) => coords[0]);
+  const lightnessScale = scale.map(({ coords }) => num(coords[0]));
   const backgroundL = backgroundColor.coords[0];
   const newLightnessScale = transposeProgressionStart(backgroundL, lightnessScale, ease);
   newLightnessScale.forEach((lightness, i) => {
@@ -295,7 +352,9 @@ function getTextColor(background: any): any {
   const white = new Color("oklch", [1, 0, 0]);
   if (Math.abs(white.contrastAPCA(background)) < 40) {
     const [, C, H] = background.coords;
-    return new Color("oklch", [0.25, Math.max(0.08 * C, 0.04), H]);
+    // A missing chroma contributes nothing to the floor; a missing hue is passed
+    // through untouched (colorjs renders `none` exactly like 0).
+    return new Color("oklch", [0.25, Math.max(0.08 * num(C), 0.04), H]);
   }
   return white;
 }
@@ -385,8 +444,8 @@ function blendAlpha(foreground: number, alpha: number, background: number, round
 
 function getAlphaColorSrgb(targetColor: string, backgroundColor: string, targetAlpha?: number): string {
   const [r, g, b, a] = getAlphaColor(
-    new Color(targetColor).to("srgb").coords,
-    new Color(backgroundColor).to("srgb").coords,
+    numericCoords(new Color(targetColor).to("srgb")),
+    numericCoords(new Color(backgroundColor).to("srgb")),
     255,
     255,
     targetAlpha,
@@ -396,8 +455,8 @@ function getAlphaColorSrgb(targetColor: string, backgroundColor: string, targetA
 
 function getAlphaColorP3(targetColor: string, backgroundColor: string, targetAlpha?: number): string {
   const [r, g, b, a] = getAlphaColor(
-    new Color(targetColor).to("p3").coords,
-    new Color(backgroundColor).to("p3").coords,
+    numericCoords(new Color(targetColor).to("p3")),
+    numericCoords(new Color(backgroundColor).to("p3")),
     255,
     1e3,
     targetAlpha,
@@ -446,7 +505,7 @@ export function transposeProgressionStart(
 }
 
 function toOklchString(color: any): string {
-  const L = +(color.coords[0] * 100).toFixed(1);
+  const L = +(num(color.coords[0]) * 100).toFixed(1);
   return color
     .to("oklch")
     .toString({ precision: 4 })

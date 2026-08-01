@@ -14,7 +14,20 @@
  * any drift between the two is a failing test, not a silent ship.
  */
 /* eslint-disable -- verbatim vendored upstream source; not linted, not shipped (the
-   ported src/lib/theme/generate-radix-colors.ts is what compiles into the app). */
+   ported src/lib/theme/generate-radix-colors.ts is what compiles into the app).
+
+   TYPECHECK CARVE-OUT (#2303). Upstream was written against colorjs.io 0.5.x,
+   which typed a colour coordinate as `number`. From 0.6 colorjs types it as
+   `number | null` (a CSS Color 4 "none" component), so ~13 of the arithmetic
+   lines below no longer typecheck as written. Editing them would break the one
+   thing this file exists for — being the unmodified upstream source the shipping
+   port is diffed against — so the `@ts-nocheck` below exempts the file from tsc
+   instead, exactly as this comment already exempts it from eslint. That pragma
+   and this comment are the ONLY local additions; the upstream code body stays
+   byte-for-byte verbatim. The real missing-coordinate handling lives in the
+   shipping port (src/lib/theme/generate-radix-colors.ts), whose output is pinned
+   by src/lib/theme/__tests__/generator-goldens.test.ts. */
+// @ts-nocheck
 import * as RadixColors from "@radix-ui/colors";
 import Color from "colorjs.io";
 import BezierEasing from "bezier-easing";

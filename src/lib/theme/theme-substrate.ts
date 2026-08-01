@@ -60,15 +60,39 @@ export interface BuiltTheme {
 // ---------------------------------------------------------------------------
 // Colour helpers (WCAG 2.x on opaque sRGB — matches the wrapper + guarantees).
 // ---------------------------------------------------------------------------
-export const oklch = (hex: string): [number, number, number] =>
-  new Color(hex).to("oklch").coords as [number, number, number];
+/*
+ * colorjs.io >= 0.6 types a colour coordinate as `number | null`, where `null` is
+ * a CSS Color 4 "none" (missing) component. Converting an ACHROMATIC colour to
+ * oklch produces a missing hue — 0.5.x reported that as `NaN`, 0.7.x reports it
+ * as `null` (#2303). Lightness and chroma are never missing for a colour parsed
+ * from a hex string.
+ *
+ * Every caller here feeds the hue straight back into `fromOklch`, which already
+ * folded the old `NaN` to 0, and colorjs renders `oklch(L C none)` byte-for-byte
+ * like `oklch(L C 0)`. So normalising a missing coordinate to 0 right here keeps
+ * the substrate identical to what 0.5.2 produced, and keeps the returned tuple
+ * honestly all-numbers instead of a cast that hides a null.
+ */
+export const oklch = (hex: string): [number, number, number] => {
+  const [L, C, H] = new Color(hex).to("oklch").coords;
+  return [L ?? 0, C ?? 0, H ?? 0];
+};
 
+/*
+ * The `isNaN(H)` guard is load-bearing under colorjs 0.7: `new Color("oklch",
+ * [L, C, NaN])` now serialises to the literal string "#NaNNaNNaN" instead of
+ * silently behaving like a missing hue, so a NaN that reached the constructor
+ * would ship as broken CSS rather than a grey. `oklch()` above never hands one
+ * over, but this is a public helper.
+ */
 export const fromOklch = (L: number, C: number, H: number): string =>
   new Color("oklch", [L, C, isNaN(H) ? 0 : H]).to("srgb").toString({ format: "hex" });
 
 function relLum(hex: string): number {
-  const [r, g, b] = new Color(hex).to("srgb").coords.map((c: number) => {
-    c = Math.min(1, Math.max(0, c));
+  const [r, g, b] = new Color(hex).to("srgb").coords.map((coord) => {
+    // A missing ("none") sRGB channel counts as 0 per CSS Color 4; a hex colour
+    // never has one, so this only satisfies the colorjs >= 0.6 coordinate type.
+    const c = Math.min(1, Math.max(0, coord ?? 0));
     return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
   });
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
