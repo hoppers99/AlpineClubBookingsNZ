@@ -30,6 +30,7 @@ const mocks = vi.hoisted(() => ({
   getDefaultLodgeId: vi.fn(),
   validateMinimumStay: vi.fn(),
   formatViolationsDetail: vi.fn(),
+  loggerWarn: vi.fn(),
   sendGroupBookingJoinVerificationEmail: vi.fn(),
   sendBookingRequestApprovedEmail: vi.fn(),
   issueActionToken: vi.fn(),
@@ -98,7 +99,7 @@ vi.mock("@/lib/action-tokens", async () => {
 });
 
 vi.mock("@/lib/logger", () => ({
-  default: { error: vi.fn(), warn: vi.fn(), info: vi.fn() },
+  default: { error: vi.fn(), warn: mocks.loggerWarn, info: vi.fn() },
 }));
 
 import {
@@ -110,9 +111,15 @@ import {
   formatDateOnly,
   getTodayDateOnly,
 } from "@/lib/date-only";
+import { PUBLIC_GROUP_JOIN_MINIMUM_STAY_MESSAGE } from "@/lib/policies/minimum-stay";
 
 /** A correctly-formatted (64 hex char) action token for the verify path. */
 const VALID_TOKEN = "a".repeat(64);
+
+/** Byte-for-byte the shape `formatViolationsDetail` really produces. */
+const DETAILED_MINIMUM_STAY_SENTENCE =
+  "Bookings including a Saturday night require a minimum stay of 3 nights " +
+  "(Lodge B weekends). Your booking is 2 nights.";
 
 const LODGE_B = "lodge-b";
 
@@ -215,9 +222,11 @@ beforeEach(() => {
     tokenHash: "hash",
   });
   mocks.hashActionToken.mockReturnValue("hash");
-  mocks.formatViolationsDetail.mockReturnValue(
-    "Lodge B weekends: minimum 2 nights",
-  );
+  // A REALISTIC formatter output, not a stylised stub: the point of the #2363
+  // fix is that this exact shape — rule name, required nights, trigger weekday
+  // — never crosses the wire on a public surface, and a short made-up string
+  // cannot prove that.
+  mocks.formatViolationsDetail.mockReturnValue(DETAILED_MINIMUM_STAY_SENTENCE);
   mocks.validateMinimumStay.mockResolvedValue({ valid: true, violations: [] });
   mocks.priceBookingGuestsWithMembershipTypePolicy.mockRejectedValue(
     PRICING_SENTINEL,
@@ -238,7 +247,9 @@ describe("createNonMemberJoinRequest enforces minimum stay (#2363, stage 1)", ()
     ).rejects.toMatchObject({
       status: 400,
       code: "MINIMUM_STAY_VIOLATION",
-      details: "Lodge B weekends: minimum 2 nights",
+      // `details` never leaves the service on this path — the public staging
+      // route serialises `error` and `code` only.
+      details: DETAILED_MINIMUM_STAY_SENTENCE,
       violations: [violation],
       exceptionReview: { violations: [violation], capacityMode: "HOLD" },
     });
@@ -303,9 +314,13 @@ describe("verifyAndCreateNonMemberJoin re-validates minimum stay (#2363, stage 2
       violations: [violation],
     });
 
+    // The wire message is the SAME generic sentence stage 1 answers with — the
+    // detailed sentence naming the rule, its nights and its trigger weekday is
+    // for the club's log, not an unauthenticated 409 body. The frozen snapshot
+    // still rides the service result for #2365; the route drops it.
     await expect(verifyAndCreateNonMemberJoin(VALID_TOKEN)).resolves.toEqual({
       outcome: "minimum_stay",
-      message: "Lodge B weekends: minimum 2 nights",
+      message: PUBLIC_GROUP_JOIN_MINIMUM_STAY_MESSAGE,
       violations: [violation],
       exceptionReview: { violations: [violation], capacityMode: "HOLD" },
     });
@@ -314,6 +329,28 @@ describe("verifyAndCreateNonMemberJoin re-validates minimum stay (#2363, stage 2
     // payment link, and no pay-link email.
     expect(mocks.transaction).not.toHaveBeenCalled();
     expect(mocks.sendBookingRequestApprovedEmail).not.toHaveBeenCalled();
+  });
+
+  it("keeps the detailed sentence in the server log and out of the result", async () => {
+    mocks.validateMinimumStay.mockResolvedValue({
+      valid: false,
+      violations: [violation],
+    });
+
+    const result = await verifyAndCreateNonMemberJoin(VALID_TOKEN);
+
+    // The club gets the detail...
+    expect(mocks.loggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ detail: DETAILED_MINIMUM_STAY_SENTENCE }),
+      expect.stringContaining("minimum-stay policy no longer satisfied"),
+    );
+    // ...and the sentence the joiner is shown carries none of it.
+    expect(
+      (result as { message?: string }).message,
+    ).not.toContain("Lodge B weekends");
+    expect((result as { message?: string }).message).toBe(
+      PUBLIC_GROUP_JOIN_MINIMUM_STAY_MESSAGE,
+    );
   });
 
   it("evaluates the CURRENT policy set against the organiser's dates at the group's lodge", async () => {

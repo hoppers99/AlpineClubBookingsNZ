@@ -29,7 +29,11 @@ beforeEach(() => {
     jsonResponse(
       {
         outcome: "minimum_stay",
-        message: "Lodge B weekends: minimum 2 nights",
+        // What the route actually sends (#2363): the same generic sentence the
+        // staging route answers with, never the rule's name or night count.
+        message:
+          "This group's stay is shorter than the minimum stay required for " +
+          "those nights, so it cannot accept sign-ups. Please contact the organiser.",
       },
       409,
     );
@@ -56,10 +60,29 @@ describe("GroupJoinVerifyPageClient — minimum stay (#2363)", () => {
     ).toBeInTheDocument();
     expect(screen.getByText(/contact the organiser/i)).toBeInTheDocument();
     expect(screen.getByText(/haven't been charged/i)).toBeInTheDocument();
-    // The server's own sentence about the rule is shown too.
-    expect(
-      screen.getByText("Lodge B weekends: minimum 2 nights"),
-    ).toBeInTheDocument();
+  });
+
+  it("never renders a detailed policy sentence, even if one somehow arrives", async () => {
+    // Defence in depth for the privacy decision: the route sends only the
+    // generic sentence, and this branch writes its own copy rather than echoing
+    // whatever the server said — so a rule name and night count cannot reach
+    // this unauthenticated page by either route.
+    verifyResponse = () =>
+      jsonResponse(
+        {
+          outcome: "minimum_stay",
+          message:
+            "Bookings including a Saturday night require a minimum stay of 3 nights (Lodge B weekends). Your booking is 2 nights.",
+        },
+        409,
+      );
+
+    render(<GroupJoinVerifyPageClient club={club} token={"a".repeat(64)} />);
+    await confirm();
+
+    await screen.findByText(/shorter than the minimum stay required/i);
+    expect(screen.queryByText(/Lodge B weekends/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/minimum stay of 3 nights/)).not.toBeInTheDocument();
   });
 
   it("does not fall back to the generic not-joinable message", async () => {

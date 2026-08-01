@@ -46,10 +46,14 @@ export async function POST(
       // #2363: the minimum-stay rules changed (or the organiser's dates moved)
       // between staging and this confirmation, so the join fails closed. A 409
       // for the same reason capacity_full is one — the request was fine when it
-      // was made and the club's state has since moved under it. Only the plain
-      // sentence crosses the wire: the frozen snapshot stays server-side, as it
-      // does on the public staging route, so this unauthenticated surface never
-      // becomes a policy-configuration read.
+      // was made and the club's state has since moved under it.
+      //
+      // `result.message` is the SAME generic sentence the public staging route
+      // answers with (`PUBLIC_GROUP_JOIN_MINIMUM_STAY_MESSAGE`), and it is the
+      // only field forwarded: the frozen snapshot and the detailed sentence
+      // naming the rule, its night count and its trigger weekdays stay
+      // server-side, so this unauthenticated surface never becomes a
+      // policy-configuration read.
       case "minimum_stay":
         return NextResponse.json(
           { outcome: "minimum_stay", message: result.message },

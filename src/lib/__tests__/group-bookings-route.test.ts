@@ -114,10 +114,26 @@ import { POST as joinRequestPOST } from "@/app/api/group-bookings/[code]/join-re
 import { POST as verifyPOST } from "@/app/api/group-bookings/join/verify/[token]/route";
 import { POST as settlePOST } from "@/app/api/group-bookings/[code]/settle/route";
 import { GroupBookingError } from "@/lib/group-booking";
+// The REAL constant, from the unmocked leaf module that owns it — so this suite
+// fails if the sentence the public routes answer with ever changes shape.
+import { PUBLIC_GROUP_JOIN_MINIMUM_STAY_MESSAGE } from "@/lib/policies/minimum-stay";
 import type { MinimumStayPolicyExceptionViolation } from "@/lib/booking-policy-exceptions";
 
 /** A correctly-formatted (64 hex char) action token. */
 const VALID_TOKEN = "a".repeat(64);
+
+/**
+ * A REALISTIC `formatViolationsDetail` output — byte-for-byte the shape
+ * `getMinimumStayViolations` builds. The earlier version of the minimum-stay
+ * route test stubbed a short stylised string ("Lodge B weekends: minimum 2
+ * nights"), which is why it passed while the verification route was in fact
+ * returning the rule's name, its required nights and its trigger weekday to an
+ * unauthenticated caller. Assertions below use this, so nothing about the
+ * detailed sentence can slip through unnoticed again.
+ */
+const DETAILED_MINIMUM_STAY_SENTENCE =
+  "Bookings including a Saturday night require a minimum stay of 3 nights " +
+  "(Lodge B weekends). Your booking is 2 nights.";
 
 function verifyRequest() {
   return new NextRequest("http://localhost/api/group-bookings/join/verify/x", {
@@ -705,23 +721,99 @@ describe("POST /api/group-bookings/join/verify/[token] (non-member confirm)", ()
     });
   });
 
-  it("maps a minimum_stay outcome to 409 with its plain sentence only (#2363)", async () => {
+  it("maps a minimum_stay outcome to 409 with the generic sentence only (#2363)", async () => {
     // The policy set moved under a staged request, so this is a conflict with
     // the club's current state, exactly like capacity_full. The service carries
     // the frozen review for #2365, but this unauthenticated response must not:
     // only the sentence the joiner reads crosses the wire.
+    //
+    // The service's `message` is REALISTIC here — the actual generic sentence
+    // the service returns — and the assertion below proves the detailed
+    // formatter output cannot appear in the serialized body. The earlier
+    // version of this test stubbed a short stylised string, which is why it
+    // passed while the service was in fact returning the rule's name, required
+    // nights and trigger weekdays to an unauthenticated caller.
     mocks.verifyAndCreateNonMemberJoin.mockResolvedValueOnce({
       outcome: "minimum_stay",
-      message: "Lodge B weekends: minimum 2 nights",
-      violations: [{ policyId: "policy-lodge-b" }],
+      message: PUBLIC_GROUP_JOIN_MINIMUM_STAY_MESSAGE,
+      violations: [
+        {
+          policyId: "policy-lodge-b",
+          policyVersion: 4,
+          policyName: "Lodge B weekends",
+          message: DETAILED_MINIMUM_STAY_SENTENCE,
+          minimumNights: 3,
+          actualNights: 2,
+          requirements: {
+            kind: "MINIMUM_STAY",
+            minimumNights: 3,
+            actualNights: 2,
+            triggerDays: [6],
+          },
+        },
+      ],
       exceptionReview: { violations: [], capacityMode: "HOLD" },
     });
     const res = await callVerify(VALID_TOKEN);
     expect(res.status).toBe(409);
-    await expect(res.json()).resolves.toEqual({
+    const body = await res.json();
+    expect(body).toEqual({
       outcome: "minimum_stay",
-      message: "Lodge B weekends: minimum 2 nights",
+      message: PUBLIC_GROUP_JOIN_MINIMUM_STAY_MESSAGE,
     });
+
+    const wire = JSON.stringify(body);
+    expect(wire).not.toContain(DETAILED_MINIMUM_STAY_SENTENCE);
+    expect(wire).not.toContain("Lodge B weekends");
+    expect(wire).not.toContain("minimum stay of 3 nights");
+    expect(wire).not.toContain("Saturday");
+    expect(wire).not.toContain("policy-lodge-b");
+  });
+
+  it("answers the SAME sentence at both public stages, so neither can drift (#2363)", async () => {
+    // Staging and verification are the same unauthenticated audience; the bug
+    // was verification quietly answering with the detailed sentence while
+    // staging answered generically.
+    mocks.createNonMemberJoinRequest.mockRejectedValueOnce(
+      new GroupBookingError(PUBLIC_GROUP_JOIN_MINIMUM_STAY_MESSAGE, 400, {
+        code: "MINIMUM_STAY_VIOLATION",
+        details: DETAILED_MINIMUM_STAY_SENTENCE,
+        violations: [],
+        exceptionReview: { violations: [], capacityMode: null },
+      }),
+    );
+    const stagingRequest = new NextRequest(
+      "http://localhost/api/group-bookings/ABCD2345/join-request",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          contactFirstName: "Sam",
+          contactLastName: "Guest",
+          contactEmail: "sam@example.com",
+          guests: [{ firstName: "Sam", lastName: "Guest", ageTier: "ADULT" }],
+        }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    const staging = await joinRequestPOST(stagingRequest, {
+      params: Promise.resolve({ code: "ABCD2345" }),
+    });
+    const stagingBody = await staging.json();
+
+    mocks.verifyAndCreateNonMemberJoin.mockResolvedValueOnce({
+      outcome: "minimum_stay",
+      message: PUBLIC_GROUP_JOIN_MINIMUM_STAY_MESSAGE,
+      violations: [],
+      exceptionReview: { violations: [], capacityMode: null },
+    });
+    const verify = await callVerify(VALID_TOKEN);
+    const verifyBody = await verify.json();
+
+    expect(stagingBody.error).toBe(PUBLIC_GROUP_JOIN_MINIMUM_STAY_MESSAGE);
+    expect(verifyBody.message).toBe(stagingBody.error);
+    expect(JSON.stringify(stagingBody)).not.toContain(
+      DETAILED_MINIMUM_STAY_SENTENCE,
+    );
   });
 
   it("returns 500 if the service throws unexpectedly", async () => {

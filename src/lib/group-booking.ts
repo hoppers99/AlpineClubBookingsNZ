@@ -41,6 +41,9 @@ import {
   type AggregatedPolicyExceptions,
   type PolicyExceptionViolation,
 } from "@/lib/booking-policy-exceptions";
+// Leaf module (no Prisma, no email): the generic public sentence lives beside
+// the detailed formatter it deliberately replaces on these two surfaces.
+import { PUBLIC_GROUP_JOIN_MINIMUM_STAY_MESSAGE } from "@/lib/policies/minimum-stay";
 import { prisma } from "@/lib/prisma";
 import { hashActionToken, issueActionToken } from "@/lib/action-tokens";
 import {
@@ -995,7 +998,7 @@ export async function createNonMemberJoinRequest(
     throw new GroupBookingError(
       // A non-member cannot move these dates — only the organiser can — so the
       // sentence they read on /join/[code] names the fix rather than the rule.
-      "This group's stay is shorter than the minimum stay required for those nights, so it cannot accept sign-ups. Please contact the organiser.",
+      PUBLIC_GROUP_JOIN_MINIMUM_STAY_MESSAGE,
       400,
       {
         code: "MINIMUM_STAY_VIOLATION",
@@ -1243,13 +1246,18 @@ export async function verifyAndCreateNonMemberJoin(
   // rather than admitting a stay under a rule that now applies.
   //
   // Deliberately outside the booking transaction, like every other pre-write
-  // check on this path: `validateMinimumStay` reads through the module-level
-  // Prisma client, so running it inside would take a second pool connection
-  // while the per-lodge capacity lock is held, and minimum-stay rows are not
-  // protected by that lock anyway (policy writes take the policy-set lock, in
-  // the opposite order). The residual window is the few milliseconds between
-  // this read and the claim below, which is the same footing as the member
-  // join path.
+  // check on this path. The argument is about the CONNECTION POOL, not lock
+  // order: running it inside would leave `validateMinimumStay` reading through
+  // the module-level Prisma client while the per-lodge capacity lock is held,
+  // taking a second pool connection underneath that lock — the shape
+  // `member-guest-add-policy.ts` forbids. (The two in-transaction callers that
+  // genuinely cannot hoist the check — the two modify services — pass their own
+  // `tx` instead; see docs/CONCURRENCY_AND_LOCKING.md.) There is no lock-order
+  // hazard to weigh either way: no minimum-stay policy writer ever takes a
+  // per-lodge capacity lock and no booking path takes the policy-set key, so
+  // the two keyspaces are disjoint and cannot cycle. The residual window is the
+  // few milliseconds between this read and the claim below, which is the same
+  // footing as the member join path.
   const {
     validateMinimumStay: validateVerifyMinimumStay,
     formatViolationsDetail: formatVerifyViolationsDetail,
@@ -1267,6 +1275,10 @@ export async function verifyAndCreateNonMemberJoin(
       {
         joinId: join.id,
         groupLodgeId,
+        // The detailed sentence lives HERE and only here: rule name, required
+        // nights and trigger weekdays are for the club reading its own log, not
+        // for an unauthenticated 409 body.
+        detail: formatVerifyViolationsDetail(verifyStay.violations),
         violations: exceptionReview.violations.map((violation) => ({
           policyId: violation.policyId,
           policyVersion: violation.policyVersion,
@@ -1276,7 +1288,11 @@ export async function verifyAndCreateNonMemberJoin(
     );
     return {
       outcome: "minimum_stay",
-      message: formatVerifyViolationsDetail(verifyStay.violations),
+      // The same generic sentence stage 1 answers with — see
+      // PUBLIC_GROUP_JOIN_MINIMUM_STAY_MESSAGE. This used to be the detailed
+      // formatter output, which contradicted the route's own comment and turned
+      // the unauthenticated confirm into a policy-configuration read.
+      message: PUBLIC_GROUP_JOIN_MINIMUM_STAY_MESSAGE,
       violations: exceptionReview.violations,
       exceptionReview,
     };

@@ -49,7 +49,11 @@ export type PublicBookingPolicy = {
     dateRange: string;
     minimumNights: number;
     triggerDays: string;
-    capacityHandling: string;
+    /**
+     * Plain-language exception-capacity sentence, or `null` while the exception
+     * workflow is unshipped. See `PUBLIC_EXCEPTION_CAPACITY_COPY_ENABLED`.
+     */
+    capacityHandling: string | null;
   }>;
   groupDiscount: string | null;
 };
@@ -527,6 +531,33 @@ export async function loadPublicHutFees(
   return tables;
 }
 
+/**
+ * Whether `{{booking-policies}}` publishes the exception-capacity sentence.
+ *
+ * OFF for the #2363 foundation release, deliberately. The sentences describe a
+ * workflow that does not exist yet: a member who trips a minimum-stay rule today
+ * is simply refused, with no way to request an exception at all, so telling the
+ * public what happens to capacity "while the club reviews it" advertises a
+ * button nobody can press. The whole pipeline behind it stays wired — the loader
+ * still selects `capacityMode`, the copy still lives in `exceptionCapacityCopy`,
+ * and the renderer still handles a present sentence — so #2365 turns this on in
+ * one line, as a deliberate act, once the review flow ships.
+ *
+ * The ADMIN card is unaffected: it has always stated the stored mode, and an
+ * operator configuring the rule needs to see what they chose.
+ *
+ * Typed `boolean` rather than left as the literal `false` so the branch below
+ * stays a real conditional to the compiler and the linter.
+ */
+const PUBLIC_EXCEPTION_CAPACITY_COPY_ENABLED: boolean = false;
+
+/** The published sentence for each capacity mode (#2363, surfaced by #2365). */
+function exceptionCapacityCopy(mode: "HOLD" | "NO_HOLD"): string {
+  return mode === "HOLD"
+    ? "If an exception is requested, the requested capacity is held while the club reviews it."
+    : "An exception request does not reserve capacity until the club approves it.";
+}
+
 export async function loadPublicBookingPolicy(slug?: string): Promise<PublicBookingPolicy | null> {
   if (!(await isPublicContentEnabled("bookingPolicySummary"))) return null;
   const lodge = slug === undefined ? null : await findPublicLodge(slug);
@@ -581,9 +612,9 @@ export async function loadPublicBookingPolicy(slug?: string): Promise<PublicBook
       triggerDays: policy.triggerDays.length === 0
         ? "all check-in days"
         : policy.triggerDays.map((day) => ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][day] ?? "").filter(Boolean).join(", "),
-      capacityHandling: policy.capacityMode === "HOLD"
-        ? "If an exception is requested, the requested capacity is held while the club reviews it."
-        : "An exception request does not reserve capacity until the club approves it.",
+      capacityHandling: PUBLIC_EXCEPTION_CAPACITY_COPY_ENABLED
+        ? exceptionCapacityCopy(policy.capacityMode)
+        : null,
     })),
     // Type-neutral copy (#1933, E7): the E4 re-key means "member rate" is no
     // longer a single binary, so describe the outcome without naming a type.

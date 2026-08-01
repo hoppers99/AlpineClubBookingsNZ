@@ -181,9 +181,14 @@ export function GroupJoinVerifyPageClient({
                   required for those nights, so we can&apos;t confirm your spot.
                 </p>
               </div>
-              {message ? (
-                <p className="text-sm text-muted-foreground">{message}</p>
-              ) : null}
+              {/*
+                No echo of the server's `message` here, unlike the not_joinable
+                branch below. This outcome writes its own full copy, and the
+                server's sentence for it is deliberately generic (#2363) — it
+                would only restate the heading. The detail that WOULD add
+                something, the rule and its night count, is intentionally never
+                sent to this unauthenticated page.
+              */}
               <p className="text-sm text-muted-foreground">
                 Please contact the organiser — the rules for these dates changed
                 after you asked to join. Nothing has been booked and you

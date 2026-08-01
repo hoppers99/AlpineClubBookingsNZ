@@ -132,7 +132,34 @@ export function formatViolationMessage(violation: MinimumStayViolation): string 
 
 /**
  * Format all violations into a single details string for API responses.
+ *
+ * NAMES THE RULE. The output carries the policy's name, its required night
+ * count and the weekdays that trigger it, so it belongs to an authenticated
+ * member-facing response or a server log — never to an unauthenticated body.
+ * The public group-join surfaces answer with the generic sentence below instead.
  */
 export function formatViolationsDetail(violations: MinimumStayViolation[]): string {
   return violations.map(formatViolationMessage).join(" ");
 }
+
+/**
+ * The one sentence BOTH public non-member group-join stages answer with when
+ * the minimum-stay policy refuses a group's dates (#2363).
+ *
+ * Deliberately generic, and deliberately declared right beside the detailed
+ * formatter above so the choice between them is visible at the point of use.
+ * Staging and verification are unauthenticated surfaces reachable by anyone
+ * holding a join code or an emailed token; the detailed sentence would turn
+ * either into a policy-configuration read the club never agreed to publish
+ * there (the public `{{booking-policies}}` token is the surface that decides
+ * what of that is public, and it is separately gated). The reader cannot act on
+ * the detail either — a non-member cannot move a group's dates, only the
+ * organiser can — so the sentence names the fix instead. The detailed sentence
+ * and the frozen review snapshot still reach the club, in the server log.
+ *
+ * Shared by both stages so they cannot drift, which is exactly how verification
+ * came to answer with the detailed sentence while staging answered with this.
+ */
+export const PUBLIC_GROUP_JOIN_MINIMUM_STAY_MESSAGE =
+  "This group's stay is shorter than the minimum stay required for those " +
+  "nights, so it cannot accept sign-ups. Please contact the organiser.";

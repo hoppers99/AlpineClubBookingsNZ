@@ -121,9 +121,11 @@ rules — see
    a group's public link, who is checked both when they ask to join and again
    when they click the confirmation email, so a rule you tighten in between is
    honoured. Admins can still override the rule when booking on behalf.
-3. The public `{{booking-policies}}` block states the selected capacity handling
-   in plain language. Check that copy wherever your club publishes booking
-   rules, especially before the exception-review workflow is enabled.
+3. Your choice is stored, carried by configuration transfer, and shown on this
+   card, but it is **not** published yet. The public booking-rules block lists
+   each rule's nights, dates and trigger days only — it says nothing about
+   exception capacity until members can actually request an exception, so
+   nothing on your public pages promises a process that does not exist.
 4. To change an existing policy, click its **Edit** button. **Update Policy**
    stays greyed out until you actually change something — including trigger
    days, where ticking a day and unticking it again counts as no change.

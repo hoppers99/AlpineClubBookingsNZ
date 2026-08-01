@@ -168,15 +168,22 @@ mirror the settlement threshold ranges, including implicit no-refund gaps and a
 separate post-check-in no-refund fallback. Disabled provisional holds are stated
 explicitly rather than silently omitted.
 
-Each minimum-stay row in `{{booking-policies}}` also renders its configured
-exception-capacity sentence. `HOLD` says the requested capacity will be held
-while the club reviews an exception; `NO_HOLD` says an exception request will
-not reserve capacity until approval. The token receives only this display copy,
-not the policy id/version or internal capacity-mode enum. During the #2363
-foundation release the booking paths still block the violation and do not yet
-create a request or reserve capacity; #2365 supplies that review workflow. This
-deployment boundary is why public copy can be prepared without implying that a
-member can already submit an exception.
+Each minimum-stay row in `{{booking-policies}}` publishes its name, date range,
+required nights and trigger days. It deliberately publishes **no**
+exception-capacity sentence during the #2363 foundation release: a member who
+trips a minimum-stay rule today is simply refused and has no way to request an
+exception at all, so telling the public what happens to capacity "while the club
+reviews it" would advertise a button nobody can press. `capacityHandling` is
+therefore `null` on every row and the renderer omits it.
+
+The plumbing behind it stays in place — the loader still selects `capacityMode`,
+the two sentences still live in `exceptionCapacityCopy`, and the renderer still
+emits a sentence when one is supplied — so #2365 re-enables it by flipping
+`PUBLIC_EXCEPTION_CAPACITY_COPY_ENABLED` in `public-page-content-tokens.ts` once
+the review workflow ships. Even then the token receives only the display copy,
+never the policy id/version or the internal capacity-mode enum. The **admin**
+Minimum Night Stay card is unaffected and has always stated the stored mode: an
+operator configuring the rule needs to see what they chose.
 
 Content-area view roles can inspect visibility but cannot change it. Content
 edit roles can save it. Saves are audited with before/after state and invalidate

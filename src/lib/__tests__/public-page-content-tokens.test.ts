@@ -491,9 +491,10 @@ describe("public PageContent token view models", () => {
     const policy = await loadPublicBookingPolicy();
     expect(policy).toEqual(expect.objectContaining({ hold: expect.stringContaining("7 days"), groupDiscount: expect.stringContaining("5") }));
     expect(policy?.minimumStays[0]?.triggerDays).toBe("Saturday");
-    expect(policy?.minimumStays[0]?.capacityHandling).toContain(
-      "does not reserve capacity until",
-    );
+    // #2363 ships the model and the admin card, not the public promise: no
+    // member can request an exception yet, so the token publishes no sentence
+    // about what happens to capacity during a review. #2365 turns it on.
+    expect(policy?.minimumStays[0]?.capacityHandling).toBeNull();
     expect(mocks.minimumStays).toHaveBeenCalledWith(
       expect.objectContaining({
         select: expect.objectContaining({ capacityMode: true }),
@@ -504,7 +505,7 @@ describe("public PageContent token view models", () => {
     expect(JSON.stringify(policy)).not.toContain("internal");
   });
 
-  it("renders HOLD and NO_HOLD minimum-stay capacity handling distinctly", async () => {
+  it("publishes no exception-capacity sentence for either mode while the workflow is unshipped", async () => {
     mocks.minimumStays.mockResolvedValue([
       {
         name: "Held",
@@ -527,10 +528,20 @@ describe("public PageContent token view models", () => {
     ]);
 
     const policy = await loadPublicBookingPolicy();
+
+    // Both modes publish nothing: the stored choice still drives the admin card
+    // and configuration transfer, but the public page must not describe an
+    // exception request a member cannot make yet (#2365 owns that).
     expect(policy?.minimumStays.map((row) => row.capacityHandling)).toEqual([
-      expect.stringContaining("capacity is held while the club reviews"),
-      expect.stringContaining("does not reserve capacity until"),
+      null,
+      null,
     ]);
+    // The nights and trigger days a member CAN act on are still published.
+    expect(policy?.minimumStays.map((row) => row.name)).toEqual([
+      "Held",
+      "Not held",
+    ]);
+    expect(JSON.stringify(policy)).not.toContain("exception");
   });
 
   it("describes divergent card and credit cancellation terms", async () => {
