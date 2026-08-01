@@ -223,6 +223,61 @@ saved** stamp in the editor still shows the original backfill time until an
 admin saves it — cosmetic, and the migration deliberately leaves it alone
 because this is a system repair rather than an edit somebody made.
 
+### One-off rewrite of the front-page hero that advertised guest booking (#2431)
+
+`20260802150000_update_starter_home_guest_copy` is a **data-only cleanup**, the
+third sibling of the two above. It adds and removes no schema, touches no hot
+table, and is safe to run in the ordinary deploy window with the previous app
+colour still serving.
+
+**What it fixes.** `20260613090000_update_starter_home_page_content` set the
+home page's hero — the sentence under the club name, above the fold — to *"Our
+club lodge welcomes members and guests year-round. Book a stay, join the club,
+and explore New Zealand's mountains."* On the front page that reads as open
+visitor accommodation: anyone may come, anyone may book. The starter FAQ seeded
+beside it says the opposite — a non-member stays only as the invited guest of a
+financial member who is also staying — so the reference site contradicted
+itself, and the front page was the surface making the wrong promise. It is also
+the page's **meta description**, so it is what a search engine quotes under your
+club's name. This migration replaces that sentence wherever the hero still holds
+exactly it.
+
+**What you will notice.** If your front page shows that exact sentence today,
+then after you cut over it reads *"Our club lodge welcomes members year-round.
+Sign in to book a stay, or apply to join and explore New Zealand's mountains."*
+instead. Nothing else on the page moves: the eyebrow line ("Welcome to the Club
+Lodge"), the heading ("Club Lodge"), your page body, and every other page are
+untouched. Unlike the two cleanups above, this one **replaces** the value rather
+than clearing it — the front page needs a hero, and an empty one would look
+broken rather than corrected.
+
+**Post-upgrade action: load your public front page and read the new sentence.**
+Do this even though there is nothing you are required to change. Two reasons.
+First, the wording is a default and your club may want its own — **Admin → Setup
+& Configuration → Site Appearance & Content → Page Content → Club Lodge**
+(`/admin/page-content`), edit the header text, then Save. Second, the Page
+Content editor loads a page's fields when it is opened and saves them all back,
+so an admin who had **Club Lodge** open *before* the upgrade and pressed Save
+*afterwards* writes the old sentence straight back — and this cleanup runs once,
+so it will not rewrite it a second time. Public pages are cached briefly for
+logged-out visitors, so allow a minute or check while signed in.
+
+**A hero you edited yourself is never touched.** The cleanup matches that one
+exact sentence and nothing else, so a club that has written its own front-page
+line keeps it byte for byte — and so does a club that merely reworded part of
+it, because what remains no longer matches. There is no exception to note here,
+unlike the two cleanups above: no club legitimately owns this sentence, because
+this project wrote it as a placeholder for all of them. The caption and title
+are deliberately left out of the match, so a club that renamed its front page
+but never touched the hero is corrected like everyone else.
+
+**Re-running is safe.** After the rewrite the hero holds the new sentence, so
+nothing matches the old one and a second run changes nothing. No audit row is
+written, for the same reason as the two cleanups above. The page's **Updated:**
+stamp in the editor still shows the original backfill time until an admin saves
+it — cosmetic, and the migration deliberately leaves it alone because this is a
+system repair rather than an edit somebody made.
+
 ### The public "Book Now" button is switched OFF for every club (#2430)
 
 **After this release every club's public "Book Now" button is off, whether or

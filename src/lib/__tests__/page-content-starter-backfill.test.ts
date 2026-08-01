@@ -40,23 +40,19 @@ const HOME_UPDATE_MIGRATION_PATH = join(
   "migration.sql",
 );
 
-// Issue #2421: supersedes the #716 migration above as the authoritative writer
-// of the home hero text (the old copy read as an open invitation for anyone to
-// book). It changes headerText only — caption and title are still whatever #716
-// wrote.
+// Issue #2431 (epic #2422, PR #2428 review finding B8): supersedes the #716
+// migration above as the authoritative writer of the home hero text — the old
+// copy said the lodge "welcomes members and guests year-round", which reads as
+// an open invitation for anyone to book and contradicted the starter FAQ seeded
+// beside it. It changes headerText only; caption and title are still whatever
+// #716 wrote.
 const HOME_GUEST_COPY_MIGRATION_PATH = join(
   process.cwd(),
   "prisma",
   "migrations",
-  "20260801130000_update_starter_home_guest_copy",
+  "20260802150000_update_starter_home_guest_copy",
   "migration.sql",
 );
-
-// The hero text #716 wrote and #2421 replaced. The later migration must guard
-// its WHERE on exactly this, so a deployment whose admin has edited the hero is
-// left untouched.
-const SUPERSEDED_HOME_HEADER_TEXT =
-  "Our club lodge welcomes members and guests year-round. Book a stay, join the club, and explore New Zealand's mountains.";
 
 const FAQ_UPDATE_MIGRATION_PATH = join(
   process.cwd(),
@@ -150,6 +146,32 @@ function nthCmsBlock(sql: string, n: number) {
   throw new Error(`cms block #${n} not found`);
 }
 
+/**
+ * SQL with every "--" comment line removed, so assertions read statements
+ * rather than prose. Migrations in this repository carry long explanatory
+ * headers that quote the very literals under test, so a bare `toContain` on the
+ * raw file would pass on a comment alone (#2490's cleanup test does the same).
+ */
+function statementsOnly(sql: string) {
+  return sql
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("--"))
+    .join("\n");
+}
+
+// Reads the headerText a "home" migration's SET clause writes, un-escaping the
+// doubled SQL quotes back to the literal string. Used so the #2431 guest-copy
+// migration's WHERE guard is proved byte-identical to what #716 actually
+// planted, rather than to a copy of it restated in this file that could drift.
+function homeHeaderTextWrittenBy(sql: string) {
+  const setClause = statementsOnly(sql).split(/\bWHERE\b/)[0];
+  const quoted = setClause.match(/"headerText"\s*=\s*'((?:[^']|'')*)'/)?.[1];
+  if (quoted === undefined) {
+    throw new Error("headerText SET value not found in home migration SQL");
+  }
+  return quoted.replace(/''/g, "'");
+}
+
 // Previous default "home" copy, replaced by the update migration above. The
 // update migration's WHERE clause must guard on these values so deployments
 // where an admin has already edited the home page are left untouched.
@@ -159,6 +181,13 @@ const PREVIOUS_HOME_CONTENT = {
   headerText:
     "Our club lodge sits in the Whakapapa ski area on Mt Ruapehu. Book a stay, join the club, and explore New Zealand's mountains.",
 };
+
+// The hero text #716 planted and #2431 replaces, read out of #716's own SET
+// clause rather than restated here. #2431 must guard its WHERE on exactly this,
+// so a deployment whose admin has edited the hero is left untouched.
+const SUPERSEDED_HOME_HEADER_TEXT = homeHeaderTextWrittenBy(
+  readFileSync(HOME_UPDATE_MIGRATION_PATH, "utf8"),
+);
 
 function sqlQuote(value: string) {
   return `'${value.replace(/'/g, "''")}'`;
@@ -186,7 +215,11 @@ describe("starter page content backfill migration", () => {
     GENERICISE_LODGE_COPY_MIGRATION_PATH,
     "utf8",
   );
-  const homeGuestCopySql = readFileSync(HOME_GUEST_COPY_MIGRATION_PATH, "utf8");
+  // Comments stripped: #2431's header quotes the new hero in prose, and this
+  // suite's job is to prove a STATEMENT writes each current seed value.
+  const homeGuestCopySql = statementsOnly(
+    readFileSync(HOME_GUEST_COPY_MIGRATION_PATH, "utf8"),
+  );
   const allInsertSql = `${insertSql}\n${backfill404Sql}\n${policyPagesSql}`;
   const combinedSql = `${allInsertSql}\n${updateSql}\n${faqUpdateSql}\n${privacyUpdateSql}\n${nonMemberHoldCopyUpdateSql}\n${genericiseLodgeCopySql}\n${homeGuestCopySql}`;
 
@@ -266,6 +299,7 @@ describe("starter privacy analytics update migration (#975)", () => {
 
 describe("starter home page content update migration", () => {
   const sql = readFileSync(HOME_UPDATE_MIGRATION_PATH, "utf8");
+  const statements = statementsOnly(sql);
 
   it("only updates the home row, and never inserts or deletes", () => {
     expect(sql).toMatch(/UPDATE\s+"PageContent"/);
@@ -290,43 +324,115 @@ describe("starter home page content update migration", () => {
     }
   });
 
-  it("writes the hero text the #2421 migration supersedes", () => {
-    // #716 no longer writes the current hero (the #2421 guest-copy migration
-    // does); it must still write exactly what #2421 guards its WHERE on, so the
-    // update chain stays unbroken.
-    expect(sql).toContain(sqlQuote(SUPERSEDED_HOME_HEADER_TEXT));
+  it("writes the hero text the #2431 migration supersedes", () => {
+    // #716 no longer writes the current hero (the #2431 guest-copy migration
+    // does); it must still write exactly what #2431 guards its WHERE on, so the
+    // update chain stays unbroken. SUPERSEDED_HOME_HEADER_TEXT is read out of
+    // this very SET clause, so this asserts the extraction found a real value
+    // and that it is the guest-booking sentence #2431 exists to remove.
+    expect(statements).toContain(sqlQuote(SUPERSEDED_HOME_HEADER_TEXT));
+    expect(SUPERSEDED_HOME_HEADER_TEXT).toContain(
+      "welcomes members and guests year-round",
+    );
   });
 });
 
-describe("starter home guest-copy update migration (#2421)", () => {
-  const sql = readFileSync(HOME_GUEST_COPY_MIGRATION_PATH, "utf8");
+describe("starter home guest-copy update migration (#2431)", () => {
+  // Comments stripped: this migration's header quotes both the old and the new
+  // sentence, so every assertion below must read statements, not prose.
+  const statements = statementsOnly(
+    readFileSync(HOME_GUEST_COPY_MIGRATION_PATH, "utf8"),
+  );
+  const home = starterPageContent.find((page) => page.slug === "home");
 
   it("only updates the home row, and never inserts or deletes", () => {
-    expect(sql).toMatch(/UPDATE\s+"PageContent"/);
-    expect(sql).not.toMatch(/\bDELETE\b/i);
-    expect(sql).not.toMatch(/\bINSERT\b/i);
-    expect(sql).toContain(`"slug" = ${sqlQuote("home")}`);
+    expect(statements).toMatch(/UPDATE\s+"PageContent"/);
+    expect(statements).not.toMatch(/\bDELETE\b/i);
+    expect(statements).not.toMatch(/\bINSERT\b/i);
+    expect(statements).toContain(`"slug" = ${sqlQuote("home")}`);
+    // Exactly one statement, and pure DML: no schema change for an old app
+    // colour's compiled queries to miss during the blue/green drain.
+    expect(statements.match(/;/g) ?? []).toHaveLength(1);
+    expect(statements).not.toMatch(/\b(CREATE|ALTER|DROP|TRUNCATE)\b/i);
   });
 
-  it("guards the update on the row still holding the #716 hero text", () => {
-    expect(sql).toContain(sqlQuote(SUPERSEDED_HOME_HEADER_TEXT));
+  it("is value-scoped, so a customised hero is untouched", () => {
+    // The predicate that does the work. Without the headerText equality this
+    // would overwrite EVERY install's hero, edited or not — the one property
+    // that makes rewriting somebody's front page safe.
+    expect(statements).toMatch(/WHERE\s+"slug" = 'home'/);
+    expect(statements).toContain(
+      `AND "headerText" = ${sqlQuote(SUPERSEDED_HOME_HEADER_TEXT)};`,
+    );
+
+    // A club that only reworded part of the sentence no longer byte-matches, so
+    // it falls outside the WHERE — demonstrated on the value itself.
+    const reworded = SUPERSEDED_HOME_HEADER_TEXT.replace(
+      "members and guests",
+      "members and their guests",
+    );
+    expect(reworded).not.toBe(SUPERSEDED_HOME_HEADER_TEXT);
+    expect(statements).not.toContain(sqlQuote(reworded));
   });
 
   it("writes the current hero text from starterPageContent", () => {
-    const home = starterPageContent.find((page) => page.slug === "home");
     expect(home).toBeDefined();
-    expect(sql).toContain(sqlQuote(home!.headerText));
+    expect(statements).toContain(
+      `SET "headerText" = ${sqlQuote(home!.headerText)}`,
+    );
 
     // SET (new value) must come before the WHERE guard (old value), so the two
     // are not accidentally swapped.
-    const setIndex = sql.indexOf(sqlQuote(home!.headerText));
-    const whereIndex = sql.indexOf(sqlQuote(SUPERSEDED_HOME_HEADER_TEXT));
+    const setIndex = statements.indexOf(sqlQuote(home!.headerText));
+    const whereIndex = statements.indexOf(
+      sqlQuote(SUPERSEDED_HOME_HEADER_TEXT),
+    );
     expect(setIndex).toBeGreaterThan(-1);
     expect(whereIndex).toBeGreaterThan(setIndex);
 
     // Only the hero changes: caption and title are still #716's.
-    expect(sql).not.toContain(sqlQuote(home!.caption));
-    expect(sql).not.toContain(sqlQuote(home!.title));
+    expect(statements).not.toContain(sqlQuote(home!.caption));
+    expect(statements).not.toContain(sqlQuote(home!.title));
+  });
+
+  it("replaces rather than clears, so a fresh front page is never blank", () => {
+    // Unlike the #2484/#2490 cleanups, "/home" needs SOMETHING in its hero: it
+    // is the row "/" renders, above the fold and as the page's meta description.
+    expect(home!.headerText.trim()).not.toBe("");
+    expect(statements).not.toMatch(/SET\s+"headerText"\s*=\s*''/);
+  });
+
+  it("seeds and writes copy that no longer advertises guest booking", () => {
+    // The point of the issue: the fresh-install hero must agree with the starter
+    // FAQ, which says a non-member stays only as the invited guest of a
+    // financial member who is also staying.
+    expect(home!.headerText).not.toMatch(/guest/i);
+    expect(home!.headerText).toBe(
+      "Our club lodge welcomes members year-round. Sign in to book a stay, or apply to join and explore New Zealand's mountains.",
+    );
+    // ...and the seed stays clear of the founding club's geography (#1945).
+    expect(home!.headerText).not.toMatch(
+      /Waldvogel|Iwikau|Ruapehu|Whakapapa|Tokoroa/i,
+    );
+  });
+
+  it("is idempotent: the value it writes is not the value it matches", () => {
+    expect(home!.headerText).not.toBe(SUPERSEDED_HOME_HEADER_TEXT);
+  });
+
+  it("writes no session clock into the payload (#1627/#1656)", () => {
+    expect(statements).not.toMatch(/CURRENT_TIMESTAMP/i);
+    expect(statements).not.toMatch(/\bnow\s*\(/i);
+    // "updatedAt" is deliberately left alone: a system repair, not an edit —
+    // matching 20260802110000 (#2484) and 20260802140000 (#2490).
+    expect(statements).not.toContain('"updatedAt"');
+  });
+
+  it("sorts after the migration it corrects, so migrate deploy applies it second", () => {
+    expect(
+      "20260802150000_update_starter_home_guest_copy" >
+        "20260613090000_update_starter_home_page_content",
+    ).toBe(true);
   });
 });
 

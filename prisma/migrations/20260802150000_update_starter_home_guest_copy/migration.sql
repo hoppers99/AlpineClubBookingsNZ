@@ -1,0 +1,131 @@
+-- Rewrite the starter "/home" hero so the reference release stops advertising
+-- guest booking (#2431, filed by the PR #2428 review of epic #2422 as finding
+-- B8).
+--
+-- WHY THIS EXISTS
+--
+-- 20260611101500_backfill_starter_page_content creates the starter "/home"
+-- PageContent row, and 20260613090000_update_starter_home_page_content (#716)
+-- rewrote its hero to the club-agnostic wording every install has carried since:
+-- 'Our club lodge welcomes members and guests year-round. Book a stay, join the
+-- club, and explore New Zealand''s mountains.' On the front page of the public
+-- site that reads as open visitor accommodation -- anyone may come, anyone may
+-- book -- which is exactly what epic #2422 established the product must not say.
+-- The starter FAQ seeded alongside it already says the opposite ("you must be
+-- invited as a guest by a current financial member, who must also be staying at
+-- the lodge during your visit"), so the reference seed contradicted itself and
+-- the hero was the outlier. The same string is also the front page's meta
+-- DESCRIPTION (src/app/(website)/page.tsx generateMetadata derives it from
+-- headerText), so it is what a search engine quotes under the club's name.
+--
+-- This is the same class as #2484 (another club's lodge address) and #2490
+-- (another club's footer affiliations): starter data this project wrote that no
+-- longer says what the project means, planted by a migration and therefore
+-- present on every database built from this repository. An applied migration
+-- cannot be edited -- Prisma records a checksum and a rewrite is migration drift
+-- for every database that already ran it -- so a NEW migration is the only
+-- mechanism that corrects both a fresh install and an already-stamped database
+-- on its next `prisma migrate deploy`.
+--
+-- REPLACED, NOT CLEARED, unlike #2484 and #2490. Those two removed facts about
+-- another club that this project cannot know. This one is generic front-page
+-- copy that every club needs SOMETHING in: "/home" is the row the route "/"
+-- renders, its hero sits under the page title above the fold, and an empty
+-- headerText would leave a fresh install's front page looking broken rather than
+-- corrected. So the value is rewritten to wording that matches the FAQ:
+-- 'Our club lodge welcomes members year-round. Sign in to book a stay, or apply
+-- to join and explore New Zealand''s mountains.'
+--
+-- Keep the SET value in sync with the "home" entry in
+-- prisma/starter-page-content.ts (enforced by
+-- src/lib/__tests__/page-content-starter-backfill.test.ts, which reads both this
+-- file and the seed rather than restating either string).
+--
+-- VALUE-SCOPED, NOT ROW-SCOPED. The WHERE clause matches the exact headerText
+-- literal that 20260613090000 wrote, byte for byte, in addition to the row's
+-- slug. A club that has edited its own hero under Admin > Setup & Configuration
+-- > Site Appearance & Content > Page Content keeps it exactly as saved --
+-- including a club that only reworded part of the sentence, because what remains
+-- no longer matches. The only value this statement can overwrite is the one
+-- string this project put there itself. There is no deliberate exception to
+-- accept here, unlike #2484 and #2490: no club legitimately "owns" this
+-- sentence, because this project wrote it as a placeholder for all of them.
+--
+-- HEADER TEXT ONLY. "caption" ('Welcome to the Club Lodge') and "title" ('Club
+-- Lodge') are still whatever 20260613090000 wrote and are not named here --
+-- neither carries a guest-booking claim, and naming them would only widen the
+-- WHERE and make the update SKIP installs whose hero is untouched but whose
+-- title an admin has changed. Guarding on the hero alone is what makes this
+-- correct the maximum number of affected installs.
+--
+-- "updatedAt" IS DELIBERATELY UNTOUCHED, matching 20260731140000, 20260802110000
+-- and 20260802140000: this is a system repair, not an admin edit. The visible
+-- consequence is that the Page Content editor's "Updated:" stamp for "/home"
+-- still reads the time of the original backfill; it is cosmetic (that panel's
+-- display only -- nothing caches, orders, or invalidates on this column), and an
+-- admin's first real save corrects it. Leaving it also keeps the payload free of
+-- CURRENT_TIMESTAMP/now(), so the session-clock DML gate (#1627/#1656) passes
+-- with no acknowledgement -- unlike 20260717180000, which had to be added to
+-- SESSION_CLOCK_DML_ACKNOWLEDGED for writing the session clock into this very
+-- table.
+--
+-- IDEMPOTENT. After the UPDATE no row matches the old literal (the value is now
+-- the new sentence), so a re-run selects nothing and changes nothing. A row that
+-- never held it is never touched.
+--
+-- NO AUDIT ROW, deliberately, and unlike an admin save through
+-- /api/admin/page-content (which does write one). What is overwritten is not
+-- club-authored content a club could lose: it is a string this project wrote
+-- into the row itself, it is quoted verbatim here, in the changelog fragment and
+-- in docs/UPGRADING.md, and restoring it is one paste into one editor.
+-- "AuditLog" is a 7-year retained store; there is nothing here worth keeping in
+-- it.
+--
+-- BLUE/GREEN. Phase metadata-only: no DDL at all, one value-scoped UPDATE.
+-- "PageContent" is a small cold content table (about a dozen rows, read on
+-- public page render, written only when an admin saves a page), so the row locks
+-- are momentary and no hot-table traffic window applies. Nothing here matches
+-- the validator's hot-table or breaking-SQL regexes
+-- (scripts/validate-blue-green-migrations.sh), so
+-- scripts/check-migration-safety-coverage.sh does not REQUIRE a
+-- docs/BLUE_GREEN_MIGRATION_SAFETY.tsv row -- 20260613090000, the migration
+-- being corrected, has none for the same reason. One is recorded anyway,
+-- matching every other data-rewriting migration in this stretch of history
+-- (20260731140000, 20260801150000, 20260802100000, 20260802110000,
+-- 20260802140000), because docs/UPGRADING.md tells an operator to look up every
+-- pending migration in the ledger and this one changes what their public front
+-- page says.
+--
+-- READS are compatible in both directions during the drain. Both app colours
+-- render "/home" identically: they select headerText and print it under the page
+-- title, and derive the page's meta description from the same value. The column
+-- stays a non-empty string of ordinary text of similar length, so an old colour
+-- still serving simply shows the new sentence. No layout, content token, or
+-- sanitiser behaviour depends on the wording.
+--
+-- WRITES need one caveat, and it is a stale-form hazard rather than a colour
+-- incompatibility -- the same shape as 20260802110000's and 20260802140000's.
+-- The Page Content editor (src/components/admin/page-content-panel.tsx) loads a
+-- page's fields when it is opened and PUTs them back on save, so an admin on
+-- EITHER colour who had "/home" open before this migration ran and pressed Save
+-- afterwards writes the old sentence straight back, and because this is one-shot
+-- DML it never re-runs to correct it again. Nothing breaks and nothing is lost
+-- -- the sentence sits visibly in that editor and one edit removes it -- but the
+-- operator must VERIFY the public front page after cutover rather than assume
+-- the rewrite stuck. Public pages are cached briefly for logged-out visitors, so
+-- allow a minute (or check while signed in) before concluding anything.
+-- docs/UPGRADING.md carries that as part of the post-upgrade action.
+--
+-- TIMESTAMP COORDINATION. 20260802150000 sorts strictly after the latest
+-- committed migration, 20260802140000_clear_starter_footer_affiliations (#2490),
+-- and reuses no existing prefix (the duplicate-prefix ratchet in
+-- scripts/check-migration-safety-coverage.sh turns main red on a collision). One
+-- in-flight branch, #2364, currently holds a SECOND 20260802140000 that already
+-- collides with the committed one and must be re-stamped above this migration
+-- before it merges; its subject (member hosting policy) does not touch
+-- "PageContent", so the applied order between the two is immaterial.
+
+UPDATE "PageContent"
+SET "headerText" = 'Our club lodge welcomes members year-round. Sign in to book a stay, or apply to join and explore New Zealand''s mountains.'
+WHERE "slug" = 'home'
+  AND "headerText" = 'Our club lodge welcomes members and guests year-round. Book a stay, join the club, and explore New Zealand''s mountains.';
