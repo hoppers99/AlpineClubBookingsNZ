@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { hasAdminAreaAccess } from "@/lib/admin-permissions";
+import { parseJsonRequestBody } from "@/lib/api-json";
 import logger from "@/lib/logger";
 import {
   auditMemberGuestResolve,
@@ -22,6 +23,22 @@ import { requireAdmin } from "@/lib/session-guards";
  * classifies what the officer typed and asks for either an exact email or a name
  * fragment. Splitting them would mean two admin routes with one audience and one
  * gate between them.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * TWO METHODS, AND WHICH ONE EACH MODE USES IS LOAD-BEARING
+ *
+ * The email mode is a **POST**, exactly like its member-facing twin
+ * `POST /api/members/guest-candidates/resolve`, and for the reason that route's
+ * own docblock states without hedging: a GET puts another member's email address
+ * into the request URL, and from there into the access log, the browser history,
+ * the `Referer` header of anything the page subsequently loads, and every proxy
+ * in between. None of that is less true because an officer typed it — if
+ * anything it is worse, since an officer types many addresses in a session and
+ * an admin browser is likelier to be shared. It shipped as a GET here and the
+ * privacy review caught it; the method is now the same on both paths.
+ *
+ * The name mode stays a **GET**. A name fragment is not a contact detail, and
+ * the member-facing search route is a GET for the same reason.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * WHY THIS EXISTS RATHER THAN REUSING THE MEMBER ROUTES
@@ -75,6 +92,91 @@ import { requireAdmin } from "@/lib/session-guards";
  * confirms the club has the feature and has switched it off, which is a fact
  * about the club an unauthorised caller has no business learning.
  */
+/**
+ * The EMAIL mode — an exact address, in the body (see the method note above).
+ *
+ * Available to any booking officer, `membership:view` or not: it is the #1376
+ * fallback, and it is bounded by the same thing that has always bounded it — you
+ * must already know the address.
+ */
+export async function POST(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  // Path-derived, and a POST under `/api/admin/bookings/...` resolves to
+  // bookings:EDIT rather than the GET's bookings:view. That is the right floor
+  // and not an accident of the method change: the picker is only ever offered
+  // to a viewer the booking page has already put in admin mode, which is itself
+  // `bookings:edit` (`bookingManagementAuthorizationRole`). A read-only
+  // bookings viewer gets the MEMBER routes and the club's own search setting.
+  const guard = await requireAdmin();
+  if (!guard.ok) return guard.response;
+  const actorMemberId = guard.session.user.id;
+  await params;
+
+  const gate = await loadMemberGuestFindGate({ requiresOpenSearch: false });
+  if (!gate.ok) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
+  const json = await parseJsonRequestBody(request);
+  if (!json.ok) return json.response;
+  const rawEmail =
+    typeof (json.body as { email?: unknown } | null)?.email === "string"
+      ? (json.body as { email: string }).email.slice(0, 320)
+      : "";
+  const email = normalizeMemberGuestEmail(rawEmail);
+
+  if (!email) {
+    // D-20 RIDER (b): AUDITED, not silently dropped. This is the same answer a
+    // genuine miss gets — a malformed address says nothing about any member, so
+    // it must not get its own distinguishable response — but "indistinguishable
+    // to the caller" is not "invisible to the club". The member route records
+    // this case as `outcome: "failure"` for exactly this reason (a run of
+    // malformed probes is a pattern an admin should be able to find), and rider
+    // (b) says an admin resolve is audited identically to the member path. It
+    // was the one outcome here that left no trace at all.
+    await auditMemberGuestResolve({
+      request,
+      actorMemberId,
+      email: rawEmail.trim(),
+      candidates: [],
+      outcome: "failure",
+    });
+    return NextResponse.json({ candidates: [] });
+  }
+
+  try {
+    const result = await resolveMemberGuestCandidatesByEmail({ email });
+    await auditMemberGuestResolve({
+      request,
+      actorMemberId,
+      email,
+      candidates: result.candidates.map((candidate) => ({
+        memberId: candidate.memberId,
+      })),
+    });
+    return NextResponse.json(result);
+  } catch (err) {
+    logger.error({ err }, "Failed to resolve member-guest candidates for an admin");
+    // AUDITED BEFORE RETURNING, for the same rider. A lookup that blew up is
+    // still a lookup that was attempted, and the envelope hides the failure from
+    // the caller — so without this row the trail would show nothing at all for
+    // the one class of request most worth being able to find later.
+    await auditMemberGuestResolve({
+      request,
+      actorMemberId,
+      email,
+      candidates: [],
+      outcome: "failure",
+    });
+    return NextResponse.json({ candidates: [] });
+  }
+}
+
+/**
+ * The NAME mode — a fragment, in the query string, gated on `membership:view`.
+ */
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -87,36 +189,9 @@ export async function GET(
   const actorMemberId = guard.session.user.id;
   await params;
 
-  const mode = request.nextUrl.searchParams.get("mode");
   const gate = await loadMemberGuestFindGate({ requiresOpenSearch: false });
   if (!gate.ok) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
-
-  if (mode === "email") {
-    const email = normalizeMemberGuestEmail(
-      request.nextUrl.searchParams.get("email") ?? "",
-    );
-    if (!email) {
-      // Same shape a genuine miss gets. A malformed address says nothing about
-      // any member, so it must not get its own distinguishable answer.
-      return NextResponse.json({ candidates: [] });
-    }
-    try {
-      const result = await resolveMemberGuestCandidatesByEmail({ email });
-      await auditMemberGuestResolve({
-        request,
-        actorMemberId,
-        email,
-        candidates: result.candidates.map((candidate) => ({
-          memberId: candidate.memberId,
-        })),
-      });
-      return NextResponse.json(result);
-    } catch (err) {
-      logger.error({ err }, "Failed to resolve member-guest candidates for an admin");
-      return NextResponse.json({ candidates: [] });
-    }
   }
 
   // Rider (a). The name mode — and only the name mode — needs the directory.

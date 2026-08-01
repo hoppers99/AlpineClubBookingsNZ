@@ -34,7 +34,10 @@ vi.mock("@/lib/member-guest-find-service", () => ({
 }));
 vi.mock("@/lib/logger", () => ({ default: { error: vi.fn(), warn: vi.fn() } }));
 
-import { GET } from "@/app/api/admin/bookings/[id]/member-guest-candidates/route";
+import {
+  GET,
+  POST,
+} from "@/app/api/admin/bookings/[id]/member-guest-candidates/route";
 
 const SETTINGS = {
   approvalRequired: true,
@@ -43,10 +46,27 @@ const SETTINGS = {
   openMemberSearchIncludesMinors: false,
 };
 
+const ROUTE_URL =
+  "https://club.example.org/api/admin/bookings/bk-1/member-guest-candidates";
+
 function request(query: string) {
-  return new NextRequest(
-    `https://club.example.org/api/admin/bookings/bk-1/member-guest-candidates${query}`,
-  );
+  return new NextRequest(`${ROUTE_URL}${query}`);
+}
+
+/**
+ * The EMAIL mode's request — a POST with the address in the BODY.
+ *
+ * The method is the assertion, not the plumbing: a GET would have put another
+ * member's address into the access log, the browser history and the `Referer` of
+ * every later request from the page, which is precisely why the member-facing
+ * twin is a POST and calls the choice load-bearing in its own docblock.
+ */
+function emailRequest(body: unknown) {
+  return new NextRequest(ROUTE_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
 }
 
 const params = Promise.resolve({ id: "bk-1" });
@@ -102,13 +122,38 @@ describe("the gate", () => {
     // They lose a convenience, not a capability: an exact address is bounded by
     // already knowing it, which is what they have always had.
     mocks.hasAdminAreaAccess.mockReturnValue(false);
-    const res = await GET(request("?mode=email&email=sam%40example.com"), {
+    const res = await POST(emailRequest({ email: "sam@example.com" }), {
       params,
     });
     expect(res.status).toBe(200);
     expect(mocks.resolveByEmail).toHaveBeenCalledWith({
       email: "sam@example.com",
     });
+  });
+
+  it("does not exist at all on the EMAIL mode either when the module is off", async () => {
+    mocks.loadMemberGuestFindGate.mockResolvedValue({ ok: false });
+    const res = await POST(emailRequest({ email: "sam@example.com" }), { params });
+    expect(res.status).toBe(404);
+    expect(mocks.resolveByEmail).not.toHaveBeenCalled();
+  });
+});
+
+describe("the address never travels in the URL", () => {
+  it("takes the email from the BODY, and the route exposes no GET email mode", async () => {
+    // The regression this pins is a whole-route one rather than a line: the
+    // first cut read `?mode=email&email=…` from the query string, which put a
+    // member's address into the access log and the browser history. A GET now
+    // has one mode only, and it is the name search.
+    await POST(emailRequest({ email: "sam@example.com" }), { params });
+    expect(mocks.resolveByEmail).toHaveBeenCalledWith({
+      email: "sam@example.com",
+    });
+
+    mocks.resolveByEmail.mockClear();
+    await GET(request("?mode=email&email=sam%40example.com"), { params });
+    // The GET fell through to the NAME search — it did not resolve an address.
+    expect(mocks.resolveByEmail).not.toHaveBeenCalled();
   });
 });
 
@@ -148,7 +193,7 @@ describe("the audit trail", () => {
     mocks.resolveByEmail.mockResolvedValue({
       candidates: [{ memberId: "m-1" }],
     });
-    await GET(request("?mode=email&email=Sam%40Example.com"), { params });
+    await POST(emailRequest({ email: "Sam@Example.com" }), { params });
     expect(mocks.auditResolve).toHaveBeenCalledWith(
       expect.objectContaining({
         actorMemberId: "admin-1",
@@ -158,12 +203,39 @@ describe("the audit trail", () => {
     );
   });
 
-  it("answers an empty envelope for a blank address without pretending it looked", async () => {
-    // A malformed address says nothing about any member, so it gets the same
-    // answer a genuine miss gets — and no query is issued.
-    const res = await GET(request("?mode=email&email="), { params });
+  it("answers an empty envelope for a blank address — and STILL records it", async () => {
+    // Two properties in one, and the second is D-20 rider (b). The caller must
+    // not be able to tell a malformed address from a genuine miss, so the
+    // response is identical and no query is issued. But indistinguishable to
+    // the caller is not invisible to the club: the member route audits this
+    // case as `outcome: "failure"` precisely so a run of malformed probes is
+    // findable, and rider (b) says an admin resolve is audited identically. It
+    // was the one outcome on this route that left no trace at all.
+    const res = await POST(emailRequest({ email: "   " }), { params });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ candidates: [] });
     expect(mocks.resolveByEmail).not.toHaveBeenCalled();
+    expect(mocks.auditResolve).toHaveBeenCalledWith(
+      expect.objectContaining({ actorMemberId: "admin-1", outcome: "failure" }),
+    );
+  });
+
+  it("records the attempt even when the lookup itself throws", async () => {
+    // The envelope hides the failure from the caller (a 500 on the "member
+    // exists" path and a 200 on the "does not" path would be the crudest
+    // possible oracle), which is exactly why the row has to exist: without it
+    // the trail would show nothing at all for the class of request most worth
+    // being able to find later.
+    mocks.resolveByEmail.mockRejectedValue(new Error("boom"));
+    const res = await POST(emailRequest({ email: "sam@example.com" }), { params });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ candidates: [] });
+    expect(mocks.auditResolve).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actorMemberId: "admin-1",
+        email: "sam@example.com",
+        outcome: "failure",
+      }),
+    );
   });
 });

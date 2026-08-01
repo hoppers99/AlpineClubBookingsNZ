@@ -97,6 +97,12 @@ export const MEMBER_GUEST_FIND_ENDPOINTS: MemberGuestFindEndpoints = {
  *
  * One route, two modes — see its own doc comment for why the name mode needs
  * `membership:view` and the email mode does not.
+ *
+ * THE EMAIL LOOKUP IS A POST, matching the member pair above rather than
+ * diverging from it. An address in a query string lands in the access log, the
+ * browser history and the `Referer` of every later request from the page; a body
+ * lands in none of those. The member route's docblock calls the method
+ * load-bearing, and nothing about an officer typing the address makes it less so.
  */
 export function adminMemberGuestFindEndpoints(
   bookingId: string,
@@ -104,7 +110,12 @@ export function adminMemberGuestFindEndpoints(
   const base = `/api/admin/bookings/${encodeURIComponent(bookingId)}/member-guest-candidates`;
   return {
     resolveByEmail: (email, signal) =>
-      fetch(`${base}?mode=email&email=${encodeURIComponent(email)}`, { signal }),
+      fetch(base, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+        signal,
+      }),
     searchByName: (q, signal) =>
       fetch(`${base}?q=${encodeURIComponent(q)}`, { signal }),
   };
