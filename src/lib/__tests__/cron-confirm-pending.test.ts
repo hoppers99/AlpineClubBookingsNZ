@@ -530,7 +530,7 @@ describe("Cron: Confirm Pending Bookings", () => {
     });
 
     expect(mockSendConfirmedEmail).toHaveBeenCalledWith(
-      { bookingId: "b1" },
+      { bookingId: "b1", recipientMemberId: "member_b1" },
       "b1@example.com",
       "Test",
       booking.checkIn,

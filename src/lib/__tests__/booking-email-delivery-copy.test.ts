@@ -141,7 +141,7 @@ const RELATIVE_DETAIL =
 const CONSENT_ACTION =
   `${CURRENT_ORIGIN}/bookings/consent/bearer-secret` +
   `?return=%2Fbookings%2F${BOOKING_ID}&mode=answer#respond`;
-const CONSENT_ACTION_HTML = CONSENT_ACTION.replace("&", "&amp;");
+const CONSENT_ACTION_HTML = CONSENT_ACTION.replaceAll("&", "&amp;");
 const ENCODED_CONSENT_ACTIONS = [
   `${CURRENT_ORIGIN}/bookings/%63onsent/current-secret?mode=answer#respond`,
   "https://legacy-bookings.example.test/bookings/%43ONSENT/legacy-secret?mode=answer#respond",
