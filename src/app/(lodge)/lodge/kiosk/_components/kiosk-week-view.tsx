@@ -29,6 +29,15 @@ const SHORT_WEEKDAY_DAY = new Intl.DateTimeFormat(APP_LOCALE, {
   month: "short",
 });
 
+// The START of the week range only. The range reads "13 Apr - 19 Apr 2026":
+// the year is carried once, by the end date, so printing it on both halves
+// would just be noise.
+const SHORT_DAY_MONTH = new Intl.DateTimeFormat(APP_LOCALE, {
+  timeZone: APP_TIME_ZONE,
+  day: "numeric",
+  month: "short",
+});
+
 type DateRange = { minDate: string; maxDate: string } | null;
 
 export type KioskWeekDaySummary =
@@ -158,7 +167,7 @@ function displayWeekRange(weekStart: string): string {
   const weekEnd = addDaysToDateKey(weekStart, 6);
   const start = parseDateKey(weekStart);
   const end = parseDateKey(weekEnd);
-  return `${formatNZDate(start)} - ${formatNZDate(end)}`;
+  return `${SHORT_DAY_MONTH.format(start)} - ${formatNZDate(end)}`;
 }
 
 export function KioskWeekView({

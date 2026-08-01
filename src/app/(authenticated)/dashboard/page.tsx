@@ -56,9 +56,11 @@ import { checkCapacity } from "@/lib/capacity";
 import { formatNZDate, formatNZTime } from "@/lib/nzst-date";
 import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
 
-// Not one of the shared helpers: the upcoming-events list renders its date into
-// a fixed-width `w-14` column, so the year is deliberately dropped to keep the
-// column narrow. Zone-pinned to club time like every other date on this page.
+// Not one of the shared helpers: the three tightest slots on this page — the
+// upcoming-events list (a fixed-width `w-14` column), the "Next Stay" summary
+// pair and the draft "Expires" note — deliberately drop the year to stay
+// compact, and always have. The admin dashboard's twin cards do the same.
+// Zone-pinned to club time like every other date on this page.
 const COMPACT_DAY_MONTH = new Intl.DateTimeFormat(APP_LOCALE, {
   timeZone: APP_TIME_ZONE,
   day: "numeric",
@@ -438,9 +440,9 @@ export default async function DashboardPage() {
           {nextStay ? (
             <>
               <div className="text-lg font-semibold">
-                {formatNZDate(new Date(nextStay.checkIn))}
+                {COMPACT_DAY_MONTH.format(new Date(nextStay.checkIn))}
                 {" — "}
-                {formatNZDate(new Date(nextStay.checkOut))}
+                {COMPACT_DAY_MONTH.format(new Date(nextStay.checkOut))}
               </div>
               <p className="text-xs text-muted-foreground mt-1">
                 {nextStay._count.guests} guest
@@ -663,7 +665,9 @@ export default async function DashboardPage() {
                         {booking.draftExpiresAt && (
                           <span className="text-warning-11 ml-2">
                             Expires{" "}
-                            {formatNZDate(new Date(booking.draftExpiresAt))}
+                            {COMPACT_DAY_MONTH.format(
+                              new Date(booking.draftExpiresAt),
+                            )}
                           </span>
                         )}
                       </p>
