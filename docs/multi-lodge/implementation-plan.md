@@ -197,6 +197,16 @@ the page carries the standard `LodgeSelect` + URL lodge context through
 fetches, mutations, and the print link. Kiosk roster routes were already
 lodge-bound and are unchanged.
 
+*Progress note (2026-08-02, #2478):* one more roster read had been missed
+— the standalone printable-roster feed
+`/api/chores/roster/[date]/print`, which no page calls (the admin Print
+Roster button goes to `/api/admin/roster/[date]`). It queried chore
+assignments and staying guests club-wide. It now resolves its lodge the
+same way the admin roster route does (`?lodgeId=` validated active, 400
+otherwise, default-lodge fallback) and scopes both queries —
+`choreTemplate: lodgeNullTolerantScope(...)` on the assignments, a plain
+lodge match on the bookings — so it can only ever answer for one lodge.
+
 **Risk: Medium.**
 
 ## Phase 6 — Promo codes
