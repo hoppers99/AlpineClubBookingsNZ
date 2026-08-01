@@ -417,19 +417,50 @@ describe("email-templates", () => {
     const checkOut = new Date("2026-07-18");
 
     it("includes bumped explanation", () => {
-      const html = bookingBumpedTemplate("Alice", checkIn, checkOut, 2);
+      const html = bookingBumpedTemplate("Alice", checkIn, checkOut, 2, true);
       expect(html).toContain("bumped");
       expect(html).toContain("member demand");
     });
 
     it("clarifies no charge", () => {
-      const html = bookingBumpedTemplate("Test", checkIn, checkOut, 1);
+      const html = bookingBumpedTemplate("Test", checkIn, checkOut, 1, true);
       expect(html).toContain("not been charged");
     });
 
     it("includes rebook link", () => {
-      const html = bookingBumpedTemplate("Test", checkIn, checkOut, 1);
+      const html = bookingBumpedTemplate("Test", checkIn, checkOut, 1, true);
       expect(html).toContain("/book");
+    });
+
+    // #2430: the same notice reaches a club member and a non-login
+    // NON_MEMBER/SCHOOL contact (a converted public booking request). Only the
+    // member can complete the login behind /book. The recipient argument is
+    // REQUIRED — there is no default to fall back to, because `true` is the
+    // leaky value (#2430 review) — so this pins the member wording directly.
+    it("pins the member wording: Book Again, linked to the member booking flow", () => {
+      const html = bookingBumpedTemplate("Test", checkIn, checkOut, 1, true);
+      expect(html).toContain("Book Again");
+      expect(html).toMatch(/href="[^"]*\/book"/);
+      expect(html).not.toContain("Contact the Club");
+    });
+
+    it("sends a non-login recipient to the club contact page, not the members-only booking flow", () => {
+      const html = bookingBumpedTemplate("Test", checkIn, checkOut, 1, false);
+      expect(html).toContain("Contact the Club");
+      expect(html).toContain("/contact");
+      expect(html).not.toContain("Book Again");
+      // No link anywhere in the message points at the member booking flow.
+      expect(html).not.toMatch(/href="[^"]*\/book"/);
+    });
+
+    // #2430 review: a club's Contact page need not carry a contact form, so a
+    // reader who cannot sign in would otherwise be left with no way to reply.
+    it("names the club's support address for both recipient classes", () => {
+      for (const canBook of [true, false]) {
+        const html = bookingBumpedTemplate("Test", checkIn, checkOut, 1, canBook);
+        expect(html).toContain("If you have any questions, contact the club at");
+        expect(html).toContain("mailto:");
+      }
     });
   });
 

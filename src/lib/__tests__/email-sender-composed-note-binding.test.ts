@@ -39,7 +39,10 @@ import {
   sendAdminSplitSettlementUnpaidAlert,
 } from "@/lib/email/admin-alerts-booking";
 import { sendAdminDuplicateCaptureRefundAlert } from "@/lib/email/admin-alerts-finance";
-import { sendSplitGuestPortionCancelledEmail } from "@/lib/email/booking";
+import {
+  sendBookingBumpedEmail,
+  sendSplitGuestPortionCancelledEmail,
+} from "@/lib/email/booking";
 
 function capturedAdminTemplateData(): EmailTemplateData {
   expect(mocks.sendToAdmins).toHaveBeenCalledTimes(1);
@@ -194,5 +197,104 @@ describe("#2320 review — senders supply the composed notes their defaults rend
     expect(rendered).toContain(
       "your own booking is unaffected and remains confirmed",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2430 — the bumped notice's way back in, per recipient class.
+// ---------------------------------------------------------------------------
+describe("#2430 booking-bumped points each recipient class somewhere it can go", () => {
+  const BASE_URL = "https://club.example.org";
+  const SUPPORT_EMAIL = "club@example.org";
+  const SUPPORT_LINE = `If you have any questions, contact the club at ${SUPPORT_EMAIL}.`;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.sendEmail.mockResolvedValue(undefined);
+  });
+
+  async function bumpedTemplateData(
+    recipientCanBookOnline: boolean,
+  ): Promise<EmailTemplateData> {
+    await sendBookingBumpedEmail(
+      { bookingId: "booking_1", recipientMemberId: "member_1" },
+      "someone@example.org",
+      "Alice",
+      new Date("2026-07-10"),
+      new Date("2026-07-12"),
+      2,
+      null,
+      recipientCanBookOnline,
+    );
+    expect(mocks.sendEmail).toHaveBeenCalledTimes(1);
+    const [args] = mocks.sendEmail.mock.calls[0] as [
+      { templateName: string; templateData: EmailTemplateData },
+    ];
+    expect(args.templateName).toBe("booking-bumped");
+    // BASE_URL and SUPPORT_EMAIL are GLOBAL tokens resolved from the club's own
+    // configured public URL and support address at render time, which is
+    // exactly why the sender supplies only the caption and the path.
+    return { ...args.templateData, BASE_URL, SUPPORT_EMAIL };
+  }
+
+  it("a club member still gets the members-only booking flow", async () => {
+    const rendered = renderDefaultBody(
+      "booking-bumped",
+      await bumpedTemplateData(true),
+    );
+    expect(rendered).toContain(
+      `
+
+Book Again: ${BASE_URL}/book
+
+${SUPPORT_LINE}
+
+We apologise for the inconvenience.`,
+    );
+    expect(rendered).not.toContain("Contact the Club");
+  });
+
+  it("a non-login contact gets the club contact page instead of a login they cannot complete", async () => {
+    const rendered = renderDefaultBody(
+      "booking-bumped",
+      await bumpedTemplateData(false),
+    );
+    expect(rendered).toContain(
+      `
+
+Contact the Club: ${BASE_URL}/contact
+
+${SUPPORT_LINE}
+
+We apologise for the inconvenience.`,
+    );
+    expect(rendered).not.toContain("Book Again");
+    expect(rendered).not.toContain(`${BASE_URL}/book`);
+  });
+
+  // #2430 review: the contact page is a club-authored page and need not host a
+  // contact form, so a recipient who cannot sign in must be given an address
+  // too. Both classes get the same courtesy line.
+  it("names the club's support address for both classes", async () => {
+    for (const canBook of [true, false]) {
+      mocks.sendEmail.mockClear();
+      const rendered = renderDefaultBody(
+        "booking-bumped",
+        await bumpedTemplateData(canBook),
+      );
+      expect(rendered).toContain(SUPPORT_LINE);
+    }
+  });
+
+  it("leaves no dangling caption or bare base URL for either class", async () => {
+    for (const canBook of [true, false]) {
+      mocks.sendEmail.mockClear();
+      const data = await bumpedTemplateData(canBook);
+      expect(String(data.rebookLabel).trim()).not.toBe("");
+      expect(String(data.rebookPath)).toMatch(/^\/[a-z]/);
+      const rendered = renderDefaultBody("booking-bumped", data);
+      expect(rendered).not.toMatch(/:\s*$/m);
+      expect(rendered).not.toContain("{{");
+    }
   });
 });

@@ -997,6 +997,11 @@ export function sampleValue(token: string): string {
       `Open Xero object: ${buildXeroInvoiceUrl("sample-invoice-id")}\n`
     );
   }
+  // #2430: previewed as the MEMBER wording, which is what the shipped default
+  // has always rendered; the non-login contact variant is the sender's other
+  // branch of bookingBumpedRebookAction.
+  if (token === "rebookLabel") return "Book Again";
+  if (token === "rebookPath") return "/book";
   if (token === "refundOutcomeNote") {
     return duplicateCaptureRefundOutcomeParagraph(false);
   }
@@ -1433,6 +1438,13 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "reason",
   "reasonNote",
   "recipientLabel",
+  // #2430: the bumped notice's way back in, split into the caption and the
+  // path so the line stays "{{rebookLabel}}: {{BASE_URL}}{{rebookPath}}" and
+  // keeps resolving the club's own configured public URL. A club MEMBER gets
+  // "Book Again" + "/book"; a non-login NON_MEMBER/SCHOOL contact, who cannot
+  // complete the login /book sits behind, gets "Contact the Club" + "/contact".
+  "rebookLabel",
+  "rebookPath",
   "refundAmount",
   "refundOutcomeNote",
   "refundMessage",

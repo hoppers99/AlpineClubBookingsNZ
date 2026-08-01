@@ -348,7 +348,15 @@ async function sendBumpedEmail(booking: PendingBooking, flagged: boolean) {
         booking.checkIn,
         booking.checkOut,
         booking.guests.length,
-        booking.lodgeId
+        booking.lodgeId,
+        // #2430: the only send site of this template, and it reaches two
+        // recipient classes. A club member (their own pending booking, or a
+        // split guest child) can sign in and rebook; the non-login
+        // NON_MEMBER/SCHOOL contact who owns a booking converted from a public
+        // booking request (#707) — or any non-login contact an admin booked for
+        // — cannot, so the notice points them at the club contact page instead
+        // of the members-only booking flow.
+        booking.member.canLogin
       );
     }
   } catch (emailErr) {

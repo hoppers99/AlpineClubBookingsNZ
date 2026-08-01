@@ -31,6 +31,7 @@ import type { MemberGuestPartyList } from "@/lib/member-guest-email-notes";
 import {
   adminSplitSettlementCancelledLeadParagraph,
   adminSplitSettlementUnpaidLeadParagraph,
+  bookingBumpedRebookAction,
   bookingPaymentDueNote,
   duplicateCaptureRefundOutcomeParagraph,
   splitGuestPortionOwnBookingLine,
@@ -734,8 +735,16 @@ export function bookingBumpedTemplate(
   firstName: string,
   checkIn: Date,
   checkOut: Date,
-  guestCount: number
+  guestCount: number,
+  // #2430: whether this recipient can actually use the member booking flow.
+  // A non-login NON_MEMBER/SCHOOL contact (a converted public booking request,
+  // or an admin booking on their behalf) is pointed at the club contact page
+  // instead of a login they can never complete. REQUIRED, with no default: the
+  // leaky value is `true`, so a new send site that forgot this argument would
+  // silently mail a login-less contact a members-only link (#2430 review).
+  recipientCanBookOnline: boolean
 ): string {
+  const rebook = bookingBumpedRebookAction(recipientCanBookOnline);
   return layout(`
     ${heading("Booking Update")}
     ${paragraph("Hi " + escapeHtml(firstName) + ", unfortunately your pending lodge booking has been bumped due to member demand.")}
@@ -746,7 +755,8 @@ export function bookingBumpedTemplate(
     ])}
     ${alertBox("Your card has not been charged.", "info")}
     ${paragraph("As a non-member booking, priority is given to club members when the lodge reaches capacity. You're welcome to rebook for different dates where availability exists.")}
-    ${button("Book Again", BASE_URL + "/book")}
+    ${button(rebook.label, BASE_URL + rebook.path)}
+    ${supportContactSentence("If you have any questions, contact the club at ")}
     ${muted("We apologise for the inconvenience.")}
   `);
 }
