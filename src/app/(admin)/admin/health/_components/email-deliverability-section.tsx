@@ -336,6 +336,8 @@ export function EmailDeliverabilitySection({
                 {emailFailures.failures.map((failure) => (
                   <div
                     key={failure.id}
+                    role="group"
+                    aria-label={`Email failure for ${failure.to}`}
                     className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,1.5fr)_140px_90px_140px_88px] gap-3 px-4 py-3 text-sm items-center"
                   >
                     <span className="font-medium text-foreground truncate">
@@ -360,6 +362,16 @@ export function EmailDeliverabilitySection({
                       <CheckCircle className="h-3.5 w-3.5" />
                       Archive
                     </button>
+                    {failure.errorMessage ? (
+                      <p className="col-span-full text-xs text-muted-foreground">
+                        <span className="font-medium text-foreground">
+                          Failure reason:
+                        </span>{" "}
+                        <span className="whitespace-pre-wrap break-words">
+                          {failure.errorMessage}
+                        </span>
+                      </p>
+                    ) : null}
                   </div>
                 ))}
               </div>

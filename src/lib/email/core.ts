@@ -18,6 +18,11 @@ import {
   type EmailBookingContext,
 } from "@/lib/booking-email-suppression";
 import { isPlaceholderContactEmail } from "@/lib/placeholder-contact-email";
+import { resolveBookingEmailLink } from "@/lib/booking-email-authority";
+import {
+  finalizeBookingEmailHtml,
+  hasBookingDetailHref,
+} from "@/lib/booking-email-html";
 import {
   getEmailTransporter,
   shouldPersistEmailHtml,
@@ -212,12 +217,30 @@ export async function sendEmail({
   // thread the real id wherever one exists.
   bookingContext: EmailBookingContext;
 }): Promise<EmailSendOutcome> {
+  const bookingLink =
+    bookingContext === "none"
+      ? null
+      : await resolveBookingEmailLink({
+          bookingId: bookingContext.bookingId,
+          templateName,
+          recipient: bookingContext.recipient,
+          deliveryAddress: to,
+        });
   const prepared = await prepareEmailMessage({
     templateName,
     subject,
     html,
-    templateData,
+    templateData: {
+      ...(templateData ?? {}),
+      bookingUrl: bookingLink?.bookingUrl ?? "",
+    },
     lodgeId,
+  });
+  prepared.html = finalizeBookingEmailHtml({
+    html: prepared.html,
+    bookingUrl: bookingLink?.bookingUrl ?? null,
+    bookingScoped: bookingContext !== "none",
+    bodyOverrideApplied: prepared.bodyOverrideApplied,
   });
   const from = formatEmailFromAddressWithSettings(
     prepared.settings,
@@ -262,13 +285,33 @@ export async function sendEmail({
         to: emailLogRecipient,
         subject: sanitizedSubject,
         templateName,
-        htmlBody: persistHtmlBody ? prepared.html : null,
+        // New booking rows quarantine retryable HTML from the pre-#2362
+        // worker, whose fixed query selects only legacy htmlBody. This makes a
+        // later application rollback fail closed without withholding the
+        // initial send. Sensitive templates remain unretained in both fields.
+        htmlBody:
+          bookingContext === "none" && persistHtmlBody ? prepared.html : null,
         status: "QUEUED",
         lastAttemptAt: new Date(),
         // #2258: booking attribution on every booking-scoped message, not just
         // withheld ones — the retry cron re-evaluates the switch from this
         // column before it replays a FAILED row.
         bookingId: bookingContext === "none" ? null : bookingContext.bookingId,
+        // #2362: retries must repeat the current authority check from a durable
+        // identity. `to` is deliberately never treated as proof of access.
+        // The nullable override flag doubles as the provenance marker: null is
+        // a legacy/unknown row; false/true means this context was recorded.
+        ...(bookingContext === "none"
+          ? {}
+          : {
+              bookingRecipientMemberId:
+                bookingContext.recipient.kind === "member"
+                  ? bookingContext.recipient.memberId
+                  : null,
+              bookingBodyOverrideApplied: prepared.bodyOverrideApplied,
+              bookingDetailLinkIncluded: hasBookingDetailHref(prepared.html),
+              bookingRetryHtmlBody: persistHtmlBody ? prepared.html : null,
+            }),
       },
     });
     emailLogId = log.id;
@@ -301,7 +344,9 @@ export async function sendEmail({
             // switch is a transient fault: FAILED lets the retry cron pick the
             // row up again, and that cron re-checks the switch before replaying.
             status: withheld ? "SKIPPED_NO_EMAILS" : "FAILED",
-            ...(withheld ? { htmlBody: null } : {}),
+            ...(withheld
+              ? { htmlBody: null, bookingRetryHtmlBody: null }
+              : {}),
             errorMessage,
           },
         });
@@ -366,6 +411,7 @@ export async function sendEmail({
           data: {
             status: "BOUNCED",
             htmlBody: null,
+            bookingRetryHtmlBody: null,
             errorMessage: `Email suppressed after SES ${activeSuppression.reason.toLowerCase()} feedback`,
           },
         });

@@ -21,7 +21,10 @@ afterEach(() => {
 describe("school-attendee confirmation threads its confirm-link token (#1797)", () => {
   it("passes the raw token in templateData so an override renders the link", async () => {
     await sendSchoolAttendeeConfirmationEmail({
-      bookingContext: { bookingId: "bk_test" },
+      bookingContext: {
+        bookingId: "bk_test",
+        recipientMemberId: "member_1",
+      },
       email: "coordinator@school.example",
       firstName: "Sam",
       schoolName: "Example School",

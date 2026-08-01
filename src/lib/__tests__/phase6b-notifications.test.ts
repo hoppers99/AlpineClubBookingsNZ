@@ -373,6 +373,7 @@ describe("N-11: retryFailedEmails", () => {
         to: "user@example.com",
         subject: "Test Subject",
         htmlBody: "<p>Test body</p>",
+        bookingRetryHtmlBody: null,
         attempts: 1,
         status: "FAILED",
       },
@@ -387,10 +388,17 @@ describe("N-11: retryFailedEmails", () => {
     expect(result.failed).toBe(0);
     // The attempts increment moved into the pre-send claim (F33, #1885).
     expect(mockPrisma.emailLog.updateMany).toHaveBeenCalledWith({
-      where: { id: "log-fail-1", status: "FAILED" },
+      where: {
+        id: "log-fail-1",
+        status: "FAILED",
+        attempts: 1,
+        htmlBody: "<p>Test body</p>",
+        bookingRetryHtmlBody: null,
+      },
       data: expect.objectContaining({
         status: "QUEUED",
         attempts: 2,
+        lastAttemptAt: expect.any(Date),
       }),
     });
     expect(mockPrisma.emailLog.update).toHaveBeenCalledWith({
@@ -475,18 +483,23 @@ describe("N-11: retryFailedEmails", () => {
     (process.env as Record<string, string>).NODE_ENV = origEnv!;
   });
 
-  it("does not retry emails without htmlBody", async () => {
+  it("queries only emails with a retained legacy or booking retry body", async () => {
     mockPrisma.emailLog.findMany.mockResolvedValue([]);
 
     const { retryFailedEmails } = await import("../cron-email-retry");
     const result = await retryFailedEmails();
 
     expect(result.retried).toBe(0);
-    // Verify the query filtered on htmlBody not null
+    // #2362 keeps retry-time booking HTML in a separately isolated column so
+    // an old-color worker cannot replay it. Either retained-body column makes a
+    // row eligible for the current worker; rows with neither remain excluded.
     expect(mockPrisma.emailLog.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          htmlBody: { not: null },
+          OR: [
+            { htmlBody: { not: null } },
+            { bookingRetryHtmlBody: { not: null } },
+          ],
           attempts: { lt: 3 },
         }),
       })

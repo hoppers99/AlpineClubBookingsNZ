@@ -2175,14 +2175,37 @@ Editable subjects reject secret-bearing tokens (including nomination, quote
 response, and optional chore links), and the render path strips bearer-link
 aliases from legacy stored overrides before SMTP, `EmailLog`, or application
 logging receives the subject.
-Every send carries a REQUIRED, typed `bookingContext` (`{ bookingId } | "none"`)
-so the mailer knows which booking a message belongs to; that is the choke point
+Every send carries a REQUIRED, typed `bookingContext`
+(`{ bookingId, recipient } | "none"`) so the mailer knows which booking a
+message belongs to and which exact recipient authority it must verify; that is
+the choke point
 for the per-booking "No emails" switch (`Booking.noEmails`, #2258), which
 withholds every member-facing message for a booking, records each withhold as an
 `EmailLog` row with status `SKIPPED_NO_EMAILS`, never touches admin-audience or
 account/security mail, and fails closed if the switch cannot be read. The retry
 cron and the two Xero-sent invoice emails re-check the same switch because they
 bypass `sendEmail`. See `docs/DOMAIN_INVARIANTS.md` for the full contract.
+For every live registered template in the booking-scoped suppression inventory,
+that same choke point may add the canonical encoded
+`/bookings/<booking-id>` detail URL (#2362). `booking-email-authority.ts`
+re-reads the booking and recipient member, then mirrors the detail page's read
+gate: active login-capable owner, linked member, or bookings-area viewer; deleted
+bookings remain Full-Admin-only. The actual SMTP destination must also still be
+that member's current direct or flattened inherited mailbox. Public/non-login
+contacts and aggregate reports are explicit recipient categories and never
+receive the authenticated URL. Built-in HTML rewrites or adds one booking CTA
+only after authorization. Stored override SOURCE stays byte-for-byte unchanged;
+at the final delivery boundary an authorized override is unchanged, while an
+unauthorized delivery copy loses any legacy/admin-authored authenticated booking
+href. Bearer action URLs are not booking detail URLs and are never removed by
+this policy. Retry-safe booking rows persist the checked recipient member id (or
+an explicit null for public/aggregate mail), override provenance, and whether
+finalized HTML contained a detail href in `EmailLog`. Their retained HTML lives
+in `bookingRetryHtmlBody`, not legacy `htmlBody`, so a rolled-back pre-#2362
+worker cannot select new-version booking rows. The current worker repeats
+mailbox ownership and booking authorization before its guarded claim, then
+re-finalizes both built-in and override delivery copies. A legacy row with
+unknown context retires fail-closed for manual review.
 If an admin/system alert cannot be delivered to any opted-in admin recipient
 because every send is suppressed or fails, the app records a critical
 communication audit event and surfaces it in Admin Email Deliverability.

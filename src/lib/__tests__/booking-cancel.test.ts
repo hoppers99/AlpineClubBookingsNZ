@@ -1742,7 +1742,7 @@ describe("cancelBooking credit refunds", () => {
     // The tiered restored amount is threaded to the cancellation email (7th arg)
     // so the member sees the policy-adjusted restore, not the full applied sum.
     expect(mocks.sendBookingCancelledEmail).toHaveBeenCalledWith(
-      { bookingId: "booking_credit" },
+      { bookingId: "booking_credit", recipientMemberId: "member_1" },
       "member@example.com",
       "Alice",
       expect.anything(),
@@ -2609,7 +2609,7 @@ describe("cancelBooking detaches the held booking-request pointer (issue #1254)"
 
     expect(result.status).toBe(200);
     expect(mocks.sendBookingCancelledEmail).toHaveBeenCalledWith(
-      { bookingId: "held-1" },
+      { bookingId: "held-1", recipientMemberId: "owner-1" },
       "req@example.com",
       "Req",
       heldBooking.checkIn,
@@ -2830,7 +2830,7 @@ describe("cancelBooking no-payment claim-first (issue #1311)", () => {
     // Email uses the UNDER-LOCK member + dates, never the stale outer read.
     expect(mocks.sendBookingCancelledEmail).toHaveBeenCalledTimes(1);
     expect(mocks.sendBookingCancelledEmail).toHaveBeenCalledWith(
-      { bookingId: "held-1" },
+      { bookingId: "held-1", recipientMemberId: "owner-1" },
       "fresh@example.com",
       "Fresh",
       freshCheckIn,
@@ -2841,7 +2841,7 @@ describe("cancelBooking no-payment claim-first (issue #1311)", () => {
       "lodge-fresh",
     );
     expect(mocks.sendBookingCancelledEmail).not.toHaveBeenCalledWith(
-      { bookingId: "held-1" },
+      { bookingId: "held-1", recipientMemberId: "owner-1" },
       "stale@example.com",
       expect.anything(),
       expect.anything(),

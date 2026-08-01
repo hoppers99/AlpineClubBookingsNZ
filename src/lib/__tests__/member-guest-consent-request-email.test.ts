@@ -65,6 +65,7 @@ const PARTY = [
 ];
 const SEND_PARAMS = {
   bookingId: "bkg_1",
+  recipient: { kind: "member" as const, memberId: "member_1" },
   email: "priya@example.nz",
   firstName: "Priya",
   bookerName: "Dave Ngata",
@@ -281,7 +282,10 @@ describe("sendMemberGuestConsentRequestEmail (#2307)", () => {
     const call = sendEmailMock.mock.calls[0][0];
     // A required discriminated union: `"none"` here would silently escape the
     // switch, and this email is always about one specific booking.
-    expect(call.bookingContext).toEqual({ bookingId: "bkg_1" });
+    expect(call.bookingContext).toEqual({
+      bookingId: "bkg_1",
+      recipient: { kind: "member", memberId: "member_1" },
+    });
     expect(call.templateName).toBe(TEMPLATE);
     expect(call.to).toBe("priya@example.nz");
     expect(call.lodgeId).toBe("lodge_1");

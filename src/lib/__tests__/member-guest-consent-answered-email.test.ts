@@ -68,6 +68,7 @@ const STAY = {
 };
 const SEND_PARAMS = {
   bookingId: "bkg_1",
+  recipient: { kind: "member" as const, memberId: "member_1" },
   email: "tama@example.nz",
   firstName: "Tama",
   target: TARGET,
@@ -240,7 +241,10 @@ describe("sendMemberGuestConsentAnsweredEmail (#2307)", () => {
     await sendMemberGuestConsentAnsweredEmail(SEND_PARAMS);
 
     const call = sendEmailMock.mock.calls[0][0];
-    expect(call.bookingContext).toEqual({ bookingId: "bkg_1" });
+    expect(call.bookingContext).toEqual({
+      bookingId: "bkg_1",
+      recipient: { kind: "member", memberId: "member_1" },
+    });
     expect(call.templateName).toBe(TEMPLATE);
     expect(call.to).toBe("tama@example.nz");
     expect(call.lodgeId).toBe("lodge_1");

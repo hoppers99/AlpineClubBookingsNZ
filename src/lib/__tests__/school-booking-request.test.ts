@@ -2085,8 +2085,12 @@ describe("approveMemberWholeLodgeRequest (#2263)", () => {
 
     expect(sendBookingConfirmedEmail).toHaveBeenCalled();
     const args = vi.mocked(sendBookingConfirmedEmail).mock.calls[0];
-    // Booking-scoped, so the per-booking "No emails" switch can withhold it.
-    expect(args[0]).toEqual({ bookingId: "booking-wl" });
+    // Booking-scoped, so the per-booking "No emails" switch can withhold it;
+    // the durable recipient identity also authorizes the booking detail link.
+    expect(args[0]).toEqual({
+      bookingId: "booking-wl",
+      recipientMemberId: "member-9",
+    });
     // A member is never told the lodge is exclusively held, and never told
     // whose booking overlaps (ADR-001 decision 6). Nothing in the serialised
     // arguments may mention either.
