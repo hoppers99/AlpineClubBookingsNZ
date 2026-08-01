@@ -105,16 +105,29 @@ everybody. This migration sets the address back to empty wherever it is still
 exactly that string.
 
 **What you will notice.** If your Contact page shows that exact address today,
-its address block is **empty** after you cut over. Nothing else on the page
-changes: your Club Details block, contact role, and page content are untouched.
+then after you cut over the **whole map block under Club Details disappears —
+including your lodge's name.** The page draws the pin icon, the lodge name and
+the address line together, and only when an address is set, so clearing the
+address takes the name line with it. Both come back the moment you enter an
+address (see the next paragraph). Nothing else on the page changes: your contact
+role and its phone and email, the contact form, and your page content are all
+untouched.
 
-**Post-upgrade action: put your own address in.** **Admin → Setup &
-Configuration → Site Appearance & Content → Club Identity → Lodge details →
-Address**, then **Save lodge details** (`/admin/appearance/identity`). It shows
-on the Contact page and in the `{{lodge-address}}` content token within
+**Post-upgrade action: put your own address in, then check the page.** **Admin →
+Setup & Configuration → Site Appearance & Content → Club Identity → Lodge
+details → Address**, then **Save lodge details** (`/admin/appearance/identity`).
+It shows on the Contact page and in the `{{lodge-address}}` content token within
 seconds. A multi-lodge club sets each lodge's address under **Admin → Setup →
 Lodges** instead. Nothing in the product prompts you, so add this to your
 post-upgrade list — it is about a minute's work.
+
+**Then load your public Contact page and confirm what it shows.** Do this even
+if you expect the cleanup to have emptied the field on its own. The lodge details
+form saves every field it loaded when the page was opened, so an admin who had
+that form open *before* the upgrade and pressed **Save lodge details**
+*afterwards* writes the old address straight back — and this cleanup runs once,
+so it will not clear it a second time. If the old address is still on the page,
+open the same form, replace it with your own (or clear it) and save.
 
 **An address you entered yourself is never touched.** The cleanup matches that
 one exact string and nothing else, so a club that has already set its own

@@ -10,8 +10,12 @@
   everybody.
 
   A one-off cleanup now blanks that address wherever it is still exactly the
-  string above, so the Contact page simply shows no address block until an
-  admin enters the club's own. Nothing else on the page changes.
+  string above, so the Contact page shows no address block at all until an admin
+  enters the club's own. Note that the **lodge name goes with it**: the page
+  draws the pin, the lodge name and the address as one block, and only when an
+  address is set, so both lines disappear together and both return as soon as an
+  address is entered. Nothing else on the page changes — the contact role, its
+  phone and email, the contact form and the page content are untouched.
 
   **If your Contact page currently shows that exact address, it will be empty
   after you upgrade.** Put your real address in under **Admin → Setup &

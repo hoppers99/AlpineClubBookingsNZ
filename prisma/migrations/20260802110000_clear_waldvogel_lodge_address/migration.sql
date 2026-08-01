@@ -14,14 +14,23 @@
 -- unrelated club's public Contact page advertises another club's real lodge --
 -- reported by the owner against a clean local staging stack, 2 Aug 2026.
 --
--- prisma/seed.ts is already policed for exactly this class: seed-account-defaults
--- .test.ts asserts /Waldvogel|Iwikau|Ruapehu|Whakapapa|Tokoroa/i never appears in
--- the seeds, which is why the seeds write no address at all. The migration chain
--- carries no such guard, so the guard never saw this. An applied migration cannot
--- be edited -- Prisma records a checksum and a rewrite is migration drift for
--- every database that already ran it -- so a NEW migration is the only mechanism
--- that cleans both a fresh install and an already-stamped database on its next
--- `prisma migrate deploy`.
+-- Part of the seed layer is already policed for exactly this class -- but only
+-- part, so do not read that guard as covering "the seeds". The assertion in
+-- src/lib/__tests__/seed-account-defaults.test.ts, that
+-- /Waldvogel|Iwikau|Ruapehu|Whakapapa|Tokoroa/i never appears, runs against
+-- exactly two surfaces: buildSeedChoreTemplates() and starterPageContent. That is
+-- why those two carry no club-specific geography and write no address at all. It
+-- reaches nothing else in the seed layer. The #2489 review found the starter
+-- FOOTER affiliations -- starterSiteContent in prisma/starter-site-content.ts --
+-- still ship a hardcoded "Ruapehu Mountain Clubs Association (RMCA)" link that no
+-- guard sees; that surface is out of scope for this address cleanup and is filed
+-- as #2490. The migration chain carries no geography guard of any kind, which is
+-- why nothing ever caught this address.
+--
+-- An applied migration cannot be edited -- Prisma records a checksum and a
+-- rewrite is migration drift for every database that already ran it -- so a NEW
+-- migration is the only mechanism that cleans both a fresh install and an
+-- already-stamped database on its next `prisma migrate deploy`.
 --
 -- VALUE-SCOPED, NOT ROW-SCOPED. The WHERE clause matches the exact literal the
 -- backfill wrote, rather than default_lodge_id() (the row the backfill targeted).
@@ -46,12 +55,27 @@
 -- "Lodge" is a tiny cold config table (a handful of rows, read on page render,
 -- never on a hot write path), so the row locks are momentary and no hot-table
 -- traffic window applies. The payload contains no CURRENT_TIMESTAMP/now(), so the
--- session-clock DML gate (#1627/#1656) passes without an acknowledgement. Old and
--- new app colours are compatible in both directions during the drain: the contact
--- page renders the address block only when "address" is non-null
--- (src/app/(website)/contact/page.tsx, loadDefaultLodgeContact) and the
--- {{lodge-address}} content token resolves to empty, so an old colour still
--- serving simply stops showing the block -- it cannot error on it.
+-- session-clock DML gate (#1627/#1656) passes without an acknowledgement.
+--
+-- READS are compatible in both directions during the drain: the contact page
+-- renders the Club Details address block only when "address" is non-null
+-- (src/app/(website)/contact/page.tsx loads it via loadDefaultLodgeContact;
+-- contact-page-client.tsx wraps the pin, the lodge NAME and the address line in
+-- one {lodge?.address ? ... : null} conditional) and the {{lodge-address}} content
+-- token resolves to empty, so an old colour still serving simply stops showing
+-- that whole block -- it cannot error on it.
+--
+-- WRITES need one caveat, and it is a stale-form hazard rather than a colour
+-- incompatibility. The lodge details panel
+-- (src/components/admin/lodge-details-panel.tsx, save()) PATCHes the WHOLE payload
+-- -- name, address, travelNote, doorCode -- from the state it loaded when the page
+-- was opened. So an admin on EITHER colour who had that panel open before this
+-- migration ran and presses "Save lodge details" afterwards writes the literal
+-- straight back, and because this is a one-shot migration it never re-runs to
+-- clear it again. Nothing breaks and nothing is lost -- the value is sitting
+-- visibly in the Address field and one edit removes it -- but the operator must
+-- VERIFY the Contact page after cutover rather than assume the clear stuck.
+-- docs/UPGRADING.md states that as part of the post-upgrade action.
 --
 -- Nothing here matches the validator's hot-table or breaking-SQL regexes
 -- (scripts/validate-blue-green-migrations.sh: "Lodge" is not a hot table and
