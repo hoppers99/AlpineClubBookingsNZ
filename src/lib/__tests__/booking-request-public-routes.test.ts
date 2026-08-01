@@ -118,8 +118,30 @@ function jsonRequest(url: string, body: unknown) {
   });
 }
 
+/**
+ * `POST /api/booking-requests` refuses a check-in before `getTodayDateOnly()`
+ * (the NZ calendar date) before it ever reaches the mocked service layer, and
+ * nearly every case below requests 2026-08-01. Left on the real clock this suite
+ * would have started failing on 2 August 2026 (#2426's defect class exactly):
+ * five cases expecting a 201 and a `createBookingRequest` call would instead get
+ * the past-date 400, with the request never created — a green suite turning red
+ * on a guard doing precisely its job.
+ *
+ * Pin the clock a month clear of the fixtures so the scenario under test — a
+ * request for FUTURE nights — stays the intended one. The past-date guard keeps
+ * its own coverage in "rejects check-in dates in the past", whose 2020-01-01 is
+ * behind the pinned today as well as behind any real one.
+ *
+ * Only `Date` is faked, so real timers still run and awaited promises resolve
+ * normally. 2026-07-01T00:00:00Z reads as 1 July in NZ (12:00 NZST) and in UTC
+ * alike, so the pinned "today" does not depend on the runner's own zone.
+ */
+const FIXED_NOW = new Date("2026-07-01T00:00:00.000Z"); // NZ 2026-07-01 12:00
+
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(FIXED_NOW);
   mockApplyRateLimit.mockReturnValue(null);
 });
 

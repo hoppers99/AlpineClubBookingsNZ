@@ -52,7 +52,23 @@ export default defineConfig({
       // default single-lodge project (they only run in the `multi-lodge`
       // project below). Byte-identical for the default suite: this dir is
       // otherwise empty, so the matched spec set is unchanged.
-      testIgnore: /multi-lodge\//,
+      //
+      // pre-setup/ is excluded for a stronger reason: those specs CLOSE the
+      // public site for their duration, so they run in their own project after
+      // everything else (#2420).
+      testIgnore: /(multi-lodge|pre-setup)\//,
+    },
+    // The pre-setup gate on the wire (#2420). Runs LAST — `dependencies` on the
+    // main project — because it un-completes site-style setup, which makes every
+    // public address answer 503 until it restores the row in afterAll. Safe
+    // where it sits: workers: 1 and fullyParallel: false mean nothing else is in
+    // flight, and nothing follows it. Needs no second stack; it needs
+    // E2E_DATABASE_URL, which scripts/e2e-stack.sh exports.
+    {
+      name: "pre-setup",
+      testMatch: /pre-setup\/.*\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"] },
+      dependencies: ["chromium"],
     },
     // Cross-lodge isolation project — issue #1568, blocking in CI since #1655.
     // Only present when E2E_MULTI_LODGE=1, so the default project list is unchanged.
