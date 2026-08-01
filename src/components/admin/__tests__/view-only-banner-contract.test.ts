@@ -322,7 +322,7 @@ const NOTICE = "AdminViewOnlyNotice";
 */
 const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 299,
+  callSites: 301,
   /** Those that hand their explanation to a banner, by either rule. */
   optOuts: 252,
   /** `describeReason={false}` — needs a banner in the SAME file. */
@@ -334,11 +334,11 @@ const FIGURES = {
   /** …of the vouched: proved through the wizard shell's channel (#2324). */
   shellVouchedOptOuts: 5,
   /** Controls that KEEP the per-button reason, and the files holding them. */
-  exceptions: 47,
-  exceptionFiles: 25,
+  exceptions: 49,
+  exceptionFiles: 26,
   /** The remainder bucket: neither a member detail card nor dialog-only. */
-  leafControls: 34,
-  leafFiles: 20,
+  leafControls: 36,
+  leafFiles: 21,
   /** Components that render an `AdminViewOnlySectionBanner`. */
   bannerComponents: 80,
 } as const;
@@ -1204,6 +1204,11 @@ describe("view-only section banner coverage (#2160)", () => {
                opt-outs under the panel's existing AdminViewOnlySectionBanner
                (optOuts 250 -> 252, staticOptOuts 224 -> 226; vouched,
                exceptions and bannerComponents unchanged — no new banner).
+          301  +2  #2359 makes the Subscriptions header's Xero sync actions
+               finance-edit-aware. Both keep their own reason because the
+               sibling billing panel's banner does not cover header actions
+               (exceptions 47 -> 49, exceptionFiles 25 -> 26, leaf bucket
+               34/20 -> 36/21; opt-outs and bannerComponents unchanged).
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into

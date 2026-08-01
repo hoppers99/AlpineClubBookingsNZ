@@ -82,7 +82,6 @@ import {
   resolveAccessRoleTokens,
   isAccessRole,
   type AccessRoleInput,
-  type AppAccessRole,
 } from "@/lib/access-roles";
 import {
   accessRoleAssignmentRowsFromTokens,
@@ -94,6 +93,7 @@ import {
   financeAccessLevelFromMatrix,
   getAdminPermissionMatrix,
 } from "@/lib/admin-permissions";
+import { getMemberLoginStageSortRank } from "@/lib/member-login-stage";
 
 const maxStr = (len: number) => z.string().max(len).optional().nullable();
 
@@ -179,7 +179,7 @@ export const createMemberSchema = z.object({
 const SORT_BY_WHITELIST = [
   "name",
   "email",
-  "role",
+  "access",
   "ageTier",
   "active",
   "createdAt",
@@ -310,8 +310,11 @@ export async function listAdminMembers(
     case "email":
       orderBy = { email: sortDir };
       break;
-    case "role":
-      orderBy = { role: sortDir };
+    case "access":
+      // Access is a derived four-stage login journey, so its page order is
+      // resolved below from the same fields as getMemberLoginStage. Never use
+      // hidden role as a proxy for the status the header announces.
+      orderBy = [{ lastName: "asc" }, { firstName: "asc" }];
       break;
     case "ageTier":
       orderBy = { ageTier: sortDir };
@@ -855,6 +858,7 @@ export async function listAdminMembers(
       take: 1,
     },
     passwordResetTokens: {
+      where: activePendingInviteFilter,
       orderBy: { createdAt: "desc" as const },
       take: 1,
       select: { expiresAt: true, used: true },
@@ -941,18 +945,82 @@ export async function listAdminMembers(
     return [...nonMinors, ...minors];
   }
 
-  const [members, total] = await Promise.all([
-    parentLinkEligibleFor
-      ? findParentLinkCandidatesNonMinorsFirst()
-      : prisma.member.findMany({
-          where,
+  let members;
+  let total: number;
+  if (sortBy === "access") {
+    // Prisma cannot order by the existence of an active related invite token,
+    // so resolve the lightweight status keys for the filtered cohort first,
+    // rank them with the shared login-stage helper, then fetch only this page's
+    // full rows. This keeps filtering and pagination server-side while making
+    // the visible/announced Access order truthful.
+    const accessCandidates = await prisma.member.findMany({
+      where,
+      orderBy: [{ lastName: "asc" }, { firstName: "asc" }, { id: "asc" }],
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        canLogin: true,
+        passwordChangedAt: true,
+        lastLoginAt: true,
+        passwordResetTokens: {
+          where: activePendingInviteFilter,
+          orderBy: { createdAt: "desc" as const },
+          take: 1,
+          select: { expiresAt: true },
+        },
+      },
+    });
+    const direction = sortDir === "asc" ? 1 : -1;
+    accessCandidates.sort((left, right) => {
+      const leftRank = getMemberLoginStageSortRank({
+        canLogin: left.canLogin,
+        hasCompletedAccountSetup: hasMemberCompletedAccountSetup(left),
+        pendingInviteExpiresAt: left.passwordResetTokens[0]?.expiresAt ?? null,
+      });
+      const rightRank = getMemberLoginStageSortRank({
+        canLogin: right.canLogin,
+        hasCompletedAccountSetup: hasMemberCompletedAccountSetup(right),
+        pendingInviteExpiresAt: right.passwordResetTokens[0]?.expiresAt ?? null,
+      });
+      if (leftRank !== rightRank) return (leftRank - rightRank) * direction;
+      return (
+        left.lastName.localeCompare(right.lastName) ||
+        left.firstName.localeCompare(right.firstName) ||
+        left.id.localeCompare(right.id)
+      );
+    });
+    total = accessCandidates.length;
+    const pageIds = accessCandidates
+      .slice(skip, skip + pageSize)
+      .map(({ id }) => id);
+    const pageOrder = new Map(pageIds.map((id, index) => [id, index]));
+    const unsortedMembers = pageIds.length
+      ? await prisma.member.findMany({
+          where: { AND: [where, { id: { in: pageIds } }] },
           orderBy,
           select,
-          skip,
-          take: pageSize,
-        }),
-    prisma.member.count({ where }),
-  ]);
+        })
+      : [];
+    members = unsortedMembers.sort(
+      (left, right) =>
+        (pageOrder.get(left.id) ?? Number.MAX_SAFE_INTEGER) -
+        (pageOrder.get(right.id) ?? Number.MAX_SAFE_INTEGER),
+    );
+  } else {
+    [members, total] = await Promise.all([
+      parentLinkEligibleFor
+        ? findParentLinkCandidatesNonMinorsFirst()
+        : prisma.member.findMany({
+            where,
+            orderBy,
+            select,
+            skip,
+            take: pageSize,
+          }),
+      prisma.member.count({ where }),
+    ]);
+  }
 
   // #2254: a dependant-link search that finds nobody eligible used to render a
   // bare "No eligible members found.", which told the admin nothing — and hid a
@@ -1062,7 +1130,6 @@ export async function listAdminMembers(
     const pendingInviteExpiresAt =
       !hasCompletedAccountSetup &&
       latestToken &&
-      !latestToken.used &&
       latestToken.expiresAt > now
         ? latestToken.expiresAt
         : null;

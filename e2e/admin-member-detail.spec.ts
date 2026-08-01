@@ -28,6 +28,28 @@ async function openMemberDetail(page: import("@playwright/test").Page, name: str
   await expect(page).toHaveURL(/\/admin\/members\/(?!$)[^/?#]+/);
 }
 
+test("member directory Open action lands read-only and keeps the name link", async ({
+  page,
+}) => {
+  await loginPersona(page, ROLE_PERSONAS.ADMIN_MEMBERSHIP.email);
+  await page.goto("/admin/members");
+
+  const name = `${personas.booker.firstName} ${personas.booker.lastName}`;
+  const row = page.getByRole("row").filter({ hasText: name }).first();
+  const nameLink = row.getByRole("link", { name, exact: true });
+  const openLink = row.getByRole("link", { name: `Open ${name}` });
+  await expect(nameLink).toBeVisible({ timeout: 30_000 });
+  await expect(openLink).toHaveAttribute("href", /\/admin\/members\/[^?]+\?returnTo=/);
+  await expect(openLink).not.toHaveAttribute("href", /edit=true/);
+
+  await openLink.focus();
+  await expect(openLink).toBeFocused();
+  await openLink.press("Enter");
+  await expect(page).toHaveURL(/\/admin\/members\/(?!$)[^/?#]+\?returnTo=/);
+  await expect(page.getByText("First Name", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Save Changes" })).toHaveCount(0);
+});
+
 test("groups start collapsed, edit inline, and persist expansion across members", async ({
   page,
 }) => {

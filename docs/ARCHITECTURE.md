@@ -138,6 +138,16 @@ chosen for maximum separation from cat1-5 and the four semantic hues — and
 retired the legacy `--hue-*` accent pairs entirely; every categorical chip now
 reaches a generated cat scale.)
 
+The Members and Subscriptions tables are a worked identity-versus-state case.
+Their **Access** chip is semantic state from `member-login-stage.ts`: No login →
+neutral, Not invited → warning, Invited → info, Can log in → success. Role is
+deliberately absent. Xero contact groups are identities, not severity, so both
+tables call `getXeroContactGroupTone`, which selects `cat1..cat6` from a
+stable-id hash modulo six. Catalog availability, filtering, and row order do
+not participate, so pages with different catalog-loading policies cannot
+drift. Collisions are intentional and the visible group name remains
+authoritative.
+
 The same rule applies to raw NEUTRALS, though for a narrower reason than the
 brand accent — and the reason is worth stating precisely, because a safety net
 already exists.
@@ -797,7 +807,7 @@ tree** (#2160, extended by #2168 and #2324) — not a claim that nothing is left
 Measured
 on the current tree by `view-only-banner-contract.test.ts`, which asserts these
 figures rather than trusting a hand count: **80 components render a banner, and
-252 of the 299 `ViewOnlyActionButton` call sites opt out** of the per-button
+252 of the 301 `ViewOnlyActionButton` call sites opt out** of the per-button
 reason. (Earlier revisions of this page published 76/232/264/211 — those were
 upstream-historical and had drifted; the numbers here are the ones the contract
 test currently pins, which is the only authority.) Those 252 split by WHICH rule
@@ -807,7 +817,7 @@ pass `describeReason={!ancestorRendersViewOnlyBanner}` and are covered by a
 verified vouching parent — 21 by a parent's own JSX render site (#2168), 5 by the
 guided-setup shell (#2324); see *Vouching for a child's coverage* and *Vouching
 through the wizard shell* below. The
-remaining **47 controls across 25 files deliberately keep the per-button
+remaining **49 controls across 26 files deliberately keep the per-button
 default** (`describeReason` left at `true`), in three shapes:
 
 - **Controls inside a dialog, sheet, popover, or dropdown menu.** These live in
@@ -821,7 +831,7 @@ default** (`describeReason` left at `true`), in three shapes:
   the booking capacity/exclusive hold controls, the family-group login-holder
   and request-review sub-sections, and the non-member contact form). Nothing
   local proves an ancestor renders a banner above them, so the reason stays on
-  the control. (34 controls across 20 files.) Nine of those 34 sit inside a
+  the control. (36 controls across 21 files.) Nine of those 36 sit inside a
   setup wizard and are **scope** exceptions rather than indirection ones: each is
   gated on a permission NARROWER than the banner its shell renders, so an admin
   who has the wizard's area but not that narrower one meets no banner at all.
