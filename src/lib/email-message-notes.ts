@@ -122,3 +122,40 @@ export function splitGuestPortionOwnBookingLine(
     ? "This only affects your guests' provisional place — your own booking is unaffected and remains confirmed."
     : "This only affects your guests' provisional place — your own linked booking has not been changed by this cancellation.";
 }
+
+/** A labelled link in an email: the button caption and the site-relative path. */
+export interface EmailLinkAction {
+  label: string;
+  path: string;
+}
+
+/**
+ * #2430 — where a BUMPED booking's owner is invited to go next.
+ *
+ * The bumped notice used to end in "Book Again: {BASE_URL}/book" for everyone,
+ * but `/book` is the MEMBER booking flow behind the login. Two of the three
+ * recipient classes that reach `sendBookingBumpedEmail` cannot use it:
+ *
+ *   - a club MEMBER whose pending booking (their own non-member guests, or a
+ *     split guest child) lost its beds — `/book` is exactly right;
+ *   - the non-login NON_MEMBER/SCHOOL contact who owns a booking converted from
+ *     a public booking request (#707), and any other non-login contact an admin
+ *     booked on behalf of — these have `canLogin = false` by construction
+ *     (`assertMappableOwnerContact` refuses a login-capable owner outright), so
+ *     `/book` bounces them to a login they can never complete.
+ *
+ * There is no tokenised respond link to offer them either: the bump path
+ * revokes the booking's payment links, and the request itself is CONVERTED, so
+ * the club's contact page is the only live way back in.
+ *
+ * Shared by the hand-built HTML template and the `{{rebookNote}}` token the
+ * admin-editable body renders, so the two paths cannot drift. The caller owns
+ * the base URL — this module deliberately imports nothing.
+ */
+export function bookingBumpedRebookAction(
+  recipientCanBookOnline: boolean,
+): EmailLinkAction {
+  return recipientCanBookOnline
+    ? { label: "Book Again", path: "/book" }
+    : { label: "Contact the Club", path: "/contact" };
+}

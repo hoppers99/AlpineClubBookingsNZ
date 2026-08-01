@@ -431,6 +431,27 @@ describe("email-templates", () => {
       const html = bookingBumpedTemplate("Test", checkIn, checkOut, 1);
       expect(html).toContain("/book");
     });
+
+    // #2430: the same notice reaches a club member and a non-login
+    // NON_MEMBER/SCHOOL contact (a converted public booking request). Only the
+    // member can complete the login behind /book.
+    it("keeps the member wording byte-identical to the historical template", () => {
+      expect(bookingBumpedTemplate("Test", checkIn, checkOut, 1, true)).toBe(
+        bookingBumpedTemplate("Test", checkIn, checkOut, 1),
+      );
+      expect(bookingBumpedTemplate("Test", checkIn, checkOut, 1, true)).toContain(
+        "Book Again",
+      );
+    });
+
+    it("sends a non-login recipient to the club contact page, not the members-only booking flow", () => {
+      const html = bookingBumpedTemplate("Test", checkIn, checkOut, 1, false);
+      expect(html).toContain("Contact the Club");
+      expect(html).toContain("/contact");
+      expect(html).not.toContain("Book Again");
+      // No link anywhere in the message points at the member booking flow.
+      expect(html).not.toMatch(/href="[^"]*\/book"/);
+    });
   });
 
   describe("bookingCancelledTemplate", () => {

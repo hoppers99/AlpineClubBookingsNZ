@@ -131,9 +131,11 @@ export const DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS = {
  * `PublicContentSettings` — the values the public read paths synthesise when the
  * `id = "default"` row is absent (#2200). Every double-opt-in visibility gate is
  * OFF on a miss (`isPublicContentEnabled` returns `settings?.[gate] === true`,
- * `src/lib/public-page-content-tokens.ts`) and the public "Book Now" button is
- * SHOWN, pointing at the booking flow (`getBookNowConfig`,
- * `src/lib/book-now-config.ts`). Only the portable policy fields are declared
+ * `src/lib/public-page-content-tokens.ts`) and, since #2430, so is the public
+ * "Book Now" button: a fresh install advertises no public booking CTA until an
+ * admin ticks it on (`getBookNowConfig`, `src/lib/book-now-config.ts`). Absence
+ * is the ONLY thing this constant governs — a club that has saved its choice
+ * keeps it, saved-true and saved-false alike. Only the portable policy fields are declared
  * here — `bookNowTarget`/`bookNowPageId` are instance-local (they reference a
  * specific install's `PageContent` id) and never travel, so they have no
  * effective-default to carry. These match the schema column defaults, which is
@@ -146,7 +148,7 @@ export const DEFAULT_PUBLIC_CONTENT_SETTINGS = {
   bookingPolicySummary: false,
   cancellationPolicy: false,
   annualFees: false,
-  showBookNow: true,
+  showBookNow: false,
   committeePhotoDisplay: "NONE",
 } as const;
 

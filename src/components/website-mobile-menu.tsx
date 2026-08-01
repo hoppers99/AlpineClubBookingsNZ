@@ -21,6 +21,9 @@ interface WebsiteMobileMenuProps {
   // Configurable public Book Now (E3 #1929): hide the button entirely when the
   // admin has disabled it.
   showBookNow: boolean;
+  // #2430: resolved by getBookNowConfig alongside the href, so the drawer and
+  // the desktop header can never disagree about what the CTA is called.
+  bookNowLabel: string;
   bookingsHref: string;
   dashboardHref: string;
 }
@@ -32,6 +35,7 @@ export function WebsiteMobileMenu({
   logoDataUrl,
   navLinks,
   showBookNow,
+  bookNowLabel,
   bookingsHref,
   dashboardHref,
 }: WebsiteMobileMenuProps) {
@@ -105,7 +109,7 @@ export function WebsiteMobileMenu({
                   className="w-full shadow-lg shadow-brand-gold/20"
                 >
                   <Link href={bookingsHref} onClick={closeMenu}>
-                    Book Now
+                    {bookNowLabel}
                   </Link>
                 </Button>
               ) : null}
@@ -129,7 +133,7 @@ export function WebsiteMobileMenu({
                   className="w-full shadow-lg shadow-brand-gold/20"
                 >
                   <Link href={bookingsHref} onClick={closeMenu}>
-                    Book Now
+                    {bookNowLabel}
                   </Link>
                 </Button>
               ) : null}

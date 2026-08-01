@@ -50,7 +50,9 @@ button. Page Content is edited under the **content** permission area.
    must also be individually marked for public listing).
 2. Under **Book Now button**, choose whether to **Show the Book Now button** and
    whether it goes to the **booking flow** or a **content page**. A page target
-   that is unpublished or removed falls back to the booking flow.
+   that is unpublished or removed falls back to the booking flow. The button
+   starts **off** until you tick it and save; once you have saved this panel your
+   choice is what counts, whichever way it went.
 3. Click **Save visibility**.
 
 ## Settings reference
@@ -64,7 +66,7 @@ button. Page Content is edited under the **content** permission area.
 | Content (rich text + tokens) | The page body | Per page | HTML sanitised; only recognised `{{tokens}}` render |
 | Joining fees / Annual membership fees / Hut fees | Whether fee tokens may publish those authoritative amounts | Off | Money stays in integer cents; types must also be marked public |
 | Booking policy summaries / Cancellation policies | Whether policy tokens may publish those blocks | Off | — |
-| Show the Book Now button | Whether the public header shows Book Now | On | — |
+| Show the Book Now button | Whether the public header shows the booking button | Off | Saved once, your choice always wins over the shipped default |
 | Book Now target | Booking flow, or a specific content page | Booking flow | An unpublished/removed target falls back to the booking flow |
 
 ## Troubleshooting
@@ -73,6 +75,8 @@ button. Page Content is edited under the **content** permission area.
 | --- | --- | --- |
 | A fee token shows nothing on the public page | Its family isn't enabled under Public fee and policy blocks | Tick the family and **Save visibility**; also mark the membership types public |
 | The Book Now button goes to the booking flow, not my page | The target page is unpublished or was removed | Publish the target page, or re-select it |
+| The button vanished after an upgrade | This panel had never been saved, so the button followed the shipped default, which is now off | Tick **Show the Book Now button** and **Save visibility** |
+| Visitors see "Member booking", not "Book Now" | Expected: a signed-out visitor is sent to the member login, so the button names its audience. Signed-in members still see **Book Now** | Nothing to do — it is not configurable |
 | I can't unpublish a page | It's a **System** page | System pages can't be unpublished by design |
 | Save is rejected | A field exceeds `PAGE_CONTENT_LIMITS`, or the slug is invalid/reserved | Fix the flagged field; keep slugs valid and non-reserved |
 | Everything is read-only | Your admin role can view but not edit under the content area | Ask a full admin for content edit access |

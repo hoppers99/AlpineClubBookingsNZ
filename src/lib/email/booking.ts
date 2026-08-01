@@ -18,6 +18,7 @@ import {
   bookingModificationSummaryRows,
 } from "../email-templates";
 import {
+  bookingBumpedRebookAction,
   composeChoreLine,
   composeOptionalEmailLine,
   splitGuestPortionOwnBookingLine,
@@ -293,11 +294,25 @@ export async function sendBookingBumpedEmail(
   guestCount: number,
   // Booking's lodge (multi-lodge phase 8): see sendBookingConfirmedEmail.
   lodgeId?: string | null,
+  // #2430: whether the owner of the bumped booking can sign in and rebook.
+  // Pass the owner's `Member.canLogin`: a booking converted from a public
+  // booking request (#707), or any booking an admin made for a non-login
+  // NON_MEMBER/SCHOOL contact, is owned by a member that cannot authenticate,
+  // so `/book` would send them to a login they can never complete. Defaults to
+  // the member case, which keeps the historical wording byte-for-byte.
+  recipientCanBookOnline: boolean = true,
 ) {
+  const rebook = bookingBumpedRebookAction(recipientCanBookOnline);
   await sendEmail({
     to: email,
     subject: `Booking Update - ${EMAIL_DEFAULT_LODGE_NAME}`,
-    html: bookingBumpedTemplate(firstName, checkIn, checkOut, guestCount),
+    html: bookingBumpedTemplate(
+      firstName,
+      checkIn,
+      checkOut,
+      guestCount,
+      recipientCanBookOnline,
+    ),
     bookingContext,
     templateName: "booking-bumped",
     templateData: {
@@ -305,6 +320,10 @@ export async function sendBookingBumpedEmail(
       checkIn: formatNZDate(checkIn),
       checkOut: formatNZDate(checkOut),
       guestCount,
+      // The caption and the path only — the body keeps {{BASE_URL}} in front of
+      // the path so the club's own configured public URL still resolves it.
+      rebookLabel: rebook.label,
+      rebookPath: rebook.path,
     },
     lodgeId,
   });

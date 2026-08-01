@@ -255,6 +255,10 @@ function makePendingBooking(
     // #1967: a #796 group joiner's booking always carries a join row.
     groupBookingJoin?: { id: string } | null;
     originBookingRequest?: { id: string } | null;
+    // #2430: a booking converted from a public booking request is owned by a
+    // non-login NON_MEMBER/SCHOOL contact, which changes where the bumped
+    // notice sends them.
+    memberCanLogin?: boolean;
   } = {}
 ) {
   const {
@@ -269,6 +273,7 @@ function makePendingBooking(
     parentBooking,
     groupBookingJoin = null,
     originBookingRequest = null,
+    memberCanLogin = true,
   } = opts;
   const stayStart = new Date(checkIn);
   const stayEnd = new Date(checkOut);
@@ -315,6 +320,7 @@ function makePendingBooking(
       email: `${id}@example.com`,
       firstName: "Test",
       lastName: "User",
+      canLogin: memberCanLogin,
     },
     guests: Array.from({ length: guestCount }, (_, i) => ({
       id: `guest_${id}_${i}`,
@@ -674,6 +680,33 @@ describe("Cron: Confirm Pending Bookings", () => {
     expect(mockChargePaymentMethod).not.toHaveBeenCalled();
     expect(mockEnqueueXeroBookingInvoiceOperation).not.toHaveBeenCalled();
     expect(mockSendBumpedEmail).toHaveBeenCalled();
+    // #2430: a club member's own bumped booking keeps the members-only
+    // booking flow (the last argument is the owner's canLogin).
+    expect(mockSendBumpedEmail.mock.calls[0].at(-1)).toBe(true);
+  });
+
+  // #2430: the same bump, but the booking came from a public booking request,
+  // so it is owned by a contact that can never sign in. The notice must not
+  // send them to /book.
+  it("tells the bumped-email sender when the owner cannot sign in (#2430)", async () => {
+    const booking = makePendingBooking("b1", {
+      hasPaymentMethod: false,
+      originBookingRequest: { id: "req_1" },
+      memberCanLogin: false,
+    });
+    mockPendingBookings([booking]);
+    mockCheckCapacityForGuestRanges.mockResolvedValue({
+      available: false,
+      minAvailable: 0,
+      nightDetails: [],
+    });
+    mockBookingUpdate.mockResolvedValue({});
+
+    const result = await confirmPendingBookings();
+
+    expect(result.bumpedBookingIds).toEqual(["b1"]);
+    expect(mockSendBumpedEmail).toHaveBeenCalledTimes(1);
+    expect(mockSendBumpedEmail.mock.calls[0].at(-1)).toBe(false);
   });
 
   // #1771 — a hold-eligible PENDING booking deliberately admitted over the

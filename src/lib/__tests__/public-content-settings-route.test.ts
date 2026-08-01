@@ -19,6 +19,7 @@ vi.mock("@/lib/audit", () => ({
   getAuditRequestContext: () => ({}),
 }));
 
+import { DEFAULT_PUBLIC_CONTENT_SETTINGS } from "@/config/club-settings-defaults";
 import { GET, PUT } from "@/app/api/admin/public-content-settings/route";
 
 const existing = {
@@ -46,6 +47,37 @@ describe("public content settings route", () => {
       showBookNow: true, bookNowTarget: "BOOKING_FLOW", bookNowPageId: null,
       committeePhotoDisplay: "NONE",
     }, pages: [] });
+  });
+
+  // #2430: a club that has never saved the singleton sees the shipped default,
+  // which now hides the public Book Now button. The panel must show the SAME
+  // "unsaved" state the website renders, so it reads the one shared constant
+  // rather than a second hand-written copy.
+  it("synthesises the shared shipped defaults when no row is saved", async () => {
+    mocks.findUnique.mockResolvedValue(null);
+    const response = await GET();
+    const body = (await response.json()) as {
+      settings: Record<string, unknown>;
+    };
+    expect(body.settings).toEqual({
+      ...DEFAULT_PUBLIC_CONTENT_SETTINGS,
+      bookNowTarget: "BOOKING_FLOW",
+      bookNowPageId: null,
+    });
+    expect(body.settings.showBookNow).toBe(false);
+  });
+
+  // The other half: a saved row always wins, so an existing club that ticked
+  // the button on keeps it (covered by the serialisation test above, which
+  // returns saved-true) and one that ticked it off keeps that too.
+  it("returns a saved showBookNow choice unchanged in both directions", async () => {
+    mocks.findUnique.mockResolvedValue({ ...existing, showBookNow: false });
+    const off = (await (await GET()).json()) as { settings: { showBookNow: boolean } };
+    expect(off.settings.showBookNow).toBe(false);
+
+    mocks.findUnique.mockResolvedValue({ ...existing, showBookNow: true });
+    const on = (await (await GET()).json()) as { settings: { showBookNow: boolean } };
+    expect(on.settings.showBookNow).toBe(true);
   });
 
   it("audits writes and invalidates public routes", async () => {

@@ -590,12 +590,20 @@ menu.
 The public website header's **Book Now** button is configured on the same
 Admin > Page Content panel (`PublicContentSettings`):
 
-- **Show the button** — off hides it entirely (desktop and mobile).
+- **Show the button** — off hides it entirely (desktop and mobile). **Ships off**
+  (#2430): a club that has never saved this panel advertises no public booking
+  button at all. A club that HAS saved the panel keeps whatever it saved, on or
+  off — the shipped default only ever governs the never-saved case.
 - **Target** — *booking flow* (the default: a logged-in member goes to `/book`,
   a guest is sent through login) or a chosen **published content page**.
 - A page target that becomes unpublished or is deleted **fails open** to the
   booking flow, so the button is never dead. The authenticated dashboard's own
   Book Now action is unaffected — a signed-in member can always book.
+- **The label follows the visitor, not the target** (#2430). A signed-out
+  visitor sees **Member booking**, because the button sends them to the member
+  login rather than to a bookable page; a signed-in member sees **Book Now**.
+  Both surfaces (desktop header and mobile drawer) take the label from
+  `getBookNowConfig`, so they cannot disagree. Not configurable.
 
 ## Website Site Content
 
