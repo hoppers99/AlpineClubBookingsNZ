@@ -13,10 +13,13 @@
  *     That is deliberate — the holding screen must render on an install whose
  *     static assets a visitor has never fetched, and it means the "don't 503 the
  *     assets the holding screen needs" constraint is satisfied by needing none.
- *  2. `src/app/(website)/layout.tsx` — the fallback. A handful of request shapes
- *     are excluded from the proxy matcher (notably RSC prefetches) and reach the
- *     layout directly; the layout keeps its own pre-setup branch so those cannot
- *     see the real site. It renders as normal JSX against the app stylesheet, so
+ *  2. `src/app/(website)/layout.tsx` — the fallback. The gate answers only for a
+ *     path `isPublicWebsitePath()` CLAIMS, and asset-extension paths are refused
+ *     on purpose — this screen is a document, and a document must never be the
+ *     answer to a request for an image — so such a URL that no route serves
+ *     reaches the layout directly; the layout keeps its own pre-setup branch so
+ *     those cannot see the real site. It renders as normal JSX against the app
+ *     stylesheet, so
  *     it looks slightly richer than the proxy's inline-styled copy. Only the
  *     WORDS are shared, via `SETUP_IN_PROGRESS_COPY` below, and
  *     `setup-gate.test.ts` pins that both surfaces carry the same words.

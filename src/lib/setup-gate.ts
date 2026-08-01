@@ -151,9 +151,16 @@ const NON_WEBSITE_EXACT_PATHS: ReadonlySet<string> = new Set([
  * holding screen is an HTML DOCUMENT.** A request for an image or a deleted
  * script chunk must never be answered with one — that is the whole of #2404 — and
  * a club mid-setup would otherwise answer every such request with the 503 "Site
- * setup in progress" page. `public/branding/*` is also what the holding screen
- * itself loads, so gating those URLs would strip the screen of the club's own
- * imagery in the one state it exists for.
+ * setup in progress" page.
+ *
+ * Not for the holding screen's own sake: it loads no image at all
+ * (`src/lib/setup-in-progress-screen.ts` inlines its theme CSS and ships no
+ * `<img>`, no `<link>` and no external anything, precisely so this constraint is
+ * satisfied by needing nothing). The surface that does need `public/branding/*`
+ * mid-setup is the ADMIN's site-style wizard, which an operator uses in exactly
+ * the state this rule covers — `branding` is not in
+ * {@link NON_WEBSITE_ROOT_SEGMENTS}, so without this rule
+ * `/branding/favicon.ico` would be gated 503 underneath them.
  *
  * The list is kept in step with `ASSET_URL_EXTENSIONS` in
  * `src/lib/asset-url-404.ts` — the shapes the `afterFiles` rewrites terminate —

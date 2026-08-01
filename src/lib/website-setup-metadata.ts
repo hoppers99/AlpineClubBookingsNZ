@@ -10,17 +10,25 @@ import { SETUP_IN_PROGRESS_COPY } from "@/lib/setup-in-progress-screen";
  * ## The hole this closes
  *
  * `src/proxy.ts` answers every public-website address with 503 until setup is
- * complete — but its matcher skips a flight prefetch, and a flight prefetch is
- * nothing but ORDINARY REQUEST HEADERS.
- * `curl -H 'Purpose: prefetch' -H 'RSC: 1' https://club/about` is enough to skip
- * the proxy entirely; nothing about the bypass is internal to the app, and the
- * earlier framing of it as "a prefetch issued from an admin page" was wrong.
+ * complete — but only for a path `isPublicWebsitePath()` CLAIMS, and only where
+ * the proxy runs at all. Both halves have had holes.
  *
- * #2404 raised the price and did not remove it: the matcher used to skip on
- * `next-router-prefetch` or `purpose: prefetch` ALONE, so a single crafted header
- * was enough. It now requires `RSC` alongside one of those, because a real Next
- * router prefetch always sends both. Two headers instead of one is not a
- * defence — everything below still stands.
+ * The header half is now closed: the matcher used to skip any request bearing
+ * `next-router-prefetch` or `purpose: prefetch`, so
+ * `curl -H 'Purpose: prefetch' https://club/about` reached the app directly, and
+ * the earlier framing of that as "a prefetch issued from an admin page" was
+ * wrong — it was ordinary request headers, craftable by anyone. #2404 first
+ * narrowed the exemption to a real flight prefetch and then, on the owner's
+ * decision (1 Aug 2026), deleted it outright. No header now takes a URL outside
+ * the proxy.
+ *
+ * The classifier half remains, and it is why this guard is still load-bearing.
+ * `isPublicWebsitePath()` refuses asset-extension paths on purpose — the holding
+ * screen is an HTML document and must never be the answer to a request for an
+ * image — so a URL of that shape that reaches a render is rendered with no gate
+ * in front of it. `/API/x.png` is the live case: the rewrites hand it back
+ * unchanged and Next's case-sensitive route table then leaves it to the
+ * `(website)` catch-all.
  *
  * `(website)/layout.tsx` catches those requests and substitutes the holding
  * screen for `{children}`, so the page component never runs. That suppresses the
@@ -43,9 +51,8 @@ import { SETUP_IN_PROGRESS_COPY } from "@/lib/setup-in-progress-screen";
  * tree and fails if a page skips it.
  *
  * The title is byte-identical to the `<title>` of the 503 document
- * (`buildSetupInProgressDocument`), so the proxied and the prefetch-shaped
- * responses describe the same screen. `noindex` matches that document's own
- * robots meta.
+ * (`buildSetupInProgressDocument`), so the gated and the ungated responses
+ * describe the same screen. `noindex` matches that document's own robots meta.
  *
  * ## What this is and is not
  *

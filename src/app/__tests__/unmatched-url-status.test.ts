@@ -32,9 +32,10 @@ import { autoImplementMethods } from "next/dist/server/route-modules/app-route/h
  * above it), so misses would 404 while published pages still rendered the
  * holding screen, and an anonymous visitor could read off an unlaunched site's
  * page list. #2420 has since answered the wider question by putting a 503 gate
- * in `src/proxy.ts` ahead of the render; these cases stay because the shapes
- * that skip the proxy matcher (RSC prefetches) still reach this route, and the
- * oracle must not open for them either.
+ * in `src/proxy.ts` ahead of the render; these cases stay because a shape the
+ * gate does not CLAIM still reaches this route — an asset-extension URL that no
+ * route serves, which the gate refuses on purpose — and the oracle must not open
+ * for it either.
  */
 
 const mocks = vi.hoisted(() => {
@@ -223,12 +224,15 @@ describe("a published CMS page still answers 200", () => {
  * slot from the page's seed data, so metadata is produced even when the component
  * never runs.
  *
- * #2404 narrowed HOW that exemption is reached but did not close this class, so
- * every case below still stands. A bare `Purpose: prefetch` — an ordinary header
- * anyone can set — no longer skips the matcher; the proxy now skips only a real
- * flight prefetch, which carries `RSC` as well. That is still a request any
- * client can make (both headers are just headers), and it still lands here with
- * no gate in front of it. The point of this suite is that the answer must be
+ * #2404 CLOSED the header route in — the matcher's prefetch exemption is gone
+ * outright, so no header a caller can set skips the proxy — and every case below
+ * still stands, because the gate has a second precondition. It answers only for
+ * a path `isPublicWebsitePath()` claims, and asset-extension paths are refused
+ * on purpose: the holding screen is an HTML document and must never answer a
+ * request for an image. A URL of that shape that no route claims still reaches
+ * this code with no gate in front of it — `/API/x.png`, handed back unchanged by
+ * the asset rewrites and then matched by no `/api` route, because Next's route
+ * table is case-sensitive. The point of this suite is that the answer must be
  * uniform whether or not the gate ran.
  *
  * The property is therefore UNIFORMITY, not "misses are hidden": pre-setup,

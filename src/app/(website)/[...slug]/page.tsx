@@ -107,14 +107,16 @@ function pageSlugFromPath(path: string) {
  * The earlier version of this guard consulted the setup state only inside
  * `if (!page)`. That was the enumeration oracle it was written to prevent,
  * merely inverted: pre-setup a miss returned the bare club name while a HIT
- * still returned the page's own title and header text, so an anonymous prober —
- * who reaches this code by putting a prefetch header AND `RSC` on an ordinary
- * request, which skips the proxy matcher (#2404 narrowed that from either header
- * alone to both together; it is still nothing but headers) — could read an
- * unlaunched club's whole page inventory. Suppressing `{children}` in the layout
- * does not help: the document
- * head is a separate flight slot from the page's seed data in next@16.2.11, so
- * metadata is produced even though the component never runs.
+ * still returned the page's own title and header text, so an anonymous prober
+ * who reached this code could read an unlaunched club's whole page inventory.
+ * The route in at the time was a crafted `Purpose: prefetch` header, which the
+ * proxy matcher skipped; #2404 removed that exemption altogether. What still
+ * reaches this code pre-setup is an asset-extension URL the setup gate refuses
+ * to claim (deliberately — the holding screen is a document) and that no `/api`
+ * route matches, `/API/x.png` being the live shape. Suppressing `{children}` in
+ * the layout does not help: the document head is a separate flight slot from the
+ * page's seed data in next@16.2.11, so metadata is produced even though the
+ * component never runs.
  *
  * `notFound()` is therefore unreachable pre-setup, which is still the right
  * answer for the reason it always was: the root not-found boundary sits ABOVE

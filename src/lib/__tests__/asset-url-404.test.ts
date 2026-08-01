@@ -10,25 +10,27 @@ import {
 import { getPathMatch } from "next/dist/shared/lib/router/utils/path-match";
 import { prepareDestination } from "next/dist/shared/lib/router/utils/prepare-destination";
 import { modifyRouteRegex } from "next/dist/lib/redirect-status";
+import { getRouteRegex } from "next/dist/shared/lib/router/utils/route-regex";
 import { autoImplementMethods } from "next/dist/server/route-modules/app-route/helpers/auto-implement-methods";
 import {
   API_ASSET_MISS_SOURCE,
-  API_ASSET_NOT_FOUND_PATH,
   ASSET_MISS_SOURCE,
   ASSET_NOT_FOUND_PATH,
   ASSET_NOT_FOUND_REWRITES,
   ASSET_URL_EXTENSIONS,
+  IDENTITY_DESTINATION,
   NEXT_STATIC_MISS_SOURCE,
-  UPLOADED_IMAGE_IDENTITY_DESTINATION,
   UPLOADED_IMAGE_MISS_SOURCE,
   UPLOADED_IMAGE_URL_PREFIX,
 } from "@/lib/asset-url-404";
 import { IMAGES_ROOT, imagePublicUrl } from "@/lib/image-storage";
 import { getRequiredFeaturesForPath } from "@/config/feature-routes";
+import { MODULE_KEYS } from "@/config/modules";
+import type { FeatureFlags } from "@/config/schema";
 import { isPublicWebsitePath } from "@/lib/setup-gate";
 import * as assetNotFoundRoute from "@/app/asset-not-found/route";
 import nextConfig from "../../../next.config";
-import { config } from "../../proxy";
+import { config, getFeatureFlagBlockResponse } from "../../proxy";
 
 /**
  * The standing invariant this file exists to hold (#2404):
@@ -141,16 +143,13 @@ type Coverage =
   /** An `afterFiles` rewrite terminates it with an empty 404, no document. */
   | "asset-404"
   /**
-   * An `afterFiles` rewrite sends it to the `/api` catch-all, which answers the
-   * same JSON 404 as any other unmatched `/api` URL.
+   * An `afterFiles` rewrite claims it and hands the SAME path back: the URL is
+   * exempt from termination, and `check: true` re-resolves it exactly as it
+   * would have resolved with no rule present. Destination equal to the request
+   * path is also what keeps `x-nextjs-rewritten-path` off the response, which is
+   * what #2405's header parity rests on.
    */
-  | "api-asset-404"
-  /**
-   * An `afterFiles` rewrite claims it and hands it straight back: the URL is
-   * exempt from termination, and `check: true` re-resolves it onto the real
-   * uploaded-images route.
-   */
-  | "uploaded-image"
+  | "handed-back"
   /** Under `/api`: terminated as JSON by a route handler, never a document. */
   | "api-json"
   /** The image optimiser: a real handler that answers a short 400, never HTML. */
@@ -161,8 +160,7 @@ function rewriteCoverage(pathname: string): Coverage | null {
 
   if (destination === null) return null;
   if (destination === ASSET_NOT_FOUND_PATH) return "asset-404";
-  if (destination === API_ASSET_NOT_FOUND_PATH) return "api-asset-404";
-  if (destination === pathname) return "uploaded-image";
+  if (destination === pathname) return "handed-back";
 
   throw new Error(
     `${pathname} is rewritten to ${destination}, which is neither terminal nor ` +
@@ -183,11 +181,13 @@ function coverageFor(pathname: string): Coverage[] {
   }
 
   // Only counted when no TERMINATING rewrite claimed the URL first — such a
-  // rewrite is applied before the dynamic catch-all, so it decides. The
-  // uploaded-images rule is not terminating: it hands the path back and dynamic
-  // resolution runs exactly as it would have.
+  // rewrite is applied before the dynamic catch-all, so it decides. A
+  // handed-back URL is the opposite case: dynamic resolution runs exactly as it
+  // would have, so the `/api` catch-all still answers. Case-sensitively,
+  // because Next's own route table is: `/API/x.png` is handed back and then
+  // matches no `/api` route at all.
   if (
-    (rewrite === null || rewrite === "uploaded-image") &&
+    (rewrite === null || rewrite === "handed-back") &&
     (pathname === "/api" || pathname.startsWith("/api/"))
   ) {
     covers.push("api-json");
@@ -255,21 +255,24 @@ const shapes: ReadonlyArray<readonly [string, Coverage[]]> = [
   ["/_next/static/chunks/nope.js", ["asset-404"]],
   ["/_next/static", ["proxy", "asset-404"]],
   // The uploaded-images route: a REAL route whose every URL ends in an image
-  // extension. Exempted by identity, so it keeps resolving to itself and the
-  // dynamic route claims it — the rows that fail if the exemption is dropped.
-  ["/api/images/uploaded/photo.jpg", ["uploaded-image", "api-json"]],
-  ["/api/images/uploaded/gallery/2026/hut.png", ["uploaded-image", "api-json"]],
-  // `/api` asset shapes go to the catch-all's JSON, never the empty 404.
-  ["/api/does-not-exist.png", ["api-asset-404"]],
-  ["/api/chores/zzz.png", ["proxy", "api-asset-404"]],
-  // Case variants of the same. The matcher is compiled case-SENSITIVELY and
-  // rewrites case-INSENSITIVELY, which is exactly how `/API/x.png` fell between a
-  // lookahead-based carve-out and the matcher in the first cut of this fix. The
-  // matcher's `api` alternative is lowercase, so these DO run the proxy now that
-  // the extension alternative is gone — and the ordered rewrite still sends them
-  // to the JSON, which is what keeps #2405's parity.
-  ["/API/x.png", ["proxy", "api-asset-404"]],
-  ["/Api/does-not-exist.png", ["proxy", "api-asset-404"]],
+  // extension. Handed back, so it keeps resolving to itself and the dynamic
+  // route claims it — the rows that fail if the exemption is dropped.
+  ["/api/images/uploaded/photo.jpg", ["handed-back", "api-json"]],
+  ["/api/images/uploaded/gallery/2026/hut.png", ["handed-back", "api-json"]],
+  // Every other `/api` asset shape: claimed so the general rule cannot
+  // terminate it, then handed straight back to the catch-all's JSON.
+  ["/api/does-not-exist.png", ["handed-back", "api-json"]],
+  ["/api/chores/zzz.png", ["proxy", "handed-back", "api-json"]],
+  // Case variants. The matcher and Next's route table are compiled
+  // case-SENSITIVELY, rewrites case-INSENSITIVELY. So these are claimed by the
+  // `/api` rule (which is why they are never terminated while their lowercase
+  // twins are not), handed back with their own spelling intact, and then match
+  // no `/api` route: the CMS catch-all renders the club's 404 page. The proxy
+  // runs on them, so that page is nonced — a wasted render, not a missing
+  // nonce, and the same outcome `/foo.avif` gets.
+  ["/API/x.png", ["proxy", "handed-back"]],
+  ["/Api/does-not-exist.png", ["proxy", "handed-back"]],
+  ["/API/images/uploaded/x.jpg", ["proxy", "handed-back"]],
   ["/FOO.PNG", ["proxy", "asset-404"]],
   // Plain `/api` URLs: src/app/api/[[...unmatched]]/route.ts answers JSON.
   ["/api", ["api-json"]],
@@ -325,9 +328,10 @@ describe("the shipped next.config.ts, through Next's own pipeline", () => {
     ["/foo.png", ASSET_NOT_FOUND_PATH],
     ["/wp-content/uploads/x.jpg", ASSET_NOT_FOUND_PATH],
     ["/_next/static/chunks/nope.js", ASSET_NOT_FOUND_PATH],
-    ["/api/does-not-exist.png", API_ASSET_NOT_FOUND_PATH],
-    // The identity: the shipped config hands this path straight back, which is
-    // what lets `check: true` re-resolve it onto the real route.
+    // The identities: the shipped config hands these paths straight back, which
+    // is what lets `check: true` re-resolve them where they were going anyway —
+    // and what keeps `x-nextjs-rewritten-path` off the response.
+    ["/api/does-not-exist.png", "/api/does-not-exist.png"],
     ["/api/images/uploaded/photo.jpg", "/api/images/uploaded/photo.jpg"],
   ])("rewrites %s to %s", async (path, expected) => {
     await expect(rewriteOf(path)).resolves.toBe(expected);
@@ -349,7 +353,7 @@ describe("the shipped next.config.ts, through Next's own pipeline", () => {
     // rather than skipped so that a Next release fixing the util turns this red
     // and the divergence gets re-checked instead of silently drifting.
     await expect(rewriteOf("/API/x.png")).resolves.toBe(ASSET_NOT_FOUND_PATH);
-    expect(resolveRewrites("/API/x.png")).toBe(API_ASSET_NOT_FOUND_PATH);
+    expect(resolveRewrites("/API/x.png")).toBe("/API/x.png");
   });
 
   it.each(["/", "/about", "/definitely-missing", "/api/health", "/foo.avif"])(
@@ -458,15 +462,22 @@ describe("the rewrites cannot shadow a route that really serves the URL", () => 
   });
 
   it.each(assetShapedRoutes)(
-    "%s can be asked for %s without reaching the empty 404",
+    "%s can be asked for %s without being diverted anywhere",
     (pattern, url) => {
-      // The empty-bodied terminal is for URLs NOTHING serves. A real route
-      // handler's own URL reaching it means the handler has been made
-      // unreachable — silently, and only for the extensions in the list.
+      // Stated as "the rewrites must leave it where it was", not as "it must
+      // not reach THIS terminal". Naming one destination is how this guard went
+      // vacuous once before: every `/api` row was claimed by a rule with a
+      // different destination, so all 55 rows passed unconditionally and
+      // deleting the uploaded-images exemption changed nothing here.
+      //
+      // A real route handler's own URL may only be left alone (no rule claims
+      // it) or handed back unchanged (a rule claims it and returns it to
+      // resolution). Anything else means the handler has been made unreachable —
+      // silently, and only for the extensions in the list.
       expect(
-        resolveRewrites(url),
-        `${pattern} is a real route; ${url} must not be terminated as a miss`,
-      ).not.toBe(ASSET_NOT_FOUND_PATH);
+        [null, url],
+        `${pattern} is a real route; ${url} must be left where routing would have taken it`,
+      ).toContain(resolveRewrites(url));
     },
   );
 
@@ -496,7 +507,7 @@ describe("the rewrites cannot shadow a route that really serves the URL", () => 
 
     expect(url).toBe(`${UPLOADED_IMAGE_URL_PREFIX}/gallery/hut.jpg`);
     expect(resolveRewrites(url), "the exemption must be an identity").toBe(url);
-    expect(resolveRewrites(url)).not.toBe(API_ASSET_NOT_FOUND_PATH);
+    expect(resolveRewrites(url)).not.toBe(ASSET_NOT_FOUND_PATH);
   });
 
   it("keeps a real route file at the exempted path", () => {
@@ -516,58 +527,82 @@ describe("the /api namespace keeps #2405's module-state parity", () => {
    * same bytes and the same headers whether the module is on or off, or one
    * anonymous request reads off which optional modules a club runs. With the
    * module OFF `src/proxy.ts`'s gate answers `{"error":"Not found"}` as
-   * `application/json`; with it ON the request must still reach
-   * `src/app/api/[[...unmatched]]/route.ts`, which answers the same thing.
+   * `application/json` from middleware and routing stops there; with it ON the
+   * request must still reach `src/app/api/[[...unmatched]]/route.ts`, which
+   * answers the same thing.
    *
    * Sending an asset-shaped `/api` URL to the empty-bodied `/asset-not-found`
-   * would reopen exactly that oracle: no `content-type` with the module on, a
-   * JSON one with it off.
+   * would reopen that oracle on the BODY: no `content-type` with the module on,
+   * a JSON one with it off. Sending it anywhere else at all reopens it on the
+   * HEADERS, which is subtler and is why these rules are identities:
+   * `resolve-routes.js` sets `x-nextjs-rewritten-path` on an RSC request
+   * whenever a rewrite's destination differs from the request path, and with the
+   * module OFF no rewrite runs at all — so any non-identity destination is a
+   * response header present in one module state and absent in the other.
    */
   it.each([
     "/api/chores/zzz.png",
     "/api/admin/lockers/1.svg",
     "/api/definitely-missing.jpg",
+    "/api/images/uploaded/photo.jpg",
     "/API/chores/zzz.png",
-  ])("%s is routed to the /api catch-all, not the empty 404", (pathname) => {
-    expect(rewriteCoverage(pathname)).toBe("api-asset-404");
-  });
-
-  it("sends them to a path no route file claims, so the catch-all answers", async () => {
-    // The parity is byte-identical BY CONSTRUCTION rather than by a second copy
-    // of the body: the destination has no route of its own, so
-    // `api/[[...unmatched]]` (a DYNAMIC route, resolved after afterFiles
-    // rewrites) is what replies. A route file appearing here would silently
-    // change the answer, so its absence is asserted rather than assumed.
-    const destination = join(process.cwd(), "src/app", API_ASSET_NOT_FOUND_PATH);
-
-    expect(existsSync(destination)).toBe(false);
-    expect(existsSync(`${destination}.ts`)).toBe(false);
+    "/API/admin/lockers/1.png",
+  ])("%s is handed back unchanged, so no rewrite header can be set", (pathname) => {
+    expect(rewriteCoverage(pathname)).toBe("handed-back");
+    expect(
+      resolveRewrites(pathname),
+      "destination must equal the request path, byte for byte, or the header ships",
+    ).toBe(pathname);
   });
 
   it("keeps a route file at the /api catch-all that answers those rewrites", () => {
+    // Handing the path back only works because something downstream claims it:
+    // `api/[[...unmatched]]` is a DYNAMIC route, and `check: true` re-runs
+    // dynamic resolution after the substitution.
     expect(
       existsSync(join(process.cwd(), "src/app/api/[[...unmatched]]/route.ts")),
     ).toBe(true);
   });
 
-  it("does not identity-rewrite the rest of /api, which would skip the module gate", () => {
-    // Recorded because it is the design decision a future reader is most likely
-    // to want to "simplify". An identity rewrite over the whole `/api` namespace
-    // substitutes the destination's LITERAL lowercase `/api`, so it would hand
-    // `/API/admin/lockers/1.png` to the real, module-gated handler — and nothing
-    // would have gated it, because the gate's own route table is case-SENSITIVE
-    // (`matchesPrefix` in `src/config/feature-routes.ts` uses `startsWith`, and
-    // its patterns carry no `i` flag). The frozen JSON keeps the gate the only
-    // way in.
-    //
-    // The proxy DOES run on both forms since #2404 widened the matcher, which is
-    // an improvement — the response carries a policy either way — but it is not
-    // the gate, so it does not change this decision. Both facts are pinned so a
-    // future reader can see which one the argument rests on.
+  it("preserves the request's own spelling, so /API is not folded onto the gated handler", () => {
+    // The trap this rule is written around. Rewrites compile
+    // case-INSENSITIVELY, so the `/api` rule matches `/API/…` too — but the
+    // module gate's route table is case-SENSITIVE (`matchesPrefix` in
+    // `src/config/feature-routes.ts` uses `startsWith`, and its patterns carry
+    // no `i` flag), so `/API/admin/lockers/1.png` is gated by nothing. A
+    // destination containing a literal `/api/` would substitute that lowercase
+    // spelling and hand the request to the real, gated handler with the gate
+    // never having run. Capturing the whole path and substituting the capture is
+    // what stops it.
     expect(getRequiredFeaturesForPath("/api/admin/lockers/1.png")).toEqual([
       "lockers",
     ]);
     expect(getRequiredFeaturesForPath("/API/admin/lockers/1.png")).toEqual([]);
+    for (const url of [
+      "/api/admin/lockers/1.png",
+      "/API/admin/lockers/1.png",
+      "/API/images/uploaded/photo.jpg",
+    ]) {
+      expect(
+        resolveRewrites(url),
+        `${url} must be handed back with its own case, never lowercased`,
+      ).toBe(url);
+    }
+    // Proved rather than argued: the ungated spelling must not resolve onto the
+    // real handlers. Their route regexes are built without the `i` flag
+    // (`next/dist/shared/lib/router/utils/route-regex.js`), so they do not.
+    for (const [route, url] of [
+      ["/api/images/uploaded/[...path]", "/API/images/uploaded/photo.jpg"],
+      ["/api/[[...unmatched]]", "/API/admin/lockers/1.png"],
+    ] as const) {
+      expect(
+        getRouteRegex(route).re.test(url),
+        `${url} must not resolve onto ${route}`,
+      ).toBe(false);
+    }
+    // And the proxy runs on both forms since #2404 widened the matcher, so the
+    // response carries a policy either way. That is an improvement, not a
+    // substitute: running is not gating.
     for (const url of [
       "/api/admin/lockers/1.png",
       "/API/admin/lockers/1.png",
@@ -577,9 +612,6 @@ describe("the /api namespace keeps #2405's module-state parity", () => {
         `${url} must run the proxy`,
       ).toBe(true);
     }
-    expect(resolveRewrites("/API/admin/lockers/1.png")).toBe(
-      API_ASSET_NOT_FOUND_PATH,
-    );
   });
 
   it.each(["/apiary-photo.png", "/api.png", "/apis/logo.png"])(
@@ -614,10 +646,67 @@ describe("the /api namespace keeps #2405's module-state parity", () => {
       expect(index, `the ${name} rule must still be shipped`).toBeGreaterThanOrEqual(0);
     }
 
-    // Uploaded images before the /api rule, or every uploaded image 404s as
-    // JSON; /api before the general rule, or the parity oracle reopens.
+    // The uploaded-images exemption is declared first, so it holds however the
+    // `/api` rule below is written — if that destination is ever made
+    // terminating again, every uploaded image would 404 as JSON without it. And
+    // `/api` before the general rule, or the parity oracle reopens.
     expect(uploaded).toBeLessThan(api);
     expect(api).toBeLessThan(general);
+  });
+});
+
+/**
+ * The other half of "the proxy now runs on asset shapes": a module-gated PAGE
+ * prefix sees them too, and the two module states then answer from different
+ * Next terminations. `docs/SECURITY-ATTACK-SURFACE.md` states this is no new
+ * module-state oracle; the claim is asserted here rather than left to prose.
+ *
+ * What is pinned is the whole of what is true — status, empty body, no
+ * `content-type`. The reason the remaining difference does not matter is a
+ * reason rather than a measurement: with `kiosk` off, `/lodge` ITSELF answers an
+ * empty 404 while with it on the same address answers a 200 page, so the flag is
+ * already readable from the bare prefix and the asset-shaped sibling adds no
+ * bit. The response FRAMING does differ (a middleware short-circuit is chunked,
+ * a route handler sends `Content-Length: 0`); that is recorded in the doc rather
+ * than asserted here, because it is decided by Next's transport layer and cannot
+ * be read off either object.
+ */
+describe("a module-gated PAGE prefix's asset shape adds no module-state bit", () => {
+  const allFeaturesOn = Object.fromEntries(
+    MODULE_KEYS.map((key) => [key, true]),
+  ) as FeatureFlags;
+
+  it("answers the same empty 404 whichever layer replies", async () => {
+    const gated = "/lodge/x.png";
+
+    expect(getRequiredFeaturesForPath(gated)).toEqual(["kiosk"]);
+    expect(
+      unstable_doesProxyMatch({ config, nextConfig: {}, url: gated }),
+      "the gate can only answer for a URL the proxy runs on",
+    ).toBe(true);
+
+    // Module OFF: the gate answers from middleware and routing stops there.
+    const blocked = getFeatureFlagBlockResponse(gated, {
+      ...allFeaturesOn,
+      kiosk: false,
+    });
+
+    expect(blocked).not.toBeNull();
+    expect(blocked!.status).toBe(404);
+    expect(blocked!.headers.get("content-type")).toBeNull();
+    await expect(blocked!.text()).resolves.toBe("");
+
+    // Module ON: nothing is gated, and the rewrite terminates it instead.
+    expect(
+      getFeatureFlagBlockResponse(gated, { ...allFeaturesOn, kiosk: true }),
+    ).toBeNull();
+    expect(rewriteCoverage(gated)).toBe("asset-404");
+
+    const terminal = assetNotFoundRoute.GET();
+
+    expect(terminal.status).toBe(blocked!.status);
+    expect(terminal.headers.get("content-type")).toBeNull();
+    await expect(terminal.text()).resolves.toBe("");
   });
 });
 
@@ -630,7 +719,7 @@ describe("the rewrite rules and the proxy matcher cannot drift", () => {
    * becomes a single-layer row again.
    */
   it("no longer excludes asset extensions from the proxy at all", () => {
-    const source = (config.matcher[0] as { source: string }).source;
+    const source = config.matcher[0];
 
     expect(source).not.toMatch(/\\\.\(\?:[a-z|]+\)\$/);
     for (const extension of ASSET_URL_EXTENSIONS) {
@@ -650,19 +739,39 @@ describe("the rewrite rules and the proxy matcher cannot drift", () => {
    *
    * Driven through the real function rather than through its private pattern, so
    * a rewrite of the classifier that keeps the behaviour keeps passing.
+   *
+   * Probed in UPPER CASE as well as lower, because the extension SET is not the
+   * only thing that can drift: the classifier's only case handling is one `/i`
+   * flag, and the obvious rewrite of it (take `path.extname()` and test set
+   * membership) is case-SENSITIVE and passes every lowercase assertion. Dropping
+   * the flag would make `/FOO.PNG` a public-website path, so a club mid-setup
+   * would answer an image request with the 503 holding screen — the document on
+   * an asset URL this whole issue is about. The matcher runs on `/FOO.PNG`
+   * (it is compiled case-sensitively, and its `api`/`_next` alternatives are
+   * lowercase), and the rewrites cannot help: `afterFiles` runs after
+   * middleware, so the gate has already answered.
    */
-  it("keeps every terminated extension out of the pre-setup gate", () => {
+  it("keeps every terminated extension out of the pre-setup gate, in either case", () => {
     for (const extension of ASSET_URL_EXTENSIONS) {
-      for (const url of [`/foo.${extension}`, `/a/b/foo.${extension}`]) {
-        expect(
-          isPublicWebsitePath(url),
-          `${url} is terminated as an asset miss, so the setup gate must not claim it`,
-        ).toBe(false);
+      const spellings = [extension, extension.toUpperCase()];
+
+      for (const spelling of spellings) {
+        for (const url of [
+          `/foo.${spelling}`,
+          `/a/b/foo.${spelling}`,
+          `/branding/Logo.${spelling}`,
+        ]) {
+          expect(
+            isPublicWebsitePath(url),
+            `${url} is terminated as an asset miss, so the setup gate must not claim it`,
+          ).toBe(false);
+        }
       }
     }
 
     // Guards the loop: a classifier that refused everything would pass it.
     expect(isPublicWebsitePath("/foo.avif")).toBe(true);
+    expect(isPublicWebsitePath("/FOO.AVIF")).toBe(true);
   });
 
   it("keeps the matcher exclusions to the set that has been paid for", () => {
@@ -676,7 +785,7 @@ describe("the rewrite rules and the proxy matcher cannot drift", () => {
     // #2405's parity, with the ordered `/api/…` entries re-admitting the gated
     // prefixes), `_next/static/` (the hot path; misses covered by the rewrite),
     // and `_next/image$` (a real handler that answers its own plain-text 400).
-    expect((config.matcher[0] as { source: string }).source).toBe(
+    expect(config.matcher[0]).toBe(
       "/((?!api(?:/|$)|_next/static/|_next/image$).*)",
     );
   });
@@ -692,20 +801,35 @@ describe("the rewrite rules and the proxy matcher cannot drift", () => {
     ).toBe(true);
   });
 
-  it("cannot rewrite either terminal destination into itself", () => {
+  it("cannot rewrite the terminal destination into itself", () => {
     expect(rewriteCoverage(ASSET_NOT_FOUND_PATH)).toBeNull();
-    expect(rewriteCoverage(API_ASSET_NOT_FOUND_PATH)).toBeNull();
   });
 
-  it("keeps the uploaded-images destination an identity of its source", () => {
-    // Spelled out because "identity" is the whole reason that rule is safe: it
-    // returns the request to routing untouched instead of diverting it.
-    expect(UPLOADED_IMAGE_IDENTITY_DESTINATION).toBe(
-      `${UPLOADED_IMAGE_URL_PREFIX}/:path`,
-    );
-    expect(UPLOADED_IMAGE_MISS_SOURCE.startsWith(
-      `${UPLOADED_IMAGE_URL_PREFIX}/:path(`,
-    )).toBe(true);
+  it("keeps both /api destinations a capture, never a literal path", () => {
+    // Spelled out because it is the whole reason those rules are safe. The
+    // destination has to be the rule's OWN capture: a literal `/api/…` in a
+    // destination is substituted verbatim, so it would lowercase `/API/…` onto
+    // the real gated handler, and any destination other than the matched path
+    // sets `x-nextjs-rewritten-path` and leaks module state.
+    expect(IDENTITY_DESTINATION).toBe("/:path");
+    for (const source of [UPLOADED_IMAGE_MISS_SOURCE, API_ASSET_MISS_SOURCE]) {
+      const rule = ASSET_NOT_FOUND_REWRITES.find(
+        (candidate) => candidate.source === source,
+      );
+
+      expect(rule?.destination, `${source} must hand the path back`).toBe(
+        IDENTITY_DESTINATION,
+      );
+      expect(
+        source.startsWith("/:path("),
+        `${source} must capture the whole path, prefix included`,
+      ).toBe(true);
+    }
+    // The prefix is in the PATTERN (where case-insensitive matching accepts
+    // `/API/…`) and nowhere else.
+    expect(
+      UPLOADED_IMAGE_MISS_SOURCE.includes(UPLOADED_IMAGE_URL_PREFIX.slice(1)),
+    ).toBe(true);
   });
 
   it("is exempt from the pre-setup gate", () => {

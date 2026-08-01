@@ -298,15 +298,17 @@ test("unmatched /api URLs still answer JSON — the asset rewrite must not claim
 }) => {
   // #2405's module-state parity: a path under a gated prefix that no handler
   // claims must answer identically whether the module is on or off. Routing an
-  // asset-shaped /api URL to the empty asset 404 would reopen that oracle, so
-  // the ordered `/api` rewrite rule sends these to the same JSON catch-all
-  // instead. The mixed-case entry is the one that matters most: rewrites are
-  // compiled case-INSENSITIVELY, and an ordered rule is what stops `/API/x.png`
-  // falling through the case seam a lookahead-based carve-out left open.
+  // asset-shaped /api URL anywhere at all would reopen that oracle — to the
+  // empty asset 404 on the BODY, and to any other destination on the HEADERS,
+  // because Next stamps `x-nextjs-rewritten-path` on an RSC request whenever a
+  // rewrite's destination differs from the request path, and with the module off
+  // no rewrite runs. So the ordered `/api` rule claims these (keeping the
+  // general rule off them) and hands them straight back to the same JSON
+  // catch-all any other unmatched `/api` URL reaches.
   for (const url of [
     "/api/does-not-exist.png",
     "/api/chores/zzz.svg",
-    "/API/x.png",
+    "/api/admin/lockers/zzz.png",
   ]) {
     const response = await request.get(url);
 
@@ -316,5 +318,50 @@ test("unmatched /api URLs still answer JSON — the asset rewrite must not claim
       `${url} must stay on the JSON path`,
     ).toContain("application/json");
     expect(await response.json()).toEqual({ error: "Not found" });
+    expect(
+      response.headers()["x-nextjs-rewritten-path"],
+      `${url} must not advertise that a rewrite ran — that header is the module-state oracle`,
+    ).toBeUndefined();
   }
+});
+
+test("a mixed-case /API asset shape renders the club's nonced 404, not the JSON", async ({
+  request,
+}) => {
+  // The recorded consequence of the `/api` rule being a case-PRESERVING
+  // identity. Rewrites compile case-insensitively, so `/API/x.png` is claimed by
+  // that rule and never terminated as a miss; the destination is the rule's own
+  // capture, so it is handed back spelled exactly as it arrived. Next's route
+  // table is case-SENSITIVE, so no `/api` route claims it and the CMS catch-all
+  // renders the club's 404 page.
+  //
+  // Pinned because the alternative — substituting a literal lowercase `/api` —
+  // would hand `/API/admin/lockers/1.png` to the real, module-gated handler with
+  // the gate never having run, the gate's own route table being case-sensitive
+  // too. This is the assertion that fails if that literal ever comes back.
+  //
+  // The proxy runs on it, so the page is nonced and carries a policy: a wasted
+  // render, never a missing nonce.
+  const response = await request.get("/API/x.png");
+
+  expect(response.status()).toBe(404);
+  expect(response.headers()["content-type"]).toContain("text/html");
+
+  const body = await response.text();
+  expect(body).toContain("Page Not Found");
+  expect(unnoncedInlineScripts(body)).toEqual([]);
+  expect(response.headers()["content-security-policy"]).toContain("'nonce-");
+});
+
+test("a mixed-case uploaded-images URL does not reach the real handler", async ({
+  request,
+}) => {
+  // The same property on the one `/api` route that really serves image bytes.
+  // `/API/images/uploaded/…` must NOT be folded onto it: that would give every
+  // uploaded image an unauthenticated case-insensitive alias with its own cache
+  // key, and would pre-bypass any gate later put on that prefix.
+  const response = await request.get("/API/images/uploaded/anything.jpg");
+
+  expect(response.status()).toBe(404);
+  expect(response.headers()["content-type"]).not.toContain("image/");
 });

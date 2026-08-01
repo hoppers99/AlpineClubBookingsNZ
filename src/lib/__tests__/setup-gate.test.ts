@@ -528,11 +528,12 @@ describe("the proxy applies the gate end to end", () => {
 
 describe("the layout's fallback screen says the same thing", () => {
   it("renders its pre-setup branch from the shared copy", () => {
-    // The layout still has to hold a copy of this screen: the proxy matcher
-    // deliberately skips RSC prefetches, and those reach the layout directly. It
-    // cannot set a status, so its copy is 200 — but it must never say something
-    // different from the 503 body. Checked structurally because the branch only
-    // renders inside a request scope.
+    // The layout still has to hold a copy of this screen: the gate answers only
+    // for a path it CLAIMS, and it refuses asset-extension paths on purpose, so
+    // such a URL that no route serves reaches the layout directly. It cannot set
+    // a status, so its copy is 200 — but it must never say something different
+    // from the 503 body. Checked structurally because the branch only renders
+    // inside a request scope.
     const source = readFileSync(
       path.join(process.cwd(), "src/app/(website)/layout.tsx"),
       "utf8",

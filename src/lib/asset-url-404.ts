@@ -41,41 +41,60 @@
  * miss reaches them. `beforeFiles` would shadow every real asset; `fallback` runs
  * after `(website)/[...slug]` has already turned the URL into a render.
  *
- * **Case sensitivity is the trap here, and rule ORDER is how it is closed.** Next
- * compiles the middleware matcher case-SENSITIVELY and `rewrites`
- * case-INSENSITIVELY (path-to-regexp's `sensitive` defaults to false). A first cut
- * of this fix gave the asset rule a `(?!api…)` lookahead to protect #2405's
- * module-state parity, and `/API/x.png` then fell between the two: skipped by the
- * matcher (its `.png` tail, matched case-sensitively) AND skipped by the rewrite
- * (its `/api` carve-out, matched case-insensitively), so it still rendered the
- * unnonced document. There is no portable way to write a case-SENSITIVE lookahead
- * inside a case-insensitive regex, so the carve-out is an ORDERED RULE instead:
- * `/api` asset shapes are claimed AHEAD of the general rule and sent where an
- * unmatched `/api` URL already goes, and the general rule that follows needs no
- * lookahead and so has no case seam to leak through.
- *
- * Option A closed the matcher's half of that seam — `/API/x.png` runs the proxy
- * now, so a lookahead-based carve-out would no longer produce an unnonced
- * document. The ordered rule stays anyway, because the seam it closes has a
- * second consequence that Option A does not touch: a `/API/…` asset shape
- * falling into the GENERAL rule would be answered with the empty 404 while its
- * lowercase twin got JSON, which is #2405's module-state parity read off from one
- * anonymous request.
- *
- * **A rewrite is not the end of routing, and one route depends on that.** An
- * `afterFiles` rewrite carries `check: true`
+ * **A rewrite is not the end of routing, and the `/api` rules depend on that.**
+ * An `afterFiles` rewrite carries `check: true`
  * (`next/dist/server/lib/router-utils/filesystem.js`, `buildCustomRoute`), so
  * after the destination is substituted Next runs `checkTrue()`
  * (`resolve-routes.js`) over the REWRITTEN path: an exact filesystem/app match
- * first, then every DYNAMIC route. That is why a rewrite whose destination is the
- * matched path itself is not a no-op loop — it re-enters resolution and a real
- * dynamic route can still claim the URL. `UPLOADED_IMAGE_MISS_SOURCE` uses
- * exactly that, because `src/app/api/images/uploaded/[...path]/route.ts` is a
- * REAL dynamic route whose URLs all end in an image extension. Without that
- * identity rule the `/api` rule below would swallow every admin-uploaded image
- * in the app (`src/lib/image-storage.ts`'s public URL prefix, and the
- * `Caddyfile` `/images/*` rewrite that feeds the same route) and answer it with
- * a JSON 404.
+ * first, then every DYNAMIC route. A rewrite whose destination is the matched
+ * path itself is therefore not a no-op loop and not a diversion either — it
+ * hands the request back to resolution exactly where it started, and the route
+ * that would have claimed the URL still claims it.
+ *
+ * **`/api` is claimed by an IDENTITY rewrite, and that is a security decision
+ * rather than a tidiness one.** Both `/api` rules below hand the path straight
+ * back, so the only thing they do is claim the URL before the general rule can
+ * terminate it. Two properties depend on that:
+ *
+ *  1. **#2405's module-state parity survives on the HEADERS as well as the
+ *     bytes.** A path under a module-gated prefix that no handler claims must
+ *     answer identically whether the module is ON or OFF. With it off,
+ *     `src/proxy.ts`'s gate answers the JSON 404 from middleware and routing
+ *     stops there, so no rewrite runs. With it on, the request continues — and
+ *     `resolve-routes.js` sets `x-nextjs-rewritten-path` on an RSC request
+ *     whenever a rewrite's destination DIFFERS from the request path. A
+ *     terminating `/api` rule therefore added a response header in one module
+ *     state and not the other, and one anonymous
+ *     `curl -H 'RSC: 1' /api/<gated>/zzz.png` read the flag off. An identity
+ *     destination cannot: the paths are equal, so the header is never set and
+ *     the request lands on `api/[[...unmatched]]` with the same bytes the gate
+ *     would have sent.
+ *  2. **`src/app/api/images/uploaded/[...path]/route.ts` keeps serving.** It is a
+ *     REAL dynamic route whose URLs all end in an image extension
+ *     (`src/lib/image-storage.ts`'s public URL prefix, and the `Caddyfile`
+ *     `/images/*` rewrite that feeds the same route). Handing the path back is
+ *     what lets `checkTrue()` resolve it onto that route.
+ *
+ * **Case sensitivity is the trap here, and CAPTURING the whole path is how it is
+ * closed.** Next compiles the middleware matcher case-SENSITIVELY and `rewrites`
+ * case-INSENSITIVELY (path-to-regexp's `sensitive` defaults to false, and
+ * `next.config.ts` sets no `experimental.caseSensitiveRoutes`), so every rule
+ * here also matches `/API/…` and `/Api/…`. A destination written with a literal
+ * `/api/` prefix would substitute that LITERAL LOWERCASE spelling, which is not
+ * an identity at all: it would rewrite `/API/admin/lockers/1.png` onto the real,
+ * module-gated handler with nothing having gated it, because the module gate's
+ * route table is case-SENSITIVE (`matchesPrefix` in
+ * `src/config/feature-routes.ts` is a `startsWith` and its patterns carry no `i`
+ * flag). Each rule therefore captures the ENTIRE path, prefix included, in one
+ * `:path` parameter and substitutes that capture — so the destination is the
+ * request's own spelling, byte for byte, whatever case it arrived in.
+ *
+ * The consequence for an odd-cased `/API/x.png` is recorded rather than hidden:
+ * handed back, it matches no `/api` route (Next's own route table is
+ * case-sensitive) and the `(website)/[...slug]` catch-all renders the club's 404
+ * page for it. That is a wasted render, not a missing nonce — since Option A the
+ * proxy runs on it, so it is nonced and carries a policy — and it is the same
+ * outcome `/foo.avif` already gets from an unlisted extension.
  */
 
 /**
@@ -111,26 +130,15 @@ const EXTENSION_ALTERNATION = ASSET_URL_EXTENSIONS.join("|");
 export const ASSET_NOT_FOUND_PATH = "/asset-not-found";
 
 /**
- * Where an asset-shaped `/api` URL is rewritten to.
+ * The destination shared by both `/api` rules: the path the rule matched, given
+ * straight back.
  *
- * Deliberately a path with NO route file of its own, so
- * `src/app/api/[[...unmatched]]/route.ts` claims it — that optional catch-all is a
- * DYNAMIC route, and Next resolves dynamic routes AFTER `afterFiles` rewrites, so
- * the rewritten request lands there and is answered with the same
- * `{"error":"Not found"}` JSON as any other unmatched `/api` URL.
- *
- * The indirection is the point rather than an accident. #2405's parity property is
- * that a path under a module-gated prefix that no handler claims must answer the
- * same bytes AND the same headers whether the module is ON or OFF — with it off,
- * `src/proxy.ts`'s gate answers that JSON, and its matcher entries
- * (`/api/chores/:path*` and friends) match whatever the URL's tail looks like,
- * `.png` included. Routing these to the empty-bodied `/asset-not-found` would have
- * answered module-ON with no body and no `content-type` while module-OFF still
- * answered JSON, and one anonymous request would again read off which optional
- * modules a club runs. Pointing at the catch-all keeps the two byte-identical BY
- * CONSTRUCTION, with no second copy of the body to drift.
+ * `:path` is the rule's own single capture, which spans the WHOLE path including
+ * the `/api` prefix — see the case-sensitivity note in this module's header. A
+ * destination that spelled any part of the path as a literal would substitute
+ * that literal's case and stop being an identity for `/API/…`.
  */
-export const API_ASSET_NOT_FOUND_PATH = "/api/unmatched-asset";
+export const IDENTITY_DESTINATION = "/:path";
 
 /**
  * Misses under `_next/static`. A stale browser tab asking for a chunk a deploy
@@ -154,51 +162,45 @@ export const NEXT_STATIC_MISS_SOURCE = "/_next/static/:path*";
 export const UPLOADED_IMAGE_URL_PREFIX = "/api/images/uploaded";
 
 /**
- * The one route that legitimately SERVES extension-suffixed URLs, exempted from
- * termination by an IDENTITY rewrite — destination = the matched path.
+ * The same prefix as a path-to-regexp PATTERN fragment: no leading slash,
+ * because the rule below supplies the one slash the capture starts after.
+ */
+const UPLOADED_IMAGE_URL_PATTERN = UPLOADED_IMAGE_URL_PREFIX.slice(1);
+
+/**
+ * The one route that legitimately SERVES extension-suffixed URLs, declared
+ * exempt from termination in its own right.
  *
- * Claimed before the `/api` rule below, so `/api/images/uploaded/photo.jpg` is
- * never answered as a miss. The rewrite fires (which is the point: a URL a rule
- * claims can never reach a later rule), and because `afterFiles` rewrites carry
- * `check: true` the substituted path re-enters resolution and
- * `src/app/api/images/uploaded/[...path]/route.ts` claims it, exactly as it
- * would have with no rule present at all. A file that is missing from the
- * uploads volume still gets that route's own JSON 404 — the same body the
- * `/api` catch-all answers — so nothing here can produce a document.
+ * Claimed before the `/api` rule below, so the exemption holds however that rule
+ * is written: if the `/api` destination is ever made terminating again — the
+ * change #2405's parity pressure keeps inviting — every admin-uploaded image in
+ * the app would 404 as JSON without this line, which is exactly what the first
+ * cut of #2404 did.
  *
  * Scoped to the extension alternation, not `:path*`, so it stays symmetric with
  * the rule below and does not put a rewrite compile on `/api/images/uploaded`
- * URLs the terminating rules would never have touched.
+ * URLs the terminating rules would never have touched. The `:path` capture spans
+ * the prefix as well as the tail so the destination reproduces the request's own
+ * spelling: the prefix appears inside the PATTERN, where case-insensitive
+ * matching makes it accept `/API/…`, and never in the destination, where it
+ * would impose lowercase.
  */
-export const UPLOADED_IMAGE_MISS_SOURCE = `${UPLOADED_IMAGE_URL_PREFIX}/:path((?:.*)\\.(?:${EXTENSION_ALTERNATION}))`;
-
-/** Identity destination for {@link UPLOADED_IMAGE_MISS_SOURCE}. */
-export const UPLOADED_IMAGE_IDENTITY_DESTINATION = `${UPLOADED_IMAGE_URL_PREFIX}/:path`;
+export const UPLOADED_IMAGE_MISS_SOURCE = `/:path(${UPLOADED_IMAGE_URL_PATTERN}/(?:.*)\\.(?:${EXTENSION_ALTERNATION}))`;
 
 /**
  * Every OTHER asset-shaped URL under `/api`, claimed before the general rule so
  * that rule never sees them. Matched case-insensitively like every Next rewrite,
- * which is what makes `/API/x.png` and `/Api/x.png` land here too instead of
- * falling through the case seam described above.
+ * which is what makes `/API/x.png` and `/Api/x.png` land here too rather than
+ * falling into the general rule and being terminated while their lowercase twins
+ * were not.
  *
- * Deliberately NOT an identity rewrite, even though that would be the smaller
- * change. An identity rewrite over the whole `/api` namespace substitutes the
- * destination's LITERAL lowercase `/api`, so it would hand
- * `/API/admin/lockers/1.png` to the real, module-gated handler — with nothing
- * having gated it, because the module gate's route table is case-SENSITIVE
- * (`matchesPrefix` in `src/config/feature-routes.ts` is a `startsWith`, and its
- * patterns carry no `i` flag, so `/API/…` matches no rule and
- * `getRequiredFeaturesForPath()` returns nothing). Terminating at the frozen JSON
- * keeps the gate the only way in.
- *
- * Since #2404's Option A the proxy itself runs on both case forms — the matcher's
- * `api` alternative is lowercase and the extension alternative that used to catch
- * the `.png` tail is gone — so the response carries a policy either way. That is
- * an improvement and it does not weaken the argument above: running is not the
- * same as gating, and it is the gate this rule protects. Both facts are pinned in
- * `src/lib/__tests__/asset-url-404.test.ts`.
+ * Claiming is all this rule does: the destination is the captured path, so the
+ * request goes back to resolution untouched and `api/[[...unmatched]]` answers
+ * the same `{"error":"Not found"}` JSON it answers for `/api/does-not-exist`.
+ * That equality is what #2405's parity needs, and the identity is what keeps it
+ * true of the response HEADERS too — see this module's header.
  */
-export const API_ASSET_MISS_SOURCE = `/api/:path((?:.*)\\.(?:${EXTENSION_ALTERNATION}))`;
+export const API_ASSET_MISS_SOURCE = `/:path(api/(?:.*)\\.(?:${EXTENSION_ALTERNATION}))`;
 
 /**
  * Every other path ending in an asset extension, at any depth
@@ -213,12 +215,14 @@ export const ASSET_MISS_SOURCE = `/:path((?:.*)\\.(?:${EXTENSION_ALTERNATION}))`
  *
  * ORDER IS LOAD-BEARING — Next applies the first rule that matches, so this list
  * reads most-specific first:
- *  1. `_next/static` misses;
- *  2. the uploaded-images route, exempted by identity so real images still work;
- *  3. every other `/api` asset shape, to the frozen JSON (#2405 parity);
+ *  1. `_next/static` misses, to the empty 404;
+ *  2. the uploaded-images route, handed back so real images still work;
+ *  3. every other `/api` asset shape, handed back so `api/[[...unmatched]]`
+ *     answers it (#2405 parity, bytes and headers);
  *  4. everything else, to the empty 404.
- * Swap 2 behind 3 and every uploaded image 404s as JSON; swap 3 behind 4 and the
- * parity oracle reopens. Both orderings are asserted in the guard.
+ * Move 3 behind 4 and the parity oracle reopens; move 2 behind 3 and the
+ * uploaded-images exemption starts depending on rule 3's destination instead of
+ * being declared. Both orderings are asserted in the guard.
  *
  * `_next/image` is deliberately absent: it is a REAL handler (the image
  * optimiser), so a rewrite would break optimised images rather than catch a miss.
@@ -227,10 +231,7 @@ export const ASSET_MISS_SOURCE = `/:path((?:.*)\\.(?:${EXTENSION_ALTERNATION}))`
  */
 export const ASSET_NOT_FOUND_REWRITES = [
   { source: NEXT_STATIC_MISS_SOURCE, destination: ASSET_NOT_FOUND_PATH },
-  {
-    source: UPLOADED_IMAGE_MISS_SOURCE,
-    destination: UPLOADED_IMAGE_IDENTITY_DESTINATION,
-  },
-  { source: API_ASSET_MISS_SOURCE, destination: API_ASSET_NOT_FOUND_PATH },
+  { source: UPLOADED_IMAGE_MISS_SOURCE, destination: IDENTITY_DESTINATION },
+  { source: API_ASSET_MISS_SOURCE, destination: IDENTITY_DESTINATION },
   { source: ASSET_MISS_SOURCE, destination: ASSET_NOT_FOUND_PATH },
 ] as const;

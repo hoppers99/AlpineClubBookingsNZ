@@ -267,7 +267,7 @@ describe("CSP policy", () => {
 });
 
 describe("CSP proxy", () => {
-  it("matches root page requests but skips API/static/prefetch requests", () => {
+  it("matches root page requests, and skips only the API and static shapes", () => {
     expect(
       unstable_doesProxyMatch({
         config,
@@ -296,6 +296,8 @@ describe("CSP proxy", () => {
         url: "/_next/static/chunks/app.js",
       })
     ).toBe(false);
+    // A real flight prefetch is matched like everything else since #2404
+    // removed the exemption; the matrix below covers the whole header space.
     expect(
       unstable_doesProxyMatch({
         config,
@@ -303,83 +305,82 @@ describe("CSP proxy", () => {
         nextConfig: {},
         url: "/",
       })
-    ).toBe(false);
+    ).toBe(true);
   });
 
   /**
-   * The prefetch exemption, header by header (#2404).
+   * The prefetch headers, exhaustively (#2404).
    *
-   * **The pinned expectation for a bare `Purpose: prefetch` changed in #2404, on
-   * purpose.** It used to be `false`, and that was the finding: `missing:` alone
-   * made the exemption depend on a header ANYONE can set, so a plain
-   * `GET /anything` carrying `Purpose: prefetch` skipped the proxy on EVERY URL
-   * and was answered with no nonce, no `Content-Security-Policy` and no #2420
-   * setup gate — the asset-URL class again, reachable on any address rather than
-   * only asset-shaped ones.
+   * **Every row is `true`, and that is the whole point.** The matcher used to
+   * carry a `missing:` clause exempting `next-router-prefetch`/`purpose:
+   * prefetch`, and those are headers ANYONE can set: a plain `GET /anything`
+   * carrying `Purpose: prefetch` skipped the proxy on EVERY URL and was answered
+   * with no nonce, no `Content-Security-Policy` and no #2420 setup gate.
    *
-   * The INTENT the old pin recorded is unchanged and is still asserted below: a
-   * genuine flight prefetch must not pay a nonce mint. What narrowed is which
-   * requests count as one. Next's app router always sends `RSC` alongside its
-   * prefetch header, so the matcher now skips only when the two arrive together;
-   * a header-only probe is treated as the ordinary document request it is.
+   * Narrowing the exemption to "a prefetch header AND `RSC`" was tried and
+   * rejected (owner decision, 1 Aug 2026), because the matcher cannot express
+   * Next's own definition of a flight request. `missing:` with no `value` counts
+   * ANY non-empty header as present (`prepare-destination.js`'s `matchHas`),
+   * while Next flags a flight request on `RSC: 1` exactly
+   * (`next/dist/server/lib/is-rsc-request.js`) — so `RSC: 2`, `RSC: 0` and the
+   * `1, 1` that Node produces from two `RSC` headers all skipped the proxy while
+   * Next still rendered the full HTML document. Those rows are listed below by
+   * name: they are the vectors the narrowed form left open, and they are why the
+   * exemption was deleted rather than tightened.
+   *
+   * A genuine flight prefetch now mints a nonce like any other request. That is
+   * a deliberate cost, taken because #2352 (static/ISR public pages) cannot
+   * tolerate the alternative: a prefetch that skipped the proxy would store a
+   * nonce-less copy of the page in the page cache for every later visitor.
    */
   const prefetchMatrix: ReadonlyArray<
-    readonly [string, Record<string, string>, boolean]
+    readonly [string, Record<string, string>]
   > = [
-    ["an ordinary request", {}, true],
-    ["a bare Purpose: prefetch probe", { purpose: "prefetch" }, true],
-    [
-      "a bare Next-Router-Prefetch probe",
-      { "next-router-prefetch": "1" },
-      true,
-    ],
-    // Unchanged: an RSC navigation is not a prefetch and has always run.
-    ["an RSC navigation", { rsc: "1" }, true],
-    // The exemption the matcher exists for: a real Next router prefetch.
-    [
-      "a true flight prefetch",
-      { "next-router-prefetch": "1", rsc: "1" },
-      false,
-    ],
-    [
-      "a true flight prefetch (Purpose form)",
-      { purpose: "prefetch", rsc: "1" },
-      false,
-    ],
+    ["an ordinary request", {}],
+    ["a bare Purpose: prefetch probe", { purpose: "prefetch" }],
+    ["a bare Next-Router-Prefetch probe", { "next-router-prefetch": "1" }],
+    ["an RSC navigation", { rsc: "1" }],
+    // The requests that used to be exempt.
+    ["a true flight prefetch", { "next-router-prefetch": "1", rsc: "1" }],
+    ["a true flight prefetch (Purpose form)", { purpose: "prefetch", rsc: "1" }],
+    // The vectors the narrowed exemption left open: Next does NOT treat any of
+    // these as a flight request, so each returned a full HTML document.
+    ["prefetch + RSC: 2", { purpose: "prefetch", rsc: "2" }],
+    ["prefetch + two RSC headers joined", { purpose: "prefetch", rsc: "1, 1" }],
+    ["prefetch + a non-numeric RSC", { "next-router-prefetch": "1", rsc: "x" }],
+    ["prefetch + RSC: 0", { "next-router-prefetch": "0", rsc: "0" }],
     // A value other than "prefetch" was never the exemption and still is not.
-    ["Purpose: preload", { purpose: "preload" }, true],
+    ["Purpose: preload", { purpose: "preload" }],
   ];
 
   it.each(prefetchMatrix)(
-    "%s: the proxy runs = %o -> %s",
-    (_label, headers, expected) => {
+    "%s runs the proxy: %o",
+    (_label, headers) => {
       expect(
         unstable_doesProxyMatch({ config, headers, nextConfig: {}, url: "/" }),
-      ).toBe(expected);
+        "no combination of request headers may take a URL outside the proxy",
+      ).toBe(true);
     },
   );
 
-  it("expresses the prefetch rule as two entries over one identical source", () => {
-    // Matcher entries are OR-ed, so "run unless this is a real flight prefetch"
-    // needs two: one that runs when no prefetch header is present, one that runs
-    // when no `RSC` header is present. Their union skips only when both arrive.
-    //
-    // The source is repeated LITERALLY because Next extracts `export const
-    // config` from the middleware source statically and cannot evaluate a shared
-    // constant, so the two copies are pinned as identical here — a hand-edit to
-    // one and not the other would otherwise open a matcher hole on exactly the
-    // requests this pair is meant to cover.
-    const [first, second] = config.matcher as Array<{
-      source: string;
-      missing?: Array<{ type: string; key: string; value?: string }>;
-    }>;
+  it("states the root rule once, with no header exemption to bypass", () => {
+    // Structural, because the matrix above can only probe the header space
+    // someone thought to list. A `missing:`/`has:` clause on the root entry is
+    // by construction a way to skip the proxy by setting a request header, and
+    // there is no header a caller can send that our nonce, our CSP and the
+    // #2420 setup gate should be conditional on.
+    const entries: readonly unknown[] = config.matcher;
 
-    expect(second.source).toBe(first.source);
-    expect(first.missing).toEqual([
-      { type: "header", key: "next-router-prefetch" },
-      { type: "header", key: "purpose", value: "prefetch" },
-    ]);
-    expect(second.missing).toEqual([{ type: "header", key: "RSC" }]);
+    expect(
+      entries.filter((entry) => typeof entry !== "string"),
+      "every entry must be a bare source string — only an object entry can carry `missing:`/`has:`",
+    ).toEqual([]);
+    expect(
+      entries.filter(
+        (entry) => typeof entry === "string" && !entry.startsWith("/api"),
+      ),
+      "the root rule is stated once; a second copy is where the two used to drift",
+    ).toHaveLength(1);
   });
 
   it("emits a single enforced CSP header with a per-request nonce and no report-only header", async () => {
@@ -948,7 +949,7 @@ describe("the proxy matcher covers every path the setup gate would gate", () => 
   });
 
   it("does run on the explicitly listed /api matcher entries", () => {
-    // The negative lookahead only governs the first matcher entry; the module
+    // The negative lookahead only governs the root matcher entry; the module
     // gate's own /api list must keep matching.
     expect(matches("/api/admin/waitlist")).toBe(true);
   });

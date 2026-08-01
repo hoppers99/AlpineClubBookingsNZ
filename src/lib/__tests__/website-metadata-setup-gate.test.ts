@@ -6,10 +6,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * The `<head>` half of the pre-setup holding screen (#2420 review finding F1).
  *
  * The gate in `src/proxy.ts` answers 503 for every public-website address until
- * setup is complete — but its matcher skips any request carrying
- * `next-router-prefetch` or `purpose: prefetch`, and those are ordinary request
- * headers anyone can set. `curl -H 'Purpose: prefetch' https://club/about`
- * reaches the app directly.
+ * setup is complete — but its matcher used to skip any request carrying
+ * `next-router-prefetch` or `purpose: prefetch`, ordinary request headers anyone
+ * can set, so `curl -H 'Purpose: prefetch' https://club/about` reached the app
+ * directly. #2404 deleted that exemption outright (owner decision, 1 Aug 2026),
+ * and no header now takes a URL outside the proxy.
+ *
+ * This guard is not demoted by that, because the gate answers only for a path
+ * `isPublicWebsitePath()` CLAIMS. An asset-extension path is deliberately not
+ * claimed — the holding screen is an HTML document and must never be the answer
+ * to a request for an image — so any such URL that still reaches a render
+ * arrives with no gate in front of it. `/API/x.png` is the live example: Next's
+ * route table is case-sensitive, so it matches no `/api` route and the
+ * `(website)` catch-all renders it. The head that ships for it must be as
+ * uniform as the one the 503 would have carried.
  *
  * `(website)/layout.tsx` substitutes the holding screen for `{children}` on
  * those requests, which suppresses the BODY only: in next@16.2.11 the document
@@ -162,8 +172,8 @@ describe("pre-setup, no (website) page describes itself in the document head", (
   });
 
   it("matches the <title> of the 503 document byte for byte", async () => {
-    // The proxied response and the prefetch-shaped one must describe the same
-    // screen; the 503 document titles itself with the same string.
+    // The gated response and the ungated one must describe the same screen; the
+    // 503 document titles itself with the same string.
     mocks.getPage.mockResolvedValue(publishedPage);
 
     expect((await homeMetadata()).title).toBe(SETUP_IN_PROGRESS_COPY.eyebrow);

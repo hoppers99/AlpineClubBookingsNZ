@@ -43,14 +43,20 @@
   took the claim at face value, and anything can make that claim about any
   address. So a request that simply said "this is a look-ahead" was handed pages
   without their security instructions, and could also slip past the "site setup
-  in progress" screen on a club that has not launched yet. The site now checks
-  that the request really is a browser look-ahead — genuine ones carry a second
-  marker that cannot be faked usefully — and treats everything else as the
-  ordinary page request it is. **Operators should expect one visible change:**
-  on a club that has not finished setup, these requests now correctly get the
-  "site setup in progress" screen where they previously got a page.
+  in progress" screen on a club that has not launched yet. Trying to tell real
+  look-aheads from claimed ones turned out to be unreliable — a second marker a
+  genuine browser sends can be copied or altered just as easily as the first — so
+  the exception was removed altogether. Every request now gets the same security
+  work, including genuine look-aheads. It was measured first: skipping that work
+  saved nothing worth having. **Operators should expect one visible change:** on
+  a club that has not finished setup, these requests now correctly get the "site
+  setup in progress" screen where they previously got a page.
 
   Nothing about how the site looks, how members use it, or how anything is
   stored has changed. Pictures uploaded through **Admin → Content → Images**
   are served exactly as before — that is checked automatically now, on a real
   uploaded file, because an earlier draft of this fix would have hidden them.
+  Requests for club data that a switched-off feature hides still answer exactly
+  the same way whether that feature is on or off, right down to the fine print
+  of the reply, so nobody can work out which optional features a club uses by
+  probing addresses. An earlier draft of this fix would have let them.

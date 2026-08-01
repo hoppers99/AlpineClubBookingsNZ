@@ -54,15 +54,20 @@ export default async function WebsiteLayout({
   if (!theme.isComplete && !theme.readFailed) {
     // FALLBACK, not the main path (#2420). `src/proxy.ts` answers every
     // public-website address with 503 and this same screen while setup is
-    // incomplete, so an ordinary request never gets here. What still does are
-    // the request shapes the proxy matcher deliberately skips: a flight
-    // prefetch, i.e. `purpose: prefetch` or `next-router-prefetch` TOGETHER with
-    // `RSC`. (#2404 narrowed that — a bare prefetch header on its own no longer
-    // skips the matcher — but it did not close it: all three are plain request
-    // headers and so are craftable by anyone, not just by our own client.) This
-    // branch is what stops those seeing the real site. Those
-    // responses are still 200, because a layout cannot set a status; that is the
-    // whole reason the authoritative decision moved to the proxy.
+    // incomplete, so an ordinary request never gets here.
+    //
+    // What still does is a URL the proxy RUNS on but the gate does not CLAIM.
+    // (#2404 removed the matcher's prefetch exemption entirely, so the header
+    // route in — `purpose: prefetch`, with or without `RSC` — is closed; there
+    // is no header a caller can set that skips the proxy.) The gate refuses
+    // asset-extension paths on purpose, because the holding screen is an HTML
+    // document and must never answer a request for an image, so any such URL
+    // that reaches a render lands here ungated: `/API/x.png` is the live case,
+    // handed back by the rewrite and then matched by no `/api` route, because
+    // Next's route table is case-sensitive. This branch is what stops those
+    // seeing the real site. Those responses are still 200, because a layout
+    // cannot set a status; that is the whole reason the authoritative decision
+    // moved to the proxy.
     //
     // `!readFailed` is the other half, and the asymmetry with the proxy gate is
     // deliberate (#2420 review F4). The gate answers an unreadable database with
