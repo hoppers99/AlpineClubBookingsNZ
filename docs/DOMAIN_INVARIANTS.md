@@ -4347,20 +4347,30 @@ and is hard-deleted at the end. The merge is **additive and master-wins**:
   point at, so a concurrent `FamilyGroup` delete can still abort the merge (as a
   deadlock rather than a stale-value error); the master is still unlocked during
   the guards and the self-relation pass, which is why the Member self-relation
-  moves exclude the master's own row. The same under-lock re-read also
-  re-checks the four **family-link** columns (`parentMemberId`,
-  `secondaryParentId`, `inheritEmailFromId`, `detailsConfirmedByMemberId`) in
-  both directions — either member's own outgoing links beyond the merge's own
-  step-1 nulling and step-3 re-pointing, and any other row still referencing
-  the loser after the moves — and refuses with the same 409 on any drift
-  (#2437). Two invariants follow: a merge never commits a member as its own
-  parent / second parent / email source / details confirmer (no self-relation
-  column can come to equal its own row's id through a merge), and a family
-  link saved while the merge runs is never silently nulled by the loser's
-  hard-delete — the merge refuses, nothing is written, and the operator's
-  re-run previews the link from the start (owner decision on #2437, 1 Aug
-  2026: detect and refuse; no new advisory-lock participants, no DB CHECK
-  constraint).
+  moves exclude the master's own row. The four **family-link** columns
+  (`parentMemberId`, `secondaryParentId`, `inheritEmailFromId`,
+  `detailsConfirmedByMemberId`) are protected in three places (#2437): step 1
+  nulls a master pointer at the duplicate **value-conditionally** (a pointer
+  that moved since the opening snapshot refuses right there, instead of being
+  overwritten and read back as "unchanged"); the step-3 sweeps are
+  **id-bounded** to the rows captured by the in-transaction token
+  re-derivation (a link written after that capture is never absorbed onto the
+  master unvetted — it stays pointing at the duplicate); and the step-5
+  under-lock re-read checks all three arms — either member's own outgoing
+  links beyond the merge's own rewrites, and any other row still referencing
+  the loser after the moves — refusing with the same 409 on any drift. Two
+  invariants follow: a merge never **creates** a self-referencing family link
+  (step 1 clears a master→duplicate pointer, the moves exclude the master's
+  own row, and every mid-merge divergence refuses — note this does NOT forbid
+  a **pre-existing** self-reference: `detailsConfirmedByMemberId` equal to the
+  member's own id is the legitimate self-confirmed state gating
+  `canBeBookedAsMember` (`member-profile-completeness.ts`), and a merge
+  carries it through untouched), and a family link saved while the merge runs
+  is never silently lost or silently absorbed — the merge refuses, nothing is
+  written, and the operator's re-run previews the up-to-date links, including
+  an explicit warning when the master's own link at the duplicate will be
+  cleared (owner decision on #2437, 1 Aug 2026: detect and refuse; no new
+  advisory-lock participants, no DB CHECK constraint).
 - **Relation buckets.** Every Member-referencing relation is classified into
   exactly one bucket by `MEMBER_MERGE_RELATION_SPECS`, enforced complete by a
   DMMF/schema test that fails CI if a new relation is added unclassified:

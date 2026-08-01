@@ -11,3 +11,8 @@
   stops safely with a clear message naming what changed, before anything is
   saved. Nothing about either member is altered; the operator re-runs the
   merge preview, sees the up-to-date family links, and the retry goes through.
+
+  The merge preview is also now honest about the one family link a merge
+  deletes rather than moves: when the surviving member's own link points at
+  the duplicate record, the preview says it will be cleared instead of listing
+  it as history to be moved, and the audit records the clearance explicitly.

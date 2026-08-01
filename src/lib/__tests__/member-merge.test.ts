@@ -485,16 +485,33 @@ describe("family-link drift under the lock (#2437, diffSelfRelationLinkState)", 
     ).toEqual([{ column: "inheritEmailFromId", where: "master" }]);
   });
 
-  it("refuses a directly-written self-link, so a committed merge can never carry one", () => {
+  it("refuses a directly-written self-link (the merge never CREATES one; it does not police pre-existing ones)", () => {
     // A writer sets master.parentMemberId = the master itself mid-merge.
     // Nothing in the merge writes that value, so it can only be drift — and
-    // refusing it is what makes the no-self-link invariant hold at commit time
-    // for ANY interleaving: the moves exclude the master's row (#2445), the
+    // refusing it is what keeps the merge unable to CREATE a self-link under
+    // any interleaving: the moves exclude the master's row (#2445), the
     // re-pointed inbound rows can only gain the MASTER's id (never their own),
-    // and every divergence on the two locked rows lands here.
+    // and every mid-merge divergence on the two locked rows lands here.
     expect(drift({ masterAtWrite: links({ parentMemberId: M }) })).toEqual([
       { column: "parentMemberId", where: "master" },
     ]);
+  });
+
+  it("preserves a pre-existing self-confirmation untouched — a legitimate state, not drift", () => {
+    // detailsConfirmedByMemberId === the member's own id is the REQUIRED
+    // details-confirmed state for a login-capable member
+    // (member-profile-completeness.ts), written by onboarding confirm and
+    // nomination approval, and it gates canBeBookedAsMember. A merge must
+    // carry it through unchanged: step 1 only nulls pointers at the LOSER,
+    // the moves exclude the master's row, and an unchanged snapshot value is
+    // not drift. (The invariant is "a merge never CREATES a self-link", not
+    // "no committed merge carries one".)
+    expect(
+      drift({
+        masterSnapshot: links({ detailsConfirmedByMemberId: M }),
+        masterAtWrite: links({ detailsConfirmedByMemberId: M }),
+      }),
+    ).toEqual([]);
   });
 
   it("flags a link moved between two third members (what was previewed is what is applied)", () => {

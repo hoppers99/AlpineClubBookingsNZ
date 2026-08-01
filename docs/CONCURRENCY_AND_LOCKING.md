@@ -462,18 +462,34 @@ do not use unnamespaced `hashtext(<id>)` for new lock families.
   master as its own parent), but left the SILENT-LOSS arm: a link pointing at
   the loser that lands after the opening snapshot survives the moves
   un-repointed and is quietly nulled by the loser's hard-delete
-  (`onDelete: SetNull`) — no error, no audit. The step-5 under-lock re-read
-  therefore also re-checks the family links, in both directions: any change to
-  the four columns on either member row beyond the merge's own step-1 nulling
-  and step-3 re-pointing (`diffSelfRelationLinkState`), and any OTHER row
-  still referencing the loser after the moves, 409s with the same
-  `merge_drift_in_transaction` refusal naming the changed links (owner
-  decision on #2437, 1 Aug 2026: detect and refuse — deliberately NOT a new
+  (`onDelete: SetNull`) — no error, no audit. Three mechanisms compose to
+  close every interleaving. **Step 1 is value-conditional**: the master's
+  pointer at the loser is nulled with a `WHERE column = loserId` predicate
+  (re-evaluated after blocking under READ COMMITTED), so a pointer that moved
+  since the opening snapshot refuses at step 1 instead of being overwritten —
+  and a successful null holds the master's row lock to commit, which is what
+  makes the step-5 expectation for that column enforceable rather than a
+  check of step 1's own write. **The step-3 self-relation sweeps are
+  id-bounded** to the rows captured by the in-transaction token re-derivation
+  (counts and captured ids come from the same read), so a link that lands
+  after the capture is never absorbed onto the master unvetted — it stays
+  pointing at the loser. **The step-5 under-lock re-read** then checks all
+  three arms: any change to the four columns on either member row beyond the
+  merge's own step-1 nulling and step-3 re-pointing
+  (`diffSelfRelationLinkState`), and any OTHER row still referencing the
+  loser after the moves, 409s with the same `merge_drift_in_transaction`
+  refusal naming the changed links in club-admin vocabulary (owner decision
+  on #2437, 1 Aug 2026: detect and refuse — deliberately NOT a new
   advisory-lock participant for the link writers, and NOT a DB CHECK
   constraint). Interleavings after the re-check cannot reopen the hole: both
   member rows are FOR UPDATE-locked, and an inbound FK write referencing the
   loser from another row blocks on its KEY SHARE lock against that FOR UPDATE
-  and then fails loudly on the FK once the hard-delete commits.
+  and then fails loudly on the FK once the hard-delete commits. The refusal
+  itself writes **no audit row** — the 409 rolls the transaction back whole,
+  exactly like the #2243/#2445 field-drift refusal and the other merge
+  refusals (`merge_blocked`, `preview_drift`); recording refused merge
+  attempts (outside the transaction) would be a deliberate new convention
+  across all of those arms, and is an owner decision not taken on #2437.
 
   **One new row lock, no new lock family.** Immediately before that fresh read
   the merge takes `SELECT 1 FROM "Member" WHERE "id" IN (…) ORDER BY "id" FOR
