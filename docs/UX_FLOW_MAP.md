@@ -280,6 +280,11 @@ answered) and built to it:
   legacy or in-flight booking keeps its protection if the module is later
   switched off.
 
+Lobby Display's single `/admin/display` hub entry is owned by the collapsible
+**Lodge Operations** sidebar section. The admin command palette derives the same
+group from the shared navigation registry, while the display leaves and their
+BackLinks remain unchanged.
+
 ## Feedback Conventions
 
 One rule for "did that work?" feedback, so the affordance is predictable on
