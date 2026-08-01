@@ -711,7 +711,7 @@ async function planXeroConfig(ctx: PlanContext): Promise<CategoryPlanResult> {
 // ---- Apply -----------------------------------------------------------------
 
 async function applyXeroConfig(ctx: ApplyContext): Promise<CategoryApplyResult> {
-  const result: CategoryApplyResult = { created: 0, updated: 0, unchanged: 0, skipped: 0 };
+  const result: CategoryApplyResult = { created: 0, updated: 0, deleted: 0, unchanged: 0, skipped: 0 };
   const errors: string[] = []; // plan blocked all errors; defensive only
   const batch = await loadXeroBatch(ctx.tx);
 

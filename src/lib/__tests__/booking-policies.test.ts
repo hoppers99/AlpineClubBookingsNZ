@@ -53,6 +53,9 @@ function makePolicy(overrides: Partial<{
   triggerDays: number[];
   minimumNights: number;
   active: boolean;
+  lodgeId: string | null;
+  version: number;
+  capacityMode: "HOLD" | "NO_HOLD";
 }> = {}) {
   return {
     id: "policy-1",
@@ -62,6 +65,9 @@ function makePolicy(overrides: Partial<{
     triggerDays: [6], // Saturday
     minimumNights: 2,
     active: true,
+    lodgeId: null,
+    version: 1,
+    capacityMode: "HOLD" as const,
     ...overrides,
   };
 }
@@ -195,38 +201,74 @@ describe("validateMinimumStay", () => {
 
 describe("formatViolationMessage", () => {
   it("formats a single violation", () => {
-    const msg = formatViolationMessage({
-      policyName: "Winter Saturday Minimum Stay",
-      triggerDay: "Saturday",
-      minimumNights: 2,
-      actualNights: 1,
-    });
+    const [violation] = getMinimumStayViolationFixture();
+    const msg = formatViolationMessage(violation);
     expect(msg).toContain("Saturday");
     expect(msg).toContain("minimum stay of 2 nights");
     expect(msg).toContain("1 night.");
   });
 
   it("pluralises correctly for multiple nights", () => {
-    const msg = formatViolationMessage({
-      policyName: "Test",
-      triggerDay: "Friday",
+    const [violation] = getMinimumStayViolationFixture({
+      name: "Test",
+      triggerDays: [5],
       minimumNights: 3,
-      actualNights: 2,
-    });
+    }, new Date("2026-07-03"), new Date("2026-07-05"));
+    const msg = formatViolationMessage(violation);
     expect(msg).toContain("2 nights.");
   });
 });
 
 describe("formatViolationsDetail", () => {
   it("joins multiple violations", () => {
-    const msg = formatViolationsDetail([
-      { policyName: "A", triggerDay: "Sat", minimumNights: 2, actualNights: 1 },
-      { policyName: "B", triggerDay: "Fri", minimumNights: 3, actualNights: 1 },
-    ]);
+    const first = getMinimumStayViolationFixture({ name: "A" })[0];
+    const second = getMinimumStayViolationFixture({
+      id: "policy-2",
+      name: "B",
+      triggerDays: [6],
+      minimumNights: 3,
+    })[0];
+    const msg = formatViolationsDetail([first, second]);
     expect(msg).toContain("(A)");
     expect(msg).toContain("(B)");
   });
 });
+
+function getMinimumStayViolationFixture(
+  overrides: Parameters<typeof makePolicy>[0] = {},
+  checkIn = new Date("2026-07-04"),
+  checkOut = new Date("2026-07-05"),
+) {
+  const policy = makePolicy(overrides);
+  const nightCount = Math.round(
+    (checkOut.getTime() - checkIn.getTime()) / 86_400_000,
+  );
+  const triggerDay = policy.triggerDays.includes(5) ? "Friday" : "Saturday";
+  return [{
+    reasonCode: "MINIMUM_STAY" as const,
+    policyId: policy.id,
+    policyVersion: policy.version,
+    policyName: policy.name,
+    resolvedScope: {
+      kind: "CLUB_WIDE" as const,
+      lodgeId: null,
+      effectiveLodgeId: "lodge-1",
+    },
+    affectedNights: [checkIn.toISOString().slice(0, 10)],
+    exceptionEligible: true as const,
+    capacityMode: policy.capacityMode,
+    message: `Bookings including a ${triggerDay} night require a minimum stay of ${policy.minimumNights} nights (${policy.name}). Your booking is ${nightCount} night${nightCount === 1 ? "" : "s"}.`,
+    triggerDay,
+    minimumNights: policy.minimumNights,
+    actualNights: nightCount,
+    requirements: {
+      kind: "MINIMUM_STAY" as const,
+      minimumNights: policy.minimumNights,
+      actualNights: nightCount,
+      triggerDays: policy.triggerDays,
+    },
+  }];
+}
 
 // ─── CRUD API contract tests ──────────────────────────────────────────────────
 
@@ -247,6 +289,8 @@ describe("Minimum Stay CRUD API contracts", () => {
       expect(p).toHaveProperty("triggerDays");
       expect(p).toHaveProperty("minimumNights");
       expect(p).toHaveProperty("active");
+      expect(p).toHaveProperty("capacityMode");
+      expect(p).toHaveProperty("version");
       expect(Array.isArray(p.triggerDays)).toBe(true);
       expect(p.minimumNights).toBeGreaterThanOrEqual(2);
     }

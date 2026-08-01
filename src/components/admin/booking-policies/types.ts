@@ -11,6 +11,8 @@ export interface MinStayPolicy {
   endDate: string
   triggerDays: number[]
   minimumNights: number
+  capacityMode: "HOLD" | "NO_HOLD"
+  version: number
   active: boolean
 }
 

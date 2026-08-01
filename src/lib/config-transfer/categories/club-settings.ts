@@ -841,7 +841,7 @@ async function planClubSettings(
 async function applyClubSettings(
   ctx: ApplyContext,
 ): Promise<CategoryApplyResult> {
-  const result: CategoryApplyResult = { created: 0, updated: 0, unchanged: 0, skipped: 0 };
+  const result: CategoryApplyResult = { created: 0, updated: 0, deleted: 0, unchanged: 0, skipped: 0 };
   const errors: string[] = []; // plan blocked all errors; defensive only
   for (const spec of SINGLETONS) {
     const bytes = ctx.files.get(fileFor(spec.entity));

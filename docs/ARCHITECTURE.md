@@ -123,8 +123,10 @@ Important route groups:
 > from them and the app brand utilities / wizard preview / muted-tone clamp still
 > read them (the website's legal-callout and mobile-menu `bg-brand-*` utilities
 > are a small remaining consumer, left for their own render review). Config-transfer
-> bundles are **format version 2** (`CONFIG_TRANSFER_FORMAT_VERSION`) and reject
-> any version-1 bundle.
+> bundles are **format version 3** (`CONFIG_TRANSFER_FORMAT_VERSION`) and require
+> an exact version match. Version 3 adds the destructive, fully previewed
+> minimum-stay policy replace-set; both older and newer bundle versions are
+> refused rather than interpreted under the wrong semantics.
 
 Every app-shell layout (`(public)`, `(authenticated)`, `(admin)`, `(finance)`)
 injects the admin-configured theme via `getWebsiteThemeRenderState()` inside an
@@ -1521,6 +1523,56 @@ sequenceDiagram
     R-->>M: booking + client secret
     S-->>R: webhook confirms payment (idempotent)
 ```
+
+### Booking-policy exception foundation
+
+Minimum-stay evaluation now produces a stable review snapshot, but it does not
+yet create an exception request or change booking state. The closed soft-policy
+allowlist in `src/lib/booking-policy-exceptions.ts` contains only
+`MINIMUM_STAY` and the contract reserved for the follow-up hosting evaluator,
+`ADULT_MEMBER_HOSTING_REQUIRED`. Every violation freezes the reason, policy id
+and version, resolved club-wide/lodge scope, exact affected NZ lodge nights,
+typed requirements, eligibility, and the policy's `HOLD` or `NO_HOLD` capacity
+mode. Aggregation is deterministic and **HOLD wins** when any eligible violation
+requires it. A runtime object carrying a non-allowlisted reason is rejected.
+
+`MinimumStayPolicy.capacityMode` is required and existing rows migrate to
+`HOLD`; `MinimumStayPolicy.version` is the optimistic concurrency token for
+admin writes and config transfer. Enforcement is server-side on every
+member-facing mutation path, for non-admin actors only: booking create, member
+group join, the live member date modification (`PUT /api/bookings/[id]/modify` →
+`modifyBookingBatch`, checked before the guest plan, pricing and capacity) and
+its `modify-dates` sibling all return their blocking HTTP 400 with the frozen
+`violations` and `exceptionReview`. The public non-member group join enforces at
+**both** stages: staging refuses before a verification token, join row or email
+exists, and verification re-reads the current policy set and fails closed with a
+409 `minimum_stay` outcome before any member, booking, payment or pay link is
+created — the emailed link lives 48 hours, long enough for a rule to change
+under it. Waitlist-offer confirmation enforces on both offer kinds: a same-lodge
+confirm against the booking's own lodge and a cross-lodge confirm (ADR-004)
+against the **offered** lodge, whose policy set replaces rather than merges with
+the club-wide one. Both run outside any transaction and fail closed without
+consuming the offer — the entry reverts to `WAITLISTED` under the relevant
+lodge's capacity lock and the member gets a plain sentence with code
+`MINIMUM_STAY_VIOLATION`. On the batch modify path the check runs only when the
+edit actually moves a night (`resolveTargetDates().datesChanged`, the resolved
+envelope after any `guestStayRanges` widening); a guest add, removal, name fix
+or credit election leaves the nights alone, cannot admit a new violation, and is
+exempt. `modify-quote` gates its advisory check on the identical
+`targetDatesChanged`, so preview and apply agree on every request shape. Modify quote and policy check
+expose the same structure as advisory data; policy check first resolves omitted
+lodge context to the active default and rejects an unknown/inactive explicit
+lodge. All evaluators receive the resolved booking lodge, so a lodge-specific
+policy cannot silently fall back to the club default.
+
+This is intentionally not the approval workflow. No exception row is persisted,
+no `HOLD` capacity is reserved, no hard failure becomes reviewable, and no
+caller continues into admission after a minimum-stay block. Durable requests,
+approval/revalidation, capacity reservation, and the combined soft-plus-hard
+admission order belong to #2365. Hard failures such as capacity exhaustion,
+subscription/membership eligibility, duplicate member-nights, payment,
+authentication/privacy, invalid dates, and data-integrity faults remain outside
+the soft allowlist structurally.
 
 1. A member selects a lodge (implicit when only one active lodge exists) and
    check-in and check-out dates.
