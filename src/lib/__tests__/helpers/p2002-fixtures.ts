@@ -119,6 +119,77 @@ export const googleSubCollisionError = () =>
   );
 
 /**
+ * SYNTHETIC. Duplicate `EmailChangeToken.tokenHash` — the other unique column
+ * written inside the email-change confirmation transaction (#2455). Built to
+ * the captured shape above rather than measured: forcing it needs two identical
+ * token hashes, which the issuer will not produce.
+ */
+export const emailChangeTokenCollisionError = () =>
+  livePrismaP2002(
+    '\nInvalid `prisma.emailChangeToken.delete()` invocation:\n\n\nUnique constraint failed on the fields: (`"tokenHash"`)',
+    {
+      modelName: "EmailChangeToken",
+      driverAdapterError: {
+        name: "DriverAdapterError",
+        cause: {
+          originalCode: "23505",
+          originalMessage:
+            'duplicate key value violates unique constraint "EmailChangeToken_tokenHash_key"',
+          kind: "UniqueConstraintViolation",
+          constraint: { fields: ['"tokenHash"'] },
+        },
+      },
+    },
+  );
+
+/**
+ * SYNTHETIC. Duplicate `PromoCode.code` — the collision the work party promo
+ * retry exists for (#2455). Lowercase and unquoted, like `email`, because
+ * Postgres only quotes a column name that needs it.
+ */
+export const promoCodeCollisionError = () =>
+  livePrismaP2002(
+    "\nInvalid `prisma.promoCode.create()` invocation:\n\n\nUnique constraint failed on the fields: (`code`)",
+    {
+      modelName: "PromoCode",
+      driverAdapterError: {
+        name: "DriverAdapterError",
+        cause: {
+          originalCode: "23505",
+          originalMessage:
+            'duplicate key value violates unique constraint "PromoCode_code_key"',
+          kind: "UniqueConstraintViolation",
+          constraint: { fields: ["code"] },
+        },
+      },
+    },
+  );
+
+/**
+ * SYNTHETIC. Duplicate `WorkPartyEvent.promoCodeId` — the OTHER unique in the
+ * same transaction, and the reason the promo-code test is word-level rather
+ * than a substring match: this normalises to `promocodeid`, which contains
+ * "code" (#2455).
+ */
+export const workPartyPromoCodeIdCollisionError = () =>
+  livePrismaP2002(
+    '\nInvalid `prisma.workPartyEvent.create()` invocation:\n\n\nUnique constraint failed on the fields: (`"promoCodeId"`)',
+    {
+      modelName: "WorkPartyEvent",
+      driverAdapterError: {
+        name: "DriverAdapterError",
+        cause: {
+          originalCode: "23505",
+          originalMessage:
+            'duplicate key value violates unique constraint "WorkPartyEvent_promoCodeId_key"',
+          kind: "UniqueConstraintViolation",
+          constraint: { fields: ['"promoCodeId"'] },
+        },
+      },
+    },
+  );
+
+/**
  * SYNTHETIC. A P2002 carrying nothing identifiable — no adapter detail, and a
  * message with no field list. Adapter-pg was never seen raising this (it always
  * populated `driverAdapterError`); it stands in for the stack changing under us

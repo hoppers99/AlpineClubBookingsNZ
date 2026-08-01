@@ -14,6 +14,11 @@ import {
 import logger from "@/lib/logger";
 import { hashActionToken, isActionTokenFormat } from "@/lib/action-tokens";
 import { applyRateLimit, rateLimiters } from "@/lib/rate-limit";
+import { isLoginEmailUniqueConflict } from "@/lib/member-email";
+import {
+  describeUniqueConstraintTarget,
+  isPrismaUniqueConstraintError,
+} from "@/lib/prisma-errors";
 
 const confirmEmailChangeQuerySchema = z.object({
   token: z.string().trim().refine(isActionTokenFormat),
@@ -129,9 +134,39 @@ export async function GET(request: NextRequest) {
       if (err instanceof Error && err.message === "EMAIL_TAKEN") {
         return NextResponse.redirect(new URL("/profile?emailChangeError=taken", baseUrl));
       }
-      // Handle Prisma unique constraint violation (P2002) as backup
-      if (err && typeof err === "object" && "code" in err && (err as { code: string }).code === "P2002") {
-        return NextResponse.redirect(new URL("/profile?emailChangeError=taken", baseUrl));
+      // Backstop for the race the EMAIL_TAKEN pre-check above cannot close: the
+      // uniqueness query and the update run in one transaction, but a concurrent
+      // write can still claim the address between them and the partial unique
+      // index `Member_email_login_unique` rejects this update.
+      //
+      // Narrowed from "any P2002 here means the address is taken" (#2455,
+      // matching what #2412 did for the member create): a collision the database
+      // names as some OTHER constraint is a genuine failure, and telling the
+      // member their new address is taken would send them off to change an
+      // address that is perfectly fine. It falls through to the outer handler
+      // and the honest `emailChangeError=error`.
+      //
+      // A P2002 that names NOTHING is still read as the address clash, because
+      // the email writes are the only unique-bearing statements this transaction
+      // makes: deleting the token cannot violate a unique constraint, and
+      // `AuditLog` carries none at all. Staying silent would leave the member an
+      // unexplained failure for what is almost certainly the clash.
+      //
+      // The constraint is logged beside the error because the pino `err`
+      // serializer keeps only name/message/stack and would drop `meta` entirely
+      // — including the adapter detail that names the column.
+      if (isPrismaUniqueConstraintError(err)) {
+        if (isLoginEmailUniqueConflict(err)) {
+          return NextResponse.redirect(new URL("/profile?emailChangeError=taken", baseUrl));
+        }
+        logger.error(
+          {
+            err,
+            memberId: record.memberId,
+            constraint: describeUniqueConstraintTarget(err),
+          },
+          "Email change confirmation hit an unexpected unique constraint"
+        );
       }
       throw err;
     }
