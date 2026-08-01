@@ -29,7 +29,18 @@ never removes one. A general mirror/replace mode remains explicitly deferred;
 if ever added it must be reference-aware (refuse to delete config referenced by
 live rows — e.g. `ChoreAssignment → ChoreTemplate` is `onDelete: Restrict`).
 
-The sole reviewed exception is `booking-policies/minimum-stay.csv` (#2363).
+The reviewed exception is the `booking-policies` category, which now carries two
+replace-set files: `booking-policies/minimum-stay.csv` (#2363) and
+`booking-policies/adult-member-hosting.csv` (#2364). Both are planned before
+either may classify a deletion, so one malformed file cannot let the other read
+as an intentional clear, and both are applied in the same transaction under the
+same fixed lock order. The hosting file is keyed on `scope` alone — one row per
+scope, and the database enforces that with a unique `scopeKey` — so unlike its
+sibling its natural key is strong. Deleting a scope's row returns it to the
+built-in default rather than storing "off", which is a real difference: only a
+stored `DISABLED` survives as a decision an admin can see they made.
+
+The original reasoning, which the hosting file inherits unchanged:
 Minimum-stay policies have no transactional foreign-key dependants and the
 bundle represents the complete club-wide/lodge-scoped set, keyed by exact
 `(scope, name)`. Apply creates, updates, and deletes to match that file under the
@@ -40,7 +51,8 @@ or current-state error produces no mutation plan and blocks Apply.
 
 **Stated limitation (must appear in UI copy):** ordinary categories do not
 delete, so "restoring a snapshot" is approximate — anything added after the
-snapshot survives except an omitted minimum-stay policy. The policy exception
+snapshot survives except an omitted minimum-stay policy or hosting scope. The
+policy exception
 is destructive but fully previewed. True point-in-time rollback is the automatic
 pre-apply database backup, not this tool.
 
@@ -94,13 +106,15 @@ pre-apply database backup, not this tool.
      "reseal" to regenerate the manifest first.
 3. **Apply.** Take the automatic DB backup, then in ONE transaction: take the
    single-flight config-transfer advisory lock; if booking policies are selected,
-   take the shared minimum-stay policy-set lock next; **re-plan against in-lock
+   take the shared minimum-stay policy-set lock and then the adult-member hosting
+   policy-set lock next; **re-plan against in-lock
    state**; refuse on validation errors or ANY fingerprint mismatch (never apply
    a stale or substituted plan — a second import queued behind the lock re-plans
    against the winner's committed writes); then execute in dependency order
-   (lodges → rooms → beds → minimum-stay policies → per-lodge config; singletons
+   (lodges → rooms → beds → minimum-stay policies → adult-member hosting policies
+   → per-lodge config; singletons
    independently). The permanent lock order is config-transfer singleton →
-   minimum-stay policy set. Any failure
+   minimum-stay policy set → adult-member hosting policy set. Any failure
    rolls back the entire import. Confident, non-destructive changes are not
    individually prompted — they are visible in the preview and covered by the
    single final confirm.

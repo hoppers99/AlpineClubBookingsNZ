@@ -262,16 +262,6 @@ export function formatAdultMemberHostingMessage(
 }
 
 /**
- * The one sentence an UNAUTHENTICATED surface answers with, for the same reason
- * `PUBLIC_GROUP_JOIN_MINIMUM_STAY_MESSAGE` exists (#2363): a non-member holding
- * a join code must not be able to read the club's policy configuration, or how
- * many people are on somebody else's booking, out of a refusal body.
- */
-export const PUBLIC_ADULT_MEMBER_HOSTING_MESSAGE =
-  "This club asks that an adult member stays alongside non-member guests, so " +
-  "this sign-up needs to be checked by the club. Please contact the organiser.";
-
-/**
  * Evaluate one booking's participants against an already-resolved policy.
  *
  * Returns `null` when the policy is disabled, when the party has no non-member

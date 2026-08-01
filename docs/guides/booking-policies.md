@@ -151,6 +151,57 @@ rules — see
    the set. Review every deletion and keep the automatic pre-apply backup. This
    is the sole replace-set exception — ordinary config categories do not delete.
 
+### Adult Member Hosting
+
+Some clubs want a club member present whenever non-member guests are staying.
+This card asks for that, without ever leaving a member at a dead end.
+
+1. Open **Booking Policies → Adult Member Hosting** and click **Edit**.
+2. Choose what happens when a non-member guest is booked on a night with no
+   adult member on the same booking:
+
+   - **Allowed — no adult member needed** turns the requirement off. This is
+     what a club that has never configured the card already has.
+   - **Send the booking to an admin to review** flags such a booking for you to
+     look at. The booking is still made and can still be paid — nobody is
+     stopped, and nobody has to ring the club.
+
+3. Choose **Exception capacity handling**. It has no automatic default, so pick
+   one even while the requirement is off: it is what the club falls back on the
+   moment you turn it on. As with minimum stay, this release stores, transfers
+   and shows the choice but reserves no beds from it; the request-and-approve
+   workflow arrives separately.
+4. With two or more lodges a **Rules for** selector appears. A lodge can follow
+   the club ("Use the club-wide setting") or make its own decision. The
+   club-wide scope has no inherit option — there is nothing above it.
+5. **Save Hosting Policy** stays greyed out until you have actually changed
+   something, and each save carries the revision you loaded. If another admin or
+   a config import saves first, yours is refused and the current settings are
+   reloaded; reopen **Edit** and apply your change to those.
+
+**Who counts as the adult member.** They must be on the booking as a guest in
+their own right, on that night. Being the person who MADE the booking is not
+enough — plenty of members book for family who are travelling without them — and
+child or youth members do not count, nor does a member whose membership is
+inactive, cancelled or archived. Members' own nights never need covering; only
+non-member guest-nights do.
+
+**When the review goes away.** By itself, as soon as the facts change. Add an
+adult member to the booking, remove the guest, move the nights, reinstate a
+member, or turn the policy off, and the flag clears with no action from you. A
+review you have already decided is only re-raised if the problem genuinely
+changes — different guests or different nights — not because somebody corrected a
+spelling.
+
+**Booking on behalf of a member.** If the party would trip the rule, you are
+stopped once and asked for a reason. The reason and your name are stored with the
+booking, so "who let this through, and why" has an answer months later. That is
+the only place the rule refuses anything.
+
+**What the public sees.** When the requirement is on, the public booking-rules
+block states it in one sentence. It says nothing about asking for an exception,
+because there is nowhere to ask yet.
+
 ### Public Booking Requests
 
 1. Open **Public Booking Requests**.
@@ -198,6 +249,8 @@ rules — see
 | Minimum nights | Minimum Stay | Nights required when a trigger day is included | 2 | Minimum 2 |
 | Trigger days | Minimum Stay | Which weekdays activate the rule | Sat | At least one day |
 | Exception capacity handling | Minimum Stay | Whether a future exception request holds the affected capacity during review | Existing rows: Hold | Required on create; Hold wins when several eligible rules apply |
+| Non-member guests without an adult member | Adult Member Hosting | Allowed, or sent to an admin to review | Allowed (club); Use the club-wide setting (lodge) | The club-wide scope cannot inherit |
+| Exception capacity handling | Adult Member Hosting | Whether a future exception request holds the affected capacity during review | None — you must choose | Required on every save |
 | Show indicative pricing | Public Requests | Price shown on the public request form | off | — |
 | Quote response window | Public Requests | Days a quote link stays valid | 14 | 1–60 days |
 | Reminder lead time | Public Requests | Days before expiry to remind the requester | 3 | 0–30, must be shorter than the window |
@@ -213,6 +266,8 @@ rules — see
 | A section says "Could not load…" and shows no editor and no list | Its policy or list could not be fetched, so what is stored is unknown — either on first load, or after switching **Rules for** to a lodge | Click **Try again** on that card. Nothing is shown deliberately: what was on screen belongs to a different scope, or is only this form's built-in starting values, and editing, removing, or deactivating it from here would change the wrong thing. The **Rules for** selector stays available throughout, so you can also switch scope instead |
 | A "Public copy may be out of date" banner | Your Terms/FAQ still describe the old non-member hold | Click **Edit public pages** and update the copy to match the current policy |
 | A period's rules are not applying | The booking's check-in is outside the period, or the period is inactive | Check the dates and the Active toggle on the period card |
+| A booking is flagged for hosting review even though a member is on it | The member is not a guest on the affected night, or their membership is a child/youth tier or is inactive, cancelled or archived | Open the booking's guest list and check who is staying on that night, then check the member's record |
+| Adult Member Hosting says it cannot load the settings for a lodge | The load for that scope failed, so nothing is shown rather than another lodge's values | Click **Try again**; do not save until the settings for the lodge you chose are on screen |
 | Group discount never triggers | It is disabled, the group is under the minimum, or it is summer-only and the stay is in winter | Enable it, lower the minimum group size, or untick Summer seasons only |
 | A minimum-stay update closes and the row changes back | Another admin or a configuration import saved a newer row revision first | The stale write was refused and the current row was reloaded. Reopen **Edit**, review the current values, and make the change again |
 | A minimum-stay save says the name is already in use | Another **active** rule in the same place (club-wide, or the same lodge) already has that name, and configuration transfer identifies a rule by its name | Give this rule a different name, or deactivate the other one first. A rule you have already deactivated does not block the name |

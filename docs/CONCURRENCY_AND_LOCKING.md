@@ -112,6 +112,7 @@ are the literal `1`.
 | **Roster generation** | `hashtext("roster:<date>")` | inline (`admin-roster-service.ts`) | — | Roster generation for one calendar date. |
 | **Config-transfer import** | `hashtext("config-transfer-import")` | `acquireConfigImportLock(tx)` (`config-transfer/apply.ts`) | — | Single-flights configuration-bundle apply. |
 | **Minimum-stay policy set** | `hashtext("minimum-stay-policy-set")` | `lockMinimumStayPolicySet(tx)` (`minimum-stay-policy-set.ts`) plus the migration's `MinimumStayPolicy_lock_set` statement trigger | policy config | Serialises every live CRUD and config-transfer replacement across the small club/lodge policy set. The database trigger puts draining old-colour DML behind the exact same key before any tuple lock. |
+| **Adult-member hosting policy set** | `hashtext("adult-member-hosting-policy-set")` | `lockAdultMemberHostingPolicySet(tx)` (`adult-member-hosting-policy-set.ts`) plus the migration's `AdultMemberHostingPolicy_lock_set` statement trigger | policy config | Serialises the admin write route and the config-transfer replacement over the one club row plus one row per lodge (#2364). Unlike its minimum-stay sibling the trigger is NOT a blue/green drain boundary — the table did not exist before its own migration, so no old colour writes it — it is there so advisory-before-tuple order holds for every writer, operator psql included. |
 | **Membership subscription billing** | `hashtext("membership-subscription-billing:<seasonYear>")` | `confirmSubscriptionBillingPreview`, `reconcileSubscriptionBillingExceptions` (`membership-subscription-billing.ts`) | — | Annual/approval charge snapshot creation for one membership year; the #2148 refresh-reconciliation holds the same key so exception auto-resolution serialises with confirm and never resolves rows a concurrent confirm is regenerating. The #2161 operator family-marker writers (MARK/UNMARK on the subscription-billing route) deliberately take **no** advisory lock: they only insert/release a `FamilyGroupSeasonInvoiceMarker` row (single-active enforced by a partial unique index, so a concurrent double-mark is a benign no-op), and confirm re-derives suppression from the live marker rows under this same lock inside its transaction, so a mark landing mid-confirm either is seen by the in-tx re-preview or shifts the confirmation token — never a torn snapshot. |
 | **Authoritative fee schedule** | `hashtext("fee-schedule:<domain>:<key>")` | `lockFeeSchedule` (`authoritative-fees.ts`) | — | Serialises effective-dated membership or entrance-fee schedule changes for one configured key. |
 | **Member partner link** | sorted `hashtext("member-partner-link:<memberId>")` keys | `lockPartnerMembers` (`member-partner-link.ts`) | — | Serialises partner-link invariants across every member touched by a link; same-family keys are sorted. |
@@ -176,6 +177,54 @@ key, so the two keyspaces are disjoint and cannot deadlock in either order.
 `booking-date-modification-minimum-stay.test.ts` each pin their call site to the
 transaction client so a future edit cannot silently reintroduce the second
 connection.
+
+### Composition: adult-member hosting policy set (#2364)
+
+`PUT /api/admin/booking-policies/adult-member-hosting` calls
+`lockAdultMemberHostingPolicySet(tx)` before its first policy or lodge read, then
+compare-and-swaps on the revision it read inside the same transaction. The set is
+one club row plus at most one row per lodge, so a single global configuration key
+is deliberately preferred to per-scope concurrency.
+
+Configuration transfer composes three global configuration keys in one fixed
+order: `config-transfer-import`, then `minimum-stay-policy-set`, then
+`adult-member-hosting-policy-set`, all before the booking-policy category
+re-fingerprints or replaces any row. Live CRUD takes exactly one of the last two
+and never both, and no writer takes them in another order, so the three cannot
+form a cycle.
+
+The `AdultMemberHostingPolicy_lock_set` `BEFORE STATEMENT` trigger takes the same
+key ahead of any tuple lock. Its purpose differs from the #2363 one it copies:
+that trigger exists because a draining old colour already wrote
+`MinimumStayPolicy` and could not call the TypeScript helper, whereas this table
+was created by its own migration and has no old-colour writer at all. It is kept
+so the ordering holds unconditionally — for operator psql and for any future
+colour — rather than only for the code paths that exist today. A separate `BEFORE
+ROW` trigger manages the revision after the statement lock is held, and is
+stricter than its sibling: a material update must present `OLD + 1`, and a
+non-material one keeps the token so a no-op cannot invalidate somebody's open
+editor.
+
+#### Which client reads the hosting policy
+
+`loadAdultMemberHostingPolicy` (`adult-member-hosting-review.ts`) takes the same
+optional trailing `db` as `validateMinimumStay`, under the same one-line rule: **a
+caller already inside `prisma.$transaction` MUST pass its own `tx`.** Every
+enforcement site is in that position, because the hosting review is reconciled
+inside the booking write itself — booking create (all three services plus the
+split child), `modifyBookingBatch`, `modifyBookingDates`, `adminShiftBookingDates`,
+the guest-add route, the guest-removal service and the waitlist confirm — and all
+of them hold `pg_advisory_xact_lock(1)` and/or a per-lodge capacity lock while
+they do it. Reaching for the module client there would check out a second pool
+connection underneath both locks, which is the pool-starvation shape the ordering
+rule at the top of `member-guest-add-policy.ts` forbids.
+
+The one caller that keeps the default is the booking-create route's
+pre-transaction check for an admin on-behalf confirmation, which runs before any
+transaction is opened. This is a pool argument, not a lock-order one: no hosting
+policy writer takes a per-lodge capacity lock and no booking path takes the
+policy-set key, so the keyspaces are disjoint and cannot deadlock in either
+order.
 
 ### Composition: application-approval mapping (E10, #1936)
 

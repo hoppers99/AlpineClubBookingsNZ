@@ -53,6 +53,40 @@ membership refusal, duplicate member-night, authentication, payment, privacy,
 invalid-date, and data-integrity failures remain hard stops with no transition
 into review.
 
+### Adult-member hosting review (#2364)
+
+An adult-member hosting hazard causes **no booking-state transition**. The
+booking is made, held, paid and completed exactly as it would have been; what
+changes is a review that lives beside the lifecycle, in its own columns, with its
+own small state machine:
+
+```
+(none) -> PENDING            a hazard appears on a booking that had none
+(none) -> APPROVED           create only, and only with an explicit admin
+                             on-behalf reason recorded against it (D-R4)
+PENDING|APPROVED|REJECTED -> (none)
+                             current facts cover every affected night, or the
+                             policy stops applying to this booking
+PENDING|APPROVED|REJECTED -> PENDING
+                             a MATERIALLY different hazard replaced the recorded
+                             one (a different uncovered guest-night set, or a
+                             different policy revision); the previous decision is
+                             dropped with it
+```
+
+Two of those edges are the whole point. Clearing is automatic and needs no admin:
+adding an adult member to the booking, removing the last uncovered guest, moving
+the nights, reinstating a cancelled member, switching the policy off, or moving
+the booking to a lodge that never had the rule all end the hazard the next time
+any booking path touches it. Reopening is deliberately NARROW: a renamed guest,
+or an extra host on an already-covered night, is the same hazard and does not
+re-prompt an admin who has already decided.
+
+There is no transition into the shared `AWAITING_REVIEW` booking status and no
+check-in block, unlike the minors-only rule (#1372/#1422). Capacity is not
+reserved from the frozen `HOLD` value; that, the member request state and the
+approval/revalidation edges belong to #2365.
+
 `DRAFT -> PAYMENT_PENDING` is also where a stored account-credit election is
 spent (#2265). A draft carries the member's election on
 `Booking.creditElectionCents` and consumes no credit while it may still be

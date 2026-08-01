@@ -86,6 +86,28 @@ as a red flag and check the release notes before deploying.
 
 ## Unreleased
 
+### Re-export configuration bundles for format version 4 (#2364)
+
+Configuration bundles now require exact **format version 4**. Version 4 adds a
+second required file to the `booking-policies` category,
+`booking-policies/adult-member-hosting.csv`, carrying the adult-member hosting
+setting for each scope under the same replace-set rules as its sibling: a scope
+omitted from the file is deleted after appearing in the dry-run.
+
+The number moves rather than the file being optional because both directions are
+unsafe. A version 3 bundle has no such file, so a version 4 reader would have to
+guess whether that means "clear every hosting policy" or "leave them alone"; a
+version 3 reader handed a version 4 bundle is worse, because it would ignore the
+file while reporting that it had replaced the club's complete booking-policy set,
+leaving source and target quietly disagreeing about who may bring guests.
+
+Re-export any configuration bundle you rely on from the upgraded source app
+before importing it. Do not hand-edit `manifest.json` and do not expect **Reseal
+edited bundle** to upgrade an old bundle's meaning: a valid v4 export contains
+BOTH `booking-policies/minimum-stay.csv` and
+`booking-policies/adult-member-hosting.csv` with the complete intended sets (or
+their exact headers alone when clearing is intentional).
+
 ### Re-export configuration bundles for format version 3 (#2363)
 
 Configuration bundles now require exact **format version 3** compatibility. The

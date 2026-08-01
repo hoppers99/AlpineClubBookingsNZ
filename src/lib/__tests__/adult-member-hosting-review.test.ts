@@ -10,6 +10,10 @@ import {
   parseStoredHostingReview,
   toHostingParticipants,
 } from "@/lib/adult-member-hosting-review";
+import {
+  bookingReviewReasonCodes,
+  bookingReviewReasonSentences,
+} from "@/lib/booking-review";
 
 const CLUB_ON = {
   id: "policy-club",
@@ -346,6 +350,62 @@ describe("stored snapshot parsing (#2364)", () => {
         requirements: {},
       }),
     ).toBeNull();
+  });
+});
+
+describe("structured review reason codes (#2364)", () => {
+  const cases: Array<[string, Record<string, unknown>, string[]]> = [
+    [
+      "no review at all",
+      { requiresAdminReview: false, adminReviewStatus: null, adultMemberHostingReviewStatus: null },
+      [],
+    ],
+    [
+      "the minors rule alone",
+      {
+        requiresAdminReview: true,
+        adminReviewStatus: AdminReviewStatus.PENDING,
+        adultMemberHostingReviewStatus: null,
+      },
+      ["ADULT_SUPERVISION"],
+    ],
+    [
+      "the hosting policy alone",
+      {
+        requiresAdminReview: false,
+        adminReviewStatus: null,
+        adultMemberHostingReviewStatus: AdminReviewStatus.PENDING,
+      },
+      ["ADULT_MEMBER_HOSTING_REQUIRED"],
+    ],
+    [
+      "both at once, in a fixed order",
+      {
+        requiresAdminReview: true,
+        adminReviewStatus: AdminReviewStatus.PENDING,
+        adultMemberHostingReviewStatus: AdminReviewStatus.APPROVED,
+      },
+      ["ADULT_SUPERVISION", "ADULT_MEMBER_HOSTING_REQUIRED"],
+    ],
+  ];
+
+  for (const [label, booking, expected] of cases) {
+    it(`reports ${label}`, () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const codes = bookingReviewReasonCodes(booking as any);
+      expect(codes).toEqual(expected);
+      expect(bookingReviewReasonSentences(codes)).toHaveLength(expected.length);
+    });
+  }
+
+  it("gives each code its own sentence, so neither hazard is described by the other", () => {
+    const sentences = bookingReviewReasonSentences([
+      "ADULT_SUPERVISION",
+      "ADULT_MEMBER_HOSTING_REQUIRED",
+    ]);
+    expect(sentences[0]).toMatch(/does not include an adult guest/);
+    expect(sentences[1]).toMatch(/no adult member is staying/);
+    expect(sentences[0]).not.toBe(sentences[1]);
   });
 });
 

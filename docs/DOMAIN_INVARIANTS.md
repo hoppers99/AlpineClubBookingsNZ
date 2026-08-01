@@ -2323,6 +2323,106 @@ Config transfer is the one replace-set exception: it takes the config-import
 lock then the shared policy-set lock, re-plans, and may delete omitted policies
 only after they appeared in Preview. Existing policies migrate to `HOLD`.
 
+### Adult-member hosting (#2364, epic decisions D-R3 / D-R4)
+
+A club may optionally ask that every non-member guest-night overlaps an adult
+member who is actually staying on the same booking. It is the second consumer of
+the #2363 exception foundation and the second allowlisted reason code,
+`ADULT_MEMBER_HOSTING_REQUIRED`.
+
+**Configuration.** One `AdultMemberHostingPolicy` row per scope: a club-wide row
+(`Disabled` / `Admin review required`) plus, per lodge, an override that may also
+say `Inherit`. Scope identity is pinned in the database — `scopeKey` is held to
+`COALESCE(lodgeId, 'club-wide')` by a CHECK and carries a unique index, so a
+second club-wide row cannot exist and resolution is deterministic. A club-wide
+`INHERIT` is refused by a second CHECK, because it would have nothing to inherit
+from. `capacityMode` has **no** database default (D-R6): the table is created
+empty and every API and UI write states it. Every write is versioned and
+compare-and-swaps on the revision the editor loaded, under the
+`adult-member-hosting-policy-set` advisory key.
+
+**Resolution.** A lodge row whose mode is not `INHERIT` replaces the club default
+for that lodge; an `INHERIT` row, or no row at all, falls through to the club
+row; a club with no row resolves `DISABLED`. A scope that cannot be identified is
+REFUSED (`UnknownAdultMemberHostingScopeError`), never quietly answered
+"disabled" — the caller must not be able to confuse "the club has not turned this
+on" with "we could not tell which lodge this is".
+
+**Who may host.** An active, uncancelled, unarchived **ADULT** `Member` who is
+linked to a guest row on that exact night. Three consequences, each deliberate:
+
+- **Booking ownership never proves attendance.** The owner counts only through a
+  participant row linked to them, and only on the nights that row covers. The
+  evaluator is never given `Booking.memberId`, so it cannot be credited by
+  accident.
+- **The member LINK is authoritative, not the guest row's `isMember` flag**,
+  which is a pricing-time snapshot. A row whose member cannot be resolved is
+  treated as a non-member guest — the safe direction, since that means it needs
+  hosting rather than provides it.
+- **Child, youth, infant and NOT_APPLICABLE (organisation) members cannot
+  host**, and neither can an inactive, cancelled or archived one. They are still
+  members, so their OWN nights never need covering: the rule is about non-member
+  guest-nights only.
+
+Nights come from the sparse `BookingGuestNight` rows (#713), so a non-contiguous
+stay is judged night by night. Rows predating #713 fall back to the GUEST's own
+`stayStart..stayEnd` envelope, never the booking's.
+
+**Split bookings (#738).** A mixed party awaiting payment is stored as a member
+booking plus a linked non-member child. Judged alone the child contains no member
+at all, so the evaluation borrows the direct parent's (or child's) adults as
+host-only participants whenever that sibling belongs to the SAME member and is
+live. Uncovered guest-nights still come only from the booking's own rows, so one
+party yields one hazard rather than two. Group bookings are explicitly NOT
+affected: a joiner's booking belongs to a different member, so an organiser's
+adults never host somebody else's guests and "the same booking" keeps meaning
+what it says.
+
+**Consequence.** Hosting is a REVIEW, not a refusal — the club chose "admin
+review required", and D-R4 makes it always administratively overridable. A
+member's booking is made and an admin decides afterwards. The hosting review
+lives in its OWN `Booking` columns (`adultMemberHostingReview*`) rather than the
+shared `requiresAdminReview` / `adminReviewStatus` pair, because several booking
+paths wipe those the moment the minors-only rule stops applying, and an unrelated
+guest edit must not silently discard an admin's hosting decision. The two hazards
+are reported together as structured codes at read time
+(`bookingReviewReasonCodes`), which is what "without overloading the legacy single
+review string" means here. A pending hosting review deliberately does NOT block
+lodge check-in: the minors gate is a child-safety stop, whereas the fix for a
+hosting hazard — an adult member joining the booking — is not something anybody at
+the door can do.
+
+**Admin exemption.** Stated per path, like minimum stay's:
+
+- **Booking create** refuses an authorised **on-behalf** booking that trips the
+  rule with HTTP 409 `ADULT_MEMBER_HOSTING_CONFIRM_REQUIRED` until the admin
+  supplies a reason, which is then persisted with their id against an APPROVED
+  review. Role alone buys nothing: a dual-hat admin booking for themselves is a
+  member here, exactly as #1442 decided for minimum stay.
+- **Every other path opens the review PENDING for everybody, admin included.**
+  Accepting a hosting exception is a deliberate act with a reason attached, not a
+  side effect of an unrelated edit, so a modification, a guest change or a
+  waitlist confirm never auto-approves a hazard it just created.
+
+**Re-evaluation.** The reconciler derives everything from live rows and is
+idempotent, so it runs at the end of every booking path that can change the
+party: create (draft, confirmed, waitlisted, and the split child), batch modify,
+date modify, admin date shift, guest add, guest removal and waitlist confirm —
+each inside its own transaction, with the caller's `tx`. A hazard **clears**
+whenever current facts cover every night, for any reason: an adult member was
+added, a guest left, the nights moved, the member was reinstated, the policy was
+switched off, or the booking moved to a lodge that never had the rule. It
+**reopens** as PENDING, dropping the previous decision, only when the uncovered
+guest-night set or the policy revision materially differs — a renamed guest or an
+extra host on an already-covered night does not re-prompt an admin who has
+already decided.
+
+**Scope boundary.** #2364 stops at configuration, the evaluator and these
+integration seams. The member request surface, the admin execution UI, durable
+proposal state and capacity reservation from `HOLD` all belong to #2365; the
+capacity mode is frozen onto the snapshot and aggregated here, and reserves
+nothing.
+
 Issue #1668 adds an **admin-only override** (`adminOverride`, honoured solely when
 `bookingManagementAuthorizationRole(session.user) === "ADMIN"`, i.e. Full Admin
 or Booking Officer) that lifts those date-window locks so an admin can move the
