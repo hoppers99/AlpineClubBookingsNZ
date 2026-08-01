@@ -4,32 +4,41 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
-- **The member-guests module switch now really does reach the consent endpoint
-  (#2435).** Turning a module off is meant to make its routes disappear at the
-  front door, before any of the app's own code runs. For `POST
-  /api/bookings/[id]/guests/[guestId]/consent` that never actually happened: the
-  rule naming the route was written, but the address was missing from the list of
-  URLs the proxy is asked to run on at all, so the rule sat there unable to fire.
+<!-- changelog-pointer-note:start -->
 
-  **Nothing was left unprotected.** The endpoint checks the member-guests module
-  itself and answers the same `403 Forbidden` it gives every other refusal when
-  the module is off, before it reads a single booking or guest row — so a club
-  with the module switched off was, and always has been, refused. What was
-  missing was the second, outer layer that is supposed to sit in front of that
-  one. This restores it.
+Entries for the next release are written as one file per pull request in
+[`changelog.d/`](changelog.d/README.md), not added here by hand (#2452);
+`scripts/release/compile-changelog.mjs` folds them into a version section when a
+release is cut. Any entries still listed below were written before that change
+and are folded in the same way.
 
-  A new contract test now walks every module route rule and fails if it names an
-  address the proxy would never run on. A rule written as a plain path prefix
-  covers a whole branch of the site, so it is checked at the prefix itself *and*
-  at an address below it; a rule written as a pattern is checked once for every
-  address shape it accepts. That turned up two more addresses — the Xero cron and
-  webhook paths — where anything filed underneath them would have slipped past
-  the module switch, and they are now covered too.
+<!-- changelog-pointer-note:end -->
+- **Finding the right parent again: the Link Parent search lists adults first,
+  and says when it ran out of room (#2425).** Recording a parent of any age was
+  the right call — a 16 or 17 year old can genuinely be a parent — but it had a
+  consequence nobody meant. The search shows eight people at a time, ordered by
+  surname then first name, so a family who all share a surname could put their
+  **children in all eight slots** and leave the adult the admin was actually
+  looking for off the list entirely, with nothing on screen to say the list had
+  been cut short. On a big family, the parent was simply unreachable.
 
-  The rules themselves also now read an address the way a browser can spell it
-  before deciding: a trailing slash, or the internal spelling used when a page's
-  data is fetched rather than the page, no longer walks past a module switch that
-  plainly names that route.
+  The list now puts **the grown-ups at the top and children and youth last**.
+  This changes the ORDER and nothing else: exactly the same people are offered as
+  before — any active, non-archived member of any age who is not an organisation
+  or school account — and the younger candidates follow immediately below. Adults
+  come first, and so does a member whose membership type makes them age-exempt
+  (an honorary or life member, who carries no age tier at all): they are
+  grown-ups too, and sorting them in among the children would have left the
+  problem unfixed for the very families it was reported on. The dialog now says
+  so ("adults are listed first, children and youth last"), so the order does not
+  read as a fault. Who may be recorded as a parent, and who the club emails about
+  a dependent (always an adult), are both completely unchanged.
+
+  When more people matched than the list can show, it now says **"Keep typing to
+  narrow this down."** underneath — the same sentence the booking screens use
+  when a member search is cut short, so the product says one thing in one voice.
+  The hint appears only when the list really was truncated, never under a
+  complete one, and never when nothing matched at all.
 
 - **The cancellation queue stops spending Xero API calls on questions nobody can
   act on (#2402).** Opening **Admin → Members → Cancellation Requests** asked
@@ -164,6 +173,27 @@ All notable public reference-release changes should be recorded here.
   server error. The demo seed's school children now carry surnames, matching
   what the real school form writes.
 
+- **A member merge that is overtaken mid-merge now stops cleanly instead of
+  failing with an unexplained error (#2243).** Merging two member profiles runs
+  as one long transaction, and it used to work out what to copy onto the
+  surviving record the moment that transaction opened, then write it much later.
+  A member photo can be uploaded at any time without waiting for a merge to
+  finish, so an on-behalf photo upload landing in that gap left the merge writing
+  a photo reference that had already been deleted — the database refused it and
+  the whole merge rolled back as an unexplained error, with nothing in the
+  operator's preview to hint at why. The merge now re-checks what it is about to
+  copy just before it writes, covering every field it copies rather than photos
+  alone (the duplicate's family group is the other one that could fail the same
+  way), and locks both member records for that final step. If anything did change
+  in the meantime, the merge stops with a clear message naming what changed,
+  saves nothing, and asks the operator to re-run the preview — so what was
+  previewed is always exactly what gets applied. Nothing changes for an ordinary
+  merge. Two smaller corrections ride along: where a booking request was already
+  turned into a booking for the duplicate, that link now follows the surviving
+  member (it previously kept pointing at the deleted record); and the safety net
+  that stops a new member-referencing column being forgotten by a merge now also
+  covers columns that hold a member id without a database foreign key — two
+  calendar columns had slipped past it — with a test that fails on the next one.
 - **The finance dashboard was counting a paid price increase twice, and now
   counts it once (#2408).** When a booking's price goes up after it was made —
   someone adds a guest — the difference is tracked as an "additional payment".
