@@ -161,11 +161,25 @@ const RATE_LIMIT_DB_ERROR_LOG_INTERVAL_MS = 60 * 1000;
  *
  * WHERE THE THROW LANDS, deliberately: inside the existing `try`, so a shape
  * mismatch is treated as exactly what it is — the shared store failing to answer
- * usefully — and the request drops to the per-process fallback at the DEGRADED
- * budget, with the error logged. That keeps the limiter's standing decision that
- * a store-local fault must not become a login outage (see `authSensitive`),
- * while still turning a mismatch into a visible error instead of a silent `NaN`
- * that waves everything through.
+ * usefully — and the request drops to the per-process fallback, with the error
+ * logged. That keeps the limiter's standing decision that a store-local fault
+ * must not become a login outage, while still turning a mismatch into a visible
+ * error instead of a silent `NaN` that waves everything through.
+ *
+ * BE PRECISE ABOUT WHAT THE FALLBACK BUYS, because it is easy to over-read.
+ * `degraded: true` only *reduces* the budget for `authSensitive` limiters
+ * (`checkRateLimitInMemory` above); for the majority — `api`, `bookingQuery`,
+ * `bookingCreate`, the member-guest resolve/search/add-probe throttles,
+ * `dataExport`, `deletionRequest`, the group-booking limiters — the degraded
+ * budget IS the full budget, now counted per process. And a shape mismatch is
+ * PERMANENT, not a blip: every call throws until the schema is fixed, so a
+ * two-replica deployment enforces each of those budgets twice over, with the
+ * window resetting on every restart. That is still strictly better than what it
+ * replaces (`Number(undefined)` → `NaN`, under which `NaN > limit` is false and
+ * every request is allowed, forever, silently), which is why the throw belongs
+ * here rather than outside the `try` — but the fallback is a floor, not a fix.
+ * The `RawSqlShapeError` travels in `err` to the logger and to Sentry naming the
+ * column, so the fix is the alert, not the fallback.
  */
 const RATE_LIMIT_UPSERT_ROW = z.object({
   count: rawIntColumn,

@@ -52,11 +52,19 @@
  *   throws `Cannot mix BigInt and other types` the first time you do arithmetic
  *   on it — or silently produces a string if you concatenate. Use
  *   {@link rawIntColumn}, which accepts both and narrows to `number`.
- * - `numeric` / `decimal` arrive as a **string** (not a number, not a
- *   `Prisma.Decimal` — that conversion is a Prisma model-read behaviour, not a
- *   raw one). Nothing in this repository reads a `numeric` raw, and nothing
- *   should: money is integer cents. {@link rawIntColumn} therefore REFUSES a
- *   numeric string loudly rather than guessing at `Number("12.50")`.
+ * - `numeric` / `decimal` arrive as a **`Prisma.Decimal` object** — NOT a string
+ *   and not a number. Verified in the installed runtime rather than assumed:
+ *   `@prisma/client/runtime/client.js` maps the adapter's `Numeric` column type
+ *   to `"decimal"` and then deserialises it with `new Decimal(value)`, on the
+ *   same code path that turns `int8` into a BigInt and `timestamp` into a Date.
+ *   So `z.string()` on a `numeric` column is wrong, and wrong in the way this
+ *   whole file exists to catch: it type-checks, a mocked test returns the string
+ *   the author believed, and only production disagrees. Nothing in this
+ *   repository reads a `numeric` raw, and nothing should — money is integer
+ *   cents. {@link rawIntColumn} REFUSES both a `Decimal` object and a numeric
+ *   string loudly rather than guessing at either; if a genuine `numeric` read
+ *   ever arrives, decode it with a schema that expects the Decimal and convert
+ *   deliberately.
  * - `timestamp` / `timestamptz` arrive as a **Date**.
  * - `boolean` arrives as a **boolean**, enums and `text` as **strings**.
  *
@@ -88,9 +96,12 @@ export class RawSqlShapeError extends Error {
  *
  * Accepts a `number` (`int2`/`int4`) or a `BigInt` (`int8`, and every aggregate
  * — `COUNT(*)` is the one people meet first) and narrows both to `number`.
- * Refuses a numeric string, a float, and a BigInt too large to survive the
- * conversion, because each of those is a real defect wearing a plausible
- * disguise rather than something to paper over.
+ * Refuses a float, a BigInt too large to survive the conversion, and anything a
+ * `numeric`/`decimal` column sends (a `Prisma.Decimal` object; a string from a
+ * driver configured differently), because each of those is a real defect wearing
+ * a plausible disguise rather than something to paper over. A column that is
+ * genuinely `numeric` is not an integer column, and silently rounding it here
+ * would be the money bug this file exists to prevent.
  */
 export const rawIntColumn = z
   .union([z.number(), z.bigint()])

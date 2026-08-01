@@ -190,13 +190,18 @@ describe("rawIntColumn — what Postgres actually sends (#2289)", () => {
     ).toThrow(/safe integer range/);
   });
 
-  it("refuses the STRING a numeric/decimal column returns instead of guessing", () => {
+  it("refuses a numeric STRING instead of guessing at Number(\"12.50\")", () => {
     expect(() => decodeRawRows([{ count: "12.50" }], schema, "counter")).toThrow(
       RawSqlShapeError,
     );
   });
 
-  it("refuses a Decimal-like object", () => {
+  it("refuses the Prisma.Decimal a numeric/decimal column really sends", () => {
+    // What the installed runtime actually hands back for a `numeric` column
+    // read raw: `@prisma/client` maps the adapter's Numeric type to "decimal"
+    // and deserialises it with `new Decimal(value)` — an OBJECT, not the string
+    // this file's reference block used to claim. The message names the
+    // constructor so the mismatch diagnoses itself.
     class Decimal {
       constructor(readonly value: string) {}
     }
