@@ -322,11 +322,11 @@ const NOTICE = "AdminViewOnlyNotice";
 */
 const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 301,
+  callSites: 303,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 252,
+  optOuts: 254,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 226,
+  staticOptOuts: 228,
   /** `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch. */
   vouchedOptOuts: 26,
   /** …of the vouched: proved at a parent's own JSX render site (#2168). */
@@ -340,7 +340,7 @@ const FIGURES = {
   leafControls: 36,
   leafFiles: 21,
   /** Components that render an `AdminViewOnlySectionBanner`. */
-  bannerComponents: 80,
+  bannerComponents: 81,
 } as const;
 
 const WIZARD_SHELL = "IntegrationWizard";
@@ -1209,6 +1209,14 @@ describe("view-only section banner coverage (#2160)", () => {
                sibling billing panel's banner does not cover header actions
                (exceptions 47 -> 49, exceptionFiles 25 -> 26, leaf bucket
                34/20 -> 36/21; opt-outs and bannerComponents unchanged).
+          303  +2  #2364's Adult Member Hosting card on Booking Policies
+               (adult-member-hosting-section.tsx): Edit + Save, both static
+               opt-outs under the card's own unconditional
+               AdminViewOnlySectionBanner, so optOuts 252 -> 254, staticOptOuts
+               226 -> 228 and bannerComponents 80 -> 81 move with it. The
+               vouched split, exceptions and the leaf bucket are untouched:
+               nothing keeps its own reason, and no control here is gated on
+               anything narrower than the bookings area the banner states.
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into

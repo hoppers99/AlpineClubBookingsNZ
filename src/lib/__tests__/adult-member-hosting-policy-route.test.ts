@@ -1,0 +1,252 @@
+import { NextRequest } from "next/server";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({
+  requireAdmin: vi.fn(),
+  transaction: vi.fn(),
+  findUnique: vi.fn(),
+  create: vi.fn(),
+  updateMany: vi.fn(),
+  lodgeFindUnique: vi.fn(),
+  executeRaw: vi.fn(),
+  logAudit: vi.fn(),
+  revalidate: vi.fn(),
+}));
+
+vi.mock("@/lib/session-guards", () => ({ requireAdmin: mocks.requireAdmin }));
+vi.mock("@/lib/audit", () => ({ logAudit: mocks.logAudit }));
+vi.mock("@/lib/public-content-revalidation", () => ({
+  revalidatePublicPageContent: mocks.revalidate,
+}));
+vi.mock("@/lib/prisma", () => ({
+  prisma: {
+    $transaction: mocks.transaction,
+    adultMemberHostingPolicy: { findUnique: mocks.findUnique },
+  },
+}));
+
+import {
+  GET,
+  PUT,
+} from "@/app/api/admin/booking-policies/adult-member-hosting/route";
+import { STALE_ADULT_MEMBER_HOSTING_POLICY_MESSAGE } from "@/lib/adult-member-hosting-policy-set";
+
+const stored = {
+  id: "policy-1",
+  scopeKey: "club-wide",
+  lodgeId: null,
+  mode: "ADMIN_REVIEW_REQUIRED",
+  capacityMode: "HOLD",
+  version: 4,
+};
+
+function put(body: unknown) {
+  return new NextRequest(
+    "https://example.test/api/admin/booking-policies/adult-member-hosting",
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+function get(lodgeId?: string) {
+  return new NextRequest(
+    lodgeId
+      ? `https://example.test/api/admin/booking-policies/adult-member-hosting?lodgeId=${lodgeId}`
+      : "https://example.test/api/admin/booking-policies/adult-member-hosting",
+  );
+}
+
+describe("adult-member hosting policy route (#2364)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.requireAdmin.mockResolvedValue({
+      ok: true,
+      session: { user: { id: "admin-1" } },
+    });
+    mocks.executeRaw.mockResolvedValue(1);
+    mocks.lodgeFindUnique.mockResolvedValue({ id: "lodge-1", active: true });
+    mocks.transaction.mockImplementation(
+      async (fn: (tx: unknown) => Promise<unknown>) =>
+        fn({
+          $executeRaw: mocks.executeRaw,
+          adultMemberHostingPolicy: {
+            findUnique: mocks.findUnique,
+            create: mocks.create,
+            updateMany: mocks.updateMany,
+          },
+          lodge: { findUnique: mocks.lodgeFindUnique },
+        }),
+    );
+  });
+
+  it("synthesises the built-in default for a scope with no row, and says so", async () => {
+    mocks.findUnique.mockResolvedValue(null);
+
+    const club = await (await GET(get())).json();
+    expect(club).toMatchObject({
+      scopeKey: "club-wide",
+      lodgeId: null,
+      mode: "DISABLED",
+      // No automatic capacity choice for a new policy (D-R6).
+      capacityMode: null,
+      version: 0,
+      configured: false,
+    });
+
+    const lodge = await (await GET(get("lodge-1"))).json();
+    expect(lodge).toMatchObject({
+      scopeKey: "lodge-1",
+      lodgeId: "lodge-1",
+      mode: "INHERIT",
+      configured: false,
+    });
+  });
+
+  it("reports a stored row as configured", async () => {
+    mocks.findUnique.mockResolvedValue(stored);
+    const body = await (await GET(get())).json();
+    expect(body).toMatchObject({ ...stored, configured: true });
+  });
+
+  it("gates reads on bookings:view and writes on bookings:edit", async () => {
+    mocks.requireAdmin.mockResolvedValue({
+      ok: false,
+      response: new Response(null, { status: 403 }),
+    });
+    expect((await GET(get())).status).toBe(403);
+    expect(
+      (await PUT(put({ mode: "DISABLED", capacityMode: "HOLD" }))).status,
+    ).toBe(403);
+    expect(mocks.requireAdmin).toHaveBeenNthCalledWith(1, {
+      permission: { area: "bookings", level: "view" },
+    });
+    expect(mocks.requireAdmin).toHaveBeenNthCalledWith(2, {
+      permission: { area: "bookings", level: "edit" },
+    });
+  });
+
+  it("requires an explicit capacity mode on every write (D-R6)", async () => {
+    const response = await PUT(put({ mode: "DISABLED" }));
+    expect(response.status).toBe(400);
+    expect(mocks.create).not.toHaveBeenCalled();
+    expect(mocks.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("refuses a club-wide INHERIT, which has nothing to inherit from", async () => {
+    const response = await PUT(put({ mode: "INHERIT", capacityMode: "HOLD" }));
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toMatch(/cannot inherit/i);
+    expect(mocks.create).not.toHaveBeenCalled();
+  });
+
+  it("takes the policy-set lock before it reads anything", async () => {
+    mocks.findUnique.mockResolvedValue(null);
+    mocks.create.mockResolvedValue({ ...stored, version: 1 });
+    const order: string[] = [];
+    mocks.executeRaw.mockImplementation(() => {
+      order.push("lock");
+      return Promise.resolve(1);
+    });
+    mocks.findUnique.mockImplementation(() => {
+      order.push("read");
+      return Promise.resolve(null);
+    });
+
+    await PUT(put({ mode: "DISABLED", capacityMode: "NO_HOLD" }));
+    expect(order).toEqual(["lock", "read"]);
+  });
+
+  it("creates a first row at version 1 when the editor knew of none", async () => {
+    mocks.findUnique.mockResolvedValue(null);
+    mocks.create.mockResolvedValue({ ...stored, version: 1 });
+    const response = await PUT(
+      put({ mode: "ADMIN_REVIEW_REQUIRED", capacityMode: "HOLD" }),
+    );
+    expect(response.status).toBe(200);
+    expect(mocks.create).toHaveBeenCalledWith({
+      data: {
+        scopeKey: "club-wide",
+        lodgeId: null,
+        mode: "ADMIN_REVIEW_REQUIRED",
+        capacityMode: "HOLD",
+        version: 1,
+      },
+    });
+    expect((await response.json()).configured).toBe(true);
+    expect(mocks.revalidate).toHaveBeenCalled();
+  });
+
+  it("refuses to resurrect a row a concurrent import deleted", async () => {
+    mocks.findUnique.mockResolvedValue(null);
+    const response = await PUT(
+      put({ mode: "DISABLED", capacityMode: "HOLD", version: 4 }),
+    );
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toBe(
+      STALE_ADULT_MEMBER_HOSTING_POLICY_MESSAGE,
+    );
+    expect(mocks.create).not.toHaveBeenCalled();
+  });
+
+  it("compare-and-swaps on the loaded revision and refuses a stale one", async () => {
+    mocks.findUnique.mockResolvedValue(stored);
+    const stale = await PUT(
+      put({ mode: "DISABLED", capacityMode: "HOLD", version: 3 }),
+    );
+    expect(stale.status).toBe(409);
+    expect(mocks.updateMany).not.toHaveBeenCalled();
+
+    mocks.updateMany.mockResolvedValue({ count: 1 });
+    mocks.findUnique
+      .mockResolvedValueOnce(stored)
+      .mockResolvedValueOnce({ ...stored, mode: "DISABLED", version: 5 });
+    const ok = await PUT(
+      put({ mode: "DISABLED", capacityMode: "HOLD", version: 4 }),
+    );
+    expect(ok.status).toBe(200);
+    expect(mocks.updateMany).toHaveBeenCalledWith({
+      where: { scopeKey: "club-wide", version: 4 },
+      data: { mode: "DISABLED", capacityMode: "HOLD", version: 5 },
+    });
+    expect(await ok.json()).toMatchObject({ version: 5, configured: true });
+  });
+
+  it("refuses when the row moved between the read and the swap", async () => {
+    mocks.findUnique.mockResolvedValue(stored);
+    mocks.updateMany.mockResolvedValue({ count: 0 });
+    const response = await PUT(
+      put({ mode: "DISABLED", capacityMode: "HOLD", version: 4 }),
+    );
+    expect(response.status).toBe(409);
+  });
+
+  it("does not write, audit or bust caches for an unchanged re-save (#2143)", async () => {
+    mocks.findUnique.mockResolvedValue(stored);
+    const response = await PUT(
+      put({
+        mode: "ADMIN_REVIEW_REQUIRED",
+        capacityMode: "HOLD",
+        version: 4,
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(mocks.updateMany).not.toHaveBeenCalled();
+    // The audit entry and the revalidation belong to a real change; this is a
+    // read that happened to arrive as a PUT.
+    expect(mocks.logAudit).toHaveBeenCalledTimes(1);
+    expect(mocks.revalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a lodge override for a lodge that is gone or inactive", async () => {
+    mocks.lodgeFindUnique.mockResolvedValue({ id: "lodge-1", active: false });
+    const response = await PUT(
+      put({ mode: "DISABLED", capacityMode: "HOLD", lodgeId: "lodge-1" }),
+    );
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toMatch(/not active/i);
+    expect(mocks.create).not.toHaveBeenCalled();
+  });
+});

@@ -547,6 +547,61 @@ describe("public PageContent token view models", () => {
     expect(JSON.stringify(policy)).not.toContain("exception");
   });
 
+  it("publishes the adult-member hosting rule only when it is actually in force (#2364)", async () => {
+    const clubRow = {
+      id: "hosting-club",
+      scopeKey: "club-wide",
+      lodgeId: null,
+      mode: "ADMIN_REVIEW_REQUIRED",
+      capacityMode: "HOLD",
+      version: 2,
+    };
+
+    mocks.hostingPolicies.mockResolvedValue([]);
+    expect((await loadPublicBookingPolicy())?.adultMemberHosting).toBeNull();
+
+    mocks.hostingPolicies.mockResolvedValue([{ ...clubRow, mode: "DISABLED" }]);
+    expect((await loadPublicBookingPolicy())?.adultMemberHosting).toBeNull();
+
+    mocks.hostingPolicies.mockResolvedValue([clubRow]);
+    const on = await loadPublicBookingPolicy();
+    expect(on?.adultMemberHosting).toMatch(/adult member on the same\s+booking/);
+    // Says what the rule IS; never invites an exception request, and never
+    // leaks the policy id, revision or capacity mode.
+    expect(on?.adultMemberHosting).not.toMatch(/exception|request/i);
+    expect(JSON.stringify(on)).not.toContain("hosting-club");
+    expect(JSON.stringify(on)).not.toContain("HOLD");
+  });
+
+  it("answers a lodge page from that lodge's override, and a club page from the club row (#2364)", async () => {
+    mocks.lodge.mockResolvedValue({ id: "lodge-1", name: "Lodge One", slug: "one" });
+    const clubOn = {
+      id: "hosting-club",
+      scopeKey: "club-wide",
+      lodgeId: null,
+      mode: "ADMIN_REVIEW_REQUIRED",
+      capacityMode: "HOLD",
+      version: 1,
+    };
+    const lodgeOff = {
+      id: "hosting-lodge",
+      scopeKey: "lodge-1",
+      lodgeId: "lodge-1",
+      mode: "DISABLED",
+      capacityMode: "NO_HOLD",
+      version: 1,
+    };
+    mocks.hostingPolicies.mockResolvedValue([clubOn, lodgeOff]);
+
+    // The lodge relaxed it, so its own page says nothing.
+    expect((await loadPublicBookingPolicy("one"))?.adultMemberHosting).toBeNull();
+
+    // A page with no lodge in the URL is answered by the CLUB row alone, so one
+    // lodge's relaxation cannot soften the club's stated rule elsewhere.
+    mocks.hostingPolicies.mockResolvedValue([clubOn]);
+    expect((await loadPublicBookingPolicy())?.adultMemberHosting).not.toBeNull();
+  });
+
   it("describes divergent card and credit cancellation terms", async () => {
     mocks.cancellation.mockResolvedValue([{
       daysBeforeStay: 14,
