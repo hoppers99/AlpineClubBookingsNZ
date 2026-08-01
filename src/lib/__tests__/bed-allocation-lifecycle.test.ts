@@ -3438,9 +3438,16 @@ describe("exclusive whole-lodge hold (ADR-001, #2285)", () => {
   // -------------------------------------------------------------------------
 
   /**
-   * Answer the three booking reads independently. The planner load is the only
-   * one selecting `guests`; the write-time re-check selects the flag trio and
-   * nothing else, so the two are told apart by their `select`.
+   * Answer the FOUR booking reads independently.
+   *
+   * Told apart by their `select`: the planner load is the only one selecting
+   * `guests`; the #2317 blocking-hold load selects the stay window but no
+   * guests; the write-time re-check selects the flag trio and nothing else.
+   * Testing `guests` alone stopped being enough when #2317 added its own query
+   * — a `guests`-only test hands the hold load the narrow re-check rows, whose
+   * missing `checkIn`/`checkOut` then make it return nothing for an incidental
+   * reason (`toWholeLodgeHoldSpans` skips a row with no stay window) rather
+   * than a chosen one.
    */
   function driftScenarioDb(states: {
     reconcileRead: boolean;
@@ -3471,9 +3478,15 @@ describe("exclusive whole-lodge hold (ADR-001, #2285)", () => {
         wholeLodgeHold: states.writeTimeRead.wholeLodgeHold ?? false,
       },
     ];
-    db.booking.findMany.mockImplementation(async ({ select }: any) =>
-      select?.guests ? plannerRows : writeTimeRows,
-    );
+    db.booking.findMany.mockImplementation(async ({ select }: any) => {
+      if (select?.guests) return plannerRows;
+      // The #2317 blocking-hold load. Explicitly EMPTY: these scenarios are
+      // about the reconciled booking's own hold flag, and a booking never
+      // blocks its own placement — so the emptiness is the fixture's decision,
+      // not a side effect of the row shape it happened to be handed.
+      if (select?.checkIn) return [];
+      return writeTimeRows;
+    });
     return db;
   }
 
