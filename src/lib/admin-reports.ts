@@ -18,7 +18,12 @@ import {
   differenceInUtcDays,
   parseFinanceBookingMetricDate,
 } from "@/lib/finance-booking-metric-calculations";
-import { isGuestActiveOnNight, type GuestStayRange } from "@/lib/booking-guest-stay-ranges";
+import {
+  getGuestStayEnd,
+  getGuestStayStart,
+  type GuestStayRange,
+} from "@/lib/booking-guest-stay-ranges";
+import { formatDateOnlyForTimeZone } from "@/lib/date-only";
 
 export type RevenueGranularity = "daily" | "weekly" | "monthly";
 
@@ -201,19 +206,23 @@ export function summarizeOverlappingGuests(
   rangeStart: Date,
   rangeEnd: Date,
 ): ReportGuestSummary {
-  const selectedDates = buildIsoDateRange(toUtcDateOnly(rangeStart), toUtcDateOnly(rangeEnd));
+  const selectedStartKey = toDateKey(toUtcDateOnly(rangeStart));
+  const selectedEndExclusiveKey = toDateKey(
+    addUtcDays(toUtcDateOnly(rangeEnd), 1),
+  );
   const guests = new Map<string, ReportGuestLike>();
 
   for (const booking of bookings) {
     for (const guest of booking.guests) {
+      const guestStartKey = formatDateOnlyForTimeZone(
+        getGuestStayStart(guest, booking),
+      );
+      const guestEndKey = formatDateOnlyForTimeZone(
+        getGuestStayEnd(guest, booking),
+      );
       if (
-        selectedDates.some((date) =>
-          isGuestActiveOnNight(
-            guest,
-            parseFinanceBookingMetricDate(date, "night"),
-            booking,
-          ),
-        )
+        guestStartKey < selectedEndExclusiveKey &&
+        guestEndKey > selectedStartKey
       ) {
         guests.set(guest.id, guest);
       }

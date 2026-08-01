@@ -1,7 +1,26 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { NextRequest } from "next/server";
-import { BookingStatus, PaymentStatus } from "@prisma/client";
-import { REPORT_BOOKING_STATUSES } from "@/lib/admin-reports";
+import { BookingStatus, PaymentStatus, type Prisma } from "@prisma/client";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+const EXPECTED_REPORT_STATUS_VALUES = [
+  "PENDING",
+  "PAYMENT_PENDING",
+  "CONFIRMED",
+  "PAID",
+  "AWAITING_REVIEW",
+  "COMPLETED",
+] as const;
 
 const mockLodgeFindUnique = vi.fn();
 const mockPrisma = {
@@ -13,6 +32,14 @@ const mockPrisma = {
 
 const mockAuth = vi.fn();
 const mockRequireActiveSessionUser = vi.fn();
+const mockResolveMetricsCapacityAndScope = vi.fn(
+  async (
+    lodgeId?: string,
+  ): Promise<{ capacity: number; bookingLodgeWhere: Prisma.BookingWhereInput }> => ({
+    capacity: 29,
+    bookingLodgeWhere: lodgeId ? { lodgeId } : {},
+  }),
+);
 
 vi.mock("@/lib/prisma", () => ({ prisma: mockPrisma }));
 vi.mock("@/lib/auth", () => ({ auth: () => mockAuth() }));
@@ -24,16 +51,8 @@ vi.mock("@/lib/session-guards", () => ({
 vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), info: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
-vi.mock("@/lib/capacity", () => ({
-  getOccupiedBedsForNight: vi.fn((_date: Date, bookings: Array<{ guests?: unknown[] }>) =>
-    bookings.reduce((total, booking) => total + (booking.guests?.length ?? 0), 0)),
-  LODGE_CAPACITY: 29,
-}));
 vi.mock("@/lib/finance-booking-metrics", () => ({
-  resolveMetricsCapacityAndScope: vi.fn(async (lodgeId?: string) => ({
-    capacity: 29,
-    bookingLodgeWhere: lodgeId ? { lodgeId } : {},
-  })),
+  resolveMetricsCapacityAndScope: mockResolveMetricsCapacityAndScope,
 }));
 
 const day = (value: string) => new Date(`${value}T00:00:00.000Z`);
@@ -79,6 +98,20 @@ function zeroMemberQueries() {
 }
 
 describe("admin reports route", () => {
+  const originalTimeZone = process.env.TZ;
+
+  beforeAll(() => {
+    process.env.TZ = "Pacific/Auckland";
+  });
+
+  afterAll(() => {
+    if (originalTimeZone === undefined) {
+      delete process.env.TZ;
+    } else {
+      process.env.TZ = originalTimeZone;
+    }
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
@@ -87,6 +120,10 @@ describe("admin reports route", () => {
       user: { id: "admin-1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] },
     });
     mockRequireActiveSessionUser.mockResolvedValue(null);
+    mockResolveMetricsCapacityAndScope.mockImplementation(async (lodgeId?: string) => ({
+      capacity: 29,
+      bookingLodgeWhere: lodgeId ? { lodgeId } : {},
+    }));
     zeroMemberQueries();
   });
 
@@ -125,10 +162,42 @@ describe("admin reports route", () => {
       deletedAt: null,
       checkIn: { lte: day("2026-04-08") },
       checkOut: { gt: day("2026-04-08") },
-      status: { in: [...REPORT_BOOKING_STATUSES] },
+      status: { in: [...EXPECTED_REPORT_STATUS_VALUES] },
     });
     expect(query.where).not.toHaveProperty("createdAt");
     expect(mockPrisma.booking.findMany).toHaveBeenCalledTimes(1);
+  }, 15_000);
+
+  it("enumerates inclusive NZ date-only occupancy nights without a DST day shift", async () => {
+    mockPrisma.booking.findMany.mockResolvedValue([
+      reportBooking({
+        checkIn: day("2026-09-25"),
+        checkOut: day("2026-10-03"),
+        guests: [
+          {
+            id: "dst-guest",
+            isMember: true,
+            stayStart: day("2026-09-25"),
+            stayEnd: day("2026-10-03"),
+            nights: [],
+          },
+        ],
+      }),
+    ]);
+
+    const { GET } = await import("@/app/api/admin/reports/route");
+    const response = await GET(
+      new NextRequest(
+        "http://localhost/api/admin/reports?from=2026-09-25&to=2026-09-27",
+      ),
+    );
+    const data = await response.json();
+
+    expect(data.occupancy).toEqual([
+      { date: "2026-09-25", occupiedBeds: 1, availableBeds: 28, occupancyRate: 3 },
+      { date: "2026-09-26", occupiedBeds: 1, availableBeds: 28, occupancyRate: 3 },
+      { date: "2026-09-27", occupiedBeds: 1, availableBeds: 28, occupancyRate: 3 },
+    ]);
   }, 15_000);
 
   it("uses the same stay cohort for status, guests, trends, lodge, and deleted scope", async () => {
@@ -207,5 +276,56 @@ describe("admin reports route", () => {
     );
     expect(response.status).toBe(400);
     expect(mockPrisma.booking.findMany).not.toHaveBeenCalled();
+  });
+
+  it("applies deleted=only and the strict post-migration default-lodge scope together", async () => {
+    mockLodgeFindUnique.mockResolvedValue({ id: "lodge-default", active: true });
+    mockResolveMetricsCapacityAndScope.mockResolvedValueOnce({
+      capacity: 29,
+      // Booking.lodgeId is NOT NULL after the completed expand/contract
+      // migration. The historically named legacy-null helper is now a strict
+      // default-lodge match; pin that current contract independently here.
+      bookingLodgeWhere: { lodgeId: "lodge-default" },
+    });
+    mockPrisma.booking.findMany.mockResolvedValue([]);
+
+    const { GET } = await import("@/app/api/admin/reports/route");
+    const response = await GET(
+      new NextRequest(
+        "http://localhost/api/admin/reports?from=2026-04-07&to=2026-04-09&lodgeId=lodge-default&deleted=only",
+      ),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockPrisma.booking.findMany.mock.calls[0][0].where).toEqual({
+      deletedAt: { not: null },
+      lodgeId: "lodge-default",
+      checkIn: { lte: day("2026-04-09") },
+      checkOut: { gt: day("2026-04-07") },
+      status: { in: [...EXPECTED_REPORT_STATUS_VALUES] },
+    });
+  }, 15_000);
+
+  it("pins the completed Booking lodge backfill and NOT NULL contract", () => {
+    const schema = readFileSync(join(process.cwd(), "prisma/schema.prisma"), "utf8");
+    const bookingModel = schema.match(/model Booking \{[\s\S]*?\n\}/)?.[0];
+    expect(bookingModel).toContain(
+      'lodgeId                   String             @default(dbgenerated("default_lodge_id()"))',
+    );
+    expect(bookingModel).not.toMatch(/lodgeId\s+String\?/);
+
+    const contractMigration = readFileSync(
+      join(
+        process.cwd(),
+        "prisma/migrations/20260708001100_multi_lodge_entity_lodge_id_not_null/migration.sql",
+      ),
+      "utf8",
+    );
+    expect(contractMigration).toContain(
+      'UPDATE "Booking" SET "lodgeId" = default_lodge_id() WHERE "lodgeId" IS NULL;',
+    );
+    expect(contractMigration).toContain(
+      'ALTER TABLE "Booking" ALTER COLUMN "lodgeId" SET NOT NULL;',
+    );
   });
 });

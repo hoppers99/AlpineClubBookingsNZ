@@ -42,8 +42,10 @@ date-only lodge nights, interpreted in the club time zone.
 
 1. The top cards show **Total Bookings**, **Booked Revenue**, **Net Collected
    Cash**, **Outstanding Additions**, **Total Guests**, and **Avg Occupancy** for
-   the range. A booking and each guest row count once when at least one of their
-   actual stay nights overlaps the inclusive From/To dates. The second row shows
+   the range. A booking counts once when one of its lodge nights overlaps the
+   inclusive From/To dates. Each guest row counts once when its own half-open
+   `[stayStart, stayEnd)` envelope overlaps that range; sparse per-night rows do
+   not replace the guest envelope for this total. The second row shows
    member stats (Active, Paid-Up, Unpaid, Overdue, New) for the current season.
 2. The charts show **Occupancy Rate**, **Booked Revenue by Day/Week/Month** (the
    granularity is chosen automatically from the range length), **Booking Trends

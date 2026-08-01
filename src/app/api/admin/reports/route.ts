@@ -7,7 +7,6 @@ import { BookingStatus, SubscriptionStatus } from "@prisma/client";
 import { isAdditionalPaymentOwed } from "@/lib/additional-payment-chase";
 import { getOccupiedBedsForNight } from "@/lib/capacity";
 import { resolveMetricsCapacityAndScope } from "@/lib/finance-booking-metrics";
-import { eachDayOfInterval, format } from "date-fns";
 import logger from "@/lib/logger";
 import {
   buildBookingTrendSeries,
@@ -25,7 +24,10 @@ import {
   parseBookingDeletedVisibility,
 } from "@/lib/booking-delete-visibility";
 import {
+  addDaysDateOnly,
+  eachDateOnlyInRange,
   endOfDateOnlyForTimeZone,
+  formatDateOnly,
   parseDateOnly,
   startOfDateOnlyForTimeZone,
 } from "@/lib/date-only";
@@ -152,7 +154,10 @@ export async function GET(request: NextRequest) {
     ]);
 
     // 1. Occupancy by date
-    const days = eachDayOfInterval({ start: occupancyFromDate, end: occupancyToDate });
+    const days = eachDateOnlyInRange(
+      occupancyFromDate,
+      addDaysDateOnly(occupancyToDate, 1),
+    );
 
     // Custodian occupancy (#2286) is deliberately EXCLUDED here. Utilisation
     // reporting measures how much the lodge was BOOKED, so a bed held for a
@@ -170,7 +175,7 @@ export async function GET(request: NextRequest) {
     const occupancyByDate = days.map((day) => {
       const beds = getOccupiedBedsForNight(day, occupancyBookings);
       return {
-        date: format(day, "yyyy-MM-dd"),
+        date: formatDateOnly(day),
         occupiedBeds: beds,
         availableBeds: lodgeCapacity - beds,
         occupancyRate:

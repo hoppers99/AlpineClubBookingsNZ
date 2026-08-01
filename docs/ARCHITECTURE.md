@@ -2050,8 +2050,11 @@ based (#2368). One overlap query applies the selected lodge and deleted scope to
 the explicit positive current-status cohort `PENDING`, `PAYMENT_PENDING`,
 `CONFIRMED`, `PAID`, `AWAITING_REVIEW`, and `COMPLETED`; that same cohort owns
 distinct booking/guest totals, weekly trends, current-status breakdown, and
-booked revenue. Stay dates are `checkIn` inclusive / `checkOut` exclusive, while
-the selected From/To dates are inclusive. `Booking.finalPriceCents` is allocated
+booked revenue. Booking stay dates are `checkIn` inclusive / `checkOut`
+exclusive, while the selected From/To dates are inclusive. Guest totals use each
+guest row's own half-open `[stayStart, stayEnd)` envelope; sparse explicit guest
+night rows do not override that envelope for this metric.
+`Booking.finalPriceCents` is allocated
 deterministically over the booking's complete stay before the selected range is
 sliced, so $1.00 over three nights is 34/33/33 cents and a one-night slice keeps
 its original share. Booked revenue is therefore not collected cash. Net

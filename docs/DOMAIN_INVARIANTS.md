@@ -361,8 +361,10 @@ Future reviews and issues should cite this file when proposing changes.
   `[checkIn, checkOut)`. Every non-occupancy figure uses one explicit positive
   cohort: `PENDING`, `PAYMENT_PENDING`, `CONFIRMED`, `PAID`,
   `AWAITING_REVIEW`, and `COMPLETED`, with the same lodge/deleted scope. Count
-  bookings once per overlapped bucket and guest rows once when any actual guest
-  night overlaps. Allocate all integer cents of `finalPriceCents` across the
+  bookings once per overlapped bucket. Count guest rows once when their own
+  half-open `[stayStart, stayEnd)` envelope overlaps the selected range; sparse
+  explicit guest-night rows do not override that envelope for this metric.
+  Allocate all integer cents of `finalPriceCents` across the
   booking's complete stay before slicing the report range (100/3 = 34/33/33).
   This is **Booked revenue**, not cash. Net collected cash stays payment-derived
   (`Payment.amountCents` less refunds, with a captured addition already inside

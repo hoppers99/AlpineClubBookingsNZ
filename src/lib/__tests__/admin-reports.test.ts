@@ -12,6 +12,23 @@ import {
   type RevenueBookingLike,
 } from "@/lib/admin-reports";
 
+const EXPECTED_REPORT_STATUS_VALUES = [
+  "PENDING",
+  "PAYMENT_PENDING",
+  "CONFIRMED",
+  "PAID",
+  "AWAITING_REVIEW",
+  "COMPLETED",
+] as const;
+
+const EXPECTED_EXCLUDED_REPORT_STATUS_VALUES = [
+  "DRAFT",
+  "WAITLISTED",
+  "WAITLIST_OFFERED",
+  "CANCELLED",
+  "BUMPED",
+] as const;
+
 const date = (value: string) => new Date(`${value}T00:00:00.000Z`);
 
 function booking(
@@ -37,15 +54,20 @@ describe("admin reports helpers", () => {
     expect(getRevenueGranularity(start, addDays(start, 90))).toBe("monthly");
   });
 
-  it("allocates the whole price before slicing the selected stay nights", () => {
-    const row = booking();
-    expect(getBookingRevenueByNight(row, date("2026-04-07"), date("2026-04-09"))).toEqual([
-      { date: "2026-04-07", revenueCents: 34 },
-      { date: "2026-04-08", revenueCents: 33 },
-      { date: "2026-04-09", revenueCents: 33 },
+  it("allocates 100 cents across three leap-day stay nights as 34/33/33", () => {
+    const row = booking({
+      checkIn: date("2028-02-28"),
+      checkOut: date("2028-03-02"),
+    });
+    expect(getBookingRevenueByNight(row, date("2028-02-28"), date("2028-03-01"))).toEqual([
+      { date: "2028-02-28", revenueCents: 34 },
+      { date: "2028-02-29", revenueCents: 33 },
+      { date: "2028-03-01", revenueCents: 33 },
     ]);
-    // If selection happened first this middle-night slice would receive all
-    // 100 cents. It must retain its position in the full 34/33/33 allocation.
+  });
+
+  it("assigns the remainder before slicing when the first night is outside the report", () => {
+    const row = booking();
     expect(getBookingRevenueByNight(row, date("2026-04-08"), date("2026-04-08"))).toEqual([
       { date: "2026-04-08", revenueCents: 33 },
     ]);
@@ -113,11 +135,19 @@ describe("admin reports helpers", () => {
     });
   });
 
-  it("excludes non-report statuses instead of treating every non-cancelled row as revenue", () => {
+  it("excludes the exhaustive literal non-report status list", () => {
+    expect(Object.values(BookingStatus).sort()).toEqual(
+      [...EXPECTED_REPORT_STATUS_VALUES, ...EXPECTED_EXCLUDED_REPORT_STATUS_VALUES].sort(),
+    );
     const result = buildRevenueSeries(
       [
-        booking({ status: BookingStatus.DRAFT, finalPriceCents: 5000 }),
-        booking({ id: "waitlist", status: BookingStatus.WAITLISTED, finalPriceCents: 7000 }),
+        ...EXPECTED_EXCLUDED_REPORT_STATUS_VALUES.map((status, index) =>
+          booking({
+            id: `excluded-${status}`,
+            status: status as BookingStatus,
+            finalPriceCents: 5_000 + index,
+          }),
+        ),
         booking({ id: "paid", status: BookingStatus.PAID, finalPriceCents: 300 }),
       ],
       date("2026-04-01"),
@@ -139,7 +169,7 @@ describe("admin reports helpers", () => {
     ]);
   });
 
-  it("counts distinct guest rows only when an actual guest night overlaps", () => {
+  it("counts distinct guest rows by their own half-open envelope despite sparse night rows", () => {
     const result = summarizeOverlappingGuests(
       [
         booking({
@@ -157,15 +187,27 @@ describe("admin reports helpers", () => {
               stayEnd: date("2026-04-10"),
               nights: [{ stayDate: date("2026-04-07") }, { stayDate: date("2026-04-09") }],
             },
+            {
+              id: "departed-guest",
+              isMember: false,
+              stayStart: date("2026-04-07"),
+              stayEnd: date("2026-04-08"),
+            },
+            {
+              id: "arriving-after-selection",
+              isMember: false,
+              stayStart: date("2026-04-09"),
+              stayEnd: date("2026-04-10"),
+            },
           ],
         }),
       ],
       date("2026-04-08"),
       date("2026-04-08"),
     );
-    // The member spans the selected night and is counted once. The sparse
-    // guest's envelope spans it but their authoritative night rows do not.
-    expect(result).toEqual({ totalGuests: 1, memberGuests: 1, nonMemberGuests: 0 });
+    // Reports counts guest rows, not guest-nights. Both envelopes overlap the
+    // selected night even though one guest has a gap in its sparse night rows.
+    expect(result).toEqual({ totalGuests: 2, memberGuests: 1, nonMemberGuests: 1 });
   });
 
   it("derives net collected cash from payment aggregates without double-counting additions", () => {
