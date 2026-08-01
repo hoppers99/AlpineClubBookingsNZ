@@ -328,6 +328,14 @@ Rollback follows `docs/BLUE_GREEN_MIGRATION_POLICY.md`. The policy's whole point
 is that migrations preserve old-code/new-schema compatibility until the previous
 color drains, which makes the rollback boundary the **cutover (step 16)**.
 
+That holds for this upgrade set, whose migrations are all expand-shaped and
+old-code-compatible. It does **not** hold for a migration the ledger declares
+`old_code_compatible=windowed`: once its migrate step commits, the old color is
+already broken, so the boundary moves back to **step 13 (migrate)** and the
+recovery paths are forward to cutover, the migration's own `rollback.sql`, or the
+verified backup. Check the ledger for a `windowed` row before relying on the
+boundary below.
+
 ### Before cutover (up to and including step 13/14/15)
 
 The **old color is still serving traffic**. Migrations are expand-shaped and

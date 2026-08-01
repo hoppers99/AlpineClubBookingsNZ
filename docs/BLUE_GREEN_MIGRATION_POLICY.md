@@ -8,17 +8,51 @@ Production deploys run Prisma migrations before the new web color receives traff
 - Runtime release: move all reads and writes to the new shape while still tolerating the old one.
 - Contract release: remove old columns, tables, indexes, enum values, token fields, or compatibility code only after the previous deployed runtime no longer depends on them.
 
-Destructive contract migrations must name the previous expand/runtime release in `docs/BLUE_GREEN_MIGRATION_SAFETY.tsv` and must declare `old_code_compatible=yes`. If that cannot be true, the migration is not valid for normal blue/green deploy and needs a separate maintenance/bootstrap plan.
+Destructive contract migrations must name the previous expand/runtime release in `docs/BLUE_GREEN_MIGRATION_SAFETY.tsv` and must declare `old_code_compatible=yes` — meaning *genuinely* compatible, because the migration carries a compensating pattern (for example a `SET NOT NULL` paired with a same-column non-NULL `SET DEFAULT`, so an old color's omitted-column `INSERT` still succeeds).
+
+If that cannot be true, the migration is not valid for a normal blue/green deploy and needs a separate maintenance/bootstrap plan. **Declare that plan in the ledger as `old_code_compatible=windowed`** — do not assert `yes` and leave the caveat to prose.
+
+### `old_code_compatible`: the three values
+
+The ledger's fourth column is a closed vocabulary, and the validator rejects anything else outright:
+
+| Value | Meaning |
+| --- | --- |
+| `yes` | Genuinely old-code compatible. The previous color keeps working throughout migrate → cutover, because the migration is additive or carries a compensating pattern. |
+| `windowed` | **Not** compatible. The previous color *will* error between migrate and cutover. Requires a maintenance window **and** the `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS` override at deploy time. |
+| `no` | The migration has no breaking SQL matched by the deploy guard, so there is nothing to acknowledge. Read the row's `lock_impact_plan` anyway — see the historical note below. |
+
+A migration matching the guard's breaking patterns must be `yes` or `windowed`; `no` fails. `windowed` additionally requires the incompatibility **and** the window plan to be written into `lock_impact_plan`, so it cannot become a quieter way to say `yes`. A `windowed` row also forces the override even when no SQL pattern matched — a data-only migration (an `UPDATE` flipping rows to a value the previous color's client cannot deserialize, say) breaks the old color with no breaking DDL at all, and the ledger row is the only place that knows.
+
+### A `windowed` migration moves the rollback boundary
+
+For an ordinary migration the rollback boundary is the **cutover**: everything up to it is reversible by aborting, because the already-migrated schema still serves the old color (`docs/PRODUCTION_UPGRADE_RUNBOOK.md` [§4](PRODUCTION_UPGRADE_RUNBOOK.md#4-rollback-plan)).
+
+For a `windowed` migration the boundary moves back to the **migrate step**. Once migrate commits, the previous color is already broken, so aborting the deploy no longer restores service — going back means going *forward* to cutover, or restoring from backup. Therefore:
+
+- Take and verify a fresh database backup immediately before migrating, not merely before the deploy.
+- Write a reverse script and keep it **beside the migration**, as `prisma/migrations/<migration>/rollback.sql`, so the schema change can be undone without a restore. Prisma and every gate in this repo address a migration folder by its `migration.sql` alone, so the extra file is inert — it is never applied, never checksummed, and only ever run by an operator on purpose.
+- Keep the migrate → cutover gap as short as the plan allows, and say in `lock_impact_plan` what the old color will do during it.
+
+Historical note: before `windowed` existed the gate hard-required `yes`, so every breaking migration declared it whether or not it was true and the field carried no information for exactly the migrations that most needed scrutiny. Two classes of row predate the value and are more accurately `windowed`:
+
+- `yes` in the operator-acknowledgement sense — `20260526120000_promo_code_per_individual_redesign` and `20260708220300_drop_finance_report_mapping_label_columns`.
+- `no` used to flag a genuinely incompatible **data** migration that tripped none of the breaking patterns — `20260528120000_add_booking_admin_review_workflow` ("old code … is not treated as fully enum-compatible with backfilled `AWAITING_REVIEW` rows") and `20260707000100_backfill_org_age_tier_not_applicable` (pre-#1440 clients cannot deserialize `NOT_APPLICABLE`).
+
+All four are deliberately left as they were declared rather than rewritten: rewriting would falsify the record of what was declared at the time, and each row's `lock_impact_plan` already carries the real caveat. New rows use `windowed` for both cases.
 
 ## Deploy Gate
 
 `scripts/run-production-blue-green-deploy.sh --internal-blue-green-deploy` calls `scripts/validate-blue-green-migrations.sh` before `prisma migrate deploy`. The validator checks pending migration SQL for:
 
 - destructive schema removals, renames, type changes, `SET NOT NULL`, and constraint drops
+- **enum-value renames** — `ALTER TYPE … RENAME VALUE` (#2288). Renaming a value inside a Postgres enum is genuinely breaking: the draining old color keeps sending the old label and Postgres answers `invalid input value for enum`. The phrase is matched on its own, so a statement split across lines is caught too. `ALTER TYPE … ADD VALUE` is additive and deliberately **not** matched, and neither is `ALTER INDEX … RENAME TO` — no application code references an index by name, so matching it would generate false positives forever and train operators to reach for the override.
 - operations touching hot tables: `Member`, `Booking`, `Payment`, membership tables, finance token tables, and auth/action-token tables — including index, constraint, and trigger creation/removal (`CREATE`/`DROP TRIGGER`, `CREATE CONSTRAINT TRIGGER`) against those tables
 - matching entries in `docs/BLUE_GREEN_MIGRATION_SAFETY.tsv`
 
-Hot-table migrations require a lock-impact plan in the ledger. Potentially breaking migrations also require `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1` and a non-empty `BLUE_GREEN_MIGRATION_OVERRIDE_REASON` at deploy time, after the ledger documents why the active old color remains compatible.
+Hot-table migrations require a lock-impact plan in the ledger. Potentially breaking migrations also require `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1` and a non-empty `BLUE_GREEN_MIGRATION_OVERRIDE_REASON` at deploy time, after the ledger records either why the active old color remains compatible (`old_code_compatible=yes`) or what the maintenance window is (`old_code_compatible=windowed`).
+
+The breaking/hot-table scan is line-oriented, not a SQL parser: it reads every non-comment line of the pending `migration.sql`, case-insensitively, including lines inside a `DO $$ … $$` block. What it cannot see is a keyword *phrase* split across lines — `RENAME` at the end of one line and `VALUE` at the start of the next reads as neither. That limitation is shared by every pattern in the list (`DROP COLUMN`, `RENAME COLUMN`, and the rest), and no migration in this repo is written that way; keep it so. Splitting *between* clauses is fine and is caught — `ALTER TYPE "X"` on one line and `RENAME VALUE 'a' TO 'b';` on the next matches on the second line.
 
 ## Session-clock DML gate
 

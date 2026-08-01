@@ -1,7 +1,11 @@
 # migration_name	phase	previous_expand_release	old_code_compatible	lock_impact_plan
 # phase must be expand, contract, or metadata-only.
 # previous_expand_release is required for destructive contract migrations; use n/a otherwise.
-# old_code_compatible must be yes for any migration with breaking SQL matched by the deploy guard.
+# old_code_compatible must be exactly one of yes, no, or windowed; any other value fails the gate.
+#   yes = genuinely old-code compatible, because the migration carries a compensating pattern (e.g. SET NOT NULL paired with a same-column non-NULL SET DEFAULT, so an old colour's omitted-column INSERT still succeeds).
+#   windowed = NOT compatible: the previous colour will error between migrate and cutover. Needs a maintenance window plus the ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS override, and the incompatibility and window plan must be written into lock_impact_plan. Do not assert yes for one of these - windowed is what the value exists for.
+#   no = a migration with no breaking SQL matched by the deploy guard; nothing to acknowledge.
+# A migration with breaking SQL matched by the deploy guard must be yes or windowed. See docs/BLUE_GREEN_MIGRATION_POLICY.md for the rollback boundary a windowed migration moves.
 20260507000000_add_payment_transactions	expand	n/a	yes	Adds PaymentTransaction plus indexes/FK references to Payment; run during the normal deploy window, verify no long payment transactions before migrate, and let the deploy guard stop on lock timeout/failure.
 20260509020000_add_payment_refunds_and_schema_drift_fixes	expand	n/a	yes	Drops and recreates FK constraints on Booking, Payment, MemberCredit, RefundRequest, and related finance tables without removing columns; run during low traffic, check for long write transactions first, and roll back before traffic cutover if migrate fails.
 20260509090000_enrich_payment_refund_ledger	expand	n/a	yes	Adds nullable/default PaymentRefund ledger columns, reads Payment and PaymentTransaction for a bounded backfill, then creates indexes; run during low traffic and verify payment writes are quiet before migrate.
