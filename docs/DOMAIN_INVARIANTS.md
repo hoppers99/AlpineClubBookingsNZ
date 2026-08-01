@@ -1419,9 +1419,10 @@ Future reviews and issues should cite this file when proposing changes.
   please transfer the amount the invoice shows" — which is honest for the great
   majority of members, whose invoice matches the total exactly. It names NO
   second figure and makes NO Xero read: a transactional confirmation must not
-  carry a provider round-trip, or a provider outage, in its send path. Stating
-  the real net figure is deferred work (owner decision, 1 Aug 2026), not an
-  omission.
+  carry a provider round-trip, or a provider outage, in its send path. This is
+  the shape sent whenever no applicable credit can be stated — including every
+  send on today's one live unpaid path — and #2483 leaves it unchanged to the
+  byte.
   **The sentence must not promise that credit WILL be applied.** The one send
   site (member whole-lodge approval) mints a brand-new booking and writes no
   `MemberCredit` row, so the `enqueueXeroAppliedCreditAllocationOperation` call
@@ -1435,6 +1436,34 @@ Future reviews and issues should cite this file when proposing changes.
   as the credit rows above; it rides on an EXISTING token, so an override a club
   saved before #2444 keeps rendering it. Every other money outcome — paid,
   partly paid, and fully credit-covered — is byte-for-byte unchanged.
+- An UNPAID confirmation that DOES carry applied credit states the netting, from
+  the club's OWN ledger (#2483; owner decision 2 Aug 2026). Where the booking
+  carries `BOOKING_APPLIED` rows the Xero invoice is reduced by exactly that
+  credit (allocate-existing, below), so the full price would ask a member for
+  more than the club wants and they would OVERPAY. The `paymentDue` branch
+  therefore renders the reconciling trio — `Booking Total`, `Account credit
+  applied`, `Total Due` — from `unpaidMoneySummaryRows`, the shared builder both
+  renderers use, and `bookingPaymentDueNote` names the netted figure and states
+  the arithmetic in words. `{{totalDue}}` carries the NETTED figure (it has
+  always meant "what is still owed"), so no token was added.
+  **The figure is LOCAL by decision, and it is not a guess at Xero.** The
+  allocation is asynchronous, so reading it back would either delay a
+  member-facing confirmation behind a provider operation or make its content
+  depend on outbox timing. `deriveBookingAppliedCreditCents` sums the very rows
+  that GATE `enqueueXeroAppliedCreditAllocationOperation`, so the email and the
+  invoice rest on one fact; a hand edit made in Xero afterwards is the residual
+  drift, and the reconciliation checker filed as #2501 — not the email — is what
+  warns admins about it.
+  **It refuses rather than guess.** `resolveUnpaidCreditNetting` returns no
+  netting, and the #2444 paragraph renders unchanged, when no credit is applied
+  or when the credit is at least as large as the booking's price (a
+  contradiction on a payment-due send, which the sender logs). A failed ledger
+  read fails open to the same unchanged paragraph.
+  **Its closing instruction inverts, deliberately.** #2444 tells the member to
+  transfer what the invoice shows; once the email has netted, that would produce
+  the very overpayment this prevents, because the invoice may not have been
+  reduced yet. The netted figure stands and a disagreement is routed to the
+  club.
 - Applied credit reduces the Internet-Banking invoice by ALLOCATING the member's
   EXISTING floating credit notes (#1620, "allocate-existing"; owner decision
   2026-07-08). A member's credit is already represented in Xero as floating

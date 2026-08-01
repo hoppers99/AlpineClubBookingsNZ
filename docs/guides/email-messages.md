@@ -282,6 +282,23 @@ Two consequences worth knowing before you edit one:
   label typed in front of it ("Payment: `{{paymentDueNote}}`") would leave a bare
   `Payment:` on every confirmation that is already paid, and the editor now warns
   you about exactly that.
+- **…unless the club's own records already show credit against that booking, in
+  which case it does the sum for the member.** If account credit has been put
+  towards the booking, `{{paymentOutcome}}` renders three lines that add up —
+  `Booking Total: $300.00`, `Account credit applied: -$120.00`,
+  `Total Due: $180.00` — and `{{paymentDueNote}}` asks for the `$180.00`,
+  explains where it came from, and asks the member to transfer that and tell the
+  club if their invoice says something different. `{{totalDue}}` carries the
+  netted `$180.00`, so a body that writes its own money lines gets the right
+  figure without you touching it; `{{creditNote}}` stays empty, because that
+  block explains a booking that has already been paid for. Two things are worth
+  knowing. The figure comes from the booking system's own credit records, so the
+  email never waits on your accounting system — and if the invoice has not caught
+  up yet, the member is told to pay the email's figure, not the invoice's, which
+  is the opposite of the conditional sentence above and is deliberate. And it is
+  stated only when those records answer cleanly: a booking with no credit against
+  it, or one whose credit would leave nothing to transfer, gets the conditional
+  sentence exactly as before.
 
 ### Consent emails ignore a member's notification preferences
 

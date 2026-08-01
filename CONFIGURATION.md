@@ -225,6 +225,24 @@ credit off such an invoice automatically: an admin who wants a member's credit
 applied does it in Xero, which is why the sentence describes a possibility
 rather than promising one.
 
+Where the booking app's OWN records say account credit has been applied to that
+booking, the unpaid send states the netting instead of the sentence above
+(#2483). `{{paymentOutcome}}` then renders three reconciling lines —
+`Booking Total: $300.00`, `Account credit applied: -$120.00`,
+`Total Due: $180.00` — and `{{paymentDueNote}}` names the netted figure, states
+the arithmetic in words, and asks the member to transfer that figure and tell
+the club if their invoice disagrees. `{{totalDue}}` carries the **netted**
+amount, because it has always meant "what is still owed", so an override that
+writes its own money lines out of the per-piece tokens asks for the right amount
+with no edit at all; again, no new token was added. `{{creditNote}}` stays empty
+here — it explains where the money came from on a booking that has been settled,
+and an unpaid one has no such story. The figure comes from the club's own credit
+records, not from Xero, so the email never waits on your accounting system to
+catch up; a separate reconciliation check warns admins if the two ever disagree.
+The netting is stated only when those records answer cleanly: with no applied
+credit, or with credit that would leave nothing to transfer, the conditional
+sentence above renders exactly as before.
+
 Account credit spent on the booking is explained by the pre-composed
 `{{creditNote}}` block, on the same convention again. When a member put account
 credit towards their stay it renders two reconciling lines — `Account credit
