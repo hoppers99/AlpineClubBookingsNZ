@@ -105,6 +105,7 @@ describe("resendAdditionalPaymentEmail", () => {
     expect(result).toMatchObject({ ok: true, additionalAmountCents: 21_000 });
     expect(mockSendAdditionalPaymentReminderEmail).toHaveBeenCalledWith({
       bookingId: "booking-1",
+      recipientMemberId: "member-1",
       email: "member@example.org",
       firstName: "Alice",
       additionalAmountCents: 21_000,

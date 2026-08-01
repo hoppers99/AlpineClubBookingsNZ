@@ -180,16 +180,20 @@ describe("PUT /api/admin/roster/[date] email action", () => {
     expect(body.skipped).toBe(0);
     // Both hybrid inputs are threaded through.
     expect(mockShouldSendChoreRoster).toHaveBeenCalledWith("dependent-1", "primary-1");
-    // Delivery follows the inherited email (the primary's inbox), and the sender
-    // is a pure transport — no preference arg is passed to it anymore.
+    // Delivery follows the inherited email (the primary's inbox), and that same
+    // primary identity authorizes any booking detail link. The sender remains a
+    // pure transport — no preference arg is passed to it anymore.
     expect(mockSendChoreRosterEmail).toHaveBeenCalledWith(
       // #2258: the roster is attributed to the booking whose stay it covers.
-      { bookingId: "booking-1" },
+      {
+        bookingId: "booking-1",
+        recipient: { kind: "member", memberId: "primary-1" },
+      },
       "primary@test.com",
       "Dana Young",
       "2026-04-10",
       [{ name: "Kitchen", description: null }],
-      expect.stringContaining("/chores/"),
+      "http://localhost:3000/chores/token-1",
       "default-lodge",
     );
   });

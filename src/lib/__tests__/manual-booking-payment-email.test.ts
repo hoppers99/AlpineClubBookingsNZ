@@ -110,7 +110,7 @@ describe("applyManualBookingPayment — confirmation email parity (M4)", () => {
       memberId: "member-1",
     });
     expect(mocks.sendBookingConfirmedEmail).toHaveBeenCalledWith(
-      { bookingId: "booking-1" },
+      { bookingId: "booking-1", recipientMemberId: "member-1" },
       "ada@example.org",
       "Ada",
       expect.any(Date),
