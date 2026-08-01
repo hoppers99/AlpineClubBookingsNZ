@@ -135,6 +135,33 @@ export function frozenClockOptOutReason(): string | null {
   return realClockReason;
 }
 
+/**
+ * Real elapsed milliseconds since `sinceNs`, captured with
+ * `process.hrtime.bigint()`:
+ *
+ * ```ts
+ * const before = process.hrtime.bigint();
+ * await somethingThatShouldNotHaveWaited();
+ * expect(realElapsedMs(before)).toBeLessThan(20);
+ * ```
+ *
+ * This is the ONLY sanctioned way to measure elapsed time in a test. Under the
+ * freeze `Date.now()` is a constant, so `Date.now() - before` is always `0` —
+ * which makes an "it actually waited" assertion fail and, far worse, makes an
+ * "it did NOT wait" assertion pass vacuously off a hard-coded zero, reporting
+ * green while checking nothing.
+ *
+ * `process.hrtime.bigint()` is monotonic: the freeze does not touch it, and
+ * neither does the rollover canary's libfaketime shim
+ * (`FAKETIME_DONT_FAKE_MONOTONIC=1`). It is also deliberately a DIFFERENT API
+ * from the `performance.now()` some of the code under test reads, so a guard and
+ * its test cannot pass by sharing one broken clock — the whole point of
+ * measuring from outside.
+ */
+export function realElapsedMs(sinceNs: bigint): number {
+  return Number(process.hrtime.bigint() - sinceNs) / 1e6;
+}
+
 function readOffsetDays(): number {
   const raw = process.env.TEST_CLOCK_OFFSET_DAYS?.trim();
   if (!raw) {

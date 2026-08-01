@@ -9,24 +9,14 @@
 // that nothing anywhere branches on the repeat count.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-/**
- * Real elapsed milliseconds, for the timing-floor assertions below.
- *
- * These used to read `Date.now()`. Since #2481 every test file runs with the
- * wall clock FROZEN, which makes `Date.now()` a constant — the two "it actually
- * waited" assertions would have failed and, worse, the two "it did NOT wait"
- * assertions would have passed vacuously off a hard-coded zero, reporting green
- * while checking nothing.
- *
- * `process.hrtime.bigint()` keeps the property those assertions were written
- * for: it is a REAL clock, unaffected by the freeze, and it is a different API
- * from the `performance.now()` the guard itself reads — so the guard and its
- * test still cannot pass by sharing one broken clock, which is the whole point
- * of measuring the floor from outside.
- */
-function realElapsedMs(sinceNs: bigint): number {
-  return Number(process.hrtime.bigint() - sinceNs) / 1e6;
-}
+// The timing-floor assertions below used to read `Date.now()`. Since #2481 every
+// test file runs with the wall clock FROZEN, which makes `Date.now()` a constant
+// — the two "it actually waited" assertions would have failed and, worse, the
+// two "it did NOT wait" assertions would have passed vacuously off a hard-coded
+// zero, reporting green while checking nothing. `realElapsedMs` measures with
+// the monotonic clock the freeze leaves alone; see its docblock for why it is
+// deliberately a different API from the `performance.now()` the guard reads.
+import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
 
 const h = vi.hoisted(() => ({
   createStructuredAuditLog: vi.fn(),
