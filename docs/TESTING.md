@@ -50,6 +50,15 @@ Two details there are load-bearing rather than stylistic:
   everything `vitest.setup.ts` imports. Vitest evaluates `setupFiles` in order,
   so a dedicated first file freezes the clock before any other module in the run.
 
+A root `beforeEach` then re-freezes before each test **if and only if** the clock
+has been handed back to the real calendar. Dozens of suites undo their own pin
+with `vi.useRealTimers()` in an `afterEach`; where their later describes have no
+clock hooks, those tests used to drop straight back out of the freeze — the
+rollover canary caught two doing exactly that. A suite that deliberately pinned
+another instant still has fake timers installed and is left completely alone, so
+this only ever converts "real clock" back to "frozen clock", never one pin into
+another.
+
 ### Why
 
 Four separate times, CI went red on `main` and on every open pull request at the
@@ -101,13 +110,18 @@ generalised.
    `vitest.config.ts` pins `sequence.hooks: "stack"` so the setup file's
    `afterAll` restore stays last. The `vi.mock("@/lib/date-only", …)` idiom (see
    `site-banners.test.ts`) also still works and is unaffected.
-4. **Measuring how long something took? `Date.now()` is no longer a stopwatch.**
+4. **Do not hand the clock back to the real calendar.** If your suite pins its
+   own instant and wants to undo that, `vi.useRealTimers()` in an `afterEach` is
+   safe — the root `beforeEach` re-freezes before the next test — but never rely
+   on real time being restored, and never call it expecting later tests in the
+   file to see the real date.
+5. **Measuring how long something took? `Date.now()` is no longer a stopwatch.**
    Under the freeze it is a constant, so `Date.now() - before` is always `0` —
    which makes an "it waited long enough" assertion fail and, far worse, makes an
    "it did NOT wait" assertion pass vacuously. Use `process.hrtime.bigint()`
    (or `performance.now()`); both stay real, and both are what
    `member-guest-probe-guard.test.ts` uses for the privacy timing floor.
-5. **Remember `APP_TIME_ZONE` follows `process.env.TZ`**
+6. **Remember `APP_TIME_ZONE` follows `process.env.TZ`**
    (`src/config/operational.ts:5-8`). Setting `TZ=UTC` to simulate the CI runner
    also moves the *club* zone to UTC, so a timezone bug can silently pass. To
    reproduce a UTC runner with an NZ club, force
