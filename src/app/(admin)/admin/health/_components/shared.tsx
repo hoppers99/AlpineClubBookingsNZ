@@ -56,14 +56,18 @@ export function formatUptime(seconds: number) {
   return `${minutes}m`;
 }
 
+// #2264: deliberately not `formatNZDateTime` — the health dashboard packs many
+// timestamps into narrow rows, so it drops the year and keeps 2-digit fields.
+const HEALTH_DAY_MONTH_TIME = new Intl.DateTimeFormat(APP_LOCALE, {
+  timeZone: APP_TIME_ZONE,
+  day: "2-digit",
+  month: "short",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
 export function formatDate(dateStr: string) {
-  return new Date(dateStr).toLocaleString(APP_LOCALE, {
-    timeZone: APP_TIME_ZONE,
-    day: "2-digit",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  return HEALTH_DAY_MONTH_TIME.format(new Date(dateStr));
 }
 
 export function formatOptionalDate(dateStr: string | null) {

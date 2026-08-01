@@ -12,6 +12,7 @@ import {
   getUnreadNoticeCount,
   listNoticesForMember,
 } from "@/lib/notices";
+import { formatNZDate } from "@/lib/nzst-date";
 
 /**
  * Dashboard "Recent News" card: the member's top few visible notices (pinned
@@ -91,9 +92,7 @@ export async function RecentNewsCard({ memberId }: { memberId: string }) {
                   </span>
                   {notice.publishedAt ? (
                     <span className="block text-xs text-muted-foreground">
-                      {new Date(notice.publishedAt).toLocaleDateString("en-NZ", {
-                        dateStyle: "medium",
-                      })}
+                      {formatNZDate(new Date(notice.publishedAt))}
                     </span>
                   ) : null}
                 </span>

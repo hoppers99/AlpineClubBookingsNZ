@@ -18,6 +18,7 @@ import {
   type AuditTimelineResponse,
 } from "@/lib/audit-query";
 import { auditCategoryBadgeClass } from "@/lib/audit-category-badges";
+import { formatNZDateTime } from "@/lib/nzst-date";
 
 type AuditTimelineProps = {
   endpoint: string;
@@ -29,13 +30,12 @@ type AuditTimelineProps = {
 };
 
 function formatDateTime(value: string) {
-  return new Date(value).toLocaleString("en-NZ", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  // Club time (#2264). The audit trail is read against the club's own clock —
+  // the hand-rolled bag below pinned only the locale, so an officer reading the
+  // timeline from overseas saw every entry shifted into their own zone. The
+  // shared helper renders the same shape ("16 Apr 2026, 10:30 am") with the
+  // zone pinned too.
+  return formatNZDateTime(new Date(value));
 }
 
 function getCategoryLabel(category: string) {

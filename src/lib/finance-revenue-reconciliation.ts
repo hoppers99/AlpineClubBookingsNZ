@@ -22,7 +22,7 @@
  */
 
 import { FinanceSnapshotType, SubscriptionStatus } from "@prisma/client";
-import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
+import { formatNZMonthYear } from "@/lib/nzst-date";
 import { prisma } from "@/lib/prisma";
 import { FINANCE_REALIZED_BOOKING_STATUSES } from "@/lib/finance-booking-metrics";
 import { getAccountMapping } from "@/lib/xero-mappings";
@@ -305,14 +305,6 @@ async function loadBookingHutFees(
   };
 }
 
-function formatMonthYear(date: Date): string {
-  return date.toLocaleDateString(APP_LOCALE, {
-    month: "long",
-    year: "numeric",
-    timeZone: APP_TIME_ZONE,
-  });
-}
-
 function resolveStatus(
   xeroHutFeesCents: number | null,
   varianceCents: number | null,
@@ -339,7 +331,7 @@ async function buildPeriod(
   const { start, end } = resolvePeriodBounds(snapshot);
   const payload = readPnlReportPayload(snapshot.payload);
   const periodLabel =
-    (payload ? readPnlPeriodLabel(payload) : null) ?? formatMonthYear(end);
+    (payload ? readPnlPeriodLabel(payload) : null) ?? formatNZMonthYear(end);
 
   const xero = parseXeroIncome(snapshot, chart);
   const bookingHutFees = await loadBookingHutFees(start, end);

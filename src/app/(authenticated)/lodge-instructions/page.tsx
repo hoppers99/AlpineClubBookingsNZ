@@ -11,6 +11,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { useClubIdentity } from "@/components/club-identity-provider";
+import { formatNZDate } from "@/lib/nzst-date";
 
 type InstructionDocument = {
   key: "OPEN" | "CLOSE" | "DAY_TO_DAY";
@@ -28,7 +29,7 @@ function formatUpdatedAt(value: string | null): string | null {
   if (!value) {
     return null;
   }
-  return new Date(value).toLocaleDateString("en-NZ", { dateStyle: "long" });
+  return formatNZDate(new Date(value));
 }
 
 export default function LodgeInstructionsPage() {

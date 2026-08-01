@@ -12,6 +12,7 @@ import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { resetXeroInboundDatasetSearchParams } from "@/lib/admin-dataset-reset-state"
+import { formatNZDateTime } from "@/lib/nzst-date"
 import { fetchJson, postJson } from "./api"
 import {
   FilterSelect,
@@ -305,7 +306,7 @@ export function InboundEventsPanel({
                 <div className="flex flex-wrap items-center gap-2">
                   <OperationStatusChip status={event.status} />
                   <span className="text-sm font-medium">{event.eventCategory ?? "UNKNOWN"} {event.eventType}</span>
-                  <span className="text-xs text-muted-foreground">{new Date(event.createdAt).toLocaleString("en-NZ")}</span>
+                  <span className="text-xs text-muted-foreground">{formatNZDateTime(new Date(event.createdAt))}</span>
                 </div>
                 <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
                   <span>Source: {event.source}</span>
@@ -318,7 +319,7 @@ export function InboundEventsPanel({
                       ) : shortId(event.resourceId)}
                     </span>
                   ) : null}
-                  {event.processedAt ? <span>Processed: {new Date(event.processedAt).toLocaleString("en-NZ")}</span> : null}
+                  {event.processedAt ? <span>Processed: {formatNZDateTime(new Date(event.processedAt))}</span> : null}
                 </div>
                 {event.errorMessage ? <p className="text-sm text-danger">{event.errorMessage}</p> : null}
                 <div className="flex flex-wrap items-center gap-2">

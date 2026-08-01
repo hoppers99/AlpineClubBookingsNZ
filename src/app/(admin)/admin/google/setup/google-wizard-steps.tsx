@@ -13,6 +13,7 @@ import { CopyField } from "@/components/admin/integration-wizard";
 import type { WizardStepHelpers } from "@/components/admin/integration-wizard";
 import { ViewOnlyActionButton } from "@/components/admin/view-only-action";
 import { ADMIN_FULL_ADMIN_ONLY_ACTION_REASON } from "@/hooks/use-admin-area-edit-access";
+import { formatNZDate } from "@/lib/nzst-date";
 import type {
   GoogleCredentialKey,
   GoogleWizardContext,
@@ -24,13 +25,7 @@ const VERIFY_START_ENDPOINT = "/api/admin/integrations/google/verify/start";
 function formatSetAt(setAt: string | null): string {
   if (!setAt) return "";
   const date = new Date(setAt);
-  return Number.isNaN(date.getTime())
-    ? ""
-    : date.toLocaleDateString("en-NZ", {
-        year: "numeric",
-        month: "short",
-        day: "numeric",
-      });
+  return Number.isNaN(date.getTime()) ? "" : formatNZDate(date);
 }
 
 function LegacyEnvWarning({ vars }: { vars: string[] }) {

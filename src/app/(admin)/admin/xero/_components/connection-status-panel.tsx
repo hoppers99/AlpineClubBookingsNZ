@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import type { SemanticTone } from "@/lib/chip-tones"
 import type { LucideIcon } from "lucide-react"
+import { formatNZDateTime } from "@/lib/nzst-date"
 import { ToneChip } from "./shared"
 import type { XeroConnectionProbe, XeroStatus, XeroTokenHealth } from "./types"
 
@@ -109,7 +110,7 @@ export function ConnectionStatusPanel({
             {status.tokenExpiresAt ? (
               <div className="text-sm">
                 <span className="text-muted-foreground">Token expires:</span>{" "}
-                {new Date(status.tokenExpiresAt).toLocaleString("en-NZ")}
+                {formatNZDateTime(new Date(status.tokenExpiresAt))}
                 <span className="ml-1 text-muted-foreground">(auto-refreshes)</span>
               </div>
             ) : null}

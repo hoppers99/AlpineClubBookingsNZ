@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/select";
 import { APP_CURRENCY, APP_TIME_ZONE } from "@/config/operational";
 import { formatDateOnlyForTimeZone } from "@/lib/date-only";
+import { formatNZDate } from "@/lib/nzst-date";
 import { formatCents } from "@/lib/pricing";
 import { useLodgeOptions } from "@/components/lodge-select";
 import {
@@ -128,9 +129,7 @@ function formatPromoDateInput(value: string | null) {
 }
 
 function formatPromoDateDisplay(value: string | null) {
-  return value
-    ? new Date(value).toLocaleDateString("en-NZ", { timeZone: APP_TIME_ZONE })
-    : "";
+  return value ? formatNZDate(new Date(value)) : "";
 }
 
 export function PromoCodesPageClient({

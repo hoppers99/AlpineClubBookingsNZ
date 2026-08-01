@@ -52,14 +52,19 @@ const severityLabels: Record<StuckStateSeverity, string> = {
   info: "Info",
 };
 
+// #2264: deliberately not `formatNZDateTime` — this "generated at" stamp sits in
+// a dense operations header, so it drops the year and keeps 2-digit fields to
+// match the system-health timestamps beside it.
+const GENERATED_AT = new Intl.DateTimeFormat(APP_LOCALE, {
+  timeZone: APP_TIME_ZONE,
+  day: "2-digit",
+  month: "short",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
 function formatGeneratedAt(value: string) {
-  return new Date(value).toLocaleString(APP_LOCALE, {
-    timeZone: APP_TIME_ZONE,
-    day: "2-digit",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  return GENERATED_AT.format(new Date(value));
 }
 
 function severityBadgeVariant(severity: StuckStateSeverity) {

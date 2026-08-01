@@ -16,6 +16,7 @@ import {
 import { formatCents } from "@/lib/utils";
 import { bookingStatusClass, bookingStatusLabel } from "@/lib/status-colors";
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
+import { formatNZWeekdayDate } from "@/lib/nzst-date";
 
 export interface MyBookingItem {
   id: string;
@@ -33,13 +34,10 @@ export interface MyBookingItem {
 
 type SortDir = "desc" | "asc";
 
+// Wrapper kept only for the ISO-string -> Date parse; the format itself is the
+// shared weekday-bearing club-time helper.
 function formatDate(value: string) {
-  return new Date(value).toLocaleDateString("en-NZ", {
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
+  return formatNZWeekdayDate(new Date(value));
 }
 
 // #1975: the pre-#1975 inline link labels. When a provisional child is nested

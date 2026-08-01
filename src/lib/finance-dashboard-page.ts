@@ -55,8 +55,18 @@ import {
   buildFinanceSyncHealth,
   type FinanceSyncHealthTone,
 } from "@/lib/finance-sync-health";
+import { formatNZDateTime } from "@/lib/nzst-date";
 import { prisma } from "@/lib/prisma";
 import { formatCents } from "@/lib/utils";
+
+// Compact day+month export label ("14 Jun"), deliberately year-less: it labels
+// rows already scoped to one range, and widening it to the shared
+// `formatNZDate` medium form would change an exported report column.
+const EXPORT_SHORT_DATE = new Intl.DateTimeFormat(APP_LOCALE, {
+  timeZone: APP_TIME_ZONE,
+  day: "numeric",
+  month: "short",
+});
 
 type SearchParams = Record<string, string | string[] | undefined>;
 type FinanceDashboardViewModel = Pick<
@@ -215,19 +225,11 @@ function formatSignedCents(value: number) {
 }
 
 function formatDateTime(value: string | Date) {
-  return new Date(value).toLocaleString(APP_LOCALE, {
-    dateStyle: "medium",
-    timeStyle: "short",
-    timeZone: APP_TIME_ZONE,
-  });
+  return formatNZDateTime(new Date(value));
 }
 
 function formatShortDate(dateOnly: string) {
-  return new Date(`${dateOnly}T00:00:00.000Z`).toLocaleDateString(APP_LOCALE, {
-    day: "numeric",
-    month: "short",
-    timeZone: APP_TIME_ZONE,
-  });
+  return EXPORT_SHORT_DATE.format(new Date(`${dateOnly}T00:00:00.000Z`));
 }
 
 function cardRows(cards: FinanceDashboardKpiCard[]) {

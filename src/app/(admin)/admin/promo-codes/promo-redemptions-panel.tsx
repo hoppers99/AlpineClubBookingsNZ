@@ -23,6 +23,7 @@ import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
 import { DateRangeControls } from "@/components/admin/date-range-controls";
 import { auditAndPaymentsDateRangePresets } from "@/lib/date-range-presets";
 import { APP_LOCALE } from "@/config/operational";
+import { formatNZDate } from "@/lib/nzst-date";
 import { formatCents } from "@/lib/utils";
 import { useLodgeOptions } from "@/components/lodge-select";
 import {
@@ -128,16 +129,12 @@ interface PromoSummary {
 }
 
 function formatStayDate(value: string): string {
-  // `value` is a yyyy-MM-dd lodge night from the API; render it without any
-  // timezone shift by parsing the parts directly.
+  // `value` is a yyyy-MM-dd lodge night from the API; parse the parts directly
+  // to UTC midnight so the club-time formatter renders that exact calendar day
+  // with no shift.
   const [year, month, day] = value.split("-").map(Number);
   if (!year || !month || !day) return value;
-  return new Date(Date.UTC(year, month - 1, day)).toLocaleDateString("en-NZ", {
-    timeZone: "UTC",
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
+  return formatNZDate(new Date(Date.UTC(year, month - 1, day)));
 }
 
 // The truncation notice asks an operator to compare two five-figure counts, so

@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
+import { formatNZDate } from "@/lib/nzst-date"
 
 interface RefundAppealButtonProps {
   bookingId: string
@@ -107,7 +108,7 @@ export function RefundAppealButton({
                     {humanizeStatus(req.status)}
                   </Badge>
                   <span className="text-xs text-muted-foreground">
-                    {new Date(req.createdAt).toLocaleDateString("en-NZ")}
+                    {formatNZDate(new Date(req.createdAt))}
                   </span>
                 </div>
                 <p className="text-muted-foreground">{req.reason}</p>

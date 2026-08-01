@@ -44,6 +44,7 @@ import {
 } from "@/lib/audit-query";
 import { auditCategoryBadgeClass } from "@/lib/audit-category-badges";
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
+import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
 
 type AuditFacets = {
   eventTypes: string[];
@@ -74,15 +75,21 @@ const emptyFacets: AuditFacets = {
   severities: [],
 };
 
+// #2264: not one of the shared `nzst-date` helpers on purpose — the audit trail
+// keeps seconds, so entries logged within the same minute stay orderable. Owner
+// decision: do not migrate this to `formatNZDateTime`, which drops seconds.
+const AUDIT_DATE_TIME = new Intl.DateTimeFormat(APP_LOCALE, {
+  timeZone: APP_TIME_ZONE,
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  second: "2-digit",
+});
+
 function formatDateTime(value: string) {
-  return new Date(value).toLocaleString("en-NZ", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-  });
+  return AUDIT_DATE_TIME.format(new Date(value));
 }
 
 function titleCase(value: string) {

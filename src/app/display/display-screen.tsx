@@ -37,17 +37,29 @@ import {
   type DisplayModuleProps,
 } from "@/components/lodge-display/modules";
 import { useDisplayState, type DisplayPayload } from "./use-display-state";
+import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
+import { formatNZTime, formatNZWeekdayDate } from "@/lib/nzst-date";
 
 // The lobby display screen (fork issue #32): full-screen, non-interactive,
 // driven entirely by the display-state payload + resolved template. States:
 // pairing (show the code, poll claim), active (render regions, rotate
 // eligible panels), stale (keep the last good render, badge it).
 
+// #2264: the lobby clock used to render in the VIEWER's zone, so a TV browser or
+// an operator previewing from outside New Zealand showed the wrong time on the
+// wall. `formatNZTime` pins the club zone.
 function formatClock(date: Date): string {
-  return date
-    .toLocaleTimeString("en-NZ", { hour: "numeric", minute: "2-digit" })
-    .toUpperCase();
+  return formatNZTime(date).toUpperCase();
 }
+
+// Not one of the shared helpers: the header date line deliberately drops the
+// year to fit the fixed-width clock block without shifting the layout.
+const SHORT_WEEKDAY_DAY = new Intl.DateTimeFormat(APP_LOCALE, {
+  timeZone: APP_TIME_ZONE,
+  weekday: "short",
+  day: "numeric",
+  month: "short",
+});
 
 const DATE_ONLY_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -73,14 +85,11 @@ function readPreviewState(): { isPreview: boolean; previewDate: string | null } 
 /** Human-readable label for the accessible simulating hint; falls back to the
  * raw value if it is not a real calendar date. */
 function formatSimulatedDate(dateStr: string): string {
-  const parsed = new Date(`${dateStr}T00:00:00`);
+  // Date-only preview date: parse at UTC midnight so the club-time formatter
+  // cannot roll it back a day for an operator outside New Zealand.
+  const parsed = new Date(`${dateStr}T00:00:00Z`);
   if (Number.isNaN(parsed.getTime())) return dateStr;
-  return parsed.toLocaleDateString("en-NZ", {
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
+  return formatNZWeekdayDate(parsed);
 }
 
 /** Live clock + payload freshness for the header (issue #56). Ticks on the
@@ -139,10 +148,10 @@ function HeaderClock({
   // The date line shows real "today" normally; when a previewDate override is
   // active it shows the simulated window start (the board's window.start),
   // keeping the header and the board in agreement without shifting layout.
-  const dateSource = simulated ? new Date(`${windowStart}T00:00:00`) : now;
+  const dateSource = simulated ? new Date(`${windowStart}T00:00:00Z`) : now;
   const dateLine = (
     <>
-      {dateSource.toLocaleDateString("en-NZ", { weekday: "short", day: "numeric", month: "short" })}
+      {SHORT_WEEKDAY_DAY.format(dateSource)}
       {" · "}
       <b>updated {formatClock(updated).toLowerCase()}</b>
     </>

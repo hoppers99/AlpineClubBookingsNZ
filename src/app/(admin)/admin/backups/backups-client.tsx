@@ -23,6 +23,7 @@ import {
   useSectionEditState,
   ForbiddenSaveError,
 } from "@/hooks/use-section-edit-state";
+import { formatNZDateTime } from "@/lib/nzst-date";
 
 interface BackupRunSummary {
   id: string;
@@ -78,7 +79,7 @@ async function readError(res: Response, fallback: string): Promise<string> {
 
 function formatDateTime(iso: string | null): string {
   if (!iso) return "—";
-  return new Date(iso).toLocaleString("en-NZ");
+  return formatNZDateTime(new Date(iso));
 }
 
 function StatusPill({

@@ -34,6 +34,7 @@ import {
   type NonMemberOwner,
 } from "@/components/admin/non-member-contact-form";
 import { formatLocalDateOnly } from "@/lib/date-only";
+import { formatNZDate, formatNZWeekdayDate } from "@/lib/nzst-date";
 import { CreditCard, Landmark } from "lucide-react";
 
 type BookingPaymentMethod = "stripe" | "internet_banking";
@@ -668,8 +669,8 @@ export default function AdminBookPage() {
               Add Guests
               {checkIn && checkOut && (
                 <span className="ml-2 text-sm font-normal text-muted-foreground">
-                  {checkIn.toLocaleDateString("en-NZ")} -{" "}
-                  {checkOut.toLocaleDateString("en-NZ")} ({nights} night
+                  {formatNZDate(checkIn)} -{" "}
+                  {formatNZDate(checkOut)} ({nights} night
                   {nights !== 1 ? "s" : ""})
                 </span>
               )}
@@ -778,23 +779,13 @@ export default function AdminBookPage() {
                 <div>
                   <span className="text-muted-foreground">Check-in:</span>{" "}
                   <span className="font-medium">
-                    {checkIn!.toLocaleDateString("en-NZ", {
-                      weekday: "short",
-                      day: "numeric",
-                      month: "short",
-                      year: "numeric",
-                    })}
+                    {formatNZWeekdayDate(checkIn!)}
                   </span>
                 </div>
                 <div>
                   <span className="text-muted-foreground">Check-out:</span>{" "}
                   <span className="font-medium">
-                    {checkOut!.toLocaleDateString("en-NZ", {
-                      weekday: "short",
-                      day: "numeric",
-                      month: "short",
-                      year: "numeric",
-                    })}
+                    {formatNZWeekdayDate(checkOut!)}
                   </span>
                 </div>
                 <div>
@@ -996,7 +987,7 @@ export default function AdminBookPage() {
 
           {isRetroactive && (
             <div className="rounded-md bg-muted border border-border p-3 text-sm text-muted-foreground">
-              Recording a past stay ({checkIn!.toLocaleDateString("en-NZ")}). The
+              Recording a past stay ({formatNZDate(checkIn!)}). The
               member email is optional (you choose on confirm); drafts are not
               available for retroactive bookings.
             </div>

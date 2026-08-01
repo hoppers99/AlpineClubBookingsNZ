@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/select";
 import { type LodgeOption } from "@/components/lodge-select";
 import { sumDeferredGuestPortionCents } from "@/lib/deferred-guest-portion";
+import { formatNZWeekdayDate } from "@/lib/nzst-date";
 import { PromoCodeInput, type PromoResult } from "@/components/promo-code-input";
 import { TimePicker } from "@/components/time-picker";
 import { CheckCircle2, CreditCard, Landmark } from "lucide-react";
@@ -228,14 +229,7 @@ export function ReviewStep({
     checkIn && holdDays > 0
       ? new Date(checkIn.getTime() - holdDays * 24 * 60 * 60 * 1000)
       : null;
-  const holdDeadlineLabel = holdDeadline
-    ? holdDeadline.toLocaleDateString("en-NZ", {
-        weekday: "short",
-        day: "numeric",
-        month: "short",
-        year: "numeric",
-      })
-    : null;
+  const holdDeadlineLabel = holdDeadline ? formatNZWeekdayDate(holdDeadline) : null;
 
   useEffect(() => {
     if (!provisionalHoldWillBeCreated && cancelIfGuestsBumped) {
@@ -260,17 +254,13 @@ export function ReviewStep({
             <div>
               <span className="text-muted-foreground">Check-in:</span>{" "}
               <span className="font-medium">
-                {checkIn!.toLocaleDateString("en-NZ", {
-                  weekday: "short", day: "numeric", month: "short", year: "numeric",
-                })}
+                {formatNZWeekdayDate(checkIn!)}
               </span>
             </div>
             <div>
               <span className="text-muted-foreground">Check-out:</span>{" "}
               <span className="font-medium">
-                {checkOut!.toLocaleDateString("en-NZ", {
-                  weekday: "short", day: "numeric", month: "short", year: "numeric",
-                })}
+                {formatNZWeekdayDate(checkOut!)}
               </span>
             </div>
             <div>

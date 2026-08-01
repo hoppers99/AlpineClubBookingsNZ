@@ -16,6 +16,7 @@ import { Label } from "@/components/ui/label"
 import { redactSensitiveText } from "@/lib/redact-sensitive-json"
 import { summarizeXeroOperation } from "@/lib/xero-operation-summaries"
 import { resetXeroOperationsDatasetSearchParams } from "@/lib/admin-dataset-reset-state"
+import { formatNZDateTime } from "@/lib/nzst-date"
 import { fetchJson, postJson } from "./api"
 import {
   FailureStateChip,
@@ -496,7 +497,7 @@ export function OperationItem({
           <FailureStateChip state={operation.failureState} />
         ) : null}
         <span className="text-sm font-medium">{operation.entityType} {operation.operationType}</span>
-        <span className="text-xs text-muted-foreground">{new Date(operation.createdAt).toLocaleString("en-NZ")}</span>
+        <span className="text-xs text-muted-foreground">{formatNZDateTime(new Date(operation.createdAt))}</span>
       </div>
       <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
         <span>Direction: {operation.direction}</span>

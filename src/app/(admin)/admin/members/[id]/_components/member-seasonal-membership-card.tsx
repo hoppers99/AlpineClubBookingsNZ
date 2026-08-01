@@ -23,6 +23,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { ROLE_LABELS } from "@/lib/member-roles";
 import { formatCents, getSeasonYear } from "@/lib/utils";
+import { formatNZDate } from "@/lib/nzst-date";
 import type {
   MembershipTypeSummary,
   MemberDetail,
@@ -126,7 +127,7 @@ function formatSeasonLabel(seasonYear: number) {
 }
 
 function formatDate(date: string | null) {
-  return date ? new Date(date).toLocaleDateString("en-NZ") : "-";
+  return date ? formatNZDate(new Date(date)) : "-";
 }
 
 function BookingSummaryBlock({

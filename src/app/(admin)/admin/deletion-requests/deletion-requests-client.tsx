@@ -36,6 +36,7 @@ import {
   ADMIN_VIEW_ONLY_ACTION_REASON,
   useAdminAreaEditAccess,
 } from "@/hooks/use-admin-area-edit-access";
+import { formatNZDate, formatNZDateTime } from "@/lib/nzst-date";
 
 interface DeletionRequestMember {
   id: string;
@@ -87,15 +88,6 @@ interface LifecycleApiResponse {
   pageSize: number;
   totalPages: number;
 }
-
-const dateTime = (value: string) =>
-  new Date(value).toLocaleDateString("en-NZ", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
 
 export default function DeletionRequestsClient({
   sessionMemberId,
@@ -292,7 +284,7 @@ export default function DeletionRequestsClient({
                         {statusBadge(req.status)}
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        Requested {dateTime(req.createdAt)}
+                        Requested {formatNZDateTime(new Date(req.createdAt))}
                       </p>
                       {req.reason && (
                         <p className="text-sm text-muted-foreground">
@@ -309,11 +301,7 @@ export default function DeletionRequestsClient({
                       {req.reviewedAt && (
                         <p className="text-xs text-muted-foreground">
                           Reviewed{" "}
-                          {new Date(req.reviewedAt).toLocaleDateString("en-NZ", {
-                            day: "numeric",
-                            month: "short",
-                            year: "numeric",
-                          })}
+                          {formatNZDate(new Date(req.reviewedAt))}
                         </p>
                       )}
                     </div>
@@ -633,7 +621,7 @@ function AdminInitiatedDeletionSection({
                         {renderStatus(req.status)}
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        Requested by {requesterLabel} · {dateTime(req.requestedAt)}
+                        Requested by {requesterLabel} · {formatNZDateTime(new Date(req.requestedAt))}
                       </p>
                       {req.reason && (
                         <p className="text-sm text-muted-foreground">

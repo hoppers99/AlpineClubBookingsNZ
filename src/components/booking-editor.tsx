@@ -8,6 +8,22 @@ import { EditBookingPanel } from "@/components/edit-booking-panel";
 import { formatCents } from "@/lib/utils";
 import { bookingStatusClass, bookingStatusLabel } from "@/lib/status-colors";
 import { formatNZDate } from "@/lib/nzst-date";
+import { parseDateOnly } from "@/lib/date-only";
+import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
+
+// Not one of the shared `nzst-date` helpers (#2264): the two headline stay dates
+// are spelled out in full — long weekday, long month — because they are the
+// thing the member checks before agreeing to a change, and "Friday 12 June 2026"
+// is harder to misread than "Fri, 12 Jun 2026". Zone pinned to club time; the
+// values are NZ date-only lodge nights handed over at UTC midnight, so the
+// calendar day can no longer slide for a member browsing from overseas.
+const STAY_DATE_LONG = new Intl.DateTimeFormat(APP_LOCALE, {
+  timeZone: APP_TIME_ZONE,
+  weekday: "long",
+  day: "numeric",
+  month: "long",
+  year: "numeric",
+});
 
 interface Guest {
   id: string;
@@ -191,23 +207,13 @@ export function BookingEditor({
             <div>
               <p className="text-sm text-muted-foreground">Check-in</p>
               <p className="font-medium">
-                {new Date(booking.checkIn + "T00:00:00").toLocaleDateString("en-NZ", {
-                  weekday: "long",
-                  day: "numeric",
-                  month: "long",
-                  year: "numeric",
-                })}
+                {STAY_DATE_LONG.format(parseDateOnly(booking.checkIn))}
               </p>
             </div>
             <div>
               <p className="text-sm text-muted-foreground">Check-out</p>
               <p className="font-medium">
-                {new Date(booking.checkOut + "T00:00:00").toLocaleDateString("en-NZ", {
-                  weekday: "long",
-                  day: "numeric",
-                  month: "long",
-                  year: "numeric",
-                })}
+                {STAY_DATE_LONG.format(parseDateOnly(booking.checkOut))}
               </p>
             </div>
             <div>

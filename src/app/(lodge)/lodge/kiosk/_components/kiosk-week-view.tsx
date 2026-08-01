@@ -8,6 +8,26 @@ import {
   Users,
 } from "lucide-react";
 import type { RosterDayStatus } from "@/lib/roster-status";
+import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
+import { formatNZDate } from "@/lib/nzst-date";
+
+// Neither of these is one of the shared helpers: the kiosk week strip is scanned
+// by day of the week, and it deliberately drops the year (the week range beneath
+// it already carries the year). Both bags are rendered verbatim into accessible
+// button labels, so they must stay byte-identical.
+const LONG_WEEKDAY_DAY = new Intl.DateTimeFormat(APP_LOCALE, {
+  timeZone: APP_TIME_ZONE,
+  weekday: "long",
+  day: "numeric",
+  month: "long",
+});
+
+const SHORT_WEEKDAY_DAY = new Intl.DateTimeFormat(APP_LOCALE, {
+  timeZone: APP_TIME_ZONE,
+  weekday: "short",
+  day: "numeric",
+  month: "short",
+});
 
 type DateRange = { minDate: string; maxDate: string } | null;
 
@@ -67,28 +87,46 @@ const rosterStatusMeta: Record<
   },
 };
 
+/*
+  #2264 — these four helpers carry a lodge-night date KEY ("2026-04-15") in and
+  out of a `Date`, and they now do it at UTC midnight rather than at the
+  browser's local midnight.
+
+  They used to build a local-midnight instant and read it back with local
+  getters, which round-tripped exactly — but only because the labels were also
+  rendered without a time zone. Now that the labels are pinned to club time
+  (the point of this issue), a local-midnight instant is no longer guaranteed to
+  land on the same calendar day when read in New Zealand: for a browser far
+  enough west, local midnight on the 15th is already the 16th in Auckland, and
+  the strip would label a column with the wrong night.
+
+  UTC midnight has no such edge. New Zealand is UTC+12/+13, so a UTC-midnight
+  instant is always midday-ish the SAME calendar day in club time, and the key,
+  the arithmetic and the rendered label can never disagree. `formatDateKey` is
+  only ever handed a `parseDateKey` result, so the pair stays exact.
+*/
 export function parseDateKey(dateKey: string): Date {
   const [year, month, day] = dateKey.split("-").map(Number);
-  return new Date(year, month - 1, day);
+  return new Date(Date.UTC(year, month - 1, day));
 }
 
 export function formatDateKey(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
 }
 
 export function addDaysToDateKey(dateKey: string, days: number): string {
   const date = parseDateKey(dateKey);
-  date.setDate(date.getDate() + days);
+  date.setUTCDate(date.getUTCDate() + days);
   return formatDateKey(date);
 }
 
 export function getWeekStartDateKey(dateKey: string): string {
   const date = parseDateKey(dateKey);
-  const mondayOffset = (date.getDay() + 6) % 7;
-  date.setDate(date.getDate() - mondayOffset);
+  const mondayOffset = (date.getUTCDay() + 6) % 7;
+  date.setUTCDate(date.getUTCDate() - mondayOffset);
   return formatDateKey(date);
 }
 
@@ -109,33 +147,18 @@ export function weekHasAccessibleDay(
 }
 
 function displayDay(dateKey: string): string {
-  return parseDateKey(dateKey).toLocaleDateString("en-NZ", {
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-  });
+  return LONG_WEEKDAY_DAY.format(parseDateKey(dateKey));
 }
 
 function displayShortDay(dateKey: string): string {
-  return parseDateKey(dateKey).toLocaleDateString("en-NZ", {
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-  });
+  return SHORT_WEEKDAY_DAY.format(parseDateKey(dateKey));
 }
 
 function displayWeekRange(weekStart: string): string {
   const weekEnd = addDaysToDateKey(weekStart, 6);
   const start = parseDateKey(weekStart);
   const end = parseDateKey(weekEnd);
-  return `${start.toLocaleDateString("en-NZ", {
-    day: "numeric",
-    month: "short",
-  })} - ${end.toLocaleDateString("en-NZ", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  })}`;
+  return `${formatNZDate(start)} - ${formatNZDate(end)}`;
 }
 
 export function KioskWeekView({

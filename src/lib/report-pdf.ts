@@ -1,5 +1,6 @@
 import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
+import { formatNZDate } from "@/lib/nzst-date";
 
 /**
  * Force the light palette onto the off-screen document html2canvas renders from
@@ -60,7 +61,7 @@ export async function generateReportPDF(
   pdf.setTextColor(100, 100, 100);
   pdf.text(`Date range: ${dateRange.from} to ${dateRange.to}`, margin, margin + 12);
   pdf.text(
-    `Generated: ${new Date().toLocaleDateString("en-NZ", { day: "numeric", month: "long", year: "numeric" })}`,
+    `Generated: ${formatNZDate(new Date())}`,
     margin,
     margin + 17
   );

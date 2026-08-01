@@ -26,6 +26,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { bookingStatusClass, bookingStatusLabel } from "@/lib/status-colors";
+import { formatNZDateTime } from "@/lib/nzst-date";
 import { buildHrefWithReturnTo, buildPathWithSearch } from "@/lib/internal-return-path";
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100] as const;
@@ -115,10 +116,7 @@ function formatDateTime(value: string | null) {
     return null;
   }
 
-  return new Date(value).toLocaleString("en-NZ", {
-    dateStyle: "short",
-    timeStyle: "short",
-  });
+  return formatNZDateTime(new Date(value));
 }
 
 function getErrorMessage(data: unknown, fallback: string) {

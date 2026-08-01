@@ -16,6 +16,7 @@ import {
   type AncestorViewOnlyBannerProps,
 } from "@/components/admin/view-only-action";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
+import { formatNZDateTime, formatNZTime } from "@/lib/nzst-date";
 import { useRestoreBuiltInBoards } from "../templates/restore-built-ins";
 import {
   DISPLAY_TERM_BOARD,
@@ -1241,9 +1242,9 @@ export function PairStep({
                 </Badge>
                 Waiting for the screen to claim it
                 {pending?.pairingArmedUntil
-                  ? ` — the code stops working at ${new Date(
-                      pending.pairingArmedUntil,
-                    ).toLocaleTimeString("en-NZ")}`
+                  ? ` — the code stops working at ${formatNZTime(
+                      new Date(pending.pairingArmedUntil),
+                    )}`
                   : ""}
                 .
               </p>
@@ -1274,7 +1275,7 @@ export function PairStep({
                     {device.name} — showing{" "}
                     {device.templateName ?? "the club default board"}
                     {device.lastSeenAt
-                      ? `, last seen ${new Date(device.lastSeenAt).toLocaleString("en-NZ")}`
+                      ? `, last seen ${formatNZDateTime(new Date(device.lastSeenAt))}`
                       : ", not seen yet"}
                   </li>
                 ))}
@@ -1337,7 +1338,7 @@ export function DoneStep({ context, helpers }: StepProps) {
               <li key={device.id}>
                 {device.name} — showing{" "}
                 {device.templateName ?? "the club default board"}, last seen{" "}
-                {new Date(device.lastSeenAt as string).toLocaleString("en-NZ")}
+                {formatNZDateTime(new Date(device.lastSeenAt as string))}
               </li>
             ))}
           </ul>

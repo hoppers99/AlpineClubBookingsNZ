@@ -21,6 +21,7 @@ import {
   useLodgeOptions,
 } from "@/components/lodge-select"
 import { formatDateOnly, getTodayDateOnly } from "@/lib/date-only"
+import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational"
 import { OccupancyCalendar, type CalendarTone } from "@/components/admin/occupancy-calendar"
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access"
 import {
@@ -29,6 +30,17 @@ import {
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action"
 import type { RosterDayStatus, RosterDayStatusResult } from "@/lib/roster-status"
+
+// #2264: deliberately not one of the shared `nzst-date` helpers — a chore roster
+// is read as "which day of the week am I on", so it spells the weekday and
+// month out in full.
+const ROSTER_LONG_DATE = new Intl.DateTimeFormat(APP_LOCALE, {
+  timeZone: APP_TIME_ZONE,
+  weekday: "long",
+  year: "numeric",
+  month: "long",
+  day: "numeric",
+})
 
 interface Guest {
   id: string
@@ -607,12 +619,7 @@ export default function RosterPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <CardTitle>
-                    Roster for {new Date(selectedDate + "T00:00:00").toLocaleDateString("en-NZ", {
-                      weekday: "long",
-                      year: "numeric",
-                      month: "long",
-                      day: "numeric",
-                    })}
+                    Roster for {ROSTER_LONG_DATE.format(new Date(selectedDate + "T00:00:00Z"))}
                   </CardTitle>
                   <CardDescription>
                     {roster.guestCount} guest{roster.guestCount !== 1 ? "s" : ""} staying

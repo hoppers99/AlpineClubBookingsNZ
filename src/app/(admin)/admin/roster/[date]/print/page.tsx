@@ -4,6 +4,18 @@ import { useEffect, useState } from "react"
 import Link from "next/link"
 import { useParams, useSearchParams } from "next/navigation"
 import { useClubIdentity } from "@/components/club-identity-provider"
+import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational"
+
+// #2264: deliberately not one of the shared `nzst-date` helpers — the printed
+// chore roster heads the page with the full weekday and month, matching the
+// on-screen roster and the chore-roster email.
+const ROSTER_LONG_DATE = new Intl.DateTimeFormat(APP_LOCALE, {
+  timeZone: APP_TIME_ZONE,
+  weekday: "long",
+  year: "numeric",
+  month: "long",
+  day: "numeric",
+})
 
 interface Assignment {
   id: string
@@ -83,12 +95,7 @@ export default function PrintRosterPage() {
   }
 
   const chores = [...byChore.values()].sort((a, b) => a.sortOrder - b.sortOrder)
-  const formattedDate = new Date(dateStr + "T00:00:00").toLocaleDateString("en-NZ", {
-    weekday: "long",
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  })
+  const formattedDate = ROSTER_LONG_DATE.format(new Date(dateStr + "T00:00:00Z"))
 
   return (
     <>

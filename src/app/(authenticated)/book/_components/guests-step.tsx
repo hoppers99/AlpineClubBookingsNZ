@@ -13,6 +13,7 @@ import {
 } from "@/lib/family-booking";
 import { describeMemberGuestConsentBadge } from "@/lib/member-guest-consent-card";
 import type { MemberGuestCandidate } from "@/lib/member-guest-find";
+import { formatNZDate } from "@/lib/nzst-date";
 import {
   describeMemberGuestWizardHelper,
   memberGuestConsentPreviewColumns,
@@ -205,7 +206,7 @@ export function GuestsStep({
           Add Guests
           {checkIn && checkOut && (
             <span className="ml-2 text-sm font-normal text-muted-foreground">
-              {checkIn.toLocaleDateString("en-NZ")} - {checkOut.toLocaleDateString("en-NZ")} ({nights} night{nights !== 1 ? "s" : ""})
+              {formatNZDate(checkIn)} - {formatNZDate(checkOut)} ({nights} night{nights !== 1 ? "s" : ""})
             </span>
           )}
         </CardTitle>

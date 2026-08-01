@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { BackLink } from "@/components/admin/back-link";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
+import { formatNZDateTime } from "@/lib/nzst-date";
 import {
   ADMIN_FORBIDDEN_SAVE_REASON,
   AdminViewOnlySectionBanner,
@@ -379,7 +380,7 @@ export default function AdminDisplayDevicesPage() {
                   )}
                   <span className="text-muted-foreground text-xs">
                     {device.lastSeenAt
-                      ? `Last seen ${new Date(device.lastSeenAt).toLocaleString("en-NZ")}`
+                      ? `Last seen ${formatNZDateTime(new Date(device.lastSeenAt))}`
                       : "Never seen"}
                   </span>
                 </div>

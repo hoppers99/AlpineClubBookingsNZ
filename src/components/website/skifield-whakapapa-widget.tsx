@@ -8,6 +8,19 @@ import {
   type WhakapapaTrail,
   type WhakapapaTrailArea,
 } from "@/lib/whakapapa-report";
+import { formatNZDateTime } from "@/lib/nzst-date";
+
+/**
+ * The upstream report's own "updated" stamp is an arbitrary string scraped from
+ * the ski field feed, so it may not parse at all. `Intl` throws a RangeError on
+ * an invalid Date where `toLocaleString` merely returned "Invalid Date", so the
+ * unparseable case falls back to the same "Unknown" the missing case uses
+ * rather than taking the conditions panel down (#2264).
+ */
+function formatUpdatedStamp(value: string): string {
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? "Unknown" : formatNZDateTime(parsed);
+}
 
 type ApiResponse = WhakapapaCurlData & { error?: string; stale?: boolean };
 
@@ -456,10 +469,7 @@ export function SkifieldWhakapapaWidget() {
   }
 
   const formattedUpdated = data.updated
-    ? new Date(data.updated).toLocaleString("en-NZ", {
-        dateStyle: "medium",
-        timeStyle: "short",
-      })
+    ? formatUpdatedStamp(data.updated)
     : "Unknown";
 
   const roadStatusTone = /open/i.test(data.roadStatus.status)

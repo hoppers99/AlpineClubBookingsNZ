@@ -14,7 +14,6 @@ import {
 // EmailMessageSetting.emailFromName at send time. Must NOT come from the severed
 // club-identity export (now safe-default-derived) or the replacement would no-op.
 import { EMAIL_DEFAULT_FROM_NAME } from "@/lib/email-message-settings";
-import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
 import { formatCents as formatMoneyCents } from "@/lib/utils";
 import { FALLBACK_LODGE_CAPACITY } from "@/lib/lodge-capacity";
 import { SUPPORT_EMAIL } from "./email-sender";
@@ -249,10 +248,6 @@ function arrivalInstructionsSection({
 
 function formatCents(cents: number): string {
   return formatMoneyCents(cents);
-}
-
-function formatOperationalDateTime(value: Date): string {
-  return value.toLocaleString(APP_LOCALE, { timeZone: APP_TIME_ZONE });
 }
 
 export function passwordResetTemplate(resetUrl: string): string {
@@ -1565,7 +1560,7 @@ export function adminXeroSyncErrorTemplate(data: {
       { label: "Error Type", value: escapeHtml(data.errorType) },
       { label: "Operation", value: escapeHtml(data.operation) },
       { label: "Error Message", value: escapeHtml(data.errorMessage) },
-      { label: "Timestamp", value: formatOperationalDateTime(data.timestamp) },
+      { label: "Timestamp", value: formatNZDateTime(data.timestamp) },
     ])}
     ${button("View Xero Status", BASE_URL + "/admin/xero")}
   `);
@@ -1606,7 +1601,7 @@ export function adminXeroRepeatedFailureTemplate(data: {
     },
     {
       label: "Timestamp",
-      value: formatOperationalDateTime(data.timestamp),
+      value: formatNZDateTime(data.timestamp),
     },
   ];
 
@@ -1846,7 +1841,7 @@ function formatEmailDateTime(value: Date | null): string {
     return "";
   }
 
-  return formatOperationalDateTime(value);
+  return formatNZDateTime(value);
 }
 
 function formatXeroObjectLabel(item: {
@@ -1948,7 +1943,7 @@ function renderIssueSection(section: XeroReconciliationIssueSectionEmail): strin
 export function adminXeroReconciliationReportTemplate(report: XeroReconciliationReportEmail): string {
   const p = emailPalette();
   const summaryRows = [
-    { label: "Generated", value: formatOperationalDateTime(report.generatedAt) },
+    { label: "Generated", value: formatNZDateTime(report.generatedAt) },
     { label: "Lookback Window", value: `${report.lookbackHours} hour${report.lookbackHours === 1 ? "" : "s"}` },
     { label: "Stale Pending Threshold", value: `${report.stalePendingMinutes} minute${report.stalePendingMinutes === 1 ? "" : "s"}` },
     { label: "Issue Categories", value: String(report.summary.issueCategoryCount) },

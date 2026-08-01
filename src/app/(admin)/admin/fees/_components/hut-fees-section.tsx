@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { APP_CURRENCY } from "@/config/operational";
 import { formatCents } from "@/lib/pricing";
+import { formatNZDate } from "@/lib/nzst-date";
 import {
   AdminViewOnlyNotice,
   AdminViewOnlySectionBanner,
@@ -529,8 +530,8 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
                         )}
                       </div>
                       <CardDescription>
-                        {new Date(season.startDate).toLocaleDateString("en-NZ")} &mdash;{" "}
-                        {new Date(season.endDate).toLocaleDateString("en-NZ")}
+                        {formatNZDate(new Date(season.startDate))} &mdash;{" "}
+                        {formatNZDate(new Date(season.endDate))}
                       </CardDescription>
                     </CardHeader>
                     <CardContent>

@@ -16,6 +16,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { AdminViewOnlyNotice } from "@/components/admin/view-only-action";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import { isFullAdmin } from "@/lib/access-roles";
+import { formatNZDateTime } from "@/lib/nzst-date";
 import type { AiAssistantKeyState } from "@/lib/ai-assistant-config";
 import {
   MAX_BUDGET_CENTS,
@@ -222,7 +223,7 @@ function KeyCard({
             API key{" "}
             {setAt ? (
               <span className="text-xs font-normal text-muted-foreground">
-                (last set {new Date(setAt).toLocaleString("en-NZ")})
+                (last set {formatNZDateTime(new Date(setAt))})
               </span>
             ) : null}
           </Label>
@@ -544,7 +545,7 @@ function UsageCard() {
                           {failure.surface}
                         </span>
                         <span className="text-xs text-muted-foreground">
-                          {new Date(failure.createdAt).toLocaleString("en-NZ")}
+                          {formatNZDateTime(new Date(failure.createdAt))}
                         </span>
                       </div>
                       <p className="mt-1 text-xs text-muted-foreground">

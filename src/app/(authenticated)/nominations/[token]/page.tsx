@@ -7,6 +7,7 @@ import {
   parseApplicationFamilyMembers,
 } from "@/lib/nomination";
 import { prisma } from "@/lib/prisma";
+import { formatNZDate } from "@/lib/nzst-date";
 import { NominationConfirmCard } from "@/components/nomination-confirm-card";
 import { CLUB_NAME } from "@/config/club-identity";
 
@@ -122,11 +123,7 @@ export default async function NominationPage({
                 Submitted
               </p>
               <p className="mt-1 text-sm">
-                {application.createdAt.toLocaleDateString("en-NZ", {
-                  day: "numeric",
-                  month: "short",
-                  year: "numeric",
-                })}
+                {formatNZDate(application.createdAt)}
               </p>
             </div>
           </div>
@@ -150,7 +147,10 @@ export default async function NominationPage({
                       {familyMember.firstName} {familyMember.lastName}
                     </div>
                     <div className="text-muted-foreground">
-                      DOB {new Date(familyMember.dateOfBirth).toLocaleDateString("en-NZ")}
+                      {/* Date-only DOB (YYYY-MM-DD): pin to UTC midnight so the
+                          club-time formatter cannot roll it back a day. */}
+                      DOB{" "}
+                      {formatNZDate(new Date(`${familyMember.dateOfBirth}T00:00:00Z`))}
                     </div>
                   </li>
                 ))}
