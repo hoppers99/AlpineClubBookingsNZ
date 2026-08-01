@@ -219,14 +219,17 @@ describe("executeMemberMerge", () => {
     expect(memberDelegate.delete).toHaveBeenCalledWith({ where: { id: LOSER_ID } });
   });
 
-  it("excludes the master's OWN row from every Member self-relation move (#2243, see #2437)", async () => {
-    // A writer outside the member-lifecycle lock can set
-    // `master.parentMemberId = loserId` after the transaction's opening snapshot,
-    // which is what `nullSelfRelationCycles` read. A blanket
-    // `updateMany({ where: { parentMemberId: loserId } })` would then rewrite the
-    // MASTER's own pointer to the master — master as its own parent. Excluding
-    // the master's row leaves it pointing at the loser, and the loser's
-    // hard-delete (ON DELETE SET NULL) nulls it correctly.
+  it("bounds every Member self-relation move to the captured ids and excludes the master's OWN row (#2243, #2445, #2437)", async () => {
+    // Two write-side bounds on one predicate. The master exclusion (#2445): a
+    // writer outside the member-lifecycle lock can set
+    // `master.parentMemberId = loserId` after the transaction's opening
+    // snapshot, and a blanket `updateMany({ where: { parentMemberId: loserId } })`
+    // would rewrite the MASTER's own pointer to the master — master as its own
+    // parent. The id bound (#2437): a third member's link at the duplicate that
+    // commits after the token counts were captured must NOT be silently
+    // absorbed onto the master (the family-graph guards never evaluated it) —
+    // bounded to the captured ids it stays pointing at the duplicate, where the
+    // step-5 inbound re-check refuses the merge.
     const { client, member } = makeClient();
 
     await executeMemberMerge({
@@ -241,7 +244,9 @@ describe("executeMemberMerge", () => {
     const selfRelationColumns = MEMBER_MERGE_RELATION_SPECS.filter(
       (s) => s.selfRelation && s.bucket === "move",
     ).map((s) => s.column);
-    // All four of them, so a fifth added later is covered too.
+    // All four of them — and the DMMF-driven flag test in
+    // member-merge-dmmf.test.ts is what forces a fifth Member self-FK to carry
+    // `selfRelation: true` and join this sweep shape.
     expect(selfRelationColumns).toEqual([
       "parentMemberId",
       "secondaryParentId",
@@ -254,7 +259,11 @@ describe("executeMemberMerge", () => {
       ([arg]) => (arg as { where: Record<string, unknown> }).where,
     );
     for (const column of selfRelationColumns) {
-      expect(wheres).toContainEqual({ [column]: LOSER_ID, id: { not: MASTER_ID } });
+      // No captured rows in this mock, so the bound is the empty id list.
+      expect(wheres).toContainEqual({
+        [column]: LOSER_ID,
+        id: { in: [], not: MASTER_ID },
+      });
     }
   });
 
@@ -1368,6 +1377,59 @@ describe("family-link drift under the lock (#2437)", () => {
     ).not.toHaveBeenCalled();
   });
 
+  it("REFUSES (409) a dependants link that lands between the token capture and the moves — never absorbs it unvetted (#2437)", async () => {
+    // The absorption shape: `late-joiner.parentMemberId = loser` commits in the
+    // window between the token re-derivation's capture and applyMoves. An
+    // unbounded sweep would re-point it onto the master — a family link the
+    // graph guards (cycle / depth) never evaluated and the operator never
+    // previewed, silently committed by an irreversible merge. Bounded to the
+    // captured ids, the late row keeps pointing at the duplicate and the
+    // step-5 inbound re-check refuses the whole merge.
+    const store = new Map<string, Record<string, unknown>>();
+    store.set(MASTER_ID, storeMember(MASTER_ID, { occupation: null }));
+    store.set(LOSER_ID, storeMember(LOSER_ID, { occupation: "Engineer" }));
+    const token = tokenFor(store.get(MASTER_ID)!, store.get(LOSER_ID)!);
+    let landed = false;
+    const memberDelegate = storeMemberDelegate(store, {
+      // The moved-id sample (first `take`-bearing member read) runs after the
+      // token capture and before the moves — the real landing window.
+      onFindMany: (args) => {
+        if (landed || typeof args.take !== "number") return;
+        landed = true;
+        store.set(
+          "late-joiner",
+          storeMember("late-joiner", { parentMemberId: LOSER_ID }),
+        );
+      },
+    });
+    const { client, auditLog } = makeClient({ member: memberDelegate });
+
+    await expect(
+      executeMemberMerge({
+        masterId: MASTER_ID,
+        loserId: LOSER_ID,
+        actorMemberId: ACTOR_ID,
+        previewToken: token,
+        confirmationText: "MERGE Dup Person",
+        db: client as never,
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      code: "merge_drift_in_transaction",
+      details: {
+        driftFamilyLinks: [{ column: "parentMemberId", where: "inbound" }],
+      },
+    });
+
+    // The late link was NOT swept onto the master (that is exactly what the
+    // bound forbids), the duplicate was not deleted, and nothing was audited.
+    expect(store.get("late-joiner")!.parentMemberId).toBe(LOSER_ID);
+    expect(store.has(LOSER_ID)).toBe(true);
+    expect(
+      (auditLog as { create: ReturnType<typeof vi.fn> }).create,
+    ).not.toHaveBeenCalled();
+  });
+
   it.each(SELF_RELATION_COLUMNS)(
     "REFUSES (409) when a mid-merge write points the master's %s at the duplicate — the silent-loss shape",
     async (column) => {
@@ -1542,7 +1604,7 @@ describe("family-link drift under the lock (#2437)", () => {
     store.set(LOSER_ID, storeMember(LOSER_ID, { occupation: "Engineer" }));
     const token = tokenFor(store.get(MASTER_ID)!, store.get(LOSER_ID)!);
     const memberDelegate = storeMemberDelegate(store);
-    const { client } = makeClient({ member: memberDelegate });
+    const { client, auditLog } = makeClient({ member: memberDelegate });
 
     const result = await executeMemberMerge({
       masterId: MASTER_ID,
@@ -1563,6 +1625,22 @@ describe("family-link drift under the lock (#2437)", () => {
     expect(store.get(MASTER_ID)!.inheritEmailFromId).toBeNull();
     // ...and the merge completed: the duplicate was deleted, no 409.
     expect(memberDelegate.delete).toHaveBeenCalledWith({ where: { id: LOSER_ID } });
+
+    // AUDIT HONESTY (#2437): the cleared link is recorded as a clearance, and
+    // the master's own row is NOT listed in movedIdSample as a "moved" row —
+    // the audit of an irreversible merge must never claim a link the merge
+    // deleted was carried over.
+    const auditCall = (auditLog as { create: ReturnType<typeof vi.fn> }).create.mock
+      .calls[0]?.[0] as {
+      data: { metadata: { selfRelationCyclesNulled: string[]; movedIdSample: { model: string; id: string }[] } };
+    };
+    expect(auditCall.data.metadata.selfRelationCyclesNulled).toEqual([
+      "inheritEmailFromId",
+    ]);
+    expect(auditCall.data.metadata.movedIdSample).not.toContainEqual({
+      model: "Member.inheritEmailFrom",
+      id: MASTER_ID,
+    });
   });
 
   it("re-checks inbound links with the id-excluded four-column query (shape pin)", async () => {
