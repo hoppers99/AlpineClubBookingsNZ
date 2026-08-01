@@ -65,6 +65,9 @@ import { bookingPaymentDueNote } from "@/lib/email-message-notes";
 import {
   bookingConfirmedTemplate,
   plainTextEmailTemplate,
+  resolveUnpaidCreditNetting,
+  unpaidMoneySummaryRows,
+  wholeLodgeManualInvoiceAmountCents,
 } from "@/lib/email-templates";
 import {
   renderTemplateString,
@@ -363,9 +366,23 @@ describe("#2444 the shared composer", () => {
     // brand-new booking and writes NO MemberCredit row, so the
     // enqueueXeroAppliedCreditAllocationOperation call it makes always
     // short-circuits ("No unallocated applied credit; nothing to allocate.")
-    // and the Xero invoice stands at the full price. If that ever changes, the
-    // copy can — and should — be revisited, so fail here rather than let the
-    // wording quietly become either wrong or needlessly timid.
+    // and the Xero invoice stands at the full price.
+    //
+    // WHAT THIS PIN NOW MEANS (#2483). It used to say "if that ever changes,
+    // the copy can — and should — be revisited", i.e. the state was one the
+    // code had no answer for. It has an answer now: the credit shape below
+    // states the netting, from these very rows. So this is no longer a
+    // correctness precondition — it is why every member on today's live path
+    // reads the conditional sentence and not the netted one, and a tripwire
+    // saying the netted copy has gone live for real members.
+    //
+    // If it does go red, the member's email is not the only artefact to check:
+    // the PENDING receivable this conversion writes and the admin
+    // manual-invoice alert it sends must state the same netted figure the
+    // member is asked for. #2483 wired the alert to the same resolver; the
+    // receivable is written at the booking's price inside the transaction and
+    // equals the netted figure only while no credit is applied, which is what
+    // this assertion proves.
     // (#2328's own suite pins the single-send-site half of this premise.)
     const source = readFileSync(
       path.join(process.cwd(), "src", "lib", "school-booking-request.ts"),
@@ -375,6 +392,458 @@ describe("#2444 the shared composer", () => {
     expect(source).not.toContain("BOOKING_APPLIED");
     expect(source).not.toContain("applyCreditToBooking");
     expect(source).not.toContain("memberCredit");
+  });
+});
+
+// #2483 — the second half of the owner's "both, in order" decision on #2444.
+//
+// #2444 shipped an honest sentence because no figure could be stated: netting
+// the member's credit off their invoice is done by Xero, asynchronously, and a
+// precise number that is wrong is worse than none. The owner's decision (2 Aug
+// 2026) took a fifth road past the four options on #2483: the email uses the
+// booking app's OWN known credits, so there is no delay and the amount is
+// itemised, and a SEPARATE checker (#2501) keeps the club's credits and Xero's
+// in sync and warns admins when they are not.
+//
+// The local figure is not a guess at what Xero will do, and the reason is
+// narrower than an earlier draft of this comment claimed (#2483 review, 2 Aug
+// 2026). `deriveBookingAppliedCreditCents` is the club's OWN amount-owing law —
+// the same figure `prepareManualSettlement` derives an effective price from and
+// the same one the Xero deallocation engine converges an invoice to — so the
+// netted figure is exactly what the club would accept as full settlement. It is
+// NOT the same predicate the allocation gate reads: that aggregates only the
+// `xeroCreditNoteId: null` unallocated subset, a work-remaining filter over
+// these rows. So a hand edit in Xero, an allocation op that failed or was never
+// processed, and a stamp that outlived its invoice can all put email and
+// invoice out of step — all of them #2501's job, not the email's.
+describe("#2483 the itemised netting on an unpaid confirmation", () => {
+  const CREDIT = { amountCents: 12000, settlementMethod: "card" as const };
+
+  // The #2444 sentence, in full, is what a member must NOT be told once the
+  // email has done the netting itself: it says to follow the invoice, and the
+  // invoice may not have caught up with the allocation yet.
+  it("itemises total, credit and what to transfer", async () => {
+    loadAppliedCreditMock.mockResolvedValue(CREDIT);
+    const { templateData, html } = await send(PAYMENT_DUE);
+
+    // The reconciling trio, in the #2328 shape and the #2397 order: what the
+    // stay costs, what has come off it, what is left.
+    expect(templateData.paymentOutcome).toBe(
+      "Booking Total: $300.00\n" +
+        "Account credit applied: -$120.00\n" +
+        "Total Due: $180.00\n\n" +
+        "This booking is confirmed, but payment of $180.00 is still owing — " +
+        "the booking's price of $300.00 less the $120.00 of account credit the " +
+        "club has put towards it. Please pay $180.00 by internet banking " +
+        "quoting reference BOOKING-ABC123. " +
+        "An invoice has been emailed to you separately. " +
+        "If the invoice asks for more than that, please still transfer $180.00; " +
+        "if it asks for less, please pay what the invoice asks. Either way, let " +
+        "the club know, and the club will check its own record of your credit " +
+        "against the invoice.",
+    );
+
+    // {{totalDue}} has always meant "what is still owed", so it is the netted
+    // figure — an override that writes its own money lines out of the per-piece
+    // tokens asks for the right amount with no edit at all.
+    expect(templateData.totalDue).toBe("$180.00");
+    expect(templateData.totalPaid).toBe("");
+
+    // The HTML a member actually receives carries the same three rows in the
+    // same order.
+    expect(html).toContain(">Booking Total</td>");
+    expect(html.indexOf(">Booking Total</td>")).toBeLessThan(
+      html.indexOf(">Account credit applied</td>"),
+    );
+    expect(html.indexOf(">Account credit applied</td>")).toBeLessThan(
+      html.indexOf(">Total Due</td>"),
+    );
+    expect(html).toContain("-$120.00");
+    expect(html).toContain("$180.00");
+
+    // No line trails off after a label, sign or dash, in the substituted body
+    // or in the plain text a member receives.
+    const rendered = renderDefaultBody(templateData);
+    for (const text of [rendered, plainTextEmailTemplate(rendered)]) {
+      for (const line of text.split("\n")) {
+        expect(
+          line.trimEnd(),
+          `dangling line: ${JSON.stringify(line)}`,
+        ).not.toMatch(/[-+:–]$/);
+      }
+    }
+  });
+
+  it("stops telling the member to follow the invoice once it has netted", async () => {
+    // THE POINT OF THE INVERSION. #2444's closing sentence defers to the
+    // invoice. The allocation that reduces that invoice is processed on the
+    // Xero outbox AFTER the send, so a member who opens the invoice first may
+    // still see the full price — and "transfer the amount the invoice shows"
+    // would produce exactly the overpayment this change exists to prevent.
+    loadAppliedCreditMock.mockResolvedValue(CREDIT);
+    const { templateData, html } = await send(PAYMENT_DUE);
+
+    expect(templateData.paymentDueNote).not.toContain(SENTENCE_MARKER);
+    expect(html).not.toContain(SENTENCE_MARKER);
+    // A disagreement is routed to the club, not acted on by the member.
+    expect(templateData.paymentDueNote).toContain("let the club know");
+    // And the club's side of that is #2501's reconciliation checker, referred
+    // to in plain English and promising only a check — never that Xero has
+    // already been updated, which the email cannot know.
+    expect(templateData.paymentDueNote).toContain(
+      "the club will check its own record of your credit against the invoice",
+    );
+    for (const overclaim of [
+      "has been applied to your invoice",
+      "your invoice has been reduced",
+      "xero",
+    ]) {
+      expect(
+        (templateData.paymentDueNote as string).toLowerCase(),
+        `unkeepable promise: ${overclaim}`,
+      ).not.toContain(overclaim);
+    }
+  });
+
+  it("holds the netted figure only against a LARGER invoice, never a smaller one", async () => {
+    // THE INVERSION IS ONE-DIRECTIONAL (#2483 review, 2 Aug 2026). Its first
+    // draft was symmetric — "if the invoice asks for a different amount, please
+    // transfer $180.00" — which also told a member to transfer MORE than an
+    // invoice asking for less. That is the #2444 overpayment wearing the new
+    // wording, and the drift the change itself names (a hand edit in Xero) is
+    // exactly what produces a lower invoice. So: hold the email's figure when
+    // the invoice asks for more, pay the invoice when it asks for less, tell
+    // the club either way.
+    loadAppliedCreditMock.mockResolvedValue(CREDIT);
+    const { templateData } = await send(PAYMENT_DUE);
+    const note = templateData.paymentDueNote as string;
+
+    expect(note).toContain(
+      "If the invoice asks for more than that, please still transfer $180.00; " +
+        "if it asks for less, please pay what the invoice asks.",
+    );
+    // The symmetric wording must not come back.
+    expect(note).not.toContain("asks for a different amount, please transfer");
+  });
+
+  it("asks for nothing when the credit covers the booking exactly", async () => {
+    // THE BOUNDARY THIS SPLIT (#2483 review, 2 Aug 2026). Credit EQUAL to the
+    // price used to be folded into the same refusal as credit larger than it,
+    // which rendered "Total Due: $300.00" and the #2444 "please pay" imperative
+    // — a 100% overpayment instruction on the one booking the member owes
+    // nothing on. Equality is not a contradiction: it is the documented steady
+    // state of the #1887 reprice clamp, and the state `prepareManualSettlement`
+    // refuses as "This booking has nothing owing". So it states $0.00 and asks
+    // for nothing.
+    loadAppliedCreditMock.mockResolvedValue({
+      amountCents: 30000,
+      settlementMethod: "card" as const,
+    });
+    const { templateData, html } = await send(PAYMENT_DUE);
+
+    expect(templateData.paymentOutcome).toBe(
+      "Booking Total: $300.00\n" +
+        "Account credit applied: -$300.00\n" +
+        "Total Due: $0.00\n\n" +
+        "This booking is confirmed and there is nothing further to transfer — " +
+        "the booking's price of $300.00 is fully covered by the $300.00 of " +
+        "account credit the club has put towards it. " +
+        "An invoice has been emailed to you separately. " +
+        "If the invoice asks for a payment, please let the club know rather " +
+        "than paying it, and the club will check its own record of your credit " +
+        "against the invoice.",
+    );
+    expect(templateData.totalDue).toBe("$0.00");
+    // No payment imperative survives anywhere in the paragraph.
+    expect(templateData.paymentDueNote).not.toContain("is still owing");
+    expect(templateData.paymentDueNote).not.toContain("Please pay");
+    expect(templateData.paymentDueNote).not.toContain(SENTENCE_MARKER);
+    expect(html).toContain(">Total Due</td>");
+    expect(html).not.toContain("$300.00 is still owing");
+  });
+
+  it("asks for no figure at all when the ledger contradicts the price", async () => {
+    // Credit LARGER than the booking's price. That really is a contradiction
+    // the #1887 clamp exists to prevent, so no figure derived from the pair
+    // belongs in a member's inbox — INCLUDING the gross price, which the first
+    // draft printed as "Total Due" with the #2444 "please pay" sentence beneath
+    // it. A refusal must never instruct payment of a figure the ledger
+    // contradicts. The booking's price is stated as a fact; nothing is asked
+    // for; {{totalDue}} is empty so no override can print one either.
+    loadAppliedCreditMock.mockResolvedValue({
+      amountCents: 45000,
+      settlementMethod: "card" as const,
+    });
+    const { templateData, html } = await send(PAYMENT_DUE);
+
+    expect(templateData.paymentOutcome).toBe(
+      "Booking Total: $300.00\n\n" +
+        "This booking is confirmed. The club is checking its record of the " +
+        "account credit held against this booking and will confirm what, if " +
+        "anything, is left to pay. An invoice has been emailed to you " +
+        "separately — please wait to hear from the club before transferring " +
+        "anything against it.",
+    );
+    expect(templateData.totalDue).toBe("");
+    expect(templateData.paymentOutcome).not.toContain("Total Due");
+    expect(templateData.paymentOutcome).not.toContain("is still owing");
+    expect(templateData.paymentOutcome).not.toContain("Please pay");
+    expect(templateData.paymentOutcome).not.toContain(SENTENCE_MARKER);
+    // The internet-banking reference is not quoted either: quoting it is part
+    // of an instruction to pay, and there is no instruction to pay.
+    expect(templateData.paymentDueNote).not.toContain("BOOKING-ABC123");
+    expect(html).not.toContain(">Total Due</td>");
+  });
+
+  it("leaves the email exactly as #2444 shipped it when no credit applies", async () => {
+    // THE UNCHANGED PIN. Every member on today's live path is here, so this is
+    // the case #2483 must not touch at all — not the rows, not the paragraph,
+    // not the tokens.
+    const { templateData, html } = await send(PAYMENT_DUE);
+
+    expect(templateData.paymentOutcome).toBe(
+      "Total Due: $300.00\n\n" +
+        "This booking is confirmed, but payment of $300.00 is still owing. " +
+        "Please pay by internet banking quoting reference BOOKING-ABC123. " +
+        "An invoice has been emailed to you separately. " +
+        CREDIT_SENTENCE,
+    );
+    expect(templateData.totalDue).toBe("$300.00");
+    expect(html).not.toContain("Booking Total");
+    expect(html).not.toContain("Account credit applied");
+    expect(html).toContain(CREDIT_SENTENCE);
+  });
+
+  it("falls back to the #2444 paragraph when the ledger read fails", async () => {
+    // The credit read FAILS OPEN (#2328): a thrown read must not abort a send
+    // that would otherwise happen, or the member is silently owed an email. So
+    // a failure degrades to the no-credit rendering — the honest sentence,
+    // which is true whatever the ledger would have said — rather than to a
+    // half-computed figure.
+    loadAppliedCreditMock.mockRejectedValue(new Error("ledger unavailable"));
+    const { templateData, html } = await send(PAYMENT_DUE);
+
+    expect(templateData.paymentOutcome).toBe(
+      "Total Due: $300.00\n\n" +
+        "This booking is confirmed, but payment of $300.00 is still owing. " +
+        "Please pay by internet banking quoting reference BOOKING-ABC123. " +
+        "An invoice has been emailed to you separately. " +
+        CREDIT_SENTENCE,
+    );
+    expect(html).toContain(CREDIT_SENTENCE);
+    expect(html).not.toContain("Account credit applied");
+  });
+
+  it("renders identically from the HTML template and the flat token", async () => {
+    // The #2444 drift guard, extended to the credit shape: one composer, two
+    // renderers, one story about how much to transfer.
+    loadAppliedCreditMock.mockResolvedValue(CREDIT);
+    const { templateData, html } = await send(PAYMENT_DUE);
+    const composed = bookingPaymentDueNote({
+      amount: "$180.00",
+      reference: "BOOKING-ABC123",
+      invoiceEmailed: true,
+      accountCredit: {
+        outcome: "netted",
+        bookingTotal: "$300.00",
+        creditApplied: "$120.00",
+      },
+    });
+
+    expect(templateData.paymentDueNote).toBe(composed);
+    expect(html).toContain(composed);
+    expect(
+      bookingConfirmedTemplate("Sam", CHECK_IN, CHECK_OUT, 2, 30000, {
+        paymentDue: { reference: "BOOKING-ABC123", invoiceEmailed: true },
+        appliedCredit: CREDIT,
+      }),
+    ).toContain(composed);
+  });
+
+  it("says the same thing when the club raises no invoice automatically", async () => {
+    loadAppliedCreditMock.mockResolvedValue(CREDIT);
+    const { templateData } = await send({
+      paymentDue: { reference: "BOOKING-ABC123", invoiceEmailed: false },
+    });
+
+    expect(templateData.paymentDueNote).toContain(
+      "The club will send you an invoice for it.",
+    );
+    expect(templateData.paymentDueNote).toContain("payment of $180.00");
+  });
+
+  it("adds no token, and leaves {{creditNote}} to the settled outcomes", async () => {
+    // No new token, for the reason #2444 gives: one would be invisible to every
+    // club that saved an override before today — on the one branch where
+    // following the email can make a member pay the wrong amount. The netting
+    // rides on {{paymentOutcome}} and {{totalDue}}, both of which every saved
+    // body already understands, and {{paymentDueNote}} states the arithmetic in
+    // words for a body that renders it alone.
+    //
+    // {{creditNote}} stays EMPTY here on purpose: it is the "where the money
+    // came from" pair for a booking that has been settled, and an unpaid
+    // booking has no such story — its credit is a reduction in what is still
+    // owed, which the rows above say.
+    loadAppliedCreditMock.mockResolvedValue(CREDIT);
+    const { templateData } = await send(PAYMENT_DUE);
+
+    expect(templateData.creditNote).toBe("");
+    expect(EXTRA_TEMPLATE_TOKENS["booking-confirmed"]).toEqual([
+      "creditNote",
+      "discount",
+      "doorCode",
+      "doorCodeNote",
+      "paymentDueNote",
+      "paymentOutcome",
+      "paymentReference",
+      "promoAdjustment",
+      "promoCode",
+      "promoSummary",
+      "provisionalGuestsNote",
+      "subtotal",
+      "totalDue",
+      "totalPaid",
+    ]);
+  });
+});
+
+describe("#2483 the netting arithmetic", () => {
+  // Money is integer cents and the only operation is one subtraction, so there
+  // is no rounding to get wrong — these pin that no rounding is INTRODUCED, and
+  // that each of the four outcomes is reached at exactly the right boundary.
+  it("nets in whole cents, including amounts that do not divide evenly", () => {
+    expect(
+      resolveUnpaidCreditNetting({ totalCents: 30000, appliedCreditCents: 12000 }),
+    ).toEqual({ outcome: "netted", creditCents: 12000, toTransferCents: 18000 });
+    // $300.01 less $120.34 — awkward cents survive intact.
+    expect(
+      resolveUnpaidCreditNetting({ totalCents: 30001, appliedCreditCents: 12034 }),
+    ).toEqual({ outcome: "netted", creditCents: 12034, toTransferCents: 17967 });
+    // One cent of credit, and one cent left to pay: the extremes still reconcile.
+    expect(
+      resolveUnpaidCreditNetting({ totalCents: 30000, appliedCreditCents: 1 }),
+    ).toEqual({ outcome: "netted", creditCents: 1, toTransferCents: 29999 });
+    expect(
+      resolveUnpaidCreditNetting({ totalCents: 30000, appliedCreditCents: 29999 }),
+    ).toEqual({ outcome: "netted", creditCents: 29999, toTransferCents: 1 });
+  });
+
+  it("takes the ledger's summed figure, however many credits it came from", () => {
+    // `deriveBookingAppliedCreditCents` sums every BOOKING_APPLIED row for the
+    // booking — several partial applications, plus any #1887 reprice-clamp
+    // offset, net to one number before this is reached. Splitting $120.00 into
+    // $50.00 + $70.00 must not change what the member is asked for.
+    expect(
+      resolveUnpaidCreditNetting({
+        totalCents: 30000,
+        appliedCreditCents: 5000 + 7000,
+      }).toTransferCents,
+    ).toBe(18000);
+  });
+
+  it("states nothing when there is nothing to state", () => {
+    for (const appliedCreditCents of [0, -1, -12000]) {
+      expect(
+        resolveUnpaidCreditNetting({ totalCents: 30000, appliedCreditCents }),
+      ).toEqual({ outcome: "none", creditCents: 0, toTransferCents: 30000 });
+    }
+    // A free booking has nothing to net against either.
+    expect(
+      resolveUnpaidCreditNetting({ totalCents: 0, appliedCreditCents: 12000 }),
+    ).toEqual({ outcome: "none", creditCents: 0, toTransferCents: 0 });
+  });
+
+  it("splits the boundary at the exact cent: covered, then unreconciled", () => {
+    // THE FIX (#2483 review, 2 Aug 2026). `creditCents >= totalCents` used to
+    // collapse into the no-credit return, so a booking fully covered by credit
+    // rendered the FULL price as "Total Due" with the "please pay" imperative.
+    // Equality is a legitimate ledger state — the #1887 clamp's documented
+    // steady state, and what `prepareManualSettlement` calls "nothing owing" —
+    // so it now states $0.00, and only a genuinely larger credit refuses.
+    expect(
+      resolveUnpaidCreditNetting({ totalCents: 30000, appliedCreditCents: 29999 })
+        .outcome,
+    ).toBe("netted");
+    expect(
+      resolveUnpaidCreditNetting({ totalCents: 30000, appliedCreditCents: 30000 }),
+    ).toEqual({ outcome: "covered", creditCents: 30000, toTransferCents: 0 });
+    expect(
+      resolveUnpaidCreditNetting({ totalCents: 30000, appliedCreditCents: 30001 }),
+    ).toEqual({ outcome: "unreconciled", creditCents: 0, toTransferCents: 0 });
+    expect(
+      resolveUnpaidCreditNetting({ totalCents: 30000, appliedCreditCents: 45000 }),
+    ).toEqual({ outcome: "unreconciled", creditCents: 0, toTransferCents: 0 });
+  });
+
+  it("never leaves a figure a caller could render on the refusal", () => {
+    // `toTransferCents` is ZERO on "unreconciled", not the gross price, so a
+    // caller that ignored the outcome still cannot print the contradicted
+    // figure as an amount to pay.
+    expect(
+      resolveUnpaidCreditNetting({ totalCents: 30000, appliedCreditCents: 45000 })
+        .toTransferCents,
+    ).toBe(0);
+  });
+
+  it("renders one line without netting and the reconciling trio with it", () => {
+    expect(
+      unpaidMoneySummaryRows(30000, {
+        outcome: "none",
+        creditCents: 0,
+        toTransferCents: 30000,
+      }),
+    ).toEqual([{ label: "Total Due", value: "$300.00" }]);
+    expect(
+      unpaidMoneySummaryRows(30000, {
+        outcome: "netted",
+        creditCents: 12000,
+        toTransferCents: 18000,
+      }),
+    ).toEqual([
+      { label: "Booking Total", value: "$300.00" },
+      // The value carries its own minus sign, so no body may prefix one.
+      { label: "Account credit applied", value: "-$120.00" },
+      { label: "Total Due", value: "$180.00" },
+    ]);
+    // Fully covered still reconciles, and lands on the honest $0.00.
+    expect(
+      unpaidMoneySummaryRows(30000, {
+        outcome: "covered",
+        creditCents: 30000,
+        toTransferCents: 0,
+      }),
+    ).toEqual([
+      { label: "Booking Total", value: "$300.00" },
+      { label: "Account credit applied", value: "-$300.00" },
+      { label: "Total Due", value: "$0.00" },
+    ]);
+    // The refusal states the price as a FACT and never as an amount due:
+    // labelling a figure "Total Due" is an instruction to pay it.
+    expect(
+      unpaidMoneySummaryRows(30000, {
+        outcome: "unreconciled",
+        creditCents: 0,
+        toTransferCents: 0,
+      }),
+    ).toEqual([{ label: "Booking Total", value: "$300.00" }]);
+  });
+});
+
+describe("#2483 the manual-invoice branch asks the admin for the member's figure", () => {
+  // The Xero-off branch has no invoice object and no allocation op, so nothing
+  // downstream would ever reconcile an admin who invoiced the gross price
+  // against a member who was told to transfer the netted one — the club would
+  // chase a shortfall its own ledger says does not exist, while the member
+  // holds an email telling them not to pay it. One resolver, both messages.
+  it("nets the amount to invoice exactly as the member's email nets it", () => {
+    expect(wholeLodgeManualInvoiceAmountCents(30000, 0)).toBe(30000);
+    expect(wholeLodgeManualInvoiceAmountCents(30000, 12000)).toBe(18000);
+    // Fully covered: there is nothing to collect, so nothing is invoiced.
+    expect(wholeLodgeManualInvoiceAmountCents(30000, 30000)).toBe(0);
+    // Contradictory ledger: the member is asked for nothing and told to wait,
+    // so there is no netted figure to agree with — the admin keeps the booking
+    // price and the send-time warning is what flags the contradiction.
+    expect(wholeLodgeManualInvoiceAmountCents(30000, 45000)).toBe(30000);
   });
 });
 
