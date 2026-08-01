@@ -1,0 +1,537 @@
+import { createHash } from "node:crypto";
+
+import {
+  aggregatePolicyExceptionViolations,
+  sortPolicyExceptionViolations,
+  isPolicyExceptionReasonCode,
+  type AggregatedPolicyExceptions,
+  type PolicyExceptionCapacityMode,
+  type PolicyExceptionReasonCode,
+  type PolicyExceptionViolation,
+} from "@/lib/booking-policy-exceptions";
+
+/**
+ * The durable member-request + admin-decision workflow that sits ON TOP of the
+ * #2363 exception foundation (#2365).
+ *
+ * #2363 owns the frozen VIOLATION shape and the HOLD-if-any-HOLD aggregate;
+ * #2364 owns the two evaluators. This module owns the WORKFLOW facts a request
+ * freezes and an approval re-checks, and it is deliberately PURE: no Prisma, no
+ * clock, no I/O. Everything here is a deterministic function of its inputs, so
+ * the proposal hash, the reservation footprint and the drift classification are
+ * byte-reproducible and directly unit-testable. The transaction-aware execution
+ * seam that loads live facts and calls the canonical booking service composes
+ * these functions; it does not reimplement them.
+ *
+ * Two request flavours share this vocabulary:
+ *
+ *  - a **new-booking** request freezes the WHOLE proposed booking and, while
+ *    held, reserves the FULL proposal's per-night beds;
+ *  - a **modification** request freezes the live booking's base footprint AND
+ *    the full proposed result, and while held reserves ONLY the incremental
+ *    per-night beds beyond the unchanged live booking.
+ */
+
+/** The request lifecycle #2365 adds, mirroring BookingChangeRequestStatus. */
+export const POLICY_EXCEPTION_REQUEST_STATUSES = [
+  "REQUESTED",
+  "APPROVED",
+  "REJECTED",
+  "CANCELLED",
+  "SUPERSEDED",
+] as const;
+
+export type PolicyExceptionRequestStatus =
+  (typeof POLICY_EXCEPTION_REQUEST_STATUSES)[number];
+
+/**
+ * The three statuses that release a held request's provisional reservation and
+ * admit no further transition. APPROVED is deliberately NOT terminal here: an
+ * approval releases its reservation by turning it into the executed booking's
+ * own beds INSIDE the same transaction, which is a different discipline from the
+ * plain release the rejected/withdrawn/replaced outcomes perform.
+ */
+export const TERMINAL_RELEASING_STATUSES = [
+  "REJECTED",
+  "CANCELLED",
+  "SUPERSEDED",
+] as const satisfies readonly PolicyExceptionRequestStatus[];
+
+export function isTerminalReleasingStatus(
+  status: PolicyExceptionRequestStatus,
+): status is (typeof TERMINAL_RELEASING_STATUSES)[number] {
+  return (TERMINAL_RELEASING_STATUSES as readonly string[]).includes(status);
+}
+
+/**
+ * Whether a request in `status` may still be moved to `next` by the workflow.
+ * REQUESTED is the only non-terminal state; every terminal state is a dead end.
+ * A guarded `updateMany` enforces this at the database, but the predicate is
+ * shared so the route, the service and the tests cannot disagree about it.
+ */
+export function isPolicyExceptionTransitionAllowed(
+  from: PolicyExceptionRequestStatus,
+  to: PolicyExceptionRequestStatus,
+): boolean {
+  if (from !== "REQUESTED") return false;
+  return (
+    to === "APPROVED" ||
+    to === "REJECTED" ||
+    to === "CANCELLED" ||
+    to === "SUPERSEDED"
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Member message
+// ---------------------------------------------------------------------------
+
+export const MEMBER_MESSAGE_MAX_LENGTH = 1000;
+
+export class PolicyExceptionMemberMessageError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PolicyExceptionMemberMessageError";
+  }
+}
+
+/**
+ * The member's message is REQUIRED, trimmed, and capped at 1000 characters. It
+ * is normalised once, at the request boundary, so the stored value is exactly
+ * what every later surface renders. An empty-after-trim message is refused
+ * rather than silently stored, because "explain why" with nothing to show an
+ * admin is not a request anybody can decide.
+ */
+export function normalizeMemberMessage(raw: string | null | undefined): string {
+  const trimmed = (raw ?? "").trim();
+  if (trimmed.length === 0) {
+    throw new PolicyExceptionMemberMessageError(
+      "A message for the Booking Officers is required.",
+    );
+  }
+  if (trimmed.length > MEMBER_MESSAGE_MAX_LENGTH) {
+    throw new PolicyExceptionMemberMessageError(
+      `Your message must be ${MEMBER_MESSAGE_MAX_LENGTH} characters or fewer.`,
+    );
+  }
+  return trimmed;
+}
+
+// ---------------------------------------------------------------------------
+// The immutable proposal snapshot
+// ---------------------------------------------------------------------------
+
+/**
+ * One guest as frozen into a proposal. `nights` is the SPARSE per-guest-night
+ * footprint (the #713 representation), sorted and de-duplicated so two freezes
+ * of the same party are byte-identical. `memberId` is the link that decides
+ * hosting, not the `isMember` snapshot.
+ */
+export interface ProposalGuest {
+  firstName: string;
+  lastName: string;
+  ageTier: string;
+  isMember: boolean;
+  memberId: string | null;
+  /** Sorted, unique NZ lodge nights (YYYY-MM-DD) this guest occupies. */
+  nights: string[];
+}
+
+export interface ProposalParty {
+  /** Booking envelope, YYYY-MM-DD; the min/max of the guest nights. */
+  checkIn: string;
+  checkOut: string;
+  guests: ProposalGuest[];
+}
+
+export type NewBookingProposalSnapshot = {
+  kind: "NEW_BOOKING";
+  lodgeId: string;
+  proposed: ProposalParty;
+};
+
+export type ModificationProposalSnapshot = {
+  kind: "MODIFICATION";
+  lodgeId: string;
+  bookingId: string;
+  /**
+   * The live booking footprint the proposal was computed against. Frozen so
+   * approval can prove the live booking has not drifted (someone else modifying
+   * it changes this, which changes the hash and forces a resubmission).
+   */
+  base: ProposalParty;
+  /** The full proposed result — a snapshot, never a delta, so nothing is
+   * ambiguous about what an approval will execute. */
+  proposed: ProposalParty;
+};
+
+export type ExceptionProposalSnapshot =
+  | NewBookingProposalSnapshot
+  | ModificationProposalSnapshot;
+
+/** Sort + de-duplicate a night list so a snapshot is canonical. */
+function canonicalNights(nights: readonly string[]): string[] {
+  return [...new Set(nights)].sort();
+}
+
+/** Canonicalise a party so two freezes of the same facts are byte-identical. */
+export function canonicalizeProposalParty(party: ProposalParty): ProposalParty {
+  const guests = party.guests
+    .map((guest) => ({
+      firstName: guest.firstName,
+      lastName: guest.lastName,
+      ageTier: guest.ageTier,
+      isMember: guest.isMember,
+      memberId: guest.memberId ?? null,
+      nights: canonicalNights(guest.nights),
+    }))
+    // Stable, content-derived order: two parties with the same guests in a
+    // different input order must hash identically.
+    .sort(
+      (a, b) =>
+        a.lastName.localeCompare(b.lastName) ||
+        a.firstName.localeCompare(b.firstName) ||
+        (a.memberId ?? "").localeCompare(b.memberId ?? "") ||
+        a.nights.join(",").localeCompare(b.nights.join(",")),
+    );
+  return { checkIn: party.checkIn, checkOut: party.checkOut, guests };
+}
+
+/** Canonicalise a whole proposal (both parties for a modification). */
+export function canonicalizeProposalSnapshot(
+  snapshot: ExceptionProposalSnapshot,
+): ExceptionProposalSnapshot {
+  if (snapshot.kind === "NEW_BOOKING") {
+    return {
+      kind: "NEW_BOOKING",
+      lodgeId: snapshot.lodgeId,
+      proposed: canonicalizeProposalParty(snapshot.proposed),
+    };
+  }
+  return {
+    kind: "MODIFICATION",
+    lodgeId: snapshot.lodgeId,
+    bookingId: snapshot.bookingId,
+    base: canonicalizeProposalParty(snapshot.base),
+    proposed: canonicalizeProposalParty(snapshot.proposed),
+  };
+}
+
+/**
+ * Deterministic JSON with recursively sorted object keys. `JSON.stringify` alone
+ * is insertion-ordered, so two objects with the same fields in a different order
+ * would hash differently; this removes that as a source of false drift.
+ */
+function stableStringify(value: unknown): string {
+  return JSON.stringify(sortKeysDeep(value));
+}
+
+function sortKeysDeep(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortKeysDeep);
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(record).sort()) {
+      out[key] = sortKeysDeep(record[key]);
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
+ * The proposal hash: SHA-256 over the canonicalised proposal snapshot. A stored
+ * request carries it, and approval recomputes it from the SAME frozen snapshot
+ * to prove the row was not tampered with, and — for a modification — recomputes
+ * the base party from the LIVE booking to prove the live booking has not drifted
+ * (a mismatch keeps the request out of execution and forces a resubmission).
+ *
+ * 64 lowercase hex characters, which is why the column is VARCHAR(64).
+ */
+export function computeProposalHash(snapshot: ExceptionProposalSnapshot): string {
+  const canonical = canonicalizeProposalSnapshot(snapshot);
+  return createHash("sha256").update(stableStringify(canonical)).digest("hex");
+}
+
+// ---------------------------------------------------------------------------
+// Provisional capacity reservation math (pure)
+// ---------------------------------------------------------------------------
+
+/** Per-night bed demand for one party: how many guests occupy each night. */
+export function perNightBedDemand(party: ProposalParty): Map<string, number> {
+  const demand = new Map<string, number>();
+  for (const guest of party.guests) {
+    for (const night of new Set(guest.nights)) {
+      demand.set(night, (demand.get(night) ?? 0) + 1);
+    }
+  }
+  return demand;
+}
+
+export interface NightReservation {
+  /** NZ lodge night, YYYY-MM-DD. */
+  night: string;
+  /** Beds to reserve on that night (always >= 1 in the returned list). */
+  beds: number;
+}
+
+function demandToReservations(demand: Map<string, number>): NightReservation[] {
+  return [...demand.entries()]
+    .filter(([, beds]) => beds > 0)
+    .map(([night, beds]) => ({ night, beds }))
+    .sort((a, b) => a.night.localeCompare(b.night));
+}
+
+/**
+ * The provisional reservation a HELD request holds while pending.
+ *
+ *  - NEW_BOOKING reserves the FULL proposal: there is no live booking holding
+ *    any of these beds, so every proposed guest-night must be held.
+ *  - MODIFICATION reserves ONLY the incremental beds beyond the unchanged live
+ *    booking — `max(0, proposed - live)` per night — because the live booking is
+ *    a capacity-holding row that already holds its own footprint, and #2365
+ *    forbids touching it before approval. Nights where the proposal shrinks the
+ *    party reserve nothing; the live booking keeps holding those until the
+ *    modification actually applies.
+ */
+export function computeProposalReservation(
+  snapshot: ExceptionProposalSnapshot,
+): NightReservation[] {
+  if (snapshot.kind === "NEW_BOOKING") {
+    return demandToReservations(perNightBedDemand(snapshot.proposed));
+  }
+  const proposed = perNightBedDemand(snapshot.proposed);
+  const live = perNightBedDemand(snapshot.base);
+  const incremental = new Map<string, number>();
+  for (const [night, beds] of proposed) {
+    const delta = beds - (live.get(night) ?? 0);
+    if (delta > 0) incremental.set(night, delta);
+  }
+  return demandToReservations(incremental);
+}
+
+// ---------------------------------------------------------------------------
+// Frozen evidence
+// ---------------------------------------------------------------------------
+
+/**
+ * The immutable evidence a request freezes: the #2363 aggregate (every covered
+ * structured violation plus the HOLD-if-any-HOLD capacity mode) enriched with
+ * flat, derived fields the queue and the capacity path read without parsing the
+ * violation array. Derived, never authored: the violations remain the source of
+ * truth and these are recomputed from them.
+ */
+export interface FrozenPolicyExceptionEvidence extends AggregatedPolicyExceptions {
+  /** Sorted, unique reason codes present in the aggregate. */
+  reasonCodes: PolicyExceptionReasonCode[];
+  /** One entry per covered policy, sorted. */
+  policyRefs: Array<{
+    reasonCode: PolicyExceptionReasonCode;
+    policyId: string;
+    policyVersion: number;
+    capacityMode: PolicyExceptionCapacityMode;
+  }>;
+  /** Every affected NZ night across all violations, sorted and unique. */
+  affectedNights: string[];
+}
+
+/**
+ * Freeze a set of violations into the stored evidence. Refuses a non-allowlisted
+ * reason code before anything is stored — a hard failure must never reach
+ * exception review, and `aggregatePolicyExceptionViolations` already throws on
+ * one, so this is defence in depth at the persistence boundary.
+ */
+export function freezePolicyExceptionEvidence(
+  violations: PolicyExceptionViolation[],
+): FrozenPolicyExceptionEvidence {
+  const aggregate = aggregatePolicyExceptionViolations(violations);
+  const reasonCodes = [
+    ...new Set(aggregate.violations.map((violation) => violation.reasonCode)),
+  ].sort() as PolicyExceptionReasonCode[];
+  const policyRefs = aggregate.violations
+    .map((violation) => ({
+      reasonCode: violation.reasonCode,
+      policyId: violation.policyId,
+      policyVersion: violation.policyVersion,
+      capacityMode: violation.capacityMode,
+    }))
+    .sort(
+      (a, b) =>
+        a.reasonCode.localeCompare(b.reasonCode) ||
+        a.policyId.localeCompare(b.policyId) ||
+        a.policyVersion - b.policyVersion,
+    );
+  const affectedNights = [
+    ...new Set(aggregate.violations.flatMap((violation) => violation.affectedNights)),
+  ].sort();
+  return { ...aggregate, reasonCodes, policyRefs, affectedNights };
+}
+
+/**
+ * Parse a stored `frozenEvidence` value back without trusting it. The column is
+ * JSON, so a hand-edited or partially-written value is possible. Anything that
+ * does not carry the fields the drift check reads is treated as "no evidence",
+ * which fails an execution closed rather than approving against nonsense.
+ */
+export function parseFrozenEvidence(
+  value: unknown,
+): FrozenPolicyExceptionEvidence | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (!Array.isArray(record.violations)) return null;
+  for (const violation of record.violations) {
+    if (!violation || typeof violation !== "object") return null;
+    const reasonCode = (violation as Record<string, unknown>).reasonCode;
+    if (typeof reasonCode !== "string" || !isPolicyExceptionReasonCode(reasonCode)) {
+      return null;
+    }
+  }
+  return value as FrozenPolicyExceptionEvidence;
+}
+
+// ---------------------------------------------------------------------------
+// Drift classification
+// ---------------------------------------------------------------------------
+
+/**
+ * A stable identity+content fingerprint for one violation. Two evaluations that
+ * produce the SAME fingerprint are the same hazard about the same rule at the
+ * same revision; a different fingerprint is a materially different question that
+ * an admin has not reviewed. The reason-specific tail is what makes "the hosting
+ * hazard now covers a different guest-night" count as changed.
+ */
+export function violationFingerprint(violation: PolicyExceptionViolation): string {
+  const head = `${violation.reasonCode}|${violation.policyId}|v${violation.policyVersion}|nights=${violation.affectedNights.join(",")}`;
+  if (violation.reasonCode === "MINIMUM_STAY") {
+    const req = violation.requirements;
+    return `${head}|min=${req.minimumNights}|act=${req.actualNights}|days=${req.triggerDays.join(",")}`;
+  }
+  const req = violation.requirements;
+  const uncovered = req.uncovered
+    .map((row) => `${row.night} ${row.guestRef}`)
+    .join(";");
+  return `${head}|uncovered=${uncovered}`;
+}
+
+/** Identity (reason + policy) of a violation, ignoring content — for reporting. */
+function violationIdentity(violation: PolicyExceptionViolation): {
+  reasonCode: PolicyExceptionReasonCode;
+  policyId: string;
+} {
+  return { reasonCode: violation.reasonCode, policyId: violation.policyId };
+}
+
+export interface PolicyExceptionDriftResult {
+  /**
+   * True only when every reviewed violation that STILL trips is byte-identical
+   * to what was reviewed, and no new violation has appeared. When true the
+   * execution may proceed, overriding exactly the reviewed violations that still
+   * trip (see `clearedReviewed` for the ones it must NOT override).
+   */
+  executable: boolean;
+  /**
+   * Reviewed violations that no longer trip at all (the policy was switched off,
+   * relaxed, or the proposal now satisfies it). Per #2365 the execution runs
+   * WITHOUT an override for these and records the resolution — there is nothing
+   * to override.
+   */
+  clearedReviewed: Array<{ reasonCode: PolicyExceptionReasonCode; policyId: string }>;
+  /**
+   * Reviewed violations that still trip but at a different revision or with
+   * different content. A materially changed hazard is a new question the member
+   * must resubmit; it is never silently overridden.
+   */
+  changedReviewed: Array<{ reasonCode: PolicyExceptionReasonCode; policyId: string }>;
+  /** Violations present now that were never reviewed. Force a resubmission. */
+  newViolations: Array<{ reasonCode: PolicyExceptionReasonCode; policyId: string }>;
+  /**
+   * Reviewed violations that still trip unchanged — the ones an approval MAY
+   * override. Sorted, so the override set is deterministic.
+   */
+  overridable: Array<{ reasonCode: PolicyExceptionReasonCode; policyId: string }>;
+}
+
+/**
+ * Classify how the CURRENT violations of the frozen proposal compare to the
+ * violations that were reviewed. Both inputs are the result of evaluating the
+ * SAME frozen proposal — the reviewed set at submit time, the current set at
+ * approval time against today's policy configuration — so any difference is a
+ * genuine policy-config change (or tampering), never snapshot noise.
+ *
+ * This is the whole of #2365's "if a reviewed soft rule disappeared, execute
+ * without override; new/materially-changed violations require resubmission",
+ * expressed as pure set algebra over fingerprints.
+ */
+export function classifyPolicyExceptionDrift(
+  reviewed: PolicyExceptionViolation[],
+  current: PolicyExceptionViolation[],
+): PolicyExceptionDriftResult {
+  const reviewedByKey = new Map<string, PolicyExceptionViolation>();
+  for (const violation of reviewed) {
+    reviewedByKey.set(
+      `${violation.reasonCode}|${violation.policyId}`,
+      violation,
+    );
+  }
+  const currentByKey = new Map<string, PolicyExceptionViolation>();
+  for (const violation of current) {
+    currentByKey.set(`${violation.reasonCode}|${violation.policyId}`, violation);
+  }
+
+  const clearedReviewed: PolicyExceptionDriftResult["clearedReviewed"] = [];
+  const changedReviewed: PolicyExceptionDriftResult["changedReviewed"] = [];
+  const overridable: PolicyExceptionDriftResult["overridable"] = [];
+
+  for (const [key, reviewedViolation] of reviewedByKey) {
+    const currentViolation = currentByKey.get(key);
+    if (!currentViolation) {
+      clearedReviewed.push(violationIdentity(reviewedViolation));
+      continue;
+    }
+    if (
+      violationFingerprint(reviewedViolation) !==
+      violationFingerprint(currentViolation)
+    ) {
+      changedReviewed.push(violationIdentity(reviewedViolation));
+      continue;
+    }
+    overridable.push(violationIdentity(reviewedViolation));
+  }
+
+  const newViolations: PolicyExceptionDriftResult["newViolations"] = [];
+  for (const [key, currentViolation] of currentByKey) {
+    if (!reviewedByKey.has(key)) {
+      newViolations.push(violationIdentity(currentViolation));
+    }
+  }
+
+  const byIdentity = (
+    a: { reasonCode: string; policyId: string },
+    b: { reasonCode: string; policyId: string },
+  ) =>
+    a.reasonCode.localeCompare(b.reasonCode) ||
+    a.policyId.localeCompare(b.policyId);
+
+  clearedReviewed.sort(byIdentity);
+  changedReviewed.sort(byIdentity);
+  newViolations.sort(byIdentity);
+  overridable.sort(byIdentity);
+
+  return {
+    executable: changedReviewed.length === 0 && newViolations.length === 0,
+    clearedReviewed,
+    changedReviewed,
+    newViolations,
+    overridable,
+  };
+}
+
+/**
+ * Recompute the reviewed violations back out of stored evidence in the frozen
+ * order, so a caller can pass them to `classifyPolicyExceptionDrift`.
+ */
+export function reviewedViolationsFromEvidence(
+  evidence: FrozenPolicyExceptionEvidence,
+): PolicyExceptionViolation[] {
+  return sortPolicyExceptionViolations(evidence.violations);
+}
