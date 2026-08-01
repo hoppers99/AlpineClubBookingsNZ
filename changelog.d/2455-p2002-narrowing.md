@@ -19,7 +19,8 @@
   Creating a work party (working bee) event generates a private promo code and
   retries if that code happens to already exist. It used to retry on any clash
   at all, silently spending all five attempts on a problem that regenerating
-  the code could never fix. It now retries only a real code clash, and records
-  the details when it genuinely runs out of attempts.
+  the code could never fix. It now retries only the code clash it exists for —
+  a clash the database names as something else is reported straight away — and
+  records the details when it genuinely runs out of attempts.
 
   Nothing an administrator does changes; the messages are simply accurate now.
