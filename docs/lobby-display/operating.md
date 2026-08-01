@@ -13,11 +13,11 @@ The feature is **off by default**. An organisation admin must first enable the
 **Lobby Display** module for the club; until then no display routes, admin UI, or
 tokens exist.
 
-The whole admin surface lives under one sidebar entry, **Lobby Display**
-(`/admin/display`), a hub of cards: **Devices**, **Visual builder**, **Layouts
-(Advanced)**, **Templates**, and **Reference**. Per-lodge display settings live on
-the lodge configuration hub (**Admin → Lodges → [lodge]**), not under Lobby
-Display.
+The whole admin surface lives under the **Lobby Display** entry in the
+collapsible **Lodge Operations** sidebar section (`/admin/display`), a hub of
+cards: **Devices**, **Visual builder**, **Layouts (Advanced)**, **Templates**, and
+**Reference**. Per-lodge display settings live on the lodge configuration hub
+(**Admin → Lodges → [lodge]**), not under Lobby Display.
 
 ### 1. Pair the device
 

@@ -78,6 +78,21 @@ describe("getAdminFeatureSearchIndex — derivation", () => {
     expect(bookingRequests?.section).toBe("Bookings & Beds");
   });
 
+  it("indexes Lobby Display once under Lodge Operations", () => {
+    const lobbyDisplayEntries = getAdminFeatureSearchIndex(
+      allOn,
+      fullMatrix,
+      true,
+    ).filter((entry) => entry.href === "/admin/display");
+
+    expect(lobbyDisplayEntries).toEqual([
+      expect.objectContaining({
+        label: "Lobby Display",
+        section: "Lodge Operations",
+      }),
+    ]);
+  });
+
   it("carries the hut-leader relabel through from getVisibleAdminNavSections", () => {
     const index = getAdminFeatureSearchIndex(
       allOn,
@@ -177,5 +192,19 @@ describe("getAdminFeatureSearchIndex — permission filtering (the invariant)", 
 
     expect(hrefs.has("/admin/xero")).toBe(false);
     expect(hrefs).toEqual(visibleHrefs(xeroOff, fullMatrix, true));
+  });
+
+  it("drops Lobby Display when its module is disabled", () => {
+    const lobbyDisplayOff = {
+      ...allOn,
+      lobbyDisplay: false,
+    } as FeatureFlags;
+    const index = getAdminFeatureSearchIndex(
+      lobbyDisplayOff,
+      fullMatrix,
+      true,
+    );
+
+    expect(index.some((entry) => entry.href === "/admin/display")).toBe(false);
   });
 });

@@ -356,18 +356,11 @@ const navSections: NavSection[] = [
         label: "Lodge Instructions",
         icon: BookOpen,
       },
-    ],
-  },
-  {
-    // Lobby Display (fork issue #109): one sidebar entry opens the hub landing
-    // page (/admin/display), which lays out cards for Devices, Layouts,
-    // Templates, and Reference — mirroring the "Site Appearance & Content" hub
-    // rather than scattering four items through the sidebar. The Devices
-    // management page moved to /admin/display/devices; /admin/display/settings
-    // redirects there. Per-lodge display config (glob, name granularity,
-    // committee notice) lives on each lodge in the lodge configuration hub
-    // (/admin/lodges/[id]) since LTV-035/#81.
-    items: [
+      // Lobby Display (fork issue #109): one Lodge Operations entry opens the
+      // hub landing page (/admin/display), which lays out cards for Devices,
+      // Layouts, Templates, and Reference rather than scattering its leaves
+      // through the sidebar. Per-lodge display config remains on each lodge in
+      // the lodge configuration hub (/admin/lodges/[id]) since LTV-035/#81.
       {
         href: "/admin/display",
         label: "Lobby Display",
@@ -486,8 +479,8 @@ const navSections: NavSection[] = [
  * command palette orders its groups by this list so that a page first
  * encountered under "Needs Attention" during href de-duplication doesn't drag
  * its natural group to the wrong position. `undefined` marks the label-less
- * sections (Admin Dashboard, Lobby Display) whose palette entries fall under the
- * "General" heading; `new Set` collapses those to a single first-occurrence slot.
+ * Admin Dashboard section whose palette entry falls under the "General"
+ * heading.
  */
 export const ADMIN_NAV_SECTION_ORDER: ReadonlyArray<string | undefined> = [
   ...new Set(navSections.map((section) => section.label)),
