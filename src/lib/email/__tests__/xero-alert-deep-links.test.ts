@@ -62,6 +62,8 @@ import { buildXeroInvoiceUrl } from "@/lib/xero-links";
 /** What a stored `xeroObjectUrl` holds: no organisation named. */
 const GENERIC_URL = buildXeroInvoiceUrl("inv-1");
 const SCOPED_URL = buildXeroInvoiceUrl("inv-1", { shortCode: ORG_SHORT_CODE });
+/** A row written under a PREVIOUS Xero connection. */
+const FOREIGN_URL = buildXeroInvoiceUrl("inv-1", { shortCode: "!old99" });
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -97,6 +99,32 @@ describe("sendAdminManualSettlementConflictAlert", () => {
     h.getXeroOrgShortCode.mockResolvedValue(null);
 
     await sendAdminManualSettlementConflictAlert(data);
+
+    expect(h.settlementTemplate).toHaveBeenCalledWith(
+      expect.objectContaining({ xeroInvoiceUrl: GENERIC_URL }),
+    );
+  });
+
+  // #2314 review: the short-code cache is per process and its invalidation bus
+  // only reaches the process that handled the reconnect, so a cron/worker can
+  // hold the previous organisation for up to 12 hours. A screen re-renders; an
+  // email is stamped forever, so send time confirms the organisation live.
+  it("confirms the organisation with Xero rather than trusting the cache", async () => {
+    await sendAdminManualSettlementConflictAlert(data);
+
+    expect(h.getXeroOrgShortCode).toHaveBeenCalledWith({ confirmLive: true });
+  });
+
+  // The other half of the same rule: an unconfirmable organisation must not be
+  // the one the email points at either. A stored URL carrying a previous
+  // organisation degrades to the generic link, which is live.
+  it("strips a previous organisation when none can be confirmed", async () => {
+    h.getXeroOrgShortCode.mockResolvedValue(null);
+
+    await sendAdminManualSettlementConflictAlert({
+      ...data,
+      xeroInvoiceUrl: FOREIGN_URL,
+    });
 
     expect(h.settlementTemplate).toHaveBeenCalledWith(
       expect.objectContaining({ xeroInvoiceUrl: GENERIC_URL }),
@@ -161,6 +189,25 @@ describe("sendAdminXeroRepeatedFailureAlert", () => {
     expect(h.repeatedFailureTemplate).toHaveBeenCalledWith(
       expect.objectContaining({ xeroObjectUrl: GENERIC_URL }),
     );
+  });
+
+  it("confirms the organisation with Xero rather than trusting the cache", async () => {
+    await sendAdminXeroRepeatedFailureAlert(data);
+
+    expect(h.getXeroOrgShortCode).toHaveBeenCalledWith({ confirmLive: true });
+  });
+
+  it("strips a previous organisation when none can be confirmed", async () => {
+    h.getXeroOrgShortCode.mockResolvedValue(null);
+
+    await sendAdminXeroRepeatedFailureAlert({
+      ...data,
+      xeroObjectUrl: FOREIGN_URL,
+    });
+
+    const call = h.sendToAdmins.mock.calls[0][0];
+    expect(call.templateData.xeroObjectUrl).toBe(GENERIC_URL);
+    expect(call.templateData.xeroLinksNote).not.toContain("shortcode=");
   });
 });
 
@@ -268,6 +315,28 @@ describe("sendAdminXeroReconciliationReportAlert", () => {
     h.getXeroOrgShortCode.mockResolvedValue(null);
 
     await sendAdminXeroReconciliationReportAlert(report());
+
+    const passed = h.reconciliationTemplate.mock.calls[0][0] as StampedReport;
+    expect(passed.issueSections[0].items[0].xeroObjectUrl).toBe(GENERIC_URL);
+    expect(passed.repeatedFailures[0].xeroObjectUrl).toBe(GENERIC_URL);
+    expect(passed.unsupportedPartials[0].xeroObjectUrl).toBe(GENERIC_URL);
+  });
+
+  it("confirms the organisation once for the whole report", async () => {
+    await sendAdminXeroReconciliationReportAlert(report());
+
+    expect(h.getXeroOrgShortCode).toHaveBeenCalledTimes(1);
+    expect(h.getXeroOrgShortCode).toHaveBeenCalledWith({ confirmLive: true });
+  });
+
+  it("strips a previous organisation from every link when none can be confirmed", async () => {
+    h.getXeroOrgShortCode.mockResolvedValue(null);
+    const input = report();
+    input.issueSections[0].items[0].xeroObjectUrl = FOREIGN_URL;
+    input.repeatedFailures[0].xeroObjectUrl = FOREIGN_URL;
+    input.unsupportedPartials[0].xeroObjectUrl = FOREIGN_URL;
+
+    await sendAdminXeroReconciliationReportAlert(input);
 
     const passed = h.reconciliationTemplate.mock.calls[0][0] as StampedReport;
     expect(passed.issueSections[0].items[0].xeroObjectUrl).toBe(GENERIC_URL);

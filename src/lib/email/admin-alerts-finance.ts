@@ -33,16 +33,26 @@ import { sendToAdmins } from "./admin-alerts-shared";
  * last honest moment to name it — the alert is already a point-in-time snapshot
  * of everything else it reports.
  *
+ * The organisation is CONFIRMED with Xero at send time rather than read from
+ * the 12-hour cache (`confirmLive`, #2314 review). The cache is per process and
+ * its invalidation only reaches the process that handled a reconnect, so a cron
+ * or worker process can otherwise hold the previous organisation's short code
+ * for hours — and an email stamped with it is stamped forever.
+ *
  * Failure degrades, never blocks: no short code (Xero disconnected, the
  * organisation read failed, or Xero reported none) leaves the generic
  * `go.xero.com` link, which is live — it may just ask a multi-organisation
- * admin which organisation they meant.
+ * admin which organisation they meant. It also STRIPS any organisation the
+ * stored URL already carried, so an unconfirmable organisation is never the one
+ * an email points at.
  */
 async function stampXeroOrganisation(
   url: string | null | undefined,
 ): Promise<string | null> {
   if (!url) return null;
-  return applyXeroOrgShortCode(url, { shortCode: await getXeroOrgShortCode() });
+  return applyXeroOrgShortCode(url, {
+    shortCode: await getXeroOrgShortCode({ confirmLive: true }),
+  });
 }
 
 // N-04: Admin alert - payment failure
@@ -295,14 +305,19 @@ export async function sendAdminXeroRepeatedFailureAlert(data: {
  * #2314: stamp the club's organisation onto every Xero link the reconciliation
  * report carries — issue items, repeated failures and unsupported partials all
  * render one, and each is either a stored (organisation-agnostic) URL or one
- * rebuilt from the object's type and id. One short-code read for the whole
- * report; a null one leaves every link generic, exactly as before.
+ * rebuilt from the object's type and id. ONE confirmed organisation read for
+ * the whole report (see `stampXeroOrganisation` on why it is confirmed rather
+ * than cached).
+ *
+ * A null short code is not an early return: `applyXeroOrgShortCode` strips in
+ * that case, and a report is the surface where a legacy row still carrying a
+ * previous organisation would be most durable. Every link degrades to the
+ * generic form instead — live, just not organisation-scoped.
  */
 async function stampXeroOrganisationOnReport(
   report: XeroReconciliationReportEmail,
 ): Promise<XeroReconciliationReportEmail> {
-  const shortCode = await getXeroOrgShortCode();
-  if (!shortCode) return report;
+  const shortCode = await getXeroOrgShortCode({ confirmLive: true });
 
   const stamp = <T extends { xeroObjectUrl?: string | null }>(item: T): T => ({
     ...item,
