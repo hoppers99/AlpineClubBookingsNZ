@@ -8,7 +8,7 @@ import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import { callXeroApi, getAuthenticatedXeroClient } from "@/lib/xero-api-client";
 import { findOrCreateXeroContact } from "@/lib/xero-contacts";
-import { buildXeroInvoiceUrl } from "@/lib/xero-links";
+import { buildXeroInvoiceUrl, stripXeroOrgShortCode } from "@/lib/xero-links";
 import { formatDate } from "@/lib/xero-invoice-helpers";
 import {
   buildXeroIdempotencyKey,
@@ -369,6 +369,13 @@ export async function createXeroMembershipSubscriptionInvoice(input: {
         "Subscription invoice created but one or more covered subscriptions were already PAID and were not downgraded",
       );
     }
+    // #2314: both link rows below are written inside this transaction, so they
+    // cannot go through `upsertXeroObjectLink` (which runs its own canonical
+    // de-duplication and would change what this transaction does). They carry
+    // the organisation-agnostic invariant themselves instead — one stripped
+    // value, used by every branch, as `xero-object-url-write-guard.test.ts`
+    // requires of every direct writer.
+    const linkUrl = stripXeroOrgShortCode(buildXeroInvoiceUrl(invoiceId));
     for (const covered of charge.coverage) {
       await tx.xeroObjectLink.upsert({
         where: {
@@ -377,11 +384,11 @@ export async function createXeroMembershipSubscriptionInvoice(input: {
             xeroObjectType: "SUBSCRIPTION", xeroObjectId: invoiceId, role: "SUBSCRIPTION_INVOICE",
           },
         },
-        update: { active: true, xeroObjectNumber: invoiceNumber, xeroObjectUrl: buildXeroInvoiceUrl(invoiceId), metadata: { seasonYear: charge.seasonYear } },
+        update: { active: true, xeroObjectNumber: invoiceNumber, xeroObjectUrl: linkUrl, metadata: { seasonYear: charge.seasonYear } },
         create: {
           localModel: "MemberSubscription", localId: covered.subscription.id,
           xeroObjectType: "SUBSCRIPTION", xeroObjectId: invoiceId,
-          xeroObjectNumber: invoiceNumber, xeroObjectUrl: buildXeroInvoiceUrl(invoiceId),
+          xeroObjectNumber: invoiceNumber, xeroObjectUrl: linkUrl,
           role: "SUBSCRIPTION_INVOICE", metadata: { seasonYear: charge.seasonYear },
         },
       });
@@ -393,11 +400,11 @@ export async function createXeroMembershipSubscriptionInvoice(input: {
           xeroObjectType: "INVOICE", xeroObjectId: invoiceId, role: "SUBSCRIPTION_INVOICE",
         },
       },
-      update: { active: true, xeroObjectNumber: invoiceNumber, xeroObjectUrl: buildXeroInvoiceUrl(invoiceId), metadata: { adopted } },
+      update: { active: true, xeroObjectNumber: invoiceNumber, xeroObjectUrl: linkUrl, metadata: { adopted } },
       create: {
         localModel: "MembershipSubscriptionCharge", localId: charge.id,
         xeroObjectType: "INVOICE", xeroObjectId: invoiceId, xeroObjectNumber: invoiceNumber,
-        xeroObjectUrl: buildXeroInvoiceUrl(invoiceId), role: "SUBSCRIPTION_INVOICE", metadata: { adopted },
+        xeroObjectUrl: linkUrl, role: "SUBSCRIPTION_INVOICE", metadata: { adopted },
       },
     });
   });

@@ -5,6 +5,7 @@ import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import logger from "@/lib/logger";
 import { buildXeroObjectUrl } from "@/lib/xero-links";
+import { getXeroOrgShortCode } from "@/lib/xero-link-short-code";
 import { canReplayXeroInboundEvent } from "@/lib/xero-stale-operations";
 import {
   endOfDateOnlyForTimeZone,
@@ -143,12 +144,21 @@ export async function GET(request: NextRequest) {
       prisma.xeroInboundEvent.count({ where }),
     ]);
 
+    // #2314: the panel renders these hrefs verbatim, so the organisation short
+    // code has to be applied HERE — server-side — or a multi-organisation Xero
+    // login lands in whichever books the session last used. One cached read per
+    // request (12-hour in-process TTL), null when unavailable, which degrades
+    // every link to the generic go.xero.com form rather than hiding it.
+    const shortCode = await getXeroOrgShortCode();
+
     return NextResponse.json({
       data: events.map((event) => ({
         ...event,
         xeroObjectUrl:
           event.eventCategory && event.resourceId
-            ? buildXeroObjectUrl(event.eventCategory, event.resourceId)
+            ? buildXeroObjectUrl(event.eventCategory, event.resourceId, {
+                shortCode,
+              })
             : null,
         canReplay: canReplayXeroInboundEvent(event),
       })),

@@ -72,6 +72,8 @@ import {
   sumCoveredRefundCreditNoteCents,
   upsertXeroObjectLink,
 } from "@/lib/xero-sync";
+// The real builder — the mock above only replaces `buildXeroObjectUrl`.
+import { buildXeroContactUrl } from "@/lib/xero-links";
 
 describe("sumCoveredRefundCreditNoteCents (#1162)", () => {
   beforeEach(() => {
@@ -441,6 +443,27 @@ describe("upsertXeroObjectLink", () => {
         update: expect.objectContaining({ active: true }),
       })
     );
+  });
+
+  // #2314: what this column HOLDS is organisation-agnostic, always. The
+  // organisation is applied when the row is READ, because a short code baked
+  // into a row is wrong the moment the club reconnects to a different Xero
+  // organisation and nothing would ever correct it. Enforced at this funnel so
+  // no caller has to remember — including the caller that hands one in.
+  it("strips an organisation short code out of a URL a caller supplies", async () => {
+    await upsertXeroObjectLink({
+      localModel: "Member",
+      localId: "member_1",
+      xeroObjectType: "CONTACT",
+      xeroObjectId: "contact_1",
+      xeroObjectUrl: buildXeroContactUrl("contact_1", { shortCode: "!aBc12" }),
+      role: "CONTACT",
+    });
+
+    const stored = mocks.txLinkUpsert.mock.calls[0][0];
+    expect(stored.create.xeroObjectUrl).toBe(buildXeroContactUrl("contact_1"));
+    expect(stored.update.xeroObjectUrl).toBe(buildXeroContactUrl("contact_1"));
+    expect(stored.create.xeroObjectUrl).not.toContain("shortcode");
   });
 
   it("keeps a stale duplicate refund credit note link inactive when it conflicts with the payment canonical note", async () => {

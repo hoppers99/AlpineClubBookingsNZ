@@ -24,6 +24,7 @@ import {
   buildXeroContactUrl,
   buildXeroCreditNoteUrl,
   buildXeroInvoiceUrl,
+  stripXeroOrgShortCode,
 } from "@/lib/xero-links";
 import { sendAdminXeroSyncErrorAlert } from "@/lib/email";
 import logger from "@/lib/logger";
@@ -232,11 +233,18 @@ async function claimSubscriptionInvoiceForCancellationCredit(params: {
     role: MEMBERSHIP_CANCELLATION_CREDIT_INVOICE_CLAIM_ROLE,
   };
 
+  // #2314: this claim insert cannot go through `upsertXeroObjectLink` — the
+  // whole point is `INSERT … ON CONFLICT DO NOTHING`, and an upsert would hand
+  // the claim to the last writer instead of the first. So it carries the
+  // organisation-agnostic invariant itself: `stripXeroOrgShortCode` here is
+  // what `xero-object-url-write-guard.test.ts` requires of every direct writer.
   const inserted = await prisma.xeroObjectLink.createMany({
     data: [
       {
         ...claimWhere,
-        xeroObjectUrl: buildXeroInvoiceUrl(params.invoiceId),
+        xeroObjectUrl: stripXeroOrgShortCode(
+          buildXeroInvoiceUrl(params.invoiceId),
+        ),
         metadata: {
           subscriptionId: params.subscriptionId,
           requestId: params.requestId,
