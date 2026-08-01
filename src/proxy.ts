@@ -345,6 +345,12 @@ export const config = {
     "/api/bookings/:id/guests/:guestId/consent",
     "/api/bookings/:id/waitlist-confirm",
     "/api/admin/bookings/:id/force-confirm",
+    // Events calendar (#2241): the eventsCalendar rule in
+    // src/config/feature-routes.ts gates "/api/calendar", and the first matcher
+    // entry above excludes every "/api/..." path, so without this entry the
+    // proxy would never run on the calendar API and that half of the rule would
+    // be dead.
+    "/api/calendar/:path*",
     "/api/chores/:path*",
     "/api/cron/xero/:path*",
     "/api/display/:path*",

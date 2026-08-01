@@ -18,6 +18,7 @@ export const MODULE_KEYS = [
   "hutLeaders",
   "communications",
   "memberNotices",
+  "eventsCalendar",
   "skifieldConditions",
   "twoFactor",
   "magicLink",
@@ -74,6 +75,7 @@ export const DEFAULT_MODULE_SETTINGS: ModuleSettingsValues = {
   hutLeaders: true,
   communications: true,
   memberNotices: true,
+  eventsCalendar: true,
   skifieldConditions: true,
   twoFactor: false,
   magicLink: false,
@@ -216,6 +218,19 @@ export const MODULE_DEFINITIONS: Record<ModuleKey, ModuleDefinition> = {
     description:
       "Committee-authored news notices targeted to member audiences, shown on the member dashboard with per-member read tracking.",
     dependencies: [],
+  },
+  eventsCalendar: {
+    key: "eventsCalendar",
+    label: "Events calendar",
+    description:
+      "Club events calendar for meetings, working bees, and social events, with recurring events and optional video-meeting links.",
+    dependencies: [
+      // Stated because turning the module off is the ONLY thing that removes
+      // the calendar: it has no credential or inventory prerequisite, so an
+      // admin reading this card needs to know what the switch actually hides.
+      "When off, the member and admin calendar pages and the calendar API return Not Found, and the dashboard Events card disappears. Existing events are kept and reappear when it is switched back on.",
+      "Video meetings on an event need a separately hosted MiroTalk service; the calendar itself works without one.",
+    ],
   },
   skifieldConditions: {
     key: "skifieldConditions",

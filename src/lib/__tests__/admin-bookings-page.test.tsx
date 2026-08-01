@@ -89,6 +89,7 @@ const effectiveModulesOn = {
   lobbyDisplay: false,
   aiAssistant: false,
   memberNotices: true,
+  eventsCalendar: true,
   memberGuests: false,
 };
 

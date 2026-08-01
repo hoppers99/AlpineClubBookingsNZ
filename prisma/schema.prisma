@@ -3784,6 +3784,13 @@ model ClubModuleSettings {
   // add as a defaulted column because every read narrows to
   // CLUB_MODULE_SETTINGS_COLUMN_SELECT.
   memberNotices           Boolean  @default(true)
+  // Events calendar (#2241). Default ON: the calendar shipped always-on with no
+  // module key at all, so an existing club must see zero change when this column
+  // arrives. Safe to add as a defaulted column because every read narrows to
+  // CLUB_MODULE_SETTINGS_COLUMN_SELECT, so the previously deployed client never
+  // names it. Turning it off 404s /calendar, /admin/calendar and /api/calendar/*
+  // and drops the dashboard Events card.
+  eventsCalendar          Boolean  @default(true)
   // "+ Add Member Guest" (epic #2305, D-2). Default OFF: an existing club sees
   // zero change until an admin turns it on. Safe to add as a defaulted column
   // because every read narrows to CLUB_MODULE_SETTINGS_COLUMN_SELECT. In this
