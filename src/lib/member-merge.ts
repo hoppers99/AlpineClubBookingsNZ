@@ -295,14 +295,33 @@ export const MEMBER_MERGE_RELATION_SPECS: readonly MemberMergeRelationSpec[] = [
  * reviewers can see they were considered, not missed. NOT relations, so never
  * part of the DMMF/schema relation walk.
  *
- * ILLUSTRATIVE, not exhaustive: the schema carries ~48 FK-less member-id
- * scalars (audit actor/subject columns, reviewedBy snapshots, denormalised
- * name+id pairs like MembershipSubscriptionChargeCoverage.memberId, ...).
- * None of them can silently land in a move/resolve bucket: the completeness
+ * No such column can silently land in a move/resolve bucket: the completeness
  * test asserts the spec table equals EXACTLY the set of `@relation(fields:)`
  * owner keys, so an FK-less column is structurally excluded from
  * classification (and a test asserts no documented snapshot column overlaps a
  * classified relation column).
+ *
+ * COVERAGE (#2243). This list used to be "illustrative, not exhaustive", which
+ * meant a new FK-less member-id column could escape the relation walk AND this
+ * list with nothing in CI to notice — `CalendarEvent.createdById` and
+ * `CalendarEventSeries.createdById` did exactly that. It is now exhaustive for
+ * the DETECTABLE class: every column `parseFkLessMemberIdColumns` finds (an
+ * FK-less `String` scalar whose name is used elsewhere in the schema as a Member
+ * FK column) must appear here, enforced by member-merge-dmmf.test.ts, which
+ * fails on the next one.
+ *
+ * NOT EXHAUSTIVE FOR THE UNDETECTABLE CLASS, and deliberately says so. Columns
+ * with BESPOKE names that appear nowhere in the schema as a Member FK column
+ * (`MemberApplication.nominator1Id`, `RefundRequest.reviewedBy`,
+ * `IntegrationCredential.updatedByUserId`, …) are invisible to the detector, so
+ * the first block below is a best-effort hand-kept list that nothing in CI can
+ * prove complete. Read a gap there as a documentation gap, never as evidence
+ * that no such column exists: adding one is a review responsibility, and the
+ * only mechanical backstop is that an FK-less column cannot land in a
+ * move/resolve bucket by accident (the completeness test above).
+ *
+ * Layout: the FIRST block is that hand-kept remainder (bespoke names plus the
+ * entries that predate the detector); the SECOND is the detectable set.
  */
 export const MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS: readonly string[] = [
   "MemberLifecycleActionRequest.memberId",
@@ -349,6 +368,95 @@ export const MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS: readonly string[] = [
   // a status.
   "BookingGuest.consentRespondedByMemberId",
   "MemberGuestSettings.updatedByMemberId",
+
+  // #2243 review sweep — bespoke-named FK-less member-id columns the detector
+  // cannot see (their names appear nowhere in the schema as a Member FK column),
+  // found by hand and previously in neither block. All eight are actor/audit
+  // columns and keep the loser's id as immutable history, consistent with every
+  // entry above.
+  // Who triggered a backup run.
+  "BackupRun.triggeredByMemberId",
+  // Who performed the booking-timeline event (the audit actor of that row).
+  "BookingEvent.actorMemberId",
+  // Who priced a public booking request.
+  "BookingRequest.pricedByMemberId",
+  // Who dismissed a duplicate-family suggestion.
+  "HiddenFamilySuggestion.hiddenByMemberId",
+  // Who cleared a bounced/complained address off the suppression list.
+  "EmailSuppression.clearedById",
+  // Who reviewed a refund request.
+  "RefundRequest.reviewedBy",
+  // Who manually resolved a stuck Xero sync operation.
+  "XeroSyncOperation.manuallyResolvedById",
+  // Who last updated an integration credential. The NAME IS A MISNOMER: there is
+  // no User model in this schema — the column holds a MEMBER id, written from
+  // the admin session. It is an actor column like the rest; only its name says
+  // otherwise.
+  "IntegrationCredential.updatedByUserId",
+  //
+  // A NINTH column found by the same sweep is deliberately NOT here, because it
+  // is not a snapshot at all: `BookingRequest.convertedMemberId` is the identity
+  // pointer to the member a request converted INTO, replayed as a LIVE member id
+  // by `claimAlreadyConvertedBookingRequest` (booking-request-shared.ts). It is
+  // MOVED loser -> master by `MEMBER_MERGE_FK_LESS_MOVE_COLUMNS` / `applyMoves`,
+  // matching its FK twin on the same row (`requestedByMemberId`, classified
+  // `move`).
+
+  // -------------------------------------------------------------------------
+  // #2243 — the rest of the columns `parseFkLessMemberIdColumns` detects.
+  //
+  // Every one is the same shape as the entries above: a bare `String` column
+  // recording WHO did something (or, for the one `*.memberId` row in this block,
+  // `AiAssistantUsageEvent.memberId`, WHICH member a historical usage record was
+  // about — the coverage row `MembershipSubscriptionChargeCoverage.memberId` is
+  // in the first block), with no FK precisely so
+  // the record survives the subject leaving. They keep the loser's id on merge,
+  // exactly as the hard-delete path leaves them, because the audit answer to
+  // "who set this / who was this about" is the person who did it at the time,
+  // not whoever absorbed their record afterwards.
+  //
+  // Two of them are the gap this issue found. `CalendarEvent.createdById` and
+  // `CalendarEventSeries.createdById` are non-null bare columns naming the
+  // member who created a club calendar event or recurring series. They are
+  // write-only across `src/` today — `calendar-service.ts` sets them and nothing
+  // reads them back — so a loser id left behind is latent rather than visible.
+  // They are listed, not moved, to stay consistent with every other FK-less
+  // actor column; if the calendar ever surfaces "created by", that is a decision
+  // to revisit for the whole class at once, not for these two alone.
+  "AiAssistantSettings.updatedByMemberId",
+  "AiAssistantUsageEvent.memberId",
+  "BedAllocationSettings.updatedByMemberId",
+  "BookingMessageOverride.updatedByMemberId",
+  "BookingRequest.reviewedByMemberId",
+  "BookingRequestQuote.createdByMemberId",
+  "BookingRequestSettings.updatedByMemberId",
+  "CalendarEvent.createdById",
+  "CalendarEventSeries.createdById",
+  "ClubIdentitySettings.updatedByMemberId",
+  "ClubModuleSettings.updatedByMemberId",
+  "EmailMessageSetting.updatedByMemberId",
+  "EmailTemplateOverride.updatedByMemberId",
+  "FinanceSyncRun.requestedByMemberId",
+  "IntegrationWizardProgress.updatedByMemberId",
+  "InternetBankingPaymentSettings.updatedByMemberId",
+  "LodgeInstruction.updatedByMemberId",
+  "LodgeSettings.updatedByMemberId",
+  "LoginSecuritySetting.updatedByMemberId",
+  "MemberFieldsSettings.updatedByMemberId",
+  "MemberInduction.createdByMemberId",
+  "MembershipCancellationSetting.updatedByMemberId",
+  "MembershipLockoutSettings.updatedByMemberId",
+  "MembershipNominationSettings.updatedByMemberId",
+  "NotificationDeliveryPolicy.updatedByMemberId",
+  "PageContent.updatedByMemberId",
+  "PublicContentSettings.updatedByMemberId",
+  "SetupProgress.completedByMemberId",
+  "SiteBanner.createdByMemberId",
+  "SiteBanner.updatedByMemberId",
+  "SiteContent.updatedByMemberId",
+  "XeroGroupingSettings.updatedByMemberId",
+  "XeroMemberGroupingDryRun.createdByMemberId",
+  "XeroSyncOperation.createdByMemberId",
 ];
 
 // ---------------------------------------------------------------------------
@@ -405,6 +513,148 @@ export function diffRelationSpecCoverage(
     missing: ownerKeys.filter((k) => !specSet.has(k)).sort(),
     extra: specKeys.filter((k) => !ownerSet.has(k)).sort(),
   };
+}
+
+/**
+ * Drop a prisma `//` (or `///`) line comment, ignoring `//` inside a quoted
+ * string so a `@default("https://…")` survives intact.
+ *
+ * Comments are not decoration to a schema scanner: a trailing
+ * `// was: @relation(fields: [memberId], references: [id])` on a bare column
+ * registers a PHANTOM foreign key and silently removes that column from
+ * `parseFkLessMemberIdColumns`' output — the exact silent escape the detector
+ * exists to prevent (#2243).
+ */
+function stripPrismaLineComment(line: string): string {
+  let inString = false;
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+    if (ch === "\\") {
+      i += 1;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (!inString && ch === "/" && line[i + 1] === "/") return line.slice(0, i);
+  }
+  return line;
+}
+
+/**
+ * #2243 — the FK-less member-id scalar columns a schema scan can actually FIND,
+ * as sorted `Model.column` keys.
+ *
+ * The relation walk above is exact but structurally blind to columns that carry
+ * no `@relation`: `CalendarEvent.createdById` and `CalendarEventSeries.createdById`
+ * hold a Member id in a bare `String` and escaped both the walk and the
+ * documented snapshot list entirely, so nothing in CI would have noticed the
+ * next one either. This closes that by naming the detectable class mechanically
+ * instead of by hand.
+ *
+ * The rule: a `String`/`String?` scalar that owns NO relation on its own model,
+ * whose column NAME is used somewhere else in the schema as a Member FK column
+ * (`memberId`, `createdById`, `updatedByMemberId`, ...). The repo names actor
+ * columns consistently, so a new FK-less member-id column almost always reuses
+ * one of those names and is caught. It is a DETECTOR, not a decision: everything
+ * it returns must appear in `MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS`, which is
+ * where the "keep the loser's id as immutable history" classification is
+ * recorded (the test in member-merge-dmmf.test.ts enforces that).
+ *
+ * It is deliberately a SUBSET of the FK-less member-id universe: bespoke names
+ * that appear nowhere as a Member FK column (`MemberApplication.nominator1Id`,
+ * `IssueReport.resolvedById`, `FamilyGroupJoinRequest.reviewedBy`, ...) are
+ * invisible to it and stay hand-documented in that list. Deriving membership
+ * from a name is the only signal the schema offers for a bare column, so a
+ * detector that is right about a large, self-maintaining slice beats a promise
+ * of exhaustiveness nothing can enforce.
+ *
+ * The name rule can in principle over-reach — a future `String` column called
+ * `memberId` that holds someone ELSE's member number, say. Nothing in the schema
+ * today does, and the remedy when one appears is to document it here with a note
+ * saying why it is not a member id, not to loosen the detector: a false positive
+ * costs one line, a false negative is the bug this exists to prevent.
+ *
+ * KNOWN PARSE ASSUMPTIONS (all true of `prisma/schema.prisma` today; re-check
+ * them if the schema's shape ever changes):
+ *   * ONE FIELD PER LINE, and `@relation(...)` entirely on that line. A
+ *     multi-line `@relation` attribute would not be parsed, and its FK column
+ *     would be mistaken for a bare scalar (a false POSITIVE, which costs one
+ *     documented line, not a silent miss). No relation in this schema wraps, and
+ *     `prisma format` does not wrap attributes — but we hand-edit the schema
+ *     (AGENTS.md), so this is an assumption rather than a guarantee.
+ *   * `//` COMMENTS ARE STRIPPED before matching, outside quoted strings.
+ *     Without that a trailing comment such as
+ *     `memberId String // was: @relation(fields: [memberId], ...)` registers a
+ *     PHANTOM FK and hides the column from the detector entirely — a false
+ *     negative, exactly the failure mode this exists to prevent.
+ *   * `String[]` COLUMNS ARE EXCLUDED. The live instance is
+ *     `HiddenFamilySuggestion.memberIds`, an array of member ids identifying a
+ *     dismissed family suggestion. The merge does not rewrite it, so a
+ *     merged-away loser's id stays in the array; the signature it was hidden
+ *     under no longer matches the surviving membership, so a hidden suggestion
+ *     can reappear for an admin to dismiss again. That is cosmetic and
+ *     deliberate — array rewriting is a separate decision — but it is a real
+ *     consequence, not an oversight.
+ *   * `view` AND `type` BLOCKS ARE SKIPPED (only `model` opens a scan). There
+ *     are none in this schema today; a member-id column added inside one would
+ *     be invisible here.
+ */
+export function parseFkLessMemberIdColumns(schemaText: string): string[] {
+  type ModelScan = {
+    name: string;
+    scalarStrings: string[];
+    /** FK column -> the model type of the relation that owns it. */
+    relationFkColumns: Map<string, string>;
+  };
+  const models: ModelScan[] = [];
+  let current: ModelScan | null = null;
+
+  for (const rawLine of schemaText.split(/\r?\n/)) {
+    const line = stripPrismaLineComment(rawLine);
+    const mm = line.match(/^model\s+(\w+)\s*\{/);
+    if (mm) {
+      current = { name: mm[1], scalarStrings: [], relationFkColumns: new Map() };
+      models.push(current);
+      continue;
+    }
+    if (line.trim() === "}") {
+      current = null;
+      continue;
+    }
+    if (!current) continue;
+    const fm = line.match(/^\s*(\w+)\s+(\w+)(\[\]|\?)?(\s.*)?$/);
+    if (!fm) continue;
+    const [, fieldName, fieldType, listOrOptional, tail] = fm;
+    const relation = (tail ?? "").match(/@relation\(([^)]*)\)/);
+    const fkFields = relation?.[1].match(/fields:\s*\[([^\]]*)\]/);
+    if (fkFields) {
+      for (const column of fkFields[1].split(",").map((c) => c.trim())) {
+        if (column) current.relationFkColumns.set(column, fieldType);
+      }
+    }
+    if (fieldType === "String" && listOrOptional !== "[]") {
+      current.scalarStrings.push(fieldName);
+    }
+  }
+
+  const memberFkColumnNames = new Set<string>();
+  for (const model of models) {
+    for (const [column, relatedType] of model.relationFkColumns) {
+      if (relatedType === "Member") memberFkColumnNames.add(column);
+    }
+  }
+
+  const found: string[] = [];
+  for (const model of models) {
+    for (const column of model.scalarStrings) {
+      if (model.relationFkColumns.has(column)) continue;
+      if (!memberFkColumnNames.has(column)) continue;
+      found.push(`${model.name}.${column}`);
+    }
+  }
+  return found.sort();
 }
 
 /** All relation names touching Member, from the trimmed runtime DMMF. */
@@ -604,6 +854,51 @@ export function mergeMemberFields(
   }
 
   return { patch, diff };
+}
+
+function samePatchValue(a: unknown, b: unknown): boolean {
+  if (a instanceof Date || b instanceof Date) {
+    const at = a instanceof Date ? a.getTime() : NaN;
+    const bt = b instanceof Date ? b.getTime() : NaN;
+    return at === bt;
+  }
+  return a === b;
+}
+
+/**
+ * #2243 — the sorted field names on which two derivations of the SAME merge
+ * disagree.
+ *
+ * `executeMemberMerge` derives the field-merge patch twice: once from the
+ * transaction-opening snapshot (the derivation the preview token is verified
+ * against) and once from a read of both members taken immediately before the
+ * write. In an ordinary uncontended merge the two are identical and this returns
+ * `[]`; a non-empty result means a writer that does NOT take the
+ * `member-lifecycle` advisory lock changed a merged field mid-transaction, and
+ * the merge REFUSES with a 409 (`merge_drift_in_transaction`) rather than
+ * applying values the operator never previewed.
+ *
+ * Because it compares PATCHES rather than final stored values, it can in rare
+ * cases report a field whose finally-stored value would have been identical
+ * anyway (a group fill re-deciding its source, say). That is the safe direction
+ * for a refusal, and it is why the 409's wording says the member's details
+ * changed rather than claiming a specific value would have been wrong.
+ *
+ * A field is "different" when the two patches disagree on its VALUE or on
+ * whether it is written at all (absent versus present-and-null are different
+ * writes). Dates are compared by instant, not identity, because the two
+ * derivations read the same instant into two `Date` objects.
+ */
+export function diffFieldMergePatches(
+  previewed: Record<string, unknown>,
+  applied: Record<string, unknown>,
+): string[] {
+  const fields = new Set([...Object.keys(previewed), ...Object.keys(applied)]);
+  const drifted: string[] = [];
+  for (const field of fields) {
+    if (!samePatchValue(previewed[field], applied[field])) drifted.push(field);
+  }
+  return drifted.sort();
 }
 
 // ---------------------------------------------------------------------------
@@ -1078,6 +1373,43 @@ async function countLoserRows(
   return model.count({ where: { [column]: loserId } });
 }
 
+/**
+ * FK-less member-id columns the merge MOVES rather than snapshots, as
+ * `{ key, delegate, column }` (#2243). They own no `@relation`, so they cannot
+ * live in `MEMBER_MERGE_RELATION_SPECS` (which must equal the FK-owner universe
+ * exactly) — this is where the preview counts, the token digest, and
+ * `applyMoves` all read them from, so the three can never drift apart.
+ *
+ * `BookingRequest.convertedMemberId` is the identity pointer to the member a
+ * booking request converted INTO, replayed as a live member id by
+ * `claimAlreadyConvertedBookingRequest` — not an actor/audit snapshot.
+ */
+const MEMBER_MERGE_FK_LESS_MOVE_COLUMNS: readonly {
+  key: string;
+  delegate: string;
+  column: string;
+}[] = [
+  {
+    key: "BookingRequest.convertedMemberId",
+    delegate: "bookingRequest",
+    column: "convertedMemberId",
+  },
+];
+
+async function countFkLessMoveRows(
+  db: MergeDbClient,
+  loserId: string,
+): Promise<{ model: string; count: number }[]> {
+  const counts = await Promise.all(
+    MEMBER_MERGE_FK_LESS_MOVE_COLUMNS.map((c) =>
+      countLoserRows(db, c.delegate, c.column, loserId),
+    ),
+  );
+  return MEMBER_MERGE_FK_LESS_MOVE_COLUMNS.flatMap((c, i) =>
+    counts[i] > 0 ? [{ model: c.key, count: counts[i] }] : [],
+  );
+}
+
 export async function buildMemberMergePreview(params: {
   masterId: string;
   loserId: string;
@@ -1131,6 +1463,7 @@ export async function buildMemberMergePreview(params: {
   moveSpecs.forEach((s, i) => {
     if (moveCounts[i] > 0) relationMoves.push({ model: s.key, count: moveCounts[i] });
   });
+  relationMoves.push(...(await countFkLessMoveRows(db, loserId)));
 
   // The loser's own OUTBOUND self-relation columns (parent, inheritEmailFrom,
   // ...) die with the loser: the master keeps its own values and only INBOUND
@@ -1467,14 +1800,17 @@ export async function executeMemberMerge(params: {
 
     // Re-verify the preview token against the CURRENT state (updatedAt of both
     // records is baked in, so any concurrent edit invalidates the token: 409).
-    const fieldOutcome = mergeMemberFields(
+    // This derivation is the PREVIEW's — it must stay keyed to the snapshot the
+    // token was built from. The derivation that is actually WRITTEN is taken
+    // fresh at step 5; see the comment there (#2243).
+    const previewedFieldOutcome = mergeMemberFields(
       masterFull as unknown as Record<string, unknown>,
       loserFull as unknown as Record<string, unknown>,
     );
     const relationMoveCountsPreview = await previewRelationCountsForToken(tx, masterId, loserId);
     const collisionsPreview = (await summariseResolveCollisions(tx, masterId, loserId)).collisions;
     const core: MemberMergePreviewCore = {
-      fieldMerge: fieldOutcome.diff,
+      fieldMerge: previewedFieldOutcome.diff,
       relationMoves: relationMoveCountsPreview,
       collisions: collisionsPreview,
       blockers: [],
@@ -1511,6 +1847,93 @@ export async function executeMemberMerge(params: {
     const xeroTeardown = await teardownLoserXero(tx, masterId, loserId);
 
     // 5) Field merge.
+    //
+    // #2243 — the patch that is WRITTEN is derived from a read of both members
+    // taken HERE, not from the `masterFull`/`loserFull` snapshot the transaction
+    // opened with.
+    //
+    // The photo upload route deliberately does NOT take the member-lifecycle
+    // advisory lock (docs/CONCURRENCY_AND_LOCKING.md → "Member photo writer"), so
+    // between the snapshot read (top of tx) and this write an admin can POST a
+    // photo ON BEHALF OF the loser: it creates a new blob L2, repoints the loser
+    // to L2, DELETES the loser's old blob L1 and commits. A patch derived from
+    // the snapshot still names L1, and `Member.photoImageId` is a real FK
+    // (-> MediaImage), so writing it raises Postgres 23503 / Prisma P2003 and
+    // rolls the WHOLE merge back as a bare 500 — with the preview token none the
+    // wiser, because it verifies against that same stale snapshot.
+    //
+    // The hazard is not photo-specific: it belongs to every field the patch
+    // carries, because every one of them is copied from the loser. Two of them
+    // are real FKs and can therefore fail the write outright — `photoImageId`
+    // (-> MediaImage) and `familyGroupId` (-> FamilyGroup, whose row a club
+    // admin can delete without taking the lifecycle lock); the rest are plain
+    // scalars, where a stale value is silently-wrong data rather than a
+    // rollback. Deriving from a fresh read fixes all of them at once.
+    //
+    // Locking, per side:
+    //   * LOSER — its row lock has been held since `teardownLoserXero` (step 4),
+    //     which ends in an unconditional `member.update` on the loser.
+    //   * MASTER — locked HERE, by the `FOR UPDATE` below, because nothing
+    //     earlier is guaranteed to write it (`nullSelfRelationCycles` writes it
+    //     only when there is a self-cycle to null). Without that lock a
+    //     concurrent on-behalf upload FOR THE MASTER can commit a new blob M2
+    //     between this read and the update; the merge would then overwrite the
+    //     master's pointer with the loser's absorbed value and nothing would
+    //     ever sweep M2 (`reconcileLoserMemberPhotos` only sweeps the LOSER's
+    //     blobs), leaving an orphaned public asset. It would also produce
+    //     avoidable drift refusals below. Both ids are locked in one id-ordered
+    //     statement, matching the advisory locks at the top of the transaction,
+    //     so this can never deadlock against the mirror merge.
+    //     A stale MASTER is not harmless, which is why it is locked rather than
+    //     merely re-read: its values decide whether a blank is filled from the
+    //     loser AND which of two dates is earlier (`joinedDate` and
+    //     `hutLeaderEligibleAt` are `Math.min` against the master's own value),
+    //     so a stale master can change what is written, not just what is kept.
+    //
+    // What a row lock does NOT close: it protects these two `Member` ROWS, not
+    // the rows their FKs POINT AT. A concurrent `FamilyGroup` delete (club
+    // admin, `DELETE /api/admin/family-groups/[id]` behind `requireAdmin`) still
+    // takes no member-lifecycle lock, so it can still abort the merge — now by
+    // deadlocking against this lock (Postgres 40P01) rather than by writing a
+    // stale value (23503). Genuinely closing that is out of scope here.
+    //
+    // DRIFT IS REFUSED, NOT APPLIED. If the fresh derivation disagrees with the
+    // previewed one, some writer outside the `member-lifecycle` lock changed a
+    // merged field mid-transaction, and the merge stops with a 409 naming the
+    // fields instead of committing values the operator never saw. That matches
+    // every other preview/confirm flow in the repo (config transfer's ADR-002
+    // promise that "what was previewed is exactly what is applied", and this
+    // merge's own pre-transaction token check, which already 409s on drift).
+    // The ORIGINAL #2243 bug still stays fixed: the drift is detected from the
+    // FRESH read BEFORE the write, so a stale FK value is never handed to
+    // Postgres and the operator gets a plain 409 instead of a bare 500.
+    const [lockFirstId, lockSecondId] = [masterId, loserId].sort();
+    await tx.$executeRaw`SELECT 1 FROM "Member" WHERE "id" IN (${lockFirstId}, ${lockSecondId}) ORDER BY "id" FOR UPDATE`;
+    const [masterAtWrite, loserAtWrite] = await Promise.all([
+      tx.member.findUnique({ where: { id: masterId } }),
+      tx.member.findUnique({ where: { id: loserId } }),
+    ]);
+    if (!masterAtWrite || !loserAtWrite) {
+      throw new MemberMergeError("Both members must exist to merge.", 404, "member_missing");
+    }
+    const fieldOutcome = mergeMemberFields(
+      masterAtWrite as unknown as Record<string, unknown>,
+      loserAtWrite as unknown as Record<string, unknown>,
+    );
+    const driftFields = diffFieldMergePatches(previewedFieldOutcome.patch, fieldOutcome.patch);
+    if (driftFields.length > 0) {
+      // `diffFieldMergePatches` compares PATCHES, so it can in rare cases flag a
+      // field whose finally-stored value would have been identical. That is
+      // deliberate: the message says the details changed, and claims nothing
+      // about which value would have won.
+      throw new MemberMergeError(
+        `These member details changed while the merge was running: ${driftFields.join(", ")}. ` +
+          "Nothing was saved. Re-run the preview and try again.",
+        409,
+        "merge_drift_in_transaction",
+        { driftFields },
+      );
+    }
     const fieldsChanged = Object.keys(fieldOutcome.patch);
     if (fieldsChanged.length > 0) {
       await tx.member.update({ where: { id: masterId }, data: fieldOutcome.patch });
@@ -1525,39 +1948,37 @@ export async function executeMemberMerge(params: {
     // `Member` row locks, so this MediaImage delete takes MediaImage AFTER
     // Member — matching the photo upload writer's order. Keep this after those
     // steps. See docs/CONCURRENCY_AND_LOCKING.md → "Member photo writer".
+    //
+    // Both pointers come from the fresh step-5 read, never the top-of-transaction
+    // snapshot: a reconcile keyed on a stale loser pointer would match neither
+    // the deleted L1 nor the admin-uploaded L2 (which carries the ADMIN's
+    // `uploadedByMemberId`, not the loser's), and once the loser is hard-deleted
+    // L2 would orphan as a dangling public asset. Mirrors the account-deletion
+    // path (member-lifecycle-actions.ts), which reads photoImageId fresh from its
+    // own locking `member.update`. These are plain reads of Member rows — they
+    // introduce no new MediaImage-before-Member ordering.
     const keepPhotoImageId =
       ((fieldOutcome.patch.photoImageId as string | null | undefined) ??
-        (masterFull as unknown as { photoImageId: string | null }).photoImageId) ??
+        masterAtWrite.photoImageId) ??
       null;
-    // Read the loser's CURRENT photoImageId FRESH under the row lock rather than
-    // trusting the `loserFull` snapshot taken at the top of the transaction. The
-    // photo upload route deliberately does NOT take the member-lifecycle advisory
-    // lock (docs/CONCURRENCY_AND_LOCKING.md → "Member photo writer"), so between
-    // the snapshot read (~top of tx) and here an admin can POST a photo ON BEHALF
-    // OF the loser: it creates a NEW blob L2 (carrying the ADMIN's
-    // `uploadedByMemberId`, not the loser's), repoints the loser to L2, deletes
-    // the loser's old blob L1 and commits. The stale snapshot still names L1, so a
-    // reconcile keyed on it would match neither the deleted L1 nor the admin-owned
-    // L2 — and once the loser is hard-deleted, L2 orphans as a dangling public
-    // asset. teardownLoserXero's unconditional `member.update` (step 4 above) has
-    // already taken the loser's row lock, so this read returns the committed
-    // post-upload pointer (L2). Mirrors the account-deletion path
-    // (member-lifecycle-actions.ts), which reads photoImageId fresh from its own
-    // locking `member.update`. This is a plain read of the already-locked loser
-    // row — it introduces no new MediaImage-before-Member ordering.
-    const loserFresh = await tx.member.findUnique({
-      where: { id: loserId },
-      select: { photoImageId: true },
-    });
     const photoReconcile = await reconcileLoserMemberPhotos(
       tx,
       loserId,
-      loserFresh?.photoImageId ?? null,
+      loserAtWrite.photoImageId,
       keepPhotoImageId,
     );
 
-    // 6) One critical audit.
-    const loserSnapshot = buildLoserSnapshot(loserFull);
+    // 6) One critical audit. Vintages are deliberate and mixed: the snapshot is
+    // built from the FRESH step-5 row — the values this merge actually consumed
+    // and is about to hard-delete, so `googleSub` below is genuinely "recorded
+    // in the loser snapshot audited above" even when the link landed after the
+    // transaction opened — EXCEPT `xeroContactId`, which is taken from the
+    // transaction-opening row because this merge itself nulled it at step 4 and
+    // the audit must show the contact id that was torn down. `fieldOutcome` and
+    // `fieldsChanged` are likewise the fresh derivation that was written; they
+    // can no longer disagree with the previewed one, because a divergence 409s
+    // at step 5.
+    const loserSnapshot = buildLoserSnapshot(loserAtWrite, loserFull.xeroContactId);
     await tx.auditLog.create(
       buildStructuredAuditLogCreateArgs({
         action: "MEMBER_MERGED",
@@ -1595,7 +2016,14 @@ export async function executeMemberMerge(params: {
     // above) so the delete cannot race any unique constraint. The loser's Google
     // account is simply unlinked; re-link to the master is a deliberate,
     // profile-initiated action, never an automatic merge side effect.
-    if (loserFull.googleSub) {
+    //
+    // Read from the FRESH step-5 row, not the transaction-opening snapshot: a
+    // Google link that landed after the snapshot would otherwise be missed here
+    // and left set on a row about to be hard-deleted. `loserAtWrite` is taken
+    // under the loser's row lock, so it is the committed value, and it is also
+    // the value the audit above snapshots — which is what makes the promise on
+    // the line above ("recorded in the loser snapshot audited above") true.
+    if (loserAtWrite.googleSub) {
       await tx.member.update({
         where: { id: loserId },
         data: { googleSub: null },
@@ -1618,6 +2046,11 @@ export async function executeMemberMerge(params: {
     // P2028 exactly on the heavy members most likely to need merging. The dual
     // advisory lock serialises concurrent lifecycle writers, so a long window
     // is safe here.
+    //
+    // Do NOT add an `isolationLevel` here. The step-5 fresh read depends on READ
+    // COMMITTED's per-statement snapshots to see a writer that committed after
+    // this transaction opened; under REPEATABLE READ it would re-read the same
+    // stale values and the #2243 fix would silently stop working (#2243).
     timeout: 120_000,
     maxWait: 10_000,
   });
@@ -1634,13 +2067,19 @@ function getRequestContext(request: Request) {
   };
 }
 
-function buildLoserSnapshot(loser: Member) {
+/**
+ * The audited loser snapshot. `loser` is the fresh pre-write row;
+ * `xeroContactIdAtOpen` is passed separately because the merge nulls
+ * `xeroContactId` itself during the Xero teardown, so the fresh row would report
+ * `null` for a contact the audit needs to name (#2243).
+ */
+function buildLoserSnapshot(loser: Member, xeroContactIdAtOpen: string | null) {
   return {
     id: loser.id,
     firstName: loser.firstName,
     lastName: loser.lastName,
     email: loser.email,
-    xeroContactId: loser.xeroContactId,
+    xeroContactId: xeroContactIdAtOpen,
     googleSub: loser.googleSub,
     joinedDate: loser.joinedDate?.toISOString() ?? null,
     createdAt: loser.createdAt.toISOString(),
@@ -1660,6 +2099,9 @@ async function previewRelationCountsForToken(
   moveSpecs.forEach((s, i) => {
     if (counts[i] > 0) out.push({ model: s.key, count: counts[i] });
   });
+  // Same order and same source as `buildMemberMergePreview`, so the digest the
+  // token is verified against matches the one it was issued from (#2243).
+  out.push(...(await countFkLessMoveRows(db, loserId)));
   return out;
 }
 
@@ -1754,12 +2196,49 @@ async function applyMoves(
     const delegate = (tx as unknown as Record<string, {
       updateMany: (args: unknown) => Promise<{ count: number }>;
     }>)[s.delegate];
+    // Member SELF-relations (`parentMemberId`, `secondaryParentId`,
+    // `inheritEmailFromId`, `detailsConfirmedByMemberId`) exclude the MASTER's
+    // own row. `nullSelfRelationCycles` (step 1) already nulled any such pointer
+    // the master held at the transaction-opening snapshot, but that read is not
+    // under the master's row lock, so a writer outside the member-lifecycle lock
+    // can set `master.<selfRelation> = loserId` between the snapshot and here.
+    // Rewriting that to `masterId` would make the master its own parent (or its
+    // own email source / details confirmer) — a self-cycle this merge is
+    // supposed to prevent. Leaving it pointing at the loser is safe: the loser
+    // is hard-deleted moments later and every one of these FKs is
+    // `onDelete: SetNull`, so the pointer is nulled correctly by the delete.
+    // The broader fix — locking the master before the guards/self-cycle pass
+    // rather than only before the field write — is filed as #2437.
     const res = await delegate.updateMany({
-      where: { [s.column]: loserId },
+      where: s.selfRelation
+        ? { [s.column]: loserId, id: { not: masterId } }
+        : { [s.column]: loserId },
       data: { [s.column]: masterId },
     });
     if (res.count > 0) moves.push({ model: s.key, count: res.count });
   }
+
+  // FK-LESS member-id columns carried as MOVES rather than snapshots (#2243).
+  // `BookingRequest.convertedMemberId` is not an actor/audit column: it is the
+  // identity pointer to the member the request converted INTO, handed straight
+  // back to the idempotent replay path as a live member id
+  // (`claimAlreadyConvertedBookingRequest` in booking-request-shared.ts, read by
+  // booking-request.ts and school-booking-request.ts). Left on a hard-deleted
+  // loser it would replay a conversion as a member that no longer exists. Its FK
+  // twin on the same row, `requestedByMemberId`, is classified `move` in the
+  // spec table above; this column carries no `@relation` and so cannot live
+  // there, hence `MEMBER_MERGE_FK_LESS_MOVE_COLUMNS`.
+  for (const c of MEMBER_MERGE_FK_LESS_MOVE_COLUMNS) {
+    const delegate = (tx as unknown as Record<string, {
+      updateMany: (args: unknown) => Promise<{ count: number }>;
+    }>)[c.delegate];
+    const res = await delegate.updateMany({
+      where: { [c.column]: loserId },
+      data: { [c.column]: masterId },
+    });
+    if (res.count > 0) moves.push({ model: c.key, count: res.count });
+  }
+
   return moves;
 }
 
