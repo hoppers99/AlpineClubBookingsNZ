@@ -20,8 +20,13 @@
  *      heading into the same new release section (transition support — several
  *      PRs opened before the fragment convention still carry direct entries).
  *   3. Inserts `## <version> - <date>` above the existing releases, leaving the
- *      `## Unreleased` heading and its pointer note in place but empty.
- *   4. Deletes the fragments it consumed and prints exactly what it did.
+ *      `## Unreleased` heading in place with its pointer note and nothing else.
+ *      The note is identified by its `<!-- changelog-pointer-note:start -->`
+ *      sentinel, never by position, and is re-emitted directly under the
+ *      heading every time — see the sentinel constants below for why.
+ *   4. Deletes the fragments it consumed and prints exactly what it did,
+ *      including a loud warning for anything left under `## Unreleased` that is
+ *      neither the note nor an entry.
  *
  * It never rewrites historical sections: everything from the next `## ` heading
  * down is copied through byte-for-byte.
@@ -45,12 +50,46 @@ const RESERVED_FRAGMENT_NAMES = new Set(["readme.md", ".gitkeep"]);
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
-/** A top-level release heading, e.g. `## 0.13.2 - 2026-07-23`. */
-const VERSION_HEADING = /^## \d+\.\d+\.\d+/;
 const UNRELEASED_HEADING = /^## Unreleased[ \t]*$/;
 const ANY_HEADING = /^## /;
 /** A top-level changelog entry bullet. Continuation paragraphs are indented. */
 const ENTRY_BULLET = /^- /;
+
+/**
+ * Sentinel comments anchoring the "entries live in `changelog.d/`" pointer note
+ * under `## Unreleased`.
+ *
+ * The note MUST be identified by these markers rather than by its position in
+ * the section. `CHANGELOG.md` is declared `merge=union` (#2451), so a branch
+ * that still writes its entry directly under `## Unreleased` can have that
+ * entry land ABOVE the note after a union merge. A positional rule ("everything
+ * above the first bullet is the note") then reads the note as part of the
+ * entries, publishes it inside a release section, and deletes it from
+ * `## Unreleased` — permanently, and in a way no test of the happy path sees.
+ * Marker-anchored, the note is recognised wherever it sits and is re-emitted
+ * canonically directly under `## Unreleased` on every compile.
+ */
+export const POINTER_NOTE_START = "<!-- changelog-pointer-note:start -->";
+export const POINTER_NOTE_END = "<!-- changelog-pointer-note:end -->";
+const POINTER_NOTE_START_RE = /^[ \t]*<!--[ \t]*changelog-pointer-note:start[ \t]*-->[ \t]*$/;
+const POINTER_NOTE_END_RE = /^[ \t]*<!--[ \t]*changelog-pointer-note:end[ \t]*-->[ \t]*$/;
+
+/**
+ * The note written back when `## Unreleased` carries no sentinel-marked one —
+ * an older CHANGELOG.md, or one whose note was lost before this anchoring
+ * existed. Compiling restores it, so the pointer cannot stay missing.
+ */
+const DEFAULT_POINTER_NOTE = [
+  POINTER_NOTE_START,
+  "",
+  "Entries for the next release are written as one file per pull request in",
+  "[`changelog.d/`](changelog.d/README.md), not added here by hand (#2452);",
+  "`scripts/release/compile-changelog.mjs` folds them into a version section when a",
+  "release is cut. Any entries still listed below were written before that change",
+  "and are folded in the same way.",
+  "",
+  POINTER_NOTE_END,
+];
 
 /**
  * Deterministic fragment order: ascending, comparing runs of digits
@@ -113,17 +152,88 @@ function stripBlankEdges(lines) {
 }
 
 /**
+ * Split the body of `## Unreleased` into three buckets, by MARKER not position:
+ *
+ *   - `note` — the sentinel-anchored pointer note, wherever it sits;
+ *   - `legacy` — top-level `- ` entries (with their indented continuations),
+ *     which the compile releases;
+ *   - `unrecognised` — anything else, which is neither released nor deleted but
+ *     reported loudly, because silently keeping unknown prose under
+ *     `## Unreleased` forever is how an entry goes missing without a trace.
+ *
+ * Exported for tests. Throws on a malformed sentinel, which is the only
+ * situation where guessing could swallow real entries into the note.
+ */
+export function classifyUnreleasedSection(sectionLines) {
+  const note = [];
+  const legacy = [];
+  const unrecognised = [];
+  let inNote = false;
+  let sawNote = false;
+  let target = null;
+  let pendingBlanks = [];
+
+  for (const line of sectionLines) {
+    if (inNote) {
+      note.push(line);
+      if (POINTER_NOTE_END_RE.test(line)) inNote = false;
+      continue;
+    }
+    if (POINTER_NOTE_START_RE.test(line)) {
+      if (sawNote) {
+        throw new Error(
+          `CHANGELOG.md has more than one "${POINTER_NOTE_START}" sentinel under "## Unreleased" — ` +
+            "keep exactly one and re-run.",
+        );
+      }
+      inNote = true;
+      sawNote = true;
+      note.push(line);
+      pendingBlanks = [];
+      target = null;
+      continue;
+    }
+    if (line.trim() === "") {
+      pendingBlanks.push(line);
+      continue;
+    }
+    if (ENTRY_BULLET.test(line)) {
+      target = legacy;
+    } else if (!/^[ \t]/.test(line) || target === null) {
+      // A non-indented line that is not a bullet starts something we do not
+      // recognise. An indented line continues whatever bucket is open.
+      target = unrecognised;
+    }
+    if (target.length > 0) target.push(...pendingBlanks);
+    pendingBlanks = [];
+    target.push(line);
+  }
+
+  if (inNote) {
+    throw new Error(
+      `CHANGELOG.md has an unterminated "${POINTER_NOTE_START}" sentinel under "## Unreleased" — ` +
+        `close it with "${POINTER_NOTE_END}" and re-run.`,
+    );
+  }
+
+  return { note, legacy, unrecognised, hasNote: sawNote };
+}
+
+/**
  * Pure composer: returns the new CHANGELOG.md text plus whether any legacy
- * `## Unreleased` entries were folded in. `fragments` is an ordered list of
- * `{ name, body }`; `changelog` is the current file text.
+ * `## Unreleased` entries were folded in, any unrecognised content left behind,
+ * and whether the pointer note had to be restored. `fragments` is an ordered
+ * list of `{ name, body }`; `changelog` is the current file text.
  */
 export function composeChangelog({ changelog, version, date, fragments }) {
   const lines = changelog.split("\n");
   const unreleasedIndex = lines.findIndex((line) => UNRELEASED_HEADING.test(line));
 
   let head;
-  let preamble = [];
+  let note = [];
   let legacy = [];
+  let unrecognised = [];
+  let restoredPointerNote = false;
   let tail;
 
   if (unreleasedIndex >= 0) {
@@ -133,13 +243,14 @@ export function composeChangelog({ changelog, version, date, fragments }) {
     const sectionEnd =
       nextHeadingOffset >= 0 ? unreleasedIndex + 1 + nextHeadingOffset : lines.length;
     const section = lines.slice(unreleasedIndex + 1, sectionEnd);
-    // Everything from the first top-level bullet onwards is an entry (including
-    // its indented continuation paragraphs); anything above it is the pointer
-    // note that must survive the compile.
-    const firstBullet = section.findIndex((line) => ENTRY_BULLET.test(line));
+    const classified = classifyUnreleasedSection(section);
+    ({ legacy, unrecognised } = classified);
+    // The note is re-emitted directly under `## Unreleased` regardless of where
+    // it was found, so a union merge that lands an entry above it cannot carry
+    // it into the release section or lose it.
+    note = classified.hasNote ? classified.note : [...DEFAULT_POINTER_NOTE];
+    restoredPointerNote = !classified.hasNote;
     head = lines.slice(0, unreleasedIndex + 1);
-    preamble = stripBlankEdges(firstBullet >= 0 ? section.slice(0, firstBullet) : section);
-    legacy = firstBullet >= 0 ? stripBlankEdges(section.slice(firstBullet)) : [];
     tail = lines.slice(sectionEnd);
   } else {
     // No `## Unreleased` heading at all: insert directly above the newest
@@ -156,8 +267,11 @@ export function composeChangelog({ changelog, version, date, fragments }) {
   }
 
   const out = [...head];
-  if (preamble.length > 0) {
-    out.push("", ...preamble);
+  if (note.length > 0) {
+    out.push("", ...note);
+  }
+  if (unrecognised.length > 0) {
+    out.push("", ...unrecognised);
   }
   out.push("", `## ${version} - ${date}`, "", ...entryLines);
   if (stripBlankEdges(tail).length > 0) {
@@ -166,7 +280,12 @@ export function composeChangelog({ changelog, version, date, fragments }) {
     out.push("");
   }
 
-  return { changelog: out.join("\n"), foldedLegacyEntries: legacy.length > 0 };
+  return {
+    changelog: out.join("\n"),
+    foldedLegacyEntries: legacy.length > 0,
+    unrecognised,
+    restoredPointerNote,
+  };
 }
 
 /** Today's date in the club's timezone, as `YYYY-MM-DD`. */
@@ -208,6 +327,24 @@ export function compileChangelog({
   const fragments = readFragments(fragmentsDir);
   const composed = composeChangelog({ changelog, version, date, fragments });
 
+  // Loud, before anything else in the output: content under `## Unreleased`
+  // that is neither the pointer note nor a `- ` entry is NOT released and NOT
+  // deleted, and a maintainer who never sees this would never learn that an
+  // entry they wrote has been sitting there unreleased.
+  if (composed.unrecognised.length > 0) {
+    log("");
+    log('!! WARNING: unrecognised content left under "## Unreleased".');
+    log("!! It was NOT released and NOT deleted. Nothing here is a changelog entry");
+    log("!! (a top-level `- ` bullet) or the pointer note, so the compiler cannot");
+    log("!! tell what to do with it:");
+    for (const line of composed.unrecognised) {
+      log(`!!   | ${line}`);
+    }
+    log("!! Fix it by moving a real entry into a changelog.d/ fragment, or by");
+    log(`!! wrapping explanatory prose in ${POINTER_NOTE_START} ... ${POINTER_NOTE_END}.`);
+    log("");
+  }
+
   if (fragments.length === 0 && !composed.foldedLegacyEntries) {
     log(
       `Nothing to compile: ${FRAGMENTS_DIRNAME}/ holds no fragments and "## Unreleased" has no ` +
@@ -219,6 +356,9 @@ export function compileChangelog({
   const names = fragments.map((fragment) => fragment.name);
   if (dryRun) {
     log(`[dry run] Would add "## ${version} - ${date}" to CHANGELOG.md with:`);
+    if (composed.restoredPointerNote) {
+      log('  - a restored changelog.d pointer note under "## Unreleased" (it is missing)');
+    }
     if (composed.foldedLegacyEntries) {
       log('  - the entries currently written directly under "## Unreleased"');
     }
@@ -235,6 +375,9 @@ export function compileChangelog({
   }
 
   log(`Added "## ${version} - ${date}" to CHANGELOG.md.`);
+  if (composed.restoredPointerNote) {
+    log('  Restored the changelog.d pointer note under "## Unreleased" (it was missing).');
+  }
   if (composed.foldedLegacyEntries) {
     log('  Folded in the entries that were written directly under "## Unreleased".');
   }

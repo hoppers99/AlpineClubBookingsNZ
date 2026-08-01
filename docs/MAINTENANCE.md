@@ -538,10 +538,12 @@ Before cutting a public reference release:
    That adds `## <version> - <date>` to `CHANGELOG.md` from the per-PR fragments
    in `changelog.d/` (plus any entry still written directly under
    `## Unreleased`), deletes the fragments it consumed, and leaves the
-   `## Unreleased` heading and its pointer note in place. Commit the compiled
-   `CHANGELOG.md` and the fragment deletions together, then read the new section
-   end to end and edit it for order and duplication before pushing —
-   `changelog.d/README.md` documents the convention.
+   `## Unreleased` heading and its sentinel-marked pointer note in place. Commit
+   the compiled `CHANGELOG.md` and the fragment deletions together, then read the
+   new section end to end and edit it for order and duplication before pushing —
+   `changelog.d/README.md` documents the convention. If the run prints
+   `WARNING: unrecognised content left under "## Unreleased"`, resolve that
+   first: the text it echoes was neither released nor deleted.
 3. Check `README.md`, `DEPLOYMENT.md`, `CONFIGURATION.md`, this maintenance
    guide, and `docs/ARCHITECTURE.md` for dependency, release, GHCR, migration,
    validation, and public/private workflow drift.

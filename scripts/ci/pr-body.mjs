@@ -1,5 +1,6 @@
 /**
- * Shared PR-body plumbing for the pull-request gates in this directory.
+ * Shared PR-body and changed-file plumbing for the pull-request gates in this
+ * directory.
  *
  * Both gates run before `npm ci` in the `verify` job, so this module stays
  * dependency-free and uses only Node built-ins.
@@ -10,6 +11,7 @@
  * re-run, and fall back to the (possibly stale) event payload when the API is
  * unavailable.
  */
+import { execFileSync } from "node:child_process";
 
 /**
  * Body-source selection, factored pure so it can be unit tested without network
@@ -66,6 +68,36 @@ export async function fetchLivePrBody(label) {
     );
     return null;
   }
+}
+
+/**
+ * Run `git diff` over a PR's range and return the raw changed-file listing.
+ *
+ * `-c core.quotePath=false` is LOAD-BEARING, not tidiness. With git's default
+ * `quotePath=true` any path containing a non-ASCII byte is emitted C-quoted —
+ * `src/lib/café.ts` arrives as `"src/lib/caf\303\251.ts"`, complete with the
+ * leading double quote. Every path pattern in these gates is anchored (`^src/`,
+ * `^prisma/`, `^changelog\.d/`), so a quoted path matches NOTHING: the
+ * concurrency gate stops seeing a sensitive file and accepts a bare `N/A`, and
+ * the changelog gate stops seeing a code change and waves the PR through. Both
+ * fail OPEN, silently, on exactly the kind of file whose name nobody inspects.
+ * With the flag the bytes are emitted verbatim and the patterns match again.
+ *
+ * `nameStatus` picks `--name-status` (the changelog gate needs A/M/D to tell an
+ * added fragment from a deleted one) over `--name-only`.
+ */
+export function gitDiffChangedFiles(base, head, { nameStatus = false, cwd } = {}) {
+  return execFileSync(
+    "git",
+    [
+      "-c",
+      "core.quotePath=false",
+      "diff",
+      nameStatus ? "--name-status" : "--name-only",
+      `${base}...${head}`,
+    ],
+    { encoding: "utf8", ...(cwd ? { cwd } : {}) },
+  );
 }
 
 /**

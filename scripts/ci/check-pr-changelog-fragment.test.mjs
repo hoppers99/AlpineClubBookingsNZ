@@ -1,14 +1,43 @@
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import {
   isCodeBearing,
   validateChangelogFragment,
 } from "./check-pr-changelog-fragment.mjs";
-import { parseNameStatus } from "./pr-body.mjs";
+import { gitDiffChangedFiles, parseNameStatus } from "./pr-body.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+/**
+ * A throwaway two-commit repo whose second commit adds `relPath`. Used with a
+ * non-ASCII path to prove the gate reads git's raw bytes: `core.quotePath` is
+ * set to git's DEFAULT (true) locally, so the `-c core.quotePath=false` in
+ * `gitDiffChangedFiles` — a command-line `-c` beats local config — is the only
+ * thing keeping the path from arriving C-quoted as `"src/lib/caf\303\251.ts"`.
+ * The same fixture exists in `check-pr-concurrency-declaration.test.mjs`.
+ */
+function makeRepoAdding(relPath) {
+  const root = mkdtempSync(join(tmpdir(), "quoted-path-gate-"));
+  const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8" });
+  git("init", "--quiet");
+  git("config", "user.email", "gate-test@example.invalid");
+  git("config", "user.name", "Gate Test");
+  git("config", "commit.gpgsign", "false");
+  git("config", "core.quotePath", "true");
+  git("config", "core.autocrlf", "false");
+  writeFileSync(join(root, "seed.txt"), "seed\n");
+  git("add", "-A");
+  git("commit", "--quiet", "-m", "seed");
+  mkdirSync(join(root, dirname(relPath)), { recursive: true });
+  writeFileSync(join(root, relPath), "export const value = 1;\n");
+  git("add", "-A");
+  git("commit", "--quiet", "-m", "add file");
+  return root;
+}
 
 /** Shorthand: turn `"A src/lib/x.ts"` pairs into diff records. */
 function changes(...pairs) {
@@ -141,6 +170,30 @@ describe("PR changelog fragment gate", () => {
     expect(isCodeBearing(["prisma/schema.prisma"])).toBe(true);
     expect(isCodeBearing(["docs/x.md", "scripts/ci/y.mjs", "e2e/z.spec.ts"])).toBe(false);
     expect(isCodeBearing(["src/lib/__tests__/a.test.ts"])).toBe(false);
+  });
+
+  /*
+    A gate that cannot see a file cannot judge it. Git quotes any path with a
+    non-ASCII byte by default, so `src/lib/café.ts` reaches the gate as
+    `"src/lib/caf\303\251.ts"` — which `^(?:src|prisma)/` does not match. The PR
+    then looks like it changed no application source and is waved through with
+    no changelog entry at all. Real git, real accented filename, real diff.
+  */
+  it("classifies a non-ASCII source path instead of failing open on git's quoting", () => {
+    const root = makeRepoAdding("src/lib/café.ts");
+    try {
+      const raw = gitDiffChangedFiles("HEAD~1", "HEAD", { nameStatus: true, cwd: root });
+      expect(raw).toContain("src/lib/café.ts");
+      expect(raw).not.toContain("\\303");
+      const parsed = parseNameStatus(raw);
+      expect(parsed).toEqual([{ status: "A", path: "src/lib/café.ts" }]);
+      expect(isCodeBearing(parsed.map((change) => change.path))).toBe(true);
+      expect(() => validateChangelogFragment(EMPTY_BODY, parsed)).toThrow(
+        /needs a changelog entry/,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   // The marker must never be pre-filled into the template: a body that always

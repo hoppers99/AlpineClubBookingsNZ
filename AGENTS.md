@@ -498,9 +498,12 @@ handed an epic-with-children or asked to run several related issues at once.
   caveat as an open loop never terminates. Each item is resolved, or written into
   the PR as a stated limit with its reasoning. It does not spawn another agent.
 - **Price the delay, because someone pays it.** Every hour a PR sits unready,
-  `main` moves under it: a `CHANGELOG.md` conflict at minimum, and on a schema
-  lane a migration-timestamp collision that fails `Migration drift check` and
-  `verify` together — each costing a re-resolve plus a full CI cycle. Optimise
+  `main` moves under it. The changelog no longer contributes: entries are per-PR
+  `changelog.d/` fragments (#2452) and `CHANGELOG.md` is `merge=union` (#2451),
+  so that daily conflict is gone. What is left still costs — a shared doc, test
+  matrix or workflow hunk two lanes both edited, and on a schema lane a
+  migration-timestamp collision that fails `Migration drift check` and `verify`
+  together, each costing a re-resolve plus a full CI cycle. Optimise
   **time-to-ready**, and get sibling PRs ready in the same window rather than
   serially, since each merge re-conflicts every branch still open behind it.
 

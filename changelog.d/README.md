@@ -71,6 +71,26 @@ The marker is deliberately **not** pre-filled into
 `.github/pull_request_template.md`. A marker present in every pull request body
 would switch the gate off for everyone.
 
+## What the gate treats as "code-bearing" (a recorded decision)
+
+`scripts/ci/check-pr-changelog-fragment.mjs` asks for an entry when a pull
+request changes a non-test file under **`src/`** or **`prisma/`** — nothing
+else. That definition is deliberately **identical to the one the concurrency
+gate uses** (`scripts/ci/check-pr-concurrency-declaration.mjs`), so "this PR
+carries application code" means exactly one thing across both gates, and a
+future change to one has to be made to the other on purpose.
+
+The cost of that choice is real and accepted: a change that only touches
+`next.config.ts`, `sentry.*.config.ts`, `deploy/`, `scripts/`, `e2e/`,
+`.github/workflows/`, `middleware.ts` or `package.json` can be user-visible —
+a changed security header, a new deploy step, a dependency bump an operator
+must know about — and the gate will **not** ask for an entry. Write the fragment
+anyway when the change has something to tell a reader; the gate is a floor, not
+the standard. Widening the definition instead would fail a large class of PRs
+that genuinely need no entry (every workflow tweak, every test-harness change),
+and the noise would train everyone to reach for the no-entry marker, which is
+the one outcome that switches the gate off in practice.
+
 ## Compiling a release
 
 From the release-prep branch (see `docs/MAINTENANCE.md`, "Public Reference
@@ -87,3 +107,19 @@ with every fragment in filename order (numeric parts compared as numbers, so
 under `## Unreleased`, deletes the fragments it consumed, and prints what it
 did. The date defaults to today in New Zealand; pass one as the second argument
 to override it. Historical sections are never rewritten.
+
+Two things under `## Unreleased` are **not** entries, and the compiler tells
+them apart by marker rather than by position:
+
+- The pointer note ("entries live in `changelog.d/`") is wrapped in
+  `<!-- changelog-pointer-note:start -->` / `<!-- changelog-pointer-note:end -->`.
+  Leave those comments in place. They exist because `CHANGELOG.md` is
+  `merge=union`: a branch still writing its entry directly under
+  `## Unreleased` can land that entry *above* the note, and a compiler that
+  guessed by position would then publish the note inside a release section and
+  delete it from `## Unreleased` for good. Anchored, the note is recognised
+  wherever it sits and is rewritten directly under the heading every time.
+- Anything else that is neither the note nor a `- ` bullet is left exactly where
+  it is and reported with a loud `WARNING: unrecognised content left under
+  "## Unreleased"`. Nothing is released and nothing is deleted — read the
+  warning and either move the text into a fragment or wrap it in the sentinels.

@@ -6,11 +6,15 @@ import {
   compareFragmentNames,
   compileChangelog,
   parseArgs,
+  POINTER_NOTE_END,
+  POINTER_NOTE_START,
   readFragments,
   todayInNewZealand,
 } from "./compile-changelog.mjs";
 
-const NOTE = "Entries for the next release live in `changelog.d/` — one file per PR.";
+const NOTE_BODY = "Entries for the next release live in `changelog.d/` — one file per PR.";
+/** The note exactly as CHANGELOG.md carries it: prose inside its sentinels. */
+const NOTE = [POINTER_NOTE_START, "", NOTE_BODY, "", POINTER_NOTE_END].join("\n");
 
 const HISTORY = [
   "## 0.13.2 - 2026-07-23",
@@ -153,6 +157,155 @@ describe("compile-changelog", () => {
     // Nothing is left under Unreleased except the pointer note.
     expect(compiled).toContain(`## Unreleased\n\n${NOTE}\n\n## 0.14.0`);
     expect(log.text()).toContain("Folded in the entries");
+  });
+
+  /*
+    THE INVERTED-ORDER CASE, and the reason the note is sentinel-anchored.
+
+    `CHANGELOG.md` is `merge=union` (#2451). Merging a branch that still writes
+    its entry directly under `## Unreleased` can therefore put that entry ABOVE
+    the pointer note — reproduced with real git: the branch side of a union
+    merge wins the position. A compiler that split the section positionally
+    ("everything above the first bullet is the note") would then read the note
+    as part of the entries: it would be published inside the release section AND
+    deleted from `## Unreleased` for good, with no error and nothing to notice.
+  */
+  it("keeps the pointer note in place when an entry sits above it (union-merge order)", () => {
+    const inverted = [
+      "# Changelog",
+      "",
+      "All notable public reference-release changes should be recorded here.",
+      "",
+      "## Unreleased",
+      "",
+      "- **An entry a union merge landed above the note (#2400).** First paragraph.",
+      "",
+      "  A continuation paragraph that belongs to the same entry.",
+      "",
+      NOTE,
+      "",
+      HISTORY,
+    ].join("\n");
+    const root = makeRepo({
+      changelog: inverted,
+      fragments: { "2452-fragments.md": "- **A fragment entry (#2452).** Body.\n" },
+    });
+
+    compileChangelog({ repoRoot: root, version: "0.14.0", date: "2026-08-04", log: silentLog() });
+
+    const compiled = read(root);
+    // 1. The note survives, re-emitted canonically directly under Unreleased.
+    expect(compiled).toContain(`## Unreleased\n\n${NOTE}\n\n## 0.14.0 - 2026-08-04`);
+    // 2. It never enters the release section.
+    const section = compiled.slice(compiled.indexOf("## 0.14.0"), compiled.indexOf("## 0.13.2"));
+    expect(section).not.toContain(POINTER_NOTE_START);
+    expect(section).not.toContain(NOTE_BODY);
+    // The entry that was above it is released, continuation and all.
+    expect(section).toContain("(#2400)");
+    expect(section).toContain("A continuation paragraph that belongs to the same entry.");
+    expect(section).toContain("(#2452)");
+    // And the note exists exactly once in the whole file — not duplicated.
+    expect(compiled.split(POINTER_NOTE_START).length - 1).toBe(1);
+  });
+
+  it("restores the pointer note when Unreleased has lost it", () => {
+    const root = makeRepo({
+      changelog: [
+        "# Changelog",
+        "",
+        "## Unreleased",
+        "",
+        "- **An entry with no pointer note above it (#2400).** Body.",
+        "",
+        HISTORY,
+      ].join("\n"),
+    });
+    const log = silentLog();
+
+    compileChangelog({ repoRoot: root, version: "0.14.0", date: "2026-08-04", log });
+
+    const compiled = read(root);
+    expect(compiled).toContain(`## Unreleased\n\n${POINTER_NOTE_START}\n`);
+    expect(compiled).toContain("changelog.d/README.md");
+    expect(compiled.indexOf(POINTER_NOTE_END)).toBeLessThan(compiled.indexOf("## 0.14.0"));
+    expect(log.text()).toContain("Restored the changelog.d pointer note");
+  });
+
+  it("warns loudly about unrecognised content under Unreleased instead of silently keeping it", () => {
+    const stray = "TODO: someone please turn the refund fix into a proper entry.";
+    const root = makeRepo({
+      changelog: changelogWith(`${stray}\n\n- **A real entry (#2400).** Body.`),
+    });
+    const log = silentLog();
+
+    compileChangelog({ repoRoot: root, version: "0.14.0", date: "2026-08-04", log });
+
+    expect(log.text()).toContain('WARNING: unrecognised content left under "## Unreleased"');
+    expect(log.text()).toContain(stray);
+    const compiled = read(root);
+    // Neither released...
+    const section = compiled.slice(compiled.indexOf("## 0.14.0"), compiled.indexOf("## 0.13.2"));
+    expect(section).not.toContain(stray);
+    expect(section).toContain("(#2400)");
+    // ...nor deleted: it stays under Unreleased, below the note.
+    expect(compiled).toContain(`${NOTE}\n\n${stray}\n\n## 0.14.0 - 2026-08-04`);
+  });
+
+  it("refuses to guess when the pointer-note sentinel is malformed", () => {
+    const unterminated = makeRepo({
+      changelog: [
+        "# Changelog",
+        "",
+        "## Unreleased",
+        "",
+        POINTER_NOTE_START,
+        "",
+        NOTE_BODY,
+        "",
+        HISTORY,
+      ].join("\n"),
+      fragments: { "2452-fragments.md": "- **Entry (#2452).**\n" },
+    });
+    expect(() =>
+      compileChangelog({
+        repoRoot: unterminated,
+        version: "0.14.0",
+        date: "2026-08-04",
+        log: silentLog(),
+      }),
+    ).toThrow(/unterminated/);
+
+    const duplicated = makeRepo({
+      changelog: changelogWith(NOTE),
+      fragments: { "2452-fragments.md": "- **Entry (#2452).**\n" },
+    });
+    expect(() =>
+      compileChangelog({
+        repoRoot: duplicated,
+        version: "0.14.0",
+        date: "2026-08-04",
+        log: silentLog(),
+      }),
+    ).toThrow(/more than one/);
+  });
+
+  it("keeps the real CHANGELOG.md pointer note inside its sentinels", () => {
+    const real = fs.readFileSync(
+      path.resolve(import.meta.dirname, "..", "..", "CHANGELOG.md"),
+      "utf8",
+    );
+    const unreleased = real.slice(
+      real.indexOf("## Unreleased"),
+      real.indexOf("\n## ", real.indexOf("## Unreleased") + 1),
+    );
+    expect(unreleased).toContain(POINTER_NOTE_START);
+    expect(unreleased).toContain(POINTER_NOTE_END);
+    expect(unreleased.indexOf(POINTER_NOTE_START)).toBeLessThan(
+      unreleased.indexOf("changelog.d/README.md"),
+    );
+    expect(unreleased.indexOf("changelog.d/README.md")).toBeLessThan(
+      unreleased.indexOf(POINTER_NOTE_END),
+    );
   });
 
   it("is a no-op with a clear message when there is nothing to compile", () => {

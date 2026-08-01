@@ -18,11 +18,15 @@
  *
  * Runs before `npm ci` in the `verify` job, so it uses Node built-ins only.
  */
-import { execFileSync } from "node:child_process";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 
-import { fetchLivePrBody, parseNameStatus, selectPrBody } from "./pr-body.mjs";
+import {
+  fetchLivePrBody,
+  gitDiffChangedFiles,
+  parseNameStatus,
+  selectPrBody,
+} from "./pr-body.mjs";
 
 const GATE_LABEL = "PR changelog fragment check";
 
@@ -113,11 +117,7 @@ if (invokedPath === import.meta.url) {
         "PR_BASE_SHA and PR_HEAD_SHA must both be set so the changed files can be classified.",
       );
     }
-    const changes = parseNameStatus(
-      execFileSync("git", ["diff", "--name-status", `${base}...${head}`], {
-        encoding: "utf8",
-      }),
-    );
+    const changes = parseNameStatus(gitDiffChangedFiles(base, head, { nameStatus: true }));
     const fetchedBody = await fetchLivePrBody(GATE_LABEL);
     const body = selectPrBody({ fetchedBody, eventBody: process.env.PR_BODY });
     const { outcome } = validateChangelogFragment(body, changes);

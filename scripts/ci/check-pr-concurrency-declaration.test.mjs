@@ -1,6 +1,8 @@
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import {
   REQUIRED_FIELDS,
@@ -8,9 +10,36 @@ import {
 } from "./check-pr-concurrency-declaration.mjs";
 // `selectPrBody` moved to the shared PR-body module when the changelog fragment
 // gate (#2452) needed the same live-body behaviour; its contract is unchanged.
-import { selectPrBody } from "./pr-body.mjs";
+// `gitDiffChangedFiles` is the shared diff invocation both gates now use.
+import { gitDiffChangedFiles, selectPrBody } from "./pr-body.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+/**
+ * A throwaway two-commit repo whose second commit adds `relPath`. `core.quotePath`
+ * is pinned to git's DEFAULT (true) locally, so the `-c core.quotePath=false` in
+ * `gitDiffChangedFiles` — a command-line `-c` beats local config — is the only
+ * thing keeping a non-ASCII path from arriving C-quoted. The same fixture exists
+ * in `check-pr-changelog-fragment.test.mjs`.
+ */
+function makeRepoAdding(relPath) {
+  const root = mkdtempSync(join(tmpdir(), "quoted-path-gate-"));
+  const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8" });
+  git("init", "--quiet");
+  git("config", "user.email", "gate-test@example.invalid");
+  git("config", "user.name", "Gate Test");
+  git("config", "commit.gpgsign", "false");
+  git("config", "core.quotePath", "true");
+  git("config", "core.autocrlf", "false");
+  writeFileSync(join(root, "seed.txt"), "seed\n");
+  git("add", "-A");
+  git("commit", "--quiet", "-m", "seed");
+  mkdirSync(join(root, dirname(relPath)), { recursive: true });
+  writeFileSync(join(root, relPath), "export const value = 1;\n");
+  git("add", "-A");
+  git("commit", "--quiet", "-m", "add file");
+  return root;
+}
 
 const heading = "## Concurrency And Lock Impact";
 const complete = `${heading}
@@ -128,6 +157,33 @@ describe("PR concurrency declaration gate", () => {
         "src/lib/booking-cancel.ts",
       ]),
     ).toThrow(/cannot use N\/A/);
+  });
+
+  /*
+    The sharper half of the same defect as in the changelog gate: git quotes any
+    path holding a non-ASCII byte by default, so a booking/payment file named
+    `src/lib/booking-café.ts` reaches this gate as `"src/lib/booking-caf\303\251.ts"`.
+    `SENSITIVE_PATH` is anchored at `^src/`, so the quoted form matches nothing —
+    the gate stops seeing a concurrency-sensitive change and accepts a bare
+    `[x] N/A` on a PR that moves money or capacity. Real git, real accented
+    filename, real diff.
+  */
+  it("sees a non-ASCII sensitive path instead of failing open on git's quoting", () => {
+    const root = makeRepoAdding("src/lib/booking-café.ts");
+    try {
+      const changedFiles = gitDiffChangedFiles("HEAD~1", "HEAD", { cwd: root })
+        .split(/\r?\n/)
+        .filter(Boolean);
+      expect(changedFiles).toEqual(["src/lib/booking-café.ts"]);
+      expect(() =>
+        validateConcurrencyDeclaration(
+          `${heading}\n\n- [x] N/A — no impact.\n`,
+          changedFiles,
+        ),
+      ).toThrow(/cannot use N\/A/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("selectPrBody prefers a successfully fetched live body over the event payload", () => {

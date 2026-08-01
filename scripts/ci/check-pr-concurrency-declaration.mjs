@@ -1,7 +1,6 @@
-import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
-import { fetchLivePrBody, selectPrBody } from "./pr-body.mjs";
+import { fetchLivePrBody, gitDiffChangedFiles, selectPrBody } from "./pr-body.mjs";
 
 const HEADING = "## Concurrency And Lock Impact";
 
@@ -84,9 +83,7 @@ if (invokedPath === import.meta.url) {
     const head = process.env.PR_HEAD_SHA;
     const changedFiles =
       base && head
-        ? execFileSync("git", ["diff", "--name-only", `${base}...${head}`], {
-            encoding: "utf8",
-          })
+        ? gitDiffChangedFiles(base, head)
             .split(/\r?\n/)
             .filter(Boolean)
         : [];
