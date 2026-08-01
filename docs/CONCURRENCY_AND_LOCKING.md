@@ -146,6 +146,37 @@ takes only the second key, and no policy writer takes them in reverse, so this
 composition cannot form a cycle. The database statement trigger re-enters the
 second key during import DML.
 
+#### Which client reads the policy set
+
+`validateMinimumStay` (`booking-policies.ts`) takes an optional trailing `db`
+that defaults to the module-level Prisma client. The rule is one line: **a
+caller already inside `prisma.$transaction` MUST pass its own `tx`.** Two
+callers are in that position — `modifyBookingBatch`
+(`booking-batch-modification-service.ts`) and `modifyBookingDates`
+(`booking-date-modification-service.ts`) — and both run the check while holding
+`pg_advisory_xact_lock(1)` **and** the per-lodge capacity lock. Reading through
+the module client there checks out a **second pool connection underneath both
+locks**, which is the pool-starvation shape the ordering rule at the top of
+`member-guest-add-policy.ts` exists to forbid: under load every connection can
+end up held by a transaction waiting for a connection. Passing `tx` also gives
+the check the transaction's own snapshot instead of a second, later one.
+
+Every other caller is deliberately OUTSIDE a transaction and keeps the default:
+booking create, both public group-join stages, the member group join, the two
+waitlist-offer confirm paths, the advisory modify quote, and the policy-check
+route. Those are pre-write checks with no lock held, so the module client is
+correct and cheapest there. The residual window between such a read and the
+claim that follows it is milliseconds and is the same footing every other
+pre-write policy check on those paths sits on.
+
+This is a **pool** argument, not a lock-order one: no minimum-stay policy writer
+ever takes a per-lodge capacity lock, and no booking path takes the policy-set
+key, so the two keyspaces are disjoint and cannot deadlock in either order.
+`booking-batch-modification-minimum-stay.test.ts` and
+`booking-date-modification-minimum-stay.test.ts` each pin their call site to the
+transaction client so a future edit cannot silently reintroduce the second
+connection.
+
 ### Composition: application-approval mapping (E10, #1936)
 
 The membership-application approval transaction is the one writer that composes

@@ -402,10 +402,15 @@ export async function modifyBookingBatch({
       const { validateMinimumStay, formatViolationsDetail } = await import(
         "@/lib/booking-policies"
       );
+      // `tx`, never the module client: this runs under BOTH the global money
+      // lock and the per-lodge capacity lock, so a read on a second pool
+      // connection here is the pool-starvation shape `member-guest-add-policy.ts`
+      // forbids. See docs/CONCURRENCY_AND_LOCKING.md → minimum-stay composition.
       const stayResult = await validateMinimumStay(
         dates.newCheckIn,
         dates.newCheckOut,
         bookingLodgeId,
+        tx,
       );
       if (!stayResult.valid) {
         throw new MinimumStayPolicyViolationError(

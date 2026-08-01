@@ -399,10 +399,14 @@ export async function modifyBookingDates({
 
     if (actor.role !== "ADMIN") {
       const { validateMinimumStay, formatViolationsDetail } = await import("@/lib/booking-policies");
+      // `tx`, never the module client — see the composition rule on
+      // `validateMinimumStay`: this check runs inside the transaction that
+      // already holds the global money lock and the per-lodge capacity lock.
       const stayResult = await validateMinimumStay(
         newCheckIn,
         newCheckOut,
         bookingLodgeId,
+        tx,
       );
       if (!stayResult.valid) {
         throw new MinimumStayPolicyViolationError(

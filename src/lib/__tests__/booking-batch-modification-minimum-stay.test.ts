@@ -133,14 +133,17 @@ function loadedBooking() {
   };
 }
 
+/** The exact client the service runs its transaction body on. */
+let txClient: Record<string, unknown>;
+
 beforeEach(() => {
   vi.clearAllMocks();
+  txClient = {
+    $executeRaw: h.executeRaw,
+    booking: { findUnique: h.bookingFindUnique },
+  };
   h.transaction.mockImplementation(
-    async (callback: (tx: unknown) => Promise<unknown>) =>
-      callback({
-        $executeRaw: h.executeRaw,
-        booking: { findUnique: h.bookingFindUnique },
-      }),
+    async (callback: (tx: unknown) => Promise<unknown>) => callback(txClient),
   );
   h.bookingFindUnique
     .mockResolvedValueOnce({ lodgeId: LODGE_B })
@@ -194,6 +197,7 @@ describe("modifyBookingBatch minimum-stay enforcement (#2363)", () => {
       shortCheckIn,
       shortCheckOut,
       LODGE_B,
+      txClient,
     );
     // Nothing downstream ran: no guest plan, so no pricing and no capacity
     // check or claim for a stay the policy refuses.
@@ -215,6 +219,30 @@ describe("modifyBookingBatch minimum-stay enforcement (#2363)", () => {
 
     expect(h.validateMinimumStay).toHaveBeenCalledTimes(1);
     expect(h.prepareGuestPlan).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads the policy set on the TRANSACTION'S OWN client, never the module pool", async () => {
+    // This check runs while the transaction holds pg_advisory_xact_lock(1) AND
+    // the per-lodge capacity lock. Letting `validateMinimumStay` fall back to
+    // its module-level default would check out a second pool connection under
+    // both of them — the pool-starvation shape the ordering rule at the top of
+    // `member-guest-add-policy.ts` forbids, pinned for its own read by
+    // `member-guest-boundary-gate.test.ts`. The composition rule lives in
+    // docs/CONCURRENCY_AND_LOCKING.md.
+    await expect(
+      modifyBookingBatch({
+        bookingId: "booking-1",
+        actor: { id: "member-1", role: "USER" },
+        input: {
+          checkIn: formatDateOnly(storedCheckIn),
+          checkOut: formatDateOnly(addDaysDateOnly(getTodayDateOnly(), 34)),
+        },
+        ipAddress: "127.0.0.1",
+      }),
+    ).rejects.toThrow(GUEST_PLAN_SENTINEL);
+
+    const [, , , db] = h.validateMinimumStay.mock.calls[0] ?? [];
+    expect(db).toBe(txClient);
   });
 
   it("never blocks an ADMIN edit — including an admin editing on behalf of the member", async () => {
@@ -335,6 +363,7 @@ describe("modifyBookingBatch minimum-stay enforcement (#2363)", () => {
       storedCheckIn,
       storedCheckOut,
       LODGE_B,
+      txClient,
     );
   });
 });

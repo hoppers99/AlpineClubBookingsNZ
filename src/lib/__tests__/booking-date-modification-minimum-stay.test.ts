@@ -57,14 +57,17 @@ import { MinimumStayPolicyViolationError } from "@/lib/booking-policy-exceptions
 const D = (value: string) => new Date(`${value}T00:00:00.000Z`);
 
 describe("modifyBookingDates minimum-stay transport (#2363)", () => {
+  /** The exact client the service runs its transaction body on. */
+  let txClient: Record<string, unknown>;
+
   beforeEach(() => {
     vi.clearAllMocks();
+    txClient = {
+      $executeRaw: h.executeRaw,
+      booking: { findUnique: h.bookingFindUnique },
+    };
     h.transaction.mockImplementation(
-      async (callback: (tx: unknown) => Promise<unknown>) =>
-        callback({
-          $executeRaw: h.executeRaw,
-          booking: { findUnique: h.bookingFindUnique },
-        }),
+      async (callback: (tx: unknown) => Promise<unknown>) => callback(txClient),
     );
     h.bookingFindUnique
       .mockResolvedValueOnce({ lodgeId: "lodge-b" })
@@ -139,8 +142,34 @@ describe("modifyBookingDates minimum-stay transport (#2363)", () => {
       D("2027-09-02"),
       D("2027-09-04"),
       "lodge-b",
+      txClient,
     );
     expect(h.checkCapacity).not.toHaveBeenCalled();
     expect(h.checkCapacityForGuestRanges).not.toHaveBeenCalled();
+  });
+
+  it("reads the policy set on the TRANSACTION'S OWN client, never the module pool", async () => {
+    // Same rule as the live `modifyBookingBatch` sibling: this check runs while
+    // the transaction holds pg_advisory_xact_lock(1) and the per-lodge capacity
+    // lock, so falling back to the module-level default would take a second pool
+    // connection under both. See docs/CONCURRENCY_AND_LOCKING.md → minimum-stay
+    // composition, and `member-guest-add-policy.ts` for the ordering rule.
+    h.validateMinimumStay.mockResolvedValue({ valid: true, violations: [] });
+    h.checkCapacityForGuestRanges.mockResolvedValue({
+      available: true,
+      fullNights: [],
+    });
+    h.checkCapacity.mockResolvedValue({ available: true, fullNights: [] });
+
+    await modifyBookingDates({
+      bookingId: "booking-1",
+      actor: { id: "member-1", role: "USER" },
+      input: { checkIn: "2027-09-02", checkOut: "2027-09-04" },
+      ipAddress: "127.0.0.1",
+    }).catch(() => undefined);
+
+    expect(h.validateMinimumStay).toHaveBeenCalledTimes(1);
+    const [, , , db] = h.validateMinimumStay.mock.calls[0] ?? [];
+    expect(db).toBe(txClient);
   });
 });
