@@ -3,24 +3,36 @@ import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { resolveOptionalActiveLodgeId } from "@/lib/lodges";
 import { z } from "zod";
-import { BookingStatus, SubscriptionStatus } from "@prisma/client";
+import {
+  BookingStatus,
+  PaymentTransactionKind,
+  SubscriptionStatus,
+} from "@prisma/client";
 import { isAdditionalPaymentOwed } from "@/lib/additional-payment-chase";
+import { summarizeAdditionalLedgerGap } from "@/lib/additional-ledger-gap";
 import { getOccupiedBedsForNight } from "@/lib/capacity";
 import { resolveMetricsCapacityAndScope } from "@/lib/finance-booking-metrics";
-import { eachDayOfInterval, format } from "date-fns";
 import logger from "@/lib/logger";
-import { buildRevenueSeries } from "@/lib/admin-reports";
+import {
+  buildBookingTrendSeries,
+  buildRevenueSeries,
+  REPORT_BOOKING_STATUSES,
+  summarizeNetCollectedCash,
+  summarizeOverlappingGuests,
+} from "@/lib/admin-reports";
 import { getSeasonYear } from "@/lib/utils";
 import {
   OPERATIONAL_STAY_BOOKING_STATUSES,
-  PAYMENT_OWED_BOOKING_STATUSES,
 } from "@/lib/booking-status";
 import {
   buildBookingDeletedWhere,
   parseBookingDeletedVisibility,
 } from "@/lib/booking-delete-visibility";
 import {
+  addDaysDateOnly,
+  eachDateOnlyInRange,
   endOfDateOnlyForTimeZone,
+  formatDateOnly,
   parseDateOnly,
   startOfDateOnlyForTimeZone,
 } from "@/lib/date-only";
@@ -33,6 +45,8 @@ const reportQuerySchema = z.object({
   // is the summed active-lodge capacity); a value scopes to that lodge.
   lodgeId: z.string().min(1).optional(),
 });
+
+const MAX_LOGGED_LEDGER_GAP_BOOKINGS = 20;
 
 export async function GET(request: NextRequest) {
   const guard = await requireAdmin();
@@ -84,7 +98,6 @@ export async function GET(request: NextRequest) {
 
     const [
       bookings,
-      occupancyBookings,
       totalActiveMembers,
       paidMembers,
       unpaidMembers,
@@ -94,23 +107,38 @@ export async function GET(request: NextRequest) {
       prisma.booking.findMany({
         where: {
           ...deletedWhere,
-          createdAt: { gte: fromDate, lte: toDate },
+          ...bookingLodgeWhere,
+          // Selected report dates are inclusive; booking lodge nights are the
+          // half-open [checkIn, checkOut) range.
+          checkIn: { lte: occupancyToDate },
+          checkOut: { gt: occupancyFromDate },
+          status: { in: [...REPORT_BOOKING_STATUSES] },
         },
         include: {
-          guests: true,
-          payment: true,
+          guests: { include: { nights: true } },
+          payment: {
+            select: {
+              status: true,
+              amountCents: true,
+              refundedAmountCents: true,
+              additionalAmountCents: true,
+              additionalPaymentStatus: true,
+              // #2408: the cash figure continues to come from amountCents. We
+              // load only ADDITIONAL ledger evidence so Reports can surface the
+              // same possible-understatement guard as Finance without
+              // rebuilding cash or returning transaction rows.
+              transactions: {
+                where: { kind: PaymentTransactionKind.ADDITIONAL },
+                select: {
+                  kind: true,
+                  status: true,
+                  amountCents: true,
+                },
+              },
+            },
+          },
         },
-        orderBy: { createdAt: "asc" },
-      }),
-      prisma.booking.findMany({
-        where: {
-          ...deletedWhere,
-          ...bookingLodgeWhere,
-          checkIn: { lte: toDate },
-          checkOut: { gte: fromDate },
-          status: { in: [...OPERATIONAL_STAY_BOOKING_STATUSES] },
-        },
-        include: { guests: true },
+        orderBy: [{ checkIn: "asc" }, { id: "asc" }],
       }),
       prisma.member.count({
         where: {
@@ -153,7 +181,10 @@ export async function GET(request: NextRequest) {
     ]);
 
     // 1. Occupancy by date
-    const days = eachDayOfInterval({ start: occupancyFromDate, end: occupancyToDate });
+    const days = eachDateOnlyInRange(
+      occupancyFromDate,
+      addDaysDateOnly(occupancyToDate, 1),
+    );
 
     // Custodian occupancy (#2286) is deliberately EXCLUDED here. Utilisation
     // reporting measures how much the lodge was BOOKED, so a bed held for a
@@ -163,10 +194,15 @@ export async function GET(request: NextRequest) {
     // slightly low against the lodge's true fullness. Every ADMISSION path and
     // the capacity-warnings cron count the custodian; only this report and the
     // other utilisation surfaces do not.
+    const occupancyBookings = bookings.filter((booking) =>
+      (OPERATIONAL_STAY_BOOKING_STATUSES as readonly string[]).includes(
+        booking.status,
+      ),
+    );
     const occupancyByDate = days.map((day) => {
       const beds = getOccupiedBedsForNight(day, occupancyBookings);
       return {
-        date: format(day, "yyyy-MM-dd"),
+        date: formatDateOnly(day),
         occupiedBeds: beds,
         availableBeds: lodgeCapacity - beds,
         occupancyRate:
@@ -177,70 +213,53 @@ export async function GET(request: NextRequest) {
     // 2. Revenue by dynamic granularity
     const revenueSeries = buildRevenueSeries(bookings, occupancyFromDate, occupancyToDate);
 
-    // 3. Booking trends by week
-    const bookingsByWeek: Record<string, { total: number; confirmed: number; cancelled: number; bumped: number; pending: number }> = {};
-    for (const b of bookings) {
-      // ISO week start (Monday) - use a copy to avoid mutation
-      const d = new Date(b.createdAt);
-      const day = d.getDay();
-      const diff = day === 0 ? -6 : 1 - day; // days to subtract to reach Monday
-      const weekStart = new Date(d);
-      weekStart.setDate(d.getDate() + diff);
-      const weekKey = format(weekStart, "yyyy-MM-dd");
-
-      if (!bookingsByWeek[weekKey]) {
-        bookingsByWeek[weekKey] = { total: 0, confirmed: 0, cancelled: 0, bumped: 0, pending: 0 };
-      }
-      bookingsByWeek[weekKey].total += 1;
-      if ((OPERATIONAL_STAY_BOOKING_STATUSES as readonly string[]).includes(b.status)) {
-        bookingsByWeek[weekKey].confirmed += 1;
-      } else if (b.status === BookingStatus.CANCELLED) {
-        bookingsByWeek[weekKey].cancelled += 1;
-      } else if (b.status === BookingStatus.BUMPED) {
-        bookingsByWeek[weekKey].bumped += 1;
-      } else if (
-        b.status === BookingStatus.PENDING ||
-        (PAYMENT_OWED_BOOKING_STATUSES as readonly string[]).includes(b.status)
-      ) {
-        bookingsByWeek[weekKey].pending += 1;
-      }
-    }
-
-    const trendData = Object.entries(bookingsByWeek)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([week, data]) => ({
-        week,
-        ...data,
-      }));
-
-    // 4. Member vs non-member split
-    let memberGuests = 0;
-    let nonMemberGuests = 0;
-    for (const b of bookings) {
-      if (b.status === BookingStatus.CANCELLED || b.status === BookingStatus.BUMPED) continue;
-      for (const g of b.guests) {
-        if (g.isMember) memberGuests++;
-        else nonMemberGuests++;
-      }
-    }
-
-    // 5. Summary stats
-    const activeBookings = bookings.filter(
-      (b) => b.status !== BookingStatus.CANCELLED && b.status !== BookingStatus.BUMPED
+    // 3. Booking trends by overlapped stay week. A booking spanning several
+    // nights is counted once in each touched week, never once per night.
+    const trendData = buildBookingTrendSeries(
+      bookings,
+      occupancyFromDate,
+      occupancyToDate,
     );
-    // What the club BOOKED, not what it collected: the sum of every active
-    // booking's final price, whether or not the money has arrived. #2350 named
-    // the figure honestly rather than changing it, and added the shortfall
-    // beside it.
-    const totalRevenueCents = activeBookings.reduce((sum, b) => sum + b.finalPriceCents, 0);
-    // #2350: upward changes whose extra was never collected. Counted separately
-    // — it is already inside totalRevenueCents (finalPriceCents includes the
-    // increase), so subtracting this from that is what "collected" looks like.
-    //
-    // Scoped by the SHARED owed predicate, which narrows this further than the
-    // revenue figure beside it: `activeBookings` is everything except CANCELLED
-    // and BUMPED, so it also holds DRAFT / PENDING / PAYMENT_PENDING /
-    // WAITLISTED / AWAITING_REVIEW bookings.
+
+    // 4. Distinct guest rows that stay at least one selected night.
+    const { totalGuests, memberGuests, nonMemberGuests } =
+      summarizeOverlappingGuests(bookings, occupancyFromDate, occupancyToDate);
+
+    // 5. Summary stats. Booked revenue is the selected stay-night slice; the
+    // allocator divided the WHOLE price first, preserving every integer cent.
+    const totalRevenueCents = revenueSeries.data.reduce(
+      (sum, bucket) => sum + bucket.revenueCents,
+      0,
+    );
+    // Collected cash is booking-level payment data, deliberately separate from
+    // stay-night revenue. Payment.amountCents already includes captured
+    // additions (#2408), so transaction-ledger reconstruction is forbidden.
+    const netCollectedCents = summarizeNetCollectedCash(
+      bookings.map((booking) => booking.payment),
+    );
+    const additionalLedgerGap = summarizeAdditionalLedgerGap(bookings);
+    if (additionalLedgerGap.bookingIds.length > 0) {
+      logger.error(
+        {
+          bookingIds: additionalLedgerGap.bookingIds.slice(
+            0,
+            MAX_LOGGED_LEDGER_GAP_BOOKINGS,
+          ),
+          bookingCount: additionalLedgerGap.additionalLedgerGapBookings,
+          additionalLedgerGapCents:
+            additionalLedgerGap.additionalLedgerGapCents,
+          netCollectedCents,
+        },
+        "Admin Reports: payments record a collected additional payment with no captured ADDITIONAL PaymentTransaction behind it. Net Collected Cash may understate by additionalLedgerGapCents. Reconcile those payments' ledgers (reconcilePaymentAggregates) before trusting the collected figure.",
+      );
+    }
+    // #2350: upward changes whose extra was never collected. This booking-level
+    // obligation remains visible as its own figure.
+    // Do not subtract this booking-level obligation from the selected
+    // stay-night revenue slice and call the result cash: payment state owns
+    // netCollectedCents. Scoped by the SHARED owed predicate, which narrows
+    // this further than the
+    // explicit positive report cohort.
     //
     // The narrowing is NOT a claim that those deltas are uncollectable — a
     // PAYMENT_PENDING booking's delta plainly is, and the member can still pay
@@ -250,7 +269,7 @@ export async function GET(request: NextRequest) {
     // without counting the same money twice (src/lib/unpaid-finished-stays.ts).
     // Using the predicate also keeps this number equal to the one the dashboard
     // card, the sidebar badge, the bookings list and the chase cron all report.
-    const outstandingAdditional = activeBookings.reduce(
+    const outstandingAdditional = bookings.reduce(
       (acc, b) => {
         if (!isAdditionalPaymentOwed({ bookingStatus: b.status, payment: b.payment }))
           return acc;
@@ -261,7 +280,6 @@ export async function GET(request: NextRequest) {
       },
       { bookings: 0, cents: 0 }
     );
-    const totalGuests = activeBookings.reduce((sum, b) => sum + b.guests.length, 0);
     const avgOccupancy =
       occupancyByDate.length > 0
         ? Math.round(
@@ -272,20 +290,27 @@ export async function GET(request: NextRequest) {
 
     // 6. Status breakdown
     const statusBreakdown = {
-      confirmed: bookings.filter((b) => b.status === BookingStatus.PAYMENT_PENDING || b.status === BookingStatus.CONFIRMED).length,
-      paid: bookings.filter((b) => b.status === BookingStatus.PAID).length,
-      completed: bookings.filter((b) => b.status === BookingStatus.COMPLETED).length,
       pending: bookings.filter((b) => b.status === BookingStatus.PENDING).length,
-      cancelled: bookings.filter((b) => b.status === BookingStatus.CANCELLED).length,
-      bumped: bookings.filter((b) => b.status === BookingStatus.BUMPED).length,
+      paymentPending: bookings.filter((b) => b.status === BookingStatus.PAYMENT_PENDING).length,
+      confirmed: bookings.filter((b) => b.status === BookingStatus.CONFIRMED).length,
+      paid: bookings.filter((b) => b.status === BookingStatus.PAID).length,
+      awaitingReview: bookings.filter((b) => b.status === BookingStatus.AWAITING_REVIEW).length,
+      completed: bookings.filter((b) => b.status === BookingStatus.COMPLETED).length,
     };
 
     return NextResponse.json({
       summary: {
-        totalBookings: activeBookings.length,
+        totalBookings: bookings.length,
         totalRevenueCents,
-        // #2350: booked-versus-collected, so an admin reading the revenue figure
-        // can see how much of it is still owing.
+        netCollectedCents,
+        // Aggregate warning data only. Transaction rows and booking ids remain
+        // server-side evidence and are never exposed by the Reports API.
+        additionalLedgerGapCents:
+          additionalLedgerGap.additionalLedgerGapCents,
+        additionalLedgerGapBookings:
+          additionalLedgerGap.additionalLedgerGapBookings,
+        // #2350: the actionable uncollected addition remains visible beside the
+        // separately-derived booked-revenue and collected-cash figures.
         outstandingAdditionalCents: outstandingAdditional.cents,
         outstandingAdditionalBookings: outstandingAdditional.bookings,
         totalGuests,

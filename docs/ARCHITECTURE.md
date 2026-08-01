@@ -2125,6 +2125,30 @@ connection, then stores `FinanceSnapshot` and `FinanceSyncRun` rows for page
 rendering. There is no separate finance Xero OAuth app, token store, callback
 route, or usage-metering table.
 
+The simpler Base Reports page at `/admin/reports` is first-party and stay-night
+based (#2368). One overlap query applies the selected lodge and deleted scope to
+the explicit positive current-status cohort `PENDING`, `PAYMENT_PENDING`,
+`CONFIRMED`, `PAID`, `AWAITING_REVIEW`, and `COMPLETED`; that same cohort owns
+distinct booking/guest totals, weekly trends, current-status breakdown, and
+booked revenue. Booking stay dates are `checkIn` inclusive / `checkOut`
+exclusive, while the selected From/To dates are inclusive. Guest totals use each
+guest row's own half-open `[stayStart, stayEnd)` envelope; sparse explicit guest
+night rows do not override that envelope for this metric.
+`Booking.finalPriceCents` is allocated
+deterministically over the booking's complete stay before the selected range is
+sliced, so $1.00 over three nights is 34/33/33 cents and a one-night slice keeps
+its original share. Booked revenue is therefore not collected cash. Net
+collected cash is a separate booking-level payment figure derived from captured
+`Payment.amountCents` less refunds (#2408), never rebuilt from transaction rows;
+outstanding additions remain separately visible (#2350). Reports selects only
+captured `ADDITIONAL` transaction evidence to reuse #2408's consistency guard:
+when a positive additional amount is marked succeeded without such evidence,
+cash arithmetic is unchanged, a bounded server log names the affected booking
+IDs, and the API returns only aggregate possible-gap cents/count for the page,
+CSV, and PDF warning. Money on those report surfaces is rendered to exact cents.
+Occupancy intentionally keeps the pre-existing PAID/COMPLETED-only utilisation
+and custodian-exclusion semantics.
+
 ### Address autocomplete
 
 Address autocomplete uses server-side Addy credentials only in
