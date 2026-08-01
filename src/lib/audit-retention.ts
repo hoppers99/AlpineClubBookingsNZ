@@ -1,4 +1,4 @@
-import { Prisma, PrismaClient } from "@prisma/client";
+import { type AuditLog, Prisma, PrismaClient } from "@prisma/client";
 import { createPrismaPgAdapter } from "@/lib/prisma-adapter";
 import {
   type AuditCategory,
@@ -21,34 +21,174 @@ const ARCHIVABLE_RETENTION_CLASSES: AuditRetentionClass[] = [
   "standard",
 ];
 
-const auditArchiveSelect = {
-  id: true,
-  action: true,
-  memberId: true,
-  targetId: true,
-  details: true,
-  ipAddress: true,
-  createdAt: true,
-  actorMemberId: true,
-  subjectMemberId: true,
-  entityType: true,
-  entityId: true,
-  category: true,
-  severity: true,
-  outcome: true,
-  summary: true,
-  metadata: true,
-  requestId: true,
-  userAgent: true,
-  retentionClass: true,
-  expiresAt: true,
-  archivedAt: true,
-  incidentPreserved: true,
-} satisfies Prisma.AuditLogSelect;
+// ---------------------------------------------------------------------------
+// Audit archive column manifest (#2290)
+//
+// Archived rows are DELETED from the main audit table, so any column the
+// archive forgets is gone permanently. This manifest is the single source of
+// truth for the three places that must never drift apart:
+//
+//   1. the Prisma `select` that reads eligible rows out of the main table,
+//   2. the `CREATE TABLE` that provisions the archive table, and
+//   3. the `INSERT` that writes each archived row.
+//
+// It is exhaustive by construction. The key type is derived from Prisma's
+// generated `AuditLogScalarFieldEnum` — the AuditLog model's own column list —
+// so adding a column to the model is a COMPILE ERROR here until that column is
+// either archived or deliberately excluded with a reason. The old
+// `satisfies Prisma.AuditLogSelect` only checked that the listed keys were
+// *valid*, never that they were *complete*, so a new column was silently
+// dropped on archival with nothing failing.
+//
+// `src/lib/__tests__/audit-archive-columns.test.ts` re-checks the same contract
+// at runtime against the DMMF, because the `CREATE TABLE` and `INSERT` column
+// lists are now derived from this one manifest rather than hand-maintained.
+// ---------------------------------------------------------------------------
 
-type AuditArchiveRow = Prisma.AuditLogGetPayload<{
-  select: typeof auditArchiveSelect;
-}>;
+/** Every scalar column the AuditLog model declares, straight from the schema. */
+type AuditLogColumn = keyof typeof Prisma.AuditLogScalarFieldEnum;
+
+/**
+ * Columns deliberately NOT copied into the archive, each mapped to the reason
+ * it is dropped.
+ *
+ * Empty today: all 22 AuditLog columns are archived. Only add an entry when
+ * dropping a column on archival is a deliberate decision, and write a reason
+ * that explains it to a future maintainer reconstructing an incident from a
+ * seven-year-old archive row — not "unused".
+ */
+export const AUDIT_ARCHIVE_EXCLUDED_COLUMNS = {} satisfies Partial<
+  Record<AuditLogColumn, string>
+>;
+
+type ExcludedAuditLogColumn = keyof typeof AUDIT_ARCHIVE_EXCLUDED_COLUMNS;
+
+/** Columns that must appear in the select, the CREATE TABLE, and the INSERT. */
+type ArchivedAuditLogColumn = Exclude<AuditLogColumn, ExcludedAuditLogColumn>;
+
+type AuditArchiveRow = Pick<AuditLog, ArchivedAuditLogColumn>;
+
+type AuditArchiveInsertContext = {
+  /**
+   * When the archive copy is being written (the job's clock). This is not the
+   * source row's own `archivedAt`, which is always null for an eligible row.
+   */
+  archivedAt: Date;
+  /** Incident-preserved rows keep their raw request data through archival. */
+  preserveRequestData: boolean;
+};
+
+type AuditArchiveColumnSpec = {
+  /** Column definition used verbatim by the archive `CREATE TABLE`. */
+  ddl: string;
+  /** SQL cast appended to the bound parameter in the `INSERT`, e.g. `::jsonb`. */
+  cast?: string;
+  /** Value written to the archive. Defaults to the source row's own value. */
+  value?: (row: AuditArchiveRow, context: AuditArchiveInsertContext) => unknown;
+};
+
+/**
+ * The archive contract, in main-table column order. Order is load-bearing: the
+ * `INSERT` column list and its bound values are both generated from this map's
+ * key order, so they can never disagree.
+ */
+export const AUDIT_ARCHIVE_COLUMNS: Record<
+  ArchivedAuditLogColumn,
+  AuditArchiveColumnSpec
+> = {
+  id: { ddl: "TEXT PRIMARY KEY" },
+  action: { ddl: "TEXT NOT NULL" },
+  memberId: { ddl: "TEXT" },
+  targetId: { ddl: "TEXT" },
+  details: {
+    ddl: "TEXT",
+    value: (row) => sanitizeAuditArchiveText(row.details),
+  },
+  ipAddress: {
+    ddl: "TEXT",
+    value: (row, context) =>
+      context.preserveRequestData
+        ? sanitizeAuditArchiveText(row.ipAddress)
+        : null,
+  },
+  createdAt: { ddl: "TIMESTAMP(3) NOT NULL" },
+  actorMemberId: { ddl: "TEXT" },
+  subjectMemberId: { ddl: "TEXT" },
+  entityType: { ddl: "TEXT" },
+  entityId: { ddl: "TEXT" },
+  category: { ddl: "TEXT" },
+  severity: { ddl: "TEXT" },
+  outcome: { ddl: "TEXT" },
+  summary: {
+    ddl: "TEXT",
+    value: (row) => sanitizeAuditArchiveText(row.summary),
+  },
+  metadata: {
+    ddl: "JSONB",
+    cast: "::jsonb",
+    value: (row) => sanitizeArchiveMetadata(row.metadata),
+  },
+  requestId: { ddl: "TEXT" },
+  userAgent: {
+    ddl: "TEXT",
+    value: (row, context) =>
+      context.preserveRequestData
+        ? sanitizeAuditArchiveText(row.userAgent)
+        : null,
+  },
+  retentionClass: { ddl: "TEXT" },
+  expiresAt: { ddl: "TIMESTAMP(3)" },
+  archivedAt: {
+    // NOT NULL in the archive even though it is nullable in the main table: the
+    // archive copy always records when it was archived.
+    ddl: "TIMESTAMP(3) NOT NULL",
+    value: (_row, context) => context.archivedAt,
+  },
+  incidentPreserved: { ddl: "BOOLEAN NOT NULL DEFAULT false" },
+};
+
+const AUDIT_ARCHIVE_COLUMN_NAMES = Object.keys(
+  AUDIT_ARCHIVE_COLUMNS
+) as ArchivedAuditLogColumn[];
+
+const auditArchiveSelect = Object.fromEntries(
+  AUDIT_ARCHIVE_COLUMN_NAMES.map((name) => [name, true])
+) as Record<ArchivedAuditLogColumn, true>;
+
+// The manifest is the only source of the SQL fragments below, and every entry is
+// a literal written in this file — no caller can reach it. These guards are
+// belt-and-braces so that the shift from hand-written SQL to generated SQL can
+// never become an injection surface, even if the manifest were later fed from
+// somewhere less trustworthy.
+const ARCHIVE_IDENTIFIER_PATTERN = /^[A-Za-z][A-Za-z0-9_]*$/;
+const ARCHIVE_COLUMN_DDL_PATTERN = /^[A-Za-z0-9_() ]+$/;
+const ARCHIVE_COLUMN_CAST_PATTERN = /^::[a-z][a-z0-9_]*$/;
+
+function archiveIdentifier(name: string): string {
+  if (!ARCHIVE_IDENTIFIER_PATTERN.test(name)) {
+    throw new Error(`Audit archive: unsafe column identifier "${name}"`);
+  }
+  return `"${name}"`;
+}
+
+function archiveColumnDefinition(name: ArchivedAuditLogColumn): string {
+  const { ddl } = AUDIT_ARCHIVE_COLUMNS[name];
+  if (!ARCHIVE_COLUMN_DDL_PATTERN.test(ddl)) {
+    throw new Error(`Audit archive: unsafe column definition for "${name}"`);
+  }
+  return `${archiveIdentifier(name)} ${ddl}`;
+}
+
+function archiveColumnCast(name: ArchivedAuditLogColumn): string | undefined {
+  const { cast } = AUDIT_ARCHIVE_COLUMNS[name];
+  if (cast === undefined) {
+    return undefined;
+  }
+  if (!ARCHIVE_COLUMN_CAST_PATTERN.test(cast)) {
+    throw new Error(`Audit archive: unsafe column cast for "${name}"`);
+  }
+  return cast;
+}
 
 type AuditRetentionDbClient = {
   auditLog: {
@@ -223,30 +363,16 @@ export async function anonymizeExpiredAuditRequestData(
 async function ensureAuditArchiveSchema(
   archiveDb: AuditArchiveDbClient
 ): Promise<void> {
+  // Column list generated from AUDIT_ARCHIVE_COLUMNS — see the manifest comment.
+  // This only provisions a *missing* archive table; an archive database that
+  // already exists does not gain a newly added column here. See
+  // docs/AUDIT_RETENTION_ARCHIVE_RUNBOOK.md → "Adding a column to AuditLog".
+  const columnDefinitions = AUDIT_ARCHIVE_COLUMN_NAMES.map(
+    (name) => `      ${archiveColumnDefinition(name)}`
+  ).join(",\n");
   await archiveDb.$executeRawUnsafe(`
     CREATE TABLE IF NOT EXISTS "AuditLogArchive" (
-      "id" TEXT PRIMARY KEY,
-      "action" TEXT NOT NULL,
-      "memberId" TEXT,
-      "targetId" TEXT,
-      "details" TEXT,
-      "ipAddress" TEXT,
-      "createdAt" TIMESTAMP(3) NOT NULL,
-      "actorMemberId" TEXT,
-      "subjectMemberId" TEXT,
-      "entityType" TEXT,
-      "entityId" TEXT,
-      "category" TEXT,
-      "severity" TEXT,
-      "outcome" TEXT,
-      "summary" TEXT,
-      "metadata" JSONB,
-      "requestId" TEXT,
-      "userAgent" TEXT,
-      "retentionClass" TEXT,
-      "expiresAt" TIMESTAMP(3),
-      "archivedAt" TIMESTAMP(3) NOT NULL,
-      "incidentPreserved" BOOLEAN NOT NULL DEFAULT false
+${columnDefinitions}
     )
   `);
   await archiveDb.$executeRawUnsafe(`
@@ -278,58 +404,30 @@ async function insertAuditArchiveRow(
   row: AuditArchiveRow,
   archivedAt: Date
 ): Promise<number> {
-  const preserveRequestData = row.incidentPreserved;
-  const metadataJson = sanitizeArchiveMetadata(row.metadata);
+  const context: AuditArchiveInsertContext = {
+    archivedAt,
+    preserveRequestData: row.incidentPreserved,
+  };
+
+  // Column list and bound values are both generated from AUDIT_ARCHIVE_COLUMNS
+  // in the same key order, so they cannot drift apart or omit a column.
+  const columns = Prisma.join(
+    AUDIT_ARCHIVE_COLUMN_NAMES.map((name) =>
+      Prisma.raw(archiveIdentifier(name))
+    )
+  );
+  const values = Prisma.join(
+    AUDIT_ARCHIVE_COLUMN_NAMES.map((name) => {
+      const spec = AUDIT_ARCHIVE_COLUMNS[name];
+      const value = spec.value ? spec.value(row, context) : row[name];
+      const cast = archiveColumnCast(name);
+      return cast ? Prisma.sql`${value}${Prisma.raw(cast)}` : Prisma.sql`${value}`;
+    })
+  );
 
   return archiveDb.$executeRaw(Prisma.sql`
-    INSERT INTO "AuditLogArchive" (
-      "id",
-      "action",
-      "memberId",
-      "targetId",
-      "details",
-      "ipAddress",
-      "createdAt",
-      "actorMemberId",
-      "subjectMemberId",
-      "entityType",
-      "entityId",
-      "category",
-      "severity",
-      "outcome",
-      "summary",
-      "metadata",
-      "requestId",
-      "userAgent",
-      "retentionClass",
-      "expiresAt",
-      "archivedAt",
-      "incidentPreserved"
-    )
-    VALUES (
-      ${row.id},
-      ${row.action},
-      ${row.memberId},
-      ${row.targetId},
-      ${sanitizeAuditArchiveText(row.details)},
-      ${preserveRequestData ? sanitizeAuditArchiveText(row.ipAddress) : null},
-      ${row.createdAt},
-      ${row.actorMemberId},
-      ${row.subjectMemberId},
-      ${row.entityType},
-      ${row.entityId},
-      ${row.category},
-      ${row.severity},
-      ${row.outcome},
-      ${sanitizeAuditArchiveText(row.summary)},
-      ${metadataJson}::jsonb,
-      ${row.requestId},
-      ${preserveRequestData ? sanitizeAuditArchiveText(row.userAgent) : null},
-      ${row.retentionClass},
-      ${row.expiresAt},
-      ${archivedAt},
-      ${row.incidentPreserved}
-    )
+    INSERT INTO "AuditLogArchive" (${columns})
+    VALUES (${values})
     ON CONFLICT ("id") DO NOTHING
   `);
 }
