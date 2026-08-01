@@ -4,8 +4,6 @@ import { auth } from "@/lib/auth";
 import { requireAdmin, requireActiveSessionUser } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { logAudit } from "@/lib/audit";
-import { hasAdminAreaAccess } from "@/lib/admin-permissions";
-import { MEMBER_ACCESS_ROLE_SELECT } from "@/lib/access-role-definitions";
 import {
   detectImageContentType,
   extractImageDimensions,
@@ -26,10 +24,12 @@ import { readCappedMultipartFormData } from "@/lib/capped-multipart";
  * (ADR-001, owner decision 3). Authorisation is enforced at the data layer:
  *
  * - GET is publicly (anonymously) servable **iff** the target member has a
- *   published, active `CommitteeAssignment` (their photo is committee-public);
- *   otherwise only the owning member or a membership admin may fetch it, and
- *   everyone else gets 404 (preferred over 403 so the endpoint never confirms
- *   whether a private photo exists).
+ *   published, active `CommitteeAssignment` (their photo is committee-public)
+ *   AND the club's `committeePhotoDisplay` setting is not `NONE`; otherwise only
+ *   the owning member or a membership admin may fetch it — through the same
+ *   shared session guards POST/DELETE use — and everyone else gets 404
+ *   (preferred over 403 so the endpoint never confirms whether a private photo
+ *   exists).
  * - POST/DELETE are gated to the owning member (self) or a membership-`edit`
  *   admin acting on their behalf. A plain member can only act on their own id
  *   (no IDOR).
@@ -41,12 +41,12 @@ import { readCappedMultipartFormData } from "@/lib/capped-multipart";
  * GPS coordinates onto a publicly-served committee photo.
  */
 
-// A member's photo is public exactly when the member holds an active, published
-// CommitteeAssignment to an active role (committee-membership) — per ADR-001,
-// that assignment is what gates serving. `committeePhotoDisplay` is PRESENTATIONAL
-// only (it controls whether the committee page renders the photo) and does NOT
-// gate whether this endpoint serves the bytes. Kept in lockstep with the
-// /api/committee visibility predicate.
+// A member's photo is anonymously servable exactly when the member holds an
+// active, published CommitteeAssignment to an active role (committee-membership)
+// — per ADR-001, that assignment is what gates serving — AND the club has opted
+// the public roster into photos (`committeePhotoDisplay != NONE`, checked in the
+// handler below). Kept in lockstep with the /api/committee visibility predicate,
+// which applies the same two conditions.
 const PUBLIC_COMMITTEE_ASSIGNMENT_FILTER = {
   published: true,
   isActive: true,
@@ -134,24 +134,44 @@ export async function GET(
   const isCommitteePublic =
     member.active && member.committeeAssignments.length > 0;
 
-  if (!isCommitteePublic) {
-    // Private photo: only the owning member or a membership viewer/admin.
+  // The club's roster-photo setting is the SECOND gate on anonymous serving.
+  // `NONE` (the schema default) is presented to the operator as "Don't show
+  // photos", so it has to stop the bytes being public — a takedown through that
+  // control must be real, not cosmetic. Only read it when the assignment gate
+  // already passed: a non-committee member never reaches the anonymous branch,
+  // so the extra query stays off the private path.
+  let servePublicly = isCommitteePublic;
+  if (servePublicly) {
+    const publicContentSettings = await prisma.publicContentSettings.findUnique({
+      where: { id: "default" },
+      select: { committeePhotoDisplay: true },
+    });
+    servePublicly =
+      (publicContentSettings?.committeePhotoDisplay ?? "NONE") !== "NONE";
+  }
+
+  if (!servePublicly) {
+    // Not anonymously servable: only the owning member or a membership
+    // viewer/admin, resolved through the SAME shared session guards POST and
+    // DELETE use (see `resolveMutationActor` above), so this GET can never skip
+    // the forcePasswordChange and two-factor gates those guards enforce. A guard
+    // refusal is mapped onto the route's 404 rather than surfaced as its own
+    // 401/403 — the endpoint must never confirm whether a private photo exists
+    // (that 404-not-403 choice is what defeats member enumeration).
     const session = await auth();
     const viewerId = session?.user?.id ?? null;
-    let allowed = viewerId === id;
+    let allowed = false;
 
-    if (!allowed && viewerId) {
-      const viewer = await prisma.member.findUnique({
-        where: { id: viewerId },
-        select: {
-          active: true,
-          accessRoles: { select: MEMBER_ACCESS_ROLE_SELECT },
-        },
+    if (viewerId && viewerId === id) {
+      const blocked = await requireActiveSessionUser(viewerId, {
+        sessionUser: session?.user ?? null,
       });
-      allowed = Boolean(
-        viewer?.active &&
-          hasAdminAreaAccess(viewer, { area: "membership", level: "view" }),
-      );
+      allowed = blocked === null;
+    } else if (viewerId) {
+      const guard = await requireAdmin({
+        permission: { area: "membership", level: "view" },
+      });
+      allowed = guard.ok;
     }
 
     if (!allowed) {
@@ -186,7 +206,7 @@ export async function GET(
     "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'",
   };
 
-  if (isCommitteePublic) {
+  if (servePublicly) {
     // Committee-public: safe to cache in shared/browser caches, but only
     // briefly — committee membership (and therefore public visibility) can be
     // revoked while the stored bytes stay the same, so a long-lived
@@ -210,8 +230,10 @@ export async function GET(
     return new Response(image.data, { status: 200, headers });
   }
 
-  // Private photo: never store in any cache, shared or private, so a photo
-  // fetched by an authorised viewer can't be replayed to an unauthorised one.
+  // Not anonymously servable (a private photo, or a committee photo whose
+  // roster display is off): never store in any cache, shared or private, so a
+  // photo fetched by an authorised viewer can't be replayed to an unauthorised
+  // one.
   return new Response(image.data, {
     status: 200,
     headers: {

@@ -111,6 +111,14 @@ export function CommitteePhotoDisplayControl() {
           initials. (This is the same setting as under Site Appearance &amp;
           Content &rarr; Page Content.)
         </p>
+        <p className="mt-2 text-sm text-muted-foreground">
+          &ldquo;Don&apos;t show photos&rdquo; takes the pictures off the public
+          website altogether &mdash; they stop being handed out to the outside
+          world at all, not just hidden from the roster page &mdash; so you can
+          use it to answer a request to take someone&apos;s picture down. Members
+          still see their own photo, and administrators with membership access
+          still see it on the member&apos;s record.
+        </p>
       </CardHeader>
       <CardContent className="space-y-3">
         {loadFailed ? (

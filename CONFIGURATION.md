@@ -466,8 +466,11 @@ second accent setting. The occupancy meter follows the primary accent. Semantic
 success, warning, information, danger/error, and waitlist colours stay curated,
 contrast-locked light/dark pairs and are not editable brand fields. Fresh
 deployments show a neutral public-site holding page until an admin finishes that
-wizard. The logo is public-site only and is stored in the database as a validated
-image data URL; there is no runtime upload directory to preserve.
+wizard. The logo is public-site only and is stored in the database — an uploaded
+logo as a served image (`/api/images/<id>`), with a small validated inline data
+URL kept for legacy and hand-crafted logos; there is no runtime upload directory
+to preserve. Either way the stored bytes have their EXIF/XMP/comment metadata
+(camera GPS) removed first, like every other image this system stores (#2242).
 
 Saved palettes must meet the **WCAG AA 4.5:1** minimum text-contrast ratio on
 the key public/app pairs — body and muted text on the page background, app text
@@ -1306,8 +1309,9 @@ model matters for privacy.
   flag).
 - **Who can see it.** The photo is served through a scoped, member-keyed
   endpoint (`/api/members/[id]/photo`). It is **public only** when the member is
-  active and holds an active, **published** `CommitteeAssignment` — in lockstep
-  with `/api/committee`. Otherwise only the member themselves or a
+  active, holds an active, **published** `CommitteeAssignment`, and the club's
+  **Committee photo display** setting below is not "Don't show photos" — in
+  lockstep with `/api/committee`. Otherwise only the member themselves or a
   `membership:view` admin can see it; everyone else gets a 404 (the endpoint
   prefers 404 over 403 so a private photo's existence is never confirmed).
 - **Consent.** Implied by self-upload; the enforced boundary is control (who can
@@ -1322,11 +1326,16 @@ model matters for privacy.
   - `CIRCLE` / `SQUARE` — show each published member's photo in that shape, with
     an initials placeholder for members without one.
 
-  This setting is presentational: it controls the roster render and whether
-  `/api/committee` emits photo metadata, but it does not change the serving rule
-  above. See `docs/member-photos/decisions/ADR-001-member-photos.md` for the
-  full design and `docs/SECURITY-ATTACK-SURFACE.md` for the serving/upload
-  authorisation matrix.
+  Setting it to "Don't show photos" genuinely takes committee photos off the
+  public internet, not just off the roster page: the roster stops rendering
+  them, `/api/committee` stops emitting photo metadata, **and** the photo
+  endpoint stops serving the bytes to anonymous callers (#2242). That is what
+  makes it usable as a takedown control. It never hides a photo from the member
+  themselves or from a `membership:view` admin, who both keep seeing it in the
+  member and profile screens, and it never makes a photo public that the
+  published-assignment rule above does not already allow. See
+  `docs/member-photos/decisions/ADR-001-member-photos.md` for the full design and
+  `docs/SECURITY-ATTACK-SURFACE.md` for the serving/upload authorisation matrix.
 
 Booking and subscription enforcement is season-aware:
 

@@ -101,6 +101,7 @@ export function PublicContentSettingsPanel() {
     <div className="space-y-2 rounded-md border p-3">
       <p className="text-sm font-medium">Committee photos</p>
       <p className="text-sm text-muted-foreground">Whether members&apos; photos appear on the public committee roster, and their shape. Hidden by default; members without a photo show their initials.</p>
+      <p className="text-sm text-muted-foreground">&ldquo;Don&apos;t show photos&rdquo; takes the pictures off the public website altogether &mdash; they stop being handed out to the outside world at all, not just hidden from the roster page &mdash; so you can use it to answer a request to take someone&apos;s picture down. Members still see their own photo, and administrators with membership access still see it on the member&apos;s record.</p>
       <select className="w-full rounded-md border p-2 text-sm" value={settings.committeePhotoDisplay} disabled={!canEdit} aria-label="Committee photo display" aria-describedby={!canEdit ? viewOnlyReasonId : undefined} onChange={(event) => setSettings({ ...settings, committeePhotoDisplay: event.target.value as Settings["committeePhotoDisplay"] })}><option value="NONE">Don&apos;t show photos</option><option value="CIRCLE">Show photos (circular)</option><option value="SQUARE">Show photos (square)</option></select>
     </div>
     <ViewOnlyActionButton canEdit={canEdit} describeReason={false} disabled={saving} onClick={save}>{saving ? "Saving…" : "Save visibility"}</ViewOnlyActionButton></div></div>;

@@ -70,8 +70,11 @@ async function applyTheme(
   return store.written();
 }
 
-async function planTheme(theme: Record<string, unknown>) {
-  const store = makeStore();
+async function planTheme(
+  theme: Record<string, unknown>,
+  existing: Record<string, unknown> | null = null,
+) {
+  const store = makeStore(existing);
   return siteContentImporter.plan({
     db: store.db as unknown as ReadDb,
     files: themeFiles(theme),
@@ -326,5 +329,84 @@ describe("logo exclusivity holds in MERGE mode onto an existing row (#2322)", ()
         }
       }
     }
+  });
+});
+
+describe("a bundled INLINE logo is metadata-stripped on import (#2242)", () => {
+  // `ClubTheme.logoDataUrl` is image bytes like any other, and it renders inline
+  // in the public header, footer and mobile menu of every public page. It used
+  // to be written straight from the bundle, so a club whose theme held a
+  // straight-from-phone inline logo republished its GPS coordinates on every
+  // deployment that bundle was ever restored to — the same hole the bundled
+  // MediaImage bytes had.
+  const GPS = Buffer.from("GPS:-41.29,174.78", "latin1");
+
+  /** A minimal JPEG carrying EXIF/GPS; without the EOI the strip is unconfirmable. */
+  function exifJpeg(withEoi: boolean): Buffer {
+    const payload = Buffer.concat([Buffer.from("Exif\0\0", "latin1"), GPS]);
+    const len = Buffer.alloc(2);
+    len.writeUInt16BE(payload.length + 2, 0);
+    const app1 = Buffer.concat([Buffer.from([0xff, 0xe1]), len, payload]);
+    const sof0 = Buffer.alloc(11);
+    sof0.writeUInt8(0xff, 0);
+    sof0.writeUInt8(0xc0, 1);
+    sof0.writeUInt16BE(9, 2);
+    sof0.writeUInt8(8, 4);
+    sof0.writeUInt16BE(16, 5);
+    sof0.writeUInt16BE(16, 7);
+    sof0.writeUInt8(1, 9);
+    const sos = Buffer.from([0xff, 0xda, 0x00, 0x02, 0x01, 0x77]);
+    const parts = [Buffer.from([0xff, 0xd8]), app1, sof0, sos];
+    if (withEoi) parts.push(Buffer.from([0xff, 0xd9]));
+    return Buffer.concat(parts);
+  }
+
+  const asDataUrl = (bytes: Buffer) =>
+    `data:image/jpeg;base64,${bytes.toString("base64")}`;
+
+  it("removes the EXIF/GPS before storing the inline logo", async () => {
+    const bundled = asDataUrl(exifJpeg(true));
+    expect(Buffer.from(bundled.split(",")[1], "base64").includes(GPS)).toBe(true);
+
+    const written = await applyTheme(
+      baseTheme({ logoUrl: null, logoDataUrl: bundled }),
+    );
+
+    const stored = String(written?.logoDataUrl);
+    expect(stored).toMatch(/^data:image\/jpeg;base64,/);
+    expect(Buffer.from(stored.split(",")[1], "base64").includes(GPS)).toBe(false);
+    expect(stored.length).toBeLessThan(bundled.length);
+  });
+
+  it("FAILS OPEN and still imports an inline logo whose strip is unconfirmed", async () => {
+    // Deliberately unlike the member-photo route: an operator restoring a
+    // configuration bundle must not have the whole import blocked by one
+    // unparseable decorative logo.
+    const bundled = asDataUrl(exifJpeg(false)); // no primary EOI
+    const written = await applyTheme(
+      baseTheme({ logoUrl: null, logoDataUrl: bundled }),
+    );
+
+    expect(written?.logoDataUrl).toBe(bundled);
+  });
+
+  it("keeps plan/apply parity: the dry-run diffs the STORED (stripped) value", async () => {
+    // Both sides run the single `deriveThemeWrite` derivation, so a target row
+    // already holding the stripped bytes must read as unchanged rather than the
+    // preview promising a logo rewrite apply would not perform (ADR-002).
+    const bundled = asDataUrl(exifJpeg(true));
+    const applied = await applyTheme(
+      baseTheme({ logoUrl: null, logoDataUrl: bundled }),
+    );
+    const stored = applied?.logoDataUrl;
+    expect(stored).not.toBe(bundled);
+
+    const plan = await planTheme(
+      baseTheme({ logoUrl: null, logoDataUrl: bundled }),
+      existingRow({ logoDataUrl: stored }),
+    );
+
+    const item = plan.items.find((i) => i.entity === "club-theme");
+    expect(item?.changedFields ?? []).not.toContain("logoDataUrl");
   });
 });

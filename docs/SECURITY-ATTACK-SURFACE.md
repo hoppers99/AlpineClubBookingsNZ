@@ -82,7 +82,7 @@ the row, not open work. Open findings now live in labelled GitHub issues
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `src/proxy.ts` global proxy, pre-setup gate, and module gates | No session auth. Applies CSP/security headers to page requests and selected API matcher paths; returns 404 for disabled module routes; returns 503 + the "Site setup in progress" screen for every public-website path until `ClubTheme.completedAt` is set (#2420, "The Pre-Setup Gate" below). | Anonymous and authenticated browser traffic. | Module settings via `loadEffectiveModuleFlags()`; setup state, club name and contact address via `setup-gate.ts` (memoised 15s, read only while setup is incomplete). | None. | CSP nonce, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, module route blocking, pre-setup 503 gate (fails closed, `no-store`, `Retry-After`). | No per-request audit. | API matcher is selective, not global for every API path. Keep route-level auth as the enforcement boundary. The setup gate never covers `/api/*`, the admin area, or the login flows — an operator must be able to finish setup. |
 | `/api/health`, `/api/health/ready` | Public. | Load balancers, operators, anonymous callers. | DB reachability, runtime version/uptime, config readiness. Public responses omit provider error detail. | DB query only. | No rate limit. No secrets in response. | Logger debug/error only. | Anonymous callers can observe availability. #615 can decide whether to add light rate limiting or cache headers. |
-| `/api/age-tier-settings`, `/api/committee` | Public read endpoints. | Anonymous website users. | Public age-tier/rate settings and published committee assignment presentation fields; and, **only when `PublicContentSettings.committeePhotoDisplay != NONE`**, per-published-member photo metadata (member id + `photoUpdatedAt` version) so the roster can build the scoped `/api/members/[id]/photo` URL. | None. | No rate limit. Committee query selects active, published assignment fields only; member email is not selected or returned, phone is returned only when show-phone is enabled, and contact keys are returned only for contactable assignments. Photo metadata (incl. member id) is emitted **only** when the club has opted the roster into photos — with `committeePhotoDisplay = NONE` (the default), no member id or photo pointer is returned. | None beyond DB errors if thrown. | Public committee names and optional phone numbers are intentional once an admin publishes the assignment; email remains server-only. Committee-photo bytes are still served (and gated) by the scoped `/api/members/[id]/photo` endpoint — `committeePhotoDisplay` governs roster rendering/metadata only, not the serving rule. |
+| `/api/age-tier-settings`, `/api/committee` | Public read endpoints. | Anonymous website users. | Public age-tier/rate settings and published committee assignment presentation fields; and, **only when `PublicContentSettings.committeePhotoDisplay != NONE`**, per-published-member photo metadata (member id + `photoUpdatedAt` version) so the roster can build the scoped `/api/members/[id]/photo` URL. | None. | No rate limit. Committee query selects active, published assignment fields only; member email is not selected or returned, phone is returned only when show-phone is enabled, and contact keys are returned only for contactable assignments. Photo metadata (incl. member id) is emitted **only** when the club has opted the roster into photos — with `committeePhotoDisplay = NONE` (the default), no member id or photo pointer is returned. | None beyond DB errors if thrown. | Public committee names and optional phone numbers are intentional once an admin publishes the assignment; email remains server-only. Committee-photo bytes are served (and gated) by the scoped `/api/members/[id]/photo` endpoint, which applies the SAME `committeePhotoDisplay != NONE` condition to its anonymous branch (#2242) — so "Don't show photos" takes the bytes off the public internet, not just the roster metadata. |
 | `/api/address-autocomplete/search`, `/api/address-autocomplete/details/[id]` | Public server-side proxy to Addy, gated by the `addressAutocomplete` Admin Module. | Anonymous website users. | Search terms, address suggestion ids, Addy result payloads. | Addy API via `src/lib/addy-api.ts`. | Module-route/proxy gate returns 404 while disabled, Zod query validation, `rateLimiters.addressAutocomplete` at 90/min/IP. Secrets stay server-side. | Minimal error responses, no audit. | Upstream-cost and enumeration surface remains public only when the module is enabled; manual address entry remains the fallback. |
 | `/api/contact` | Public contact form. | Anonymous website users. | Name, email, message, optional published committee assignment recipient key. | SMTP/SES through `sendEmail()`. | Zod validation, CRLF checks, HTML escaping, `rateLimiters.contact` at 10/hour/IP. Committee recipient keys resolve server-side only when the assignment is active, published, contactable, and linked to an active member; delivery prefers the role email and falls back to linked member email server-side. | Email delivery logs through email layer; committee-routed messages store an opaque committee-contact marker instead of the private member recipient address; no audit log. | Spam and mailbox flooding are bounded but not CAPTCHA-backed. Invalid or non-contactable recipient keys safely fall back to the configured club contact address. |
 | `/api/applications` | Public membership application submission. | Anonymous applicant. | Applicant PII, DOB, family member PII, nominator emails, application rows. | Email notifications through nomination/application service. | Zod validation, max family member count of 10, `rateLimiters.membershipApplication` at 3/hour/IP. | Logger on unexpected errors; application workflow records status in DB. | Public PII collection endpoint. #615 should review enumeration, attachment absence, response detail, and email storm controls. |
@@ -96,8 +96,8 @@ the row, not open work. Open findings now live in labelled GitHub issues
 | `/api/bookings/[id]/**`, including cancel, modify, guests, payment confirmation, refund request, waitlist confirmation, notes, arrival time, and payment secret routes | Authenticated active member with route/service ownership checks. | Booking owner/member, sometimes admin through service rules. | Booking ownership, guest records, payment transactions, Stripe IDs/client secrets, cancellation/refund/change-request data, notes. | Stripe PaymentIntent/SetupIntent confirmation or retrieval, Xero invoice/credit-note outbox, email notifications. | Auth.js session, active-account guard, rate limits on cancel/change flows, service-level owner checks, Zod/date validation. | Audit logs for payment/guest/refund/change operations where implemented; logger on failures. | IDOR and money-state risk. #614 should include representative owner-boundary tests; #617 should review transaction invariants. |
 | `/api/payments/options`, `/api/payments/charge-saved-method`, `/api/payments/create-payment-intent`, `/api/payments/create-setup-intent` | Authenticated active member. | Signed-in member discovering payment options, paying for booking, or saving payment method. | Payment method availability, payment, payment transaction, booking, Stripe customer/payment method/client secret references. | Stripe API for Stripe paths; Xero-backed Internet Banking availability is reported but settlement stays in Xero reconciliation. | Auth.js session, active-account guard, booking/payment service checks, module-state gates for Internet Banking. | Audit/logging around payment reconciliation and failure paths. | Client secret exposure is intentional to the owning member only. Internet Banking bookings must stay out of Stripe-only mutation paths; #617 should verify ownership checks and cents-only money handling. |
 | `/api/profile`, `/api/notifications/preferences`, `/api/member/**` | Authenticated active member. | Signed-in member. | Member PII, address/phone/email preferences, audit log, credit balance, subscription status, onboarding, data export, deletion request, membership cancellation request/confirmation. | Email send, Xero contact/group update, export generation where invoked. | Auth.js session, active-account guard, rate limits for data export, deletion request, and cancellation request/confirmation. | Audit log for profile/security/deletion/cancellation operations; logger for Xero/email failures. | Member PII and lifecycle state. #614 should cover inactive/forced-password boundaries; #617 should review lifecycle integrity. |
-| `/api/members/[id]/photo` GET (serve) | Data-layer authorisation, not a session-guard marker. Public **iff** the target member has an active, published `CommitteeAssignment`; otherwise the handler resolves the session and serves only to the owning member (own id) or a `membership:view` admin. | Anonymous website visitor (committee case), owning member, or membership admin. | One `MediaImage` blob (`kind = MEMBER_PHOTO`) plus the target member's photo pointer and committee-published status. Member photos never surface through the public `/api/images/[id]` content path (that route returns 404 for any non-`CONTENT` row — enforced, not just documented) or the content picker (`kind = CONTENT` filter). | None. | Documented mixed-method public GET in `api-route-security.ts`, enforced by `api-route-boundaries.test.ts`. Committee-public responses use `Cache-Control: public, max-age=300, must-revalidate` + an **opaque digest ETag** (never the raw `MediaImage` id; short window bounds cache-leak past un-publication); private responses use `private, no-store` + `Vary: Cookie`. `Content-Disposition: inline`, `X-Content-Type-Options: nosniff`, and a locked-down CSP on every response; content-type restricted to JPEG/PNG/WebP at upload (no SVG). | Non-mutating; no per-fetch audit. | Prefers 404 over 403 so a private photo's existence is never confirmed. Cache-leak window bounded to 300s if committee membership is revoked. |
-| `/api/members/[id]/photo` POST/DELETE (upload/remove) | Owning member via `requireActiveSessionUser` (self path), or a `membership:edit` admin via `requireAdmin` acting on behalf. A plain member may act only on their own id (no IDOR). | Signed-in member (self) or membership-edit admin. | Creates/deletes a `MediaImage` (`kind = MEMBER_PHOTO`) and sets `Member.photoImageId` + `photoUpdatedAt`/`photoUpdatedByMemberId` audit columns. Replace and remove read the current pointer under a `SELECT … FOR UPDATE` row lock and delete exactly that prior MEMBER_PHOTO blob (scoped `deleteMany` on `kind`) inside one transaction — concurrent replace/remove serialise, no orphans. | None. | Content-type sniffed from magic bytes (JPEG/PNG/WebP allowlist), 2MB byte cap (Content-Length pre-check + buffered recheck), and a 4096px dimension backstop (JPEG/PNG/GIF/WebP dimensions parsed, incl. the VP8X canvas, so an oversized decode-bomb is rejected). EXIF/XMP/comment metadata (camera GPS) is stripped from JPEG/PNG/WebP before storage. Client-side resize only — no server image library (metadata strip is byte-surgery, not a re-encode). Documented member mixed-methods, enforced by `api-route-boundaries.test.ts`. | `logAudit` `member_photo.upload` / `member_photo.remove` with actor/subject and on-behalf flag; DB audit columns stamped. | Self-upload is the consent (ADR-001 decision 4). Committee removal warning is a UI concern (MP3/MP5); no DB-level block. |
+| `/api/members/[id]/photo` GET (serve) | Data-layer authorisation, not a session-guard marker. Anonymous **iff** the target member is active, holds an active, published `CommitteeAssignment`, AND the club's `committeePhotoDisplay` is not `NONE`; every other request falls through to the SAME shared session guards this file's POST/DELETE use — `requireActiveSessionUser` for the owning member, `requireAdmin({ membership: view })` for an admin — so the serve path cannot skip the force-password-change or two-factor gates (#2242). | Anonymous website visitor (committee case), owning member, or membership admin. | One `MediaImage` blob (`kind = MEMBER_PHOTO`) plus the target member's photo pointer and committee-published status. Member photos never surface through the public `/api/images/[id]` content path (that route returns 404 for any non-`CONTENT` row — enforced, not just documented) or the content picker (`kind = CONTENT` filter). | None. | Documented mixed-method public GET in `api-route-security.ts` with an explicit `conditionalAuth` declaration (the boundary is mixed WITHIN the method), enforced both ways by `api-route-boundaries.test.ts` — a silent guard fails, and so does a declaration with no guard. Committee-public responses use `Cache-Control: public, max-age=300, must-revalidate` + an **opaque digest ETag** (never the raw `MediaImage` id; short window bounds cache-leak past un-publication); private responses use `private, no-store` + `Vary: Cookie`. `Content-Disposition: inline`, `X-Content-Type-Options: nosniff`, and a locked-down CSP on every response; content-type restricted to JPEG/PNG/WebP at upload (no SVG). | Non-mutating; no per-fetch audit. | Prefers 404 over 403 so a private photo's existence is never confirmed — a guard refusal is mapped onto that same 404, never surfaced as its own 401/403, so a real member id and a nonexistent one are indistinguishable to an unauthorised caller. Cache-leak window bounded to 300s if committee membership is revoked or roster photos are switched off. |
+| `/api/members/[id]/photo` POST/DELETE (upload/remove) | Owning member via `requireActiveSessionUser` (self path), or a `membership:edit` admin via `requireAdmin` acting on behalf. A plain member may act only on their own id (no IDOR). | Signed-in member (self) or membership-edit admin. | Creates/deletes a `MediaImage` (`kind = MEMBER_PHOTO`) and sets `Member.photoImageId` + `photoUpdatedAt`/`photoUpdatedByMemberId` audit columns. Replace and remove read the current pointer under a `SELECT … FOR UPDATE` row lock and delete exactly that prior MEMBER_PHOTO blob (scoped `deleteMany` on `kind`) inside one transaction — concurrent replace/remove serialise, no orphans. | None. | Content-type sniffed from magic bytes (JPEG/PNG/WebP allowlist), 2MB byte cap (Content-Length pre-check + buffered recheck), and a 4096px dimension backstop (JPEG/PNG/GIF/WebP dimensions parsed, incl. the VP8X canvas, so an oversized decode-bomb is rejected). EXIF/XMP/comment metadata (camera GPS) is stripped from JPEG/PNG/WebP before storage, FAIL-CLOSED (an unconfirmable strip rejects the upload) — the one path that rejects rather than logs, because a member photo is personal data on a narrow purpose-built path. Client-side resize only — no server image library (metadata strip is byte-surgery, not a re-encode). Documented member mixed-methods, enforced by `api-route-boundaries.test.ts`. | `logAudit` `member_photo.upload` / `member_photo.remove` with actor/subject and on-behalf flag; DB audit columns stamped. | Self-upload is the consent (ADR-001 decision 4). Committee removal warning is a UI concern (MP3/MP5); no DB-level block. |
 | `/api/members/family/**` | Authenticated active member, usually family-group owner or adult login holder. | Signed-in member managing family relationships. | Family groups, invitations, child/adult join/removal requests, delegated non-login member details, inherited email, dependent records. | Email notifications and optional Xero contact/group sync. | Auth.js session, active-account guard, family request rate limiter, service-level ownership and adult/login-holder checks. | Audit log, logger, and email logs. | Family IDOR and shared-email risk. #614 should include a representative family-owned-resource boundary test. |
 | `/api/issue-reports` | Authenticated active member. | Signed-in member reporting an issue. | Issue report text, screenshot metadata/storage path if captured, member id. | Email notification to admins. | Auth.js session, active-account guard, issue-report retention helpers. | Audit log and logger. | Not anonymous in current code. #615 should only treat it as public if the implementation changes. |
 | `/api/chores/[token]` | Public opaque token. | Guest with chore link. | Guest chore assignment for one token/date. | None. | `rateLimiters.guestChoreToken`; token validation; `PUT` explicitly returns 405. | None. | Token URL can be logged or forwarded. Existing mitigation is rate limit and token expiry. Keep in public allowlist. |
@@ -844,6 +844,120 @@ Accepted residual risk:
   connection-holding attacks is the proxy/platform's job (request/idle timeouts,
   per-IP connection limits), not this in-app byte cap. Revisit if a deployment
   fronts the Node process without such a timeout.
+
+## Member-Photo Serving And Image Metadata Review - 2026-08-01
+
+Three related findings on the member-photo / stored-image surface, ported from
+the Tokoroa fork's review and fixed in #2242.
+
+- **The photo GET skipped two auth gates the rest of the route enforced.** Its
+  private branch hand-rolled `auth()` + `hasAdminAreaAccess` instead of using
+  `requireActiveSessionUser` / `requireAdmin`, so it never applied the
+  `forcePasswordChange` 403 or the `isTwoFactorSessionBlocked` gate — while the
+  same file's POST and DELETE did. Someone with a valid password but no second
+  factor completes step one of sign-in, `auth()` returns a real session, every
+  other admin surface refuses them, and this endpoint served private member
+  photos by id. The branch now runs the same shared guards, and a guard refusal
+  is mapped onto the route's existing `notFoundResponse()` so the deliberate
+  404-not-403 behaviour survives — a real member id and a nonexistent one stay
+  indistinguishable to an unauthorised caller. The route's `public` GET now
+  carries an explicit `conditionalAuth` declaration in `api-route-security.ts`,
+  enforced in both directions by `api-route-boundaries.test.ts`. A second, minor
+  tightening comes with it: the self path used to allow `viewerId === id` with no
+  active-account check at all, so a deactivated member's session could still
+  fetch their own photo; `requireActiveSessionUser` now refuses that too, in step
+  with POST/DELETE.
+- **`committeePhotoDisplay = NONE` did not stop anonymous serving.** It was
+  presentational only: it hid photo metadata from `/api/committee` and the
+  roster, but the endpoint still served committee photos anonymously to anyone
+  holding a member id, and the `version` field disclosed when the photo last
+  changed. The admin control reads "Don't show photos", so an operator handling a
+  takedown request reasonably believed the image was no longer public. `NONE` now
+  also blocks the ANONYMOUS branch. The AUTHENTICATED branch is deliberately not
+  gated on it — self and `membership:view` admins must still see the photo when
+  public display is off — and those responses fall back to `private, no-store`
+  rather than keeping the short public cache.
+- **Metadata was stripped on one path out of five.** `stripImageMetadata` had
+  exactly one non-test caller (the member-photo route), while
+  `POST /api/admin/image-library`, `src/lib/config-transfer/media.ts`,
+  `POST /api/admin/image-manager/upload` and the inline club logo
+  (`ClubTheme.logoDataUrl`) stored raw bytes. All four feed anonymously-served
+  content — the first two as `MediaImage` rows served from `/api/images/[id]`
+  with `public, max-age=31536000, immutable`, the third as files written straight
+  into `public/images` at 10 MB × 25 files per batch, the fourth inlined into the
+  header, footer and mobile menu of every public page — so a straight-from-phone
+  photo published its GPS coordinates effectively forever. All five paths now
+  strip. The member-photo route keeps its **fail-closed** policy (an unconfirmable
+  strip rejects the upload); the other four fail **open** through the shared
+  `storableImageBytes` helper (the inline logo through `storableLogoDataUrl`,
+  which wraps it), storing the original and logging a warning, because blocking a
+  legitimate admin content upload, a site-style save, or an operator's
+  configuration restore is the worse outcome there. Relatedly,
+  `stripImageMetadata`'s `default:` branch used to claim `ok: true` for the three
+  allowed types it has no stripper for (gif, avif, svg+xml) — all of which do
+  carry metadata — which silenced that warning for exactly the types that are
+  never stripped; it now returns `ok: false` with the original bytes.
+
+Notes on the fail-open choice and its cost:
+
+- The asymmetry is deliberate. `stripJpegMetadata` is known to reject some
+  spec-legal JPEG fill-byte sequences (T.81 §B.1.1.2). On a member photo —
+  personal data on a narrow, purpose-built path — refusing is right. On the
+  admin's general content tools it is not, so those log instead. Anything stored
+  without a confirmed strip is visible in operations as
+  `"Image stored without a confirmed metadata strip"` with the source, filename
+  and content type.
+- `/api/admin/site-style/logo` also stores image bytes and is deliberately
+  untouched: it re-encodes through `sharp` (`webp()`/`png()`) with no
+  `withMetadata()`, and sharp drops EXIF/XMP/ICC unless asked to keep it, so the
+  stored logo is already metadata-free by construction. Adding `withMetadata()`
+  there would reopen this hole.
+- The INLINE club logo (`ClubTheme.logoDataUrl`, a base64 `data:` URI rendered
+  by `website-logo.tsx` in the public header, footer and mobile menu) is a
+  separate store from the `MediaImage` table and needed its own strip. It has two
+  writers — the site-style save (`saveClubTheme`) and the config-transfer import
+  (`deriveThemeWrite`, the single derivation plan and apply share) — and both now
+  route the value through `storableLogoDataUrl`. New logos normally go through
+  `POST /api/admin/site-style/logo` above and never touch this column, so what is
+  left here is the legacy rows and a small hand-crafted/bundled escape hatch (a
+  64 KB write budget, a 900 KB read bound) — but a hand-crafted logo can still be
+  a phone photo, and it renders on every public page. The helper returns the
+  value byte for byte whenever nothing was removed, so an untouched logo neither
+  churns the stored row on an unrelated colour change nor turns an "unchanged"
+  import dry-run into a spurious update; stripping only ever shrinks the value,
+  so both budgets still hold. Two consequences worth knowing: an existing
+  unstripped inline logo is scrubbed the next time the theme is saved or
+  re-imported (not by a backfill), and a legacy inline logo whose payload cannot
+  be sniffed or confirmed is stored unchanged and logged, exactly like the other
+  fail-open paths.
+- Cost on the widest path (image-manager batch): each stripper is a single linear
+  pass with one output buffer, files are processed sequentially, and the batch is
+  already fully buffered by the streamed multipart reader, so the added peak
+  memory is about one file (≤10 MB), not the whole batch. The slowest case is the
+  byte-by-byte walk of a large JPEG's entropy-coded scan — tens of milliseconds
+  for a 10 MB file, so a worst-case 25-file batch adds well under a second to an
+  upload already dominated by transfer and disk.
+- In config-transfer the strip is applied identically by both plan helpers
+  (`planBundleMedia`, `planBundleMediaTarget`) and by `recreateBundleMedia`, and
+  the create-vs-reuse dedup keys on the STORED (stripped) bytes and their length,
+  so the dry-run keeps disclosing exactly what the write will do (ADR-002
+  plan/apply parity). One consequence is worth knowing: an image imported before
+  this change is stored unstripped, so re-importing the same bundle now creates a
+  fresh, scrubbed row instead of reusing the old one, and references remap to it.
+  That happens once, only for images that actually carried strippable metadata
+  (a clean image strips to identical bytes and still matches), and it leaves the
+  superseded row orphaned rather than losing anything.
+- Existing stored images are **not** retro-scrubbed. The strip applies to bytes
+  arriving from now on; there is no backfill pass over `MediaImage` rows or over
+  files already sitting in `public/images`.
+- The enumeration guarantee is about the RESPONSE — status, body and headers are
+  byte-identical across every refusal, which is what
+  `member-photo-route.test.ts` pins. It is not a constant-time claim: the number
+  of database round-trips still varies by branch (a committee-published member
+  costs the extra `PublicContentSettings` read that a non-committee member does
+  not), exactly as it did before this change. What that timing could distinguish
+  is committee-publication status, which the public roster already publishes by
+  name.
 
 ## Per-Route CSP Relaxation And Soft Navigation - 2026-07-26
 
