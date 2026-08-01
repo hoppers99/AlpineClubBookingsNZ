@@ -1,5 +1,7 @@
 import "server-only";
 
+import logger from "@/lib/logger";
+
 /**
  * Shared constants and helpers for the database-backed image library
  * (#731). Images are stored as Bytes in the MediaImage table and served
@@ -343,9 +345,11 @@ export function extractImageDimensions(
  * a clean structural walk AND any privacy-sensitive metadata present was removed
  * (or there was validly none) — `bytes` is safe to store & serve publicly.
  * `ok: false` means the strip could not be positively confirmed (malformed or
- * nonstandard structure, or a thrown exception); `bytes` is the ORIGINAL,
- * unchanged, and the caller must reject rather than store it. Fail-CLOSED for
- * privacy: an image whose EXIF/GPS we cannot prove was removed is never served.
+ * nonstandard structure, a thrown exception, or a content type this module has
+ * no stripper for); `bytes` is the ORIGINAL, unchanged. Never treat `ok: false`
+ * as "clean": the caller's policy decides whether to reject it (fail-CLOSED —
+ * the member-photo route) or to store it and log (fail-OPEN —
+ * `storableImageBytes` below).
  */
 export type StripImageResult = { ok: boolean; bytes: Buffer };
 
@@ -525,19 +529,37 @@ function stripWebpMetadata(bytes: Buffer): StripImageResult {
 
 /**
  * Strip privacy-sensitive metadata (EXIF/GPS, XMP, comments) from an uploaded
- * image before it is stored and potentially served publicly. Fail-CLOSED: the
- * result carries `ok: true` ONLY when the parser completed a clean structural
- * walk and any metadata present was removed (or there was validly none) — the
- * caller must reject any upload that returns `ok: false` (malformed/nonstandard
- * structure, or a thrown exception) rather than store the original bytes with
- * EXIF/GPS intact. Content re-encoded client-side (the crop canvas) is already
- * metadata-free and passes cleanly; this also covers the direct-upload path
+ * image before it is stored and potentially served publicly. The result carries
+ * `ok: true` ONLY when the parser completed a clean structural walk and any
+ * metadata present was removed (or there was validly none); `ok: false`
+ * (malformed/nonstandard structure, an unsupported type, or a thrown exception)
+ * means the strip could not be positively confirmed and `bytes` is the unchanged
+ * original. Content re-encoded client-side (the crop canvas) is already
+ * metadata-free and passes cleanly; this also covers the direct-upload paths
  * where a phone-camera JPEG could carry GPS coordinates.
  *
- * The `default` branch (a content type other than jpeg/png/webp) is unreachable
- * from the member-photo route — its only caller — which restricts uploads to
- * jpeg/png/webp; it returns `ok: true` (nothing to strip for that type) so the
- * contract stays non-breaking.
+ * How an `ok: false` result is handled is the CALLER's policy, and the callers
+ * deliberately differ:
+ *  - `src/app/api/members/[id]/photo/route.ts` fails CLOSED — it rejects the
+ *    upload rather than store personal-data bytes it could not prove were
+ *    scrubbed.
+ *  - the admin image library, the image manager, and the config-transfer bundle
+ *    import all fail OPEN through `storableImageBytes` below, which stores the
+ *    original and logs (see that helper for why).
+ *
+ * The `default` branch covers the three allowed types this module has NO
+ * stripper for — gif, avif and svg+xml — and returns `ok: false` with the
+ * ORIGINAL bytes. That is not a formality: AVIF is a HEIF container carrying
+ * EXIF (including `GPSLatitude`/`GPSLongitude`) as an `Exif` item, SVG carries
+ * `<metadata>` RDF with creator identity and, from many editors, the author's
+ * local file path, and GIF carries the Comment Extension and XMP via an
+ * Application Extension. Reporting those as a confirmed strip would silence the
+ * very warning that is meant to make an unstripped upload visible in operations.
+ * The branch is UNREACHABLE from the fail-CLOSED member-photo route, which
+ * rejects anything outside `ALLOWED_MEMBER_PHOTO_CONTENT_TYPES` (jpeg/png/webp)
+ * before it ever calls this, so it cannot start rejecting member photos; on the
+ * fail-OPEN callers it stores exactly the same bytes as before and merely starts
+ * logging.
  */
 export function stripImageMetadata(
   bytes: Buffer,
@@ -552,11 +574,56 @@ export function stripImageMetadata(
       case "image/webp":
         return stripWebpMetadata(bytes);
       default:
-        return { ok: true, bytes };
+        return { ok: false, bytes };
     }
   } catch {
     return { ok: false, bytes };
   }
+}
+
+/**
+ * Bytes to store on a FAIL-OPEN image path: metadata stripped when the strip can
+ * be positively confirmed, otherwise the unchanged original plus a warning.
+ *
+ * Shared by every fail-open image-storing path so the policy, the log shape and
+ * the bytes are identical on all of them:
+ *  - `src/app/api/admin/image-library/route.ts` (DB `MediaImage`, served
+ *    anonymously from `/api/images/[id]` with `max-age=31536000, immutable`),
+ *  - `src/lib/config-transfer/media.ts` (bundle images recreated as the same
+ *    kind of anonymously-served `MediaImage`),
+ *  - `src/app/api/admin/image-manager/upload/route.ts` (files written under
+ *    `public/images`, served directly by Next.js/Caddy).
+ *
+ * FAIL-OPEN, deliberately, and the asymmetry with the member-photo route (which
+ * fails CLOSED and rejects) is intentional: `stripJpegMetadata` rejects some
+ * spec-legal JPEG fill-byte sequences (T.81 §B.1.1.2), and blocking a legitimate
+ * admin content upload — or an operator's configuration-bundle restore — is the
+ * worse outcome on these paths, whereas a member photo is personal data on a
+ * narrow, purpose-built path where the reverse is true. An unconfirmed strip is
+ * logged so it is visible in operations.
+ *
+ * `contentType` is nullable so a caller that could not sniff the bytes at all
+ * (the image-manager batch uploader trusts the declared MIME + extension and
+ * must not start rejecting files) still goes down the logged, store-the-original
+ * path rather than silently skipping the strip.
+ *
+ * Callers MUST derive any stored size/metadata from the RETURNED buffer, not the
+ * input, or the recorded byteSize will not describe the bytes actually written.
+ */
+export function storableImageBytes(
+  bytes: Buffer,
+  contentType: AllowedMediaImageContentType | null,
+  context: Record<string, unknown> & { source: string },
+): Buffer {
+  const stripped: StripImageResult = contentType
+    ? stripImageMetadata(bytes, contentType)
+    : { ok: false, bytes };
+  if (stripped.ok) return stripped.bytes;
+  logger.warn(
+    { ...context, contentType, byteSize: bytes.length },
+    "Image stored without a confirmed metadata strip",
+  );
+  return bytes;
 }
 
 /**

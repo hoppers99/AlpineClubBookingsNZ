@@ -1269,8 +1269,9 @@ model matters for privacy.
   flag).
 - **Who can see it.** The photo is served through a scoped, member-keyed
   endpoint (`/api/members/[id]/photo`). It is **public only** when the member is
-  active and holds an active, **published** `CommitteeAssignment` — in lockstep
-  with `/api/committee`. Otherwise only the member themselves or a
+  active, holds an active, **published** `CommitteeAssignment`, and the club's
+  **Committee photo display** setting below is not "Don't show photos" — in
+  lockstep with `/api/committee`. Otherwise only the member themselves or a
   `membership:view` admin can see it; everyone else gets a 404 (the endpoint
   prefers 404 over 403 so a private photo's existence is never confirmed).
 - **Consent.** Implied by self-upload; the enforced boundary is control (who can
@@ -1285,11 +1286,16 @@ model matters for privacy.
   - `CIRCLE` / `SQUARE` — show each published member's photo in that shape, with
     an initials placeholder for members without one.
 
-  This setting is presentational: it controls the roster render and whether
-  `/api/committee` emits photo metadata, but it does not change the serving rule
-  above. See `docs/member-photos/decisions/ADR-001-member-photos.md` for the
-  full design and `docs/SECURITY-ATTACK-SURFACE.md` for the serving/upload
-  authorisation matrix.
+  Setting it to "Don't show photos" genuinely takes committee photos off the
+  public internet, not just off the roster page: the roster stops rendering
+  them, `/api/committee` stops emitting photo metadata, **and** the photo
+  endpoint stops serving the bytes to anonymous callers (#2242). That is what
+  makes it usable as a takedown control. It never hides a photo from the member
+  themselves or from a `membership:view` admin, who both keep seeing it in the
+  member and profile screens, and it never makes a photo public that the
+  published-assignment rule above does not already allow. See
+  `docs/member-photos/decisions/ADR-001-member-photos.md` for the full design and
+  `docs/SECURITY-ATTACK-SURFACE.md` for the serving/upload authorisation matrix.
 
 Booking and subscription enforcement is season-aware:
 

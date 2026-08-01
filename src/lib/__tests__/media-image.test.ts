@@ -9,6 +9,7 @@ import {
   extractImageDimensions,
   mediaImageServingUrl,
   sanitiseMediaImageFilename,
+  storableImageBytes,
   stripImageMetadata,
 } from "@/lib/media-image";
 
@@ -620,5 +621,88 @@ describe("stripImageMetadata", () => {
     const result = stripImageMetadata(garbage, "image/jpeg");
     expect(result.ok).toBe(false);
     expect(result.bytes.equals(garbage)).toBe(true);
+  });
+
+  // The three allowed types with NO stripper must never report a confirmed
+  // strip: AVIF carries EXIF/GPS as a HEIF `Exif` item, SVG carries <metadata>
+  // RDF (creator identity, editor file paths) and GIF carries the Comment and
+  // XMP Application Extensions. Reporting ok:true stored them byte-identical AND
+  // silenced the fail-open callers' warning — the one control meant to make an
+  // unstripped upload visible in operations (#2242).
+  it.each([
+    ["image/gif", buildGif(10, 20)],
+    ["image/avif", buildAvif()],
+    ["image/svg+xml", SVG_WITH_DIMENSIONS],
+  ] as const)(
+    "reports ok:false for %s (no stripper), leaving bytes unchanged",
+    (contentType, bytes) => {
+      const result = stripImageMetadata(bytes, contentType);
+      expect(result.ok).toBe(false);
+      expect(result.bytes.equals(bytes)).toBe(true);
+    },
+  );
+
+  it("covers every allowed content type without throwing", () => {
+    // A new entry in ALLOWED_MEDIA_IMAGE_CONTENT_TYPES must be a deliberate
+    // decision here: it either gets a stripper (ok:true on clean bytes) or falls
+    // to the unsupported branch (ok:false), never an unhandled throw.
+    for (const contentType of ALLOWED_MEDIA_IMAGE_CONTENT_TYPES) {
+      const result = stripImageMetadata(Buffer.from("not-an-image"), contentType);
+      expect(typeof result.ok).toBe("boolean");
+    }
+  });
+});
+
+describe("storableImageBytes (fail-open paths)", () => {
+  const GPS = Buffer.from("GPS:-41.29,174.78", "latin1");
+
+  it("returns the STRIPPED bytes when the strip is confirmed", () => {
+    const jpeg = Buffer.concat([
+      Buffer.from([0xff, 0xd8]),
+      jpegAppSegment(0xe1, Buffer.concat([Buffer.from("Exif\0\0", "latin1"), GPS])),
+      JPEG_SOF0,
+      JPEG_SOS_EOI,
+    ]);
+
+    const stored = storableImageBytes(jpeg, "image/jpeg", { source: "test" });
+
+    expect(jpeg.includes(GPS)).toBe(true);
+    expect(stored.includes(GPS)).toBe(false);
+    expect(stored.length).toBeLessThan(jpeg.length);
+  });
+
+  it("FAILS OPEN: returns the ORIGINAL bytes when the strip is unconfirmed", () => {
+    // No primary EOI → the fail-closed parser cannot confirm a clean walk. The
+    // fail-open callers store the original rather than refusing the upload.
+    const noEoi = Buffer.concat([
+      Buffer.from([0xff, 0xd8]),
+      jpegAppSegment(0xe1, Buffer.concat([Buffer.from("Exif\0\0", "latin1"), GPS])),
+      JPEG_SOF0,
+    ]);
+
+    const stored = storableImageBytes(noEoi, "image/jpeg", { source: "test" });
+
+    expect(stored.equals(noEoi)).toBe(true);
+  });
+
+  it("FAILS OPEN for the unstripped types (gif/avif/svg) rather than dropping them", () => {
+    const gif = buildGif(10, 20);
+    expect(
+      storableImageBytes(gif, "image/gif", { source: "test" }).equals(gif),
+    ).toBe(true);
+    const svg = SVG_WITH_DIMENSIONS;
+    expect(
+      storableImageBytes(svg, "image/svg+xml", { source: "test" }).equals(svg),
+    ).toBe(true);
+  });
+
+  it("stores the original when the content type could not be sniffed at all", () => {
+    // The image-manager batch uploader trusts the declared MIME + extension and
+    // must never start rejecting files, so an unsniffable buffer takes the
+    // logged store-the-original path.
+    const unknown = Buffer.from("not-an-image-at-all");
+    expect(
+      storableImageBytes(unknown, null, { source: "test" }).equals(unknown),
+    ).toBe(true);
   });
 });

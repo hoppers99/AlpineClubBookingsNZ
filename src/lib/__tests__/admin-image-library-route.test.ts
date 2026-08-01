@@ -50,6 +50,39 @@ const PNG_BYTES = (() => {
   return buf;
 })();
 
+// The GPS payload carried in the EXIF fixtures below, so a test can assert it is
+// present in the raw upload and absent from the bytes actually stored.
+const GPS_MARKER = Buffer.from("GPS:-41.29,174.78", "latin1");
+
+/**
+ * A JPEG carrying an APP1 EXIF/GPS segment. `withEoi` decides whether it ends
+ * with a primary EOI (FF D9): with one, the fail-closed parser reaches its clean
+ * exit and the strip is CONFIRMED; without one, the strip is unconfirmed and
+ * this route's fail-open policy stores the original.
+ */
+function exifJpeg(withEoi: boolean): Buffer {
+  const soi = Buffer.from([0xff, 0xd8]);
+  const payload = Buffer.concat([Buffer.from("Exif\0\0", "latin1"), GPS_MARKER]);
+  const len = Buffer.alloc(2);
+  len.writeUInt16BE(payload.length + 2, 0);
+  const app1 = Buffer.concat([Buffer.from([0xff, 0xe1]), len, payload]);
+  const sof0 = Buffer.alloc(11);
+  sof0.writeUInt8(0xff, 0);
+  sof0.writeUInt8(0xc0, 1);
+  sof0.writeUInt16BE(9, 2);
+  sof0.writeUInt8(8, 4);
+  sof0.writeUInt16BE(16, 5); // height
+  sof0.writeUInt16BE(16, 7); // width
+  sof0.writeUInt8(1, 9);
+  const sos = Buffer.from([0xff, 0xda, 0x00, 0x02, 0x01, 0x77]);
+  const parts = [soi, app1, sof0, sos];
+  if (withEoi) parts.push(Buffer.from([0xff, 0xd9]));
+  return Buffer.concat(parts);
+}
+
+const EXIF_JPEG_WITH_EOI = exifJpeg(true);
+const EXIF_JPEG_NO_EOI = exifJpeg(false);
+
 function listRequest(query = "") {
   return new NextRequest(`http://localhost/api/admin/image-library${query}`);
 }
@@ -322,5 +355,55 @@ describe("POST /api/admin/image-library", () => {
 
     expect(response.status).toBe(201);
     expect(body.image.contentType).toBe("image/png");
+  });
+
+  // ---------------------------------------------------------------------------
+  // #2242 finding 3. A library image is served ANONYMOUSLY from /api/images/[id]
+  // with `public, max-age=31536000, immutable`, so a straight-from-phone photo
+  // dropped into a website page used to publish its GPS coordinates effectively
+  // forever. Assertions are on the REAL stored bytes, not on a strip mock.
+  // ---------------------------------------------------------------------------
+  it("strips EXIF/GPS from an uploaded JPEG before storing it", async () => {
+    expect(EXIF_JPEG_WITH_EOI.includes(GPS_MARKER)).toBe(true);
+
+    const file = new File([new Uint8Array(EXIF_JPEG_WITH_EOI)], "holiday.jpg", {
+      type: "image/jpeg",
+    });
+    const response = await POST(uploadRequest(file));
+
+    expect(response.status).toBe(201);
+    const data = mocks.mediaImageCreate.mock.calls[0][0].data;
+    const stored = Buffer.from(data.data as Uint8Array);
+    expect(stored.includes(GPS_MARKER)).toBe(false);
+    expect(stored.length).toBeLessThan(EXIF_JPEG_WITH_EOI.length);
+    // byteSize must describe the bytes actually written, not the upload.
+    expect(data.byteSize).toBe(stored.length);
+  });
+
+  it("FAILS OPEN: still stores an image whose strip could not be confirmed", async () => {
+    // Deliberately unlike the fail-CLOSED member-photo route: the image library
+    // is the admin's general content tool and `stripJpegMetadata` rejects some
+    // spec-legal JPEGs, so blocking a legitimate upload is the worse outcome.
+    const file = new File([new Uint8Array(EXIF_JPEG_NO_EOI)], "holiday.jpg", {
+      type: "image/jpeg",
+    });
+    const response = await POST(uploadRequest(file));
+
+    expect(response.status).toBe(201);
+    const data = mocks.mediaImageCreate.mock.calls[0][0].data;
+    const stored = Buffer.from(data.data as Uint8Array);
+    expect(stored.equals(EXIF_JPEG_NO_EOI)).toBe(true);
+    expect(data.byteSize).toBe(EXIF_JPEG_NO_EOI.length);
+  });
+
+  it("still accepts a GIF (no stripper for that type) and stores it unchanged", async () => {
+    const gif = Buffer.from("GIF89a\x01\x00\x01\x00", "latin1");
+    const file = new File([gif], "spin.gif", { type: "image/gif" });
+    const response = await POST(uploadRequest(file));
+
+    expect(response.status).toBe(201);
+    const data = mocks.mediaImageCreate.mock.calls[0][0].data;
+    expect(Buffer.from(data.data as Uint8Array).equals(gif)).toBe(true);
+    expect(data.contentType).toBe("image/gif");
   });
 });

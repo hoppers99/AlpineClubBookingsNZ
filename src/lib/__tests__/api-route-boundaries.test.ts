@@ -227,13 +227,26 @@ describe("API route boundary metadata", () => {
             // A genuinely public method must not depend on a session, admin or
             // finance guard. If one is added later, the boundary metadata must
             // be updated to match (or the method is no longer public).
-            if (
+            //
+            // The one sanctioned shape is a method that is anonymous for a
+            // documented subset of requests and guarded for the rest (the
+            // boundary is mixed WITHIN the method, which `boundary` alone
+            // cannot express). That requires an explicit `conditionalAuth`
+            // declaration naming exactly which requests are anonymous — and it
+            // is checked BOTH ways, so neither a silent guard nor a stale
+            // declaration can survive.
+            const guarded =
               hasMemberGuard(body) ||
               hasAdminGuard(body) ||
-              hasFinanceGuard(body)
-            ) {
+              hasFinanceGuard(body);
+            if (guarded && !methodMetadata.conditionalAuth) {
               issues.push(
                 `${routePath}#${method}: documented public method contains an auth guard`,
+              );
+            }
+            if (!guarded && methodMetadata.conditionalAuth) {
+              issues.push(
+                `${routePath}#${method}: declares conditionalAuth but contains no shared guard — drop the declaration`,
               );
             }
           } else if (methodMetadata.boundary === "member") {

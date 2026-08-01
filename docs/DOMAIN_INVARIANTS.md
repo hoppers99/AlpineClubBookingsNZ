@@ -3532,10 +3532,16 @@ served only through the scoped `/api/members/[id]/photo` endpoint, never the
 public `/api/images/[id]` content path — that content route enforces the split
 in code by returning 404 for any non-`CONTENT` row, so the invariant holds even
 if a `MEMBER_PHOTO` id is learned. A photo is public **only** when the member
-is active and holds an active, published `CommitteeAssignment` — the same
-predicate `/api/committee` uses, so every publicly-rostered member is the set
-whose photo is servable; otherwise it is visible solely to the member or a
-`membership:view` admin. The photo rule is the predicate alone: the roster
+is active, holds an active, published `CommitteeAssignment`, **and** the club has
+`PublicContentSettings.committeePhotoDisplay != NONE` — the same two conditions
+`/api/committee` applies, so every publicly-rostered member is the set whose
+photo is servable; otherwise it is visible solely to the member or a
+`membership:view` admin, resolved through the same shared session guards the
+upload/remove methods use (`requireActiveSessionUser` / `requireAdmin`), so the
+serving path cannot skip the force-password-change or two-factor gates (#2242).
+Every refusal on that path is the same 404, whatever the reason, so an
+unauthorised caller cannot tell a real member id from one that does not exist.
+The photo rule is those two conditions alone: the roster
 endpoint additionally applies a pathological `take: 500` backstop
 (`src/app/api/committee/route.ts`) against a misconfigured or hostile admin
 publishing an absurd number of assignments on an unauthenticated public route.
@@ -3544,11 +3550,24 @@ a genuine roster, but it is a display bound, not a narrowing of the predicate �
 past 500 published assignments the roster would list fewer members than have
 servable photos, which is the safe direction (a photo is never made public by
 being trimmed off the roster). The committee-public ETag is
-an opaque digest, never the raw `MediaImage` id. Uploaded photos have their
-EXIF/XMP/comment metadata (camera GPS) stripped before storage. Whether the
-public committee roster renders those photos is a separate presentational opt-in
-(`PublicContentSettings.committeePhotoDisplay`, default `NONE`) and never widens
-the serving rule.
+an opaque digest, never the raw `MediaImage` id. `committeePhotoDisplay` governs
+both halves together — it decides whether the roster renders photos AND whether
+the bytes are anonymously servable — so switching it to `NONE` genuinely takes
+the images off the public internet. It only ever narrows: it never makes a photo
+public that the assignment predicate does not already allow, and it never hides a
+photo from the member themselves or a `membership:view` admin (those responses
+switch to `private, no-store` instead of the short public cache).
+Every stored image has its EXIF/XMP/comment metadata (camera GPS) stripped
+first, on all four paths that store image bytes: the member-photo upload, the
+admin image library, the image manager's batch upload into `public/images`, and
+the config-transfer bundle import. The member-photo path fails **closed** (an
+unconfirmable strip rejects the upload, because it is personal data on a narrow
+purpose-built path); the other three fail **open** through
+`storableImageBytes` — they store the original and log a warning — because
+blocking a legitimate admin content upload or an operator's whole configuration
+restore is the worse outcome there. `gif`, `avif` and `svg+xml` have no stripper
+and are always reported as unconfirmed, so they log rather than claim a clean
+strip.
 Committee contact routing is chosen per assignment via
 `CommitteeAssignment.contactEmailMode` (`ROLE`, `MEMBER`, or `CUSTOM`, default
 `ROLE`). `ROLE` uses the role email alias stored on `CommitteeRole`, `MEMBER`

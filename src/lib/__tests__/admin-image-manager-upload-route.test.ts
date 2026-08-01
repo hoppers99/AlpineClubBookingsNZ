@@ -53,6 +53,38 @@ function pngFile(name: string, size = 8): File {
   return new File([Buffer.alloc(size, 0x61)], name, { type: "image/png" });
 }
 
+// The GPS payload carried in the EXIF fixtures below, so a test can assert it is
+// present in the raw upload and absent from the bytes actually written to disk.
+const GPS_MARKER = Buffer.from("GPS:-41.29,174.78", "latin1");
+
+/**
+ * A JPEG carrying an APP1 EXIF/GPS segment. `withEoi` decides whether it ends
+ * with a primary EOI (FF D9): with one the strip is CONFIRMED, without one it is
+ * unconfirmed and this route's fail-open policy writes the original.
+ */
+function exifJpeg(withEoi: boolean): Buffer {
+  const soi = Buffer.from([0xff, 0xd8]);
+  const payload = Buffer.concat([Buffer.from("Exif\0\0", "latin1"), GPS_MARKER]);
+  const len = Buffer.alloc(2);
+  len.writeUInt16BE(payload.length + 2, 0);
+  const app1 = Buffer.concat([Buffer.from([0xff, 0xe1]), len, payload]);
+  const sof0 = Buffer.alloc(11);
+  sof0.writeUInt8(0xff, 0);
+  sof0.writeUInt8(0xc0, 1);
+  sof0.writeUInt16BE(9, 2);
+  sof0.writeUInt8(8, 4);
+  sof0.writeUInt16BE(16, 5); // height
+  sof0.writeUInt16BE(16, 7); // width
+  sof0.writeUInt8(1, 9);
+  const sos = Buffer.from([0xff, 0xda, 0x00, 0x02, 0x01, 0x77]);
+  const parts = [soi, app1, sof0, sos];
+  if (withEoi) parts.push(Buffer.from([0xff, 0xd9]));
+  return Buffer.concat(parts);
+}
+
+const EXIF_JPEG_WITH_EOI = exifJpeg(true);
+const EXIF_JPEG_NO_EOI = exifJpeg(false);
+
 function uploadRequest(files: File[], dir?: string): NextRequest {
   const formData = new FormData();
   if (dir !== undefined) formData.append("dir", dir);
@@ -186,5 +218,57 @@ describe("POST /api/admin/image-manager/upload", () => {
     expect(response.status).toBe(413);
     expect(body.error).toMatch(/split the upload/i);
     expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // #2242 finding 3. This is the WIDEST image-storing path — 10 MB per file,
+  // 25 files per batch — and everything it writes under `public/images` is
+  // served anonymously and effectively forever, so EXIF/GPS must not reach
+  // disk. Assertions are on the REAL bytes handed to fs.writeFile.
+  // -------------------------------------------------------------------------
+  it("strips EXIF/GPS from an uploaded JPEG before it is written to disk", async () => {
+    expect(EXIF_JPEG_WITH_EOI.includes(GPS_MARKER)).toBe(true);
+
+    const file = new File([new Uint8Array(EXIF_JPEG_WITH_EOI)], "holiday.jpg", {
+      type: "image/jpeg",
+    });
+    const response = await POST(uploadRequest([file]));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.results[0].ok).toBe(true);
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+    const written = Buffer.from(mocks.writeFile.mock.calls[0][1] as Buffer);
+    expect(written.includes(GPS_MARKER)).toBe(false);
+    expect(written.length).toBeLessThan(EXIF_JPEG_WITH_EOI.length);
+  });
+
+  it("FAILS OPEN: writes the original bytes when the strip cannot be confirmed", async () => {
+    // A per-file rejection here would change this route's accept/reject
+    // behaviour, so an unconfirmed strip stores the original and logs instead.
+    const file = new File([new Uint8Array(EXIF_JPEG_NO_EOI)], "holiday.jpg", {
+      type: "image/jpeg",
+    });
+    const response = await POST(uploadRequest([file]));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.results[0].ok).toBe(true);
+    const written = Buffer.from(mocks.writeFile.mock.calls[0][1] as Buffer);
+    expect(written.equals(EXIF_JPEG_NO_EOI)).toBe(true);
+  });
+
+  it("still accepts a buffer it cannot sniff, writing it unchanged", async () => {
+    // The route trusts the declared MIME + extension and must never start
+    // rejecting files just because the bytes do not sniff as a known format.
+    const unsniffable = Buffer.from("not-an-image-at-all");
+    const file = new File([unsniffable], "a.png", { type: "image/png" });
+    const response = await POST(uploadRequest([file]));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.results[0].ok).toBe(true);
+    const written = Buffer.from(mocks.writeFile.mock.calls[0][1] as Buffer);
+    expect(written.equals(unsniffable)).toBe(true);
   });
 });
