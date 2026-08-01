@@ -26,6 +26,24 @@ function readRepoFile(relative: string): string {
   return fs.readFileSync(path.join(process.cwd(), relative), "utf8");
 }
 
+/**
+ * The files the two copy sweeps read.
+ *
+ * ONE LIST FOR BOTH SWEEPS, because both ask the same question of the same
+ * surfaces — "does any member-facing sentence promise something the code
+ * deliberately does not do?" — and a file added to one sweep and forgotten by
+ * the other is exactly the gap a shared list closes.
+ */
+const MEMBER_FACING_SURFACES = [
+  "src/lib/member-guest-email-notes.ts",
+  "src/lib/member-guest-consent-card.ts",
+  "src/components/member-guest-consent-card.tsx",
+  "src/components/member-guest-delegate-consent-card.tsx",
+  "src/components/booking/edit-member-guest-section.tsx",
+  "docs/user-guide/being-added-to-a-booking.md",
+  "docs/user-guide/booking-a-stay.md",
+];
+
 // ---------------------------------------------------------------------------
 // D-13 — consent covers the booking however it later changes
 // ---------------------------------------------------------------------------
@@ -172,15 +190,7 @@ describe("D-13: an edit never revisits a consent that has already been given", (
     // Any surface that told a member "you will be asked again if the dates
     // change" would be describing behaviour this codebase deliberately does not
     // have.
-    const surfaces = [
-      "src/lib/member-guest-email-notes.ts",
-      "src/lib/member-guest-consent-card.ts",
-      "src/components/member-guest-consent-card.tsx",
-      "src/components/member-guest-delegate-consent-card.tsx",
-      "src/components/booking/edit-member-guest-section.tsx",
-      "docs/user-guide/being-added-to-a-booking.md",
-      "docs/user-guide/booking-a-stay.md",
-    ];
+    const surfaces = MEMBER_FACING_SURFACES;
     // AFFIRMATIVE FORMS ONLY, deliberately. A file may — and several do —
     // EXPLAIN that nobody is asked again; that is the decision being documented,
     // not a promise being made. What none of them may contain is a second-person
@@ -290,6 +300,41 @@ describe("D-14: nothing offers a self-removal the server would refuse", () => {
     expect(note).toBe(MEMBER_GUEST_SELF_REMOVAL_OFFER);
   });
 
+  it("never promises self-removal unconditionally in the member-facing copy", () => {
+    // THE SECOND HALF OF THE §4.4 SWEEP, and the half the UX review found still
+    // open. The member guide told a reader in two places that they could take
+    // themselves off — flatly, with no condition — eighty lines above the
+    // section that lists the situations where they cannot. A guest on a
+    // quote-priced booking (every row MG4-D-b creates) reading only the first
+    // sentence learns the opposite of the truth.
+    //
+    // WHY THESE PATTERNS AND NOT "you can take yourself off". That exact phrase
+    // is `MEMBER_GUEST_SELF_REMOVAL_OFFER`, and it is emitted ONLY when
+    // `evaluateGuestSelfRemoval` says the server would allow it — the tests
+    // above pin that. What may never appear is an UNQUALIFIED version: the
+    // modal plus an always/still/at-any-time adverb, the "guaranteed" framing
+    // the epic explainer used, or the decline outcome stated as a certainty.
+    const unconditionalSelfRemoval = [
+      /(?:can|could|may|will be able to)\s+(?:always|still|simply)\s+(?:take|remove)\s+yourself\s+(?:off|from)/i,
+      /(?:take|remove)\s+yourself\s+off\s+[^.]*\bat any time\b/i,
+      /always\s+(?:be able to\s+)?(?:take|remove)\s+yourself\s+off/i,
+      /guaranteed\s+self-?removal/i,
+      // The consent card's "No" outcome, stated as a certainty. Saying no is
+      // refused on a quote-priced, last-guest, started or settled booking.
+      /releases the bed[^.]*and takes you off the booking/i,
+    ];
+    for (const surface of MEMBER_FACING_SURFACES) {
+      const text = readRepoFile(surface);
+      for (const pattern of unconditionalSelfRemoval) {
+        const match = text.match(pattern);
+        expect(
+          match,
+          `${surface} promises self-removal unconditionally: ${match?.[0] ?? ""}`,
+        ).toBeNull();
+      }
+    }
+  });
+
   it("leaves evaluateGuestSelfRemoval with no consent-aware exception", () => {
     // MG4 builds honesty, not machinery: a carve-out that let a
     // never-consented guest bypass a blocker would be a capacity/money change
@@ -311,7 +356,7 @@ describe("the withdrawal notice says which of the three things happened", () => 
       bookerName: "Dave Ngata",
       audience: { kind: "TARGET" },
     });
-    expect(cancelled.heading).toMatch(/called off/i);
+    expect(cancelled.heading).toMatch(/withdrawn/i);
     expect(cancelled.contextNote).toMatch(/released/i);
     // Nothing left to answer: the member must not go looking for the request.
     expect(cancelled.contextNote).toMatch(/nothing left for you to answer/i);
@@ -337,6 +382,44 @@ describe("the withdrawal notice says which of the three things happened", () => 
     expect(delegate.heading).toContain("Tama Kaur");
     expect(delegate.heading).not.toMatch(/^You /);
     expect(delegate.contextNote).toMatch(/does not have a login of their own/i);
+  });
+
+  it("never names anybody on a withdrawn request, because the code cannot tell who withdrew it", () => {
+    // THE BUG THIS PINS. `REQUEST_CANCELLED` is chosen from the ROW — the
+    // consent status is still PENDING — by the guest-removal route and by the
+    // batch modification alike, and neither consults the actor. So the booker
+    // and a club officer both land here, and the earlier copy said
+    // "{booker} has called off the request" for both: wrong about half the
+    // time, and where an officer had acted it also put a staff name in front of
+    // somebody who is not on the booking. Signed-off mockup question 3 answers
+    // this "no name", and this is the assertion that keeps it that way.
+    for (const audience of [
+      { kind: "TARGET" as const },
+      {
+        kind: "DELEGATE" as const,
+        guest: { firstName: "Tama", lastName: "Kaur" },
+      },
+    ]) {
+      const cancelled = composeMemberGuestWithdrawn({
+        context: "REQUEST_CANCELLED",
+        bookerName: "Dave Ngata",
+        audience,
+      });
+      expect(cancelled.heading).not.toContain("Dave");
+      expect(cancelled.contextNote).not.toContain("Dave");
+      expect(cancelled.contextNote).not.toContain("Ngata");
+      // Passive voice on purpose: no actor is named, and none is implied.
+      expect(cancelled.contextNote).toMatch(/has been withdrawn/i);
+    }
+
+    // The other half of the property: TAKEN_OFF is a settled place on a
+    // specific person's booking, and it KEEPS its possessive phrasing.
+    const takenOff = composeMemberGuestWithdrawn({
+      context: "TAKEN_OFF",
+      bookerName: "Dave Ngata",
+      audience: { kind: "TARGET" },
+    });
+    expect(takenOff.contextNote).toContain("Dave Ngata");
   });
 
   it("never names the booker on the pipeline case, because the reader never dealt with them", () => {

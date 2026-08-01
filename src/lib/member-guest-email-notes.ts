@@ -368,7 +368,10 @@ export function composeMemberGuestWithdrawn(params: {
     return {
       heading:
         context === "REQUEST_CANCELLED"
-          ? "That request has been called off"
+          ? // Mockup panel 8, word for word. "Withdrawn" rather than "called
+            // off" so the heading and the (now name-free) opening sentence use
+            // one verb for one event.
+            "That request has been withdrawn"
           : "You are no longer on that lodge booking",
       contextNote: composeWithdrawnContextNoteForTarget(context, bookerName),
     };
@@ -383,7 +386,7 @@ export function composeMemberGuestWithdrawn(params: {
   return {
     heading:
       context === "REQUEST_CANCELLED"
-        ? `The request about ${guestName} has been called off`
+        ? `The request about ${guestName} has been withdrawn`
         : `${guestName} is no longer on that lodge booking`,
     contextNote:
       composeWithdrawnContextNoteForDelegate(context, bookerName, guestFirstName) +
@@ -397,9 +400,21 @@ function composeWithdrawnContextNoteForTarget(
 ): string {
   switch (context) {
     case "REQUEST_CANCELLED":
+      // NAMES NOBODY, and that is the signed-off answer to mockup question 3
+      // rather than a stylistic choice. This case is chosen from the ROW's
+      // consent status (still PENDING), not from who acted: the guest-removal
+      // route and the batch modification both reach it whether the booker
+      // cancelled or a club officer withdrew the request. Naming the booker was
+      // therefore wrong about half the time, and where an officer had acted it
+      // also put a staff member's name in front of somebody who is not on the
+      // booking. The neutral shape is true whoever it was — see panel 8.
+      //
+      // TAKEN_OFF keeps its possessive phrasing deliberately: a settled place
+      // exists on a specific person's booking, and the reader has been told
+      // whose it is already.
       return (
-        `${bookerName} has called off the request to add you as a guest on their ` +
-        "lodge booking, so there is nothing left for you to answer and the bed " +
+        "the request to add you as a guest on a lodge booking has been " +
+        "withdrawn, so there is nothing left for you to answer and the bed " +
         "that was being held for you has been released."
       );
     case "TAKEN_OFF":
@@ -419,10 +434,12 @@ function composeWithdrawnContextNoteForDelegate(
 ): string {
   switch (context) {
     case "REQUEST_CANCELLED":
+      // Name-free for the same reason as the target voice above — the case is
+      // chosen from the row, not from the actor, so it cannot honestly name one.
       return (
-        `${bookerName} has called off the request to add ${guestFirstName} as a ` +
-        "guest on their lodge booking, so there is nothing left to answer and the " +
-        "bed that was being held has been released."
+        `the request to add ${guestFirstName} as a guest on a lodge booking has ` +
+        "been withdrawn, so there is nothing left to answer and the bed that was " +
+        "being held has been released."
       );
     case "TAKEN_OFF":
       return `${guestFirstName} has been taken off ${bookerName}'s lodge booking, so they no longer have a place on it.`;

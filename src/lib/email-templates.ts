@@ -3875,6 +3875,13 @@ export function memberGuestConsentExpiredTemplate(data: {
  * price of being asked to join; it is not owed to somebody who has been removed.
  *
  * NO MONEY either, on the same rule as the request and added notices.
+ *
+ * THE LAST PARAGRAPH IS THE ONE DOING REAL WORK (mockup panel 8). The reader is
+ * holding an earlier email with a button in it — "Answer this request", or
+ * "View this booking" — and that button now leads nowhere. Saying so BEFORE they
+ * press it is the difference between a closed loop and an error page, so it is
+ * stated here and in the editable default body in the same words; the closing
+ * contact line carries the support address in both for the same reason.
  */
 export function memberGuestRequestWithdrawnTemplate(data: {
   firstName: string;
@@ -3894,7 +3901,8 @@ export function memberGuestRequestWithdrawnTemplate(data: {
         value: `${escapeHtml(formatNZDate(data.checkIn))} - ${escapeHtml(formatNZDate(data.checkOut))}`,
       },
     ])}
-    ${paragraph("You do not need to do anything. If you think this is a mistake, contact the club.")}
+    ${supportContactSentence("You do not need to do anything. If you think this is a mistake, contact the club at ")}
+    ${paragraph("The link in the earlier email no longer works. If plans change, you can be added to a booking again later.")}
   `);
 }
 

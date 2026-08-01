@@ -14,8 +14,10 @@ the adults in their family group are asked instead, on a dedicated page
 (`/bookings/consent/<id>`).
 
 Some clubs choose to **tell** rather than ask. In that case your place is held
-straight away, the email says so, and you can still take yourself off the
-booking if you would rather not go.
+straight away and the email says so. In most cases you can then take yourself
+off the booking if you would rather not go — but not in every case, and the
+email tells you which it is. *How to come off it, honestly*, further down this
+page, lists the situations where only the club can take you off.
 
 ## When you'd use it
 
@@ -37,8 +39,10 @@ booking if you would rather not go.
    **your nights**, the date to answer by, and everyone on the booking.
 3. Choose **Yes, add me** or **No thanks**.
    - **Yes** confirms your place. The person who made the booking is emailed.
-   - **No** releases the bed that was held for you and takes you off the
-     booking. They are emailed about that too.
+   - **No** normally releases the bed that was held for you and takes you off
+     the booking, and they are emailed about that too. On a few bookings it
+     cannot be actioned from your side — the paragraph after this list says
+     which, and what happens instead.
 4. If you do nothing, the request **lapses on its own** at the answer-by date.
    The bed is released and the person who made the booking is told. You never
    have to do anything to decline.
