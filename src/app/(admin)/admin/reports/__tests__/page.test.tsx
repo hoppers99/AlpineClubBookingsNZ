@@ -168,7 +168,7 @@ describe("ReportsPage quick ranges", () => {
         ),
       ),
     );
-    const createObjectUrl = vi.fn(() => "blob:report");
+    const createObjectUrl = vi.fn<(blob: Blob) => string>(() => "blob:report");
     Object.defineProperty(URL, "createObjectURL", { configurable: true, value: createObjectUrl });
     Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: vi.fn() });
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);

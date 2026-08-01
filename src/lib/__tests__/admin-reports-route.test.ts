@@ -150,6 +150,11 @@ describe("admin reports route", () => {
     expect(data.summary.totalBookings).toBe(3);
     expect(data.statusBreakdown).toMatchObject({ pending: 1, awaitingReview: 1, completed: 1 });
     expect(data.trends[0]).toMatchObject({ total: 3, pending: 1, awaitingReview: 1, completed: 1 });
+    // PENDING/AWAITING_REVIEW belong to the base report cohort but must not
+    // broaden the established PAID/COMPLETED occupancy cohort.
+    expect(data.occupancy.every((night: { occupiedBeds: number }) => night.occupiedBeds === 0)).toBe(
+      true,
+    );
     const queryWhere = mockPrisma.booking.findMany.mock.calls[0][0].where;
     expect(queryWhere).toMatchObject({ lodgeId: "lodge-2" });
     expect(queryWhere).not.toHaveProperty("deletedAt");

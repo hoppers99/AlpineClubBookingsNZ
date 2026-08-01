@@ -93,6 +93,26 @@ describe("admin reports helpers", () => {
     });
   });
 
+  it("does not count a multi-night booking more than once in a weekly bucket", () => {
+    const result = buildRevenueSeries(
+      [booking({ finalPriceCents: 300 })],
+      date("2026-04-01"),
+      date("2026-04-14"),
+    );
+    expect(result.granularity).toBe("daily");
+
+    const weekly = buildRevenueSeries(
+      [booking({ finalPriceCents: 300 })],
+      date("2026-04-01"),
+      date("2026-04-15"),
+    );
+    expect(weekly.granularity).toBe("weekly");
+    expect(weekly.data.find((bucket) => bucket.periodStart === "2026-04-06")).toMatchObject({
+      revenueCents: 300,
+      bookingCount: 1,
+    });
+  });
+
   it("excludes non-report statuses instead of treating every non-cancelled row as revenue", () => {
     const result = buildRevenueSeries(
       [
