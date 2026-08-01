@@ -23,6 +23,7 @@ import {
   bookingModificationSummaryRows,
 } from "../email-templates";
 import {
+  bookingBumpedRebookAction,
   bookingPaymentDueNote,
   composeChoreLine,
   composeOptionalEmailLine,
@@ -423,19 +424,51 @@ export async function sendBookingBumpedEmail(
   checkOut: Date,
   guestCount: number,
   // Booking's lodge (multi-lodge phase 8): see sendBookingConfirmedEmail.
-  lodgeId?: string | null,
+  // Required (pass `null` when unknown) so the recipient argument after it can
+  // be required too — TypeScript allows no required parameter behind an
+  // optional one, and that argument must not be omittable (below).
+  lodgeId: string | null,
+  // #2430: whether the owner of the bumped booking can sign in and rebook.
+  // Pass the owner's `Member.canLogin`: a booking converted from a public
+  // booking request (#707), or any booking an admin made for a non-login
+  // NON_MEMBER/SCHOOL contact, is owned by a member that cannot authenticate,
+  // so `/book` would send them to a login they can never complete. REQUIRED,
+  // with no default: `true` is the leaky value, so a defaulted argument would
+  // let a future send site mail a login-less contact a members-only link
+  // without anyone noticing (#2430 review).
+  recipientCanBookOnline: boolean,
 ) {
+  const rebook = bookingBumpedRebookAction(recipientCanBookOnline);
   await sendEmail({
     to: email,
     subject: `Booking Update - ${EMAIL_DEFAULT_LODGE_NAME}`,
-    html: bookingBumpedTemplate(firstName, checkIn, checkOut, guestCount),
-    bookingContext: bookingOwnerEmailContext(bookingContext.bookingId, bookingContext.recipientMemberId),
+    // Both halves of the #2430 / #2473 overlap are load-bearing and compose:
+    // the template argument is #2430's recipient split (a recipient who cannot
+    // sign in must never be sent the members-only booking link), and the
+    // context is #2473's recipient-authority resolution. Neither replaces the
+    // other, and in particular this must not route a non-login recipient to an
+    // authenticated booking-detail link — see the coordination thread on #2466.
+    html: bookingBumpedTemplate(
+      firstName,
+      checkIn,
+      checkOut,
+      guestCount,
+      recipientCanBookOnline,
+    ),
+    bookingContext: bookingOwnerEmailContext(
+      bookingContext.bookingId,
+      bookingContext.recipientMemberId,
+    ),
     templateName: "booking-bumped",
     templateData: {
       firstName,
       checkIn: formatNZDate(checkIn),
       checkOut: formatNZDate(checkOut),
       guestCount,
+      // The caption and the path only — the body keeps {{BASE_URL}} in front of
+      // the path so the club's own configured public URL still resolves it.
+      rebookLabel: rebook.label,
+      rebookPath: rebook.path,
     },
     lodgeId,
   });

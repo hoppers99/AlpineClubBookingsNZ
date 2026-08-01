@@ -86,6 +86,68 @@ as a red flag and check the release notes before deploying.
 
 ## Unreleased
 
+### The public "Book Now" button is switched OFF for every club (#2430)
+
+**After this release every club's public "Book Now" button is off, whether or
+not the club had chosen to show it.** If your public website shows that button
+today, it will be gone the moment you cut over. This is deliberate: the owner
+decided (1 Aug 2026) that the public site must not read as walk-in commercial
+accommodation, and accepted that switching it off everywhere overrides clubs
+that had deliberately turned it on.
+
+**To turn it back on** — one click, and nothing was lost:
+
+**Admin → Setup & Configuration → Site Appearance & Content → Page Content →
+tick "Show the Book Now button" → Save visibility.**
+
+`20260802100000_public_book_now_default_off` does two things. It flips the
+**column default** of `PublicContentSettings.showBookNow` from true to false, so
+a fresh install ships with no public booking button; and it runs
+`UPDATE "PublicContentSettings" SET "showBookNow" = false`, so every club that
+already has stored settings is switched off too. Nothing else about your public
+content is touched — your pages, your fee and policy visibility, your Book Now
+*target*, and your Club Contact role all stay exactly as they were. Only that
+one checkbox moves, and only in one direction.
+
+Nothing warns you in the product, so if your club wants the button, put the
+click above on your post-upgrade list.
+
+**The button is also renamed for signed-out visitors.** Where it is shown, a
+visitor who is not signed in now sees **Member booking** instead of **Book Now**,
+because booking at this club is for members and nothing behind that button lets
+a visitor make one: with the booking-flow target it opens the member login, and
+with a content-page target it opens that page. A signed-in member still sees
+**Book Now**. The rename follows the visitor, not the target, so it applies even
+if you have pointed the button at a page of your own. Nothing is configurable
+here and no setting changed.
+
+### The bumped-booking email now points non-members somewhere they can go (#2430)
+
+The built-in **Booking Update** (bumped) wording used to end in
+`Book Again: {{BASE_URL}}/book` for everyone. `/book` is the member booking flow
+behind the login, and that message also goes to the organisation or school
+contact whose booking came from a public booking request — a contact with no
+login, who could only ever reach a sign-in screen. The built-in wording now ends
+in `{{rebookLabel}}: {{BASE_URL}}{{rebookPath}}`, which renders
+`Book Again: …/book` for a member and `Contact the Club: …/contact` for a
+contact who cannot sign in. It also now names your support address, the same way
+most other built-in messages do, because a club's Contact page need not carry a
+contact form — without that line a reader who cannot sign in could be sent to a
+page that gives them no way to reply.
+
+**No saved wording is touched, and nothing warns you.** A club that saved its own
+copy of that message keeps it, exactly as it wrote it — which means it keeps
+sending `/book` to people who cannot use it. This is the ordinary "your copy
+reads differently from the built-in wording" case: the editor states the fact
+under the template with **Show differences**, and raises no warning, because a
+customisation differing from the built-in text is what a customisation is. If you
+have customised **Booking Update**, open it after upgrading and either replace
+the `Book Again: {{BASE_URL}}/book` line with
+`{{rebookLabel}}: {{BASE_URL}}{{rebookPath}}` — adding
+`If you have any questions, contact the club at {{SUPPORT_EMAIL}}.` if your copy
+names no email address — or press **Restore Default** to take the whole new
+wording.
+
 ### One-off repair of saved email template wording (#2269)
 
 `20260801150000_strip_email_override_bracket_annotations` is a **data-only

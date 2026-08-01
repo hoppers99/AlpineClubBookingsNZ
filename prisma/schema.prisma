@@ -5106,13 +5106,18 @@ model PublicContentSettings {
   // Annual membership fees are more sensitive than the entrance/joining headline
   // (D-R4), so they get their own visibility flag rather than reusing entranceFees.
   annualFees           Boolean  @default(false)
-  // Configurable public "Book Now" button (E3 #1929). Default preserves the
-  // historical behaviour: shown, pointing at the booking flow. When target is
+  // Configurable public "Book Now" button (E3 #1929). Default flipped to OFF in
+  // #2430 (owner decision, 1 Aug 2026): a fresh install advertises no public
+  // booking CTA until an admin ticks it on. The same migration
+  // (20260802100000_public_book_now_default_off) also switches EXISTING clubs
+  // off — the owner widened the decision on PR #2466, accepting that it
+  // overrides a saved choice — so after that release no club shows the button
+  // until an admin ticks it back on. When target is
   // PAGE, bookNowPageId names a published PageContent; getBookNowConfig() fails
   // open to the booking flow if the page is missing/unpublished, so the button
   // is never dead. The FK is SetNull so deleting the target page reverts the
   // button to the booking flow rather than dangling.
-  showBookNow          Boolean       @default(true)
+  showBookNow          Boolean       @default(false)
   bookNowTarget        BookNowTarget @default(BOOKING_FLOW)
   bookNowPageId        String?
   bookNowPage          PageContent?  @relation("PublicContentBookNowPage", fields: [bookNowPageId], references: [id], onDelete: SetNull)

@@ -663,12 +663,34 @@ menu.
 The public website header's **Book Now** button is configured on the same
 Admin > Page Content panel (`PublicContentSettings`):
 
-- **Show the button** — off hides it entirely (desktop and mobile).
+- **Show the button** — off hides it entirely (desktop and mobile). **Off
+  everywhere since #2430.** A fresh install ships with it off (the column
+  default), and `20260802100000_public_book_now_default_off` also switched it
+  off for **every existing club**, whether or not the club had chosen to show
+  it — the owner's decision (1 Aug 2026), which deliberately overrode saved
+  choices rather than only changing what new installs get. A club that wants
+  the button turns it back on in one click: **Admin → Setup & Configuration →
+  Site Appearance & Content → Page Content** → tick **Show the Book Now
+  button** → **Save visibility**. From that save on, the stored value is what
+  governs and nothing in the product moves it again. (A database error while
+  reading the row still falls back to showing the button — see the fail-open
+  contract below.)
 - **Target** — *booking flow* (the default: a logged-in member goes to `/book`,
   a guest is sent through login) or a chosen **published content page**.
 - A page target that becomes unpublished or is deleted **fails open** to the
-  booking flow, so the button is never dead. The authenticated dashboard's own
-  Book Now action is unaffected — a signed-in member can always book.
+  booking flow, so the button is never dead. So does a database error reading
+  the settings row: `getBookNowConfig`'s catch shows the button (#1929's
+  contract, deliberately unchanged by #2430 — the no-row branch fails closed
+  because that is a club's absent choice, whereas an outage is not). The
+  authenticated dashboard's own Book Now action is unaffected — a signed-in
+  member can always book.
+- **The label follows the visitor, not the target** (#2430). A signed-out
+  visitor sees **Member booking**, because booking here is for members: with the
+  booking-flow target the button sends them to the member login, and with a page
+  target it sends them to a content page — neither is a booking they can make.
+  A signed-in member sees **Book Now**. Both surfaces (desktop header and mobile
+  drawer) take the label from `getBookNowConfig`, so they cannot disagree. The
+  label is not configurable, and it does not change when you change the target.
 
 ## Website Site Content
 
