@@ -68,6 +68,37 @@ function toDraft(policy: MinStayPolicy): MinStayDraft {
   }
 }
 
+/** Accept only a complete server row that is safe to render and re-seed. */
+function parseMinStayPolicy(value: unknown): MinStayPolicy | null {
+  if (!value || typeof value !== "object") return null
+  const row = value as Record<string, unknown>
+  if (
+    typeof row.id !== "string" ||
+    typeof row.name !== "string" ||
+    typeof row.startDate !== "string" ||
+    typeof row.endDate !== "string" ||
+    !Array.isArray(row.triggerDays) ||
+    !row.triggerDays.every((day) => Number.isInteger(day)) ||
+    !Number.isInteger(row.minimumNights) ||
+    (row.capacityMode !== "HOLD" && row.capacityMode !== "NO_HOLD") ||
+    !Number.isInteger(row.version) ||
+    typeof row.active !== "boolean"
+  ) {
+    return null
+  }
+  return row as unknown as MinStayPolicy
+}
+
+async function responseMessage(
+  response: Response,
+  fallback: string,
+): Promise<string> {
+  const body = await response.json().catch(() => null) as
+    | { error?: unknown }
+    | null
+  return typeof body?.error === "string" ? body.error : fallback
+}
+
 function draftsEqual(a: MinStayDraft, b: MinStayDraft) {
   return (
     a.name === b.name &&
@@ -101,6 +132,7 @@ function MinStayForm({
 }) {
   // #2257 — the example lives UNDER the field, not inside it as grey pseudo-content.
   const nameHint = useFieldHint()
+  const capacityHint = useFieldHint()
   const section = useSectionEditState<MinStayDraft>({
     initial,
     save: onSubmit,
@@ -202,6 +234,7 @@ function MinStayForm({
               })
             }
             className="h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+            {...capacityHint.fieldProps}
           >
             <option value="" disabled>
               Select how capacity is handled
@@ -209,10 +242,10 @@ function MinStayForm({
             <option value="HOLD">Hold requested capacity during review</option>
             <option value="NO_HOLD">Do not hold capacity until approval</option>
           </select>
-          <p className="text-xs text-muted-foreground">
+          <FieldHint {...capacityHint.hintProps}>
             This applies when a booking needs an approved exception to this
             minimum-stay rule. New policies have no automatic choice.
-          </p>
+          </FieldHint>
         </div>
 
         <div className="space-y-2">
@@ -296,15 +329,17 @@ export function MinimumNightStaySection() {
    * Load the list for the CURRENT scope.
    *
    * `scopeLoad` marks the fetch that a scope change (including the mount) is
-   * waiting on: only that one flips the section into its loading state, so an
-   * ordinary refresh after a write never blanks the list. Every state write is
+   * waiting on: mount, scope changes, and post-mutation refreshes use it to
+   * replace the list with a non-actionable loading state. Every state write is
    * guarded on the scope still being the one this call was made for, which is
    * also what keeps `loadedScope` honest — a dropped response leaves the new
    * scope UNKNOWN until its own load lands, rather than labelling one scope's
    * rows with another's.
    */
   const fetchMinStay = useCallback(
-    async (options: { signal?: AbortSignal; scopeLoad?: boolean } = {}) => {
+    async (
+      options: { signal?: AbortSignal; scopeLoad?: boolean } = {},
+    ): Promise<boolean> => {
       const { signal, scopeLoad = false } = options
       const scope = scopeLodgeId
       if (scopeLoad) setLoadingMinStay(true)
@@ -316,14 +351,28 @@ export function MinimumNightStaySection() {
           { signal }
         )
         if (!res.ok) throw new Error("Failed to fetch minimum stay policies")
-        const data = await res.json()
-        if (scopeRef.current !== scope) return
-        setMinStayPolicies(data)
+        const data: unknown = await res.json()
+        if (!Array.isArray(data)) {
+          throw new Error("Failed to read minimum stay policies")
+        }
+        const policies = data.map(parseMinStayPolicy)
+        if (policies.some((policy) => policy === null)) {
+          throw new Error("Failed to read minimum stay policies")
+        }
+        if (scopeRef.current !== scope) return false
+        setMinStayPolicies(policies as MinStayPolicy[])
         setLoadedScope(scope)
+        return true
       } catch (err) {
-        if (err instanceof DOMException && err.name === "AbortError") return
-        if (scopeRef.current !== scope) return
+        if (err instanceof DOMException && err.name === "AbortError") return false
+        if (scopeRef.current !== scope) return false
+        setLoadedScope(UNLOADED_SCOPE)
+        setMinStayPolicies([])
+        setShowMinStayForm(false)
+        setEditingMinStayId(null)
+        setEditingDraft(NEW_MIN_STAY_DRAFT)
         setError(err instanceof Error ? err.message : "Unknown error")
+        return false
       } finally {
         if (scopeLoad && scopeRef.current === scope) setLoadingMinStay(false)
       }
@@ -369,10 +418,38 @@ export function MinimumNightStaySection() {
     setShowMinStayForm(true)
   }
 
+  /** Apply a complete authoritative mutation row before the guarded refresh. */
+  const applyServerPolicy = useCallback(
+    (policy: MinStayPolicy) => {
+      if (scopeRef.current !== scopeLodgeId) return
+      setMinStayPolicies((current) => {
+        const found = current.some((row) => row.id === policy.id)
+        return found
+          ? current.map((row) => row.id === policy.id ? policy : row)
+          : [...current, policy]
+      })
+    },
+    [scopeLodgeId],
+  )
+
   /**
-   * The open editor's transport. Throws so `useSectionEditState` surfaces the
-   * message; on success it closes the form and refreshes the list, which is why
-   * the returned value (the hook's re-seed) is never actually rendered again.
+   * Close every write affordance until an awaited refresh proves the current
+   * keyed snapshot authoritative again. This also recovers from a 409 or from
+   * a successful write whose response body cannot be read.
+   */
+  const refreshAfterMutation = useCallback(async (): Promise<boolean> => {
+    if (scopeRef.current !== scopeLodgeId) return false
+    setLoadedScope(UNLOADED_SCOPE)
+    setShowMinStayForm(false)
+    setEditingMinStayId(null)
+    setEditingDraft(NEW_MIN_STAY_DRAFT)
+    return fetchMinStay({ scopeLoad: true })
+  }, [fetchMinStay, scopeLodgeId])
+
+  /**
+   * The open editor's transport. Ordinary failures throw so
+   * `useSectionEditState` surfaces them. A 409 or a successful-but-unreadable
+   * response closes the stale editor and awaits a fresh authoritative list.
    */
   const submitMinStay = useCallback(
     async (draft: MinStayDraft): Promise<MinStayDraft> => {
@@ -400,43 +477,35 @@ export function MinimumNightStaySection() {
       })
       if (!res.ok) {
         if (res.status === 403) throw new ForbiddenSaveError()
-        const data = await res.json()
-        throw new Error(data.error || "Failed to save")
+        const message = await responseMessage(res, "Failed to save")
+        if (res.status === 409) {
+          const refreshed = await refreshAfterMutation()
+          setError(
+            refreshed
+              ? message
+              : `${message} The latest policies could not be loaded; try again.`,
+          )
+          return draft
+        }
+        throw new Error(message)
       }
       const wasEditing = editingMinStayId !== null
-      // Parse the SERVER row into the re-seed value BEFORE closing the form, so
-      // a malformed response surfaces as a save error rather than after a
-      // success message has already been shown.
-      let reseeded: MinStayDraft
-      try {
-        const saved = await res.json()
-        reseeded = toDraft({
-          ...saved,
-          triggerDays: saved.triggerDays ?? draft.triggerDays,
-        })
-      } catch {
-        // The write ALREADY SUCCEEDED at this point, so what a parse failure
-        // may safely do depends on the verb. An edit is an idempotent PUT: keep
-        // the form open with the error and the natural retry re-writes the same
-        // row. A create is not: the row exists, but the form still has
-        // `policyId === null`, so the same retry would POST a SECOND row. There
-        // we swallow the parse failure, fall back to the submitted draft, and
-        // close the form — the list refresh below shows what was really stored.
-        if (wasEditing) {
-          throw new Error(
-            "The policy was saved, but the server's reply could not be read. Reload the page to see what is stored.",
-          )
-        }
-        reseeded = draft
+      const saved = parseMinStayPolicy(await res.json().catch(() => null))
+      if (saved) applyServerPolicy(saved)
+      const refreshed = await refreshAfterMutation()
+      if (refreshed) {
+        setSuccess(
+          wasEditing ? "Minimum stay policy updated" : "Minimum stay policy created",
+        )
       }
-      resetMinStayForm()
-      void fetchMinStay()
-      setSuccess(
-        wasEditing ? "Minimum stay policy updated" : "Minimum stay policy created",
-      )
-      return reseeded
+      return saved ? toDraft(saved) : draft
     },
-    [editingMinStayId, scopeLodgeId, fetchMinStay],
+    [
+      editingMinStayId,
+      scopeLodgeId,
+      applyServerPolicy,
+      refreshAfterMutation,
+    ],
   )
 
   // The synchronous ref is the real guard for every direct row write. A
@@ -446,6 +515,7 @@ export function MinimumNightStaySection() {
   const [rowActionId, setRowActionId] = useState<string | null>(null)
 
   async function handleDeleteMinStay(policy: MinStayPolicy) {
+    if (rowActionRef.current) return
     if (
       !confirm(
         "Delete this minimum stay policy? It stops applying immediately and stays listed as inactive, so the change is auditable.",
@@ -453,7 +523,6 @@ export function MinimumNightStaySection() {
     ) {
       return
     }
-    if (rowActionRef.current) return
     rowActionRef.current = true
     setRowActionId(policy.id)
     try {
@@ -466,11 +535,27 @@ export function MinimumNightStaySection() {
         },
       )
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.error || "Failed to deactivate")
+        const message = await responseMessage(res, "Failed to deactivate")
+        if (res.status === 409) {
+          const refreshed = await refreshAfterMutation()
+          setError(
+            refreshed
+              ? message
+              : `${message} The latest policies could not be loaded; try again.`,
+          )
+          return
+        }
+        throw new Error(message)
       }
-      await fetchMinStay()
-      setSuccess("Minimum stay policy deleted — it is listed as inactive")
+      const body = await res.json().catch(() => null) as
+        | { policy?: unknown }
+        | null
+      const saved = parseMinStayPolicy(body?.policy)
+      if (saved) applyServerPolicy(saved)
+      const refreshed = await refreshAfterMutation()
+      if (refreshed) {
+        setSuccess("Minimum stay policy deleted — it is listed as inactive")
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error")
     } finally {
@@ -508,10 +593,21 @@ export function MinimumNightStaySection() {
         }),
       })
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.error || "Failed to update")
+        const message = await responseMessage(res, "Failed to update")
+        if (res.status === 409) {
+          const refreshed = await refreshAfterMutation()
+          setError(
+            refreshed
+              ? message
+              : `${message} The latest policies could not be loaded; try again.`,
+          )
+          return
+        }
+        throw new Error(message)
       }
-      await fetchMinStay()
+      const saved = parseMinStayPolicy(await res.json().catch(() => null))
+      if (saved) applyServerPolicy(saved)
+      await refreshAfterMutation()
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error")
     } finally {

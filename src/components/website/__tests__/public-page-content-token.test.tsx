@@ -180,6 +180,13 @@ describe("public PageContent token rendering", () => {
             triggerDays: "Saturday",
             capacityHandling:
               "An exception request does not reserve capacity until the club approves it.",
+          }, {
+            name: "Summer holidays",
+            dateRange: "1 Dec 2026 to 31 Jan 2027",
+            minimumNights: 3,
+            triggerDays: "Friday",
+            capacityHandling:
+              "If an exception is requested, the requested capacity is held while the club reviews it.",
           }],
           groupDiscount: null,
         }}
@@ -187,5 +194,6 @@ describe("public PageContent token rendering", () => {
     );
 
     expect(html).toContain("An exception request does not reserve capacity");
+    expect(html).toContain("requested capacity is held while the club reviews it");
   });
 });

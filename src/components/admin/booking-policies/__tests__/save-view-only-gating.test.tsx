@@ -326,6 +326,16 @@ describe("MinimumNightStaySection Save gating (#2142, #2143)", () => {
     ).toBe("");
   });
 
+  it("associates the capacity explanation with its select", async () => {
+    await openForm();
+    const select = screen.getByLabelText("Exception capacity handling");
+    const descriptionId = select.getAttribute("aria-describedby");
+    expect(descriptionId).toBeTruthy();
+    expect(document.getElementById(descriptionId!)?.textContent).toContain(
+      "New policies have no automatic choice",
+    );
+  });
+
   it("disables Create Policy when the actor is narrowed mid-edit", async () => {
     const rerender = await openForm();
     narrowTo(false, rerender);
@@ -2129,6 +2139,241 @@ describe("row toggles are guarded against a double-click (#2143)", () => {
       1,
     );
     expect(screen.getByRole("button", { name: "Delete" })).toBeTruthy();
+  });
+});
+
+describe("minimum-stay mutation responses and stale-revision recovery (#2363)", () => {
+  const POLICY = {
+    id: "m1",
+    name: "Winter Saturdays",
+    startDate: "2026-07-01T00:00:00.000Z",
+    endDate: "2026-09-30T00:00:00.000Z",
+    triggerDays: [6],
+    minimumNights: 2,
+    capacityMode: "HOLD",
+    version: 4,
+    active: true,
+  };
+
+  function mutationThenFailedRefresh(
+    initial: unknown[],
+    writeBody: unknown,
+  ) {
+    let reads = 0;
+    const fetchMock = vi.fn<
+      (url: string, init?: RequestInit) => Promise<Response>
+    >(async (_url, init) => {
+      if (init?.method) return jsonResponse(writeBody);
+      reads += 1;
+      return reads === 1
+        ? jsonResponse(initial)
+        : new Response("{}", { status: 500 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  async function fillNewPolicy() {
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Add Policy" })).toBeTruthy(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Add Policy" }));
+    fireEvent.change(screen.getByLabelText("Policy Name"), {
+      target: { value: POLICY.name },
+    });
+    fireEvent.change(screen.getByLabelText("Start Date"), {
+      target: { value: "2026-07-01" },
+    });
+    fireEvent.change(screen.getByLabelText("End Date"), {
+      target: { value: "2026-09-30" },
+    });
+    fireEvent.change(screen.getByLabelText("Exception capacity handling"), {
+      target: { value: "HOLD" },
+    });
+  }
+
+  async function expectUnknownAfterWrite() {
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Could not load the minimum-stay policies/i),
+      ).toBeTruthy(),
+    );
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Deactivate" })).toBeNull();
+  }
+
+  it("sends the exact POST body, then fails closed when its refresh fails", async () => {
+    const fetchMock = mutationThenFailedRefresh([], POLICY);
+    render(<MinimumNightStaySection />);
+    await fillNewPolicy();
+    fireEvent.click(screen.getByRole("button", { name: "Create Policy" }));
+
+    await waitFor(() => expect(writeCalls(fetchMock)).toHaveLength(1));
+    expect(JSON.parse(String(writeCalls(fetchMock)[0][1]?.body))).toEqual({
+      name: POLICY.name,
+      startDate: "2026-07-01",
+      endDate: "2026-09-30",
+      triggerDays: [6],
+      minimumNights: 2,
+      capacityMode: "HOLD",
+    });
+    await expectUnknownAfterWrite();
+    expect(screen.queryByText("Minimum stay policy created")).toBeNull();
+  });
+
+  it("sends the exact versioned PUT body, then fails closed when refresh fails", async () => {
+    const updated = { ...POLICY, minimumNights: 3, version: 5 };
+    const fetchMock = mutationThenFailedRefresh([POLICY], updated);
+    render(<MinimumNightStaySection />);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("Minimum Nights"), {
+      target: { value: "3" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Update Policy" }));
+
+    await waitFor(() => expect(writeCalls(fetchMock)).toHaveLength(1));
+    expect(JSON.parse(String(writeCalls(fetchMock)[0][1]?.body))).toEqual({
+      name: POLICY.name,
+      startDate: "2026-07-01",
+      endDate: "2026-09-30",
+      triggerDays: [6],
+      minimumNights: 3,
+      capacityMode: "HOLD",
+      version: 4,
+    });
+    await expectUnknownAfterWrite();
+  });
+
+  it("consumes the versioned toggle row, then fails closed when refresh fails", async () => {
+    const fetchMock = mutationThenFailedRefresh(
+      [POLICY],
+      { ...POLICY, active: false, version: 5 },
+    );
+    render(<MinimumNightStaySection />);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Deactivate" })).toBeTruthy(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Deactivate" }));
+
+    await waitFor(() => expect(writeCalls(fetchMock)).toHaveLength(1));
+    expect(JSON.parse(String(writeCalls(fetchMock)[0][1]?.body))).toEqual({
+      active: false,
+      version: 4,
+    });
+    await expectUnknownAfterWrite();
+  });
+
+  it("sends one exact DELETE for same-tick clicks and hides stale actions after refresh failure", async () => {
+    const fetchMock = mutationThenFailedRefresh(
+      [POLICY],
+      { success: true, policy: { ...POLICY, active: false, version: 5 } },
+    );
+    const confirmMock = vi.fn(() => true);
+    vi.stubGlobal("confirm", confirmMock);
+    render(<MinimumNightStaySection />);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Delete" })).toBeTruthy(),
+    );
+    const button = screen.getByRole("button", { name: "Delete" });
+    await act(async () => {
+      button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await waitFor(() => expect(writeCalls(fetchMock)).toHaveLength(1));
+    expect(confirmMock).toHaveBeenCalledTimes(1);
+    expect(writeCalls(fetchMock)[0][1]?.method).toBe("DELETE");
+    expect(JSON.parse(String(writeCalls(fetchMock)[0][1]?.body))).toEqual({
+      version: 4,
+    });
+    await expectUnknownAfterWrite();
+    expect(
+      screen.queryByText(/Minimum stay policy deleted/i),
+    ).toBeNull();
+  });
+
+  it("closes a stale editor on 409 and re-seeds from the refreshed revision", async () => {
+    const current = {
+      ...POLICY,
+      minimumNights: 4,
+      capacityMode: "NO_HOLD",
+      version: 5,
+    };
+    let reads = 0;
+    const fetchMock = vi.fn<
+      (url: string, init?: RequestInit) => Promise<Response>
+    >(async (_url, init) => {
+      if (init?.method) {
+        return new Response(JSON.stringify({
+          error: "This policy changed since it was loaded. Reload it and try again.",
+          code: "POLICY_VERSION_CONFLICT",
+          currentVersion: 5,
+        }), { status: 409 });
+      }
+      reads += 1;
+      return jsonResponse(reads === 1 ? [POLICY] : [current]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<MinimumNightStaySection />);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("Minimum Nights"), {
+      target: { value: "3" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Update Policy" }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/changed since it was loaded/i)).toBeTruthy(),
+    );
+    expect(screen.queryByRole("button", { name: "Update Policy" })).toBeNull();
+    expect(screen.getByText(/Revision 5/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    expect(
+      (screen.getByLabelText("Minimum Nights") as HTMLInputElement).value,
+    ).toBe("4");
+    expect(
+      (screen.getByLabelText("Exception capacity handling") as HTMLSelectElement)
+        .value,
+    ).toBe("NO_HOLD");
+    expect(writeCalls(fetchMock)).toHaveLength(1);
+  });
+
+  it("recovers an unreadable successful edit through an awaited refresh", async () => {
+    const current = { ...POLICY, minimumNights: 3, version: 5 };
+    let reads = 0;
+    const fetchMock = vi.fn<
+      (url: string, init?: RequestInit) => Promise<Response>
+    >(async (_url, init) => {
+      if (init?.method) {
+        return new Response("<html>truncated</html>", { status: 200 });
+      }
+      reads += 1;
+      return jsonResponse(reads === 1 ? [POLICY] : [current]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<MinimumNightStaySection />);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("Minimum Nights"), {
+      target: { value: "3" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Update Policy" }));
+
+    await waitFor(() => expect(screen.getByText(/Revision 5/)).toBeTruthy());
+    expect(screen.queryByRole("button", { name: "Update Policy" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    expect(
+      (screen.getByLabelText("Minimum Nights") as HTMLInputElement).value,
+    ).toBe("3");
+    expect(writeCalls(fetchMock)).toHaveLength(1);
   });
 });
 

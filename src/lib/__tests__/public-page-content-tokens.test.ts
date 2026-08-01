@@ -494,9 +494,43 @@ describe("public PageContent token view models", () => {
     expect(policy?.minimumStays[0]?.capacityHandling).toContain(
       "does not reserve capacity until",
     );
+    expect(mocks.minimumStays).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({ capacityMode: true }),
+      }),
+    );
     expect(JSON.stringify(policy)).not.toContain("waitlistCrossLodgeOrder");
     expect(JSON.stringify(policy)).not.toContain("secret");
     expect(JSON.stringify(policy)).not.toContain("internal");
+  });
+
+  it("renders HOLD and NO_HOLD minimum-stay capacity handling distinctly", async () => {
+    mocks.minimumStays.mockResolvedValue([
+      {
+        name: "Held",
+        startDate: new Date("2026-07-01"),
+        endDate: new Date("2026-08-01"),
+        minimumNights: 2,
+        triggerDays: [6],
+        capacityMode: "HOLD",
+        lodgeId: null,
+      },
+      {
+        name: "Not held",
+        startDate: new Date("2026-08-02"),
+        endDate: new Date("2026-09-01"),
+        minimumNights: 2,
+        triggerDays: [0],
+        capacityMode: "NO_HOLD",
+        lodgeId: null,
+      },
+    ]);
+
+    const policy = await loadPublicBookingPolicy();
+    expect(policy?.minimumStays.map((row) => row.capacityHandling)).toEqual([
+      expect.stringContaining("capacity is held while the club reviews"),
+      expect.stringContaining("does not reserve capacity until"),
+    ]);
   });
 
   it("describes divergent card and credit cancellation terms", async () => {
