@@ -2569,6 +2569,13 @@ describe("approveMemberWholeLodgeRequest (#2263)", () => {
       // Split across the rows sums EXACTLY to the flat total (no cent invented).
       const perGuest = data.guests.create.map((guest) => guest.priceCents);
       expect(perGuest.reduce((sum, cents) => sum + cents, 0)).toBe(120000);
+
+      // The audit trail names the flat branch, distinct from ordinary per-guest
+      // season pricing, so a money decision is legible after the fact.
+      const approveAudit = mockedLogAudit.mock.calls
+        .map((call) => call[0])
+        .find((entry) => entry.action === "booking_request.member_whole_lodge_approved");
+      expect(approveAudit?.metadata).toMatchObject({ priceSource: "whole_lodge_flat" });
     });
 
     it("prices per guest when the officer does NOT tick the toggle, even though a flat rate exists", async () => {

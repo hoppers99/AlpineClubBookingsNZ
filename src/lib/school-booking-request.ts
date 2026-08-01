@@ -324,6 +324,11 @@ export async function resolveWholeLodgeFlatPriceCents(input: {
       endDate: { gte: input.checkIn },
       ...lodgeNullTolerantScope(requestLodgeId),
     },
+    // Deterministic order so, should a night ever be covered by two active
+    // seasons (normally impossible — overlaps are rejected on create/update —
+    // but a null-lodgeId expand-release artifact could co-exist with a real
+    // season), the first-match this and the batched preview pick is identical.
+    orderBy: [{ startDate: "asc" }, { id: "asc" }],
     select: {
       startDate: true,
       endDate: true,
@@ -367,6 +372,10 @@ export async function resolveWholeLodgeFlatPricesForRequests(
             lodgeId,
             await prisma.season.findMany({
               where: { active: true, ...lodgeNullTolerantScope(lodgeId) },
+              // Same deterministic order as the authoritative approve-time query
+              // (resolveWholeLodgeFlatPriceCents) so the queue preview and the
+              // charge can never first-match different seasons for a night.
+              orderBy: [{ startDate: "asc" }, { id: "asc" }],
               select: {
                 startDate: true,
                 endDate: true,
@@ -2192,7 +2201,15 @@ export async function approveMemberWholeLodgeRequest(input: {
         bookingId: conversion.bookingId,
         memberId: conversion.memberId,
         priceCents: totalPriceCents,
-        priceSource: priceOverrideCents != null ? "admin_override" : "season_rates",
+        // #2338: distinguish the flat whole-lodge branch from ordinary
+        // per-guest season pricing so the audit trail names the money decision
+        // (override > flat > per-guest, mirroring the pricing precedence above).
+        priceSource:
+          priceOverrideCents != null
+            ? "admin_override"
+            : flatWholeLodgeCents != null
+              ? "whole_lodge_flat"
+              : "season_rates",
         guestCount: guests.length,
         submittedGuestCount: submittedGuests.length,
         checkIn: request.checkIn.toISOString(),

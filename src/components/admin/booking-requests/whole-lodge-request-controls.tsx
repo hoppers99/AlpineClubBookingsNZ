@@ -257,7 +257,6 @@ export function MemberWholeLodgeApprovalFields({
   disabled?: boolean;
 }) {
   const flatRateOffered = flatWholeLodgeTotalCents != null;
-  const priceOverridden = priceDollars.trim() !== "";
   return (
     <div className="space-y-3">
       {flatRateOffered ? (
@@ -299,7 +298,7 @@ export function MemberWholeLodgeApprovalFields({
               <span className="font-medium">Price as whole lodge</span> —{" "}
               {formatCents(flatWholeLodgeTotalCents)} for the whole building
               {nights > 0
-                ? ` (${nights} ${nights === 1 ? "night" : "nights"} at the season's flat rate)`
+                ? ` (${nights} ${nights === 1 ? "night" : "nights"} at the season flat rate${nights === 1 ? "" : ", each night at its own season's rate"})`
                 : ""}
               . Headcount does not affect this price.
             </span>
@@ -342,9 +341,9 @@ export function MemberWholeLodgeApprovalFields({
           onChange={(event) => onPriceChange(event.target.value)}
         />
         <p className="text-xs text-muted-foreground">
-          Leave blank to price at the chosen pricing method above. Required when no
-          season covers these dates — there is no separate pricing step on this
-          path. A value here overrides both per-guest and whole-lodge pricing.
+          {flatRateOffered
+            ? "Leave blank to price at the pricing method chosen above. Required when no season covers these dates — there is no separate pricing step on this path. A value here overrides both per-guest and whole-lodge pricing."
+            : "Leave blank to price at the season rates. Required when no season covers these dates — there is no separate pricing step on this path."}
         </p>
       </div>
       </div>
