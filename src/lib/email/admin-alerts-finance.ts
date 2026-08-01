@@ -16,7 +16,34 @@ import {
 import { CLUB_BOOKINGS_NAME } from "@/config/club-identity";
 import { formatNZDate } from "../nzst-date";
 import { formatCents as formatMoneyCents } from "@/lib/utils";
+import { applyXeroOrgShortCode } from "@/lib/xero-links";
+import { getXeroOrgShortCode } from "@/lib/xero-link-short-code";
 import { sendToAdmins } from "./admin-alerts-shared";
+
+/**
+ * Stamp the club's Xero organisation onto an outbound deep link, at SEND time
+ * (#2314, owner decision 1 Aug 2026).
+ *
+ * The URLs reaching these alerts are organisation-agnostic: some are read
+ * straight off a `XeroSyncOperation` / `XeroObjectLink` row, which #2314
+ * deliberately keeps generic so a reconnect to a different Xero organisation
+ * cannot leave stored links aimed at books the club no longer owns. A screen can
+ * re-render and pick the current organisation up; an email cannot. So an email
+ * is the surface that most needs the organisation named, and send time is the
+ * last honest moment to name it — the alert is already a point-in-time snapshot
+ * of everything else it reports.
+ *
+ * Failure degrades, never blocks: no short code (Xero disconnected, the
+ * organisation read failed, or Xero reported none) leaves the generic
+ * `go.xero.com` link, which is live — it may just ask a multi-organisation
+ * admin which organisation they meant.
+ */
+async function stampXeroOrganisation(
+  url: string | null | undefined,
+): Promise<string | null> {
+  if (!url) return null;
+  return applyXeroOrgShortCode(url, { shortCode: await getXeroOrgShortCode() });
+}
 
 // N-04: Admin alert - payment failure
 export async function sendAdminPaymentFailureAlert(data: {
@@ -130,10 +157,15 @@ export async function sendAdminManualSettlementConflictAlert(data: {
 }) {
   const baseUrl = process.env.NEXTAUTH_URL || "http://localhost:3000";
   const reviewUrl = `${baseUrl}/admin/payments`;
+  const xeroInvoiceUrl = await stampXeroOrganisation(data.xeroInvoiceUrl);
 
   await sendToAdmins({
     subject: `Cash settlement vs Xero payment — reconcile: ${data.memberName}`,
-    html: adminManualSettlementConflictTemplate({ ...data, reviewUrl }),
+    html: adminManualSettlementConflictTemplate({
+      ...data,
+      xeroInvoiceUrl,
+      reviewUrl,
+    }),
     templateName: "admin-manual-settlement-conflict",
     templateData: {
       memberName: data.memberName,
@@ -143,7 +175,7 @@ export async function sendAdminManualSettlementConflictAlert(data: {
       bookingId: data.bookingId,
       status: data.bookingStatus,
       xeroInvoiceNumber: data.xeroInvoiceNumber ?? "",
-      xeroObjectUrl: data.xeroInvoiceUrl ?? "",
+      xeroObjectUrl: xeroInvoiceUrl ?? "",
       reviewUrl,
     },
     preferenceKey: "adminPaymentFailure",
@@ -216,12 +248,17 @@ export async function sendAdminXeroRepeatedFailureAlert(data: {
   latestErrorMessage: string | null;
   timestamp: Date;
 }) {
+  // #2314: the operation's stored `xeroObjectUrl` is organisation-agnostic, so
+  // the club's organisation is stamped on here, at send time.
+  const xeroObjectUrl = await stampXeroOrganisation(data.xeroObjectUrl);
+  const stamped = { ...data, xeroObjectUrl };
+
   await sendToAdmins({
     subject: data.subject,
-    html: adminXeroRepeatedFailureTemplate(data),
+    html: adminXeroRepeatedFailureTemplate(stamped),
     templateName: "admin-xero-repeated-failure",
     templateData: {
-      ...data,
+      ...stamped,
       localModel: data.localModel ?? "",
       localId: data.localId ?? "",
       latestErrorMessage: data.latestErrorMessage ?? "",
@@ -244,7 +281,7 @@ export async function sendAdminXeroRepeatedFailureAlert(data: {
         composeOptionalEmailLine("Open local record", data.localUrl, {
           trailing: "\n",
         }) +
-          composeOptionalEmailLine("Open Xero object", data.xeroObjectUrl, {
+          composeOptionalEmailLine("Open Xero object", xeroObjectUrl, {
             trailing: "\n",
           }),
       ),
@@ -254,9 +291,39 @@ export async function sendAdminXeroRepeatedFailureAlert(data: {
   });
 }
 
-export async function sendAdminXeroReconciliationReportAlert(
+/**
+ * #2314: stamp the club's organisation onto every Xero link the reconciliation
+ * report carries — issue items, repeated failures and unsupported partials all
+ * render one, and each is either a stored (organisation-agnostic) URL or one
+ * rebuilt from the object's type and id. One short-code read for the whole
+ * report; a null one leaves every link generic, exactly as before.
+ */
+async function stampXeroOrganisationOnReport(
   report: XeroReconciliationReportEmail,
+): Promise<XeroReconciliationReportEmail> {
+  const shortCode = await getXeroOrgShortCode();
+  if (!shortCode) return report;
+
+  const stamp = <T extends { xeroObjectUrl?: string | null }>(item: T): T => ({
+    ...item,
+    xeroObjectUrl: applyXeroOrgShortCode(item.xeroObjectUrl, { shortCode }),
+  });
+
+  return {
+    ...report,
+    issueSections: report.issueSections?.map((section) => ({
+      ...section,
+      items: section.items.map(stamp),
+    })),
+    repeatedFailures: report.repeatedFailures.map(stamp),
+    unsupportedPartials: report.unsupportedPartials.map(stamp),
+  };
+}
+
+export async function sendAdminXeroReconciliationReportAlert(
+  reportInput: XeroReconciliationReportEmail,
 ) {
+  const report = await stampXeroOrganisationOnReport(reportInput);
   const subject =
     report.summary.issueCategoryCount === 0
       ? "Xero Reconciliation Report - clean"

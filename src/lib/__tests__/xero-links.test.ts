@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyXeroOrgShortCode,
   buildXeroContactUrl,
   buildXeroCreditNoteUrl,
   buildXeroDashboardUrl,
   buildXeroInvoiceUrl,
+  buildXeroObjectUrl,
   buildXeroReportsUrl,
 } from "@/lib/xero-links";
 
@@ -102,5 +104,104 @@ describe("buildXeroReportsUrl", () => {
     expect(buildXeroReportsUrl({ shortCode: "!aBc12" })).toBe(
       "https://go.xero.com/organisationlogin/default.aspx?shortcode=!aBc12&redirecturl=%2FReports%2F"
     );
+  });
+});
+
+// #2314: `XeroObjectLink.xeroObjectUrl` and `XeroSyncOperation.xeroObjectUrl`
+// are stored organisation-AGNOSTIC by owner decision — a short code baked into
+// a row is wrong the moment the club reconnects to a different Xero
+// organisation — so the short code is applied to those stored URLs at render
+// time. This is the function that does it, and these are its contractual
+// properties.
+describe("applyXeroOrgShortCode", () => {
+  it("scopes a stored generic URL to the club's organisation", () => {
+    expect(
+      applyXeroOrgShortCode("https://go.xero.com/Contacts/View/contact-1", {
+        shortCode: "!aBc12",
+      }),
+    ).toBe(
+      "https://go.xero.com/organisationlogin/default.aspx?shortcode=!aBc12&redirecturl=%2FContacts%2FView%2Fcontact-1",
+    );
+  });
+
+  // The whole point of applying at render time rather than at write time: a
+  // producer can mix rows written before this existed with URLs it builds now
+  // and get one consistent answer, because both paths land on the same string.
+  it("matches what the builder would have produced with the short code", () => {
+    const options = { shortCode: "!aBc12" };
+    for (const [generic, direct] of [
+      [buildXeroContactUrl("contact-1"), buildXeroContactUrl("contact-1", options)],
+      [buildXeroInvoiceUrl("inv-1"), buildXeroInvoiceUrl("inv-1", options)],
+      [
+        buildXeroCreditNoteUrl("cn-1"),
+        buildXeroCreditNoteUrl("cn-1", options),
+      ],
+      // Ids that need escaping round-trip identically too.
+      [buildXeroContactUrl("a/b c"), buildXeroContactUrl("a/b c", options)],
+    ] as const) {
+      expect(applyXeroOrgShortCode(generic, options)).toBe(direct);
+    }
+  });
+
+  it("re-points a URL already scoped to a DIFFERENT organisation", () => {
+    // Self-healing: a row written under a previous connection must not keep
+    // aiming at books the club no longer owns.
+    const stale = buildXeroInvoiceUrl("inv-1", { shortCode: "!old99" });
+
+    expect(applyXeroOrgShortCode(stale, { shortCode: "!aBc12" })).toBe(
+      buildXeroInvoiceUrl("inv-1", { shortCode: "!aBc12" }),
+    );
+  });
+
+  it("leaves the URL alone when there is no short code", () => {
+    const generic = "https://go.xero.com/Contacts/View/contact-1";
+    expect(applyXeroOrgShortCode(generic)).toBe(generic);
+    expect(applyXeroOrgShortCode(generic, { shortCode: null })).toBe(generic);
+    expect(applyXeroOrgShortCode(generic, { shortCode: "" })).toBe(generic);
+  });
+
+  it("passes null and undefined through as null", () => {
+    expect(applyXeroOrgShortCode(null, { shortCode: "!aBc12" })).toBeNull();
+    expect(applyXeroOrgShortCode(undefined, { shortCode: "!aBc12" })).toBeNull();
+  });
+
+  it("never rewrites a URL that is not a Xero web-app link", () => {
+    for (const foreign of [
+      "https://bookings.example.org/admin/payments",
+      "https://go.xero.com.evil.example/Contacts/View/contact-1",
+      "https://in.xero.com/abc123", // the member-facing online invoice link
+      "not a url at all",
+    ]) {
+      expect(applyXeroOrgShortCode(foreign, { shortCode: "!aBc12" })).toBe(
+        foreign,
+      );
+    }
+  });
+
+  it("leaves a malformed organisation-login URL untouched", () => {
+    const malformed =
+      "https://go.xero.com/organisationlogin/default.aspx?shortcode=!aBc12";
+    expect(applyXeroOrgShortCode(malformed, { shortCode: "!new77" })).toBe(
+      malformed,
+    );
+  });
+
+  it("scopes every object type buildXeroObjectUrl knows", () => {
+    for (const [type, id] of [
+      ["CONTACT", "contact-1"],
+      ["INVOICE", "inv-1"],
+      ["SUBSCRIPTION", "inv-2"],
+      ["CREDIT_NOTE", "cn-1"],
+      ["CREDITNOTE", "cn-2"],
+    ] as const) {
+      const generic = buildXeroObjectUrl(type, id);
+      expect(generic).not.toBeNull();
+      expect(applyXeroOrgShortCode(generic, { shortCode: "!aBc12" })).toBe(
+        buildXeroObjectUrl(type, id, { shortCode: "!aBc12" }),
+      );
+      expect(
+        applyXeroOrgShortCode(generic, { shortCode: "!aBc12" }),
+      ).toContain("shortcode=!aBc12");
+    }
   });
 });
