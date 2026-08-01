@@ -29,17 +29,22 @@ const TEMPLATE_COUNT = BUILT_IN_DISPLAY_TEMPLATES.length;
  *  • `unreachable` — the fetch itself failed, so there is no status. Without
  *    this the page sat on "Loading…" for ever, which is the very blank screen
  *    this issue exists to remove.
- *  • `signed-out` — 401. The session expired under an open tab; nothing is
- *    wrong with the data or with the role.
+ *  • `signed-out` — 401. Retained because the mapping is a pure function that
+ *    any caller may reuse, but `/api/admin/display/*` is module-gated, and a
+ *    gated route answers an anonymous caller with 404 rather than 401 (see
+ *    `moduleGatedNotFoundResponse` in `src/lib/session-guards.ts`) so that a
+ *    single anonymous probe cannot read which optional modules a club runs.
+ *    This page therefore lands in `module-off` for an expired session too.
  *  • `forbidden` — 403 from the route's `lodge:view` guard. The browser is told
  *    only that the request was refused, never WHICH permission was missing, so
  *    the copy names the likely cause and says how it was inferred instead of
  *    asserting a role state it cannot read.
- *  • `module-off` — 404. The proxy 404s all of `/api/admin/display/*` while the
- *    `lobbyDisplay` module is off (and it is off by default). Normally the PAGE
- *    404s with it, so reaching this state means the flag went off under an
- *    already-open tab. The copy says "looks switched off" rather than asserting
- *    it, because a 404 is also what a genuinely missing route would return.
+ *  • `module-off` — 404, and the ambiguity is deliberate rather than a gap. All
+ *    of `/api/admin/display/*` answers 404 while the `lobbyDisplay` module is
+ *    off (and it is off by default), and an expired session on the same gated
+ *    address answers the same 404 on purpose. The page cannot tell them apart
+ *    and must not guess, so the copy names both and gives the one action that
+ *    settles it — sign in again and reload — before the module switch.
  *  • `loaded` — the list came back fine. If it is ALSO empty, that is the
  *    never-seeded case the restore action fixes.
  *  • `error` — anything else, named as unknown rather than blamed on a guess.
@@ -116,12 +121,15 @@ export function DisplayTemplatesEmptyState({
 
   if (state === "module-off") {
     return (
-      <EmptyStateBox heading="The Lobby TV display module looks switched off.">
-        The templates list returned <strong>404 Not found</strong>, which is how
-        every <code className="bg-muted rounded px-1">/admin/display</code>{" "}
-        address answers while the module is off — and it is off by default. Turn{" "}
+      <EmptyStateBox heading="Your sign-in may have expired, or the Lobby TV display module is switched off.">
+        The templates list returned <strong>404 Not found</strong>. Every{" "}
+        <code className="bg-muted rounded px-1">/admin/display</code> address
+        answers that way both while the module is off — and it is off by
+        default — and when the sign-in behind an open tab has expired, so this
+        page cannot tell you which it is. Sign in again (another tab is fine)
+        and reload. If it still says this, turn{" "}
         <strong>Lobby TV display</strong> on under{" "}
-        <strong>Admin → Setup → Modules</strong>, then reload this page.
+        <strong>Admin → Setup → Modules</strong>.
       </EmptyStateBox>
     );
   }

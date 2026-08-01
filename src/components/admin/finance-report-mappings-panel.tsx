@@ -190,7 +190,19 @@ export function FinanceReportMappingsPanel() {
       // (render nothing) instead of showing the error box for a viewer lacking
       // finance access. Xero-not-connected returns 500, not 403, so the
       // chart-of-accounts amber note below is unaffected.
-      if (response.status === 401 || response.status === 403) {
+      //
+      // 404 joins them. This route is module-gated, so it answers 404 both when
+      // the finance module is off and when the sign-in behind this tab has
+      // expired — a gated route hides that difference on purpose
+      // (`moduleGatedNotFoundResponse` in `src/lib/session-guards.ts`). There is
+      // nothing to edit in either state, so the panel goes quiet exactly as it
+      // does for a denial rather than showing a red box that names neither
+      // cause.
+      if (
+        response.status === 401 ||
+        response.status === 403 ||
+        response.status === 404
+      ) {
         // Dev breadcrumb: the embedding page hides this panel by matrix, so a
         // denial here means matrix↔enforcement drift or mid-session revocation.
         if (process.env.NODE_ENV !== "production") {
@@ -238,6 +250,20 @@ export function FinanceReportMappingsPanel() {
           );
         }
         setForbidden(true);
+        return;
+      }
+      // 404 deliberately does NOT hide the panel. `/api/admin/xero/*` is gated
+      // by the Xero module, which a club can run with the finance module on, so
+      // the mappings above are still editable — only the account picker is
+      // unavailable. The other cause is an expired sign-in: a gated route
+      // answers an anonymous caller with the same 404 on purpose
+      // (`moduleGatedNotFoundResponse` in `src/lib/session-guards.ts`), so the
+      // note names both and the operator can settle it by signing in again.
+      if (response.status === 404) {
+        setAccounts([]);
+        setCoaError(
+          "the Xero module may be switched off, or your sign-in may have expired — sign in again and reload to tell which",
+        );
         return;
       }
       const body = (await response.json()) as

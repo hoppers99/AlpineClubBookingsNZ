@@ -80,7 +80,7 @@ the row, not open work. Open findings now live in labelled GitHub issues
 
 | Route or surface | Auth mechanism | Actor | Data touched | External calls | Rate, signature, or boundary controls | Logging and audit | Residual risk or follow-up |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `src/proxy.ts` global proxy, pre-setup gate, and module gates | No session auth. Applies CSP/security headers to page requests and selected API matcher paths; returns 404 for disabled module routes; returns 503 + the "Site setup in progress" screen for every public-website path until `ClubTheme.completedAt` is set (#2420, "The Pre-Setup Gate" below). | Anonymous and authenticated browser traffic. | Module settings via `loadEffectiveModuleFlags()`; setup state, club name and contact address via `setup-gate.ts` (memoised 15s, read only while setup is incomplete). | None. | CSP nonce, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, module route blocking, pre-setup 503 gate (fails closed, `no-store`, `Retry-After`). | No per-request audit. | API matcher is selective, not global for every API path. Keep route-level auth as the enforcement boundary. The setup gate never covers `/api/*`, the admin area, or the login flows — an operator must be able to finish setup. Since #2404 the matcher RUNS on asset-shaped URLs (`/foo.png`, `/favicon.ico`, `/wp-content/uploads/x.jpg`), so those carry a policy and meet the gate like any other address; only `/api`, `/_next/static/` and `/_next/image` stay excluded, and a miss inside those is terminated without a document by the `afterFiles` rewrites, whose own `default-src 'none'` is then the policy that ships. #2404 also removed the prefetch exemption outright, so no request header — `Purpose: prefetch`, `Next-Router-Prefetch`, `RSC`, in any combination — takes a URL outside the proxy. The gate still declines to CLAIM asset-shaped paths (a 503 holding screen is a document), so a URL of that shape which reaches a render is ungated by design; `(website)/layout.tsx` and the `(website)` metadata guard cover it. |
+| `src/proxy.ts` global proxy, pre-setup gate, and module gates | No session auth. Applies CSP/security headers to page requests and selected API matcher paths; returns 404 for disabled module routes; returns 503 + the "Site setup in progress" screen for every public-website path until `ClubTheme.completedAt` is set (#2420, "The Pre-Setup Gate" below). | Anonymous and authenticated browser traffic. | Module settings via `loadEffectiveModuleFlags()`; setup state, club name and contact address via `setup-gate.ts` (memoised 15s, read only while setup is incomplete). | None. | CSP nonce, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, module route blocking, pre-setup 503 gate (fails closed, `no-store`, `Retry-After`). | No per-request audit. | API matcher is selective, not global for every API path. Keep route-level auth as the enforcement boundary. The setup gate never covers `/api/*`, the admin area, or the login flows — an operator must be able to finish setup. Since #2404 the matcher RUNS on asset-shaped URLs (`/foo.png`, `/favicon.ico`, `/wp-content/uploads/x.jpg`), so those carry a policy and meet the gate like any other address; only `/api`, `/_next/static/` and `/_next/image` stay excluded. A miss under `_next/static` is terminated without a document by the `afterFiles` rewrites, whose own `default-src 'none'` is then the policy that ships; a miss under `/api` is answered as JSON by `api/[[...unmatched]]`, and no rewrite rule may touch `/api` at all (module-state parity — see "Static-Asset URLs And The Nonce-Only CSP"). #2404 also removed the prefetch exemption outright, so no request header — `Purpose: prefetch`, `Next-Router-Prefetch`, `RSC`, in any combination — takes a URL outside the proxy. The gate still declines to CLAIM asset-shaped paths (a 503 holding screen is a document), so a URL of that shape which reaches a render is ungated by design; `(website)/layout.tsx` and the `(website)` metadata guard cover it. |
 | `/api/health`, `/api/health/ready` | Public. | Load balancers, operators, anonymous callers. | DB reachability, runtime version/uptime, config readiness. Public responses omit provider error detail. | DB query only. | No rate limit. No secrets in response. | Logger debug/error only. | Anonymous callers can observe availability. #615 can decide whether to add light rate limiting or cache headers. |
 | `/api/age-tier-settings`, `/api/committee` | Public read endpoints. | Anonymous website users. | Public age-tier/rate settings and published committee assignment presentation fields; and, **only when `PublicContentSettings.committeePhotoDisplay != NONE`**, per-published-member photo metadata (member id + `photoUpdatedAt` version) so the roster can build the scoped `/api/members/[id]/photo` URL. | None. | No rate limit. Committee query selects active, published assignment fields only; member email is not selected or returned, phone is returned only when show-phone is enabled, and contact keys are returned only for contactable assignments. Photo metadata (incl. member id) is emitted **only** when the club has opted the roster into photos — with `committeePhotoDisplay = NONE` (the default), no member id or photo pointer is returned. | None beyond DB errors if thrown. | Public committee names and optional phone numbers are intentional once an admin publishes the assignment; email remains server-only. Committee-photo bytes are still served (and gated) by the scoped `/api/members/[id]/photo` endpoint — `committeePhotoDisplay` governs roster rendering/metadata only, not the serving rule. |
 | `/api/address-autocomplete/search`, `/api/address-autocomplete/details/[id]` | Public server-side proxy to Addy, gated by the `addressAutocomplete` Admin Module. | Anonymous website users. | Search terms, address suggestion ids, Addy result payloads. | Addy API via `src/lib/addy-api.ts`. | Module-route/proxy gate returns 404 while disabled, Zod query validation, `rateLimiters.addressAutocomplete` at 90/min/IP. Secrets stay server-side. | Minimal error responses, no audit. | Upstream-cost and enumeration surface remains public only when the module is enabled; manual address entry remains the fallback. |
@@ -968,9 +968,9 @@ to **any** scoped policy this app adds in future, not just these (#2279):
 
 ## Anonymous Public-Page Caching - 2026-07-29
 
-Issue #2322. `src/proxy.ts` relaxes `Cache-Control` to
-`public, max-age=60, s-maxage=60, stale-while-revalidate=300` on a **closed
-allow list** of public pages — currently the home page `/` alone — when the
+Issue #2322, narrowed by the #2404 re-review. `src/proxy.ts` relaxes
+`Cache-Control` to `private, max-age=60, stale-while-revalidate=300` on a
+**closed allow list** of public pages — currently the home page `/` alone — when the
 request is a `GET` carrying no session cookie. Every other response keeps the
 framework default (`private, no-cache, no-store`).
 
@@ -993,25 +993,23 @@ The security-relevant properties:
   which excludes v4 so a stale cookie is not misread as an auth anomaly. Here a
   stale cookie only costs a cache miss, whereas the opposite error would let a
   shared cache store a page served to someone holding a session.
-- **`Vary: Cookie` is required, not decorative.** Without it a shared cache
-  would serve the stored anonymous render to a member who has a session, who
-  would then see the header painted logged-out. It is appended rather than set
-  so any `Vary` the framework adds for RSC navigation survives.
-- **No member data is in scope, but the body is not wholly request-independent.**
-  The allow-listed page renders club-wide branding and CMS content only, so a
-  mis-keyed cache entry cannot disclose anything member-specific. It does,
-  however, carry the **per-request CSP nonce**: a cached copy replays one
-  request's nonce to later visitors for up to the cache lifetime. That does not
-  weaken the policy for the attacker's own page — a nonce is not a secret and
-  grants nothing to a third party who cannot inject markup — but it does mean
-  the nonce is NOT unique-per-response while a shared cache is serving, so the
-  nonce must never be treated as a CSRF token or a per-session secret. The
-  60-second window bounds the replay.
-- Both `max-age` and `s-maxage` are emitted. No shared cache was found in the
-  deployment path (Caddy runs without a cache module and sets no cache
-  directives), so an `s-maxage`-only value would today be stored by nothing;
-  `max-age` earns the repeat-visit win from the browser, and `s-maxage` is
-  correct if a CDN is ever placed in front.
+- **`Vary: Cookie` is required, not decorative.** One browser profile holds
+  sessions in sequence, so without it the stored anonymous render — which paints
+  the header logged-out — could be replayed to the same person after they sign
+  in. It is appended rather than set so any `Vary` the framework adds for RSC
+  navigation survives.
+- **No member data is in scope.** The allow-listed page renders club-wide
+  branding and CMS content only, so a mis-keyed cache entry cannot disclose
+  anything member-specific. It does carry the **per-request CSP nonce**, but
+  under `private` the stored copy never leaves the browser that fetched it, so
+  the nonce is not replayed to anyone else. It is still not unique-per-response
+  within that one browser for up to the cache lifetime, so it must never be
+  treated as a CSRF token or a per-session secret.
+- **`private`, and no `s-maxage` — a browser cache only.** No shared cache exists
+  in the deployment path (Caddy runs without a cache module and sets no cache
+  directives), so `s-maxage` was storing nothing anywhere, and `max-age` earns
+  the whole of the measured benefit on its own. The reason it is not merely
+  unused but actively withheld is below.
 
 The relaxed value survives the framework default because Next writes its own
 `Cache-Control` only when the response does not already carry one
@@ -1022,18 +1020,40 @@ unconditionally, so a dev-server observation of this behaviour is a false
 negative. Caddy neither sets nor rewrites `Cache-Control`, so the edge does not
 override these values either.
 
-**Flight requests are excluded (#2322).** The cache header is applied only to
-plain document requests: any request carrying `RSC`, `Next-Router-State-Tree`,
-`Next-Router-Prefetch`, or `Next-Router-Segment-Prefetch` keeps the framework
-default. A React Server Components navigation returns a *different body under the
-same URL*, and on stable Next builds `validateRSCRequestHeaders` is off, so a
-crafted `RSC: 1` GET of `/` would otherwise be handed a cacheable flight payload
-stored under the HTML's cache key — served to ordinary document requests by any
-shared cache that ignores `Vary`. (Since #2404 removed the matcher's prefetch
-exemption, EVERY one of those four reaches this check — a genuine flight prefetch
-of `/` now runs the proxy too. This list is therefore the only thing keeping a
-flight response out of the anonymous cache; it is not a restatement of the
-matcher, it is the check the matcher no longer makes.)
+**Flight requests, and why the directive is `private` rather than `public`
+(#2404 re-review).** A React Server Components navigation returns a *different
+body under the same URL*, and on stable Next builds `validateRSCRequestHeaders`
+is off, so a `RSC: 1` GET of `/` is handed a flight payload rather than the HTML
+document. Marked `public` with an `s-maxage`, that payload could be stored under
+the HTML's cache key and served to ordinary document requests by any shared cache
+that ignores `Vary`.
+
+The proxy used to guard that by refusing to cache any request carrying `RSC`,
+`Next-Router-State-Tree`, `Next-Router-Prefetch` or `Next-Router-Segment-Prefetch`.
+**That guard could never fire, and the claim that it did was false.** Next's
+middleware adapter (`next/dist/server/web/adapter.js`) DELETES every one of those
+headers — Next's own `FLIGHT_HEADERS` list — before userland middleware runs,
+and re-attaches them for the render afterwards; the `?_rsc=` cache-busting
+parameter is stripped off `nextUrl` as well. Measured by running the real adapter
+around the proxy: on a genuine flight prefetch, on a plain RSC navigation and on a
+crafted bare `RSC: 1` GET, the proxy sees none of the four. `Purpose` and
+`Sec-Purpose` do survive, but they mark a PREFETCH and a plain RSC navigation
+carries neither, so no surviving signal identifies a flight request. **Middleware
+cannot tell a flight request from a document request at all.**
+
+So the property is held by the directive instead: `private` invites no shared
+cache to store the response, whatever body Next goes on to produce for it. Next
+also appends its own `vary: RSC, Next-Router-State-Tree, Next-Router-Prefetch,
+Next-Router-Segment-Prefetch` on app paths, which protects a *correct* shared
+cache — but the threat being closed here is precisely a cache that ignores
+`Vary`, so that is a second layer rather than the mechanism.
+
+`public`/`s-maxage` must not be restored without a mechanism that can distinguish
+a flight response, and middleware cannot be that mechanism; #2352 (static/ISR
+public pages) is where such a mechanism would come from. The pin is in
+`src/lib/__tests__/csp-proxy.test.ts`, which drives the REAL adapter rather than
+constructing a `NextRequest` directly — direct construction is exactly how the
+dead guard passed its tests for as long as it did.
 
 **Accepted residual: non-steady-state renders of `/`.** The home page is
 allow-listed unconditionally, so a transient screen it serves is
@@ -1196,14 +1216,16 @@ lobby TV display (fork #54) and the global 404 (#2356).
       read the bullet above as saying every 404 URL returns 404 in every
       configuration: pre-setup they return 503, by design.
 - **A terminal `/api` 404 is a module-state oracle unless it matches the module
-  gate on EVERY verb, headers included (#2405 security review).** `src/proxy.ts`
-  short-circuits an `/api` path whose module is switched off; with the module on
-  the same path reaches a real handler, or
-  `src/app/api/[[...unmatched]]/route.ts`. The property that has to hold is
-  narrow and worth stating exactly: **for one path under a gated prefix that no
-  handler claims, the reply must be identical whether the module is on or off.**
-  Any difference tells an anonymous prober which optional modules a club runs,
-  from one request and with no login. Two were found and closed:
+  gate (#2405 security review).** `src/proxy.ts` short-circuits an `/api` path
+  whose module is switched off; with the module on the same path reaches a real
+  handler, or `src/app/api/[[...unmatched]]/route.ts`. The property enforced
+  here is narrow and worth stating exactly: **for one path under a gated prefix
+  that no handler claims, the STATUS, BODY and `content-type` are identical
+  whether the module is on or off, on every verb.** Header parity is NOT claimed
+  in full — `vary` differs, and the reasons that is accepted rather than fixed
+  are in "What \"a module's state cannot be read\" actually means" below, along
+  with everything else known to remain readable. Two verb/body findings were
+  found and closed:
   - **HEAD.** The route hand-wrote `HEAD` as `new NextResponse(null, { status:
     404 })`, which carries no `content-type`; the gate answers HEAD with its
     `NextResponse.json(...)`, which does. `HEAD /api/<gated-prefix>/zzz` with a
@@ -1598,8 +1620,9 @@ properties on the wire.
 ### The fix: two layers, and how they compose
 
 1. **`afterFiles` rewrites remove the render** (`next.config.ts`; rules in
-   `src/lib/asset-url-404.ts`). A path ending in an asset extension, or anything
-   under `_next/static`, is rewritten to `src/app/asset-not-found/route.ts`, which
+   `src/lib/asset-url-404.ts`). A path OUTSIDE `/api` ending in an asset
+   extension, or anything under `_next/static`, is rewritten to
+   `src/app/asset-not-found/route.ts`, which
    answers **404 with an empty body and no `content-type`**. An empty body is the
    security property, not a shortcut: with no document there is nothing a
    nonce-less policy has to permit, so the absent nonce stops mattering rather than
@@ -1611,9 +1634,10 @@ properties on the wire.
    complementary rather than alternatives. Removing the render makes the absent
    nonce harmless, but it cannot put a `Content-Security-Policy` on the response
    and it cannot bring the URL inside the #2420 pre-setup gate — a URL the matcher
-   skips is a URL nothing of ours can attach a header to. What is left excluded is
-   `/api` (its own JSON terminal, with the ordered `/api/…` entries re-admitting
-   every module-gated prefix), `_next/static/` and `_next/image$`.
+   skips is a URL nothing of ours can attach a header to. What is left excluded
+   from the MATCHER is `/api` (its own JSON terminal, with the explicit
+   `/api/…` matcher entries re-admitting every module-gated prefix),
+   `_next/static/` and `_next/image$`.
 3. **The cost was measured before the decision, not assumed.** On the compiled
    matcher the shorter lookahead is marginally *cheaper* per request (~1.4 ns);
    the genuinely hot shape — the dozens of `/_next/static/…` chunk requests one
@@ -1667,74 +1691,70 @@ there the whole point is that the URL gives no signal at all. That is why both
   into a render. Getting this wrong 404s every image in the app, which is why the
   E2E spec asserts a real `public/branding/*` file and a real
   `/_next/static/chunks/*.js` still answer 200 with their bytes.
-- **The `/api` carve-out is an ORDERED RULE, not a lookahead, and that is a
-  security decision.** #2405's parity property is that a path under a module-gated
-  prefix that no handler claims must answer the same bytes AND headers whether the
-  module is ON or OFF. With it off, `src/proxy.ts`'s gate answers
-  `{"error":"Not found"}` as `application/json` — its matcher entries
-  (`/api/chores/:path*` and friends) match whatever the URL's tail looks like,
-  `.png` included. So an asset-shaped `/api` URL must not reach the empty-bodied
-  404. The first cut expressed that as a `(?!api…)` lookahead on the general rule,
-  and **that was itself a hole**: Next compiles the middleware matcher
-  case-SENSITIVELY and `rewrites` case-INSENSITIVELY (path-to-regexp's `sensitive`
-  defaults to false), so `/API/x.png` was skipped by the matcher (its `.png` tail)
-  AND skipped by the rewrite (its `/api` carve-out) and still rendered the unnonced
-  document. There is no portable way to write a case-sensitive lookahead inside a
-  case-insensitive regex. The carve-out is therefore an ordered rule: `/api` asset
-  shapes are claimed FIRST, and the general rule that follows carries no exclusion
-  and so has no case seam to leak through.
-- **Both `/api` rules are IDENTITY rewrites — they claim the URL and hand it
-  straight back — and that is the second security decision** (owner decision,
-  1 Aug 2026). Claiming is all they need to do: it is what stops the general rule
-  terminating an `/api` URL at the empty 404. Where the destination points then
-  decides whether #2405's parity survives on the HEADERS as well as the bytes, and
-  only an identity keeps it.
-  - `resolve-routes.js` sets `x-nextjs-rewritten-path` on an RSC request whenever
-    a rewrite's destination DIFFERS from the request path. With the module OFF the
-    gate answers from middleware and routing stops before any rewrite runs, so no
-    such header exists. An earlier draft sent asset-shaped `/api` URLs to a
-    dedicated route-less destination (`/api/unmatched-asset`); the bodies matched,
-    but module-ON responses then carried that header and module-OFF ones did not,
-    and a single anonymous `curl -H 'RSC: 1' /api/<gated-prefix>/zzz.png` read the
-    flag off — across roughly twenty optional modules, two of which
+- **No rewrite rule may match an `/api` URL at all — not even an identity — and
+  that is the central security decision here** (owner decision, 1 Aug 2026;
+  corrected by the #2404 re-review). #2405's parity property is that a path under
+  a module-gated prefix that no handler claims must answer the same bytes AND the
+  same headers whether the module is ON or OFF. With it off, `src/proxy.ts`'s
+  gate answers `{"error":"Not found"}` as `application/json` from middleware and
+  routing stops there — its matcher entries (`/api/chores/:path*` and friends)
+  match whatever the URL's tail looks like, `.png` included — so **no rewrite runs
+  in the module-off state**. Anything a rewrite does in the module-ON state is
+  therefore a difference an anonymous prober can read.
+  - **The body half.** An asset-shaped `/api` URL must not reach the empty-bodied
+    404: that reply has no `content-type` where the gate's has one.
+  - **The header half, and it is why an identity is not enough.**
+    `resolve-routes.js` makes TWO independent comparisons on an RSC request:
+    it sets `x-nextjs-rewritten-path` when the destination PATHNAME differs from
+    the request path, and `x-nextjs-rewritten-query` when the destination SEARCH
+    differs. `prepareDestination()` gives a query-less destination an empty
+    search, and no destination can reproduce the request's own query string — so
+    an identity rewrite ships `x-nextjs-rewritten-query` for every probe that
+    appends `?x=1`, present with the module on and absent with it off. An earlier
+    cut of this fix used identity rewrites for exactly this parity and closed only
+    the path half; `curl -H 'RSC: 1' '/api/<gated-prefix>/zzz.png?x=1'` still read
+    the flag, across roughly twenty optional modules, two of which
     (`addressAutocomplete`, `groupBookings`) have no page surface to probe at all.
-    An identity destination cannot do that: the paths are equal, so the header is
-    never set in either state.
-  - Handing the path back is not a no-op. An `afterFiles` rewrite carries
-    `check: true` (`next/dist/server/lib/router-utils/filesystem.js`,
-    `buildCustomRoute`), so `resolve-routes.js`'s `checkTrue()` re-runs exact and
-    then DYNAMIC route resolution over the substituted path. An unmatched
-    asset-shaped `/api` URL therefore lands on `api/[[...unmatched]]` and gets the
-    same JSON any other unmatched `/api` URL gets — byte-identical BY
-    CONSTRUCTION, with no second copy of the body to drift out of step.
-  - **The destination is the rule's own capture, never a literal path, and that
-    is what makes it a real identity.** Rewrites match case-insensitively, so
-    these rules also match `/API/…`; a destination written as `/api/:path` would
-    substitute that LITERAL LOWERCASE prefix and hand `/API/admin/lockers/1.png`
-    to the real, module-gated handler with nothing having gated it, because the
-    module gate's route table is case-SENSITIVE (`matchesPrefix` in
-    `src/config/feature-routes.ts` is a `startsWith` and its patterns carry no
-    `i` flag, so `getRequiredFeaturesForPath("/API/…")` returns nothing). Each
-    rule therefore captures the WHOLE path — `/api` prefix included — in one
-    `:path` parameter and substitutes that capture, so the destination is the
-    request's own spelling byte for byte.
-  - **Consequence for an odd-cased `/API/x.png`, recorded rather than hidden.**
-    Handed back, it matches no `/api` route (Next's route table is
+    Measured with Next's own `getPathMatch()` and `prepareDestination()` compiled
+    under `router-utils/filesystem.js`'s exact options.
+  - **So the general rule carries a leading `(?!api/)` lookahead and there is no
+    `/api` rule of any kind.** With no rewrite running on `/api` in either module
+    state, neither header can ship in either state — which is also exactly how the
+    app behaved before this rewrite layer existed. The lookahead's trailing slash
+    is the anchor: `/api.png`, `/apiary-photo.png`, `/apis/logo.png` and
+    `/nested/api/x.png` are ordinary addresses and are still terminated.
+  - **Why a lookahead is safe now, when the first cut of #2404 rejected one.**
+    That cut argued a lookahead was itself a hole: Next compiles the middleware
+    matcher case-SENSITIVELY and `rewrites` case-INSENSITIVELY (path-to-regexp's
+    `sensitive` defaults to false), so `/API/x.png` was skipped by the matcher
+    (its `.png` tail) AND excluded by the rewrite (its `/api` carve-out) and still
+    rendered an unnonced document. Option A removed the premise — the matcher no
+    longer excludes asset extensions, so the proxy runs on `/API/x.png` and it is
+    nonced and policy-carrying like any other page. The lookahead compiles with
+    the same `i` flag as the rest of the rule, so it excludes `/API/`, `/Api/` and
+    `/api/` symmetrically: no case seam, and no dependence on rule order.
+  - **Consequence for an odd-cased `/API/x.png`, recorded rather than hidden.** No
+    rule claims it, and it matches no `/api` route either (Next's route table is
     case-sensitive), so the `(website)/[...slug]` catch-all renders the club's 404
     page for it. That is a wasted render, not a missing nonce — since Option A the
-    proxy runs on it, so it is nonced and carries a policy — and it is the same
-    outcome `/foo.avif` gets from an unlisted extension. It is also the reason the
-    layout's pre-setup branch and the `(website)` metadata guard stay
-    load-bearing: that render is not covered by the setup gate.
+    proxy runs on it — and it is the same outcome `/foo.avif` gets from an
+    unlisted extension. It is also the reason the layout's pre-setup branch and the
+    `(website)` metadata guard stay load-bearing: that render is not covered by the
+    setup gate.
+  - **Leaving `/api` alone is not a gap in the original fix.** An unmatched
+    asset-shaped `/api` URL lands on `api/[[...unmatched]]` and gets the same JSON
+    any other unmatched `/api` URL gets — a route handler, never a document — so
+    the render this issue exists to remove was never on that path in the first
+    place.
 - **One route is exempted in its own right, because it really does serve
   extension-suffixed URLs.** `src/app/api/images/uploaded/[...path]/route.ts` is
   the production URL for every admin-uploaded image: `imagePublicUrl()` in
   `src/lib/image-storage.ts` mints `/api/images/uploaded/…`, and `Caddyfile`
   rewrites `/images/*` onto the same route. The first cut of this fix routed all
   of them to the `/api` JSON 404 and every uploaded picture in the app
-  disappeared. Its rule is declared FIRST, ahead of the general `/api` rule, so
-  the exemption holds however that rule is written — if the `/api` destination
-  is ever made terminating again, uploaded images keep working. Guarded twice: a
+  disappeared. The `(?!api/)` lookahead covers it along with the rest of the
+  namespace: no rule claims those URLs, so routing reaches the real handler
+  untouched. Guarded twice: a
   unit guard walks every `route.ts` under `src/app`, builds a concrete
   extension-suffixed URL for each, and fails unless the rewrites leave it exactly
   where routing would have taken it (no destination naming is involved, which is
@@ -1783,6 +1803,83 @@ there the whole point is that the URL gives no signal at all. That is why both
   behind the proxy's for the rest — see "How the two layers compose" above. Verb
   handling mirrors `[[...unmatched]]`: HEAD is NOT exported, so Next derives it
   from GET and the two cannot disagree on headers.
+
+### What "a module's state cannot be read" actually means (#2465, restated)
+
+The goal recorded on #2465 was that *one anonymous request cannot reveal whether
+a module runs*. Stated that broadly it is not achievable, and pretending
+otherwise would leave the next reviewer trusting a claim this file cannot
+support. Four modules have endpoints whose whole job is to answer an anonymous
+caller with real data — `lobbyDisplay` (a wall-mounted screen pairs and polls
+with no human session), `addressAutocomplete` (the address lookup runs on the
+public join and booking forms), `skifieldConditions` (the mountain report is
+public content) and `groupBookings` (the school/group enquiry form is a public
+page). Those endpoints answer differently when the module is on because
+answering is the point.
+
+**The property this codebase does hold** is narrower and checkable:
+
+> A module-gated path reveals nothing beyond what that module's own
+> deliberately-public endpoints already reveal.
+
+In other words, probing a gated address that is NOT public-by-design must not
+add a bit; and for the four modules above, whatever a prober learns they could
+have learnt by using the feature as intended.
+
+What is enforced to that end:
+
+- **Body, status and `content-type` parity** on `/api` paths, verb by verb,
+  including the bare `400` for non-standard verbs — the two closed findings
+  above, pinned in `src/app/__tests__/unmatched-url-status.test.ts`.
+- **No rewrite may run on `/api`**, so neither `x-nextjs-rewritten-path` nor
+  `x-nextjs-rewritten-query` can appear in one module state and not the other —
+  see "Static-Asset URLs And The Nonce-Only CSP" above.
+- **The auth failure no longer differs from the module failure on a gated path.**
+  `requireAdmin()` and `requireActiveSession()` (`src/lib/session-guards.ts`)
+  answer an ANONYMOUS caller on a module-gated path with the same frozen
+  `404 {"error":"Not found"}` the gate sends, instead of `401`. Without that,
+  `401` meant "module on" and `404` meant "module off" on roughly 121 gated
+  routes, from one unauthenticated request. Deliberately narrow: a signed-in
+  caller still gets the honest `403` that tells them what to fix, ungated paths
+  keep their `401` exactly, and a route that supplies its own unauthenticated
+  reply (a login redirect, a deliberate 403) keeps it. The gating decision reads
+  the path header `src/proxy.ts` stamps on every request it runs on, and the
+  proxy necessarily runs on every gated path; a spoofed value on an ungated path
+  can only turn that caller's own `401` into a `404`, never the reverse.
+
+**Known and accepted, each with its reason** (owner decision, 1 Aug 2026 — worth
+not making worse, not worth a 150-endpoint audit):
+
+- **The four public-by-design modules above.** Their public endpoints answer
+  anonymous callers on purpose; hiding that would remove the feature.
+- **The verb oracle.** `OPTIONS` on a gated route answers `204` with an `Allow`
+  header when the module is on and the frozen `404` when it is off, on every
+  gated route. Closing it would mean the gate reproducing Next's per-route
+  `Allow` list, which means knowing each route's exported verbs in middleware.
+  Not fixed; recorded here so it is not re-discovered as new.
+- **The `vary` difference.** A module-OFF reply comes from middleware and never
+  enters the render pipeline, so it carries no `vary`; with the module ON the
+  same address is served by an app route handler and `base-server.js`'s
+  `setVaryHeader` appends `vary: RSC, Next-Router-State-Tree,
+  Next-Router-Prefetch, Next-Router-Segment-Prefetch` for every app path before
+  any handler runs. Both halves are traced through the vendored framework
+  source; the module-OFF half is asserted in
+  `src/app/__tests__/unmatched-url-status.test.ts`, and the module-ON half is
+  **traced but not measured against a running server** — stated that way rather
+  than asserted as fact. Pre-existing, and independent of everything above.
+- **Modules whose ADMIN page is gated alongside the API.** For most optional
+  modules the page prefix is gated too, so the page itself already answers 404
+  when the module is off; the API adds no bit an operator could not get from the
+  address bar.
+- **Route families with their own auth that this slice does not touch** —
+  `src/lib/finance-api-auth.ts`, the lodge/kiosk PIN path, the display device
+  grant, the webhook and cron callers. Each answers on a contract someone else
+  depends on (a third party, a device, an operator's sign-in prompt), and
+  changing those has a real user cost for a configuration-only disclosure.
+
+None of these expose member data, money, capacity, or credentials. What they
+expose is club-wide configuration on a public repository whose route table is
+already published.
 
 ### The other way in: the prefetch headers
 
@@ -1848,6 +1945,14 @@ answer 200. That is the correct answer and the whole point, but it is
 operator-visible. A genuine flight prefetch now mints a nonce as well; that is the
 cost, taken knowingly.
 
+**One consequence had to be paid for elsewhere.** Deleting the exemption means a
+flight prefetch of `/` now runs the proxy, and `/` is the one page on the
+anonymous cache allow list. The proxy cannot recognise a flight request — Next's
+adapter strips the headers that would say so before middleware runs — so the
+anonymous page cache directive was narrowed to `private` instead. That is the
+whole of the fix, and it is written up under "Anonymous Public-Page Caching"
+above.
+
 ### Guards
 
 - **`src/lib/__tests__/asset-url-404.test.ts`** holds the invariant in the ordinary
@@ -1866,23 +1971,30 @@ cost, taken knowingly.
     assertion that catches an `afterFiles` → `beforeFiles` move — the config-testing
     util flattens the three stages and cannot see that difference;
   - it decides matcher coverage with `unstable_doesMiddlewareMatch()`.
-  Every shape must be covered by the proxy, a terminating rewrite, a rewrite that
-  hands the path back, the `/api` JSON catch-all, or the image optimiser; a shape
-  covered by none fails, and since Option A most asset rows are covered TWICE,
-  which the table states explicitly so a silent return to single coverage fails.
-  It also walks every `route.ts` under `src/app` and fails unless the rewrites
-  leave that route's own extension-suffixed URL exactly where routing would have
-  taken it — stated as "left alone or handed back", never as "does not reach one
-  named terminal", because naming a terminal is how that guard once passed
-  vacuously for the whole `/api` namespace. Beyond that it pins the matcher source
-  string down to its three remaining alternatives, asserts the matcher carries no
-  extension carve-out and no header condition at all, asserts every terminated
-  extension stays outside the pre-setup gate in UPPER case as well as lower (the
-  classifier's case-insensitivity is a `/i` flag, and the obvious rewrite of it is
-  case-sensitive and would otherwise pass), asserts both `/api` destinations are
-  the rule's own capture rather than a literal path, asserts a module-gated PAGE
-  prefix's asset shape answers the same empty 404 from either layer, and asserts
-  the terminal route's empty body and headers on every served verb.
+  Every shape must be covered by the proxy, a terminating rewrite, the `/api` JSON
+  catch-all, or the image optimiser; a shape covered by none fails, and since
+  Option A most asset rows are covered TWICE, which the table states explicitly so
+  a silent return to single coverage fails. It also walks every `route.ts` under
+  `src/app` and fails unless the rewrites leave that route's own
+  extension-suffixed URL exactly where routing would have taken it — stated as
+  "left alone", never as "does not reach one named terminal", because naming a
+  terminal is how that guard once passed vacuously for the whole `/api` namespace.
+  The rewrite resolver threads the request's SEARCH through
+  `prepareDestination()` as well as its pathname, so the rewritten-QUERY axis is
+  measured rather than assumed: every gated `/api` prefix in
+  `FEATURE_ROUTE_RULES` is probed at an asset-shaped child, in both spellings and
+  with a query string, and must be claimed by no rule — and one non-`/api` row
+  demonstrates the header really does get set, so those assertions cannot pass by
+  measuring nothing. Beyond that it pins the matcher source string down to its
+  three remaining alternatives, asserts the matcher carries no extension carve-out
+  and no header condition at all, asserts every terminated extension stays outside
+  the pre-setup gate in UPPER case as well as lower (the classifier's
+  case-insensitivity is a `/i` flag, and the obvious rewrite of it is
+  case-sensitive and would otherwise pass), asserts the shipped rule list is
+  exactly the two terminating rules with the `(?!api/)` lookahead in place,
+  asserts a module-gated PAGE prefix's asset shape answers the same empty 404 from
+  either layer, and asserts the terminal route's empty body and headers on every
+  served verb.
   - **One recorded fidelity gap, pinned rather than hidden.**
     `unstable_getResponseFromNextConfig()` matches rewrites case-SENSITIVELY: it
     serialises the compiled pattern to a regex STRING and re-matches with
@@ -1904,10 +2016,14 @@ cost, taken knowingly.
   is served back anonymously at its `/api/images/uploaded/…` URL with its own
   bytes, while a missing one still gets that route's JSON 404; that the newly
   anchored `_next` lookalikes carry a nonced policy; that an ordinary page miss
-  still renders the club's own nonced 404 screen; that lower-case `/api` asset
-  shapes still answer the JSON 404; and that the mixed-case `/API/x.png` renders
-  the club's nonced 404 page instead — the recorded consequence of the identity
-  rewrite preserving the request's own spelling.
+  still renders the club's own nonced 404 screen; that asset-shaped `/api` URLs
+  no handler claims answer the frozen JSON 404 — probed WITH `RSC: 1` and with a
+  query string, and asserted to carry neither `x-nextjs-rewritten-path` nor
+  `x-nextjs-rewritten-query`, which is the only shape in which those assertions
+  can fail; that an asset-shaped `/api` URL a real handler DOES claim is left to
+  that handler and likewise ships no rewrite header; and that the mixed-case
+  `/API/x.png` renders the club's nonced 404 page — the recorded consequence of
+  the `(?!api/)` lookahead matching case-insensitively.
 - `scripts/ci/check-prerendered-script-nonces.mjs` is unchanged and still covers the
   build-output half of the class.
 

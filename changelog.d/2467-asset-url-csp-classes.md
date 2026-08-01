@@ -56,7 +56,28 @@
   stored has changed. Pictures uploaded through **Admin → Content → Images**
   are served exactly as before — that is checked automatically now, on a real
   uploaded file, because an earlier draft of this fix would have hidden them.
-  Requests for club data that a switched-off feature hides still answer exactly
-  the same way whether that feature is on or off, right down to the fine print
-  of the reply, so nobody can work out which optional features a club uses by
-  probing addresses. An earlier draft of this fix would have let them.
+  The rule that catches these stray requests now leaves the site's data
+  addresses alone entirely, rather than claiming them and handing them back: two
+  earlier drafts each left a small trace in the reply that told a prober which
+  optional features a club had switched on. Not claiming them at all leaves no
+  trace to find.
+
+  Two related tidy-ups landed with it.
+
+  Signing in again is now the first thing an admin is told to try when a
+  feature's screen will not load. Addresses belonging to an optional feature
+  used to answer differently depending on whether the feature was switched off
+  or the person asking was not signed in — enough of a difference that anyone
+  could list a club's optional features from outside, without an account. Both
+  now answer the same way. The cost is that a handful of admin screens can no
+  longer say for certain which of the two happened, so they now say both: sign
+  in again, and if the screen still will not load, check the feature switch
+  under **Admin → Setup → Modules**. Nothing an admin can actually do changes,
+  and a signed-in admin who simply lacks a permission is still told so plainly.
+
+  The home page is still remembered by a returning visitor's own browser for a
+  minute, but is no longer offered to shared caches. That option was there for a
+  future content-delivery network, and there is no such network in front of the
+  site today, so it was earning nothing — while relying on a safeguard that,
+  on inspection, could never actually run. It will come back properly with the
+  planned work on faster public pages.
