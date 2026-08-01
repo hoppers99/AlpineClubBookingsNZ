@@ -1080,7 +1080,10 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
             : "Internet Banking payment received after cancellation; amount held as account credit.",
         });
         sendBookingCancelledEmail(
-          { bookingId: outcome.payment.booking.id },
+          {
+            bookingId: outcome.payment.booking.id,
+            recipientMemberId: outcome.payment.booking.memberId,
+          },
           outcome.payment.booking.member.email,
           outcome.payment.booking.member.firstName,
           outcome.payment.booking.checkIn,
@@ -1191,7 +1194,10 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
         )
       );
       sendBookingCancelledEmail(
-        { bookingId: outcome.payment.booking.id },
+        {
+          bookingId: outcome.payment.booking.id,
+          recipientMemberId: outcome.payment.booking.memberId,
+        },
         outcome.payment.booking.member.email,
         outcome.payment.booking.member.firstName,
         outcome.payment.booking.checkIn,
@@ -1297,7 +1303,10 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
     });
 
     sendBookingConfirmedEmail(
-      { bookingId: outcome.payment.booking.id },
+      {
+        bookingId: outcome.payment.booking.id,
+        recipientMemberId: outcome.payment.booking.memberId,
+      },
       outcome.payment.booking.member.email,
       outcome.payment.booking.member.firstName,
       outcome.payment.booking.checkIn,

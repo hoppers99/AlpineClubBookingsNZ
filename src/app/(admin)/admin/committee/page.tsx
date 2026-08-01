@@ -14,6 +14,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -121,6 +122,9 @@ export default function CommitteePage() {
   // Committee roles/assignments resolve to the membership area (their write
   // routes enforce membership:edit), so gate the editors on that area (#1940).
   const canEdit = useAdminAreaEditAccess("membership");
+  // #2264 — the role email example moves out of the placeholder (grey text
+  // inside the box reads as an address already on file) and under the field.
+  const roleEmailHint = useFieldHint();
 
   const [showRoleForm, setShowRoleForm] = useState(false);
   const [editingRoleId, setEditingRoleId] = useState<string | null>(null);
@@ -470,9 +474,12 @@ export default function CommitteePage() {
                       contactEmail: event.target.value,
                     })
                   }
-                  placeholder="president@example.org"
                   disabled={!canEdit}
+                  {...roleEmailHint.fieldProps}
                 />
+                <FieldHint {...roleEmailHint.hintProps} className="mt-1">
+                  Example: president@example.org
+                </FieldHint>
               </div>
               <div className="mt-4">
                 <Label htmlFor="roleDescription">Description</Label>

@@ -12,7 +12,14 @@
  * wall-clock day even across DST. In local dev the browser and dev server share
  * one timezone, so it stays self-consistent. Anchor instants therefore keep
  * their wall-clock day/time across the whole series.
+ *
+ * The human-readable labels at the bottom of the file are the exception: they
+ * render through formatters pinned to the club locale and timezone (#2264), so
+ * a browser outside New Zealand still describes the pattern in club time.
  */
+
+import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
+import { formatNZDate } from "@/lib/nzst-date";
 
 export const CALENDAR_RECURRENCE_FREQUENCIES = [
   "DAILY",
@@ -197,24 +204,58 @@ function ordinal(n: number): string {
   return ORDINALS[n] ?? `${n}th`;
 }
 
-function weekdayName(date: Date): string {
-  return date.toLocaleDateString("en-NZ", { weekday: "long" });
+// Bare long weekday ("Tuesday") — none of the shared `nzst-date` helpers render
+// a weekday on its own, so this pattern-description label keeps its own pinned
+// formatter rather than gaining a date it does not want.
+const RECURRENCE_LABEL_PARTS = new Intl.DateTimeFormat(APP_LOCALE, {
+  timeZone: APP_TIME_ZONE,
+  weekday: "long",
+  day: "numeric",
+});
+
+/**
+ * The anchor's weekday AND day-of-month as the CLUB sees them (#2264).
+ *
+ * Both come out of one club-pinned formatter on purpose. Reading the weekday in
+ * club time while taking the day number from `anchor.getDate()` (the browser's
+ * zone) would let a label contradict itself for an overseas admin — "Monthly on
+ * day 16 … on the 3rd Tuesday" where the 16th is a Wednesday. Occurrences are
+ * materialised by a server pinned to `TZ=Pacific/Auckland`, so the club zone is
+ * also the zone the generated series actually follows: describing the pattern
+ * this way makes the label agree with the events it will produce, whoever is
+ * reading it.
+ *
+ * `weekdayOrdinalInMonth` above is deliberately NOT changed — it is the
+ * generation-side date math, and that stays on the local components the rest of
+ * this module steps through.
+ */
+function clubZoneLabelParts(date: Date): { weekday: string; day: number } {
+  const parts = RECURRENCE_LABEL_PARTS.formatToParts(date);
+  return {
+    weekday: parts.find((part) => part.type === "weekday")?.value ?? "",
+    day: Number(parts.find((part) => part.type === "day")?.value),
+  };
+}
+
+/** The 1-based ordinal of a weekday within its month, from a day number. */
+function ordinalFromDayOfMonth(day: number): number {
+  return Math.floor((day - 1) / 7) + 1;
 }
 
 /** "Repeat" options for a given selected date, labelled from that date. */
 export function recurrenceOptionsForDate(
   date: Date,
 ): Array<{ value: CalendarRecurrenceFrequency | "NONE"; label: string }> {
-  const day = date.getDate();
-  const nth = weekdayOrdinalInMonth(date);
+  const { weekday, day } = clubZoneLabelParts(date);
+  const nth = ordinalFromDayOfMonth(day);
   return [
     { value: "NONE", label: "Does not repeat" },
     { value: "DAILY", label: "Daily" },
-    { value: "WEEKLY", label: `Weekly on ${weekdayName(date)}` },
+    { value: "WEEKLY", label: `Weekly on ${weekday}` },
     { value: "MONTHLY_DAY_OF_MONTH", label: `Monthly on day ${day}` },
     {
       value: "MONTHLY_NTH_WEEKDAY",
-      label: `Monthly on the ${ordinal(nth)} ${weekdayName(date)}`,
+      label: `Monthly on the ${ordinal(nth)} ${weekday}`,
     },
   ];
 }
@@ -237,6 +278,8 @@ export function recurrenceUnitLabel(
 export function describeRecurrence(rule: RecurrenceRule, anchor: Date): string {
   const interval = Math.max(1, Math.floor(rule.interval || 1));
   const every = interval === 1 ? "" : `Every ${interval} `;
+  const { weekday: anchorWeekday, day: anchorDay } = clubZoneLabelParts(anchor);
+  const anchorNth = ordinalFromDayOfMonth(anchorDay);
   let base: string;
   switch (rule.frequency) {
     case "DAILY":
@@ -245,29 +288,33 @@ export function describeRecurrence(rule: RecurrenceRule, anchor: Date): string {
     case "WEEKLY":
       base =
         interval === 1
-          ? `Weekly on ${weekdayName(anchor)}`
-          : `${every}weeks on ${weekdayName(anchor)}`;
+          ? `Weekly on ${anchorWeekday}`
+          : `${every}weeks on ${anchorWeekday}`;
       break;
     case "MONTHLY_DAY_OF_MONTH":
       base =
         interval === 1
-          ? `Monthly on day ${anchor.getDate()}`
-          : `${every}months on day ${anchor.getDate()}`;
+          ? `Monthly on day ${anchorDay}`
+          : `${every}months on day ${anchorDay}`;
       break;
     case "MONTHLY_NTH_WEEKDAY":
       base =
         interval === 1
-          ? `Monthly on the ${ordinal(weekdayOrdinalInMonth(anchor))} ${weekdayName(anchor)}`
-          : `${every}months on the ${ordinal(weekdayOrdinalInMonth(anchor))} ${weekdayName(anchor)}`;
+          ? `Monthly on the ${ordinal(anchorNth)} ${anchorWeekday}`
+          : `${every}months on the ${ordinal(anchorNth)} ${anchorWeekday}`;
       break;
   }
 
   if (rule.endMode === "until" && rule.until) {
-    const untilLabel = new Date(rule.until).toLocaleDateString("en-NZ", {
-      day: "numeric",
-      month: "short",
-      year: "numeric",
-    });
+    // #2264: `Intl.format` THROWS a RangeError on an invalid Date, where the
+    // `toLocaleDateString` call this replaced quietly returned the string
+    // "Invalid Date". A malformed `until` must not take the whole "Repeat"
+    // picker down with it, so fall back to the raw value — the same defensive
+    // shape the occurrence generator above already applies to this field.
+    const untilDate = new Date(rule.until);
+    const untilLabel = Number.isNaN(untilDate.getTime())
+      ? rule.until
+      : formatNZDate(untilDate);
     return `${base}, until ${untilLabel}`;
   }
   if (rule.endMode === "count" && rule.count) {

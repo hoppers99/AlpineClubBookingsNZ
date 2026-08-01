@@ -33,6 +33,24 @@ const NO_RESULTS: never[] = [];
  * array for its `params` (e.g. include `role`/`accessRoles` when the caller
  * post-filters on them). Post-filtering and any dropdown-open bookkeeping stay
  * with the caller — pass `onResults` to run per successful response.
+ *
+ * `onResponse` is the wider seam (#2264): it receives the WHOLE parsed body,
+ * not just `members`, for the endpoints that answer with extra signals beside
+ * the rows. The dependant-link search is the case that needs it — the server
+ * reports which matches it found but could not offer and why, and whether the
+ * text matched nobody at all (#2254). Neither can be inferred from the rows,
+ * because the caller filters those client-side, so a caller without this seam
+ * would have to either re-fetch or hand-roll the whole debounce again. The
+ * payload is deliberately `unknown`: this hook makes no promise about any
+ * field except `members`/`total`, so the caller narrows what it asked for.
+ * Staleness rules are identical to `onResults` — it never fires for a response
+ * the query has already moved past, nor after unmount.
+ *
+ * `active` is the same gate the returned values are derived through: true only
+ * while `enabled` holds AND the trimmed query is long enough. A caller keeping
+ * its own state from `onResponse` must mask it with `active`, exactly as this
+ * hook masks `results`, or a closed dialog would still render the last
+ * search's leftovers.
  */
 export function useDebouncedMemberSearch<TMember>(options: {
   query: string;
@@ -42,9 +60,21 @@ export function useDebouncedMemberSearch<TMember>(options: {
   enabled?: boolean;
   /** Called with each successful, non-stale response's results. */
   onResults?: (results: TMember[]) => void;
+  /**
+   * Called with each successful, non-stale response's FULL parsed body, for
+   * endpoints that return signals alongside `members` (see the note above).
+   */
+  onResponse?: (payload: unknown) => void;
   /** `error` message when a failure carries no message of its own. */
   errorFallback?: string;
-}): { results: TMember[]; searching: boolean; error: string; total: number } {
+}): {
+  results: TMember[];
+  searching: boolean;
+  error: string;
+  total: number;
+  /** True while the query is long enough and `enabled` holds. */
+  active: boolean;
+} {
   const { query, enabled = true, errorFallback = "Failed to search members" } = options;
   const [results, setResults] = useState<TMember[]>([]);
   const [total, setTotal] = useState(0);
@@ -55,8 +85,10 @@ export function useDebouncedMemberSearch<TMember>(options: {
   // effect below (synced in its own effect: refs must not be written during
   // render, and the debounced fetch only reads it long after render).
   const onResultsRef = useRef(options.onResults);
+  const onResponseRef = useRef(options.onResponse);
   useEffect(() => {
     onResultsRef.current = options.onResults;
+    onResponseRef.current = options.onResponse;
   });
 
   // String key instead of the params object so inline `params` literals don't
@@ -94,6 +126,7 @@ export function useDebouncedMemberSearch<TMember>(options: {
             typeof data.total === "number" ? data.total : members.length,
           );
           setError("");
+          onResponseRef.current?.(data);
           onResultsRef.current?.(members);
         }
       } catch (err) {
@@ -123,5 +156,6 @@ export function useDebouncedMemberSearch<TMember>(options: {
     searching: active ? searching : false,
     error: active ? error : "",
     total: active ? total : 0,
+    active,
   };
 }

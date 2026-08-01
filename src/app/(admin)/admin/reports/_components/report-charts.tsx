@@ -25,7 +25,7 @@ import {
   Legend,
 } from "recharts";
 import type { RevenueGranularity } from "@/lib/admin-reports";
-import { formatDollarsDisplay } from "@/lib/finance-format";
+import { formatCents } from "@/lib/utils";
 import { bookingStatusLabel } from "@/lib/status-colors";
 
 const PIE_COLORS = ["#3b82f6", "#ef4444"];
@@ -89,13 +89,13 @@ export function RevenueBarChart({
         />
         <YAxis
           tick={{ fontSize: 12 }}
-          tickFormatter={(value) => formatDollarsDisplay(Number(value))}
+          tickFormatter={(value) => formatCents(Number(value))}
         />
         <Tooltip
           labelFormatter={(_value, payload) =>
             payload?.[0]?.payload?.tooltipLabel ?? ""
           }
-          formatter={(value) => [formatDollarsDisplay(Number(value)), "Revenue"]}
+          formatter={(value) => [formatCents(Number(value)), "Booked revenue"]}
         />
         <Bar dataKey="revenueCents" fill="#22c55e" radius={[4, 4, 0, 0]} />
       </BarChart>
@@ -109,8 +109,12 @@ export function TrendsLineChart({
   data: Array<{
     week: string;
     total: number;
+    pending: number;
+    paymentPending: number;
     confirmed: number;
-    cancelled: number;
+    paid: number;
+    awaitingReview: number;
+    completed: number;
   }>;
 }) {
   return (
@@ -147,11 +151,41 @@ export function TrendsLineChart({
         />
         <Line
           type="monotone"
-          dataKey="cancelled"
-          stroke="#ef4444"
+          dataKey="paid"
+          stroke="#3b82f6"
+          strokeWidth={2}
+          name={bookingStatusLabel("PAID")}
+        />
+        <Line
+          type="monotone"
+          dataKey="completed"
+          stroke="#8b5cf6"
+          strokeWidth={2}
+          name={bookingStatusLabel("COMPLETED")}
+        />
+        <Line
+          type="monotone"
+          dataKey="paymentPending"
+          stroke="#f59e0b"
           strokeWidth={1}
           strokeDasharray="5 5"
-          name="Cancelled"
+          name={bookingStatusLabel("PAYMENT_PENDING")}
+        />
+        <Line
+          type="monotone"
+          dataKey="pending"
+          stroke="#f97316"
+          strokeWidth={1}
+          strokeDasharray="5 5"
+          name={bookingStatusLabel("PENDING")}
+        />
+        <Line
+          type="monotone"
+          dataKey="awaitingReview"
+          stroke="#ec4899"
+          strokeWidth={1}
+          strokeDasharray="5 5"
+          name={bookingStatusLabel("AWAITING_REVIEW")}
         />
       </LineChart>
     </ResponsiveContainer>

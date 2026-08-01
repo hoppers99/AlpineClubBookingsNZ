@@ -1,12 +1,28 @@
+import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
 import type { CalendarEventDTO } from "@/lib/calendar-events";
+import { formatNZMonthYear, formatNZTime } from "@/lib/nzst-date";
 
 /**
- * Pure, client-safe date helpers for the month calendar. Everything here works
- * in the browser's local time — for a single-club NZ deployment that is the
- * lodge's own timezone, so an event created at "7pm" renders on the 7pm cell.
- * No server-only imports may be added to this module (it is bundled to the
+ * Pure, client-safe date helpers for the month calendar. The grid arithmetic
+ * (day keys, month grids, "is today") works in the browser's local time — for a
+ * single-club NZ deployment that is the lodge's own timezone, so an event
+ * created at "7pm" lands on the 7pm cell. The *display* formatters below
+ * instead pin the club's locale and timezone (#2264), so an operator or a TV
+ * browser sitting outside New Zealand still reads club time rather than its
+ * own. No server-only imports may be added to this module (it is bundled to the
  * client).
  */
+
+// Long weekday-bearing date, e.g. "Thursday, 16 April 2026". Deliberately
+// wordier than the shared `formatNZWeekdayDate` ("Thu, 16 Apr 2026") because
+// these are single-event headings, not scannable list rows.
+const CALENDAR_LONG_DATE = new Intl.DateTimeFormat(APP_LOCALE, {
+  timeZone: APP_TIME_ZONE,
+  weekday: "long",
+  day: "numeric",
+  month: "long",
+  year: "numeric",
+});
 
 const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -145,17 +161,14 @@ export function isToday(date: Date): boolean {
 }
 
 export function formatMonthTitle(year: number, month: number): string {
-  return new Date(year, month, 1).toLocaleDateString("en-NZ", {
-    month: "long",
-    year: "numeric",
-  });
+  // UTC midnight, not local midnight: the label is a pure calendar month, and a
+  // local-midnight construction read back in club time would slip to the
+  // previous month for a viewer east of New Zealand.
+  return formatNZMonthYear(new Date(Date.UTC(year, month, 1)));
 }
 
 export function formatTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString("en-NZ", {
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  return formatNZTime(new Date(iso));
 }
 
 /** Short chip/list label for an event's time ("All day", "7:00 pm"). */
@@ -165,27 +178,19 @@ export function formatEventTime(event: CalendarEventDTO): string {
 }
 
 export function formatEventDateLong(event: CalendarEventDTO): string {
-  return new Date(event.startsAt).toLocaleDateString("en-NZ", {
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-    year: "numeric",
-  });
+  return CALENDAR_LONG_DATE.format(new Date(event.startsAt));
 }
 
 /**
- * Long date label for a `YYYY-MM-DD` day key (parsed as a local date), used as
- * the day-detail dialog heading. Falls back to the raw key if it is malformed.
+ * Long date label for a `YYYY-MM-DD` day key, used as the day-detail dialog
+ * heading. Falls back to the raw key if it is malformed.
  */
 export function formatDayKeyLong(dayKey: string): string {
   const [y, m, d] = dayKey.split("-").map(Number);
   if (!y || !m || !d) return dayKey;
-  return new Date(y, m - 1, d).toLocaleDateString("en-NZ", {
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-    year: "numeric",
-  });
+  // UTC midnight: `dayKey` is a date-only value, so a local-midnight parse read
+  // back in club time would render the previous day east of New Zealand.
+  return CALENDAR_LONG_DATE.format(new Date(Date.UTC(y, m - 1, d)));
 }
 
 /** `<input type="date">` value (local YYYY-MM-DD) for an ISO instant. */

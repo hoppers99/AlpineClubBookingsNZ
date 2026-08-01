@@ -9,6 +9,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import type {
@@ -38,6 +39,15 @@ export function MemberDeleteReviewDialog({
   onSubmit,
 }: MemberDeleteReviewDialogProps) {
   const action = dialog?.action
+  /*
+    #2264 — the approve branch's placeholder was an EXAMPLE note ("Approved
+    after eligibility check"), which reads as a note already typed, so it moves
+    under the field. The reject branch's "Reason for rejection" is an
+    instruction about what to write and stays a placeholder; the hint (and the
+    `aria-describedby` pointing at it) is therefore rendered for approve only,
+    never leaving a dangling id behind.
+  */
+  const approveNoteHint = useFieldHint()
   return (
     <Dialog
       open={Boolean(dialog)}
@@ -76,9 +86,15 @@ export function MemberDeleteReviewDialog({
             id="delete-review-note"
             value={reviewNote}
             onChange={(event) => onChangeReviewNote(event.target.value)}
-            placeholder={action === "approve" ? "Approved after eligibility check" : "Reason for rejection"}
+            placeholder={action === "approve" ? undefined : "Reason for rejection"}
             rows={4}
+            {...(action === "approve" ? approveNoteHint.fieldProps : {})}
           />
+          {action === "approve" && (
+            <FieldHint {...approveNoteHint.hintProps}>
+              Example: Approved after eligibility check
+            </FieldHint>
+          )}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={submitting}>

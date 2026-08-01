@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { ChevronDown, ChevronRight, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -22,6 +22,8 @@ import { AdminDataTable } from "@/components/admin/admin-data-table";
 import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
 import { DateRangeControls } from "@/components/admin/date-range-controls";
 import { auditAndPaymentsDateRangePresets } from "@/lib/date-range-presets";
+import { APP_LOCALE } from "@/config/operational";
+import { formatNZDate } from "@/lib/nzst-date";
 import { formatCents } from "@/lib/utils";
 import { useLodgeOptions } from "@/components/lodge-select";
 import {
@@ -106,6 +108,15 @@ interface RedemptionsResponse {
   };
   totals: { all: Totals; filtered: Totals };
   pagination: { page: number; pageSize: number; total: number };
+  // Present only on an `?export=1` response (#2244). The server caps an export
+  // at `limit` rows, so `truncated` says the rows below are only the newest
+  // `limit` of `matchedRowCount` and the CSV built from them is partial.
+  export: {
+    truncated: boolean;
+    limit: number;
+    rowCount: number;
+    matchedRowCount: number;
+  } | null;
   rows: RedemptionRow[];
 }
 
@@ -118,16 +129,28 @@ interface PromoSummary {
 }
 
 function formatStayDate(value: string): string {
-  // `value` is a yyyy-MM-dd lodge night from the API; render it without any
-  // timezone shift by parsing the parts directly.
+  // `value` is a yyyy-MM-dd lodge night from the API; parse the parts directly
+  // to UTC midnight so the club-time formatter renders that exact calendar day
+  // with no shift.
   const [year, month, day] = value.split("-").map(Number);
   if (!year || !month || !day) return value;
-  return new Date(Date.UTC(year, month - 1, day)).toLocaleDateString("en-NZ", {
-    timeZone: "UTC",
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
+  return formatNZDate(new Date(Date.UTC(year, month - 1, day)));
+}
+
+// The truncation notice asks an operator to compare two five-figure counts, so
+// they are grouped the way the rest of the site groups numbers (and the way the
+// operator guide states the cap): "10,000 of 12,345", not "10000 of 12345".
+function formatCount(value: number): string {
+  return value.toLocaleString(APP_LOCALE);
+}
+
+// A downloaded file outlives the on-screen notice, so a capped export (#2244)
+// says so in its own name. The suffix is the only truncation marker outside the
+// UI: the CSV body stays a plain row set, since a trailing "truncated" line
+// would corrupt every spreadsheet and parser that reads it.
+function csvFilename(code: string, truncated: boolean): string {
+  const dateStr = new Date().toISOString().slice(0, 10);
+  return `promo-${code}-redemptions-${dateStr}${truncated ? "-partial" : ""}.csv`;
 }
 
 function StatTile({
@@ -189,6 +212,13 @@ export function PromoRedemptionsPanel({
   const [error, setError] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [exporting, setExporting] = useState(false);
+  // Set when the last export came back capped (#2244): the downloaded CSV is
+  // short, so it must never be read as a complete discount reconciliation.
+  const [exportTruncation, setExportTruncation] = useState<{
+    limit: number;
+    rowCount: number;
+    matchedRowCount: number;
+  } | null>(null);
 
   const buildQuery = useCallback(
     (nextPage: number, nextPageSize: number) => {
@@ -227,10 +257,23 @@ export function PromoRedemptionsPanel({
     void fetchRedemptions();
   }, [fetchRedemptions]);
 
-  // Any filter change resets to the first page and collapses open rows.
+  // What EVERY change to the filtered set invalidates, whether it came from a
+  // filter control or from Reset. Page 1 because the row set is different; the
+  // truncation notice because it describes the file the PREVIOUS filter
+  // produced, and left up it would quote a matched count for a set that is no
+  // longer on screen (#2244). Open rows are deliberately NOT included — Reset
+  // keeps them, and that distinction is pinned by
+  // `promo-redemptions-reset.test.tsx`.
+  function resetDatasetView() {
+    setPage(1);
+    setExportTruncation(null);
+  }
+
+  // A filter control additionally collapses open rows, since the expanded
+  // splits belong to rows the new filter may not return.
   function applyFilterChange(mutator: () => void) {
     mutator();
-    setPage(1);
+    resetDatasetView();
     setExpanded(new Set());
   }
 
@@ -272,14 +315,10 @@ export function PromoRedemptionsPanel({
     .filter(Boolean)
     .join(" · ");
 
-  const csvFilename = useMemo(() => {
-    const dateStr = new Date().toISOString().slice(0, 10);
-    return `promo-${promo.code}-redemptions-${dateStr}.csv`;
-  }, [promo.code]);
-
   async function exportCSV() {
     setExporting(true);
     setError("");
+    setExportTruncation(null);
     try {
       // A single server-side export request returns the full filtered row set
       // (bounded server-side) and writes the privacy audit entry — no client
@@ -298,13 +337,27 @@ export function PromoRedemptionsPanel({
       }
       const json = (await res.json()) as RedemptionsResponse;
 
+      // The server caps an export at `export.limit` rows (#2244). The file is
+      // still downloaded — a partial export is more useful than none — but the
+      // shortfall is surfaced on screen and stamped into the filename, because
+      // the CSV body stays exactly the machine-parseable row set it claims to
+      // be and cannot carry the warning itself.
+      const truncation = json.export?.truncated ? json.export : null;
+      if (truncation) {
+        setExportTruncation({
+          limit: truncation.limit,
+          rowCount: truncation.rowCount,
+          matchedRowCount: truncation.matchedRowCount,
+        });
+      }
+
       const csvContent = buildPromoRedemptionsCsvContent(promo.code, json.rows);
 
       const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = csvFilename;
+      anchor.download = csvFilename(promo.code, truncation != null);
       anchor.click();
       URL.revokeObjectURL(url);
     } catch (err) {
@@ -356,6 +409,35 @@ export function PromoRedemptionsPanel({
           {error}
         </div>
       ) : null}
+
+      {/*
+        A capped export (#2244) is stated in the reading order, not left for the
+        operator to notice by counting rows. The `role="status"` wrapper is
+        mounted unconditionally and only its CONTENT is gated — the house rule
+        (PolicyFeedback, AdminViewOnlySectionBanner): a polite live region
+        injected already-populated is silently dropped by some
+        screen-reader/browser pairings, so the region has to be registered
+        before the message lands in it.
+      */}
+      <div role="status">
+        {exportTruncation ? (
+          <div className="rounded-md border border-warning-6 bg-warning-3 px-4 py-3 text-sm text-warning-11">
+            <p className="font-medium">
+              Incomplete export: {formatCount(exportTruncation.rowCount)} of{" "}
+              {formatCount(exportTruncation.matchedRowCount)} matching
+              redemptions
+            </p>
+            <p className="mt-1">
+              A single export is capped at {formatCount(exportTruncation.limit)}{" "}
+              rows, so the downloaded file holds only the{" "}
+              {formatCount(exportTruncation.rowCount)} most recent. Do not
+              reconcile discounts from it as though it were complete — narrow
+              the redeemed-date range (or the lodge) and export each window
+              separately to cover every row.
+            </p>
+          </div>
+        ) : null}
+      </div>
 
       {/*
         Every tile shows ONE population, and says which (#2299).
@@ -475,13 +557,21 @@ export function PromoRedemptionsPanel({
               </select>
             </div>
           ) : null}
+          {/*
+            Reset changes the filtered set, so it goes through
+            `resetDatasetView` rather than clearing the fields and page by hand:
+            clearing them alone left the truncation notice up, still quoting the
+            matched count of the filter just cleared (#2244). It stops short of
+            `applyFilterChange` on purpose — Reset keeps open rows expanded,
+            pinned by `promo-redemptions-reset.test.tsx`.
+          */}
           <DatasetResetButton
             disabled={!filterActive && page === 1}
             onReset={() => {
               setFrom("");
               setTo("");
               setLodgeId("");
-              setPage(1);
+              resetDatasetView();
             }}
           />
         </CardContent>

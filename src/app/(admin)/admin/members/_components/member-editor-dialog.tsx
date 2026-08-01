@@ -10,6 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { FieldHint, describedByFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -66,6 +67,15 @@ import type {
 import { emptyForm, getMissingFieldsForXeroCreate } from "../_utils";
 import { MemberXeroControls } from "./member-xero-controls";
 import { MemberXeroDuplicateDecisionDialog } from "./member-xero-duplicate-decision-dialog";
+
+/*
+  #2264 — ONE hint for the whole phone row (country / area / number) instead of
+  an example parked in each box's placeholder, where grey text reads as a value
+  already entered. A hook cannot serve three controls (one `useFieldHint` pairs
+  with exactly one `fieldProps` spread), so the id is a module constant wired to
+  each box with `describedByFieldHint`.
+*/
+const PHONE_HINT_ID = "member-editor-phone-hint";
 
 interface MemberEditorDialogProps {
   open: boolean;
@@ -828,7 +838,6 @@ export function MemberEditorDialog({
               <div className="flex gap-2">
                 <Input
                   className="w-20"
-                  placeholder="64"
                   value={form.phoneCountryCode}
                   onChange={(event) =>
                     setForm((current) => ({
@@ -838,10 +847,10 @@ export function MemberEditorDialog({
                   }
                   maxLength={5}
                   aria-label="Country code"
+                  aria-describedby={describedByFieldHint(PHONE_HINT_ID)}
                 />
                 <Input
                   className="w-20"
-                  placeholder="27"
                   value={form.phoneAreaCode}
                   onChange={(event) =>
                     setForm((current) => ({
@@ -851,10 +860,10 @@ export function MemberEditorDialog({
                   }
                   maxLength={5}
                   aria-label="Area code"
+                  aria-describedby={describedByFieldHint(PHONE_HINT_ID)}
                 />
                 <Input
                   className="flex-1"
-                  placeholder="123 4567"
                   value={form.phoneNumber}
                   onChange={(event) =>
                     setForm((current) => ({
@@ -864,8 +873,10 @@ export function MemberEditorDialog({
                   }
                   maxLength={15}
                   aria-label="Phone number"
+                  aria-describedby={describedByFieldHint(PHONE_HINT_ID)}
                 />
               </div>
+              <FieldHint id={PHONE_HINT_ID}>Example: 64 27 123 4567</FieldHint>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

@@ -312,7 +312,7 @@ async function queueXeroInvoice(bookingId: string, logMessage: string) {
 async function sendConfirmationEmail(booking: PendingBooking) {
   try {
     await sendBookingConfirmedEmail(
-      { bookingId: booking.id },
+      { bookingId: booking.id, recipientMemberId: booking.memberId },
       booking.member.email,
       booking.member.firstName,
       booking.checkIn,
@@ -333,7 +333,7 @@ async function sendBumpedEmail(booking: PendingBooking, flagged: boolean) {
   try {
     if (flagged) {
       await sendBookingGuestsCancelledEmail(
-        { bookingId: booking.id },
+        { bookingId: booking.id, recipientMemberId: booking.memberId },
         booking.member.email,
         booking.member.firstName,
         booking.checkIn,
@@ -342,7 +342,7 @@ async function sendBumpedEmail(booking: PendingBooking, flagged: boolean) {
       );
     } else {
       await sendBookingBumpedEmail(
-        { bookingId: booking.id },
+        { bookingId: booking.id, recipientMemberId: booking.memberId },
         booking.member.email,
         booking.member.firstName,
         booking.checkIn,
@@ -1139,7 +1139,10 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
 
         try {
           await sendBookingRequestPaymentExpiredEmail({
-            bookingContext: { bookingId: resolution.booking.id },
+            bookingContext: {
+              bookingId: resolution.booking.id,
+              recipientMemberId: resolution.booking.memberId,
+            },
             email: resolution.booking.member.email,
             firstName: resolution.booking.member.firstName,
             checkIn: resolution.booking.checkIn,
@@ -1203,6 +1206,7 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
         try {
           await sendSplitGuestPortionCancelledEmail({
             bookingId: resolution.booking.id,
+            recipientMemberId: resolution.booking.memberId,
             email: resolution.booking.member.email,
             firstName: resolution.booking.member.firstName,
             checkIn: resolution.booking.checkIn,
@@ -1292,7 +1296,10 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
           let withheld = false;
           try {
             const emailOutcome = await sendSplitGuestPaymentLinkEmail({
-              bookingContext: { bookingId: resolution.booking.id },
+              bookingContext: {
+                bookingId: resolution.booking.id,
+                recipientMemberId: resolution.booking.memberId,
+              },
               email: resolution.booking.member.email,
               firstName: resolution.booking.member.firstName,
               token,

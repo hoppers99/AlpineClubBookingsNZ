@@ -36,17 +36,23 @@ cents; dates are NZ date-only.
    and page together; it stays visible but is disabled while the list is already
    at those defaults.
 
-   ![Members list: the search and filter bar, and the members table with Name, Email, Access, Type–Tier, Status, Family Group, Subscription, Xero, and Joined columns](../images/admin/admin-members.png)
+   ![Members list showing the search and filter bar and the complete table through Xero, Joined, and Actions with Open links](../images/admin/admin-members.png)
 
-2. Sort any sortable column (Name, Email, Access, Type–Tier, Status, Joined). Click
-   a member's row to open their detail page.
+2. Sort any sortable column (Name, Email, Access, Type–Tier, Status, Joined).
+   **Access** describes account readiness, not role: **No login** is neutral,
+   **Not invited** is a warning, **Invited** is informational, and **Can log in**
+   is successful. Use the member's name link or the row's **Open** action to
+   open their detail page. Opening is read-only; it never starts an editor.
 
-### Add or edit a member
+### Add or update a member
 
-1. Click **Add Member** (or **Edit** on a row). Fill in the identity, contact, and
-   address fields; tick **Can Login** for adults who sign in and book (leave it off
-   for children/youth managed in a family group). Set the access role and age tier
-   (the tier is calculated from date of birth).
+1. Click **Add Member** to create a record. To update an existing record, use
+   its name or **Open**, expand the relevant detail section, and click that
+   section's **Edit**. Opening the page itself never changes data or unlocks a
+   form. Fill in the identity, contact, and address fields; tick **Can Login**
+   for adults who sign in and book (leave it off for children/youth managed in
+   a family group). Set the access role and age tier (the tier is calculated
+   from date of birth).
 2. On create, if Xero is connected you can link an existing Xero contact or create
    one (creating in Xero requires the full name, email, phone, dates, and both
    addresses). Optionally tick **Send account setup invite** (a 7-day link).
@@ -104,8 +110,10 @@ cents; dates are NZ date-only.
 ### The member detail page
 
 Opening a member (`/admin/members/[id]`) gives collapsible sections that cover the
-rest of a member's lifecycle. Because it is a per-member page, it is documented in
-prose here rather than with a screenshot:
+rest of a member's lifecycle. The page always opens read-only. A membership-view
+admin can open it; membership edit is needed only after choosing a section's
+**Edit**. Because it is a per-member page, it is documented in prose here rather
+than with a screenshot:
 
 - **Contact & Personal** — name, email, phone, DOB, occupation, addresses,
   comments (a privileged member's login email is Full-Admin-only to change).
@@ -166,7 +174,10 @@ prose here rather than with a screenshot:
   with the adults. When more people matched than the list can show,
   it says **"Keep typing to narrow this down."** underneath — the same sentence
   the booking screens use when a member search is cut short. If you see it, add
-  another letter or two, or type the person's email address or member ID.
+  another letter or two, or type the person's email address or member ID. That
+  sentence is also read out by a screen reader as soon as it appears (#2460), on
+  both screens, so an administrator who is not looking at the list is still told
+  it stopped short rather than being left to work it out.
   **A parent link is not a licence to see that parent's contact details** (#2424).
   You see them here, as an administrator, whatever the link. Members do not:
   their own family page lists parents by name and has never printed an address
@@ -217,7 +228,7 @@ The list is a working roster; its controls:
 | Access Role / Membership Type / Status | Primary filters | Status defaults to All Non-Archived |
 | More filters | Age tier, family group, login access, Xero, subscription, Xero group | Xero-group filter needs Xero connected + the feature flag |
 | Reset | Restore list search, filters, sort, and page | Disabled while the list is already at its defaults |
-| Add Member / Edit | Create or edit a member | Membership edit; Admin user-type and privileged roles are Full-Admin only |
+| Add Member / Open | Create a member, or open an existing member read-only | Opening needs membership view; create and per-section Edit need membership edit; Admin user-type and privileged roles are Full-Admin only |
 | Import CSV | Bulk-create from a CSV | Membership edit; 500-row cap; duplicate-email rows skipped |
 | Export CSV | Download the filtered list | View access can export |
 | Invite / Resend / Reset Password | Send login/setup emails | Setup invites are 7-day links; reset expiry 1 hour / 1 day / 3 days |
@@ -231,7 +242,8 @@ The list is a working roster; its controls:
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
 | The page is read-only ("… can view membership records but cannot create, edit, import, or bulk-update members") | Your admin role has membership view but not edit | Ask a full admin for membership edit access |
-| "A member with this email already exists" | A login-enabled member already uses that email — either you changed the address to a taken one, or you ticked **Can Login** on a member whose existing address is already someone else's login | Non-login members can share a parent's email; otherwise use a different email or merge the duplicate |
+| "A member with this email already exists" | A login-enabled member already uses that email — either you changed the address to a taken one, you ticked **Can Login** on a member whose existing address is already someone else's login, or somebody claimed the address between your save and the check | Non-login members can share a parent's email; otherwise use a different email or merge the duplicate |
+| "Could not create this member: one of their details is already used by another record" | Something other than the email is already on another member — most often a Google account already linked elsewhere | Check the details that identify the member (Google login, Xero contact link) against the existing record, or search for a duplicate and merge it |
 | A CSV import created nothing | One or more rows were blocked in validation | Fix the flagged rows (First/Last/Email required, valid dates) and re-import |
 | A Xero contact wasn't created on save | Xero needs the full name, email, phone, DOB, joined date, and both addresses | Complete the listed fields, then create in Xero |
 | I can't merge, or change a privileged member's login email | Those actions are Full Admin only | Ask a full admin |

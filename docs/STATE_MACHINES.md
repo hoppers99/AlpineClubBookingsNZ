@@ -1503,7 +1503,7 @@ invariant (#1756): no future `isSecondOccupant` allocation may outlive its
 partner link or the active-adult precondition (see
 docs/DOMAIN_INVARIANTS.md, "Double-bed shared occupancy").
 
-## Member Guest Consent Lifecycle ("+ Add Member Guest", #2305 / MG2 #2307)
+## Member Guest Consent Lifecycle ("+ Add Member Guest", #2305 / MG2 #2307, MG4 #2309)
 
 Known `BookingGuest.consentStatus` values: `null`, `PENDING`, `CONFIRMED`,
 `DECLINED`, `EXPIRED`. **`null` is the dominant state and always will be** —
@@ -1529,7 +1529,34 @@ PENDING -> DECLINED    same actors; then the SHARED removal path (never a second
 PENDING -> EXPIRED     the nightly sweep, when now >= consentExpiresAt; then the shared removal path, electing account credit (D-15); respondedBy stays NULL because nobody decided
 CONFIRMED              terminal. D-13: no later modification of the booking re-opens it, in either policy mode
 DECLINED / EXPIRED     terminal, and normally GONE — see below
+
+any state -> (row deleted)   the booker or an officer takes the guest off the booking, or the
+                             booking-request approval substitutes somebody else onto the row.
+                             The member is told once (member-guest-request-withdrawn); the
+                             consent record goes with the row. NOT a status transition.
 ```
+
+**No EDIT transitions this machine, and that is owner decision D-13 rather than
+an omission.** Changing a booking's dates, its lodge, its price, or the rest of
+its party leaves every consent column of an already-consented guest exactly as
+it was — not rewritten to the same value, but never touched. There is no
+`CONFIRMED -> PENDING` edge and no re-consent path anywhere in the edit,
+modify-quote, modify-plan, copy or pipeline code, and a test asserts the
+absence rather than the presence. So a booker may stretch a two-night stay a
+member agreed to into a ten-night one and that member is neither asked nor told;
+their only exit is self-removal, which D-14 may itself refuse. The two ticks
+compound, and the compound outcome is stated here and in
+`docs/DOMAIN_INVARIANTS.md` so a reader meets it as a decision rather than as a
+surprise.
+
+**Leaving the machine is not the same as moving inside it.** A guest row can
+disappear at any state — the booker removes them, an officer withdraws a request
+nobody has answered, the booking-request approval swaps a different member onto
+the row — and none of that is a status transition, because the row and its five
+columns are deleted together. What the member gets is one message saying they are
+no longer on the booking, from whichever surface did it. A decline and a lapse
+are the two cases that do NOT use it: each already has its own message for the
+same event, and sending both would give one person two explanations.
 
 **Every transition is a status-guarded `updateMany`** (`WHERE id = ? AND
 consentStatus = 'PENDING'`). A zero row count means somebody else won, and then
@@ -1823,12 +1850,18 @@ Known email log statuses: `QUEUED`, `SENT`, `FAILED`, `BOUNCED`.
 
 ```text
 email queued -> send attempted -> sent
-send failure -> retryable failed -> retried by cron
+send failure -> retryable failed -> suppression + booking authority rechecked
+current authority + current mailbox -> delivery HTML re-finalized -> guarded claim -> retried by cron
+revoked authority or stale mailbox -> detail CTA removed, bearer/page action preserved -> retried
+unknown legacy authority -> retired for manual review
+application rollback -> old worker cannot select quarantined new-version booking body
 exhausted or suppressed -> admin-visible failure/suppression
 ```
 
-To verify: retry backoff, suppression handling, and which business-critical
-emails require admin alerts.
+To verify: retry backoff, suppression handling, durable recipient identity,
+direct/inherited mailbox drift, revoked-authority fail-closed behavior,
+page-fragment/bearer preservation, rollback isolation, and which
+business-critical emails require admin alerts.
 
 ## Xero Outbox And Reconciliation Lifecycle
 

@@ -25,6 +25,7 @@ import {
   AdminViewOnlySectionBanner,
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action";
+import { formatNZDateTime } from "@/lib/nzst-date";
 
 // Mirrors LODGE_INSTRUCTION_KEYS / LODGE_INSTRUCTION_LABELS in
 // src/lib/lodge-instructions.ts (that module is server-only).
@@ -71,10 +72,9 @@ function formatUpdatedAt(value: string | null): string {
   if (!value) {
     return "Never updated";
   }
-  return new Date(value).toLocaleString("en-NZ", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
+  // Club time, not the admin's own (#2264): the stamp says when the club's
+  // document changed, so an officer abroad must not read it in their zone.
+  return formatNZDateTime(new Date(value));
 }
 
 export function LodgeInstructionsPanel() {

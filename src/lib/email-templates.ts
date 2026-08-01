@@ -14,7 +14,6 @@ import {
 // EmailMessageSetting.emailFromName at send time. Must NOT come from the severed
 // club-identity export (now safe-default-derived) or the replacement would no-op.
 import { EMAIL_DEFAULT_FROM_NAME } from "@/lib/email-message-settings";
-import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
 import { formatCents as formatMoneyCents } from "@/lib/utils";
 import { FALLBACK_LODGE_CAPACITY } from "@/lib/lodge-capacity";
 import { SUPPORT_EMAIL } from "./email-sender";
@@ -33,6 +32,7 @@ import {
   adminSplitSettlementCancelledLeadParagraph,
   adminSplitSettlementUnpaidLeadParagraph,
   bookingBumpedRebookAction,
+  bookingPaymentDueNote,
   duplicateCaptureRefundOutcomeParagraph,
   splitGuestPortionOwnBookingLine,
 } from "./email-message-notes";
@@ -250,10 +250,6 @@ function arrivalInstructionsSection({
 
 function formatCents(cents: number): string {
   return formatMoneyCents(cents);
-}
-
-function formatOperationalDateTime(value: Date): string {
-  return value.toLocaleString(APP_LOCALE, { timeZone: APP_TIME_ZONE });
 }
 
 export function passwordResetTemplate(resetUrl: string): string {
@@ -504,14 +500,15 @@ export function appliedCreditSummaryRows(
  *    if that precondition ever stops holding, because the suppression would
  *    then be hiding a real figure from a member.
  *
- *    An EARLIER version of this comment justified the suppression by saying the
- *    amount owing is the figure the club's Xero invoice was raised for, so
- *    netting credit off it would disagree with the invoice. That reasoning is
- *    WRONG and is retracted: under #1620 "allocate-existing" the booking
- *    invoice is raised for the FULL amount and the member's floating credit
- *    notes are ALLOCATED against it (this very send site enqueues that
- *    allocation a few lines above the send), so the invoice total is not the
- *    net-of-credit figure the argument assumed;
+ *    A #2444 DRAFT claimed the invoice for this booking has the member's
+ *    floating credit notes ALLOCATED against it under #1620, because the send
+ *    site enqueues an allocation op a few lines above the send. That is WRONG
+ *    and is retracted (re-verified 1 Aug 2026):
+ *    `enqueueXeroAppliedCreditAllocationOperation` only queues anything when
+ *    the booking already carries `BOOKING_APPLIED` ledger rows, and this path
+ *    writes none, so it always returns `{ queueOperationId: null }` and the
+ *    invoice stands at the FULL amount. The suppression rests on the
+ *    no-applied-credit precondition above and on nothing else;
  *  - partly paid (`outstandingBalance`, #2397): the settled slice is the
  *    booking's price minus what is still owing, and the credit comes out of
  *    THAT, not out of the full price;
@@ -670,13 +667,18 @@ export function bookingConfirmedTemplate(
     rows.push({ label: "Total Paid", value: formatCents(totalCents) }, ...creditRows);
   }
 
-  // One composed sentence, shared with the {{paymentDueNote}} token in
-  // sendBookingConfirmedEmail so an operator override tells the same story.
+  // One composed paragraph, from the SHARED composer the {{paymentDueNote}}
+  // token in sendBookingConfirmedEmail is built from, so an operator override
+  // tells the same story — including the #2444 account-credit sentence, which
+  // must never appear on one renderer and not the other. The reference is
+  // club-entered data, so it is escaped at this HTML edge (the composer takes
+  // it already escaped, on the same principle as the shared money rows above).
   const paymentDueNote = paymentDue
-    ? `This booking is confirmed, but payment of ${formatCents(totalCents)} is still owing. Please pay by internet banking quoting reference ${escapeHtml(paymentDue.reference)}.` +
-      (paymentDue.invoiceEmailed
-        ? " An invoice has been emailed to you separately."
-        : " The club will send you an invoice for it.")
+    ? bookingPaymentDueNote({
+        amount: formatCents(totalCents),
+        reference: escapeHtml(paymentDue.reference),
+        invoiceEmailed: paymentDue.invoiceEmailed,
+      })
     : "";
   // #2397, same convention: one composed sentence shared with the token path.
   const outstandingBalanceNote = outstandingBalance
@@ -1575,7 +1577,7 @@ export function adminXeroSyncErrorTemplate(data: {
       { label: "Error Type", value: escapeHtml(data.errorType) },
       { label: "Operation", value: escapeHtml(data.operation) },
       { label: "Error Message", value: escapeHtml(data.errorMessage) },
-      { label: "Timestamp", value: formatOperationalDateTime(data.timestamp) },
+      { label: "Timestamp", value: formatNZDateTime(data.timestamp) },
     ])}
     ${button("View Xero Status", BASE_URL + "/admin/xero")}
   `);
@@ -1616,7 +1618,7 @@ export function adminXeroRepeatedFailureTemplate(data: {
     },
     {
       label: "Timestamp",
-      value: formatOperationalDateTime(data.timestamp),
+      value: formatNZDateTime(data.timestamp),
     },
   ];
 
@@ -1856,7 +1858,7 @@ function formatEmailDateTime(value: Date | null): string {
     return "";
   }
 
-  return formatOperationalDateTime(value);
+  return formatNZDateTime(value);
 }
 
 function formatXeroObjectLabel(item: {
@@ -1958,7 +1960,7 @@ function renderIssueSection(section: XeroReconciliationIssueSectionEmail): strin
 export function adminXeroReconciliationReportTemplate(report: XeroReconciliationReportEmail): string {
   const p = emailPalette();
   const summaryRows = [
-    { label: "Generated", value: formatOperationalDateTime(report.generatedAt) },
+    { label: "Generated", value: formatNZDateTime(report.generatedAt) },
     { label: "Lookback Window", value: `${report.lookbackHours} hour${report.lookbackHours === 1 ? "" : "s"}` },
     { label: "Stale Pending Threshold", value: `${report.stalePendingMinutes} minute${report.stalePendingMinutes === 1 ? "" : "s"}` },
     { label: "Issue Categories", value: String(report.summary.issueCategoryCount) },
@@ -4058,6 +4060,55 @@ export function memberGuestConsentExpiredTemplate(data: {
       `Hi ${escapeHtml(data.firstName)}, the request from <strong>${booker}</strong> to add you to a booking at ${escapeHtml(data.lodgeName)} on ${escapeHtml(formatNZDate(data.checkIn))} - ${escapeHtml(formatNZDate(data.checkOut))} has lapsed, and the bed that was held for you has been released.`,
     )}
     ${paragraph(`You do not need to do anything. If you did want to come, ask ${booker} to add you again.`)}
+  `);
+}
+
+/**
+ * "You are no longer on that booking" — MG4 (#2309).
+ *
+ * The counterpart to `memberGuestAddedTemplate`, and it exists because MG2 told
+ * a member they had a bed. Three things can take that back — the booker calls
+ * off a request nobody has answered yet, the club takes a settled member guest
+ * off, or the booking-request pipeline swaps them out at approval — and all
+ * three leave a member holding an email that has stopped being true.
+ *
+ * NO BEARER/SELF-SERVICE ACTION AND NO PARTY LISTING, deliberately. The core
+ * mail finalizer may add the canonical booking-detail action only when this
+ * exact recipient independently retains route authority (for example, a
+ * bookings-view admin). An ordinary removed member or family delegate gets no
+ * booking link, because it would 403 or disclose a party they are no longer
+ * part of. MG2-D-a's listing is the price of being asked to join; it is not owed
+ * to somebody who has been removed.
+ *
+ * NO MONEY either, on the same rule as the request and added notices.
+ *
+ * THE LAST PARAGRAPH IS THE ONE DOING REAL WORK (mockup panel 8). The reader is
+ * holding an earlier email with a button in it — "Answer this request", or
+ * "View this booking" — and that button now leads nowhere. Saying so BEFORE they
+ * press it is the difference between a closed loop and an error page, so it is
+ * stated here and in the editable default body in the same words; the closing
+ * contact line carries the support address in both for the same reason.
+ */
+export function memberGuestRequestWithdrawnTemplate(data: {
+  firstName: string;
+  withdrawnHeading: string;
+  withdrawnContextNote: string;
+  lodgeName: string;
+  checkIn: Date;
+  checkOut: Date;
+}): string {
+  return layout(`
+    ${heading(escapeHtml(data.withdrawnHeading))}
+    ${paragraph(`Hi ${escapeHtml(data.firstName)}, ${escapeHtml(data.withdrawnContextNote)}`)}
+    ${infoTable([
+      { label: "Lodge", value: escapeHtml(data.lodgeName) },
+      {
+        label: "Stay",
+        value: `${escapeHtml(formatNZDate(data.checkIn))} - ${escapeHtml(formatNZDate(data.checkOut))}`,
+      },
+    ])}
+    ${supportContactSentence("You do not need to do anything. If you think this is a mistake, contact the club at ")}
+    ${paragraph("The link in the earlier email no longer works. If plans change, you can be added to a booking again later.")}
   `);
 }
 

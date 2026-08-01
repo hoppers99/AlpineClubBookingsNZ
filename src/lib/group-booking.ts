@@ -87,6 +87,7 @@ import { recordBookingEvent } from "@/lib/booking-events";
 import { getLodgeCapacity } from "@/lib/lodge-capacity";
 import { getSeasonYear } from "@/lib/utils";
 import { ACTIVE_BOOKING_STATUSES } from "@/lib/booking-status";
+import { describeUniqueConstraintTarget } from "@/lib/prisma-errors";
 
 // Organiser booking states that may host a group. The organiser must be
 // committed (their own beds already reserved) before opening the group to
@@ -146,13 +147,31 @@ export function normaliseJoinCode(raw: string): string {
   return raw.trim().toUpperCase().replace(/[\s-]/g, "");
 }
 
+/**
+ * Was this P2002 the `joinCode` collision the retry above exists for, rather
+ * than the `organiserBookingId` one?
+ *
+ * This used to read `err.meta?.target` alone, and so answered "no" every single
+ * time. Measured on 1 Aug 2026 against PostgreSQL 16 (Prisma 7.9.0 + the `pg`
+ * driver adapter, this repo's real migration tree): the adapter never populates
+ * `meta.target` — for a schema-level `@unique` OR for a hand-written partial
+ * index. It reports the colliding COLUMNS under
+ * `meta.driverAdapterError.cause.constraint.fields`, quoted as Postgres quoted
+ * them, so `joinCode` arrives as the six-character string `"joinCode"` INCLUDING
+ * its double quotes. See `describeUniqueConstraintTarget` for the verbatim
+ * shapes; it reads every shape and normalises the quoting and case away, which
+ * is why the comparison below is lowercase.
+ *
+ * An unidentifiable P2002 answers "no" on purpose: a `joinCode` collision is
+ * about 1 in 8.5e11, while an `organiserBookingId` collision (the organiser
+ * double-submitting) is ordinary, so the honest default is to surface the
+ * conflict rather than burn five attempts regenerating a code that was fine.
+ */
 function isJoinCodeCollision(err: unknown): boolean {
   if (!(err instanceof Prisma.PrismaClientKnownRequestError) || err.code !== "P2002") {
     return false;
   }
-  const target = err.meta?.target;
-  const targets = Array.isArray(target) ? target : [target];
-  return targets.some((t) => typeof t === "string" && t.includes("joinCode"));
+  return describeUniqueConstraintTarget(err)?.includes("joincode") ?? false;
 }
 
 // ---------------------------------------------------------------------------
@@ -231,8 +250,30 @@ export async function createGroupBooking(
         },
       });
     } catch (err) {
-      if (isJoinCodeCollision(err) && attempt < CODE_GENERATION_ATTEMPTS) {
-        continue;
+      if (isJoinCodeCollision(err)) {
+        if (attempt < CODE_GENERATION_ATTEMPTS) {
+          continue;
+        }
+        // Exhausting the budget on genuine code collisions is its own answer,
+        // not the organiserBookingId one below. Unreachable in practice at
+        // 31^8 codes, but while the retry was broken (#2412) every collision
+        // fell through to "this booking already has a group", which would have
+        // been a confusing thing to tell an organiser. Logged with the
+        // constraint it read, because the route returns a GroupBookingError
+        // verbatim without logging: at these odds the realistic cause is a
+        // misread P2002, not five real clashes, and that must leave a trace.
+        logger.error(
+          {
+            organiserBookingId: booking.id,
+            attempts: CODE_GENERATION_ATTEMPTS,
+            constraint: describeUniqueConstraintTarget(err),
+          },
+          "Group booking join-code generation exhausted its attempts"
+        );
+        throw new GroupBookingError(
+          "Could not generate a unique join code, please try again",
+          500
+        );
       }
       // A non-code unique violation here is the organiserBookingId guard losing
       // a race with a concurrent create for the same booking.
@@ -1291,7 +1332,10 @@ export async function verifyAndCreateNonMemberJoin(
     // Reuses the booking-request pay-link email (same /pay/[token] flow); a
     // group-specific template is a follow-up.
     await sendBookingRequestApprovedEmail({
-      bookingContext: { bookingId: created.bookingId },
+      bookingContext: {
+        bookingId: created.bookingId,
+        recipientMemberId: created.memberId,
+      },
       email: join.contactEmail,
       firstName: join.contactFirstName,
       lodgeId: groupLodgeId,

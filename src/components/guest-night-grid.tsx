@@ -1,6 +1,27 @@
 "use client";
 
 import { formatCents } from "@/lib/utils";
+import { APP_LOCALE } from "@/config/operational";
+
+// Not shared `nzst-date` shapes (#2264): a night column is two stacked lines —
+// weekday above, day-and-month below — so each half is formatted on its own and
+// neither carries the year, which a narrow column has no room for.
+//
+// Both stay pinned to `timeZone: "UTC"`, deliberately. The column key is an NZ
+// date-only string parsed to UTC midnight just below, so reading it back in UTC
+// is what makes the label independent of the browser's zone; re-zoning it to
+// Pacific/Auckland would be a no-op at best and is not what these constants are
+// for.
+const NIGHT_COLUMN_WEEKDAY = new Intl.DateTimeFormat(APP_LOCALE, {
+  weekday: "short",
+  timeZone: "UTC",
+});
+
+const NIGHT_COLUMN_DAY = new Intl.DateTimeFormat(APP_LOCALE, {
+  day: "numeric",
+  month: "short",
+  timeZone: "UTC",
+});
 
 /**
  * Per-guest night picker grid (issue #713 — multi date range stays).
@@ -29,16 +50,10 @@ export interface GuestNightGridProps {
 function nightColumnLabel(nightKey: string): { weekday: string; day: string } {
   // nightKey is a date-only string; render in a stable, browser-local-free way.
   const date = new Date(`${nightKey}T00:00:00.000Z`);
-  const weekday = date.toLocaleDateString("en-NZ", {
-    weekday: "short",
-    timeZone: "UTC",
-  });
-  const day = date.toLocaleDateString("en-NZ", {
-    day: "numeric",
-    month: "short",
-    timeZone: "UTC",
-  });
-  return { weekday, day };
+  return {
+    weekday: NIGHT_COLUMN_WEEKDAY.format(date),
+    day: NIGHT_COLUMN_DAY.format(date),
+  };
 }
 
 export function GuestNightGrid({

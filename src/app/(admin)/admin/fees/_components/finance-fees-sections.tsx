@@ -8,6 +8,7 @@ import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { FieldHint, describedByFieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -33,6 +34,14 @@ type Fee = { id: string; amountCents: number; effectiveFrom: string; effectiveTo
 // strings and converted to integer cents on save, exactly like the fee total.
 type ComponentDraft = { label: string; amount: string; prorate: boolean; xeroAccountCode: string; xeroItemCode: string };
 const defaultComponentDraft = (): ComponentDraft => ({ label: "Annual membership fee", amount: "", prorate: true, xeroAccountCode: "", xeroItemCode: "" });
+/*
+  #2264 — the component rows render inside a `.map()`, so a hook cannot be called
+  per row (see the count contract on `useFieldHint`). Each row's hint id is
+  derived from the row index — the same key the rows already use — and spelled
+  exactly once here, so a typo cannot silently orphan a hint.
+*/
+const componentLabelHintId = (index: number) => `component-label-hint-${index}`;
+const componentAmountHintId = (index: number) => `component-amount-hint-${index}`;
 type JoiningFeeRow = Fee & { ageTier: string | null };
 type Data = {
   canEdit: boolean;
@@ -123,6 +132,11 @@ export function FinanceFeesSections({ financeCanEdit }: { financeCanEdit?: boole
   const [deleteTarget, setDeleteTarget] = useState<{ action: "DELETE_MEMBERSHIP_FEE" | "DELETE_JOINING_FEE"; id: string; label: string } | null>(null);
   const errorRef = useRef<HTMLDivElement>(null);
   const { scrollToError } = useScrollToFeedback();
+  // #2264 — example amounts move out of the placeholders (grey text inside a
+  // money box reads as an amount already entered) and into hints under each
+  // field.
+  const entranceAmountHint = useFieldHint();
+  const membershipAmountHint = useFieldHint();
 
   const load = useCallback(async () => {
     const response = await fetch("/api/admin/fee-configuration");
@@ -328,7 +342,7 @@ export function FinanceFeesSections({ financeCanEdit }: { financeCanEdit?: boole
         <div className="grid gap-3 md:grid-cols-5">
           <div><Label htmlFor="joining-type">Membership type</Label><Select value={joiningTypeId} onValueChange={setJoiningTypeId} disabled={!!editingEntranceFeeId}><SelectTrigger id="joining-type"><SelectValue /></SelectTrigger><SelectContent>{data?.membershipTypes.map((type) => <SelectItem key={type.id} value={type.id}>{type.name}</SelectItem>)}</SelectContent></Select></div>
           <div><Label htmlFor="joining-tier">Age tier</Label><Select value={joiningTier} onValueChange={setJoiningTier} disabled={!!editingEntranceFeeId}><SelectTrigger id="joining-tier"><SelectValue /></SelectTrigger><SelectContent>{JOINING_TIERS.map((tier) => <SelectItem key={tier.value} value={tier.value}>{tier.label}</SelectItem>)}</SelectContent></Select></div>
-          <div><Label htmlFor="entrance-amount">Amount (NZD)</Label><Input id="entrance-amount" inputMode="decimal" value={entranceAmount} onChange={(event) => setEntranceAmount(event.target.value)} placeholder="75.00" /></div>
+          <div><Label htmlFor="entrance-amount">Amount (NZD)</Label><Input id="entrance-amount" inputMode="decimal" value={entranceAmount} onChange={(event) => setEntranceAmount(event.target.value)} {...entranceAmountHint.fieldProps} /><FieldHint {...entranceAmountHint.hintProps}>Example: 75.00</FieldHint></div>
           <div><Label htmlFor="entrance-from">Effective from</Label><Input id="entrance-from" type="date" value={entranceFrom} onChange={(event) => setEntranceFrom(event.target.value)} /></div>
           <div><Label htmlFor="entrance-to">Effective to (optional)</Label><Input id="entrance-to" type="date" value={entranceTo} onChange={(event) => setEntranceTo(event.target.value)} /></div>
         </div>
@@ -349,7 +363,7 @@ export function FinanceFeesSections({ financeCanEdit }: { financeCanEdit?: boole
               row; per-tier rows win at resolution. Per-family fees are flat-only,
               so the tier is forced to Flat and locked while PER_FAMILY is chosen. */}
           <div><Label htmlFor="membership-tier">Age tier</Label><Select value={membershipTier} onValueChange={(value) => { setMembershipTier(value); if (value !== "FLAT" && billingBasis === "PER_FAMILY") setBillingBasis("PER_MEMBER"); }} disabled={!!editingMembershipFeeId || billingBasis === "PER_FAMILY"}><SelectTrigger id="membership-tier"><SelectValue /></SelectTrigger><SelectContent>{JOINING_TIERS.map((tier) => <SelectItem key={tier.value} value={tier.value}>{tier.label}</SelectItem>)}</SelectContent></Select></div>
-          <div><Label htmlFor="membership-amount">Annual amount (NZD)</Label><Input id="membership-amount" inputMode="decimal" value={membershipAmount} onChange={(event) => setMembershipAmount(event.target.value)} placeholder="150.00" disabled={billingBasis === "NO_INVOICE"} /></div>
+          <div><Label htmlFor="membership-amount">Annual amount (NZD)</Label><Input id="membership-amount" inputMode="decimal" value={membershipAmount} onChange={(event) => setMembershipAmount(event.target.value)} disabled={billingBasis === "NO_INVOICE"} {...membershipAmountHint.fieldProps} /><FieldHint {...membershipAmountHint.hintProps}>{billingBasis === "NO_INVOICE" ? "A no-invoice fee raises no amount." : "Example: 150.00"}</FieldHint></div>
           <div><Label htmlFor="billing-basis">Billing basis</Label><Select value={billingBasis} onValueChange={(value) => { setBillingBasis(value); if (value === "NO_INVOICE") setMembershipAmount("0"); if (value === "PER_FAMILY") setMembershipTier("FLAT"); }}><SelectTrigger id="billing-basis"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="PER_MEMBER">Per member</SelectItem>{familyBillingActive && membershipTier === "FLAT" && <SelectItem value="PER_FAMILY">Per family</SelectItem>}<SelectItem value="NO_INVOICE">No invoice</SelectItem></SelectContent></Select></div>
           <div><Label htmlFor="proration-rule">Proration</Label><Select value={prorationRule} onValueChange={setProrationRule}><SelectTrigger id="proration-rule"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="NONE">Full annual fee</SelectItem><SelectItem value="REMAINING_MONTHS_INCLUSIVE">Remaining months, including decision month</SelectItem></SelectContent></Select></div>
           <div><Label htmlFor="membership-from">Effective from</Label><Input id="membership-from" type="date" value={membershipFrom} onChange={(event) => setMembershipFrom(event.target.value)} /></div>
@@ -371,8 +385,12 @@ export function FinanceFeesSections({ financeCanEdit }: { financeCanEdit?: boole
                 Could not load the Xero {coaError && itemsError ? "chart of accounts and item list" : coaError ? "chart of accounts" : "item list"}. You can still type account and item codes manually; reconnect Xero to pick from the live lists.
               </div>}
               {componentRows.map((row, index) =><div key={index} className="grid items-end gap-2 md:grid-cols-[2fr_1fr_auto_1fr_1fr_auto]">
-                <div><Label htmlFor={`component-label-${index}`} className="text-xs">Label</Label><Input id={`component-label-${index}`} value={row.label} onChange={(event) => updateComponentRow(index, { label: event.target.value })} placeholder="Base membership" /></div>
-                <div><Label htmlFor={`component-amount-${index}`} className="text-xs">Amount (NZD)</Label><Input id={`component-amount-${index}`} inputMode="decimal" value={componentRows.length === 1 ? membershipAmount : row.amount} onChange={(event) => updateComponentRow(index, { amount: event.target.value })} disabled={componentRows.length === 1} placeholder="0.00" /></div>
+                <div><Label htmlFor={`component-label-${index}`} className="text-xs">Label</Label><Input id={`component-label-${index}`} value={row.label} onChange={(event) => updateComponentRow(index, { label: event.target.value })} aria-describedby={describedByFieldHint(componentLabelHintId(index))} /><FieldHint id={componentLabelHintId(index)}>Example: Base membership</FieldHint></div>
+                {/* A single component always mirrors the fee total and its box
+                    is disabled, so that row's hint states what the amount is
+                    rather than offering an example the operator cannot type
+                    (#2264). */}
+                <div><Label htmlFor={`component-amount-${index}`} className="text-xs">Amount (NZD)</Label><Input id={`component-amount-${index}`} inputMode="decimal" value={componentRows.length === 1 ? membershipAmount : row.amount} onChange={(event) => updateComponentRow(index, { amount: event.target.value })} disabled={componentRows.length === 1} aria-describedby={describedByFieldHint(componentAmountHintId(index))} /><FieldHint id={componentAmountHintId(index)}>{componentRows.length === 1 ? "Taken from the annual fee amount above." : "Example: 120.00"}</FieldHint></div>
                 {/* A "Full annual fee" (NONE) rule prorates nothing, so the
                     per-component Prorate opt-in is replaced with a read-only
                     "Prorate n/a" placeholder when the rule is NONE (#2068,

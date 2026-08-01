@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { useConfirm } from "@/components/confirm-dialog";
 import { ViewOnlyActionButton } from "@/components/admin/view-only-action";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
+import { formatNZDate } from "@/lib/nzst-date";
 
 interface AdminCapacityHoldControlsProps {
   bookingId: string;
@@ -158,7 +159,7 @@ export function AdminCapacityHoldControls({
             Beds reserved
             {heldByName ? ` by ${heldByName}` : ""}
             {adminCapacityHoldAt
-              ? ` on ${new Date(adminCapacityHoldAt).toLocaleDateString("en-NZ")}`
+              ? ` on ${formatNZDate(new Date(adminCapacityHoldAt))}`
               : ""}
             {holdsCapacityNaturally
               ? ". The booking now holds its beds through its own status."

@@ -60,7 +60,12 @@ test("a display pairs through the real admin flow and a revoke sends it back to 
   expect(code).toMatch(/^[A-HJ-NP-Z2-9]{6}$/);
 
   // ── Admin binds the code; the TV flips itself to the active board ──
-  await page.getByPlaceholder("TV code").fill(code);
+  // #2264: selected by the input's per-device accessible name rather than its
+  // placeholder. The name carries the device, so this stays unambiguous if the
+  // page ever lists more than one row.
+  await page
+    .getByRole("textbox", { name: `Pairing code for ${deviceName}` })
+    .fill(code);
   await page.getByRole("button", { name: "Pair", exact: true }).click();
   // Match the confirmation notice specifically: once the device list refreshes,
   // a "Pairing armed" status badge appears too, and a bare /Pairing armed/

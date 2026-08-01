@@ -1,5 +1,6 @@
 import type { DisplayState } from "@/lib/lodge-display-state";
 import type { DisplayPanelOptions } from "./module-options";
+import { DISPLAY_SHORT_WEEKDAY } from "./status-helpers";
 
 // The rotating welcome panel (fork issues #30/#58; visual reference:
 // docs/lobby-display/mockups/approved/whole-lodge-rotating.html panel B): a
@@ -9,8 +10,11 @@ import type { DisplayPanelOptions } from "./module-options";
 // lodge generally when no group holds it.
 
 function shortDate(date: string): string {
-  const day = new Date(`${date}T00:00:00`);
-  return `${day.toLocaleDateString("en-NZ", { weekday: "short" })} ${day.getDate()}`;
+  // Same terse column-head shape as every other display module, from the one
+  // shared constant, and handed over at UTC midnight rather than parsed in the
+  // browser's own zone (#2264) — see `status-helpers.shortDay`.
+  const day = new Date(`${date}T00:00:00Z`);
+  return `${DISPLAY_SHORT_WEEKDAY.format(day)} ${day.getUTCDate()}`;
 }
 
 function nightsBetween(start: string, end: string): number {

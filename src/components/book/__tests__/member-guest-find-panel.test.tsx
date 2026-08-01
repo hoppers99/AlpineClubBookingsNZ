@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemberGuestFindPanel } from "@/components/book/member-guest-find-panel";
 import { MEMBER_GUEST_FIND_COPY } from "@/lib/member-guest-find";
@@ -359,8 +359,10 @@ describe("the list is bounded and the search is visible (F14, F15)", () => {
     const listbox = await screen.findByRole("listbox");
     expect(listbox.className).toContain("max-h-60");
     expect(listbox.className).toContain("overflow-y-auto");
-    // The truncation signal never carries a count.
-    expect(screen.getByText(MEMBER_GUEST_FIND_COPY.truncated)).toBeInTheDocument();
+    // The truncation signal never carries a count, and it is drawn exactly
+    // once: #2460 announces it by appending it to the status line the panel
+    // already had, rather than by putting the sentence on screen a second time.
+    expect(screen.getAllByText(MEMBER_GUEST_FIND_COPY.truncated)).toHaveLength(1);
     expect(screen.queryByText(/10 of/)).not.toBeInTheDocument();
   });
 
@@ -418,5 +420,212 @@ describe("the rate-limited and error states still render", () => {
     );
     // No request at all: a typing mistake is not a question about any member.
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+/*
+  #2460 — the truncation hint is ANNOUNCED, not only drawn.
+
+  Before this the "Keep typing to narrow this down." sentence was a bare
+  paragraph under the pick-list. A booker using a screen reader heard the result
+  count and then nothing: the list simply stopped, with no way to know that the
+  answer was to type another letter.
+
+  The sentence is announced by the panel's OWN status line — the permanently
+  mounted `aria-live="polite"` paragraph that already carries the result count —
+  and not by a second live region beside it. Two things follow, and both are
+  pinned below:
+
+  - The region is mounted and EMPTY before there is anything to say, and is the
+    SAME node once there is. That is the house rule (`AGENTS.md`,
+    `PolicyFeedback`, the #2244 export-truncation notice): a polite region
+    injected already-populated is silently dropped by some screen-reader/browser
+    pairings.
+  - The sentence exists exactly ONCE on screen and once in the announcement it
+    qualifies. A second `role="status"` holding the same words would read the
+    hint twice in browse mode, which the repo treats as a defect in its own
+    right (`hut-leaders/_components/assignment-form.tsx`).
+
+  The status line and the pick-list are gated by ONE expression
+  (`showCandidateList`), so the panel can never announce a caveat about rows it
+  is not drawing; that property is pinned directly rather than left to the shape
+  of the code.
+
+  Mutation probes run against this block, each confirmed to turn it red: drop
+  the truncation clause from `announcement`; announce a string other than
+  `MEMBER_GUEST_FIND_COPY.truncated`; drop `truncated`, `candidates.length > 1`
+  or `!selected` from the `showTruncationHint` gate; read `truncated` from
+  RESULTS only, so it collapses while a search is in flight; give the pick-list
+  block its own copy of the conditions and raise its row floor.
+*/
+describe("#2460 — the truncation hint is announced to screen readers", () => {
+  const TEN = Array.from({ length: 10 }, (_, i) => ({
+    memberId: `m-${i}`,
+    firstName: `First${i}`,
+    lastName: `Last${i}`,
+    ageTier: "ADULT" as const,
+  }));
+
+  function status() {
+    return screen.getByTestId("member-guest-find-status");
+  }
+
+  async function search(body: unknown) {
+    stubFetch(() => jsonResponse(body));
+    renderPanel();
+    await type("household@example.com");
+    fireEvent.click(screen.getByRole("button", { name: "Find" }));
+    return await screen.findByRole("listbox");
+  }
+
+  it("registers the polite region before there is anything to announce", () => {
+    stubFetch();
+    renderPanel();
+    // Mounted on first paint, and empty: the region has to be in the
+    // accessibility tree BEFORE anything lands in it.
+    expect(status()).toHaveAttribute("aria-live", "polite");
+    expect(status().textContent).toBe("");
+  });
+
+  it("says only the count when the results were not cut short", async () => {
+    await search({ candidates: TEN, truncated: false });
+    expect(status().textContent).toBe("10 members found");
+    expect(screen.queryByText(MEMBER_GUEST_FIND_COPY.truncated)).not.toBeInTheDocument();
+  });
+
+  it("announces the sentence, verbatim, on the end of the count it explains", async () => {
+    await search({ candidates: TEN, truncated: true });
+    // Verbatim, and the only number in it is how many members ARE shown — the
+    // sentence never grows a count of who was left out.
+    expect(status().textContent).toBe(
+      `10 members found. ${MEMBER_GUEST_FIND_COPY.truncated}`,
+    );
+  });
+
+  it("leaves the visible copy exactly as it was, and does not duplicate it", async () => {
+    await search({ candidates: TEN, truncated: true });
+    // Still its own paragraph under the list, unchanged — the announcement is
+    // an addition, not a rewrite. And still exactly one node holds the sentence
+    // on its own: a second live region cloning it would read it twice.
+    const drawn = screen.getAllByText(MEMBER_GUEST_FIND_COPY.truncated);
+    expect(drawn).toHaveLength(1);
+    expect(drawn[0]!.tagName).toBe("P");
+    expect(drawn[0]!.className).toContain("text-muted-foreground");
+    expect(status().contains(drawn[0]!)).toBe(false);
+  });
+
+  it("swaps the content of the region that was already there, never mounts a new one", async () => {
+    stubFetch(() => jsonResponse({ candidates: TEN, truncated: true }));
+    renderPanel();
+    const before = status();
+    expect(before.textContent).toBe("");
+
+    await type("household@example.com");
+    fireEvent.click(screen.getByRole("button", { name: "Find" }));
+    await screen.findByRole("listbox");
+
+    // Same DOM node, now populated. A fresh node here would mean the region was
+    // injected already carrying the sentence, which is the case screen readers
+    // drop.
+    expect(status()).toBe(before);
+    expect(status()).toHaveTextContent(MEMBER_GUEST_FIND_COPY.truncated);
+  });
+
+  it("drops the hint once a candidate is chosen, since the list is gone", async () => {
+    await search({ candidates: TEN, truncated: true });
+    expect(status()).toHaveTextContent(MEMBER_GUEST_FIND_COPY.truncated);
+
+    fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" });
+    await screen.findByRole("button", { name: "Add to booking" });
+    expect(status().textContent).toBe("Selected First0 Last0");
+    expect(screen.queryByText(MEMBER_GUEST_FIND_COPY.truncated)).not.toBeInTheDocument();
+  });
+
+  it("keeps the hint under the list while the next keystroke's search is in flight", async () => {
+    // The type-ahead deliberately leaves the previous page of rows on screen
+    // while the next request runs. The sentence that explains those rows has to
+    // stay with them: read from RESULTS alone it collapsed to false the moment
+    // the panel went LOADING, so the hint blinked out from under a list that
+    // had not changed — and was re-announced when it came back.
+    vi.useFakeTimers();
+    let release: (() => void) | null = null;
+    let call = 0;
+    stubFetch(() => {
+      call += 1;
+      if (call === 1) return jsonResponse({ candidates: TEN, truncated: true });
+      return new Promise<Response>((resolve) => {
+        release = () => resolve(jsonResponse({ candidates: TEN, truncated: true }));
+      });
+    });
+    renderPanel({ openSearchEnabled: true });
+
+    await type("wh");
+    await act(async () => {
+      vi.advanceTimersByTime(SEARCH_SETTLE_MS);
+    });
+    expect(screen.getAllByText(MEMBER_GUEST_FIND_COPY.truncated)).toHaveLength(1);
+
+    await type("whi");
+    await act(async () => {
+      vi.advanceTimersByTime(SEARCH_SETTLE_MS);
+    });
+
+    // Second request issued and still unanswered, rows still drawn from the
+    // previous response — and the hint still under them.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("listbox")).toBeInTheDocument();
+    expect(screen.getAllByText(MEMBER_GUEST_FIND_COPY.truncated)).toHaveLength(1);
+
+    await act(async () => {
+      release?.();
+    });
+    expect(screen.getAllByText(MEMBER_GUEST_FIND_COPY.truncated)).toHaveLength(1);
+  });
+
+  it("never speaks the caveat without the list it is about on screen", async () => {
+    // The announcement is assembled OUTSIDE the pick-list block, so "are there
+    // rows?" and "may the status line add the caveat?" are two questions that
+    // could come to disagree (#2460 review). They are one expression in the
+    // component (`showCandidateList`); this pins the property, so a future
+    // change to what puts rows on screen has to keep them together.
+    for (const body of [
+      { candidates: TEN, truncated: true },
+      { candidates: TEN, truncated: false },
+      { candidates: TEN.slice(0, 1), truncated: true },
+      { candidates: [], truncated: true },
+    ]) {
+      cleanup();
+      stubFetch(() => jsonResponse(body));
+      renderPanel();
+      await type("household@example.com");
+      fireEvent.click(screen.getByRole("button", { name: "Find" }));
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      await waitFor(() => expect(status().textContent).not.toBe(""));
+      if (!status().textContent?.includes(MEMBER_GUEST_FIND_COPY.truncated)) continue;
+      // Something was said about truncation: the rows it qualifies must be on
+      // screen, and so must the visible copy of the same sentence.
+      expect(screen.getByRole("listbox")).toBeInTheDocument();
+      expect(screen.getAllByRole("option").length).toBeGreaterThan(1);
+      expect(screen.getAllByText(MEMBER_GUEST_FIND_COPY.truncated)).toHaveLength(1);
+    }
+  });
+
+  it("keeps the announced copy and the drawn copy an entire list apart", async () => {
+    // Both the status line and the visible hint carry the sentence and neither
+    // is `aria-hidden` — a deliberate call (#2460 review): the drawn hint is the
+    // copy anchored to the place the list stops, and hiding on-screen text from
+    // assistive technology to tidy a duplicate is the worse trade. What makes it
+    // benign is the ORDER — status line, then every candidate row, then the
+    // visible hint — so browse mode never reads the sentence twice in
+    // succession.
+    const listbox = await search({ candidates: TEN, truncated: true });
+    const drawn = screen.getAllByText(MEMBER_GUEST_FIND_COPY.truncated)[0]!;
+    expect(status().contains(drawn)).toBe(false);
+    expect(
+      status().compareDocumentPosition(listbox) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      drawn.compareDocumentPosition(listbox) & Node.DOCUMENT_POSITION_PRECEDING,
+    ).toBeTruthy();
   });
 });

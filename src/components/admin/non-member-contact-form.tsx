@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
@@ -52,6 +53,7 @@ export function NonMemberContactForm({ onSelected }: Props) {
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [noEmail, setNoEmail] = useState(false);
+  const emailHint = useFieldHint();
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [searching, setSearching] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -186,6 +188,15 @@ export function NonMemberContactForm({ onSelected }: Props) {
             placeholder="Last name"
           />
         </div>
+        {/*
+          #2264: this placeholder was two different things behind one ternary.
+          "No email address" is LIVE STATE — it describes the disabled box the
+          "no email" tick-box produces, so it stays inside the control. The
+          other branch was an example value, which is exactly what reads as a
+          field somebody has already filled in, so it moves to a hint below.
+          The hint is only shown when the box is usable; an example beneath a
+          disabled field is noise.
+        */}
         <div className="space-y-1">
           <Label htmlFor="nmc-email">Email</Label>
           <Input
@@ -194,8 +205,14 @@ export function NonMemberContactForm({ onSelected }: Props) {
             value={email}
             disabled={noEmail}
             onChange={(e) => setEmail(e.target.value)}
-            placeholder={noEmail ? "No email address" : "guest@example.com"}
+            placeholder={noEmail ? "No email address" : undefined}
+            {...(noEmail ? {} : emailHint.fieldProps)}
           />
+          {!noEmail && (
+            <FieldHint {...emailHint.hintProps}>
+              Example: guest@example.com
+            </FieldHint>
+          )}
         </div>
         <div className="space-y-1">
           <Label htmlFor="nmc-phone">Phone (optional)</Label>

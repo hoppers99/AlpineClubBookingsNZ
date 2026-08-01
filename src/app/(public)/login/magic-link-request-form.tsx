@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
@@ -17,6 +18,8 @@ export function MagicLinkRequestForm() {
   const [email, setEmail] = useState("");
   const [submitted, setSubmitted] = useState(false);
   const [loading, setLoading] = useState(false);
+  // #2264 — example below the box, not greyed inside it.
+  const emailHint = useFieldHint();
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -55,12 +58,15 @@ export function MagicLinkRequestForm() {
             <Input
               id="magic-link-email"
               type="email"
-              placeholder="you@example.com"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
               autoComplete="email"
+              {...emailHint.fieldProps}
             />
+            <FieldHint {...emailHint.hintProps}>
+              Example: you@example.com
+            </FieldHint>
           </div>
           <Button
             type="submit"

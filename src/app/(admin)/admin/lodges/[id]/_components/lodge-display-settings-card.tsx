@@ -10,6 +10,10 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  FieldHint,
+  describedByFieldHint,
+} from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
@@ -26,6 +30,12 @@ import {
 // the existing GET/PUT /api/admin/display/lodge-config route — the route always
 // supported a lodgeId; the old surface just never sent it. Consolidates the
 // old backlog #62 "config belongs in lodge configuration" item.
+
+/* #2264 — ONE hint for the whole repeated config-key column, spelled once.
+   The rows render inside a `.map()`, so a hook cannot be called per row; and a
+   per-row copy of the same sentence would be N identical lines of noise, so
+   every row's key box points at this single group-level hint instead. */
+const CONFIG_KEY_HINT_ID = "lodge-display-config-key-hint";
 
 const GRANULARITY_OPTIONS = [
   { value: "", label: "Club default (first name + surname initial)" },
@@ -195,11 +205,18 @@ export function LodgeDisplaySettingsCard({ lodgeId }: { lodgeId: string }) {
 
         <div className="space-y-2">
           <Label>Config values (used as {"{{config:key}}"} in templates)</Label>
+          <FieldHint id={CONFIG_KEY_HINT_ID}>
+            Keys are lower-case with hyphens — for example wifi-code.
+          </FieldHint>
           {config.map((entry, index) => (
             <div key={index} className="flex gap-2">
               <Input
                 className="w-48"
-                placeholder="wifi-code"
+                // The key box had no Label and no aria-label — its placeholder
+                // was its only accessible name, so removing the example without
+                // naming the field would have left it unnamed (#2264 rule 1).
+                aria-label="Config key"
+                aria-describedby={describedByFieldHint(CONFIG_KEY_HINT_ID)}
                 value={entry.key}
                 disabled={!canEdit}
                 onChange={(event) =>

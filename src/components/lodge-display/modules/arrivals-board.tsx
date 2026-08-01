@@ -11,6 +11,7 @@ import {
   intOption,
   type DisplayPanelOptions,
 } from "./module-options";
+import { DISPLAY_SHORT_WEEKDAY } from "./status-helpers";
 
 // The everyday bar board (fork issues #30/#56; visual reference:
 // docs/lobby-display/mockups/everyday-bar-board.html). Pure function of the
@@ -103,8 +104,11 @@ export function windowDatesOf(state: DisplayState): string[] {
 }
 
 function shortDay(date: string): string {
-  const day = new Date(`${date}T00:00:00`);
-  return `${day.toLocaleDateString("en-NZ", { weekday: "short" })} ${day.getDate()}`;
+  // Same terse column-head shape as every other display module, from the one
+  // shared constant, and handed over at UTC midnight rather than parsed in the
+  // browser's own zone (#2264) — see `status-helpers.shortDay`.
+  const day = new Date(`${date}T00:00:00Z`);
+  return `${DISPLAY_SHORT_WEEKDAY.format(day)} ${day.getUTCDate()}`;
 }
 
 function formatDayHeading(date: string, index: number): string {
@@ -117,7 +121,7 @@ export function barMeta(
   layout: BarLayout
 ): string {
   const since = layout.startsBeforeWindow
-    ? `since ${new Date(`${row.stayStart}T00:00:00`).toLocaleDateString("en-NZ", { weekday: "short" })} → `
+    ? `since ${DISPLAY_SHORT_WEEKDAY.format(new Date(`${row.stayStart}T00:00:00Z`))} → `
     : "";
   return `${since}out ${shortDay(row.stayEnd)}${layout.endsAfterWindow ? " →" : ""}`;
 }

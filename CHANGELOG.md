@@ -1015,9 +1015,9 @@ and are folded in the same way.
   is stuck and what actually fixes it (cancel the booking, add another guest,
   re-quote the request), never a dead-end "ask the club".
   The published banner-coverage figures were re-measured with the new settings
-  card: **299** gated admin controls, **252** of them covered by a banner (226
+  card: **301** gated admin controls, **252** of them covered by a banner (226
   in their own file, 26 by a verified vouching parent — 5 of those through the
-  wizard frame), and **47** across 25 files deliberately keeping their own
+  wizard frame), and **49** across 26 files deliberately keeping their own
   reason.
   **Review hardening in the same change.** A "no thanks" that the system cannot
   carry out — an already-paid booking whose refund-or-credit choice only the club
@@ -1516,10 +1516,10 @@ and are folded in the same way.
   added its three, once more when #2286's Release/Change bed controls landed,
   again when the cash / off-Xero payment feature, #2262, landed its four
   per-button-reason controls, and again with #2307's Member guests settings
-  card): **299**
+  card): **301**
   gated admin controls, **252** of them covered by a banner (226 in their own
   file, 26 by a verified vouching parent — 5 of those through the wizard frame),
-  and **47** across 25 files deliberately keeping their own reason.
+  and **49** across 26 files deliberately keeping their own reason.
 - **Choosing to use your account credit and then saving the booking as a draft
   no longer throws that choice away (#2265).** Ticking "use my credit" in the
   booking wizard and pressing **Save as draft** used to discard the amount you

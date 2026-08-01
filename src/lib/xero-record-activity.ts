@@ -1,5 +1,6 @@
 import "server-only";
 
+import { formatNZDate } from "@/lib/nzst-date";
 import { prisma } from "@/lib/prisma";
 import { formatCents } from "@/lib/utils";
 import { buildXeroObjectUrl } from "@/lib/xero-links";
@@ -24,11 +25,7 @@ interface XeroRecordScope {
 
 function formatDisplayDate(value: Date | string): string {
   const date = value instanceof Date ? value : new Date(value);
-  return date.toLocaleDateString("en-NZ", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
+  return formatNZDate(date);
 }
 
 function formatStatusLabel(value: string): string {

@@ -43,6 +43,11 @@ vi.mock("@/lib/prisma", () => ({
       update: vi.fn(),
       updateMany: vi.fn(),
     },
+    // MG4 (#2309): the pipeline computes the family boundary for its linked
+    // members against the converted booking's owner. That owner is a non-login
+    // contact in no family group, so both reads legitimately come back empty and
+    // every linked member classifies BEYOND_FAMILY — the real production shape.
+    familyGroupMember: { findMany: vi.fn().mockResolvedValue([]) },
     bookingGuest: {
       findMany: vi.fn(),
       deleteMany: vi.fn(),
@@ -122,6 +127,14 @@ vi.mock("bcryptjs", () => ({
   hash: vi.fn().mockResolvedValue("hashed-placeholder"),
 }));
 
+// MG4 (#2309): the two post-commit dispatchers, imported lazily by the pipeline.
+// Stubbed so these tests assert the WIRING — who is told, and in which
+// direction — without pulling the whole email/template graph into the suite.
+vi.mock("@/lib/member-guest-consent-notifications", () => ({
+  sendMemberGuestAddNotifications: vi.fn(),
+  sendMemberGuestWithdrawnNotifications: vi.fn(),
+}));
+
 // Keep the real BookingMemberNightConflictError so `instanceof` checks and the
 // error constructor stay usable; only the assertion is a controllable spy.
 vi.mock("@/lib/booking-member-night-conflicts", async (importOriginal) => {
@@ -169,6 +182,7 @@ import {
   updateBookingRequestSettings,
   verifyBookingRequest,
 } from "@/lib/booking-request";
+import { sendMemberGuestWithdrawnNotifications } from "@/lib/member-guest-consent-notifications";
 
 const mockedFindUnique = vi.mocked(prisma.bookingRequest.findUnique);
 const mockedCreate = vi.mocked(prisma.bookingRequest.create);
@@ -189,6 +203,9 @@ const mockedAssertNoConflicts = vi.mocked(assertNoBookingMemberNightConflicts);
 const mockedBookingFindUnique = vi.mocked(prisma.booking.findUnique);
 const mockedCancelBooking = vi.mocked(cancelBooking);
 const mockedQuoteUpdateMany = vi.mocked(prisma.bookingRequestQuote.updateMany);
+const mockedWithdrawnNotifications = vi.mocked(
+  sendMemberGuestWithdrawnNotifications,
+);
 
 function memberNightConflictError() {
   return new BookingMemberNightConflictError([
@@ -722,6 +739,11 @@ describe("priceBookingRequest", () => {
 describe("declineBookingRequest", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // MG4 (#2309): the hold-release path reads the booking's guest rows to see
+    // who it had already told they were on this booking. Empty is the ordinary
+    // answer — a request whose guests are all free-text names owes nobody a
+    // withdrawal notice.
+    vi.mocked(prisma.bookingGuest.findMany).mockResolvedValue([] as never);
     // #1423: the claim + SENT-quote retirement now run in one interactive
     // transaction; run the callback against the same prisma mock so the inner
     // tx.bookingRequest.updateMany / tx.bookingRequestQuote.updateMany are the
@@ -843,6 +865,92 @@ describe("declineBookingRequest", () => {
     expect(mockedSendDeclined).toHaveBeenCalledWith(
       expect.objectContaining({ reason: "Fully booked" }),
     );
+  });
+
+  it("tells the member guests the released hold had told (MG4 #2309)", async () => {
+    // THE GAP THIS CLOSES. The hold emailed these members to say the club had
+    // put them on a lodge booking. The decline then cancels that booking — and
+    // until now did it in silence, leaving them holding an email that had
+    // stopped being true and a person-night they did not know they had back.
+    mockedFindUnique
+      .mockResolvedValueOnce(
+        baseRequest({
+          status: BookingRequestStatus.QUOTE_SENT,
+          heldBookingId: "held-1",
+        }) as never,
+      )
+      .mockResolvedValueOnce(
+        baseRequest({
+          status: BookingRequestStatus.DECLINED,
+          heldBookingId: null,
+        }) as never,
+      );
+    mockedUpdateMany.mockResolvedValue({ count: 1 } as never);
+    mockedBookingFindUnique.mockResolvedValue({
+      id: "held-1",
+      status: BookingStatus.AWAITING_REVIEW,
+    } as never);
+    mockedCancelBooking.mockResolvedValue({
+      status: 200,
+      data: { success: true },
+    } as never);
+    // Only rows carrying a consent record — the query itself excludes the
+    // free-text guests and the family-scope ones.
+    vi.mocked(prisma.bookingGuest.findMany).mockResolvedValue([
+      { memberId: "m-sam" },
+      { memberId: "m-priya" },
+    ] as never);
+
+    await declineBookingRequest({
+      requestId: "req-1",
+      adminMemberId: "admin-1",
+      ipAddress: "203.0.113.11",
+    });
+
+    expect(mockedWithdrawnNotifications).toHaveBeenCalledWith({
+      bookingId: "held-1",
+      targetMemberIds: ["m-sam", "m-priya"],
+      // Names nobody: the held booking's owner is a non-login contact the
+      // reader has never dealt with.
+      context: "BOOKING_REQUEST_REPLACED",
+    });
+    // Read from the booking that is about to be cancelled, before the cancel.
+    expect(vi.mocked(prisma.bookingGuest.findMany)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ bookingId: "held-1" }),
+      }),
+    );
+  });
+
+  it("tells nobody when the released hold had no member guests on it", async () => {
+    // The ordinary booking request: every guest a free-text name, no consent
+    // record anywhere, so the decline owes no member-facing mail at all.
+    mockedFindUnique
+      .mockResolvedValueOnce(
+        baseRequest({
+          status: BookingRequestStatus.QUOTE_SENT,
+          heldBookingId: "held-1",
+        }) as never,
+      )
+      .mockResolvedValueOnce(
+        baseRequest({
+          status: BookingRequestStatus.DECLINED,
+          heldBookingId: null,
+        }) as never,
+      );
+    mockedUpdateMany.mockResolvedValue({ count: 1 } as never);
+    mockedBookingFindUnique.mockResolvedValue({
+      id: "held-1",
+      status: BookingStatus.AWAITING_REVIEW,
+    } as never);
+    mockedCancelBooking.mockResolvedValue({
+      status: 200,
+      data: { success: true },
+    } as never);
+
+    await declineBookingRequest({ requestId: "req-1", adminMemberId: "admin-1" });
+
+    expect(mockedWithdrawnNotifications).not.toHaveBeenCalled();
   });
 
   it("declining a request WITHOUT a hold never touches the cancel path (#1365)", async () => {

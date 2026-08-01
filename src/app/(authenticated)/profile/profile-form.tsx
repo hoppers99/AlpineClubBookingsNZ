@@ -7,6 +7,7 @@ import { Loader2 } from "lucide-react";
 import { MemberAddressFields } from "@/components/member-address-fields";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { FieldHint, describedByFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -14,6 +15,18 @@ import {
   withDefaultNzCountry,
 } from "@/lib/member-address";
 import { getSafeInternalReturnPath } from "@/lib/internal-return-path";
+
+/*
+  #2264 — the phone row is three boxes but ONE example: a greyed "64", "27" and
+  "123 4567" sitting inside them read as a number the profile already holds. A
+  grouped micro-input row therefore gets a single hint, and all three boxes point
+  at it. That is `describedByFieldHint`, not `useFieldHint`: one hook would owe
+  exactly one `fieldProps` spread, and this row needs the same id on three
+  controls. The id is a constant, spelled once, so no box can drift off it. It is
+  static like the form's other ids (firstName, lastName, dateOfBirth).
+*/
+const PHONE_HINT_ID = "profile-phone-hint";
+const PHONE_DESCRIBED_BY = describedByFieldHint(PHONE_HINT_ID);
 
 interface ProfileFormProps {
   member: {
@@ -203,10 +216,10 @@ export function ProfileForm({
               readOnly={readOnly}
               value={form.phoneCountryCode}
               onChange={handleChange}
-              placeholder="64"
               required
               maxLength={5}
               aria-label="Country code"
+              aria-describedby={PHONE_DESCRIBED_BY}
             />
           </div>
           <div className="w-20">
@@ -217,10 +230,10 @@ export function ProfileForm({
               readOnly={readOnly}
               value={form.phoneAreaCode}
               onChange={handleChange}
-              placeholder="27"
               required
               maxLength={5}
               aria-label="Area code"
+              aria-describedby={PHONE_DESCRIBED_BY}
             />
           </div>
           <div className="flex-1">
@@ -231,16 +244,17 @@ export function ProfileForm({
               readOnly={readOnly}
               value={form.phoneNumber}
               onChange={handleChange}
-              placeholder="123 4567"
               required
               maxLength={15}
               aria-label="Phone number"
+              aria-describedby={PHONE_DESCRIBED_BY}
             />
           </div>
         </div>
-        <p className="text-xs text-muted-foreground">
-          Country code (e.g. 64), area code (e.g. 27), and number. Synced with Xero.
-        </p>
+        <FieldHint id={PHONE_HINT_ID}>
+          Country code, area code, and number. Example: 64 27 123 4567. Synced
+          with Xero.
+        </FieldHint>
       </div>
 
       {ageTier === "ADULT" ? (

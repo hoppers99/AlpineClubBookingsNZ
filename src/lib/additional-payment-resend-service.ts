@@ -295,6 +295,7 @@ export async function resendAdditionalPaymentEmail(params: {
   try {
     outcome = await sendAdditionalPaymentReminderEmail({
       bookingId: booking.id,
+      recipientMemberId: booking.memberId,
       email: booking.member.email,
       firstName: booking.member.firstName,
       additionalAmountCents: payment.additionalAmountCents,

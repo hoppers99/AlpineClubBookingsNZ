@@ -2,6 +2,7 @@
 
 import { Button } from "@/components/ui/button";
 import { ViewOnlyActionButton } from "@/components/admin/view-only-action";
+import { FieldHint, describedByFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -35,6 +36,15 @@ import {
 import { useMemberFieldsSettings } from "@/lib/use-member-fields-settings";
 import type { MemberGroupEditState } from "../_hooks/use-member-group-edit";
 import type { MemberDetail } from "../_types";
+
+/*
+  #2264 — ONE hint for the whole phone row (country / area / number) rather than
+  an example parked in each box's placeholder, where grey text reads as a value
+  already entered. A hook cannot serve three controls (one `useFieldHint` pairs
+  with exactly one `fieldProps` spread), so the id is a module constant wired to
+  each box with `describedByFieldHint`.
+*/
+const PHONE_HINT_ID = "member-contact-phone-hint";
 
 interface MemberContactGroupProps {
   member: MemberDetail;
@@ -227,7 +237,6 @@ export function MemberContactGroup({
           <div className="flex gap-2">
             <Input
               className="w-20"
-              placeholder="64"
               value={form.phoneCountryCode}
               onChange={(e) =>
                 updateForm((f) => ({
@@ -237,28 +246,30 @@ export function MemberContactGroup({
               }
               maxLength={5}
               aria-label="Country code"
+              aria-describedby={describedByFieldHint(PHONE_HINT_ID)}
             />
             <Input
               className="w-20"
-              placeholder="27"
               value={form.phoneAreaCode}
               onChange={(e) =>
                 updateForm((f) => ({ ...f, phoneAreaCode: e.target.value }))
               }
               maxLength={5}
               aria-label="Area code"
+              aria-describedby={describedByFieldHint(PHONE_HINT_ID)}
             />
             <Input
               className="flex-1"
-              placeholder="123 4567"
               value={form.phoneNumber}
               onChange={(e) =>
                 updateForm((f) => ({ ...f, phoneNumber: e.target.value }))
               }
               maxLength={15}
               aria-label="Phone number"
+              aria-describedby={describedByFieldHint(PHONE_HINT_ID)}
             />
           </div>
+          <FieldHint id={PHONE_HINT_ID}>Example: 64 27 123 4567</FieldHint>
         </div>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="space-y-2">

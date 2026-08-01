@@ -47,6 +47,7 @@ import { hasAdminAccess } from "@/lib/access-roles";
 import { getFirstAccessibleAdminHref } from "@/lib/admin-permissions";
 import { MEMBER_ACCESS_ROLE_SELECT } from "@/lib/access-role-definitions";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
+import { formatNZDate } from "@/lib/nzst-date";
 
 function singleSearchParam(value?: string | string[]) {
   return Array.isArray(value) ? value[0] : value;
@@ -363,11 +364,7 @@ export default async function ProfilePage({
             <div className="flex justify-between">
               <span className="text-muted-foreground">Member Since</span>
               <span className="font-medium">
-                {new Date(member.createdAt).toLocaleDateString("en-NZ", {
-                  day: "numeric",
-                  month: "long",
-                  year: "numeric",
-                })}
+                {formatNZDate(new Date(member.createdAt))}
               </span>
             </div>
             <Separator />
@@ -402,14 +399,7 @@ export default async function ProfilePage({
                 {member.passwordChangedAt ? (
                   <p className="text-xs text-muted-foreground mt-0.5">
                     Last changed{" "}
-                    {new Date(member.passwordChangedAt).toLocaleDateString(
-                      "en-NZ",
-                      {
-                        day: "numeric",
-                        month: "long",
-                        year: "numeric",
-                      },
-                    )}
+                    {formatNZDate(new Date(member.passwordChangedAt))}
                   </p>
                 ) : (
                   <p className="text-xs text-muted-foreground mt-0.5">

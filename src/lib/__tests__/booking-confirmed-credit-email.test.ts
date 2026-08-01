@@ -118,7 +118,7 @@ async function send(
   loadAppliedCreditMock.mockResolvedValue(appliedCredit);
   const { sendBookingConfirmedEmail } = await import("@/lib/email/booking");
   await sendBookingConfirmedEmail(
-    { bookingId: "bk_2328" },
+    { bookingId: "bk_2328", recipientMemberId: "member_2328" },
     "member@example.org",
     "Sam",
     new Date("2026-08-15"),
@@ -310,10 +310,18 @@ describe("#2328 booking-confirmed applied-credit note", () => {
     );
 
     expect(templateData.creditNote).toBe("");
+    // #2444 adds the pay-what-the-invoice-asks sentence to this branch, and
+    // ONLY this branch: the "Total Due" figure is the BOOKING's price, and the
+    // invoice the member pays against is a separate document a club admin can
+    // net credit off by hand. The credit PAIR is still absent — nothing has
+    // been settled, so there is no "paid by" story to tell.
     expect(templateData.paymentOutcome).toBe(
       "Total Due: $300.00\n\nThis booking is confirmed, but payment of $300.00 is still owing. " +
         "Please pay by internet banking quoting reference BOOKING-ABC123. " +
-        "The club will send you an invoice for it.",
+        "The club will send you an invoice for it. " +
+        "If the invoice asks for a different amount — for example because the club " +
+        "has put account credit you hold towards it — please transfer the amount " +
+        "the invoice shows.",
     );
     expect(html).not.toContain("Account credit applied");
     expectCleanBody(renderDefaultBody(templateData));
@@ -366,7 +374,7 @@ describe("#2328 booking-confirmed applied-credit note", () => {
     loadAppliedCreditMock.mockRejectedValue(new Error("db down"));
     const { sendBookingConfirmedEmail } = await import("@/lib/email/booking");
     await sendBookingConfirmedEmail(
-      { bookingId: "bk_2328" },
+      { bookingId: "bk_2328", recipientMemberId: "member_2328" },
       "member@example.org",
       "Sam",
       new Date("2026-08-15"),
@@ -562,9 +570,15 @@ describe("#2328 the unpaid branch's suppression precondition", () => {
   it("never applies account credit on that path", () => {
     // No BOOKING_APPLIED row is written anywhere in the module, so
     // deriveBookingAppliedCreditCents returns zero for every booking it mints.
-    // (It DOES allocate the member's existing Xero credit notes against the
-    // invoice — #1620 allocate-existing — which is a Xero-side allocation, not
-    // a ledger spend, and leaves the booking's applied credit at zero.)
+    //
+    // An earlier version of this comment added that the path "DOES allocate the
+    // member's existing Xero credit notes against the invoice — #1620
+    // allocate-existing". That was WRONG and is retracted (#2444 review, 1 Aug
+    // 2026): the allocation op the path enqueues is gated on exactly the
+    // BOOKING_APPLIED rows this assertion proves absent, so it always
+    // short-circuits and the invoice stands at the full price. The absence
+    // asserted here is therefore doing double duty — it pins the #2328
+    // suppression AND it is why no member-facing copy may promise the netting.
     const source = readFileSync(
       path.join(SRC_ROOT, "lib/school-booking-request.ts"),
       "utf8",

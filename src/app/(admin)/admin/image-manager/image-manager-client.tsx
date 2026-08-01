@@ -24,6 +24,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { formatNZDate } from "@/lib/nzst-date";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import {
   AdminForbiddenSaveNotice,
@@ -52,14 +53,6 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
 }
 
 function dirLabel(rel: string): string {
@@ -577,7 +570,7 @@ export function ImageManagerClient() {
                       {formatBytes(img.byteSize)}
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      {formatDate(img.modifiedAt)}
+                      {formatNZDate(new Date(img.modifiedAt))}
                     </p>
                     {/* Copy URL */}
                     <button

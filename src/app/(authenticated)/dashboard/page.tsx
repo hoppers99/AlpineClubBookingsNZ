@@ -41,6 +41,7 @@ import {
   type AvailablePromoCode,
 } from "@/lib/promo";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
+import { canViewCalendarEvents } from "@/lib/calendar-access";
 import { RecentNewsCard } from "@/components/recent-news-card";
 import {
   buildHrefWithReturnTo,
@@ -52,6 +53,19 @@ import {
   PAYMENT_OWED_BOOKING_STATUSES,
 } from "@/lib/booking-status";
 import { checkCapacity } from "@/lib/capacity";
+import { formatNZDate, formatNZTime } from "@/lib/nzst-date";
+import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
+
+// Not one of the shared helpers: the three tightest slots on this page — the
+// upcoming-events list (a fixed-width `w-14` column), the "Next Stay" summary
+// pair and the draft "Expires" note — deliberately drop the year to stay
+// compact, and always have. The admin dashboard's twin cards do the same.
+// Zone-pinned to club time like every other date on this page.
+const COMPACT_DAY_MONTH = new Intl.DateTimeFormat(APP_LOCALE, {
+  timeZone: APP_TIME_ZONE,
+  day: "numeric",
+  month: "short",
+});
 
 function formatPromoBenefitSummary(promo: AvailablePromoCode) {
   if (promo.type === "PERCENTAGE") {
@@ -328,20 +342,29 @@ export default async function DashboardPage() {
   const modules = await loadEffectiveModuleFlags();
 
   // Upcoming club events for the next two weeks (Events card → /calendar).
+  //
+  // Skipped entirely — query included — when the club has the eventsCalendar
+  // module off, or when the viewer is an organisation account (#2241). The
+  // dashboard must never read for, or link to, a surface that would 404 the
+  // moment it was clicked.
+  const showEventsCard =
+    modules.eventsCalendar && canViewCalendarEvents(session.user);
   const twoWeeksOut = new Date(today);
   twoWeeksOut.setDate(twoWeeksOut.getDate() + 14);
-  const upcomingEvents = await prisma.calendarEvent.findMany({
-    where: { startsAt: { gte: today, lte: twoWeeksOut } },
-    orderBy: { startsAt: "asc" },
-    take: 6,
-    select: {
-      id: true,
-      title: true,
-      startsAt: true,
-      allDay: true,
-      isMeeting: true,
-    },
-  });
+  const upcomingEvents = showEventsCard
+    ? await prisma.calendarEvent.findMany({
+        where: { startsAt: { gte: today, lte: twoWeeksOut } },
+        orderBy: { startsAt: "asc" },
+        take: 6,
+        select: {
+          id: true,
+          title: true,
+          startsAt: true,
+          allDay: true,
+          isMeeting: true,
+        },
+      })
+    : [];
 
   return (
     <div className="space-y-8">
@@ -417,15 +440,9 @@ export default async function DashboardPage() {
           {nextStay ? (
             <>
               <div className="text-lg font-semibold">
-                {new Date(nextStay.checkIn).toLocaleDateString("en-NZ", {
-                  day: "numeric",
-                  month: "short",
-                })}
+                {COMPACT_DAY_MONTH.format(new Date(nextStay.checkIn))}
                 {" — "}
-                {new Date(nextStay.checkOut).toLocaleDateString("en-NZ", {
-                  day: "numeric",
-                  month: "short",
-                })}
+                {COMPACT_DAY_MONTH.format(new Date(nextStay.checkOut))}
               </div>
               <p className="text-xs text-muted-foreground mt-1">
                 {nextStay._count.guests} guest
@@ -484,49 +501,50 @@ export default async function DashboardPage() {
           </p>
         </SummaryLinkCard>
 
-        <SummaryLinkCard
-          href="/calendar"
-          icon={<CalendarDays aria-hidden="true" className="h-4 w-4" />}
-          title="Events"
-        >
-          {upcomingEvents.length === 0 ? (
-            <>
-              <div className="text-lg font-semibold text-muted-foreground">
-                No upcoming events
-              </div>
-              <p className="text-xs text-muted-foreground mt-1">
-                Nothing scheduled in the next two weeks
-              </p>
-            </>
-          ) : (
-            <ul className="space-y-2">
-              {upcomingEvents.map((event) => (
-                <li key={event.id} className="flex items-baseline gap-2 text-sm">
-                  <span className="w-14 shrink-0 text-xs font-medium text-muted-foreground">
-                    {new Date(event.startsAt).toLocaleDateString("en-NZ", {
-                      day: "numeric",
-                      month: "short",
-                    })}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate text-foreground">
-                    {event.title}
-                    {event.isMeeting && (
-                      <span className="ml-1 text-xs text-primary">· Meeting</span>
-                    )}
-                  </span>
-                  <span className="shrink-0 text-xs text-muted-foreground">
-                    {event.allDay
-                      ? "All day"
-                      : new Date(event.startsAt).toLocaleTimeString("en-NZ", {
-                          hour: "numeric",
-                          minute: "2-digit",
-                        })}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </SummaryLinkCard>
+        {showEventsCard && (
+          <SummaryLinkCard
+            href="/calendar"
+            icon={<CalendarDays aria-hidden="true" className="h-4 w-4" />}
+            title="Events"
+          >
+            {upcomingEvents.length === 0 ? (
+              <>
+                <div className="text-lg font-semibold text-muted-foreground">
+                  No upcoming events
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Nothing scheduled in the next two weeks
+                </p>
+              </>
+            ) : (
+              <ul className="space-y-2">
+                {upcomingEvents.map((event) => (
+                  <li
+                    key={event.id}
+                    className="flex items-baseline gap-2 text-sm"
+                  >
+                    <span className="w-14 shrink-0 text-xs font-medium text-muted-foreground">
+                      {COMPACT_DAY_MONTH.format(new Date(event.startsAt))}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-foreground">
+                      {event.title}
+                      {event.isMeeting && (
+                        <span className="ml-1 text-xs text-primary">
+                          · Meeting
+                        </span>
+                      )}
+                    </span>
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      {event.allDay
+                        ? "All day"
+                        : formatNZTime(new Date(event.startsAt))}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </SummaryLinkCard>
+        )}
 
         {modules.promoCodes && (
           <SummaryLinkCard
@@ -636,20 +654,9 @@ export default async function DashboardPage() {
                   >
                     <div className="min-w-0">
                       <p className="font-medium text-sm">
-                        {new Date(booking.checkIn).toLocaleDateString("en-NZ", {
-                          day: "numeric",
-                          month: "short",
-                          year: "numeric",
-                        })}
+                        {formatNZDate(new Date(booking.checkIn))}
                         {" — "}
-                        {new Date(booking.checkOut).toLocaleDateString(
-                          "en-NZ",
-                          {
-                            day: "numeric",
-                            month: "short",
-                            year: "numeric",
-                          },
-                        )}
+                        {formatNZDate(new Date(booking.checkOut))}
                       </p>
                       <p className="text-xs text-muted-foreground">
                         {booking._count.guests} guest
@@ -658,12 +665,9 @@ export default async function DashboardPage() {
                         {booking.draftExpiresAt && (
                           <span className="text-warning-11 ml-2">
                             Expires{" "}
-                            {new Date(
-                              booking.draftExpiresAt,
-                            ).toLocaleDateString("en-NZ", {
-                              day: "numeric",
-                              month: "short",
-                            })}
+                            {COMPACT_DAY_MONTH.format(
+                              new Date(booking.draftExpiresAt),
+                            )}
                           </span>
                         )}
                       </p>
@@ -724,20 +728,9 @@ export default async function DashboardPage() {
                   >
                     <div className="min-w-0">
                       <p className="font-medium text-sm">
-                        {new Date(booking.checkIn).toLocaleDateString("en-NZ", {
-                          day: "numeric",
-                          month: "short",
-                          year: "numeric",
-                        })}
+                        {formatNZDate(new Date(booking.checkIn))}
                         {" — "}
-                        {new Date(booking.checkOut).toLocaleDateString(
-                          "en-NZ",
-                          {
-                            day: "numeric",
-                            month: "short",
-                            year: "numeric",
-                          },
-                        )}
+                        {formatNZDate(new Date(booking.checkOut))}
                       </p>
                       <p className="text-xs text-muted-foreground">
                         {booking._count.guests} guest

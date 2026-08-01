@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { formatCents } from "@/lib/utils";
 import { bookingStatusClass, bookingStatusLabel } from "@/lib/status-colors";
+import { formatNZDate } from "@/lib/nzst-date";
 
 // #1975: one genuine #738 split child, shaped for the parent's "Your non-member
 // guests" section. Any status (a cancelled or bumped child must still show).
@@ -74,13 +75,7 @@ export function NonMemberGuestsSection({
                     </p>
                     {child.datesDiffer ? (
                       <p className="text-xs text-muted-foreground">
-                        {child.checkIn.toLocaleDateString("en-NZ", {
-                          dateStyle: "long",
-                        })}{" "}
-                        -{" "}
-                        {child.checkOut.toLocaleDateString("en-NZ", {
-                          dateStyle: "long",
-                        })}
+                        {formatNZDate(child.checkIn)} - {formatNZDate(child.checkOut)}
                       </p>
                     ) : null}
                     <p className="text-xs font-medium text-info-11 underline">

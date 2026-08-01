@@ -5,6 +5,7 @@ import { CalendarDays, RefreshCw } from "lucide-react";
 import { KioskLodgeInstructions } from "@/components/kiosk-lodge-instructions";
 import { useClubIdentity } from "@/components/club-identity-provider";
 import type { KioskTier } from "@/lib/kiosk-access";
+import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
 import {
   addDaysToDateKey,
   getWeekStartDateKey,
@@ -80,14 +81,20 @@ function formatDate(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
+// Not one of the shared helpers: the kiosk header names the DAY OF THE WEEK in
+// full ("Wednesday, 15 April 2026") because that is what a hut leader scans for.
+const LONG_WEEKDAY_DATE = new Intl.DateTimeFormat(APP_LOCALE, {
+  timeZone: APP_TIME_ZONE,
+  weekday: "long",
+  day: "numeric",
+  month: "long",
+  year: "numeric",
+});
+
 function displayDate(dateStr: string): string {
-  const d = new Date(dateStr + "T00:00:00");
-  return d.toLocaleDateString("en-NZ", {
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-    year: "numeric",
-  });
+  // Date-only lodge night: parse at UTC midnight so the club-time formatter
+  // cannot roll it back a day for a viewer outside New Zealand.
+  return LONG_WEEKDAY_DATE.format(new Date(dateStr + "T00:00:00Z"));
 }
 
 function formatArrivalTime(time: string): string {

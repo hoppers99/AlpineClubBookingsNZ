@@ -60,7 +60,12 @@ test("a device bound to lodge B renders lodge B's board and never lodge A's cont
   await expect(codeLocator).toBeVisible({ timeout: 30_000 });
   const code = (await codeLocator.innerText()).trim();
 
-  await page.getByPlaceholder("TV code").fill(code);
+  // #2264: selected by the input's per-device accessible name rather than its
+  // placeholder. The name carries the device, so this stays unambiguous if the
+  // page ever lists more than one row.
+  await page
+    .getByRole("textbox", { name: `Pairing code for ${deviceName}` })
+    .fill(code);
   await page.getByRole("button", { name: "Pair", exact: true }).click();
   // Match the confirmation notice specifically, not a bare /Pairing armed/ —
   // the device row's status badge can also say "Pairing armed" once the list

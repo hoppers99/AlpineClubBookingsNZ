@@ -10,6 +10,7 @@ import type {
   MyWholeLodgeRequestItem,
   MyWholeLodgeRequestStatus,
 } from "@/lib/member-whole-lodge-requests";
+import { formatNZDate } from "@/lib/nzst-date";
 
 /*
   #2263 — "My requests" on My bookings.
@@ -43,12 +44,9 @@ const DECLINED_COPY =
   "The booking officer was not able to offer the whole lodge for those dates. Give them a call if you would like to talk through other options.";
 
 function formatRange(checkIn: string, checkOut: string) {
-  const format = (value: string) =>
-    new Date(`${value}T00:00:00`).toLocaleDateString("en-NZ", {
-      day: "numeric",
-      month: "short",
-      year: "numeric",
-    });
+  // Date-only lodge nights: parse at UTC midnight so a viewer at UTC+13/+14
+  // does not see the previous day.
+  const format = (value: string) => formatNZDate(new Date(`${value}T00:00:00Z`));
   return `${format(checkIn)} – ${format(checkOut)}`;
 }
 

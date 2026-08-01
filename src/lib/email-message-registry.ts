@@ -6,10 +6,12 @@ import { buildXeroInvoiceUrl } from "@/lib/xero-links";
 import {
   adminSplitSettlementCancelledLeadParagraph,
   adminSplitSettlementUnpaidLeadParagraph,
+  bookingPaymentDueNote,
   duplicateCaptureRefundOutcomeParagraph,
   splitGuestPortionOwnBookingLine,
 } from "@/lib/email-message-notes";
 import { FALLBACK_LODGE_CAPACITY } from "@/lib/lodge-capacity";
+import { BOOKING_URL_TEMPLATE_NAMES } from "@/lib/booking-email-template-contract";
 
 type EmailTemplateAudience = "member" | "admin" | "system";
 export type NotificationDeliveryModeValue = "always" | "content_only" | "disabled";
@@ -459,7 +461,9 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
   // sensitive-log); firstName + the stay dates are the load-bearing content.
   "split-guest-portion-cancelled": ["firstName", "checkIn", "checkOut"],
   "admin-partner-share-swept": ["memberName", "partnerName", "reason"],
-  "booking-review-approved": ["bookingId"],
+  // The authenticated detail link is optional and centrally authorized
+  // (#2362), so neither its old raw id nor bookingUrl can be required.
+  "booking-review-approved": [],
   "induction-sign-off-request": ["inductionUrl"],
   "school-attendee-confirmation": ["token"],
   "group-booking-join-verification": ["token"],
@@ -469,7 +473,7 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
   // the season, so requiring it would force an override to promise a figure the
   // send cannot always supply.
   "membership-payment-recorded": ["firstName", "seasonYear"],
-  // #2307 (epic #2305, MG2). The four member-guest emails. What each override
+  // #2307 (epic #2305, MG2) and #2309 (MG4). The six member-guest emails. What each override
   // may NOT drop is the part of the message that would otherwise leave the
   // member unable to act:
   //   - the ask itself, the deadline, and the link to answer on;
@@ -493,7 +497,6 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
     "outcomeHeading",
     "outcomeSentence",
     "consequenceNote",
-    "bookingId",
   ],
   "member-guest-consent-answered": [
     "answeredHeading",
@@ -501,6 +504,14 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
     "answeredNote",
   ],
   "member-guest-consent-expired": ["bookerName", "checkIn", "checkOut"],
+  // MG4 (#2309). Both tokens are required because between them they are the
+  // entire message: the heading says WHAT happened and the context note says
+  // WHY and WHO — an override that dropped either would leave a member holding
+  // a stay's dates with no statement that they are no longer on it.
+  "member-guest-request-withdrawn": [
+    "withdrawnHeading",
+    "withdrawnContextNote",
+  ],
 };
 
 const TEMPLATE_TRIGGER_METADATA: Partial<
@@ -816,6 +827,14 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
     frequency:
       "Once per lapsed request, and ONLY where a request email was actually sent — nobody is told a request lapsed that they never received. Ignores the per-action notify tick and notification preferences (D-16); still withheld by the per-booking 'No emails' switch",
   },
+  // MG4 (#2309). The counterpart to member-guest-added: MG2 told a member they
+  // had a bed, and three things can take that back.
+  "member-guest-request-withdrawn": {
+    triggerSummary:
+      "A member guest came OFF a booking somebody else made — a consent request nobody had answered yet was called off, a settled member guest was taken off, or the booking-request pipeline swapped them out at approval (MG4-D-b). One template for all three; the composed opening sentence says which. NOT sent when a request simply lapses on its own — that is member-guest-consent-expired",
+    frequency:
+      "Once per member guest removed from a booking they had been told about. Ignores the per-action notify tick and the member's notification preferences (D-16); still withheld by the per-booking 'No emails' switch",
+  },
 };
 
 function titleCaseTemplateKey(key: string): string {
@@ -847,6 +866,9 @@ function uniqueSortedTokens(values: string[]): string[] {
 // shipped default from the same preview values the admin editor shows.
 export function sampleValue(token: string): string {
   if (token === "BASE_URL") return "https://bookings.example.org";
+  if (token === "bookingUrl") {
+    return "https://bookings.example.org/bookings/bkg_example";
+  }
   if (token === "CLUB_NAME") return "Example Mountain Club";
   if (token === "CLUB_BOOKINGS_NAME") return "Example Mountain Club - Bookings";
   if (token === "CLUB_LODGE_NAME") return "Example Mountain Club Lodge";
@@ -901,6 +923,10 @@ export function sampleValue(token: string): string {
       "Dave Ngata has added you as a guest on a lodge booking. Your place is " +
       "already held — this club does not ask first for member guests."
     );
+  }
+  if (token === "withdrawnHeading") return "You are no longer on that lodge booking";
+  if (token === "withdrawnContextNote") {
+    return "you have been taken off Dave Ngata's lodge booking, so you no longer have a place on it.";
   }
   if (token === "removalNote") {
     return "If you would rather not go, you can take yourself off the booking from your account.";
@@ -1027,6 +1053,37 @@ export function sampleValue(token: string): string {
   if (token === "creditNote") {
     return "Account credit applied: -$23.45\nPaid by card: $100.00\n";
   }
+  // #2444: the UNPAID confirmation's whole paragraph, composed by the very
+  // function the send uses, so the preview cannot drift from the message and
+  // an admin who puts {{paymentDueNote}} on a line of its own sees the money
+  // advice a member reads instead of the bare word "paymentDueNote" (which is
+  // what the fallthrough at the bottom of this function returned before #2444,
+  // in breach of the pre-composed-token rule stated above).
+  //
+  // It names the same $123.45 the money tokens fall through to and the same
+  // reference {{paymentReference}} previews, so an override that builds its own
+  // unpaid lines previews one coherent booking. `invoiceEmailed: true` is the
+  // shape a club running the Xero module gets; the manual-invoice club differs
+  // only in one sentence.
+  //
+  // Like {{creditNote}} above, this is a mutually exclusive sibling of the
+  // {{paymentOutcome}} sample: a body carrying both previews the paid outcome
+  // and the unpaid one together, which no single send produces. That is the
+  // price of previewing every pre-composed token in its non-empty shape, and it
+  // is the same trade #2263 and #2328 already made for {{totalPaid}}/
+  // {{totalDue}} and for the credit pair.
+  if (token === "paymentDueNote") {
+    return bookingPaymentDueNote({
+      amount: "$123.45",
+      reference: "BOOKING-1234",
+      invoiceEmailed: true,
+    });
+  }
+  // #2444: the internet-banking reference an unpaid member must quote. It fell
+  // through to the literal word "paymentReference", which contradicted the
+  // composed paragraph above (and previewed the admin manual-invoice alert's
+  // "Payment reference:" line as a token name).
+  if (token === "paymentReference") return "BOOKING-1234";
   // #2267: one coherent booking-modified sample — a 2-guest stay whose dates
   // moved from 1–3 Jul to 8–10 Jul and whose price rose from $123.45 to
   // $150.00 with no change fee, leaving $26.55 to pay. Every token below tells
@@ -1124,6 +1181,7 @@ export const EMAIL_TEMPLATE_DEFINITIONS: EmailTemplateDefinition[] = (
     ...GLOBAL_EMAIL_TEMPLATE_TOKENS,
     ...extractTokensFromDefaults(defaults.defaultSubject, defaults.defaultBody),
     ...(EXTRA_TEMPLATE_TOKENS[key] ?? []),
+    ...(BOOKING_URL_TEMPLATE_NAMES.has(key) ? ["bookingUrl"] : []),
     // An accepted alternative to a required token is by definition allowed.
     ...Object.values(REQUIRED_TOKEN_ALTERNATIVES[key] ?? {}).flat(),
   ]);
@@ -1214,6 +1272,7 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "bookerName",
   "bookingId",
   "bookingReference",
+  "bookingUrl",
   "bookingReferenceNote",
   "bumpedMemberName",
   "changeFee",
@@ -1443,8 +1502,10 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "totalAlerts",
   // #2263: the two halves of an UNPAID confirmation. `totalDue` replaces
   // `totalPaid` (exactly one of the pair carries a figure), and
-  // `paymentDueNote` is the pre-composed sentence naming the amount owing and
-  // the internet-banking reference.
+  // `paymentDueNote` is the pre-composed paragraph naming the amount owing and
+  // the internet-banking reference — and, since #2444, telling the member to
+  // transfer whatever the club's invoice asks for if that differs from the
+  // figure above it.
   //
   // #2397 adds a third, PARTLY paid state — a cash settlement the admin said
   // did not cover an uncollected price increase — in which BOTH carry a
@@ -1458,6 +1519,10 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "triggeringMemberName",
   "verifyUrl",
   "windowHours",
+  // MG4 (#2309): the withdrawal notice's two composed blocks — what happened,
+  // and why plus who. Same pre-composed shape as the added notice's pair.
+  "withdrawnHeading",
+  "withdrawnContextNote",
   "xeroLinksNote",
   "xeroObjectUrl",
   "xeroInvoiceNumber",

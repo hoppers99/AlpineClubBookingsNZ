@@ -10,12 +10,14 @@ import {
   composeMemberGuestConsentAsk,
   composeMemberGuestConsentOutcome,
   composeMemberGuestRemovalNote,
+  composeMemberGuestWithdrawn,
   type MemberGuestAddedContext,
   type MemberGuestConsentAudience,
   type MemberGuestConsentOutcome,
   type MemberGuestDelegateAnswer,
   type MemberGuestPartyMember,
   type MemberGuestRemovalFacts,
+  type MemberGuestWithdrawnContext,
 } from "@/lib/member-guest-email-notes";
 import {
   memberGuestAddedTemplate,
@@ -23,12 +25,14 @@ import {
   memberGuestConsentExpiredTemplate,
   memberGuestConsentOutcomeTemplate,
   memberGuestConsentRequestTemplate,
+  memberGuestRequestWithdrawnTemplate,
 } from "../email-templates";
 import { formatNZDate } from "../nzst-date";
 import { sendEmail, type EmailSendOutcome } from "./core";
+import type { BookingEmailRecipient } from "@/lib/booking-email-contract";
 
 /**
- * The five member-guest emails (epic #2305, MG2 #2307).
+ * The six member-guest emails (epic #2305, MG2 #2307 and MG4 #2309).
  *
  * OWNER DECISION D-16, AND IT IS THE WHOLE REASON THIS FILE READS NO
  * PREFERENCES. Consent-adjacent mail ignores the per-action "notify the member"
@@ -44,11 +48,11 @@ import { sendEmail, type EmailSendOutcome } from "./core";
  * else — so the opt-out here is "do not call it", stated rather than implied.
  *
  * WHAT DOES STILL WITHHOLD THEM: the per-booking "No emails" switch (#2258,
- * owner decision D10). All five pass a real `{ bookingId }` `bookingContext`, so
+ * owner decision D10). All six pass a real `{ bookingId }` `bookingContext`, so
  * a silenced booking withholds them and each withheld send lands on the
  * booking's withheld-banner record. That is enforced by the type — the parameter
  * is a required discriminated union, so a missing booking id is a compile error
- * — and by all five templates being registered `audience: "member"`, which is
+ * — and by all six templates being registered `audience: "member"`, which is
  * what `isBookingSuppressibleTemplate` keys on. An admin-audience consent email
  * would silently bypass the switch.
  *
@@ -65,6 +69,7 @@ import { sendEmail, type EmailSendOutcome } from "./core";
 interface MemberGuestStayParams {
   /** Booking this message belongs to (#2258). No `"none"` — see the note above. */
   bookingId: string;
+  recipient: BookingEmailRecipient;
   email: string;
   checkIn: Date;
   checkOut: Date;
@@ -126,7 +131,7 @@ export async function sendMemberGuestConsentRequestEmail(
       consentUrl: params.consentUrl,
       partyList,
     }),
-    bookingContext: { bookingId: params.bookingId },
+    bookingContext: { bookingId: params.bookingId, recipient: params.recipient },
     templateName: "member-guest-consent-request",
     templateData: {
       firstName: params.firstName,
@@ -212,7 +217,7 @@ export async function sendMemberGuestAddedEmail(
       partyList,
       removalNote,
     }),
-    bookingContext: { bookingId: params.bookingId },
+    bookingContext: { bookingId: params.bookingId, recipient: params.recipient },
     templateName: "member-guest-added",
     templateData: {
       firstName: params.firstName,
@@ -223,6 +228,67 @@ export async function sendMemberGuestAddedEmail(
       guestNightsLabel,
       partyListNote: partyList.text,
       removalNote,
+    },
+    lodgeId: params.lodgeId,
+  });
+}
+
+export interface SendMemberGuestRequestWithdrawnEmailParams
+  extends MemberGuestStayParams {
+  /**
+   * First name of WHOEVER IS BEING TOLD — the member who came off the booking,
+   * or the family adult told on their behalf.
+   */
+  firstName: string;
+  /** The member whose booking it is (named even when the club did the removing). */
+  bookerName: string;
+  /** Which of the three ways they came off it. */
+  context: MemberGuestWithdrawnContext;
+  /** Who is reading it (owner decision D-9 makes a delegate the normal case). */
+  audience?: MemberGuestConsentAudience;
+}
+
+/**
+ * "You are no longer on that booking" (MG4 #2309).
+ *
+ * NO `party` AND NO `selfRemoval` PARAMETER, and both omissions are the point.
+ * The reader is off the booking, so there is no party they are entitled to see
+ * and no self-removal left to describe — a `removalNote` here would offer to take
+ * somebody off a booking they are not on. Everything this email states is a fact
+ * about a stay that no longer includes them.
+ */
+export async function sendMemberGuestRequestWithdrawnEmail(
+  params: SendMemberGuestRequestWithdrawnEmailParams,
+): Promise<EmailSendOutcome> {
+  const settings = await loadEmailMessageSettingsForLodge(params.lodgeId);
+  const audience: MemberGuestConsentAudience = params.audience ?? {
+    kind: "TARGET",
+  };
+  const copy = composeMemberGuestWithdrawn({
+    context: params.context,
+    bookerName: params.bookerName,
+    audience,
+  });
+
+  return sendEmail({
+    to: params.email,
+    subject: `${copy.heading} - ${EMAIL_DEFAULT_LODGE_NAME}`,
+    html: memberGuestRequestWithdrawnTemplate({
+      firstName: params.firstName,
+      withdrawnHeading: copy.heading,
+      withdrawnContextNote: copy.contextNote,
+      lodgeName: settings.lodgeName,
+      checkIn: params.checkIn,
+      checkOut: params.checkOut,
+    }),
+    bookingContext: { bookingId: params.bookingId, recipient: params.recipient },
+    templateName: "member-guest-request-withdrawn",
+    templateData: {
+      firstName: params.firstName,
+      withdrawnHeading: copy.heading,
+      withdrawnContextNote: copy.contextNote,
+      checkIn: formatNZDate(params.checkIn),
+      checkOut: formatNZDate(params.checkOut),
     },
     lodgeId: params.lodgeId,
   });
@@ -260,7 +326,7 @@ export async function sendMemberGuestConsentOutcomeEmail(
       consequenceNote: copy.consequenceNote,
       bookingId: params.bookingId,
     }),
-    bookingContext: { bookingId: params.bookingId },
+    bookingContext: { bookingId: params.bookingId, recipient: params.recipient },
     templateName: "member-guest-consent-outcome",
     templateData: {
       firstName: params.firstName,
@@ -315,7 +381,7 @@ export async function sendMemberGuestConsentAnsweredEmail(
       answeredSentence: copy.sentence,
       answeredNote: copy.note,
     }),
-    bookingContext: { bookingId: params.bookingId },
+    bookingContext: { bookingId: params.bookingId, recipient: params.recipient },
     templateName: "member-guest-consent-answered",
     templateData: {
       firstName: params.firstName,
@@ -349,7 +415,7 @@ export async function sendMemberGuestConsentExpiredEmail(
       checkIn: params.checkIn,
       checkOut: params.checkOut,
     }),
-    bookingContext: { bookingId: params.bookingId },
+    bookingContext: { bookingId: params.bookingId, recipient: params.recipient },
     templateName: "member-guest-consent-expired",
     templateData: {
       firstName: params.firstName,

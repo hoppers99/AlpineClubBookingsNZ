@@ -8,6 +8,7 @@ import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader } from "@/components/ui/card";
 import { WebsiteLogo } from "@/components/website-logo";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { MagicLinkRequestForm } from "./magic-link-request-form";
@@ -69,6 +70,9 @@ export function LoginForm({
   const [emailNotVerified, setEmailNotVerified] = useState(false);
   const [resendLoading, setResendLoading] = useState(false);
   const [resendSuccess, setResendSuccess] = useState(false);
+  // #2264 — the example address sits below the box, not greyed inside it where
+  // it reads as an address already entered.
+  const emailHint = useFieldHint();
 
   // Post-auth landing (#2090): the credential form resolves the destination
   // AFTER sign-in — once the session cookie exists — because it depends on the
@@ -291,12 +295,15 @@ export function LoginForm({
             <Input
               id="email"
               type="email"
-              placeholder="you@example.com"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
               autoComplete="email"
+              {...emailHint.fieldProps}
             />
+            <FieldHint {...emailHint.hintProps}>
+              Example: you@example.com
+            </FieldHint>
           </div>
 
           <div className="space-y-2">

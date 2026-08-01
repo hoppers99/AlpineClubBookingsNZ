@@ -5,13 +5,14 @@ import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
+import { FieldHint, describedByFieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { APP_CURRENCY } from "@/config/operational";
 import { formatCents } from "@/lib/pricing";
+import { formatNZDate } from "@/lib/nzst-date";
 import {
   AdminViewOnlyNotice,
   AdminViewOnlySectionBanner,
@@ -75,6 +76,17 @@ const FLAT_KEY = "FLAT";
 
 function rateKey(membershipTypeId: string, ageTier: AgeTier | typeof FLAT_KEY): string {
   return `${membershipTypeId}::${ageTier}`;
+}
+
+/*
+  #2264 — ONE hint per membership type's rate table, not one per rate cell: the
+  grid is nested `.map()`s, so a per-cell hint would repeat the same example
+  dozens of times. The rate boxes render inside a `.map()` too, so a hook cannot
+  be called per table; the id is derived from the membership type id and spelled
+  exactly once here.
+*/
+function rateHintId(membershipTypeId: string): string {
+  return `rate-hint-${membershipTypeId}`;
 }
 
 function cellsForType(type: RateType, tiers: AgeTierSetting[]): Array<AgeTier | typeof FLAT_KEY> {
@@ -450,7 +462,7 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
                                             className="pl-7"
                                             value={rates[key] ? (rates[key] / 100).toFixed(2) : ""}
                                             onChange={(e) => handleRateChange(key, e.target.value)}
-                                            placeholder="0.00"
+                                            aria-describedby={describedByFieldHint(rateHintId(rt.id))}
                                           />
                                         </div>
                                       </div>
@@ -470,11 +482,14 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
                                       className="pl-7"
                                       value={rates[rateKey(rt.id, FLAT_KEY)] ? (rates[rateKey(rt.id, FLAT_KEY)] / 100).toFixed(2) : ""}
                                       onChange={(e) => handleRateChange(rateKey(rt.id, FLAT_KEY), e.target.value)}
-                                      placeholder="0.00"
+                                      aria-describedby={describedByFieldHint(rateHintId(rt.id))}
                                     />
                                   </div>
                                 </div>
                               )}
+                              <FieldHint id={rateHintId(rt.id)} className="mt-1">
+                                Example: 45.00 per night
+                              </FieldHint>
                             </div>
                           ))}
                         </div>
@@ -529,8 +544,8 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
                         )}
                       </div>
                       <CardDescription>
-                        {new Date(season.startDate).toLocaleDateString("en-NZ")} &mdash;{" "}
-                        {new Date(season.endDate).toLocaleDateString("en-NZ")}
+                        {formatNZDate(new Date(season.startDate))} &mdash;{" "}
+                        {formatNZDate(new Date(season.endDate))}
                       </CardDescription>
                     </CardHeader>
                     <CardContent>

@@ -14,13 +14,17 @@
 //    audited rather than swallowed or turned into a booking failure.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { sendMemberGuestAddNotifications } from "@/lib/member-guest-consent-notifications";
+import {
+  sendMemberGuestAddNotifications,
+  sendMemberGuestWithdrawnNotifications,
+} from "@/lib/member-guest-consent-notifications";
 import type { MemberGuestConsentDelegateResolver } from "@/lib/member-guest-delegate";
 import { parseDateOnly } from "@/lib/date-only";
 
 const h = vi.hoisted(() => ({
   sendConsentRequest: vi.fn(),
   sendAdded: vi.fn(),
+  sendWithdrawn: vi.fn(),
   logAudit: vi.fn(),
   loggerError: vi.fn(),
 }));
@@ -28,6 +32,7 @@ const h = vi.hoisted(() => ({
 vi.mock("@/lib/email/member-guest", () => ({
   sendMemberGuestConsentRequestEmail: h.sendConsentRequest,
   sendMemberGuestAddedEmail: h.sendAdded,
+  sendMemberGuestRequestWithdrawnEmail: h.sendWithdrawn,
 }));
 vi.mock("@/lib/audit", () => ({ logAudit: h.logAudit }));
 vi.mock("@/lib/logger", () => ({
@@ -51,7 +56,13 @@ const CHECK_IN = parseDateOnly("2026-09-10");
 const CHECK_OUT = parseDateOnly("2026-09-12");
 const EXPIRES = new Date("2026-09-05T12:00:00.000Z");
 
-function db(overrides?: { consentExpiresAt?: Date | null; nights?: Array<{ stayDate: Date }> }) {
+function db(overrides?: {
+  consentExpiresAt?: Date | null;
+  nights?: Array<{ stayDate: Date }>;
+  /** MG4 (#2309): the booking carries a negotiated booking-request price. */
+  heldForBookingRequest?: { id: string } | null;
+  originBookingRequest?: { id: string } | null;
+}) {
   return {
     booking: {
       findUnique: vi.fn(async () => ({
@@ -62,6 +73,8 @@ function db(overrides?: { consentExpiresAt?: Date | null; nights?: Array<{ stayD
         status: "CONFIRMED",
         memberId: "m-booker",
         member: { firstName: "Bev", lastName: "Booker" },
+        originBookingRequest: overrides?.originBookingRequest ?? null,
+        heldForBookingRequest: overrides?.heldForBookingRequest ?? null,
         guests: [
           {
             id: GUEST_ROW,
@@ -84,6 +97,11 @@ function db(overrides?: { consentExpiresAt?: Date | null; nights?: Array<{ stayD
           },
         ],
       })),
+    },
+    member: {
+      findMany: vi.fn(async () => [
+        { id: TARGET, firstName: "Tam", lastName: "Target" },
+      ]),
     },
   } as unknown as Parameters<typeof sendMemberGuestAddNotifications>[0]["db"];
 }
@@ -109,6 +127,36 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.sendConsentRequest.mockResolvedValue({ ok: true });
   h.sendAdded.mockResolvedValue({ ok: true });
+  h.sendWithdrawn.mockResolvedValue({ ok: true });
+});
+
+describe("withdrawal recipient identity (#2362)", () => {
+  it("threads each resolved family adult's own member id into retry provenance", async () => {
+    const result = await sendMemberGuestWithdrawnNotifications({
+      bookingId: BOOKING,
+      targetMemberIds: [TARGET],
+      context: "TAKEN_OFF",
+      db: db(),
+      delegateResolver: resolver(TWO_FAMILY_ADULTS),
+    });
+
+    expect(h.sendWithdrawn).toHaveBeenCalledTimes(2);
+    expect(
+      h.sendWithdrawn.mock.calls.map(([params]) => params.recipient),
+    ).toEqual([
+      { kind: "member", memberId: PARENT },
+      { kind: "member", memberId: OTHER_PARENT },
+    ]);
+    expect(h.sendWithdrawn.mock.calls.map(([params]) => params.email)).toEqual([
+      "parent@example.com",
+      "other@example.com",
+    ]);
+    expect(result).toEqual({
+      sentMemberIds: [TARGET],
+      failedMemberIds: [],
+      unreachableMemberIds: [],
+    });
+  });
 });
 
 describe("recipients (owner decision D-9)", () => {
@@ -277,7 +325,32 @@ describe("the added notice", () => {
       bookingStatus: "CONFIRMED",
       bookingCheckIn: CHECK_IN,
       bookingGuestCount: 2,
+      // MG4 (#2309): the sixth fact. An ordinary booking is not quote priced,
+      // so the notice may honestly offer self-removal — the pipeline case that
+      // cannot is pinned below.
+      isQuotePriced: false,
     });
+  });
+
+  it("tells the predicate the booking is quote priced, so the notice offers what the server would allow (D-14, MG4-D-b)", async () => {
+    // Every row the booking-request pipeline creates lands on a booking that is
+    // quote priced by construction. Before MG4 this fact never reached the
+    // composer, so  defaulted it to false and the
+    // notice offered a self-removal the server refuses with QUOTE_PRICED.
+    await sendMemberGuestAddNotifications({
+      bookingId: BOOKING,
+      rows: [
+        { bookingGuestId: GUEST_ROW, targetMemberId: TARGET, notification: "ADDED_NOTICE" },
+      ],
+      actor: { kind: "BOOKING_REQUEST", adminMemberId: "m-admin" },
+      db: db({ heldForBookingRequest: { id: "req-1" } }),
+      delegateResolver: resolver(TARGET_WITH_LOGIN),
+    });
+
+    expect(h.sendAdded.mock.calls[0][0].selfRemoval.isQuotePriced).toBe(true);
+    // ...and the pipeline gets its OWN sentence, not the notify-only one that
+    // would tell a stranger "this club does not ask first for member guests".
+    expect(h.sendAdded.mock.calls[0][0].context).toBe("BOOKING_REQUEST");
   });
 });
 

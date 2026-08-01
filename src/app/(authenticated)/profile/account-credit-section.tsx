@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
+import { formatNZDate } from "@/lib/nzst-date";
 
 interface SourceBooking {
   id: string;
@@ -41,23 +42,12 @@ function formatCents(cents: number): string {
 }
 
 function formatDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleDateString("en-NZ", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
+  return formatNZDate(new Date(dateStr));
 }
 
 function formatDateRange(checkIn: string, checkOut: string): string {
-  const inDate = new Date(checkIn).toLocaleDateString("en-NZ", {
-    day: "numeric",
-    month: "short",
-  });
-  const outDate = new Date(checkOut).toLocaleDateString("en-NZ", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
+  const inDate = formatNZDate(new Date(checkIn));
+  const outDate = formatNZDate(new Date(checkOut));
   return `${inDate} - ${outDate}`;
 }
 

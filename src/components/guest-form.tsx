@@ -45,7 +45,7 @@ export interface GuestData {
    * PENDING row and still triggers the consent request. `member-guest-add-call-sites`
    * and the wizard's own tests pin that.
    */
-  memberGuestConsentPreview?: "PENDING" | "NOTIFY_ONLY";
+  memberGuestConsentPreview?: "PENDING" | "NOTIFY_ONLY" | "ADMIN_ASSIGNED";
 }
 
 interface GuestFormProps {
@@ -259,7 +259,17 @@ export function GuestForm({
         const stayEnd = guest.stayEnd || bookingCheckOut || "";
         const earliestStayEnd = stayStart ? shiftDateOnly(stayStart, 1) : bookingCheckIn;
         return (
-          <div key={index} className="rounded-lg border p-4 space-y-3">
+          // #2264: each card is a named group. The fields inside repeat once
+          // per guest and several cards can be open at once, so "First Name"
+          // alone is ambiguous both to a screen reader moving between guests
+          // and to a test selecting one. The group's name is the same
+          // "Guest N" the card already shows.
+          <div
+            key={index}
+            role="group"
+            aria-label={`Guest ${index + 1}`}
+            className="rounded-lg border p-4 space-y-3"
+          >
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-sm font-medium">Guest {index + 1}</span>
             {renderGuestBadge?.(guest, index)}
@@ -276,9 +286,18 @@ export function GuestForm({
           </div>
 
           <div className="grid grid-cols-2 gap-3">
+            {/*
+              #2264: these two carried a visible <Label> that was never
+              associated with its input (no htmlFor, no id), so the ONLY way to
+              reach them — for a screen reader and for the e2e specs alike —
+              was the placeholder. They now use the same `guest-${index}-*`
+              id convention the stay-date fields below already use, which also
+              keeps each guest card's fields distinct when several are open.
+            */}
             <div className="space-y-1">
-              <Label>First Name</Label>
+              <Label htmlFor={`guest-${index}-first-name`}>First Name</Label>
               <Input
+                id={`guest-${index}-first-name`}
                 value={guest.firstName}
                 onChange={(e) => updateGuest(index, "firstName", e.target.value)}
                 placeholder="First name"
@@ -287,8 +306,9 @@ export function GuestForm({
               />
             </div>
             <div className="space-y-1">
-              <Label>Last Name</Label>
+              <Label htmlFor={`guest-${index}-last-name`}>Last Name</Label>
               <Input
+                id={`guest-${index}-last-name`}
                 value={guest.lastName}
                 onChange={(e) => updateGuest(index, "lastName", e.target.value)}
                 placeholder="Last name"

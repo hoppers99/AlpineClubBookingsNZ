@@ -22,6 +22,11 @@ vi.mock("@/lib/prisma", () => ({
       update: vi.fn(),
       updateMany: vi.fn(),
     },
+    // MG4 (#2309): the pipeline computes the family boundary for its linked
+    // members against the converted booking's owner. That owner is a non-login
+    // contact in no family group, so both reads legitimately come back empty and
+    // every linked member classifies BEYOND_FAMILY — the real production shape.
+    familyGroupMember: { findMany: vi.fn().mockResolvedValue([]) },
     bookingGuest: {
       findMany: vi.fn(),
       update: vi.fn(),
@@ -116,6 +121,23 @@ vi.mock("@/lib/admin-modules", () => ({
   isEffectiveModuleEnabled: vi.fn().mockResolvedValue(true),
 }));
 
+// MG4 (#2309): the two post-commit dispatchers, imported lazily by the school
+// pipeline. Stubbed so the test below asserts the WIRING — that a teacher an
+// officer linked to a real member account is actually told — without pulling
+// the email/template graph into this suite.
+vi.mock("@/lib/member-guest-consent-notifications", () => ({
+  sendMemberGuestAddNotifications: vi.fn(),
+  sendMemberGuestWithdrawnNotifications: vi.fn(),
+}));
+vi.mock("@/lib/member-guest-settings", () => ({
+  loadMemberGuestSettings: vi.fn().mockResolvedValue({
+    approvalRequired: true,
+    pendingHoldExpiryDays: 7,
+    openMemberSearchEnabled: false,
+    openMemberSearchIncludesMinors: false,
+  }),
+}));
+
 // #2285 (ADR-001 bed-allocation short-circuit): an exclusivity approval prunes
 // the booking's per-bed rows via the flag-keyed lifecycle reconcile — a held
 // conversion preserves pre-assigned beds (#1254), which is wrong once the
@@ -185,6 +207,11 @@ import {
   generateSchoolGuests,
 } from "@/lib/school-booking-request";
 
+import { sendMemberGuestAddNotifications } from "@/lib/member-guest-consent-notifications";
+
+const mockedMemberGuestAddNotifications = vi.mocked(
+  sendMemberGuestAddNotifications,
+);
 const mockedFindUnique = vi.mocked(prisma.bookingRequest.findUnique);
 const mockedCreate = vi.mocked(prisma.bookingRequest.create);
 const mockedUpdateMany = vi.mocked(prisma.bookingRequest.updateMany);
@@ -511,6 +538,85 @@ describe("approveSchoolBookingRequest", () => {
     vi.mocked(prisma.bookingRequest.update).mockResolvedValue({} as never);
     // Default to no member-night conflict; individual tests override to reject.
     mockedAssertNoConflicts.mockResolvedValue(undefined);
+  });
+
+  it("tells a teacher linked to a real member account that they are on the booking (MG4-D-b)", async () => {
+    // THE NO-HOLD CREATE, which is the school pipeline's own third write point
+    // and the one the issue body never listed. A school request routinely
+    // carries teacher rows an officer linked to real member accounts at pricing
+    // time; before MG4 they landed on the converted booking with no consent
+    // record and no word to the member, who then held a person-night on a
+    // stranger's booking without knowing it.
+    mockedFindUnique.mockResolvedValue(
+      schoolRequest({
+        // The officer linked the FIRST guest row — the teacher — to a member.
+        linkedGuestMembers: [{ guestIndex: 0, memberId: "m-tana" }],
+      }) as never,
+    );
+    vi.mocked(prisma.member.findMany).mockResolvedValue([
+      {
+        id: "m-tana",
+        firstName: "Tana",
+        lastName: "Teacher",
+        ageTier: "ADULT",
+        active: true,
+        canLogin: true,
+        archivedAt: null,
+      },
+    ] as never);
+    // The create selects its guest rows back, which is how the pipeline matches
+    // its notification plan to ids that only exist after the write.
+    vi.mocked(prisma.booking.create).mockResolvedValue({
+      id: "booking-1",
+      guests: [
+        { id: "bg-1", memberId: "m-tana" },
+        { id: "bg-2", memberId: null },
+        { id: "bg-3", memberId: null },
+      ],
+    } as never);
+
+    await approveSchoolBookingRequest({
+      requestId: "req-school",
+      adminMemberId: "admin-1",
+    });
+
+    // The row carries a consent record naming the approving officer...
+    const bookingArgs = vi.mocked(prisma.booking.create).mock.calls[0][0]
+      .data as { guests: { create: Array<Record<string, unknown>> } };
+    expect(
+      bookingArgs.guests.create.find((row) => row.memberId === "m-tana"),
+    ).toMatchObject({
+      consentStatus: "CONFIRMED",
+      consentRespondedByMemberId: "admin-1",
+    });
+    // ...and the member is actually told, with the pipeline's own wording.
+    expect(mockedMemberGuestAddNotifications).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bookingId: "booking-1",
+        actor: { kind: "BOOKING_REQUEST", adminMemberId: "admin-1" },
+      }),
+    );
+    const [call] = mockedMemberGuestAddNotifications.mock.calls;
+    expect(call[0].rows).toEqual([
+      expect.objectContaining({
+        bookingGuestId: "bg-1",
+        targetMemberId: "m-tana",
+        notification: "ADDED_NOTICE",
+      }),
+    ]);
+  });
+
+  it("tells nobody on an ordinary school request with no linked members", async () => {
+    // Every guest a free-text name. Nothing is planned, so the dispatcher is
+    // never even imported — the state of nearly every school approval.
+    mockedFindUnique.mockResolvedValue(schoolRequest() as never);
+
+    await approveSchoolBookingRequest({
+      requestId: "req-school",
+      adminMemberId: "admin-1",
+    });
+
+    expect(mockedMemberGuestAddNotifications).not.toHaveBeenCalled();
   });
 
   it("rejects a non-school request", async () => {
@@ -1979,8 +2085,12 @@ describe("approveMemberWholeLodgeRequest (#2263)", () => {
 
     expect(sendBookingConfirmedEmail).toHaveBeenCalled();
     const args = vi.mocked(sendBookingConfirmedEmail).mock.calls[0];
-    // Booking-scoped, so the per-booking "No emails" switch can withhold it.
-    expect(args[0]).toEqual({ bookingId: "booking-wl" });
+    // Booking-scoped, so the per-booking "No emails" switch can withhold it;
+    // the durable recipient identity also authorizes the booking detail link.
+    expect(args[0]).toEqual({
+      bookingId: "booking-wl",
+      recipientMemberId: "member-9",
+    });
     // A member is never told the lodge is exclusively held, and never told
     // whose booking overlaps (ADR-001 decision 6). Nothing in the serialised
     // arguments may mention either.

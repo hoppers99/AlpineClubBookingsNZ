@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Loader2 } from "lucide-react";
@@ -14,6 +15,10 @@ interface ChangeEmailFormProps {
 export function ChangeEmailForm({ currentEmail }: ChangeEmailFormProps) {
   const [newEmail, setNewEmail] = useState("");
   const [loading, setLoading] = useState(false);
+  // #2264 — the example address lives UNDER the field, folded into the note that
+  // was already there: a grey "new@example.com" inside the box reads as an
+  // address the form has already accepted.
+  const newEmailHint = useFieldHint();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -62,13 +67,13 @@ export function ChangeEmailForm({ currentEmail }: ChangeEmailFormProps) {
           type="email"
           value={newEmail}
           onChange={(e) => setNewEmail(e.target.value)}
-          placeholder="new@example.com"
           required
+          {...newEmailHint.fieldProps}
         />
-        <p className="text-xs text-muted-foreground">
-          A verification link will be sent to the new email address. The change
-          takes effect only after you click that link.
-        </p>
+        <FieldHint {...newEmailHint.hintProps}>
+          Example: new@example.com. A verification link will be sent to the new
+          email address. The change takes effect only after you click that link.
+        </FieldHint>
       </div>
 
       <div className="flex justify-end pt-2">

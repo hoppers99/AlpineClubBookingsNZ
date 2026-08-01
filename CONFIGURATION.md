@@ -204,6 +204,27 @@ build its own money lines from the per-piece tokens (`{{totalPaid}}`,
 `{{totalDue}}`, `{{paymentDueNote}}`, `{{paymentReference}}`); exactly one of
 `{{totalPaid}}`/`{{totalDue}}` carries a figure on any given send.
 
+On that unpaid send only, `{{paymentDueNote}}` closes with one further
+sentence: *"If the invoice asks for a different amount — for example because the
+club has put account credit you hold towards it — please transfer the amount the
+invoice shows."* The `Total Due:` line is the **booking's** price; the invoice
+the member pays against is a separate document an admin can adjust by hand, so
+the email defers to it rather than to itself. The sentence is deliberately
+conditional and names no second amount — for the great majority of members the
+invoice matches the total exactly — and it is part of the same
+`{{paymentDueNote}}` value, so no new token was added: an override that renders
+`{{paymentOutcome}}` or `{{paymentDueNote}}` picks the sentence up with no edit
+at all. An override that builds its own money lines from the per-piece tokens
+**without** either of those, as the paragraph above allows, has never carried the
+unpaid send's payment instructions and still does not — add `{{paymentDueNote}}`
+to such a body, or its members are told a `Total Due:` figure and never told how
+to pay it. The sentence renders on the unpaid send and nowhere else; on every
+other send `{{paymentDueNote}}` is empty, so it is declared emptyable and the
+editor warns if you type a label in front of it. Note that nothing nets account
+credit off such an invoice automatically: an admin who wants a member's credit
+applied does it in Xero, which is why the sentence describes a possibility
+rather than promising one.
+
 Account credit spent on the booking is explained by the pre-composed
 `{{creditNote}}` block, on the same convention again. When a member put account
 credit towards their stay it renders two reconciling lines — `Account credit
@@ -280,6 +301,22 @@ renders as an empty string, and nothing else happens. A body written as
 staying at a lodge with no door code, and a body written as
 `Requested: {{requestedAmount}}` prints a bare `Requested:` on an appeal that
 named no figure.
+
+The one security-specific exception is `{{bookingUrl}}` (#2362). It is offered
+as an **optional** chip only on templates tied to one concrete booking. The
+mailer supplies the canonical `/bookings/<encoded-id>` URL only after confirming
+that the exact signed-in recipient is the booking owner, a linked member, or an
+admin with bookings-view access. For a public/non-login contact, an aggregate
+operator message, or an unauthorized member, the renderer removes the whole
+line containing `{{bookingUrl}}`; it does not leave a bare label. Existing
+stored override source and re-save behavior are not rewritten, and public bearer
+links such as `/pay/<token>` or consent/respond URLs remain separate and
+unchanged. At delivery time, a legacy/admin-authored authenticated booking href
+is removed from an unauthorized override copy; authorized output is unchanged.
+Failed retry-safe booking mail repeats both the current authority check and the
+current direct/inherited mailbox match from durable recipient context before
+replay. Retained new-version booking HTML is isolated from the legacy retry
+column, so rolling the application back to the pre-#2362 worker cannot resend it.
 
 Anything optional is therefore supplied as a **pre-composed line**: the sender
 builds the whole line — label, value and its trailing blank line — or the empty
@@ -1625,13 +1662,14 @@ cannot be read, optional modules fail closed.
 | Promo codes | on | Promo-code administration and promo-aware booking flows. |
 | Hut leaders | on | Hut-leader assignments, kiosk access, and auto-assignment. |
 | Communications | on | Admin bulk email to members. Transactional notifications are unaffected. |
+| Events calendar | on | Club events calendar for meetings, working bees, and social events, with recurring events and optional MiroTalk video-meeting links. Defaults on, which is exactly how the calendar behaved before it had a module at all, so an existing club sees no change. Switching it off makes `/calendar`, `/admin/calendar`, and `/api/calendar/*` return Not Found and removes the dashboard Events card; existing events are kept and reappear if it is switched back on. Organisation accounts never see the calendar whether the module is on or off. |
 | Ski-field conditions | on | Live mountain/road status panel, public API routes, and admin cache controls. |
 | Two-factor authentication | off | Requires users to complete authenticator-app, email-code, or recovery-code verification after password login. |
 | Email sign-in link | off | Lets members request a single-use email link to sign in without their password (additive to password login, never a replacement). Only ever works for existing active members with a verified email; the `magic-link-login` link expiry defaults to 15 minutes (stored on the Login & Security settings, range 5–60) and is read by the sign-in request flow. |
 | Google sign-in | off | Lets members sign in with a Google account they have linked from their profile (additive to password login, never a replacement). Credentials are entered and verified **in-app** on the Google sign-in setup page (Admin → Integrations → Google) — no env vars, no restart. The module cannot be turned on until a real Google OAuth round-trip verifies (hard gate), and replacing a credential re-locks it until re-verified. The "Continue with Google" button appears only when the module is on AND credentials resolve. No account is ever created from Google, and an unlinked Google account is refused with a friendly message. See the Google sign-in section below. |
 | Google Analytics | off | Consent-gated GA4 tracking on public website and public account pages. Requires `NEXT_PUBLIC_GA_MEASUREMENT_ID`; GA scripts load only after a visitor accepts the analytics banner. |
 | AI help assistant | off | Free-text help questions answered by a paid AI model (Anthropic Claude Haiku), grounded strictly in each page's curated help content. The Anthropic API key is entered **in-app** on Admin → Integrations (encrypted vault, never an env var). Unlike Google sign-in there is **no** enable-gate on a present key — with the module on but no key, the ask box degrades to a structured fallback and curated page help still works. A monthly spend cap (default NZ$10) hard-stops AI answers for the rest of the month once reached. See the AI help assistant section below. |
-| Add another member as a guest | off | Lets a member add another club member, outside their own family group, as a guest on their booking. With the module off, a cross-family add is refused exactly as it was before this feature existed, so an existing club sees no change until an admin turns it on. With it on, the other member is emailed and asked first by default, and a bed is held for them until they answer or the request lapses. A member who has been asked but has not answered holds a bed and is deliberately kept off the kiosk arrivals list, the chore roster, bed allocation and the arrival emails until they accept. See the member-guest settings section below. |
+| Add another member as a guest | off | Lets a member add another club member, outside their own family group, as a guest on their booking. With the module off, a cross-family add is refused exactly as it was before this feature existed, so an existing club sees no change until an admin turns it on. With it on, the other member is emailed and asked first by default, and a bed is held for them until they answer or the request lapses. A member who has been asked but has not answered holds a bed and is deliberately kept off the kiosk arrivals list, the chore roster, bed allocation and the arrival emails until they accept. The surface exists both when a booking is created and when it is edited, and admins get the same section on a member's booking page. Turning the module on also brings admin adds, the admin booking-copy and the booking-request pipeline under the always-notify rule; with it off, none of those write a consent record or send anything. See the member-guest settings section below. |
 
 ### Member-guest settings
 
@@ -1653,6 +1691,17 @@ running on the defaults below and nothing has been written.
 | Pending hold expiry (days) | 7 (range 1–60) | yes | How long a bed stays held for a member who has been asked and has not answered. After that the hold is released. |
 | Open member search | off | **no** | Off means a booker can only find another member by typing their exact email address. On makes the club's member name list browsable to anyone who can start a booking. |
 | Include minors in open member search | off | **no** | Off means minors are excluded from that browsable list even when open member search is on. |
+
+**Who the settings do and do not bind.** The two search settings are about what
+MEMBERS can see. An admin's own member picker on a booking is not bound by
+either: an admin holding membership view access can already browse the whole roll
+from Admin → Members, so gating their booking-side picker on a member-facing
+privacy switch would protect nothing and only slow an officer down. The rider is
+that the admin name search is gated on the **membership** permission area rather
+than on bookings — a Booking Officer whose role has membership access removed
+gets the exact-email box instead, which preserves the guarantee that such a role
+never sees a member directory. Every admin lookup is written to the audit log
+against the officer who made it, exactly as a member's is.
 
 The two search settings deliberately **never travel** in a club config transfer
 (owner decision D-18): importing another club's bundle must not widen this

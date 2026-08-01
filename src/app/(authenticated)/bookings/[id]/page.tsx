@@ -84,6 +84,11 @@ import {
 } from "@/lib/admin-bed-allocation";
 import { BED_ALLOCATABLE_BOOKING_STATUSES } from "@/lib/bed-allocation-lifecycle";
 import { formatDateOnly } from "@/lib/date-only";
+import {
+  formatNZDate,
+  formatNZDateTime,
+  formatNZLongDate,
+} from "@/lib/nzst-date";
 import { getBookingProviderMismatches } from "@/lib/booking-provider-mismatches";
 import { loadEmailMessageSettingsForLodge } from "@/lib/email-message-settings";
 import { loadPublicBookingMessages } from "@/lib/booking-message-settings";
@@ -106,7 +111,17 @@ import {
   formatConsentWeekdayDate,
   resolveBookingConsentCard,
 } from "@/lib/member-guest-consent-card";
+// Kept as its OWN single-line import, deliberately: a source contract in
+// arrival-instructions-consent-gate.test.ts matches this line verbatim, because
+// D-12's exclusion has to be visibly the SHARED predicate on this page rather
+// than a hand-rolled filter. Folding it into the import below would satisfy the
+// compiler and break the guard.
 import { isOperationallyPresentConsent } from "@/lib/member-guest-consent";
+import { MEMBER_GUEST_MODULE_KEY } from "@/lib/member-guest-consent";
+import { classifyMemberGuestConsent } from "@/lib/member-guest-consent";
+import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
+import { loadMemberGuestSettings } from "@/lib/member-guest-settings";
+import { resolveMemberGuestNameSearchAccess } from "@/lib/member-guest-find";
 import { eachDateOnlyInRange, getTodayDateOnly } from "@/lib/date-only";
 import {
   bookingManagementAuthorizationRole,
@@ -787,6 +802,64 @@ export default async function BookingDetailPage({
       }
     : null;
 
+  /**
+   * MG4 (#2309): the edit panel's "+ Add Member Guest" surface, decided HERE.
+   *
+   * SERVER-SIDE, ON PURPOSE. The module flag and the policy singleton are
+   * settings reads, and `BookingEditorData` is serialised into a client
+   * component's payload — so the panel is handed an answer rather than left to
+   * guess one and render a finder whose routes then 404.
+   *
+   * ABSENT WHEN THE MODULE IS OFF, as a conditional SPREAD rather than a
+   * false-valued key. React Flight serialises the key as well as the value, so
+   * `memberGuest: undefined` would still ship `"memberGuest":"$undefined"` and
+   * change every club's payload; omitting the key leaves a non-adopting club's
+   * booking page byte-for-byte what it was.
+   *
+   * TWO READERS, ONE FIELD. `openSearchEnabled` answers "may THIS reader search
+   * by name", which is a different question for each: the club's own privacy
+   * setting for a member, and `membership:view` for an officer (owner decision
+   * D-20 — an admin picker is not bound by a member-facing privacy switch, and
+   * the #1376 persona without membership access falls back to exact email).
+   *
+   * AND "WHICH READER" IS DECIDED BY THE SAME PREDICATE THE PANEL ROUTES ON,
+   * which is `viewerAuthorizationRole === "ADMIN"` — i.e. `bookings:edit`. It
+   * was previously `isAdmin || canViewAsAdmin` (`bookings:view`), and the two
+   * disagree over a real, shipped persona: a read-only bookings viewer. One
+   * holding `membership:view` was handed a name type-ahead while the panel sent
+   * them down the MEMBER routes, where the name search 404s unless the club
+   * turned open search on — a search box that silently fails. One WITHOUT
+   * `membership:view` was denied name search on a club that had deliberately
+   * turned it on for every member, including them. Deriving both from one
+   * predicate is the fix: whoever is not in admin mode is a member for this
+   * purpose and gets exactly the club's member-facing answer.
+   *
+   * THE FAMILY BOUNDARY IS NOT SHIPPED FROM HERE, and that is deliberate rather
+   * than an omission. The panel already fetches the booking owner's family list
+   * for its quick-add row — `/api/members/family` for a member, the booking's
+   * `eligible-family` for an officer — so it holds the same set this page would
+   * have had to query for, and reading it from the row it already renders means
+   * the panel's idea of "my family" cannot disagree with the buttons above it.
+   * That is the create wizard's rule (`predictMemberGuestConsent`), applied to
+   * the second surface rather than re-derived for it.
+   */
+  const memberGuestModuleEnabled = await isEffectiveModuleEnabled(
+    MEMBER_GUEST_MODULE_KEY,
+  );
+  const memberGuestSettings = memberGuestModuleEnabled
+    ? await loadMemberGuestSettings()
+    : null;
+  // `viewerAuthorizationRole === "ADMIN"` and nothing else: it is the exact
+  // value shipped as `viewerRole` below, and the value the panel branches on to
+  // choose the admin picker's routes. See the note above.
+  const canSearchMembersByName = resolveMemberGuestNameSearchAccess({
+    actingAsAdmin: viewerAuthorizationRole === "ADMIN",
+    hasMembershipView: hasAdminAreaAccess(session.user, {
+      area: "membership",
+      level: "view",
+    }),
+    clubNameSearchEnabled: memberGuestSettings?.openMemberSearchEnabled ?? false,
+  });
   const editorData: BookingEditorData = {
     id: booking.id,
     checkIn: new Date(booking.checkIn).toISOString().split("T")[0],
@@ -815,7 +888,14 @@ export default async function BookingDetailPage({
             ? (consentResponderNameById.get(g.consentRespondedByMemberId) ?? null)
             : null,
         });
-        return consent ? { consent } : {};
+        // MG4 (#2309) adds the SUB-STATE beside the badge, because the edit
+        // panel needs to tell "still being asked" from "the club put them
+        // here" and a tone of `"ok"` covers both plus every ordinary consent.
+        // Classified here, from the persisted columns, rather than inferred
+        // client-side from a label string an admin can override.
+        return consent
+          ? { consent: { ...consent, subState: classifyMemberGuestConsent(g, g.memberId) } }
+          : {};
       })(),
     })),
     viewerRole: viewerAuthorizationRole,
@@ -836,6 +916,15 @@ export default async function BookingDetailPage({
     nonMemberHoldUntil: booking.nonMemberHoldUntil?.toISOString() ?? null,
     canEditNonMemberGuestNames,
     canFixNonMemberGuestNameTypos,
+    ...(memberGuestSettings
+      ? {
+          memberGuest: {
+            enabled: true,
+            openSearchEnabled: canSearchMembersByName,
+            approvalRequired: memberGuestSettings.approvalRequired,
+          },
+        }
+      : {}),
     // #2104: an already-flagged/reviewed booking must not re-prompt the member
     // for a justification when the guest list shuffles — the edit panel keys the
     // proactive field on these (the server only demands a reason on the FIRST
@@ -1030,8 +1119,12 @@ export default async function BookingDetailPage({
   const bookingMessageData = {
     bookerFirstName: booking.member.firstName,
     bookerFullName: `${booking.member.firstName} ${booking.member.lastName}`,
-    checkIn: booking.checkIn.toLocaleDateString("en-NZ", { dateStyle: "long" }),
-    checkOut: booking.checkOut.toLocaleDateString("en-NZ", { dateStyle: "long" }),
+    // Member-facing: these two land in the booking messages and the emails
+    // built from them, so they keep the long "16 April 2026" form the club has
+    // always sent (owner decision, #2264). Admin-side dates on this page use
+    // the medium `formatNZDate`.
+    checkIn: formatNZLongDate(booking.checkIn),
+    checkOut: formatNZLongDate(booking.checkOut),
     guestCount: booking.guests.length,
     amountDue: formatCents(amountDueAfterCreditCents),
     amountPaid: booking.payment ? formatCents(booking.payment.amountCents) : "",
@@ -1051,10 +1144,7 @@ export default async function BookingDetailPage({
     paymentReference: internetBankingPayment?.reference ?? "",
     xeroInvoiceNumber: internetBankingPayment?.xeroInvoiceNumber ?? "",
     holdUntil: internetBankingPayment?.internetBankingHoldUntil
-      ? internetBankingPayment.internetBankingHoldUntil.toLocaleString("en-NZ", {
-          dateStyle: "medium",
-          timeStyle: "short",
-        })
+      ? formatNZDateTime(internetBankingPayment.internetBankingHoldUntil)
       : "",
     holdDays: "",
     minimumDaysBeforeCheckIn: "",
@@ -1351,7 +1441,7 @@ export default async function BookingDetailPage({
         <div className="rounded-md border border-danger-6 bg-danger-3 px-4 py-3 text-sm text-danger-11">
           <p className="font-medium">Deleted cancelled booking</p>
           <p>
-            Deleted {booking.deletedAt?.toLocaleString("en-NZ")}
+            Deleted {booking.deletedAt ? formatNZDateTime(booking.deletedAt) : ""}
             {booking.deletedBy
               ? ` by ${booking.deletedBy.firstName} ${booking.deletedBy.lastName}`
               : ""}
@@ -1658,11 +1748,7 @@ export default async function BookingDetailPage({
                   </div>
                   <p className="mt-1 text-muted-foreground">
                     Submitted{" "}
-                    {request.createdAt.toLocaleDateString("en-NZ", {
-                      day: "numeric",
-                      month: "short",
-                      year: "numeric",
-                    })}
+                    {formatNZDate(request.createdAt)}
                   </p>
                   {request.reason ? (
                     <p className="mt-2 text-muted-foreground">{request.reason}</p>
@@ -2275,13 +2361,7 @@ export default async function BookingDetailPage({
                       {item.title}
                     </span>
                     <span className="text-xs text-muted-foreground">
-                      {item.occurredAt.toLocaleDateString("en-NZ", {
-                        day: "numeric",
-                        month: "short",
-                        year: "numeric",
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
+                      {formatNZDateTime(item.occurredAt)}
                     </span>
                   </div>
                   {item.detail ? (

@@ -18,6 +18,7 @@ import {
   effectiveSubscriptionBehavior,
   isSubscriptionNotRequiredForMembershipType,
 } from "@/lib/membership-types";
+import { serializeSubscriptionMemberLoginStage } from "@/lib/subscription-member-login-stage";
 
 const subscriptionStatuses = [
   "PAID",
@@ -70,6 +71,9 @@ type SubscriptionCandidate = {
     email: string;
     ageTier: string;
     role: string;
+    canLogin: boolean;
+    hasCompletedAccountSetup: boolean;
+    pendingInviteExpiresAt: Date | null;
     xeroContactId: string | null;
     seasonalMembershipAssignments?: Array<{
       membershipType: { subscriptionBehavior: string };
@@ -247,6 +251,14 @@ export async function GET(request: NextRequest) {
               email: true,
               ageTier: true,
               role: true,
+              canLogin: true,
+              passwordChangedAt: true,
+              lastLoginAt: true,
+              passwordResetTokens: {
+                orderBy: { createdAt: "desc" },
+                take: 1,
+                select: { expiresAt: true, used: true },
+              },
               xeroContactId: true,
               seasonalMembershipAssignments: {
                 where: { seasonYear },
@@ -270,6 +282,14 @@ export async function GET(request: NextRequest) {
           email: true,
           ageTier: true,
           role: true,
+          canLogin: true,
+          passwordChangedAt: true,
+          lastLoginAt: true,
+          passwordResetTokens: {
+            orderBy: { createdAt: "desc" },
+            take: 1,
+            select: { expiresAt: true, used: true },
+          },
           xeroContactId: true,
           seasonalMembershipAssignments: {
             where: { seasonYear },
@@ -305,7 +325,7 @@ export async function GET(request: NextRequest) {
         manualPaymentNote: subscription.manualPaymentNote,
         xeroContactGroupsLoaded: true,
         xeroContactGroups: [],
-        member: subscription.member,
+        member: serializeSubscriptionMemberLoginStage(subscription.member),
       });
     }
 
@@ -322,7 +342,7 @@ export async function GET(request: NextRequest) {
         manualPaymentNote: null,
         xeroContactGroupsLoaded: true,
         xeroContactGroups: [],
-        member,
+        member: serializeSubscriptionMemberLoginStage(member),
       });
     }
 

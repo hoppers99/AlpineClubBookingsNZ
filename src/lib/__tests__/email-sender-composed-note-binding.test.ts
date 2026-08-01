@@ -171,6 +171,7 @@ describe("#2320 review — senders supply the composed notes their defaults rend
   it("split-guest-portion-cancelled: {{ownBookingNote}} is supplied and renders its reassurance sentence", async () => {
     await sendSplitGuestPortionCancelledEmail({
       bookingId: "booking_1",
+      recipientMemberId: "member_1",
       email: "member@example.org",
       firstName: "Alice",
       checkIn: new Date("2026-07-10"),
@@ -216,7 +217,7 @@ describe("#2430 booking-bumped points each recipient class somewhere it can go",
     recipientCanBookOnline: boolean,
   ): Promise<EmailTemplateData> {
     await sendBookingBumpedEmail(
-      { bookingId: "booking_1" },
+      { bookingId: "booking_1", recipientMemberId: "member_1" },
       "someone@example.org",
       "Alice",
       new Date("2026-07-10"),

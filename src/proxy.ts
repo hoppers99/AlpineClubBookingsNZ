@@ -298,6 +298,17 @@ export default proxy;
  * those are `public/` asset shapes and running the proxy on them would mint a
  * nonce per image. `isPublicWebsitePath()` is aligned to agree, and
  * `csp-proxy.test.ts` asserts the two definitions cannot drift apart again.
+ *
+ * Because that lookahead drops the whole of `/api`, the explicit entries below
+ * are the ONLY way an API path reaches the proxy — so every `/api` prefix and
+ * every `/api` regex in `FEATURE_ROUTE_RULES` must be covered by an entry here,
+ * or its module gate is dead code (#2435: the member-guest consent pattern had
+ * none, so the `memberGuests` gate never ran in front of that endpoint). A
+ * PREFIX rule gates a whole subtree, so its entry has to end in `:path*` — a
+ * bare literal leaves every child gated-but-unmatched. Entries must be static
+ * literals; Next parses this list at build time. `csp-proxy.test.ts` asserts
+ * the two lists cannot drift apart again, probing each prefix at its bare path
+ * and at a child, and each pattern once per alternation branch.
  */
 export const config = {
   matcher: [
@@ -331,10 +342,17 @@ export const config = {
     "/api/admin/work-parties/:path*",
     "/api/admin/xero/:path*",
     "/api/address-autocomplete/:path*",
+    "/api/bookings/:id/guests/:guestId/consent",
     "/api/bookings/:id/waitlist-confirm",
     "/api/admin/bookings/:id/force-confirm",
+    // Events calendar (#2241): the eventsCalendar rule in
+    // src/config/feature-routes.ts gates "/api/calendar", and the first matcher
+    // entry above excludes every "/api/..." path, so without this entry the
+    // proxy would never run on the calendar API and that half of the rule would
+    // be dead.
+    "/api/calendar/:path*",
     "/api/chores/:path*",
-    "/api/cron/xero",
+    "/api/cron/xero/:path*",
     "/api/display/:path*",
     "/api/finance/:path*",
     "/api/group-bookings/:path*",
@@ -344,7 +362,7 @@ export const config = {
     "/api/promo-codes/:path*",
     "/api/skifield-conditions/:path*",
     "/api/skifield-whakapapa/:path*",
-    "/api/webhooks/xero",
+    "/api/webhooks/xero/:path*",
     "/api/work-parties/:path*",
   ],
 };

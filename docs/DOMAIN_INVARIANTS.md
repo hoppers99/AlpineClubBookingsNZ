@@ -346,6 +346,36 @@ Future reviews and issues should cite this file when proposing changes.
   (`setHours(0,0,0,0)`) instant: under the `TZ=Pacific/Auckland` server pin the
   latter resolves to `(D-1)T12:00Z` and shifts the boundary by a day for the
   first ~13h of each NZ day (F8/F32, #1888).
+- **Rendering** a date or a time is a separate invariant from storing or
+  comparing one, and has its own single seam: `src/lib/nzst-date.ts`. Its six
+  helpers — `formatNZDate` ("16 Apr 2026"), `formatNZDateTime`
+  ("16 Apr 2026, 11:30 am"), `formatNZLongDate` ("16 April 2026"),
+  `formatNZTime` ("11:30 am"), `formatNZMonthYear` ("April 2026") and
+  `formatNZWeekdayDate` ("Thu, 16 Apr 2026") — each pin BOTH `APP_LOCALE` and
+  `APP_TIME_ZONE`. A bare `toLocaleDateString()` / `toLocaleTimeString()` /
+  `toLocaleString()` renders in the VIEWER's zone and locale, so an
+  administrator abroad read a different lodge night than the one stored, and a
+  lobby-display television reported its own local time (#2256, #2264). An
+  `eslint` `no-restricted-syntax` rule over `src/**` now blocks all three calls;
+  the documented exclusions are written out in `eslint.config.mjs`. Three files
+  format NUMBERS with `Number.prototype.toLocaleString` (thousands separators)
+  and are listed there with a narrowed rule that lifts only `toLocaleString`,
+  keeping both date restrictions. The rule's selector is syntactic, so computed
+  access (`d["toLocaleDateString"]()`) and detached-method aliasing escape it —
+  an accepted limitation, not a gap anyone writes by accident. A screen whose
+  format is legitimately none of the six — weekday-bearing boards, compact
+  grids, the seconds-bearing audit log, an `en-CA` ISO extractor — declares a
+  module-level
+  `new Intl.DateTimeFormat(APP_LOCALE, { timeZone: APP_TIME_ZONE, … })` constant
+  instead. That, not an `eslint-disable`, is the escape hatch, and there are no
+  disables in the tree.
+- `formatNZLongDate` is reserved for the MEMBER-FACING surfaces the owner asked
+  to keep the long spelled-out month on (#2264): booking messages and the emails
+  built from them, the lodge and hut-leader instruction "last updated" stamps,
+  and the generated report cover. Admin and internal screens use the medium
+  `formatNZDate`. `src/lib/__tests__/member-facing-long-dates.test.ts` pins the
+  four call sites so a later "tidy every date onto formatNZDate" pass fails
+  loudly rather than silently shortening what a member reads.
 - Two check-out boundaries coexist by design (#2029). The completion cron flips
   PAID → COMPLETED only once `checkOut < todayNZ` — the entire NZ check-out day
   stays PAID and self-editable/extendable — whereas the admin "finished stay"
@@ -356,6 +386,26 @@ Future reviews and issues should cite this file when proposing changes.
   the check-out day itself for payment chasing, while completion is a next-day
   transition of PAID bookings. A booking is therefore never both counted as a
   finished-stay-needing-payment AND still PAID-completable under the same rule.
+- Base Reports uses lodge nights, never booking creation time (#2368). Its
+  selected From/To window is inclusive and overlaps the half-open booking stay
+  `[checkIn, checkOut)`. Every non-occupancy figure uses one explicit positive
+  cohort: `PENDING`, `PAYMENT_PENDING`, `CONFIRMED`, `PAID`,
+  `AWAITING_REVIEW`, and `COMPLETED`, with the same lodge/deleted scope. Count
+  bookings once per overlapped bucket. Count guest rows once when their own
+  half-open `[stayStart, stayEnd)` envelope overlaps the selected range; sparse
+  explicit guest-night rows do not override that envelope for this metric.
+  Allocate all integer cents of `finalPriceCents` across the
+  booking's complete stay before slicing the report range (100/3 = 34/33/33).
+  This is **Booked revenue**, not cash. Net collected cash stays payment-derived
+  (`Payment.amountCents` less refunds, with a captured addition already inside
+  that amount; #2408), and outstanding additions remain separate (#2350). The
+  #2408 guard is binding here too: a collected-addition claim without captured
+  `ADDITIONAL` transaction evidence must not change cash arithmetic or leak
+  transaction rows, but must log and expose an aggregate possible-understatement
+  warning in the page, CSV, and PDF. All Reports money presentation preserves
+  exact integer cents.
+  Occupancy is the deliberate exception within the page: it stays limited to
+  PAID/COMPLETED and continues to exclude custodian occupancy (#2286).
 - Capacity is per lodge. A booking belongs to exactly one lodge
   (`Booking.lodgeId`); capacity is "beds available on date D at lodge L", and
   no code path may sum beds across lodges into a single club-wide number. Two
@@ -1359,6 +1409,32 @@ Future reviews and issues should cite this file when proposing changes.
   are built from ONE shared row builder (`appliedCreditSummaryRows`), the
   `{{promoSummary}}` precedent, so the two paths cannot tell different stories
   about the same booking. Money is integer cents throughout.
+- An UNPAID confirmation defers to the INVOICE, and promises nothing about it
+  (#2444). The `paymentDue` branch states the booking's own price as `Total Due`
+  and asks for an internet-banking transfer, but the document the member pays
+  against is the club's invoice, which an admin can adjust by hand — netting
+  account credit off it is the commonest reason. The paragraph therefore closes
+  with a CONDITIONAL sentence — "If the invoice asks for a different amount —
+  for example because the club has put account credit you hold towards it —
+  please transfer the amount the invoice shows" — which is honest for the great
+  majority of members, whose invoice matches the total exactly. It names NO
+  second figure and makes NO Xero read: a transactional confirmation must not
+  carry a provider round-trip, or a provider outage, in its send path. Stating
+  the real net figure is deferred work (owner decision, 1 Aug 2026), not an
+  omission.
+  **The sentence must not promise that credit WILL be applied.** The one send
+  site (member whole-lodge approval) mints a brand-new booking and writes no
+  `MemberCredit` row, so the `enqueueXeroAppliedCreditAllocationOperation` call
+  it makes always short-circuits — allocate-existing below fires only on credit
+  APPLIED app-side — and the Xero invoice is raised for, and stays at, the full
+  price. A first draft of this copy asserted the netting and was corrected
+  before merge; reinstating it requires making the allocation real first.
+  The sentence is composed by `bookingPaymentDueNote` and rendered from that ONE
+  composer by both the hand-built HTML and the `{{paymentDueNote}}` token
+  (carried whole inside `{{paymentOutcome}}`), on the same anti-drift principle
+  as the credit rows above; it rides on an EXISTING token, so an override a club
+  saved before #2444 keeps rendering it. Every other money outcome — paid,
+  partly paid, and fully credit-covered — is byte-for-byte unchanged.
 - Applied credit reduces the Internet-Banking invoice by ALLOCATING the member's
   EXISTING floating credit notes (#1620, "allocate-existing"; owner decision
   2026-07-08). A member's credit is already represented in Xero as floating
@@ -1733,6 +1809,73 @@ because both are surprising and neither should be discovered by a member:
   deliberately includes the member's own pending rows and exports
   `consentStatus` as a field. Excluding them would make the export incomplete
   about a commitment that exists.
+
+**MG4 (#2309) closes the last three paths.** MG1 provisioned the columns, MG2
+turned them on for the member-facing add, MG3 built the finder, and MG4 covers
+the edit path, admin parity and the booking-request pipeline. Its rules:
+
+- **Adding a member guest while EDITING is the same act as adding one while
+  creating.** The edit panel's section goes through the modification path, which
+  resolves the family boundary and plans consent through the same single writer
+  every other add uses. There is no second consent rule for the edit path, and a
+  refusal on it is the same neutral D-8 sentence.
+- **Every path that can place a member on a booking now records who did it and
+  tells the member.** Four write points reach this: the member add, the admin
+  add, the admin booking-copy, and the booking-request pipeline (owner decisions
+  MG4-D-a and MG4-D-b). The pipeline has THREE such points, not the two the issue
+  body named — the capacity hold's booking create, the approval-time guest swap,
+  and the approval that runs with no hold behind it — and all three write
+  `ADMIN_ASSIGNED` naming the approving officer. There is no exemption: MG4-D-b
+  was ticked in the direction of bringing the pipeline under the rule, so this
+  section records the rule rather than an exception to it.
+- **A held booking's guest swap can substitute one person for another in place.**
+  The approval preserves each guest row's id so pre-assigned beds survive
+  (#1254), which means replacing a member on a row looks like an ordinary update.
+  Both parties must be told: the newcomer that they are on the booking, the
+  person dropped that they are not. A reused row's consent record is cleared when
+  the person on it changes — a stale `ADMIN_ASSIGNED` would vouch for somebody
+  who was never asked, which `classifyMemberGuestConsent` calls a broken row.
+- **A member guest who comes OFF a booking is told, once, by whichever path
+  removed them.** `member-guest-request-withdrawn` covers a request called off
+  before anybody answered, a settled member guest taken off, and a pipeline
+  substitution. It is sent by the single-guest removal route and the batch edit
+  and by NOTHING else: a decline and a lapse each already have their own message
+  for the same event, and a member removing themselves is not told what they just
+  did. A row whose `consentStatus` is `NULL` owes nobody anything, because no
+  message was ever sent about it.
+- **"Always notify" beats the per-action tick and the member's preferences, and
+  loses to the per-booking No-emails switch** (owner decision D-16, and the
+  precedent D10 set over #1705's invoice email). None of the six member-guest
+  senders consults `shouldSendEmail`, and no caller gates them on an admin's
+  notify choice — being asked, being told you are on a booking, and being told
+  you are off it are not courtesy messages. All six pass a real `bookingContext`,
+  so a silenced booking withholds them and each withheld send lands on that
+  booking's withheld-banner record where an operator can see what was held back.
+- **The officer's member picker gates its NAME mode on `membership:view`, not on
+  `bookings:edit`** (owner decision D-20). It is deliberately NOT bound by the
+  club's two member-facing privacy switches: an admin holding `membership:view`
+  can already browse the whole roll from `/admin/members`, so gating their
+  booking-side picker on a member-facing setting protects nothing. The rider is
+  what keeps #1376 true — a Booking Officer whose role carries no membership
+  access gets a 404 on the NAME mode and falls back to exact-email resolve, which
+  needs only `bookings:edit`. Every officer lookup is audited through the same two
+  writers the member routes use, including the malformed-address and
+  lookup-failed outcomes, so officers are not invisible in the trail that exists
+  to make browsing detectable. The **email mode is a `POST` with the address in
+  the body**, matching `POST /api/members/guest-candidates/resolve`: a member's
+  address must never travel in a URL, where it would reach the access log, the
+  browser history and the `Referer` of everything the page loads next.
+- **Which reader gets which picker is decided by ONE predicate**
+  (`resolveMemberGuestNameSearchAccess`), the same `viewerRole === "ADMIN"` the
+  edit panel uses to choose its routes. Deciding "may this reader search by name"
+  from a different permission than "which routes will this reader call" strands
+  the read-only bookings viewer between them: with `membership:view` they get a
+  name box that 404s on the member route, and without it they lose a search their
+  club turned on for every member.
+- **Exactly one file turns either open-search value into a decision about who is
+  discoverable.** Routes declare the AUDIENCE they are serving;
+  `member-guest-find-service.ts` decides what that means. A second decision site
+  is how two surfaces come to disagree about whether the roll is browsable.
 
 The eight legal column shapes, and only those eight, are. In the four column
 cells, **null** means the column must be `NULL`, **set** means it must be
@@ -2148,8 +2291,20 @@ The rules are:
   address-keyed switch would also swallow two-factor codes, password resets,
   magic-link logins and email-change notices — account lockout, not a
   preference. Every send therefore carries a REQUIRED, typed `bookingContext`
-  (`{ bookingId } | "none"`), so a new send site is a compile error until its
-  author states which it is.
+  (`{ bookingId, recipient } | "none"`), so a new send site is a compile error
+  until its author states which it is. For a concrete booking the context also
+  names the recipient category (an explicit member id, public/non-login, or
+  aggregate operator), so address matching can never stand in for authority.
+- **Authenticated booking links follow the booking-detail read gate (#2362).**
+  A concrete booking email receives the canonical, encoded
+  `/bookings/<booking-id>` URL only when the recipient is active, can sign in,
+  and is the owner, a linked booking guest, or holds bookings-view admin access;
+  the outbound address must also still equal that member's current direct or
+  flattened inherited mailbox.
+  Deleted bookings remain Full-Admin-only. Public/non-login contacts, aggregate
+  reports, unrelated members, failed authority reads, and templates outside the
+  live booking-scoped inventory receive no authenticated booking URL. Bearer
+  payment, quote, consent, and response links stay distinct and unchanged.
 - **Admin-audience mail is never withheld.** The registry's
   `EmailTemplateDefinition.audience` is the authority, so admin/system alerts
   (payment failure, duplicate-capture refund, and the rest) still reach an
@@ -2164,7 +2319,17 @@ The rules are:
   body, and the status is terminal).
 - **The retry cron re-evaluates before every replay.** A `FAILED` row can
   predate the moment the switch was turned on, so `cron-email-retry.ts` re-reads
-  it from the row's `bookingId` and fails closed the same way.
+  it from the row's `bookingId` and fails closed the same way. It also repeats
+  the booking-detail authority check from durable `EmailLog` recipient/context
+  provenance; the address is matched to that identity's current direct or
+  flattened inherited mailbox, never used as identity by itself. Built-in and
+  stored-override DELIVERY copies are re-finalized before the guarded retry
+  claim, so a revoked/stale recipient loses the detail CTA while bearer actions
+  and page fragments remain intact. Stored override SOURCE and re-save behavior
+  stay byte-for-byte unchanged. Legacy rows with no durable context retire
+  without sending. New booking retry bodies live only in the authority-aware
+  `bookingRetryHtmlBody` column; legacy `htmlBody` stays null so an application
+  rollback to the pre-#2362 worker cannot replay them without these checks.
 - **Waitlist candidacy excludes a silenced booking.**
   `processWaitlistForDates` filters on `noEmails: false`, so no NEW offer is
   made to a silenced entry and, in the ordinary case, no offer clock starts for
@@ -3278,6 +3443,24 @@ the correct member identity — and therefore correct member pricing — instead
 silently re-adding the member as a mispriced non-member. The member-scoped
 `GET /api/admin/members/[id]/family` remains gated on `membership:view` for
 membership surfaces.
+MG4 (#2309) adds a **third** bookings-scoped picker, and it is the one
+exception to the sentence above — stated here rather than left for a reader to
+discover, because the exception is deliberate and owner-decided (D-20).
+`/api/admin/bookings/[id]/member-guest-candidates` finds a member to add as a
+**member guest** on the booking being edited, and it has two modes with two
+different gates. The **email mode** (`POST`, the address in the body so it never
+reaches an access log or a `Referer`) behaves exactly like the two pickers above:
+`bookings:edit` only, no membership access required. The **name mode** (`GET`,
+a name fragment) **does require `membership:view`**, and a Booking Officer
+without it gets a 404 on that mode alone — the same answer the member route
+gives when open search is off — and falls back to the exact-email box. That
+preserves #1376 in full: the officer keeps every capability, including correct
+member identity and member pricing, and loses only a type-ahead over the
+membership roll they were deliberately not given access to. A picker that
+browsed the whole roll from inside a booking would have undone #1376 through a
+door nobody thought to look at. The same decision statement governs whether the
+club's member-facing open-search setting binds an officer (it does not) — see
+the member-guest consent cluster above.
 On-behalf CREATION is aligned with modification (#1313/#1442): `/api/bookings`,
 `/api/bookings/quote`, and `/api/promo-codes/validate` authorize a
 `forMemberId` via `bookingManagementAuthorizationRole` (`bookings:edit`), so a
@@ -3448,9 +3631,17 @@ public `/api/images/[id]` content path — that content route enforces the split
 in code by returning 404 for any non-`CONTENT` row, so the invariant holds even
 if a `MEMBER_PHOTO` id is learned. A photo is public **only** when the member
 is active and holds an active, published `CommitteeAssignment` — the same
-predicate `/api/committee` uses (which is uncapped, so every publicly-rostered
-member is exactly the set whose photo is servable); otherwise it is visible
-solely to the member or a `membership:view` admin. The committee-public ETag is
+predicate `/api/committee` uses, so every publicly-rostered member is the set
+whose photo is servable; otherwise it is visible solely to the member or a
+`membership:view` admin. The photo rule is the predicate alone: the roster
+endpoint additionally applies a pathological `take: 500` backstop
+(`src/app/api/committee/route.ts`) against a misconfigured or hostile admin
+publishing an absurd number of assignments on an unauthenticated public route.
+That backstop is far above any real committee (typically <30) so it never trims
+a genuine roster, but it is a display bound, not a narrowing of the predicate —
+past 500 published assignments the roster would list fewer members than have
+servable photos, which is the safe direction (a photo is never made public by
+being trimmed off the roster). The committee-public ETag is
 an opaque digest, never the raw `MediaImage` id. Uploaded photos have their
 EXIF/XMP/comment metadata (camera GPS) stripped before storage. Whether the
 public committee roster renders those photos is a separate presentational opt-in
@@ -3489,6 +3680,15 @@ A `FamilyGroup` with zero `FamilyGroupMember` rows is inert: it never affects
 booking eligibility, pricing, or any member-visible UI, because family
 visibility and eligibility everywhere derive from `familyGroupMemberships`
 (`getMemberFamily`, `resolveMemberFamily`), never from bare `FamilyGroup` rows.
+
+*(Corrected by the member-guest epic, #2305. "Eligibility everywhere derives from
+`familyGroupMemberships`" is no longer true of BOOKING-GUEST eligibility: with
+the `memberGuests` module on, a member outside the booker's family group may be
+added as a guest, and `familyGroupMemberships` then decides only whether that add
+needs the other member's CONSENT — see "Member-Guest Consent". Everything else in
+this paragraph — pricing, family billing, the memberless-group rule — is
+unchanged, and the family boundary remains the single definition of "family" that
+the consent planner, the authorization check and the D-8 collapse all read.)*
 Family billing never infers a recipient from group role, login holder, or email
 inheritance. In `BILL_FAMILY_VIA_BILLING_MEMBER` mode the explicit billing
 member must be an active, unarchived member of that family; missing or removed
@@ -3780,10 +3980,29 @@ correctly for pages beyond the first — this is a general list endpoint, and a
 ranking that reshuffled on page 2 would drop and duplicate rows — and the
 `total` the response carries is still the count of the WHOLE eligible set, which
 is what lets the dialog say the page was cut short ("Keep typing to narrow this
-down.", the #2308 member-guest finder's own sentence). The ranking is scoped to
-the `parentLinkEligibleFor` parameter, so every other caller of
-`GET /api/admin/members` — the members table, the exports, the other pickers —
-issues exactly the query it did before.
+down.", the #2308 member-guest finder's own sentence). Both surfaces DRAW that
+sentence under the list and ANNOUNCE it (#2460), each through a live region that
+is registered before there is anything to say and has only its content gated,
+since a polite region injected already populated is silently dropped by some
+screen-reader/browser pairings — the same house rule `PolicyFeedback` and the
+view-only banners follow. The booking panel announces it on the end of the result
+count its existing status line already reads out, rather than from a second
+region of its own, so it is announced ONCE: two polite regions mutating in the
+same commit are queued in no guaranteed order and one can be dropped outright.
+The dialog, which has no such line, keeps its own `sr-only` region ABOVE the
+results — above, because an invisible LAST child of a `space-y-*` stack still
+moves the visible content above it, Tailwind hanging the gap off
+`:not(:last-child)`. That region goes with the dialog when it closes, so what it
+guarantees is "registered empty before the first search answers", which is the
+case that matters. On both surfaces the sentence stays reachable twice in browse
+mode, once from the region and once as the visible hint under the list: only the
+ANNOUNCEMENT is deduplicated, because hiding the on-screen copy from assistive
+technology would take the sentence away from the place the list actually stops.
+The announced words are the drawn words, verbatim: the sentence must never grow
+a count of who was left out, so it does not grow one for a screen reader either.
+The ranking is scoped to the `parentLinkEligibleFor` parameter, so every other
+caller of `GET /api/admin/members` — the members table, the exports, the other
+pickers — issues exactly the query it did before.
 
 Three rules about that predicate are load-bearing. First, the parent columns are
 **nullable**, so every "not this parent" clause must be written as

@@ -21,6 +21,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -76,6 +77,11 @@ export default function LockersPage() {
   // Lockers live under the membership area (their write routes enforce
   // membership:edit), so gate the editor on that area (#1940).
   const canEdit = useAdminAreaEditAccess("membership");
+  // #2264 — the locker examples move out of the grey-inside-the-box position
+  // where they read as names/counts already entered.
+  const lockerNameHint = useFieldHint();
+  const bulkCountHint = useFieldHint();
+  const bulkPrefixHint = useFieldHint();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -391,10 +397,13 @@ export default function LockersPage() {
                 id="locker-name"
                 value={name}
                 onChange={(event) => setName(event.target.value)}
-                placeholder="Locker A1"
                 required
                 disabled={!canEdit}
+                {...lockerNameHint.fieldProps}
               />
+              <FieldHint {...lockerNameHint.hintProps}>
+                Example: Locker A1
+              </FieldHint>
             </div>
             <div className="space-y-1 sm:col-span-1">
               <Label htmlFor="locker-allocated">Allocated To</Label>
@@ -485,11 +494,14 @@ export default function LockersPage() {
                 type="number"
                 min={1}
                 max={100}
-                placeholder="12"
                 value={bulkCount}
                 onChange={(event) => setBulkCount(event.target.value)}
                 disabled={!canEdit}
+                {...bulkCountHint.fieldProps}
               />
+              <FieldHint {...bulkCountHint.hintProps}>
+                Between 1 and 100 lockers at a time.
+              </FieldHint>
             </div>
             <div className="space-y-1">
               <Label htmlFor="bulk-locker-prefix">Name prefix</Label>
@@ -497,9 +509,13 @@ export default function LockersPage() {
                 id="bulk-locker-prefix"
                 value={bulkNamePrefix}
                 onChange={(event) => setBulkNamePrefix(event.target.value)}
-                placeholder="Locker"
                 disabled={!canEdit}
+                {...bulkPrefixHint.fieldProps}
               />
+              <FieldHint {...bulkPrefixHint.hintProps}>
+                Each locker is numbered after the prefix — Locker 1, Locker 2, and
+                so on.
+              </FieldHint>
             </div>
             <div className="flex items-end">
               <ViewOnlyActionButton

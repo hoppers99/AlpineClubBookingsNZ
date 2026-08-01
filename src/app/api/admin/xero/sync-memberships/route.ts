@@ -20,7 +20,9 @@ const syncMembershipsQuerySchema = z.object({
  * - `backfill`: also rechecks locally stale linked members
  */
 export async function POST(request: NextRequest) {
-  const guard = await requireAdmin();
+  const guard = await requireAdmin({
+    permission: { area: "finance", level: "edit" },
+  });
   if (!guard.ok) return guard.response;
   const parsed = syncMembershipsQuerySchema.safeParse({
     seasonYear: request.nextUrl.searchParams.get("seasonYear") ?? undefined,

@@ -13,6 +13,7 @@ import {
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
+import { formatNZDate } from "@/lib/nzst-date";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -260,9 +261,7 @@ export default function CommunicationsPage() {
                   {history.map((entry) => (
                     <tr key={entry.id} className="border-b">
                       <td className="py-2 pr-4 text-muted-foreground">
-                        {new Date(entry.sentAt).toLocaleDateString("en-NZ", {
-                          dateStyle: "medium",
-                        })}
+                        {formatNZDate(new Date(entry.sentAt))}
                       </td>
                       <td className="py-2 pr-4 font-medium">{entry.subject}</td>
                       <td className="py-2 pr-4 text-muted-foreground">

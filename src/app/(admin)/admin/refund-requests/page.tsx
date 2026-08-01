@@ -30,6 +30,7 @@ import {
 import { BookingNoEmailsNotice } from "@/components/booking-no-emails-notice"
 import { getCancellationSettlementBreakdown } from "@/lib/payment-status-display"
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path"
+import { formatNZDate, formatNZDateTime } from "@/lib/nzst-date"
 
 type ReviewFilter = "PENDING" | "APPROVED" | "REJECTED" | "ALL"
 const reviewFilters = new Set<ReviewFilter>(["PENDING", "APPROVED", "REJECTED", "ALL"])
@@ -119,13 +120,7 @@ function formatDateTime(value: string | null) {
     return null
   }
 
-  return new Date(value).toLocaleDateString("en-NZ", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  })
+  return formatNZDateTime(new Date(value))
 }
 
 export default function RefundRequestsPage() {
@@ -482,11 +477,11 @@ export default function RefundRequestsPage() {
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
                           <div>
                             <span className="text-muted-foreground">Check-in:</span>{" "}
-                            {new Date(req.booking.checkIn).toLocaleDateString("en-NZ")}
+                            {formatNZDate(new Date(req.booking.checkIn))}
                           </div>
                           <div>
                             <span className="text-muted-foreground">Check-out:</span>{" "}
-                            {new Date(req.booking.checkOut).toLocaleDateString("en-NZ")}
+                            {formatNZDate(new Date(req.booking.checkOut))}
                           </div>
                           {payment && (
                             <>

@@ -39,7 +39,7 @@ import { lodgeOrderBy } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/lib/auth";
 import { hasAdminAreaAccess } from "@/lib/admin-permissions";
-import { APP_TIME_ZONE } from "@/config/operational";
+import { formatNZDate } from "@/lib/nzst-date";
 import {
   AlertTriangle,
   CalendarX2,
@@ -52,10 +52,6 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { ReactNode } from "react";
-
-function formatDate(value: Date) {
-  return value.toLocaleDateString("en-NZ", { timeZone: APP_TIME_ZONE });
-}
 
 export function formatAdminBookingGuestCount(totalGuests: number, nonMemberGuests: number) {
   return `${totalGuests} (${nonMemberGuests} non-member${nonMemberGuests === 1 ? "" : "s"})`;
@@ -376,7 +372,7 @@ export default async function AdminBookingsPage({
                     >
                       <span className="block text-sm font-medium text-foreground group-hover:text-primary group-hover:underline">
                         {row.lodgeName ? `${row.lodgeName} · ` : ""}
-                        {formatDate(row.checkIn)} – {formatDate(row.checkOut)}
+                        {formatNZDate(row.checkIn)} – {formatNZDate(row.checkOut)}
                       </span>
                       <span className="block text-xs text-muted-foreground">
                         {row.bookerName}
@@ -465,10 +461,10 @@ export default async function AdminBookingsPage({
                         {booking.lodge?.name ?? "—"}
                       </TableCell>
                     ) : null}
-                    <TableCell className="text-sm">{formatDate(booking.updatedAt)}</TableCell>
+                    <TableCell className="text-sm">{formatNZDate(booking.updatedAt)}</TableCell>
                     <TableCell className="text-sm">
-                      <span className="block">{formatDate(booking.checkIn)}</span>
-                      <span className="block text-xs text-muted-foreground">to {formatDate(booking.checkOut)}</span>
+                      <span className="block">{formatNZDate(booking.checkIn)}</span>
+                      <span className="block text-xs text-muted-foreground">to {formatNZDate(booking.checkOut)}</span>
                       <span className="block text-xs text-muted-foreground">
                         {nights} night{nights === 1 ? "" : "s"}
                       </span>

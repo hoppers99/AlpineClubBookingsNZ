@@ -35,10 +35,24 @@ import { logAudit } from "@/lib/audit";
 import { cancelBooking } from "@/lib/booking-cancel";
 import { recordBookingEvent } from "@/lib/booking-events";
 import {
+  loadMemberGuestAddPolicy,
+  matchMemberGuestNotificationRows,
+  type MemberGuestAddNotificationRow,
+  type MemberGuestAddPolicy,
+} from "@/lib/member-guest-add-policy";
+import {
+  CONSENT_FREE_GUEST_COLUMNS,
+  type MemberGuestAddActor,
+} from "@/lib/member-guest-consent";
+import {
   buildApprovalGuestCreates,
   claimAlreadyConvertedBookingRequest,
+  collectNotifiedMemberGuestIds,
   getCapacityFullNights,
+  notifyMemberGuestsHoldReleased,
+  planBookingRequestGuestConsent,
   sendOwnerSubstitutionAdminAlert,
+  toPipelineGuestCreateData,
   type HeldBookingGuestInput,
   type OwnerSubstitution,
 } from "@/lib/booking-request-shared";
@@ -894,6 +908,15 @@ export async function createMemberWholeLodgeRequest(input: {
  * it to CANCELLED here would strand an AWAITING_REVIEW hold booking forever with
  * no path that releases it — the beds sterilised indefinitely. Such a row must go
  * through admin decline instead, which does release holds.
+ *
+ * MG4 (#2309) ADDS NO WITHDRAWAL NOTICE HERE, and that is a consequence of the
+ * clause above rather than an omission. A member-guest withdrawal notice is owed
+ * when a hold that had ALREADY TOLD somebody they were on a booking goes away —
+ * but this claim refuses to act on any request holding a booking at all, so no
+ * such hold can be released down this path and there is nobody to tell. If the
+ * `heldBookingId: null` guard is ever relaxed, the notice becomes owed with it:
+ * see the decline path, which reads `collectNotifiedMemberGuestIds` before the
+ * hold is cancelled and dispatches after.
  */
 export async function withdrawMemberWholeLodgeRequest(input: {
   requestId: string;
@@ -1331,6 +1354,15 @@ export async function declineBookingRequest(input: {
       select: { id: true, status: true },
     });
     if (held && held.status === BookingStatus.AWAITING_REVIEW) {
+      // MG4 (#2309): read the population BEFORE the hold is released. These are
+      // the members the hold emailed to say the club had put them on a lodge
+      // booking; the decline takes that booking away, and until now took it away
+      // in silence. Read here rather than after, so the answer describes the
+      // hold as it stood rather than whatever the cancel left behind.
+      const notifiedMemberGuestIds = await collectNotifiedMemberGuestIds(
+        prisma,
+        request.heldBookingId
+      );
       const result = await cancelBooking(
         request.heldBookingId,
         input.adminMemberId,
@@ -1377,6 +1409,17 @@ export async function declineBookingRequest(input: {
       }
       // Success: cancelBooking cancelled the held booking, reconciled/freed its
       // beds, and detached `heldBookingId` itself.
+      //
+      // MG4 (#2309): and the people it had put on that booking are told it has
+      // gone. `cancelBooking` runs its own transactions and has committed by
+      // here, so this is a post-commit dispatch like every other one, and it is
+      // failure-safe: the hold is already released, and a mail problem must not
+      // turn a completed decline into an error.
+      await notifyMemberGuestsHoldReleased({
+        bookingId: request.heldBookingId,
+        targetMemberIds: notifiedMemberGuestIds,
+        logContext: { bookingRequestId: request.id },
+      });
     } else {
       // The held pointer is stale or the booking is no longer a live hold
       // (already CANCELLED, or gone). Nothing to cancel — just detach the
@@ -1515,22 +1558,129 @@ export function resolveRequestBookingHoldUntil(
  * still succeeds (that fallback loses pre-assigned beds but stays correct).
  * Returns whether the identity-preserving path was taken (for audit/tests).
  */
+/**
+ * What `reassignHeldBookingGuests` needs in order to obey MG4-D-b (#2309).
+ *
+ * DELIBERATELY REQUIRED, not optional. The rest of this feature fails closed by
+ * defaulting a missing policy to "refuse" — but there is nothing to refuse here:
+ * the swap has already been authorised by an officer, so a missing context could
+ * only mean "write the rows with no consent record and tell nobody", which is
+ * precisely the silent cross-family placement MG4-D-b exists to close. Making it
+ * required means a third pipeline cannot be added without answering the question.
+ */
+export interface ReassignMemberGuestContext {
+  /** The converted booking's owner — the family boundary is computed against them. */
+  bookingOwnerMemberId: string;
+  /** Always `{ kind: "BOOKING_REQUEST" }` today; typed so it cannot silently become an admin add. */
+  actor: MemberGuestAddActor;
+  policy: MemberGuestAddPolicy;
+  /** The converted booking's check-in, for the D-4 expiry clamp. */
+  bookingCheckIn: Date;
+  /** Pinned by tests so every row in one swap carries the same timestamp. */
+  now?: Date;
+}
+
+export interface ReassignHeldBookingGuestsResult {
+  /** Whether the identity-preserving path was taken (for audit/tests). */
+  preservedInPlace: boolean;
+  /**
+   * The cross-family member guests this swap ADDED, carried out of the
+   * transaction for the caller's post-commit dispatch.
+   */
+  memberGuestNotificationRows: MemberGuestAddNotificationRow[];
+  /**
+   * Members who were told they were on this booking and are not on it any more —
+   * the other half of the substitution the epic's plan calls "the subtle one".
+   * A row can be preserved in place with a changed `memberId`, which swaps one
+   * person for another on a live booking; telling only the newcomer would leave
+   * the person who was dropped believing they still have a bed.
+   */
+  displacedMemberIds: string[];
+}
+
 export async function reassignHeldBookingGuests(
   tx: Prisma.TransactionClient,
   bookingId: string,
-  guestCreates: HeldBookingGuestInput[]
-): Promise<{ preservedInPlace: boolean }> {
+  guestCreates: HeldBookingGuestInput[],
+  memberGuest: ReassignMemberGuestContext
+): Promise<ReassignHeldBookingGuestsResult> {
   const existing = await tx.bookingGuest.findMany({
     where: { bookingId },
-    select: { id: true },
+    // MG4 (#2309) widens this select from `{ id }`. The two extra columns are
+    // what make a SUBSTITUTION visible: without the old `memberId` this
+    // function cannot tell "row 3 keeps Priya" from "row 3 is now Sione", and
+    // the person who was quietly dropped is never told.
+    select: { id: true, memberId: true, consentStatus: true },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
   });
 
+  // The consent decision for the INCOMING list, taken once for both branches so
+  // the delete-and-recreate fallback cannot drift from the in-place path (that
+  // divergence is exactly how the fallback lost bed allocations before #1254).
+  const consentPlan = await planBookingRequestGuestConsent(tx, {
+    bookingOwnerMemberId: memberGuest.bookingOwnerMemberId,
+    guests: guestCreates,
+    actor: memberGuest.actor,
+    policy: memberGuest.policy,
+    bookingCheckIn: memberGuest.bookingCheckIn,
+    now: memberGuest.now,
+  });
+  const planned = consentPlan.guests;
+
+  // Who was a member guest on the held booking and is not on the approved list.
+  // Derived from the rows as they stand, not from the plan: a row the hold
+  // created carries a non-null consentStatus exactly when the target was told
+  // they were on this booking, so this is the set that was told something that
+  // has since stopped being true. A row whose member is still on the list under
+  // a different index has not been displaced and is not in this set.
+  const incomingMemberIds = new Set(
+    guestCreates
+      .map((guest) => guest.memberId)
+      .filter((memberId): memberId is string => Boolean(memberId))
+  );
+  const displacedMemberIds = [
+    ...new Set(
+      existing
+        .filter(
+          (row) =>
+            row.memberId != null &&
+            // Loose null check on purpose: `null` is "no consent record" and so
+            // is a column a narrowed caller never selected. Treating an absent
+            // value as "they were told" would mail a withdrawal notice to
+            // somebody who was never told anything in the first place.
+            row.consentStatus != null &&
+            !incomingMemberIds.has(row.memberId)
+        )
+        .map((row) => row.memberId as string)
+    ),
+  ];
+
+  /**
+   * Who has ALREADY been told they are on this booking, so they are not told
+   * again.
+   *
+   * The hold notifies at hold time (MG4-D-b); approval then rewrites the same
+   * rows. Without this filter every approval would re-send the added-notice to
+   * every member who survived the swap unchanged, and a re-hold-then-approve
+   * cycle would do it twice. The columns are still re-stamped either way — only
+   * the MAIL is suppressed, and only for a member who is on the booking both
+   * before and after with a consent record already against their name.
+   */
+  const alreadyNotifiedMemberIds = new Set(
+    existing
+      .filter((row) => row.memberId != null && row.consentStatus != null)
+      .map((row) => row.memberId as string)
+  );
+  const owedNotifications = (
+    rows: MemberGuestAddNotificationRow[]
+  ): MemberGuestAddNotificationRow[] =>
+    rows.filter((row) => !alreadyNotifiedMemberIds.has(row.targetMemberId));
+
   if (existing.length !== guestCreates.length) {
     await tx.bookingGuest.deleteMany({ where: { bookingId } });
-    if (guestCreates.length > 0) {
+    if (planned.length > 0) {
       await tx.bookingGuest.createMany({
-        data: guestCreates.map((guest) => ({
+        data: planned.map((guest) => ({
           bookingId,
           firstName: guest.firstName,
           lastName: guest.lastName,
@@ -1541,16 +1691,42 @@ export async function reassignHeldBookingGuests(
           stayEnd: guest.stayEnd,
           priceCents: guest.priceCents,
           rateMembershipTypeId: guest.rateMembershipTypeId ?? null,
+          ...(guest.memberGuestConsent ?? {}),
         })),
       });
     }
-    return { preservedInPlace: false };
+    // `createMany` returns a count, never the rows, so the ids have to be read
+    // back. Ordering does not matter here — the match is by member id.
+    const created = await tx.bookingGuest.findMany({
+      where: { bookingId },
+      select: { id: true, memberId: true },
+    });
+    return {
+      preservedInPlace: false,
+      memberGuestNotificationRows: owedNotifications(
+        matchMemberGuestNotificationRows({
+          createdGuests: created,
+          entriesByMemberId: consentPlan.entriesByMemberId,
+        })
+      ),
+      displacedMemberIds,
+    };
   }
 
-  for (let index = 0; index < guestCreates.length; index += 1) {
-    const guest = guestCreates[index];
+  for (let index = 0; index < planned.length; index += 1) {
+    const guest = planned[index];
+    const previous = existing[index];
+    /**
+     * Is this row still the SAME person it was before the swap?
+     *
+     * The whole consent decision below turns on this, and getting it wrong is
+     * not symmetrical: leaving a stale record on a substituted row claims
+     * consent for somebody who was never asked, while clearing one on an
+     * unchanged row erases a record of somebody who WAS told.
+     */
+    const sameOccupant = (guest.memberId ?? null) === previous.memberId;
     await tx.bookingGuest.update({
-      where: { id: existing[index].id },
+      where: { id: previous.id },
       data: {
         firstName: guest.firstName,
         lastName: guest.lastName,
@@ -1565,10 +1741,48 @@ export async function reassignHeldBookingGuests(
         // rows, so overwrite the hold-time snapshot with the other identity
         // fields. Prices stay the admin-set split.
         rateMembershipTypeId: guest.rateMembershipTypeId ?? null,
+        /**
+         * MG4 (#2309), and the one case in this function that is NOT "write
+         * whatever the planner said".
+         *
+         * A planned write always wins — the planner has decided this person's
+         * consent afresh, and its answer is the current one.
+         *
+         * When the planner ABSTAINS (`undefined`), what that means depends
+         * entirely on whether the person changed:
+         *
+         *  - SUBSTITUTED. The row is being handed to somebody else, and any
+         *    consent record on it belongs to the person leaving. Left in place
+         *    it would claim consent for somebody who was never asked and never
+         *    told, which is exactly what `classifyMemberGuestConsent` calls a
+         *    broken row. Cleared.
+         *  - UNCHANGED. The columns describe THIS person and are still true, so
+         *    they are left alone — not rewritten, not cleared. The clear was
+         *    unconditional here, and the module being switched off between the
+         *    hold and the approval was enough to reach it: the planner returns
+         *    the guests untouched with the module off, so an approval would
+         *    silently erase the CONFIRMED record of a member who had already
+         *    been emailed to say they were on the booking. Turning a feature off
+         *    must stop it doing new things, not rewrite what it already did.
+         */
+        ...(guest.memberGuestConsent ??
+          (sameOccupant ? {} : CONSENT_FREE_GUEST_COLUMNS)),
       },
     });
   }
-  return { preservedInPlace: true };
+  return {
+    preservedInPlace: true,
+    memberGuestNotificationRows: owedNotifications(
+      matchMemberGuestNotificationRows({
+        createdGuests: planned.map((guest, index) => ({
+          id: existing[index].id,
+          memberId: guest.memberId ?? null,
+        })),
+        entriesByMemberId: consentPlan.entriesByMemberId,
+      })
+    ),
+    displacedMemberIds,
+  };
 }
 
 /**
@@ -1650,6 +1864,15 @@ export async function approveBookingRequest(input: {
   );
   const { token: paymentToken, tokenHash: paymentTokenHash } = issueActionToken();
 
+  // MG4-D-b (#2309). Read BEFORE the transaction, per the ordering rule in
+  // `member-guest-add-policy.ts` — this transaction holds both the global and
+  // the per-lodge advisory lock, and a settings query under them buys nothing.
+  const memberGuestPolicy = await loadMemberGuestAddPolicy();
+  const memberGuestActor: MemberGuestAddActor = {
+    kind: "BOOKING_REQUEST",
+    adminMemberId: input.adminMemberId,
+  };
+
   let capacityFullNights: string[] | null = null;
   let conversion: {
     bookingId: string;
@@ -1659,6 +1882,8 @@ export async function approveBookingRequest(input: {
       | { invalidMemberId: string; substituteMemberId: string; reason: string }
       | null;
     alreadyConverted: boolean;
+    memberGuestNotificationRows: MemberGuestAddNotificationRow[];
+    displacedMemberGuestIds: string[];
   };
 
   try {
@@ -1704,6 +1929,10 @@ export async function approveBookingRequest(input: {
           memberId: alreadyConverted.convertedMemberId,
           ownerSubstitution: null,
           alreadyConverted: true as const,
+          // A replay wrote no rows, so it owes no mail. Re-sending here would
+          // tell every member guest a second time that they were just added.
+          memberGuestNotificationRows: [] as MemberGuestAddNotificationRow[],
+          displacedMemberGuestIds: [] as string[],
         };
       }
 
@@ -1798,6 +2027,10 @@ export async function approveBookingRequest(input: {
 
       let booking: { id: string };
       let member: { id: string };
+      // MG4-D-b (#2309): collected in whichever branch runs, dispatched after
+      // the commit.
+      let memberGuestNotificationRows: MemberGuestAddNotificationRow[] = [];
+      let displacedMemberGuestIds: string[] = [];
       // Set when the held owner failed re-validation at conversion and a fresh
       // contact was substituted (issue #1255 residual-risk decision 1); drives a
       // post-commit admin alert.
@@ -1847,7 +2080,19 @@ export async function approveBookingRequest(input: {
         // update guest rows in place rather than deleteMany+recreate. The date
         // range is unchanged (fixed at request submission), so existing bed
         // allocations remain valid — no reconcile needed.
-        await reassignHeldBookingGuests(tx, held.id, guestCreates);
+        const reassigned = await reassignHeldBookingGuests(
+          tx,
+          held.id,
+          guestCreates,
+          {
+            bookingOwnerMemberId: ownerId,
+            actor: memberGuestActor,
+            policy: memberGuestPolicy,
+            bookingCheckIn: request.checkIn,
+          }
+        );
+        memberGuestNotificationRows = reassigned.memberGuestNotificationRows;
+        displacedMemberGuestIds = reassigned.displacedMemberIds;
         // Status-guarded claim (#1881, defense in depth alongside lock(1)):
         // flip the held booking ONLY while it is still AWAITING_REVIEW. Under
         // lock(1) the re-read above already established that and no releaser can
@@ -1930,7 +2175,19 @@ export async function approveBookingRequest(input: {
           });
         }
 
-        booking = await tx.booking.create({
+        // MG4-D-b (#2309): the THIRD pipeline guest-write point — an approval
+        // with no capacity hold behind it, which creates the booking and its
+        // guest rows in one go. It is the same rule as the other two, and it was
+        // missing from the issue body's list of write points.
+        const consentPlan = await planBookingRequestGuestConsent(tx, {
+          bookingOwnerMemberId: member.id,
+          guests: guestCreates,
+          actor: memberGuestActor,
+          policy: memberGuestPolicy,
+          bookingCheckIn: request.checkIn,
+        });
+
+        const createdBooking = await tx.booking.create({
           data: {
             memberId: member.id,
             lodgeId: requestLodgeId,
@@ -1944,11 +2201,22 @@ export async function approveBookingRequest(input: {
             notes: request.message,
             createdById: input.adminMemberId,
             guests: {
-              create: guestCreates,
+              create: consentPlan.guests.map(toPipelineGuestCreateData),
             },
           },
-          select: { id: true },
+          select: { id: true, guests: { select: { id: true, memberId: true } } },
         });
+        booking = { id: createdBooking.id };
+        // Short-circuited on the plan, not on the rows: an ordinary booking
+        // request owes nothing, and skipping the walk keeps the common path
+        // free of it (the same shape `admin-booking-copy.ts` uses).
+        memberGuestNotificationRows =
+          consentPlan.entriesByMemberId.size === 0
+            ? []
+            : matchMemberGuestNotificationRows({
+                createdGuests: createdBooking.guests,
+                entriesByMemberId: consentPlan.entriesByMemberId,
+              });
       }
 
       await tx.payment.create({
@@ -1984,6 +2252,8 @@ export async function approveBookingRequest(input: {
         memberId: member.id,
         ownerSubstitution,
         alreadyConverted: false as const,
+        memberGuestNotificationRows,
+        displacedMemberGuestIds,
       };
     });
   } catch (err) {
@@ -2004,6 +2274,41 @@ export async function approveBookingRequest(input: {
   // importantly — never email the member a broken (unpersisted) payment link.
   // The working payment email already went out with the first accept.
   if (!conversion.alreadyConverted) {
+  // MG4-D-b (#2309), AFTER the commit and outside both advisory locks. Two
+  // directions, because an approval can do both at once: a swap adds one member
+  // guest and drops another, and telling only the newcomer would leave the
+  // person who was dropped believing they still have a bed.
+  if (
+    conversion.memberGuestNotificationRows.length > 0 ||
+    conversion.displacedMemberGuestIds.length > 0
+  ) {
+    const {
+      sendMemberGuestAddNotifications,
+      sendMemberGuestWithdrawnNotifications,
+    } = await import("@/lib/member-guest-consent-notifications");
+    try {
+      if (conversion.memberGuestNotificationRows.length > 0) {
+        await sendMemberGuestAddNotifications({
+          bookingId: conversion.bookingId,
+          rows: conversion.memberGuestNotificationRows,
+          actor: memberGuestActor,
+        });
+      }
+      if (conversion.displacedMemberGuestIds.length > 0) {
+        await sendMemberGuestWithdrawnNotifications({
+          bookingId: conversion.bookingId,
+          targetMemberIds: conversion.displacedMemberGuestIds,
+          context: "BOOKING_REQUEST_REPLACED",
+        });
+      }
+    } catch (err) {
+      logger.error(
+        { err, bookingId: conversion.bookingId, bookingRequestId: request.id },
+        "Failed to dispatch member-guest notifications after a booking-request approval",
+      );
+    }
+  }
+
     await recordBookingEvent({
       bookingId: conversion.bookingId,
       type: BookingEventType.CREATED,
@@ -2013,7 +2318,10 @@ export async function approveBookingRequest(input: {
 
     try {
       await sendBookingRequestApprovedEmail({
-        bookingContext: { bookingId: conversion.bookingId },
+        bookingContext: {
+          bookingId: conversion.bookingId,
+          recipientMemberId: conversion.memberId,
+        },
         email: request.contactEmail,
         firstName: request.contactFirstName,
         token: paymentToken,

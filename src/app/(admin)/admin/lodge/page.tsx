@@ -13,7 +13,7 @@ import {
   AdminViewOnlySectionBanner,
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action";
-import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
+import { formatNZDateTime } from "@/lib/nzst-date";
 
 // Multi-lodge kiosks: one shared login per lodge device. Each account can
 // bind to a lodge (a MemberLodgeAccess STAFF grant, managed through this
@@ -265,8 +265,8 @@ function AccountCard({
         )}
 
         <div className="text-xs text-muted-foreground">
-          <p>Created: {new Date(account.createdAt).toLocaleString(APP_LOCALE, { timeZone: APP_TIME_ZONE })}</p>
-          <p>Last updated: {new Date(account.updatedAt).toLocaleString(APP_LOCALE, { timeZone: APP_TIME_ZONE })}</p>
+          <p>Created: {formatNZDateTime(new Date(account.createdAt))}</p>
+          <p>Last updated: {formatNZDateTime(new Date(account.updatedAt))}</p>
         </div>
 
         {saveMessage && (

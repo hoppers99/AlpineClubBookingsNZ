@@ -184,6 +184,16 @@ export const EMPTYABLE_OVERRIDE_TOKENS: Record<string, readonly string[]> = {
   // a label typed in front of it ("Credit: {{creditNote}}") sends a bare
   // "Credit:" to everyone who paid without credit. Declaring it is what turns
   // guard 4 on for that line.
+  //
+  // #2444 adds {{paymentDueNote}} on the same three grounds. #2263 supplied it
+  // without declaring it here: the sender emits it only when the confirmation
+  // is CONFIRMED-BUT-UNPAID and `""` on every paid, partly-paid and
+  // credit-covered send (src/lib/email/booking.ts), it is listed in
+  // EXTRA_TEMPLATE_TOKENS rather than written into the default body (which
+  // carries it inside {{paymentOutcome}}), and an override that labels it
+  // ("Payment: {{paymentDueNote}}") therefore ships a bare "Payment:" to
+  // everyone who has already paid. #2444 is what makes the token carry the
+  // club's payment instructions, so the warning is worth having now.
   "booking-confirmed": [
     "subtotal",
     "discount",
@@ -192,6 +202,7 @@ export const EMPTYABLE_OVERRIDE_TOKENS: Record<string, readonly string[]> = {
     "totalPaid",
     "totalDue",
     "creditNote",
+    "paymentDueNote",
   ],
   // sendBookingModifiedEmail: each of these is `?? ""` when the change did not
   // involve an additional payment.

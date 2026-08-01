@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useId, useMemo, useRef } from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -37,6 +37,7 @@ export function MemberPicker({
   const [query, setQuery] = useState("");
   const [showDropdown, setShowDropdown] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const inputId = useId();
 
   const { results: allMatches, searching: loading } = useDebouncedMemberSearch<
     PickedMember & { role?: string; accessRoles?: string[] }
@@ -102,10 +103,22 @@ export function MemberPicker({
 
   return (
     <div ref={wrapperRef} className="relative">
-      <label className="block text-sm font-medium text-muted-foreground mb-1">
+      {/*
+        #2264: the <label> above the box was never associated with it — no
+        `htmlFor`, and it does not wrap the input either — so the field's only
+        accessible name was its placeholder, and every consumer's tests had to
+        reach it with `getByPlaceholder`. Associating them here fixes all
+        consumers at once, and the `label` prop (which each consumer already
+        overrides to say what IT is searching for) becomes the accessible name.
+      */}
+      <label
+        htmlFor={inputId}
+        className="block text-sm font-medium text-muted-foreground mb-1"
+      >
         {label}
       </label>
       <Input
+        id={inputId}
         placeholder={placeholder}
         value={query}
         onChange={(e) => setQuery(e.target.value)}

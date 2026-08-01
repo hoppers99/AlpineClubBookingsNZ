@@ -33,7 +33,9 @@ import {
   NonMemberContactForm,
   type NonMemberOwner,
 } from "@/components/admin/non-member-contact-form";
-import { formatLocalDateOnly } from "@/lib/date-only";
+import { formatLocalDateOnly, localCalendarDayToDateOnly } from "@/lib/date-only";
+import { formatNZDate, formatNZWeekdayDate } from "@/lib/nzst-date";
+
 import { CreditCard, Landmark } from "lucide-react";
 
 type BookingPaymentMethod = "stripe" | "internet_banking";
@@ -668,8 +670,8 @@ export default function AdminBookPage() {
               Add Guests
               {checkIn && checkOut && (
                 <span className="ml-2 text-sm font-normal text-muted-foreground">
-                  {checkIn.toLocaleDateString("en-NZ")} -{" "}
-                  {checkOut.toLocaleDateString("en-NZ")} ({nights} night
+                  {formatNZDate(localCalendarDayToDateOnly(checkIn))} -{" "}
+                  {formatNZDate(localCalendarDayToDateOnly(checkOut))} ({nights} night
                   {nights !== 1 ? "s" : ""})
                 </span>
               )}
@@ -721,6 +723,31 @@ export default function AdminBookPage() {
                 </div>
               </div>
             )}
+            {/*
+              NO "+ Add Member Guest" HERE, and it is a real limitation rather
+              than an oversight (MG4 #2309, declared and documented in
+              `docs/guides/book.md` Step 2).
+
+              The officer's member finder is BOOKING-SCOPED —
+              `/api/admin/bookings/[id]/member-guest-candidates` — because that
+              is what lets the lookup be gated and audited against a booking
+              that exists. This is a creation wizard: there is no booking id to
+              scope it to. The alternatives were both worse. Pointing the panel
+              at the MEMBER routes would apply the club's member-facing privacy
+              gate and the member rate limits to an officer, which is exactly
+              what owner decision D-20 rules out. Minting a second,
+              booking-less admin find endpoint would be a new unaudited-by-
+              booking lookup surface over the whole membership roll, added on a
+              stacked branch, to save one step.
+
+              The server side is NOT the constraint: `POST /api/bookings`
+              already accepts a cross-family member link on an authorised
+              on-behalf create. So the workaround is complete rather than
+              partial — create the booking, then add the member guest from its
+              edit panel, which writes the same consent record and sends the
+              same email. Wiring a picker here belongs in its own issue with the
+              endpoint question answered first.
+            */}
             <GuestForm
               guests={guests}
               onGuestsChange={setGuests}
@@ -753,23 +780,13 @@ export default function AdminBookPage() {
                 <div>
                   <span className="text-muted-foreground">Check-in:</span>{" "}
                   <span className="font-medium">
-                    {checkIn!.toLocaleDateString("en-NZ", {
-                      weekday: "short",
-                      day: "numeric",
-                      month: "short",
-                      year: "numeric",
-                    })}
+                    {formatNZWeekdayDate(localCalendarDayToDateOnly(checkIn!))}
                   </span>
                 </div>
                 <div>
                   <span className="text-muted-foreground">Check-out:</span>{" "}
                   <span className="font-medium">
-                    {checkOut!.toLocaleDateString("en-NZ", {
-                      weekday: "short",
-                      day: "numeric",
-                      month: "short",
-                      year: "numeric",
-                    })}
+                    {formatNZWeekdayDate(localCalendarDayToDateOnly(checkOut!))}
                   </span>
                 </div>
                 <div>
@@ -971,7 +988,7 @@ export default function AdminBookPage() {
 
           {isRetroactive && (
             <div className="rounded-md bg-muted border border-border p-3 text-sm text-muted-foreground">
-              Recording a past stay ({checkIn!.toLocaleDateString("en-NZ")}). The
+              Recording a past stay ({formatNZDate(localCalendarDayToDateOnly(checkIn!))}). The
               member email is optional (you choose on confirm); drafts are not
               available for retroactive bookings.
             </div>

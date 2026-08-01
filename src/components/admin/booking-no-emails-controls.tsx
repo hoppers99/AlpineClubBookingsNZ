@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { ViewOnlyActionButton } from "@/components/admin/view-only-action";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
+import { formatNZDate } from "@/lib/nzst-date";
 
 /**
  * The per-booking "No emails" switch (#2259, owner decision D10).
@@ -131,7 +132,7 @@ export function BookingNoEmailsControls({
     ? [
         setByName ? `Turned on by ${setByName}` : "Turned on",
         noEmailsAt
-          ? ` on ${new Date(noEmailsAt).toLocaleDateString("en-NZ")}`
+          ? ` on ${formatNZDate(new Date(noEmailsAt))}`
           : "",
         ".",
       ].join("")

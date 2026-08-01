@@ -17,6 +17,7 @@ import {
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
+import { formatNZDate } from "@/lib/nzst-date";
 import type { AdminNoticeData } from "@/components/admin/notice-editor";
 
 type NoticeGroups = {
@@ -59,7 +60,7 @@ function formatDate(iso: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleDateString("en-NZ", { dateStyle: "medium" });
+  return formatNZDate(d);
 }
 
 function NoticeRow({ notice }: { notice: AdminNoticeData }) {

@@ -1,4 +1,4 @@
-import { APP_TIME_ZONE } from "@/config/operational";
+import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
 import {
   SELF_REMOVABLE_GUEST_BOOKING_STATUSES,
 } from "@/lib/booking-guest-self-removal";
@@ -30,6 +30,32 @@ import {
  * comes back. Predicting it by guessing from "has a captured payment" would
  * hide the action from members the server would in fact allow.
  */
+
+// #2264 — the three consent-surface date shapes stay hand-pinned rather than
+// moving to the shared `nzst-date` helpers: they are locked to the signed-off
+// #2307 mockup pack (a year-less badge date, and two comma-stripped weekday
+// forms), so their rendered strings must not drift. Both the locale and the
+// club timezone are pinned here exactly as the call sites already pinned them.
+const CONSENT_SHORT_DATE = new Intl.DateTimeFormat(APP_LOCALE, {
+  day: "numeric",
+  month: "short",
+  timeZone: APP_TIME_ZONE,
+});
+
+const CONSENT_WEEKDAY_DATE = new Intl.DateTimeFormat(APP_LOCALE, {
+  weekday: "short",
+  day: "numeric",
+  month: "short",
+  timeZone: APP_TIME_ZONE,
+});
+
+const CONSENT_FULL_DATE = new Intl.DateTimeFormat(APP_LOCALE, {
+  weekday: "short",
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+  timeZone: APP_TIME_ZONE,
+});
 
 /** The four decline refusals the page can know about before the click. */
 export type PredictableConsentDeclineBlocker =
@@ -613,38 +639,19 @@ export function formatConsentGuestName(guest: {
 
 /** "7 Aug" — the badge / inline-sentence shape. */
 export function formatConsentShortDate(date: Date): string {
-  return date.toLocaleDateString("en-NZ", {
-    day: "numeric",
-    month: "short",
-    timeZone: APP_TIME_ZONE,
-  });
+  return CONSENT_SHORT_DATE.format(date);
 }
 
 /** "Sat 8 Aug" — one night in a nights list, or the lapse sentence's deadline.
  * en-NZ renders "Sat, 8 Aug"; the comma is stripped because the signed-off
  * mockups write the bare "Sat 8 Aug" shape throughout. */
 export function formatConsentWeekdayDate(date: Date): string {
-  return date
-    .toLocaleDateString("en-NZ", {
-      weekday: "short",
-      day: "numeric",
-      month: "short",
-      timeZone: APP_TIME_ZONE,
-    })
-    .replace(/,/g, "");
+  return CONSENT_WEEKDAY_DATE.format(date).replace(/,/g, "");
 }
 
 /** "Fri 7 Aug 2026" — the facts-table shape (comma stripped, as above). */
 export function formatConsentFullDate(date: Date): string {
-  return date
-    .toLocaleDateString("en-NZ", {
-      weekday: "short",
-      day: "numeric",
-      month: "short",
-      year: "numeric",
-      timeZone: APP_TIME_ZONE,
-    })
-    .replace(/,/g, "");
+  return CONSENT_FULL_DATE.format(date).replace(/,/g, "");
 }
 
 /** "Sat 8 Aug – Mon 10 Aug 2026 (2 nights)" — the facts-table stay row. */

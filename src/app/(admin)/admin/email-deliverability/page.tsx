@@ -2,6 +2,7 @@
 
 import { BackLink } from "@/components/admin/back-link";
 import { RefreshCw } from "lucide-react";
+import { formatNZTime } from "@/lib/nzst-date";
 import { useHealthData } from "../health/_components/use-health-data";
 import { EmailDeliverabilitySection } from "../health/_components/email-deliverability-section";
 
@@ -18,7 +19,7 @@ export default function EmailDeliverabilityPage() {
           </h1>
           <div className="flex items-center gap-3">
             <span className="text-sm text-muted-foreground">
-              Last refresh: {lastRefresh.toLocaleTimeString("en-NZ")}
+              Last refresh: {formatNZTime(lastRefresh)}
             </span>
             <button
               onClick={refresh}

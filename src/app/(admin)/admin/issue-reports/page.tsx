@@ -18,6 +18,7 @@ import {
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
+import { formatNZDateTime } from "@/lib/nzst-date";
 import {
   Card,
   CardContent,
@@ -91,13 +92,7 @@ type ListResponse = {
 
 function formatDateTime(value: string | null) {
   if (!value) return "Not set";
-  return new Date(value).toLocaleString("en-NZ", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  return formatNZDateTime(new Date(value));
 }
 
 function statusBadge(report: IssueReportSummary) {

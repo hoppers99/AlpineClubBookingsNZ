@@ -12,6 +12,7 @@ import {
   composeMemberGuestConsentAsk,
   composeMemberGuestConsentOutcome,
   composeMemberGuestRemovalNote,
+  composeMemberGuestWithdrawn,
   MEMBER_GUEST_REMOVAL_NOTE_BY_BLOCKER,
   MEMBER_GUEST_SELF_REMOVAL_OFFER,
   type MemberGuestRemovalFacts,
@@ -552,6 +553,27 @@ describe("registry preview samples mirror what the senders compose (#2307)", () 
     expect(sampleFor("member-guest-added", "removalNote")).toBe(
       MEMBER_GUEST_SELF_REMOVAL_OFFER,
     );
+  });
+
+  it("matches the withdrawal notice's composed samples (MG4 #2309)", () => {
+    // The two tokens MG4 adds, swept for the same reason as the four above: the
+    // registry hard-codes the preview text so it keeps no dependency on the
+    // email layer, and this is what stops that copy going stale. The sample is
+    // the TAKEN_OFF case, which is the one that legitimately names the booker —
+    // so if the name-free rewording of REQUEST_CANCELLED ever leaked into the
+    // wrong branch, the two would stop matching here.
+    const copy = composeMemberGuestWithdrawn({
+      context: "TAKEN_OFF",
+      bookerName: FIXTURE.bookerName,
+      audience: { kind: "TARGET" },
+    });
+
+    expect(sampleFor("member-guest-request-withdrawn", "withdrawnHeading")).toBe(
+      copy.heading,
+    );
+    expect(
+      sampleFor("member-guest-request-withdrawn", "withdrawnContextNote"),
+    ).toBe(copy.contextNote);
   });
 
   it("matches the outcome notice's composed samples", () => {
