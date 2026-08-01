@@ -200,6 +200,70 @@ describe("a suite that hands the clock back to real time", () => {
   });
 });
 
+describe("a suite that pins its own instant with no fake timers installed", () => {
+  // Vitest has TWO mocked-Date states. `vi.setSystemTime(x)` while timers are
+  // real mocks `Date` on its own and leaves `vi.isFakeTimers()` FALSE — which is
+  // exactly what a file gets by combining two idioms this repo blesses
+  // separately: an earlier describe's `afterEach(() => vi.useRealTimers())`,
+  // then a later describe pinning with a bare `vi.setSystemTime` in `beforeAll`
+  // (the shape `booking-guest-consent-authority.test.ts` already uses).
+  //
+  // Guarding the re-freeze on `isFakeTimers()` read that as "real clock" and
+  // silently replaced the pin with the default instant, so the suite ran at a
+  // date its author never chose and the docs said it would keep.
+  const OWN_INSTANT = new Date("2027-09-09T09:09:09.000Z");
+
+  beforeAll(() => {
+    vi.useRealTimers();
+    vi.setSystemTime(OWN_INSTANT);
+  });
+
+  afterAll(() => {
+    installFrozenTestClock();
+  });
+
+  it("is in the date-only mock state, not the fake-timer one", () => {
+    // If this ever flips, the case above is no longer being exercised and the
+    // guard below would pass for the wrong reason.
+    expect(vi.isFakeTimers()).toBe(false);
+    expect(vi.getMockedSystemTime()?.toISOString()).toBe(
+      "2027-09-09T09:09:09.000Z"
+    );
+  });
+
+  it("keeps its own instant across tests, not the default one", () => {
+    expect(new Date().toISOString()).toBe("2027-09-09T09:09:09.000Z");
+    expect(Date.now()).not.toBe(frozenTestNow().getTime());
+  });
+});
+
+describe("a suite that pins its own instant AND hands the clock back", () => {
+  // The two documented idioms combined in one suite, and the one behaviour the
+  // docs must state plainly: the re-freeze restores the DEFAULT instant, never
+  // this suite's pin. A `beforeAll` pin therefore survives only until the first
+  // handback. A suite that does both has to re-pin in a `beforeEach`.
+  const OWN_INSTANT = new Date("2027-05-06T07:08:09.000Z");
+
+  beforeAll(() => {
+    vi.setSystemTime(OWN_INSTANT);
+  });
+
+  afterAll(() => {
+    installFrozenTestClock();
+  });
+
+  it("keeps the pin for as long as nothing hands the clock back", () => {
+    expect(new Date().toISOString()).toBe("2027-05-06T07:08:09.000Z");
+    // What an `afterEach(() => vi.useRealTimers())` does to the next test.
+    vi.useRealTimers();
+  });
+
+  it("comes back on the DEFAULT instant, not on the suite's own pin", () => {
+    expect(Date.now()).toBe(frozenTestNow().getTime());
+    expect(new Date().toISOString()).not.toBe("2027-05-06T07:08:09.000Z");
+  });
+});
+
 describe("frozen test clock opt-out allowlist", () => {
   const filesCallingOptOut = TEST_FILES.filter(
     (file) =>

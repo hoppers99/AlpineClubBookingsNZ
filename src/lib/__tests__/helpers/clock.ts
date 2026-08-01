@@ -87,6 +87,12 @@
  * idiom) in its own `beforeAll`/`beforeEach`, which runs after the freeze is
  * already installed and therefore wins. `vitest.config.ts` pins
  * `sequence.hooks: "stack"` so the `afterAll` restore stays last too.
+ *
+ * One sharp edge to know about: the re-freeze below restores the DEFAULT
+ * instant, never a suite's own pin. So a suite that pins once in `beforeAll` and
+ * ALSO hands the clock back (`vi.useRealTimers()` in an `afterEach`) keeps its
+ * instant only until the first handback — every later test runs on the default.
+ * Pin in a `beforeEach` instead if the suite does both.
  */
 import { vi } from "vitest";
 
@@ -216,14 +222,25 @@ export function installFrozenTestClock(): void {
  * `batch-modify-payment.test.ts`), each a latent repeat of #2426/#2401/#2443/
  * #2479 waiting for its fixture date to pass.
  *
- * The `isFakeTimers()` check is what makes this safe rather than a blunt reset:
- * a suite that DELIBERATELY pinned another instant still has fake timers
- * installed, so this leaves it completely alone. It only ever converts "real
- * clock" back to "frozen clock", never one pin into another. And it runs before
- * the file's own `beforeEach`, so a per-test pin still wins.
+ * The "is anything already mocking Date?" check is what makes this safe rather
+ * than a blunt reset: a suite that DELIBERATELY pinned another instant is left
+ * completely alone. It only ever converts "real clock" back to "frozen clock",
+ * never one pin into another. And it runs before the file's own `beforeEach`,
+ * so a per-test pin still wins.
+ *
+ * That check has to be `vi.getMockedSystemTime()`, NOT `vi.isFakeTimers()`.
+ * Vitest has two distinct mocked-Date states, and only one of them installs
+ * fake timers: `vi.setSystemTime(x)` called while timers are REAL mocks `Date`
+ * on its own and leaves `vi.isFakeTimers()` returning false. A file reaches that
+ * state by combining two separately-blessed idioms — an `afterEach` that hands
+ * the clock back, then a later describe pinning with a bare `vi.setSystemTime`
+ * in its `beforeAll`. Guarding on `isFakeTimers()` read that as "real clock" and
+ * overwrote the deliberate pin with the default instant, so the suite silently
+ * ran at the wrong date. `vi.getMockedSystemTime()` is public API and returns
+ * non-null in BOTH states; `frozen-test-clock.test.ts` pins the case.
  */
 export function ensureFrozenTestClock(): void {
-  if (realClockReason || vi.isFakeTimers()) {
+  if (realClockReason || vi.getMockedSystemTime() !== null) {
     return;
   }
 
