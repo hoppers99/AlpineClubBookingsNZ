@@ -142,6 +142,65 @@ second run changes nothing. No audit row is written: the value removed is a
 string this project wrote into the row itself, quoted in full here and in the
 migration's own comment, not club-authored content that could be lost.
 
+### One-off cleanup of another club's footer affiliations (#2490)
+
+`20260802140000_clear_starter_footer_affiliations` is a **data-only cleanup**,
+and the sibling of the address cleanup above. It adds and removes no schema,
+touches no hot table, and is safe to run in the ordinary deploy window with the
+previous app colour still serving.
+
+**What it fixes.** `20260702124500_add_site_content` made the three public
+footer columns admin-editable and backfilled them with the copy that was, until
+then, hardcoded in the footer's own source. One of those columns is
+**Affiliations**, and the value it planted lists "Federated Mountain Clubs
+(FMC)" and "Ruapehu Mountain Clubs Association (RMCA)". That was right when it
+was written — this codebase *was* the Tokoroa Alpine Club's live site, and the
+step moved the club's own footer out of the code and into the database so
+nothing changed for it — but the same step now runs for everybody, so every
+install and every fork publishes a regional body it does not belong to, on the
+footer of **every public page**. This migration empties that column wherever it
+still holds exactly the original list.
+
+**What you will notice.** If your footer shows that exact list today, then after
+you cut over the **Affiliations column disappears** and the footer shows two
+columns instead of three. A footer column with no content in it is hidden
+entirely, by design, so there is no empty heading and no gap where it used to
+be. Nothing else changes: your club blurb, your quick links, the logo,
+copyright line, and privacy/terms links are all untouched.
+
+**Post-upgrade action: add your own affiliations, then check the footer.**
+**Admin → Setup & Configuration → Site Appearance & Content → Site Content →
+Footer: affiliations** (`/admin/site-content`), then **Save Footer:
+affiliations**. Public pages are cached briefly for logged-out visitors, so
+allow a minute or check while signed in. Nothing in the product prompts you, so
+add this to your post-upgrade list.
+
+**Then load a public page and confirm what the footer shows.** Do this even if
+you expect the cleanup to have emptied the column on its own. The Site Content
+editor loads all three columns when the page is opened and saves the one you
+press Save on, so an admin who had that page open *before* the upgrade and
+pressed **Save Footer: affiliations** *afterwards* writes the old list straight
+back — and this cleanup runs once, so it will not clear it a second time. If the
+old list is still there, open the same editor, clear it or replace it with your
+own, and save.
+
+**Affiliations you edited yourself are never touched.** The cleanup matches that
+one exact list and nothing else, so a club that has written its own links keeps
+them byte for byte — and so does a club that only deleted the RMCA line, because
+what remains no longer matches. The deliberate exception is a deployment that
+still holds the original list legitimately — Tokoroa's own fork, if it ports
+this release down — which is cleared like everyone else and re-enters its links
+with the steps above.
+
+**Re-running is safe.** After the cleanup the column is empty, so nothing
+matches the old list and a second run changes nothing. No audit row is written,
+for the same reason as the address cleanup: the value removed is markup this
+project wrote into the row itself, quoted in full in the migration's own
+comment, not club-authored content that could be lost. The section's **Last
+saved** stamp in the editor still shows the original backfill time until an
+admin saves it — cosmetic, and the migration deliberately leaves it alone
+because this is a system repair rather than an edit somebody made.
+
 ### The public "Book Now" button is switched OFF for every club (#2430)
 
 **After this release every club's public "Book Now" button is off, whether or

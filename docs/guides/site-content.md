@@ -37,13 +37,20 @@ editable here. Site Content is edited under the **content** permission area.
 3. Click the column's **Save** button (e.g. **Save Footer: club blurb**). To
    hide a footer column, leave its section empty and save.
 
+> **Affiliations start empty.** A new install ships no affiliations, because
+> only your club knows which bodies it belongs to — the footer shows two columns
+> until you add them here. If you are upgrading an older install that still
+> shows the original starter list (Federated Mountain Clubs and the Ruapehu
+> Mountain Clubs Association), that list is cleared for you on upgrade; see
+> [`UPGRADING.md`](../UPGRADING.md) (#2490).
+
 ## Settings reference
 
 | Section | What it controls | Notes / constraints |
 | --- | --- | --- |
 | Footer: club blurb | The short paragraph under the club logo in the footer's first column | Leave empty to hide that column; HTML sanitised on save |
 | Footer: quick links | The heading and link list in the footer's middle column | Leave empty to hide that column |
-| Footer: affiliations | The heading and link list in the footer's last column | Leave empty to hide that column |
+| Footer: affiliations | The heading and link list in the footer's last column | **Empty on a new install** — add your club's own affiliations; leave empty to hide that column |
 | Logo / copyright / privacy & terms links | System-managed footer elements | **Not editable here** |
 
 Each column's content HTML is capped by the shared `SITE_CONTENT_LIMITS` (the
