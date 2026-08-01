@@ -27,7 +27,6 @@ import {
   type BatchModifyInput,
   type BookingModificationSettlementMethod,
   type LoadedBookingForModify,
-  type ResolvedGuestMemberLink,
   type ResolvedGuestNameUpdate,
   type PricingResult,
   isBookingFullyPaidForGuestNameEdits,
