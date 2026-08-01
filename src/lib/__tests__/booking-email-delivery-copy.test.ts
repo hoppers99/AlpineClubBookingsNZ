@@ -142,6 +142,11 @@ const CONSENT_ACTION =
   `${CURRENT_ORIGIN}/bookings/consent/bearer-secret` +
   `?return=%2Fbookings%2F${BOOKING_ID}&mode=answer#respond`;
 const CONSENT_ACTION_HTML = CONSENT_ACTION.replace("&", "&amp;");
+const ENCODED_CONSENT_ACTIONS = [
+  `${CURRENT_ORIGIN}/bookings/%63onsent/current-secret?mode=answer#respond`,
+  "https://legacy-bookings.example.test/bookings/%43ONSENT/legacy-secret?mode=answer#respond",
+  "/bookings/%63ONSENT/relative-secret?mode=answer#respond",
+];
 const UNRELATED_ABSOLUTE =
   `https://help.example.test/guide?next=/bookings/${BOOKING_ID}#faq`;
 const UNRELATED_RELATIVE =
@@ -153,6 +158,9 @@ const OVERRIDE_SOURCE = [
   "Legacy detail: https://legacy-bookings.example.test/bookings/{{bookingId}}?from=old#summary",
   "Relative detail: /bookings/{{bookingId}}?mode=compact#payment",
   "Consent action: {{BASE_URL}}/bookings/consent/bearer-secret?return=%2Fbookings%2F{{bookingId}}&mode=answer#respond",
+  "Encoded current consent: {{BASE_URL}}/bookings/%63onsent/current-secret?mode=answer#respond",
+  "Encoded legacy consent: https://legacy-bookings.example.test/bookings/%43ONSENT/legacy-secret?mode=answer#respond",
+  "Encoded relative consent: /bookings/%63ONSENT/relative-secret?mode=answer#respond",
   "Unrelated absolute: https://help.example.test/guide?next=/bookings/{{bookingId}}#faq",
   "Unrelated relative: /help?next=/bookings/{{bookingId}}#faq",
   "Keep this operational sentence unchanged.",
@@ -215,9 +223,19 @@ function expectDetailTextRemoved(html: string) {
 
 function expectBearerAndUnrelatedTextPreserved(html: string) {
   expect(html).toContain(CONSENT_ACTION_HTML);
+  for (const action of ENCODED_CONSENT_ACTIONS) {
+    expect(html).toContain(action);
+  }
   expect(html).toContain(UNRELATED_ABSOLUTE);
   expect(html).toContain(UNRELATED_RELATIVE);
   expect(html).toContain("Keep this operational sentence unchanged.");
+}
+
+function expectBearerTextPreserved(text: string) {
+  expect(text).toContain(CONSENT_ACTION);
+  for (const action of ENCODED_CONSENT_ACTIONS) {
+    expect(text).toContain(action);
+  }
 }
 
 function failedRowFromInitialSend() {
@@ -280,7 +298,7 @@ describe("booking override delivery-copy URL sanitation", () => {
     expectDetailTextRemoved(delivery.html);
     expectDetailTextRemoved(delivery.text);
     expectBearerAndUnrelatedTextPreserved(delivery.html);
-    expect(delivery.text).toContain(CONSENT_ACTION);
+    expectBearerTextPreserved(delivery.text);
     expect(delivery.text).toContain(UNRELATED_ABSOLUTE);
 
     const logged = mocks.emailLogCreate.mock.calls[0][0].data;
@@ -353,7 +371,7 @@ describe("booking override delivery-copy URL sanitation", () => {
       expectDetailTextRemoved(retryDelivery.html);
       expectDetailTextRemoved(retryDelivery.text);
       expectBearerAndUnrelatedTextPreserved(retryDelivery.html);
-      expect(retryDelivery.text).toContain(CONSENT_ACTION);
+      expectBearerTextPreserved(retryDelivery.text);
       expect(retryDelivery.text).toContain(UNRELATED_ABSOLUTE);
       expect(mocks.emailLogUpdateMany).toHaveBeenCalledWith(
         expect.objectContaining({

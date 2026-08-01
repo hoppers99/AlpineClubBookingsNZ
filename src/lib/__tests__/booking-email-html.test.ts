@@ -121,4 +121,75 @@ describe("built-in booking email HTML links", () => {
     expect(delivered).toContain("/custom/help");
     expect(storedOverride).toContain("/bookings/bk_private");
   });
+
+  it("preserves singly encoded consent bearer routes byte-for-byte", () => {
+    const storedOverride =
+      '<a href="https://bookings.example.nz/bookings/%63onsent/current-token?mode=answer#respond">https://bookings.example.nz/bookings/%63onsent/current-token?mode=answer#respond</a>' +
+      '<a href="https://old-bookings.example.nz/bookings/%43ONSENT/legacy-token?mode=answer#respond">https://old-bookings.example.nz/bookings/%43ONSENT/legacy-token?mode=answer#respond</a>' +
+      '<a href="/bookings/%63ONSENT/relative-token?mode=answer#respond">/bookings/%63ONSENT/relative-token?mode=answer#respond</a>';
+
+    expect(
+      finalizeBookingEmailHtml({
+        html: storedOverride,
+        bookingUrl: null,
+        bookingScoped: true,
+        bodyOverrideApplied: true,
+      }),
+    ).toBe(storedOverride);
+    expect(hasBookingDetailHref(storedOverride)).toBe(false);
+  });
+
+  it("decodes only the first booking route segment once and fails closed", () => {
+    const storedOverride =
+      "Encoded detail: /bookings/%62k_private?tab=guests#summary. " +
+      "Double encoded: /bookings/%2563onsent/token?mode=answer#respond. " +
+      "Malformed: /bookings/%6Gonsent/token?mode=answer#respond. " +
+      "Literal bearer: /bookings/consent/token?mode=answer#respond. " +
+      "Unrelated malformed: /help/%6G?next=/bookings/bk_private#faq.";
+
+    expect(
+      finalizeBookingEmailHtml({
+        html: storedOverride,
+        bookingUrl: null,
+        bookingScoped: true,
+        bodyOverrideApplied: true,
+      }),
+    ).toBe(
+      "Encoded detail: . Double encoded: . Malformed: . " +
+        "Literal bearer: /bookings/consent/token?mode=answer#respond. " +
+        "Unrelated malformed: /help/%6G?next=/bookings/bk_private#faq.",
+    );
+    expect(
+      hasBookingDetailHref(
+        '<a href="https://bookings.example.nz/bookings/%2563onsent/token">Double encoded</a>',
+      ),
+    ).toBe(true);
+    expect(
+      hasBookingDetailHref(
+        '<a href="https://bookings.example.nz/bookings/%6Gonsent/token">Malformed</a>',
+      ),
+    ).toBe(true);
+  });
+
+  it("sanitizes text nodes without rewriting quoted attributes or comments", () => {
+    const storedOverride =
+      "<div data-double=\"> /bookings/bk_attribute\" data-single='> https://old-bookings.example.nz/bookings/bk_attribute'>Visible detail: /bookings/bk_visible.</div>" +
+      "<!-- > /bookings/bk_comment -->" +
+      "Literal bearer: /bookings/consent/token. " +
+      "Unrelated: /help?next=/bookings/bk_visible#faq.";
+
+    expect(
+      finalizeBookingEmailHtml({
+        html: storedOverride,
+        bookingUrl: null,
+        bookingScoped: true,
+        bodyOverrideApplied: true,
+      }),
+    ).toBe(
+      "<div data-double=\"> /bookings/bk_attribute\" data-single='> https://old-bookings.example.nz/bookings/bk_attribute'>Visible detail: .</div>" +
+        "<!-- > /bookings/bk_comment -->" +
+        "Literal bearer: /bookings/consent/token. " +
+        "Unrelated: /help?next=/bookings/bk_visible#faq.",
+    );
+  });
 });

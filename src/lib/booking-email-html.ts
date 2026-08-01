@@ -12,14 +12,10 @@ function escapeHtml(value: string): string {
 function findBookingHref(html: string, fromIndex = 0) {
   const baseUrl = getAppBaseUrl().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const pattern = new RegExp(
-    // `/bookings/consent/<token>` is a bearer action for recipients who may
-    // not have a login. It must never be removed or rewritten as though it
-    // were the authenticated `/bookings/<booking-id>` detail route.
-    `href="${baseUrl}\\/bookings(?:\\/(?!consent(?:\\/|[?#]|$))[^"#?]*)?([?#][^"]*)?"`,
+    `href="${baseUrl}\\/bookings(?:\\/[^"#?]*)?([?#][^"]*)?"`,
     "g",
   );
-  pattern.lastIndex = fromIndex;
-  return pattern.exec(html);
+  return findAuthenticatedBookingHref(html, pattern, fromIndex);
 }
 
 function findAnyBookingHref(html: string, fromIndex = 0) {
@@ -27,11 +23,10 @@ function findAnyBookingHref(html: string, fromIndex = 0) {
     // Unauthorized final sanitation must also catch a legacy hard-coded app
     // origin and relative hrefs. Rewriting authorized built-ins stays on the
     // stricter current-origin matcher above; this wider matcher only removes.
-    'href="(?:https?:\\/\\/[^/"?#]+)?\\/bookings(?:\\/(?!consent(?:\\/|[?#]|$))[^"#?]*)?([?#][^"]*)?"',
+    'href="(?:https?:\\/\\/[^/"?#]+)?\\/bookings(?:\\/[^"#?]*)?([?#][^"]*)?"',
     "g",
   );
-  pattern.lastIndex = fromIndex;
-  return pattern.exec(html);
+  return findAuthenticatedBookingHref(html, pattern, fromIndex);
 }
 
 // Match a complete visible absolute/root-relative URL candidate rather than
@@ -79,33 +74,88 @@ function isAuthenticatedBookingDetailUrl(candidate: string): boolean {
     if (!pathname.startsWith("/bookings/")) return false;
 
     const firstSegment = pathname.slice("/bookings/".length).split("/", 1)[0];
-    // `/bookings/consent/...` is a bearer action for recipients who may not be
-    // able to sign in. Preserve it byte-for-byte, including query/fragment.
-    return firstSegment.toLowerCase() !== "consent";
+    try {
+      // Next decodes each route segment once. Mirror that single decode so an
+      // encoded `consent` segment remains a bearer action, without treating a
+      // double-encoded segment as equivalent. Malformed escapes fail closed
+      // and are therefore stripped as an authenticated detail path.
+      return decodeURIComponent(firstSegment).toLowerCase() !== "consent";
+    } catch {
+      return true;
+    }
   } catch {
     return false;
   }
+}
+
+function findAuthenticatedBookingHref(
+  html: string,
+  pattern: RegExp,
+  fromIndex: number,
+): RegExpExecArray | null {
+  pattern.lastIndex = fromIndex;
+  let match = pattern.exec(html);
+  while (match) {
+    const href = match[0].slice('href="'.length, -1);
+    if (isAuthenticatedBookingDetailUrl(href)) return match;
+    match = pattern.exec(html);
+  }
+  return null;
+}
+
+function sanitizeVisibleText(text: string): string {
+  return text.replace(
+    VISIBLE_URL_CANDIDATE_PATTERN,
+    (match, prefix: string, candidate: string) => {
+      const { url, trailing } = splitVisibleUrlCandidate(candidate);
+      return isAuthenticatedBookingDetailUrl(url)
+        ? `${prefix}${trailing}`
+        : match;
+    },
+  );
+}
+
+function findHtmlMarkupEnd(html: string, startIndex: number): number {
+  if (html.startsWith("<!--", startIndex)) {
+    const commentEnd = html.indexOf("-->", startIndex + 4);
+    return commentEnd < 0 ? html.length : commentEnd + "-->".length;
+  }
+
+  let quote: '"' | "'" | null = null;
+  for (let index = startIndex + 1; index < html.length; index += 1) {
+    const character = html[index];
+    if (quote) {
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+    } else if (character === ">") {
+      return index + 1;
+    }
+  }
+  return html.length;
 }
 
 function removeVisibleBookingDetailUrls(html: string): string {
   // Stored override bodies are HTML-escaped by plainTextEmailTemplate. Scan
   // only text nodes so URLs in attributes, comments, and layout markup are not
   // accidentally rewritten. Authorized output never calls this function.
-  return html
-    .split(/(<[^>]*>)/g)
-    .map((part, index) => {
-      if (index % 2 === 1) return part;
-      return part.replace(
-        VISIBLE_URL_CANDIDATE_PATTERN,
-        (match, prefix: string, candidate: string) => {
-          const { url, trailing } = splitVisibleUrlCandidate(candidate);
-          return isAuthenticatedBookingDetailUrl(url)
-            ? `${prefix}${trailing}`
-            : match;
-        },
-      );
-    })
-    .join("");
+  let next = "";
+  let cursor = 0;
+  while (cursor < html.length) {
+    const markupStart = html.indexOf("<", cursor);
+    if (markupStart < 0) {
+      next += sanitizeVisibleText(html.slice(cursor));
+      break;
+    }
+
+    next += sanitizeVisibleText(html.slice(cursor, markupStart));
+    const markupEnd = findHtmlMarkupEnd(html, markupStart);
+    next += html.slice(markupStart, markupEnd);
+    cursor = markupEnd;
+  }
+  return next;
 }
 
 /** Whether HTML contains an authenticated booking-detail href (not a bearer action). */
