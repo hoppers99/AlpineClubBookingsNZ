@@ -492,13 +492,18 @@ export async function modifyBookingBatch({
     // and the per-row write map (member identity + any consent columns).
     const guestMemberLinks = guestPlan.guestMemberLinks;
     const linkWriteByGuestId = new Map(
-      guestMemberLinks.map((link) => [
-        link.guestId,
-        {
-          memberId: link.memberId,
-          consentColumns: guestPlan.guestMemberLinkColumns.get(link.guestId),
-        },
-      ]),
+      guestMemberLinks.map((link) => {
+        const name = guestPlan.guestMemberLinkNames.get(link.guestId);
+        return [
+          link.guestId,
+          {
+            memberId: link.memberId,
+            firstName: name?.firstName ?? null,
+            lastName: name?.lastName ?? null,
+            consentColumns: guestPlan.guestMemberLinkColumns.get(link.guestId),
+          },
+        ];
+      }),
     );
     const identityOnlyModification =
       guestNameUpdates.length > 0 && !requestedStructuralChange;

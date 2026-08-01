@@ -87,7 +87,12 @@ const tx = {} as never;
 
 function familyBoundary(memberId: string) {
   return {
-    members: new Map([[memberId, { id: memberId, ageTier: "ADULT" }]]),
+    members: new Map([
+      [
+        memberId,
+        { id: memberId, ageTier: "ADULT", firstName: "Ada", lastName: "Lovelace" },
+      ],
+    ]),
     boundary: {
       scopeByMemberId: new Map([[memberId, "FAMILY"]]),
       beyondFamilyMemberIds: [],
@@ -97,7 +102,12 @@ function familyBoundary(memberId: string) {
 
 function beyondFamilyBoundary(memberId: string) {
   return {
-    members: new Map([[memberId, { id: memberId, ageTier: "ADULT" }]]),
+    members: new Map([
+      [
+        memberId,
+        { id: memberId, ageTier: "ADULT", firstName: "Grace", lastName: "Hopper" },
+      ],
+    ]),
     boundary: {
       scopeByMemberId: new Map([[memberId, "BEYOND_FAMILY"]]),
       beyondFamilyMemberIds: [memberId],
@@ -169,6 +179,12 @@ describe("#2337: prepareGuestPlan threads a placeholder→member link into prici
     // A family-scope link writes no consent columns and asks nobody.
     expect(plan.guestMemberLinkColumns.get("g1")).toBeUndefined();
     expect(plan.memberGuestEntries.size).toBe(0);
+
+    // The linked row displays the member's name, not the "Guest 1" placeholder.
+    expect(plan.guestMemberLinkNames.get("g1")).toEqual({
+      firstName: "Ada",
+      lastName: "Lovelace",
+    });
   });
 
   it("resolves the linked member THROUGH the boundary machinery, so an ineligible member is refused by the same path an added member guest is", async () => {

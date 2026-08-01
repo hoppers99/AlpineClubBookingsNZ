@@ -438,6 +438,16 @@ export type GuestPlan = {
    * guest would — so the consent email fires exactly as remove-and-re-add does.
    */
   guestMemberLinkColumns: Map<string, MemberGuestConsentColumns | undefined>;
+  /**
+   * #2337: the linked member's canonical name, keyed by guestId, so the linked
+   * row displays the member's name rather than the "Guest N" placeholder — the
+   * same as an added member guest. Null when the member record carries no name,
+   * in which case the placeholder name is kept rather than blanking the row.
+   */
+  guestMemberLinkNames: Map<
+    string,
+    { firstName: string | null; lastName: string | null }
+  >;
   totalGuestCount: number;
   requiresAdminReview: boolean;
   adminReviewReason: string | null;
@@ -581,6 +591,23 @@ export async function prepareGuestPlan(
   );
   const linkByGuestId = new Map(
     guestMemberLinks.map((link) => [link.guestId, link]),
+  );
+  // #2337: the member's canonical name for each linked row, resolved from the
+  // same `linkedMembers` the boundary machinery produced.
+  const guestMemberLinkNames = new Map<
+    string,
+    { firstName: string | null; lastName: string | null }
+  >(
+    guestMemberLinks.map((link) => {
+      const member = linkedMembers.get(link.memberId);
+      return [
+        link.guestId,
+        {
+          firstName: member?.firstName ?? null,
+          lastName: member?.lastName ?? null,
+        },
+      ];
+    }),
   );
   for (const [memberId, entry] of linkConsentPlan.entriesByMemberId) {
     memberGuestEntries.set(memberId, entry);
@@ -768,6 +795,7 @@ export async function prepareGuestPlan(
     memberGuestEntries,
     guestMemberLinks,
     guestMemberLinkColumns,
+    guestMemberLinkNames,
   };
 }
 
@@ -1649,7 +1677,12 @@ export async function applyGuestChanges(
     // the pricing pass above; this write records who it is now FOR.
     guestMemberLinks?: Map<
       string,
-      { memberId: string; consentColumns?: MemberGuestConsentColumns }
+      {
+        memberId: string;
+        firstName?: string | null;
+        lastName?: string | null;
+        consentColumns?: MemberGuestConsentColumns;
+      }
     >;
     priceBreakdown: PricingResult["priceBreakdown"];
     inProgressPlan: BookingEditGuestRangePlan | null;
@@ -1719,6 +1752,11 @@ export async function applyGuestChanges(
             ? {
                 isMember: true,
                 memberId: link.memberId,
+                // Display the member's name, like an added member guest; keep the
+                // placeholder name only if the member record has none.
+                ...(link.firstName && link.lastName
+                  ? { firstName: link.firstName, lastName: link.lastName }
+                  : {}),
                 ...(link.consentColumns ?? {}),
               }
             : {}),
