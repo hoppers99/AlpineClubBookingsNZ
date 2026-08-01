@@ -8,13 +8,24 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // shapes, and pin the flat body to the hand-built HTML template so the two
 // money stories can never drift apart again (the 31651e00 failure mode).
 
-const { sendEmailMock, loadLodgeSettingsMock } = vi.hoisted(() => ({
-  sendEmailMock: vi.fn().mockResolvedValue({ status: "sent" }),
-  loadLodgeSettingsMock: vi.fn(),
-}));
+const { sendEmailMock, loadLodgeSettingsMock, loadAppliedCreditMock } =
+  vi.hoisted(() => ({
+    sendEmailMock: vi.fn().mockResolvedValue({ status: "sent" }),
+    loadLodgeSettingsMock: vi.fn(),
+    loadAppliedCreditMock: vi.fn(),
+  }));
 
 vi.mock("@/lib/email/core", () => ({
   sendEmail: sendEmailMock,
+}));
+
+// #2328: the sender reads the booking's applied account credit itself, from the
+// ledger, rather than trusting a caller to thread it in. Stubbed here so each
+// case can state what the booking's persisted records say; defaults to no
+// credit, which is the byte-for-byte-unchanged shape every #2267/#2263/#2397
+// case below asserts.
+vi.mock("@/lib/booking-confirmation-credit", () => ({
+  loadBookingAppliedCredit: loadAppliedCreditMock,
 }));
 
 vi.mock("@/lib/email-message-settings", () => ({
@@ -49,6 +60,10 @@ beforeEach(() => {
   loadLodgeSettingsMock.mockResolvedValue({
     lodgeTravelNote: "Take the Bruce Road.",
     doorCode: "1234",
+  });
+  loadAppliedCreditMock.mockResolvedValue({
+    amountCents: 0,
+    settlementMethod: "card",
   });
 });
 
@@ -120,12 +135,24 @@ async function captureConfirmedTemplateData(
     // settlement the admin said did not cover an uncollected price increase).
     outstandingBalance?: { amountCents: number; payableOnline: boolean };
   },
+  // #2328: what the booking's PERSISTED records say about account credit — the
+  // ledger's applied total and how the rest was settled. A separate argument,
+  // not part of the sender's options, because the sender READS this rather than
+  // being told it. Omitted here means "no credit", the shape every case below
+  // asserts unchanged.
+  appliedCredit?: {
+    amountCents: number;
+    settlementMethod: "card" | "bank_transfer" | "manual";
+  },
 ): Promise<{ templateData: EmailTemplateData; html: string }> {
   if (options && "doorCode" in options) {
     loadLodgeSettingsMock.mockResolvedValue({
       lodgeTravelNote: "Take the Bruce Road.",
       doorCode: options.doorCode,
     });
+  }
+  if (appliedCredit) {
+    loadAppliedCreditMock.mockResolvedValue(appliedCredit);
   }
   const { sendBookingConfirmedEmail } = await import("../email/booking");
   await sendBookingConfirmedEmail(
@@ -311,6 +338,12 @@ describe("booking-confirmed promo summary (#2267)", () => {
     // Paid = Booking Total − Still Owing — true whether or not credit was
     // involved. Reporting the $120.00 of cash instead would read as though the
     // club were still owed the credit the member had already spent.
+    //
+    // #2328 KEEPS all three rows exactly as pinned here and adds the breakdown
+    // BENEATH "Paid" — the ledger is what supplies the credit figure, and this
+    // fixture models none, so nothing is added. The same numbers with the
+    // $50.00 of credit actually on the ledger are pinned in
+    // booking-confirmed-credit-email.test.ts.
     const { templateData, html } = await captureConfirmedTemplateData(20000, {
       outstandingBalance: { amountCents: 3000, payableOnline: true },
     });

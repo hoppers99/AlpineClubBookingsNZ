@@ -16,11 +16,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { parseDateOnly } from "@/lib/date-only";
-import type { MemberGuestConsentColumns } from "@/lib/member-guest-consent";
 import {
+  MEMBER_GUEST_CONSENT_SUB_STATES,
+  classifyMemberGuestConsent,
+  type MemberGuestConsentColumns,
+  type MemberGuestConsentSubStateId,
+} from "@/lib/member-guest-consent";
+import {
+  MEMBER_GUEST_REVIEW_EXPLAINER,
   describeConsentDeclineRefusal,
   describeConsentNightsCount,
   describeMemberGuestConsentBadge,
+  describeMemberGuestHoldSentence,
+  describeMemberGuestPendingHeading,
   formatConsentFullDate,
   formatConsentGuestName,
   formatConsentNightsLabel,
@@ -568,5 +576,303 @@ describe("the date and count labels", () => {
     expect(describeConsentNightsCount(1)).toBe("one night");
     expect(describeConsentNightsCount(2)).toBe("two nights");
     expect(describeConsentNightsCount(14)).toBe("14 nights");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MG3 (#2308) — the WIZARD audience, and the totality guarantee
+// ---------------------------------------------------------------------------
+
+describe("describeMemberGuestConsentBadge — three audiences, eight sub-states", () => {
+  // The full table, written out once. Its purpose is not to restate the code:
+  // it is to make a NEW CONSENT SUB-STATE IMPOSSIBLE TO ADD WITHOUT DECIDING
+  // WHAT ALL THREE AUDIENCES SAY. The coverage test below walks
+  // MEMBER_GUEST_CONSENT_SUB_STATES — the schema's own list — and fails if any
+  // id is missing from the table, so the table cannot silently fall behind the
+  // state machine it describes.
+  const ROWS: ReadonlyArray<{
+    id: MemberGuestConsentSubStateId;
+    columns: MemberGuestConsentColumns;
+    targetMemberId: string | null;
+    member: string | null;
+    admin: string | null;
+    wizard: string | null;
+    tone: "pending" | "ok" | "blocked" | null;
+  }> = [
+    {
+      id: "FAMILY_OR_LEGACY",
+      columns: {
+        consentStatus: null,
+        consentRequestedAt: null,
+        consentRespondedAt: null,
+        consentRespondedByMemberId: null,
+        consentExpiresAt: null,
+      },
+      targetMemberId: "m-1",
+      member: null,
+      admin: null,
+      wizard: null,
+      tone: null,
+    },
+    {
+      id: "AWAITING_TARGET",
+      columns: {
+        consentStatus: "PENDING",
+        consentRequestedAt: TODAY,
+        consentRespondedAt: null,
+        consentRespondedByMemberId: null,
+        consentExpiresAt: EXPIRES,
+      },
+      targetMemberId: "m-1",
+      member: `Waiting for consent · expires ${formatConsentShortDate(EXPIRES)}`,
+      admin: `Waiting for consent · expires ${formatConsentShortDate(EXPIRES)}`,
+      wizard: "Waiting for Sam to approve",
+      tone: "pending",
+    },
+    {
+      id: "TARGET_APPROVED",
+      columns: {
+        consentStatus: "CONFIRMED",
+        consentRequestedAt: TODAY,
+        consentRespondedAt: RESPONDED,
+        consentRespondedByMemberId: "m-1",
+        consentExpiresAt: null,
+      },
+      targetMemberId: "m-1",
+      member: "Consented",
+      admin: `Consented ${formatConsentShortDate(RESPONDED)}`,
+      wizard: "Sam approved",
+      tone: "ok",
+    },
+    {
+      id: "DELEGATE_APPROVED",
+      columns: {
+        consentStatus: "CONFIRMED",
+        consentRequestedAt: TODAY,
+        consentRespondedAt: RESPONDED,
+        consentRespondedByMemberId: "m-2",
+        consentExpiresAt: null,
+      },
+      targetMemberId: "m-1",
+      member: "Consented",
+      admin: `Consented by Ana Kaur, ${formatConsentShortDate(RESPONDED)}`,
+      // DELIBERATELY IDENTICAL to TARGET_APPROVED — see the dedicated test below.
+      wizard: "Sam approved",
+      tone: "ok",
+    },
+    {
+      id: "NOTIFY_ONLY_AUTO_CONFIRMED",
+      columns: {
+        consentStatus: "CONFIRMED",
+        consentRequestedAt: null,
+        consentRespondedAt: null,
+        consentRespondedByMemberId: null,
+        consentExpiresAt: null,
+      },
+      targetMemberId: "m-1",
+      member: "Told, not asked",
+      admin: "Told, not asked",
+      wizard: "Sam will be told",
+      tone: "ok",
+    },
+    {
+      id: "ADMIN_ASSIGNED",
+      columns: {
+        consentStatus: "CONFIRMED",
+        consentRequestedAt: null,
+        consentRespondedAt: RESPONDED,
+        consentRespondedByMemberId: "m-admin",
+        consentExpiresAt: null,
+      },
+      targetMemberId: "m-1",
+      member: "Added by the club",
+      admin: "Added by Ana Kaur",
+      // Not name-bearing: the warm wording names the TARGET, and naming the
+      // acting admin is the ADMIN audience's job.
+      wizard: "Added by the club",
+      tone: "ok",
+    },
+    {
+      id: "DECLINED",
+      columns: {
+        consentStatus: "DECLINED",
+        consentRequestedAt: TODAY,
+        consentRespondedAt: RESPONDED,
+        consentRespondedByMemberId: "m-1",
+        consentExpiresAt: null,
+      },
+      targetMemberId: "m-1",
+      member: "Said no — still on the booking",
+      admin: "Said no — could not be removed",
+      wizard: "Sam said no — still on the booking",
+      tone: "blocked",
+    },
+    {
+      id: "EXPIRED",
+      columns: {
+        consentStatus: "EXPIRED",
+        consentRequestedAt: TODAY,
+        consentRespondedAt: null,
+        consentRespondedByMemberId: null,
+        consentExpiresAt: EXPIRES,
+      },
+      targetMemberId: "m-1",
+      member: "Lapsed — still on the booking",
+      admin: "Lapsed — could not be removed",
+      wizard: "Sam didn't answer — still on the booking",
+      tone: "blocked",
+    },
+  ];
+
+  it.each(ROWS)(
+    "$id renders the agreed label for all three audiences",
+    ({ id, columns, targetMemberId, member, admin, wizard, tone }) => {
+      // Every row's columns must actually BE the sub-state it claims, or the
+      // table would be pinning wording against a shape the model rejects.
+      expect(classifyMemberGuestConsent(columns, targetMemberId)).toBe(id);
+
+      const call = (audience: "MEMBER" | "ADMIN" | "WIZARD") =>
+        describeMemberGuestConsentBadge({
+          guest: { memberId: targetMemberId, ...columns },
+          audience,
+          responderName: "Ana Kaur",
+          targetFirstName: "Sam",
+        });
+
+      expect(call("MEMBER")?.label ?? null).toBe(member);
+      expect(call("ADMIN")?.label ?? null).toBe(admin);
+      expect(call("WIZARD")?.label ?? null).toBe(wizard);
+      expect(call("WIZARD")?.tone ?? null).toBe(tone);
+    },
+  );
+
+  it("covers every sub-state the schema defines — a new one cannot be added silently", () => {
+    const pinned = new Set<string>(ROWS.map((row) => row.id));
+    const declared = MEMBER_GUEST_CONSENT_SUB_STATES.map((subState) => subState.id);
+    expect(declared.filter((id) => !pinned.has(id))).toEqual([]);
+    expect(ROWS).toHaveLength(declared.length);
+  });
+
+  it("never lets a member-facing audience tell a delegate approval from a self approval", () => {
+    // THE PRIVACY RULE, ASSERTED DIRECTLY. The responder is very often a family
+    // adult who is not on the booking at all, so disclosing that somebody else
+    // answered says the target holds no login — usually a way of saying they are
+    // a child. MEMBER already collapsed the two; the wizard's warmer vocabulary
+    // must not undo that, so the two labels are required to be IDENTICAL.
+    const target = ROWS.find((row) => row.id === "TARGET_APPROVED")!;
+    const delegate = ROWS.find((row) => row.id === "DELEGATE_APPROVED")!;
+    for (const audience of ["MEMBER", "WIZARD"] as const) {
+      const a = describeMemberGuestConsentBadge({
+        guest: { memberId: target.targetMemberId, ...target.columns },
+        audience,
+        responderName: "Ana Kaur",
+        targetFirstName: "Sam",
+      });
+      const b = describeMemberGuestConsentBadge({
+        guest: { memberId: delegate.targetMemberId, ...delegate.columns },
+        audience,
+        responderName: "Ana Kaur",
+        targetFirstName: "Sam",
+      });
+      expect(a).toEqual(b);
+    }
+    // The ADMIN audience is the one that MAY tell them apart, and still does.
+    const adminTarget = describeMemberGuestConsentBadge({
+      guest: { memberId: target.targetMemberId, ...target.columns },
+      audience: "ADMIN",
+      responderName: "Ana Kaur",
+    });
+    const adminDelegate = describeMemberGuestConsentBadge({
+      guest: { memberId: delegate.targetMemberId, ...delegate.columns },
+      audience: "ADMIN",
+      responderName: "Ana Kaur",
+    });
+    expect(adminTarget).not.toEqual(adminDelegate);
+  });
+
+  it("never names the responder to the wizard, even when one is supplied", () => {
+    for (const row of ROWS) {
+      const badge = describeMemberGuestConsentBadge({
+        guest: { memberId: row.targetMemberId, ...row.columns },
+        audience: "WIZARD",
+        responderName: "Ana Kaur",
+        targetFirstName: "Sam",
+      });
+      expect(badge?.label ?? "").not.toContain("Ana Kaur");
+    }
+  });
+
+  it("shows no invented expiry date in the wizard — nothing has been requested yet", () => {
+    const pending = ROWS.find((row) => row.id === "AWAITING_TARGET")!;
+    const badge = describeMemberGuestConsentBadge({
+      guest: { memberId: pending.targetMemberId, ...pending.columns },
+      audience: "WIZARD",
+      targetFirstName: "Sam",
+    });
+    expect(badge?.label).toBe("Waiting for Sam to approve");
+    expect(badge?.label).not.toContain(formatConsentShortDate(EXPIRES));
+  });
+
+  it("falls back to the member wording when no first name is available", () => {
+    for (const row of ROWS) {
+      const badge = describeMemberGuestConsentBadge({
+        guest: { memberId: row.targetMemberId, ...row.columns },
+        audience: "WIZARD",
+        targetFirstName: "  ",
+      });
+      // Every fallback string is one the MEMBER audience already ships, so the
+      // fallback can never introduce a third vocabulary.
+      if (row.id === "AWAITING_TARGET") {
+        expect(badge?.label).toBe("Waiting for consent");
+      } else {
+        expect(badge?.label ?? null).toBe(row.member);
+      }
+    }
+  });
+});
+
+describe("the review-step explainer (#2308, owner sign-off answer 4)", () => {
+  it("states the hold with the club's OWN configured number of days", () => {
+    expect(describeMemberGuestHoldSentence(7)).toBe(
+      "Their bed is held while you wait. If they haven't answered within 7 days, " +
+        "they'll come off the booking automatically and it will be repriced.",
+    );
+    expect(describeMemberGuestHoldSentence(1)).toContain("within 1 day,");
+    // A club that shortened the hold must not be told seven.
+    expect(describeMemberGuestHoldSentence(2)).toContain("within 2 days,");
+  });
+
+  it("says the two things D-11 and D-13 make it obliged to say", () => {
+    expect(MEMBER_GUEST_REVIEW_EXPLAINER.disclosure).toBe(
+      "As soon as you add them they can see this booking, including the other " +
+        "guests' names — before they decide.",
+    );
+    expect(MEMBER_GUEST_REVIEW_EXPLAINER.scopeAndRemoval).toContain(
+      "covers this booking including any later changes",
+    );
+  });
+
+  it("never says the two things D-13 and D-14 make false", () => {
+    const all = [
+      describeMemberGuestHoldSentence(7),
+      ...Object.values(MEMBER_GUEST_REVIEW_EXPLAINER),
+    ].join(" ");
+    // D-13 as ticked: consent carries over, so we do NOT re-ask on a date change.
+    expect(all).not.toMatch(/ask them again/i);
+    expect(all).not.toMatch(/re-?ask/i);
+    // D-14 as ticked: the ordinary self-removal blockers apply to them too.
+    expect(all).not.toMatch(/can always take themselves off/i);
+    expect(all).not.toMatch(/always remove themselves/i);
+  });
+
+  it("names who is waiting, and degrades to a count rather than a long list", () => {
+    expect(describeMemberGuestPendingHeading(["Sam"])).toBe("Sam hasn't answered yet");
+    expect(describeMemberGuestPendingHeading(["Sam", "Anna"])).toBe(
+      "Sam and Anna haven't answered yet",
+    );
+    expect(describeMemberGuestPendingHeading(["Sam", "Anna", "Toby"])).toBe(
+      "3 guests haven't answered yet",
+    );
+    expect(describeMemberGuestPendingHeading([])).toBe("Somebody hasn't answered yet");
   });
 });

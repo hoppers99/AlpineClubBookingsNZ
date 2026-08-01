@@ -25,10 +25,13 @@ export type ParentLinkSummary = {
  *
  * Kept because stored inheritance is always flat (see
  * {@link resolveInheritedEmailSourceId}), so this is the right answer whenever
- * the parent is itself a usable source — which the admin link route guarantees
- * for the common case by requiring the parent be an active, non-archived adult.
- * It is NOT sufficient when the parent has no usable address of their own; use
- * the async resolver for that.
+ * the parent is itself a usable source. NOTHING GUARANTEES THAT ANY MORE: the
+ * admin link route used to require an active, non-archived ADULT parent, and
+ * #2282 removed the adult half — parentage is recorded at any age. A parent may
+ * now be a minor, so this one-hop reading is correct only where the caller has
+ * already established that the parent can receive mail. Everywhere else — and
+ * in every WRITE path without exception — use the async resolver, which walks up
+ * to the nearest ancestor who actually qualifies.
  */
 export function getParentEmailSourceId(
   parent: { id: string; inheritEmailFromId?: string | null } | null | undefined

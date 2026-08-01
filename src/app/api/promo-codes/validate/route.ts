@@ -17,6 +17,10 @@ import {
   priceBookingGuestsWithMembershipTypePolicy,
 } from "@/lib/membership-type-policy";
 import {
+  handleMemberGuestAddRefusal,
+  startMemberGuestRefusalClock,
+} from "@/lib/member-guest-probe-guard";
+import {
   validateAndCalculatePromoDiscount,
 } from "@/lib/promo";
 import { applyRateLimit, rateLimiters } from "@/lib/rate-limit";
@@ -116,6 +120,11 @@ export async function POST(req: NextRequest) {
     );
   }
   const effectiveMemberId = parsed.data.forMemberId ?? session.user.id;
+  // Finding 2 (privacy re-review of MG3 #2308). Taken here rather than at the
+  // top of the handler because everything above is schema and authorization —
+  // the collapsed refusal cannot be raised until the party is priced.
+  const memberGuestRefusalStartedAt = startMemberGuestRefusalClock();
+  const isAuthorizedOnBehalf = Boolean(parsed.data.forMemberId);
 
   let promoCode:
     | (Awaited<ReturnType<typeof prisma.promoCode.findUnique>> & {
@@ -299,6 +308,21 @@ export async function POST(req: NextRequest) {
     });
   } catch (err) {
     if (err instanceof MembershipTypeBookingPolicyError) {
+      // Finding 2 (privacy re-review of MG3 #2308). This route is a member-facing
+      // surface that can now answer D-8's collapsed refusal, so it owes the same
+      // three mitigations as the six add paths: the throttle unit, the audit row
+      // naming actor and target, and the timing floor. Collapsed-but-uncounted is
+      // the exact gap finding H2 closed on `bookings/modify`. A no-op for every
+      // other membership-type block.
+      await handleMemberGuestAddRefusal({
+        request: req,
+        actorMemberId: session.user.id,
+        error: err,
+        route: "promo-codes/validate",
+        startedAt: memberGuestRefusalStartedAt,
+        throttle: "CHARGE_NOW",
+        skipAuthorization: isAuthorizedOnBehalf,
+      });
       return NextResponse.json(
         getMembershipTypeBookingPolicyErrorBody(err),
         { status: err.status },

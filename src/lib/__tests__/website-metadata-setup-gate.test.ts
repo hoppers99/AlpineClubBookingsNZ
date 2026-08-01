@@ -1,0 +1,253 @@
+import { readdirSync, readFileSync } from "node:fs";
+import path from "node:path";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+/**
+ * The `<head>` half of the pre-setup holding screen (#2420 review finding F1).
+ *
+ * The gate in `src/proxy.ts` answers 503 for every public-website address until
+ * setup is complete — but its matcher skips any request carrying
+ * `next-router-prefetch` or `purpose: prefetch`, and those are ordinary request
+ * headers anyone can set. `curl -H 'Purpose: prefetch' https://club/about`
+ * reaches the app directly.
+ *
+ * `(website)/layout.tsx` substitutes the holding screen for `{children}` on
+ * those requests, which suppresses the BODY only: in next@16.2.11 the document
+ * head is a separate flight slot from the page's seed data, so
+ * `generateMetadata()` still runs and still emits `<title>` and
+ * `<meta name="description">`. Pre-setup that let an anonymous prober with a
+ * slug wordlist read an unlaunched club's page inventory, each page's title, and
+ * its header text — including pages never published, because `/contact` and
+ * `/join` look their content up with no `published === false` filter.
+ *
+ * So the property under test is UNIFORMITY, not "misses are hidden": pre-setup,
+ * a page that exists, a page that does not, and a page that exists but is
+ * unpublished must all answer with the same neutral holding-screen head. A guard
+ * that fired only on the miss path would be the same oracle inverted.
+ */
+
+const mocks = vi.hoisted(() => ({
+  themeState: vi.fn(),
+  clubIdentity: vi.fn(),
+  getPage: vi.fn(),
+  buildBody: vi.fn(),
+  defaultLodgeId: vi.fn(),
+  notFound: vi.fn(() => {
+    throw new Error("NEXT_HTTP_ERROR_FALLBACK;404");
+  }),
+}));
+
+vi.mock("next/navigation", () => ({ notFound: mocks.notFound }));
+vi.mock("@/lib/public-layout-config", () => ({
+  getCachedClubIdentity: mocks.clubIdentity,
+  getCachedWebsiteThemeRenderState: mocks.themeState,
+}));
+vi.mock("@/lib/page-content-html", () => ({
+  getSanitizedPageContentByPath: mocks.getPage,
+  pageContentHtmlToPlainText: (html: string) => html,
+}));
+vi.mock("@/lib/page-content-embeds", () => ({
+  buildEmbeddedBody: mocks.buildBody,
+}));
+vi.mock("@/lib/lodges", () => ({ getDefaultLodgeId: mocks.defaultLodgeId }));
+vi.mock("@/components/website/embedded-page-content-parts", () => ({
+  EmbeddedPageContentParts: () => null,
+}));
+vi.mock("@/app/(website)/contact/contact-page-client", () => ({
+  ContactPageClient: () => null,
+}));
+vi.mock("@/app/(website)/join/apply/join-apply-page-client", () => ({
+  JoinApplyPageClient: () => null,
+}));
+
+import { SETUP_IN_PROGRESS_COPY } from "@/lib/setup-in-progress-screen";
+import { generateMetadata as slugMetadata } from "@/app/(website)/[...slug]/page";
+import { generateMetadata as homeMetadata } from "@/app/(website)/page";
+import { generateMetadata as contactMetadata } from "@/app/(website)/contact/page";
+import { generateMetadata as joinMetadata } from "@/app/(website)/join/page";
+import { generateMetadata as joinApplyMetadata } from "@/app/(website)/join/apply/page";
+
+const publishedPage = {
+  id: "page-1",
+  slug: "about",
+  caption: "About",
+  menuTitle: "About",
+  title: "Secret Committee Handbook",
+  headerText: "<p>Header text nobody outside the club should read yet</p>",
+  path: "/about",
+  sortOrder: 1,
+  contentHtml: "<p>Body</p>",
+  published: true,
+};
+
+/**
+ * Every `(website)` metadata entry point, called the way Next calls it.
+ * `[...slug]` is the only one that takes params.
+ */
+const metadataRoutes = [
+  ["/", () => homeMetadata()],
+  ["/contact", () => contactMetadata()],
+  ["/join", () => joinMetadata()],
+  ["/join/apply", () => joinApplyMetadata()],
+  ["/<cms-slug>", () => slugMetadata({ params: Promise.resolve({ slug: ["about"] }) })],
+] as const;
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.clubIdentity.mockResolvedValue({ name: "Example Alpine Club" });
+  mocks.buildBody.mockResolvedValue([]);
+  mocks.defaultLodgeId.mockResolvedValue("lodge-1");
+});
+
+describe("pre-setup, no (website) page describes itself in the document head", () => {
+  beforeEach(() => {
+    mocks.themeState.mockResolvedValue({ isComplete: false, css: "" });
+  });
+
+  it.each(metadataRoutes)(
+    "%s answers the neutral holding-screen head when the page EXISTS",
+    async (_label, run) => {
+      mocks.getPage.mockResolvedValue(publishedPage);
+
+      const metadata = await run();
+
+      expect(metadata.title).toBe(SETUP_IN_PROGRESS_COPY.eyebrow);
+      expect(metadata.description).toBeUndefined();
+      expect(metadata.robots).toEqual({ index: false, follow: false });
+    },
+  );
+
+  it.each(metadataRoutes)(
+    "%s answers the same head when the page does NOT exist",
+    async (_label, run) => {
+      mocks.getPage.mockResolvedValue(null);
+
+      const metadata = await run();
+
+      expect(metadata.title).toBe(SETUP_IN_PROGRESS_COPY.eyebrow);
+      expect(mocks.notFound).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(metadataRoutes)(
+    "%s answers the same head for an UNPUBLISHED page",
+    async (_label, run) => {
+      // /contact and /join read their content with no published filter, so this
+      // is the case that leaked hardest before the fix.
+      mocks.getPage.mockResolvedValue({ ...publishedPage, published: false });
+
+      const metadata = await run();
+
+      expect(metadata.title).toBe(SETUP_IN_PROGRESS_COPY.eyebrow);
+    },
+  );
+
+  it("never discloses a real title or header text on any path", async () => {
+    for (const page of [publishedPage, { ...publishedPage, published: false }, null]) {
+      mocks.getPage.mockResolvedValue(page);
+
+      for (const [, run] of metadataRoutes) {
+        const serialised = JSON.stringify(await run());
+
+        expect(serialised).not.toContain("Secret Committee Handbook");
+        expect(serialised).not.toContain("Header text nobody outside");
+      }
+    }
+  });
+
+  it("matches the <title> of the 503 document byte for byte", async () => {
+    // The proxied response and the prefetch-shaped one must describe the same
+    // screen; the 503 document titles itself with the same string.
+    mocks.getPage.mockResolvedValue(publishedPage);
+
+    expect((await homeMetadata()).title).toBe(SETUP_IN_PROGRESS_COPY.eyebrow);
+  });
+
+  it("reads the setup state through the layout's own cache, not a new query", async () => {
+    mocks.getPage.mockResolvedValue(publishedPage);
+
+    await homeMetadata();
+
+    expect(mocks.themeState).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("with setup complete, metadata is exactly as before", () => {
+  beforeEach(() => {
+    mocks.themeState.mockResolvedValue({ isComplete: true, css: "" });
+  });
+
+  it("returns a published CMS page's own title and description", async () => {
+    mocks.getPage.mockResolvedValue(publishedPage);
+
+    const metadata = await slugMetadata({
+      params: Promise.resolve({ slug: ["about"] }),
+    });
+
+    expect(metadata.title).toBe("Secret Committee Handbook");
+    expect(mocks.notFound).not.toHaveBeenCalled();
+  });
+
+  it("still raises notFound() for a CMS miss", async () => {
+    mocks.getPage.mockResolvedValue(null);
+
+    await expect(
+      slugMetadata({ params: Promise.resolve({ slug: ["definitely-missing"] }) }),
+    ).rejects.toThrow("NEXT_HTTP_ERROR_FALLBACK;404");
+  });
+
+  it("still returns the home page's own title", async () => {
+    mocks.getPage.mockResolvedValue(publishedPage);
+
+    expect((await homeMetadata()).title).toBe("Secret Committee Handbook");
+  });
+
+  it("still falls back to the static titles on the fixed routes", async () => {
+    mocks.getPage.mockResolvedValue(null);
+
+    expect((await contactMetadata()).title).toBe("Contact Us");
+    expect((await joinMetadata()).title).toBe("Join the Club");
+    expect((await joinApplyMetadata()).title).toBe("Apply for Membership");
+  });
+});
+
+/**
+ * The behavioural cases above only cover the pages that exist today. This is
+ * what stops a NEW `(website)` page reopening the hole: any page that exports
+ * `generateMetadata` must route through the shared helper.
+ */
+describe("every (website) page keeps the head gated", () => {
+  it("calls setupInProgressMetadata() from each generateMetadata", () => {
+    const websiteDir = path.join(process.cwd(), "src/app/(website)");
+    const pages: string[] = [];
+
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(full);
+        } else if (entry.name === "page.tsx") {
+          pages.push(full);
+        }
+      }
+    };
+
+    walk(websiteDir);
+
+    const ungated = pages.filter((file) => {
+      const source = readFileSync(file, "utf8");
+      // A page with no generateMetadata inherits the root layout's, which never
+      // reads club content, so it has nothing to disclose.
+      if (!source.includes("export async function generateMetadata")) {
+        return false;
+      }
+      return !source.includes("setupInProgressMetadata()");
+    });
+
+    expect(ungated.map((file) => path.relative(process.cwd(), file))).toEqual(
+      [],
+    );
+    // Guards the walk itself: an empty page list would pass vacuously.
+    expect(pages.length).toBeGreaterThan(3);
+  });
+});

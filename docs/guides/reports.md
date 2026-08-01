@@ -26,13 +26,16 @@ date-only lodge nights, interpreted in the club time zone.
 ### Open and set the range
 
 1. Go to **Admin → Finance → Reports**. Set the **From** and **To** dates (or
-   pick a **Quick Range** such as This Month or Last Quarter), choose whether to
-   include deleted bookings, and click **Update**.
+   pick a **Quick Range** such as This Month, Next Month, or Last Quarter),
+   choose whether to include deleted bookings, and click **Update**. Choosing a
+   quick range changes only the dates; your Lodge and Deleted selections stay
+   as they are.
 
    ![Reports dashboard: summary and member stat cards over the Occupancy Rate, Revenue by Month, Booking Trends, and pie charts, with Quick Range/From/To filters and CSV/PDF export](../images/admin/admin-reports.png)
 
 2. If the club runs more than one lodge, a **Lodge** selector lets you scope
-   occupancy and metrics to one lodge or all lodges.
+   occupancy and metrics to one lodge or all lodges. **Reset** restores the
+   rolling default date window and **Hide deleted**, but keeps that lodge scope.
 
 ### Read the figures
 
@@ -60,10 +63,11 @@ This page is read-only. Its controls:
 
 | Control | What it does | Default | Notes / constraints |
 | --- | --- | --- | --- |
-| Quick Range | Preset date range | Custom | This Month, Last Month, Last Quarter, Year to Date, Last Year |
+| Quick Range | Preset date range | Custom | This Month, Last Month, Next Month, Last Quarter, Year to Date, Last Year |
 | From / To | The reporting date range | month-of (today - 3 months) to end-of-month of today | NZ date-only, club time zone; To must be after From |
 | Lodge | Scope metrics to one lodge | All lodges | Only shown with more than one active lodge |
 | Deleted | Include soft-deleted bookings | Hide deleted | Include deleted, or Deleted only |
+| Reset | Restore the date range and Deleted filter | start of the month three months prior through current month-end; Hide deleted | Keeps the selected lodge; disabled at defaults |
 | Update | Re-run the query | — | — |
 | CSV | Download the figures as CSV | — | Filename `tac-report-<date>.csv` |
 | Download PDF | Generate a printable PDF | — | Falls back to the browser print dialog on error; always rendered light-on-white regardless of your theme |

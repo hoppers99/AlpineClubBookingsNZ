@@ -137,6 +137,10 @@ async function repriceWaitlistCandidate(
       seasons: seasonRateData,
       groupDiscount: toGroupDiscountConfig(groupDiscountSetting),
       seasonYear: getSeasonYear(candidate.checkIn),
+      // Finding 2 (privacy re-review of MG3 #2308). An unattended sweep with no
+      // member on the other end of the response: there is nobody to collapse the
+      // refusal FOR, and the operator reading the failure needs the name.
+      skipAuthorization: true,
     });
 
     const newTotalPriceCents = priceBreakdown.totalPriceCents;

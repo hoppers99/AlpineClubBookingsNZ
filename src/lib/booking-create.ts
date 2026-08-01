@@ -296,6 +296,9 @@ export async function createDraftBooking(input: DraftBookingInput): Promise<Book
       guests: guestInputs,
       seasons: seasonData,
       groupDiscount,
+      // Finding 2 (privacy re-review of MG3 #2308): an on-behalf create keeps the
+      // detailed membership-type refusal naming the blocked member.
+      skipAuthorization: isOnBehalf,
     });
 
     let discountCents = 0;
@@ -757,6 +760,8 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
         guests: guestInputs,
         seasons: seasonData,
         groupDiscount,
+        // Finding 2 (privacy re-review of MG3 #2308).
+        skipAuthorization: isOnBehalf,
       });
 
       let discountCents = 0;
@@ -1500,6 +1505,8 @@ export async function createWaitlistedBooking(input: WaitlistedBookingInput): Pr
     guests: guestInputs,
     seasons: seasonData,
     groupDiscount,
+    // Finding 2 (privacy re-review of MG3 #2308).
+    skipAuthorization: isOnBehalf,
   });
 
   let discountCents = 0;

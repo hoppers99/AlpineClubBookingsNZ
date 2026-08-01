@@ -16,6 +16,10 @@ const stubClubIdentity = {
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/public-layout-config", () => ({
   getCachedClubIdentity: vi.fn(async () => stubClubIdentity),
+  // `(website)/[...slug]`'s generateMetadata reads the layout's cached theme
+  // state to leave a pre-setup site alone (#2405). This file renders the page
+  // component rather than its metadata, so the value only has to exist.
+  getCachedWebsiteThemeRenderState: vi.fn(async () => ({ isComplete: true })),
 }));
 vi.mock("@/lib/lodges", () => ({
   getDefaultLodgeId: vi.fn(async () => "lodge-1"),

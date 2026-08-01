@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -324,7 +325,14 @@ export default function AuditLogPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const buildAuditSearchParams = useCallback(() => {
-    const params = new URLSearchParams();
+    const params = new URLSearchParams(searchParams.toString());
+    for (const key of [
+      "eventType", "category", "memberId", "memberName", "memberEmail",
+      "memberScope", "from", "to", "outcome", "severity", "entityType",
+      "q", "page",
+    ]) {
+      params.delete(key);
+    }
     if (eventType !== "all") params.set("eventType", eventType);
     if (category !== "all") params.set("category", category);
     if (selectedMember) {
@@ -351,6 +359,7 @@ export default function AuditLogPage() {
     page,
     search,
     selectedMember,
+    searchParams,
     severity,
     to,
   ]);
@@ -432,6 +441,19 @@ export default function AuditLogPage() {
     setSearch("");
     setPage(1);
   }
+
+  const isDatasetDefault =
+    eventType === "all" &&
+    category === "all" &&
+    selectedMember === null &&
+    memberScope === "involves" &&
+    from === "" &&
+    to === "" &&
+    outcome === "all" &&
+    severity === "all" &&
+    entityType === "all" &&
+    search === "" &&
+    page === 1;
 
   return (
     <div className="space-y-6">
@@ -615,10 +637,7 @@ export default function AuditLogPage() {
           />
         </div>
 
-        <Button type="button" variant="outline" size="sm" onClick={clearFilters}>
-          <X className="mr-1 h-4 w-4" />
-          Clear
-        </Button>
+        <DatasetResetButton disabled={isDatasetDefault} onReset={clearFilters} />
       </div>
 
       {error ? (

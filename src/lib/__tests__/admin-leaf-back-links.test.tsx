@@ -185,11 +185,21 @@ describe("admin drill-down leaf back links", () => {
             lastName: "Lovelace",
             email: "ada@example.test",
             accessRoles: [],
+            // #2282: the header's Add Dependent control now reads the member's
+            // own row instead of taking `isAdultMember` / `memberIsArchived`
+            // props. Stated here so the fixture describes a real member rather
+            // than one the control happens to read as inactive — NOT because
+            // this suite fails without them. It does not: these assertions are
+            // about the back link, and a mutation probe confirmed all 14 cases
+            // pass with these two lines removed. (The matching fixture edits in
+            // `admin-view-only-controls.test.tsx` and
+            // `phase3b-member-detail-edit.test.ts` ARE load-bearing — both go
+            // red without them.)
+            active: true,
+            archivedAt: null,
           },
           backHref: "/admin/members",
           backLabel: "Members",
-          isAdultMember: true,
-          memberIsArchived: false,
           pendingDeleteRequest: undefined,
           xeroConnected: null,
           xeroPushing: false,

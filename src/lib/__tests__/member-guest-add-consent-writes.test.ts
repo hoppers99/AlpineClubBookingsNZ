@@ -512,3 +512,46 @@ describe("the widening flag on an authorized (non-admin) add", () => {
     }
   });
 });
+
+// Plan §9.2's last criterion, which had no test (correctness review of MG3
+// #2308, LOW-1): "consent badges render from server state only; a client-forged
+// `consentStatus` changes nothing."
+//
+// The wizard carries `memberGuestConsentPreview` on its guest rows for display,
+// and `buildGuestPayload` spreads those rows, so the field really is transmitted
+// to `POST /api/bookings`. It is harmless because nothing server-side reads it —
+// which is a claim worth asserting rather than assuming.
+describe("a client cannot forge its way out of consent", () => {
+  it("ignores every consent-shaped field a caller sends and derives from the boundary", () => {
+    const forged = {
+      ...guest(OUTSIDER),
+      // What a hostile (or merely stale) client might put on the wire.
+      memberGuestConsentPreview: "NOTIFY_ONLY",
+      crossFamilyMemberGuest: false,
+      memberGuestConsent: {
+        consentStatus: "CONFIRMED",
+        consentRequestedAt: null,
+        consentRespondedAt: null,
+        consentRespondedByMemberId: null,
+        consentExpiresAt: null,
+      },
+    } as unknown as ReturnType<typeof guest>;
+
+    const plan = planMemberGuestConsentWrites({
+      guests: [forged],
+      boundary: boundary(),
+      actor: { kind: "MEMBER" },
+      now: NOW,
+      bookingCheckIn: CHECK_IN,
+      policy: ASK_FIRST,
+    });
+
+    // Still PENDING, still marked cross-family, and the club still owes the
+    // target a consent request.
+    expect(plan.guests[0].memberGuestConsent!.consentStatus).toBe("PENDING");
+    expect(plan.guests[0].crossFamilyMemberGuest).toBe(true);
+    expect(plan.entriesByMemberId.get(OUTSIDER)?.notification).toBe(
+      "CONSENT_REQUEST",
+    );
+  });
+});

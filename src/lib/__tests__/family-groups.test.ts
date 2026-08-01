@@ -849,6 +849,51 @@ describe("PUT /api/members/family/[memberId]/details", () => {
     expect(mockedPrisma.member.update).not.toHaveBeenCalled();
   });
 
+  /**
+   * #2282: the same refusal, for the case that issue creates. A 16-year-old can
+   * now be RECORDED as the parent of the member whose details are being
+   * confirmed — and that changes nothing here. Confirming another member's
+   * details is a responsibility function gated on active + login + ADULT +
+   * shared family group, and it never consulted the parent link, so recording
+   * one grants no part of it.
+   *
+   * Mutation probe: delete `requester.ageTier !== "ADULT"` from the details
+   * route's guard and this test 200s instead of 403ing. The sibling test below
+   * covers the same clause for a youth who is NOT the target's parent, so the
+   * two together separate "age is checked" from "the parent link is ignored".
+   */
+  it("rejects a YOUNG PARENT confirming their own child's details (#2282)", async () => {
+    mockedAuth.mockResolvedValue({ user: { id: "youth-parent-1", role: "USER", accessRoles: [{ role: "USER" }] } } as any);
+    mockedPrisma.member.findUnique.mockResolvedValueOnce({
+      ...completeAdult,
+      id: "youth-parent-1",
+      ageTier: "YOUTH",
+      canLogin: true,
+      active: true,
+      // The link #2282 now permits. It buys nothing on this path.
+      dependents: [{ id: "baby-1" }],
+      familyGroupMemberships: [{ familyGroupId: "fg1" }],
+    } as any);
+
+    const { PUT } = await import("@/app/api/members/family/[memberId]/details/route");
+    const res = await PUT(
+      makeReq("/api/members/family/baby-1/details", "PUT", {
+        firstName: "Baby",
+        lastName: "Smith",
+        dateOfBirth: "2025-01-01",
+        inheritContactFromSelf: true,
+      }),
+      { params: Promise.resolve({ memberId: "baby-1" }) }
+    );
+
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toMatchObject({
+      error:
+        "Only active adult members with login accounts can confirm family member details",
+    });
+    expect(mockedPrisma.member.update).not.toHaveBeenCalled();
+  });
+
   it("rejects a non-adult requester confirming another member's details", async () => {
     mockedAuth.mockResolvedValue({ user: { id: "youth-1", role: "USER", accessRoles: [{ role: "USER" }] } } as any);
     mockedPrisma.member.findUnique.mockResolvedValueOnce({

@@ -47,7 +47,8 @@ locker belongs to exactly one lodge, fixed when it is created.
 
 1. In **Locker List**, sort by locker name or allocated member. Use the edit icon
    to rename or re-allocate a locker (its lodge cannot be changed), or the trash
-   icon to delete it (you will be asked to confirm).
+   icon to delete it (you will be asked to confirm). **Reset** restores Name
+   ascending sort without changing the selected lodge or any create/edit form.
 
 ## Settings reference
 

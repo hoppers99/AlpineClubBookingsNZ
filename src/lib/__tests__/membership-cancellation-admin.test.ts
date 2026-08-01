@@ -43,6 +43,7 @@ const mocks = vi.hoisted(() => {
     // #2392: the unpaid-Xero-invoice half of the blocker set. Stubbed to
     // "nothing owing" by default; the tests that care drive it directly.
     loadInvoiceBlockers: vi.fn(),
+    loadCreditPlans: vi.fn(),
   };
 });
 
@@ -88,18 +89,32 @@ vi.mock("@/lib/membership-cancellation-invoice-blockers", () => ({
   loadMembershipCancellationInvoiceBlockersByMemberId: mocks.loadInvoiceBlockers,
 }));
 
+// #2400: what this cancellation will (or will not) credit. Only the DATABASE
+// read is stubbed — the notice builders stay real, so these tests exercise the
+// same wording and the same blocks-approval decision the review queue renders.
+vi.mock("@/lib/membership-cancellation-subscription-credit", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/lib/membership-cancellation-subscription-credit")
+  >()),
+  loadMembershipCancellationSubscriptionCreditPlansByMemberId:
+    mocks.loadCreditPlans,
+}));
+
 vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 
 import {
+  getAdminMembershipCancellationRequests,
   MembershipCancellationAdminError,
   reviewMembershipCancellationParticipant,
 } from "@/lib/membership-cancellation-admin";
+import { isMembershipCancellationParticipantAwaitingApproval } from "@/lib/membership-cancellation-approval-readiness";
 import {
   LAST_FULL_ADMIN_GUARD_MESSAGE,
   PRIVILEGED_TARGET_GUARD_MESSAGE,
 } from "@/lib/admin-account-guards";
+import type { MembershipCancellationSubscriptionCreditPlan } from "@/lib/membership-cancellation-subscription-credit";
 
 const ADMIN_ACCESS_ROLES = [
   { role: "ADMIN", roleDefinitionId: null, roleDefinition: null },
@@ -118,6 +133,51 @@ function member(overrides: Record<string, unknown> = {}) {
     cancelledReason: null,
     cancelledViaRequestId: null,
     ...overrides,
+  };
+}
+
+/**
+ * #2400: a credit plan whose invoice still covers a member who is staying, so
+ * the cancellation credits nothing against it.
+ */
+function sharedCreditPlan(
+  overrides: Partial<MembershipCancellationSubscriptionCreditPlan> = {},
+): MembershipCancellationSubscriptionCreditPlan {
+  return {
+    memberId: "member-1",
+    subscriptionId: "sub-1",
+    invoiceId: "inv-1",
+    invoiceNumber: "INV-0042",
+    xeroUrl: "https://go.xero.com/AccountsReceivable/View.aspx?InvoiceID=inv-1",
+    memberXeroContactId: "contact-1",
+    sharedWith: [
+      {
+        memberId: "member-2",
+        name: "Bob Smith",
+        active: true,
+        xeroContactId: "contact-2",
+      },
+    ],
+    creditsInFull: false,
+    creditOperationSettled: false,
+    excusesUnpaidInvoiceBlocker: false,
+    ...overrides,
+  };
+}
+
+/** The same invoice, seen from the unpaid-invoice blocker's side. */
+function unpaidInvoiceBlocker(invoiceId = "inv-1") {
+  return {
+    type: "unpaid_invoice" as const,
+    invoiceId,
+    invoiceNumber: "INV-0042",
+    invoiceStatus: "AUTHORISED",
+    direction: "receivable" as const,
+    amountDueCents: 60000,
+    currency: "NZD",
+    dueDate: null,
+    xeroUrl: null,
+    xeroContactUrl: null,
   };
 }
 
@@ -188,6 +248,10 @@ describe("membership cancellation admin review", () => {
     mocks.loadInvoiceBlockers.mockImplementation(
       async (memberIds: readonly string[]) =>
         new Map(memberIds.map((memberId) => [memberId, []])),
+    );
+    mocks.loadCreditPlans.mockImplementation(
+      async (memberIds: readonly string[]) =>
+        new Map(memberIds.map((memberId) => [memberId, null])),
     );
     // Admin-account guard defaults (#1604/#1622): a plain, non-privileged
     // target with no admins to strand, so neither guard trips.
@@ -576,9 +640,10 @@ describe("membership cancellation admin review", () => {
       adminMemberId: "admin-1",
     });
 
-    expect(mocks.loadInvoiceBlockers).toHaveBeenCalledWith(["member-1"], {
-      fresh: true,
-    });
+    expect(mocks.loadInvoiceBlockers).toHaveBeenCalledWith(
+      ["member-1"],
+      expect.objectContaining({ fresh: true }),
+    );
   });
 
   // The old assertion here was near-vacuous: the reject path DOES reach the
@@ -639,6 +704,122 @@ describe("membership cancellation admin review", () => {
       expect.anything(),
       expect.objectContaining({ fresh: true }),
     );
+  });
+
+  // #2400: the reviewer is told, before they approve, that a shared family
+  // invoice means no credit note will be raised. It is not itself a blocker —
+  // the club is still owed that money by the members who remain.
+  it("hands the reviewer the shared-invoice notice without blocking anything", async () => {
+    mocks.tx.membershipCancellationRequestParticipant.findMany.mockResolvedValue([
+      { status: "REQUESTED" },
+    ]);
+    mocks.requestFindUnique.mockResolvedValue(
+      adminRequest({ status: "REQUESTED" }),
+    );
+    mocks.loadCreditPlans.mockResolvedValue(
+      new Map([["member-1", sharedCreditPlan()]]),
+    );
+
+    const result = await reviewMembershipCancellationParticipant({
+      requestId: "request-1",
+      participantId: "participant-1",
+      action: "approve",
+      adminMemberId: "admin-1",
+    });
+
+    expect(result.request.participants[0].sharedInvoiceNotice).toMatchObject({
+      invoiceId: "inv-1",
+      invoiceNumber: "INV-0042",
+      sharedWith: [{ memberId: "member-2", name: "Bob Smith" }],
+      blocksApproval: false,
+      route: "cancel_others_first",
+    });
+    expect(mocks.createAuditLog).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "membership_cancellation.approval_blocked",
+      }),
+    );
+    expect(mocks.queueCancellationXeroOperations).toHaveBeenCalled();
+  });
+
+  // #2400 (review F7): the skip is otherwise recorded only on a Xero
+  // sync-operation payload, which is not where anyone looks a year later.
+  it("records in the audit trail that a credit note was deliberately not raised", async () => {
+    mocks.loadCreditPlans.mockResolvedValue(
+      new Map([["member-1", sharedCreditPlan()]]),
+    );
+
+    await reviewMembershipCancellationParticipant({
+      requestId: "request-1",
+      participantId: "participant-1",
+      action: "approve",
+      adminMemberId: "admin-1",
+    });
+
+    expect(mocks.createAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "membership_cancellation.participant_cancelled",
+        metadata: expect.objectContaining({
+          sharedInvoiceUncredited: expect.objectContaining({
+            invoiceId: "inv-1",
+            invoiceNumber: "INV-0042",
+            sharedWithMemberIds: ["member-2"],
+            summary: expect.stringContaining("also covers Bob Smith"),
+          }),
+        }),
+      }),
+      expect.anything(),
+    );
+  });
+
+  // #2400 (review F5): an API caller — or an admin approving from a stale
+  // render — used to get only the generic "pay, credit or void it", which is
+  // useless advice for a family invoice the club is still owed.
+  it("tells a refused approver that the invoice in the way is the family's own", async () => {
+    mocks.loadCreditPlans.mockResolvedValue(
+      new Map([["member-1", sharedCreditPlan()]]),
+    );
+    mocks.loadInvoiceBlockers.mockResolvedValue(
+      new Map([["member-1", [unpaidInvoiceBlocker()]]]),
+    );
+
+    await expect(
+      reviewMembershipCancellationParticipant({
+        requestId: "request-1",
+        participantId: "participant-1",
+        action: "approve",
+        adminMemberId: "admin-1",
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      message: expect.stringContaining(
+        "If the rest of the family is leaving too, approve them first",
+      ),
+    } satisfies Partial<MembershipCancellationAdminError>);
+
+    expect(mocks.createAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "membership_cancellation.approval_blocked",
+        details: expect.stringContaining("which also covers Bob Smith"),
+        metadata: expect.objectContaining({
+          sharedInvoiceNotice: expect.objectContaining({
+            invoiceId: "inv-1",
+            blocksApproval: true,
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("serializes no notice when the cancellation will credit the invoice in full", async () => {
+    const result = await reviewMembershipCancellationParticipant({
+      requestId: "request-1",
+      participantId: "participant-1",
+      action: "approve",
+      adminMemberId: "admin-1",
+    });
+
+    expect(result.request.participants[0].sharedInvoiceNotice).toBeNull();
   });
 
   it("prevents an admin from approving a cancellation request they initiated", async () => {
@@ -1111,6 +1292,307 @@ describe("membership cancellation admin review", () => {
         (c) => c[0].action === "membership_cancellation.participant_rejected",
       )?.[0];
       expect(call?.metadata).toMatchObject({ notifyMember: false });
+    });
+  });
+
+  /*
+    #2402 — who the review queue spends a Xero call on.
+
+    The unpaid-invoice check is a live, metered Xero read whose only use is to
+    warn somebody before they press Approve. These tests pin the two halves of
+    the owner's decision (31 Jul 2026): it runs for an admin who can approve and
+    for a participant still awaiting approval, and for nobody else. The final
+    group pins the thing that must NOT have moved with it — the approval-time
+    check, which stays live, fresh and fail-closed.
+  */
+  describe("review queue Xero scope (#2402)", () => {
+    /** Seed the queue reads with one page holding a single request. */
+    function seedQueue(request: ReturnType<typeof adminRequest>) {
+      mocks.requestFindMany.mockResolvedValue([request]);
+      mocks.requestCount.mockResolvedValue(1);
+    }
+
+    /** A future booking on the member — the free, local half of the blocker set. */
+    function seedFutureBooking() {
+      mocks.bookingFindMany.mockResolvedValue([
+        {
+          id: "booking-1",
+          memberId: "member-1",
+          checkIn: new Date("2099-01-01T00:00:00.000Z"),
+          checkOut: new Date("2099-01-03T00:00:00.000Z"),
+          status: "PAID",
+        },
+      ]);
+    }
+
+    it("spends no Xero call for a view-only admin, and says so on the row", async () => {
+      seedQueue(adminRequest());
+
+      const result = await getAdminMembershipCancellationRequests({
+        viewerCanApprove: false,
+      });
+
+      // The whole point: Xero is never asked.
+      expect(mocks.loadInvoiceBlockers).not.toHaveBeenCalled();
+      // The credit plans exist only to serve the invoice check and the notice
+      // built from it, so they are asked about nobody. Expressed as an empty
+      // member list rather than a second branch, so the skip cannot half-happen.
+      expect(mocks.loadCreditPlans).toHaveBeenCalledWith([]);
+
+      const [serialized] = result.requests[0].participants;
+      expect(serialized.blockers).toEqual([]);
+      expect(serialized.sharedInvoiceNotice).toBeNull();
+      // …and the silence is declared, so an absent panel is never mistaken for
+      // "this member owes nothing".
+      expect(serialized.invoiceCheckSkipped).toBe(true);
+    });
+
+    it("still shows a view-only admin the free booking blockers (#2402 review, F1)", async () => {
+      // The booking half is two local indexed reads with no external cost. It
+      // was visible to every admin before this change and must stay visible:
+      // withholding it saves the club nothing and takes away a real warning.
+      seedQueue(adminRequest());
+      seedFutureBooking();
+
+      const result = await getAdminMembershipCancellationRequests({
+        viewerCanApprove: false,
+      });
+
+      expect(mocks.bookingFindMany).toHaveBeenCalled();
+      expect(mocks.loadInvoiceBlockers).not.toHaveBeenCalled();
+      const [serialized] = result.requests[0].participants;
+      expect(serialized.blockers).toEqual([
+        expect.objectContaining({ type: "owned_booking", bookingId: "booking-1" }),
+      ]);
+      // Still true, and now precisely scoped: the MONEY half was skipped, the
+      // booking half was not.
+      expect(serialized.invoiceCheckSkipped).toBe(true);
+    });
+
+    it("still checks Xero for an admin who can approve, and shows what it found", async () => {
+      seedQueue(adminRequest());
+      mocks.loadInvoiceBlockers.mockResolvedValue(
+        new Map([["member-1", [unpaidInvoiceBlocker()]]]),
+      );
+
+      const result = await getAdminMembershipCancellationRequests({
+        viewerCanApprove: true,
+      });
+
+      expect(mocks.loadInvoiceBlockers).toHaveBeenCalledWith(
+        ["member-1"],
+        expect.anything(),
+      );
+      const [serialized] = result.requests[0].participants;
+      expect(serialized.blockers).toEqual([unpaidInvoiceBlocker()]);
+      // An approver's checks DID run, so there is nothing to apologise for.
+      expect(serialized.invoiceCheckSkipped).toBe(false);
+    });
+
+    it("does not check a participant whose outcome is already settled", async () => {
+      // A rejected participant: no approval of this row is possible, so the
+      // answer could not change anything anybody does.
+      seedQueue(
+        adminRequest({
+          status: "REJECTED",
+          reviewedAt: new Date("2026-05-25T00:00:00.000Z"),
+        }),
+      );
+
+      const result = await getAdminMembershipCancellationRequests({
+        viewerCanApprove: true,
+      });
+
+      expect(mocks.loadInvoiceBlockers).not.toHaveBeenCalled();
+      const [serialized] = result.requests[0].participants;
+      expect(serialized.blockers).toEqual([]);
+      // Nothing to explain: the row's own status badge already says why there is
+      // no approval preview, so the "not checked" line would be noise.
+      expect(serialized.invoiceCheckSkipped).toBe(false);
+    });
+
+    it("does not even load the free booking half for a settled participant", async () => {
+      // Condition 2 applies to BOTH halves: a rejected participant's future
+      // bookings are nobody's problem, whoever is looking.
+      seedQueue(adminRequest({ status: "REJECTED" }));
+      seedFutureBooking();
+
+      const result = await getAdminMembershipCancellationRequests({
+        viewerCanApprove: true,
+      });
+
+      expect(mocks.bookingFindMany).not.toHaveBeenCalled();
+      expect(result.requests[0].participants[0].blockers).toEqual([]);
+    });
+
+    it("does not check a participant still awaiting the member's own confirmation", async () => {
+      seedQueue(
+        adminRequest({ status: "PENDING_CONFIRMATION", confirmedAt: null }),
+      );
+
+      await getAdminMembershipCancellationRequests({ viewerCanApprove: true });
+
+      expect(mocks.loadInvoiceBlockers).not.toHaveBeenCalled();
+    });
+
+    it("does not check a membership that is already inactive or cancelled", async () => {
+      seedQueue(adminRequest({ member: { active: false } }));
+
+      await getAdminMembershipCancellationRequests({ viewerCanApprove: true });
+
+      expect(mocks.loadInvoiceBlockers).not.toHaveBeenCalled();
+    });
+
+    it("marks nothing as skipped for a settled row, even for a view-only admin", async () => {
+      mocks.requestFindMany.mockResolvedValue([
+        { ...adminRequest({ status: "CANCELLED" }), status: "COMPLETED" },
+      ]);
+      mocks.requestCount.mockResolvedValue(1);
+
+      const result = await getAdminMembershipCancellationRequests({
+        viewerCanApprove: false,
+      });
+
+      expect(result.requests[0].participants[0].invoiceCheckSkipped).toBe(false);
+    });
+  });
+
+  /*
+    The queue's skip rule and the approval guards must answer the same question,
+    or the promise "you are told about blockers before you press Approve" breaks
+    silently. `assertParticipantCanBeApproved` and `assertRequestCanBeReviewed`
+    are deliberately NOT rewritten in terms of the predicate — #2402 changes the
+    render, not the approval path — so the agreement is held here instead: every
+    shape is driven through BOTH, and the predicate must be true exactly when the
+    guards let the approval reach its live Xero check.
+  */
+  describe("the skip rule agrees with the approval guards (#2402)", () => {
+    const shapes: Array<{
+      name: string;
+      overrides: Record<string, unknown>;
+      awaitingApproval: boolean;
+    }> = [
+      { name: "confirmed and ready", overrides: {}, awaitingApproval: true },
+      {
+        name: "the request has already been reviewed",
+        overrides: {
+          request: {
+            id: "request-1",
+            status: "REJECTED",
+            reason: "Moving away",
+            requestedByMemberId: "requester-1",
+          },
+        },
+        awaitingApproval: false,
+      },
+      {
+        name: "the participant has already been rejected",
+        overrides: { status: "REJECTED" },
+        awaitingApproval: false,
+      },
+      {
+        name: "the member has not confirmed",
+        overrides: { confirmedAt: null },
+        awaitingApproval: false,
+      },
+      {
+        name: "the membership is deactivated",
+        overrides: { member: member({ active: false }) },
+        awaitingApproval: false,
+      },
+      {
+        name: "the membership is already cancelled",
+        overrides: {
+          member: member({ cancelledAt: new Date("2026-05-01T00:00:00.000Z") }),
+        },
+        awaitingApproval: false,
+      },
+    ];
+
+    for (const shape of shapes) {
+      it(`${shape.name}: predicate says ${shape.awaitingApproval}, and the approval guards agree`, async () => {
+        const record = participant(shape.overrides);
+
+        expect(
+          isMembershipCancellationParticipantAwaitingApproval({
+            requestStatus: record.request.status,
+            status: record.status,
+            confirmedAt: record.confirmedAt,
+            member: record.member,
+          }),
+        ).toBe(shape.awaitingApproval);
+
+        mocks.participantFindUnique.mockResolvedValue(record);
+        const approving = reviewMembershipCancellationParticipant({
+          requestId: "request-1",
+          participantId: "participant-1",
+          action: "approve",
+          adminMemberId: "admin-1",
+        });
+
+        if (shape.awaitingApproval) {
+          await expect(approving).resolves.toBeDefined();
+          // Reaching the guards means reaching the live check behind them.
+          expect(mocks.loadInvoiceBlockers).toHaveBeenCalled();
+        } else {
+          await expect(approving).rejects.toBeInstanceOf(
+            MembershipCancellationAdminError,
+          );
+          // Refused before it ever got as far as spending a Xero call.
+          expect(mocks.loadInvoiceBlockers).not.toHaveBeenCalled();
+        }
+      });
+    }
+  });
+
+  /*
+    The one thing #2402 must not have touched. The queue's scope now depends on
+    who is looking; the approval decision never does.
+  */
+  describe("the approval-time check is unchanged (#2402)", () => {
+    it("always asks Xero live, and refuses on what it finds", async () => {
+      mocks.loadInvoiceBlockers.mockResolvedValue(
+        new Map([["member-1", [unpaidInvoiceBlocker()]]]),
+      );
+
+      await expect(
+        reviewMembershipCancellationParticipant({
+          requestId: "request-1",
+          participantId: "participant-1",
+          action: "approve",
+          adminMemberId: "admin-1",
+        }),
+      ).rejects.toBeInstanceOf(MembershipCancellationAdminError);
+
+      // `fresh: true` is what bypasses the queue's 60s memo — the approval is
+      // decided on a live answer, never on whatever the render happened to cache
+      // (or, since #2402, happened not to load at all).
+      expect(mocks.loadInvoiceBlockers).toHaveBeenCalledWith(
+        ["member-1"],
+        expect.objectContaining({ fresh: true }),
+      );
+      expect(mocks.tx.member.update).not.toHaveBeenCalled();
+    });
+
+    it("refuses when Xero could not be asked at all, rather than approving", async () => {
+      mocks.loadInvoiceBlockers.mockResolvedValue(
+        new Map([
+          [
+            "member-1",
+            [{ type: "invoice_check_unavailable", reason: "unavailable" }],
+          ],
+        ]),
+      );
+
+      await expect(
+        reviewMembershipCancellationParticipant({
+          requestId: "request-1",
+          participantId: "participant-1",
+          action: "approve",
+          adminMemberId: "admin-1",
+        }),
+      ).rejects.toBeInstanceOf(MembershipCancellationAdminError);
+      expect(mocks.tx.member.update).not.toHaveBeenCalled();
     });
   });
 });

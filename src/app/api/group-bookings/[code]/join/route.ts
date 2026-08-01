@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { auth } from "@/lib/auth";
 import { requireActiveSessionUser } from "@/lib/session-guards";
+import {
+  handleMemberGuestAddRefusal,
+  startMemberGuestRefusalClock,
+} from "@/lib/member-guest-probe-guard";
 import { applyRateLimit, rateLimiters } from "@/lib/rate-limit";
 import { parseJsonRequestBody } from "@/lib/api-json";
 import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
@@ -86,6 +90,9 @@ export async function POST(
   }
 
   const { code } = await params;
+  // Finding 2 (privacy re-review of MG3 #2308) — the floor covers everything
+  // from here down, which is where the party is first read.
+  const memberGuestRefusalStartedAt = startMemberGuestRefusalClock();
 
   // Internet Banking is an optional module; reject it when off (mirrors
   // POST /api/bookings) so a joiner can never raise an invoice the club can't
@@ -113,6 +120,22 @@ export async function POST(
     return NextResponse.json(result, { status: 201 });
   } catch (err) {
     if (err instanceof MembershipTypeBookingPolicyError) {
+      // Finding 2 (privacy re-review of MG3 #2308). This route is a member-facing
+      // surface that can now answer D-8's collapsed refusal, so it owes the same
+      // three mitigations as the six add paths: the throttle unit, the audit row
+      // naming actor and target, and the timing floor. Collapsed-but-uncounted is
+      // the exact gap finding H2 closed on `bookings/modify`. A no-op for every
+      // other membership-type block.
+      // Never `skipAuthorization`: `group-booking.ts` passes no options at all,
+      // by owner decision MG1-D-a, so this path cannot be an on-behalf one.
+      await handleMemberGuestAddRefusal({
+        request,
+        actorMemberId: session.user.id,
+        error: err,
+        route: "group-bookings/join",
+        startedAt: memberGuestRefusalStartedAt,
+        throttle: "CHARGE_NOW",
+      });
       return NextResponse.json(
         getMembershipTypeBookingPolicyErrorBody(err),
         { status: err.status },

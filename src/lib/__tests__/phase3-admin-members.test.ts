@@ -562,7 +562,7 @@ describe("Phase 3: Admin Member Management", () => {
       ]);
     });
 
-    it("filters to active adult parent-link candidates and excludes the current member", async () => {
+    it("filters to active, non-archived parent-link candidates of ANY age and excludes the current member", async () => {
       mockedAuth.mockResolvedValue(adminSession);
       // #2255: this search now walks DOWN from the member first, to price up how
       // much of the four-generation budget their own dependants already use and
@@ -590,12 +590,23 @@ describe("Phase 3: Admin Member Management", () => {
         expect.arrayContaining([
           { id: { notIn: ["child-1"] } },
           { active: true },
-          { ageTier: "ADULT" },
+          // #2282: `archivedAt: null` REPLACES `ageTier: "ADULT"` here. The
+          // write route never accepted an archived parent and this search never
+          // filtered one, so the dialog could offer a candidate the save then
+          // 422'd — the #2254 drift, in the parent direction.
+          { archivedAt: null },
           // A member with no dependants of their own leaves room for a
           // candidate parent who is themselves someone's grandchild.
           ancestorDepthWithinWhere(2),
         ])
       );
+      // #2282 stated as a refusal too, because `arrayContaining` cannot say
+      // "and not this": age must not appear in the parent-candidate filter at
+      // all. Re-adding the ADULT clause fails here rather than silently
+      // narrowing the picker back to adults while the write route accepts more.
+      expect(searchCalls[0].where?.AND).not.toContainEqual({
+        ageTier: "ADULT",
+      });
     });
 
     it("combines text search with filters (AND logic)", async () => {

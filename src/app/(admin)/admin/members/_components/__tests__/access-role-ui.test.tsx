@@ -291,7 +291,6 @@ describe("admin member access-role UI", () => {
       <MemberFilterToolbar
         search=""
         filters={emptyFilters}
-        activeFilterCount={0}
         xeroFeatures={{
           liveMemberGroupLookups: false,
           autoLoadContactGroups: false,
@@ -299,7 +298,8 @@ describe("admin member access-role UI", () => {
         xeroContactGroupsList={[]}
         onSearchChange={vi.fn()}
         onSetFilter={vi.fn()}
-        onClearFilters={vi.fn()}
+        resetDisabled={true}
+        onReset={vi.fn()}
       />,
     );
 
@@ -346,7 +346,6 @@ describe("admin member access-role UI", () => {
       <MemberFilterToolbar
         search=""
         filters={filters}
-        activeFilterCount={1}
         xeroFeatures={{
           liveMemberGroupLookups: false,
           autoLoadContactGroups: false,
@@ -354,7 +353,8 @@ describe("admin member access-role UI", () => {
         xeroContactGroupsList={[]}
         onSearchChange={vi.fn()}
         onSetFilter={vi.fn()}
-        onClearFilters={vi.fn()}
+        resetDisabled={false}
+        onReset={vi.fn()}
       />,
     );
 
@@ -367,7 +367,6 @@ describe("admin member access-role UI", () => {
       <MemberFilterToolbar
         search=""
         filters={emptyFilters}
-        activeFilterCount={0}
         xeroFeatures={{
           liveMemberGroupLookups: false,
           autoLoadContactGroups: false,
@@ -375,7 +374,8 @@ describe("admin member access-role UI", () => {
         xeroContactGroupsList={[]}
         onSearchChange={vi.fn()}
         onSetFilter={vi.fn()}
-        onClearFilters={vi.fn()}
+        resetDisabled={true}
+        onReset={vi.fn()}
       />,
     );
 
@@ -401,7 +401,6 @@ describe("admin member access-role UI", () => {
       <MemberFilterToolbar
         search=""
         filters={filters}
-        activeFilterCount={1}
         xeroFeatures={{
           liveMemberGroupLookups: false,
           autoLoadContactGroups: false,
@@ -409,7 +408,8 @@ describe("admin member access-role UI", () => {
         xeroContactGroupsList={[]}
         onSearchChange={vi.fn()}
         onSetFilter={vi.fn()}
-        onClearFilters={vi.fn()}
+        resetDisabled={false}
+        onReset={vi.fn()}
       />,
     );
 

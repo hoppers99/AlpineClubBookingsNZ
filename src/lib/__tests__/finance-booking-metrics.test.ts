@@ -1,7 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { BookingStatus, PaymentStatus } from "@prisma/client";
+import {
+  BookingStatus,
+  PaymentStatus,
+  PaymentTransactionKind,
+} from "@prisma/client";
 
-const { mockPrisma } = vi.hoisted(() => ({
+const { mockPrisma, mockLogger } = vi.hoisted(() => ({
   mockPrisma: {
     booking: {
       findMany: vi.fn(),
@@ -13,15 +17,43 @@ const { mockPrisma } = vi.hoisted(() => ({
       findUnique: vi.fn(),
     },
   },
+  // #2408: the ledger-gap guard's alarm is part of its contract, so it is
+  // asserted rather than swallowed.
+  mockLogger: {
+    error: vi.fn(),
+    warn: vi.fn(),
+    info: vi.fn(),
+    debug: vi.fn(),
+  },
 }));
 
 vi.mock("@/lib/prisma", () => ({ prisma: mockPrisma }));
+vi.mock("@/lib/logger", () => ({ default: mockLogger }));
 
 import { getFinanceBookingMetrics } from "@/lib/finance-booking-metrics";
 import { FALLBACK_LODGE_CAPACITY as LODGE_CAPACITY } from "@/lib/lodge-capacity";
 
 function availableBeds(occupiedBeds: number): number {
   return LODGE_CAPACITY - occupiedBeds;
+}
+
+/**
+ * #2408: fixtures state the payment LEDGER, not just the summary columns,
+ * because the guard reads the ledger. `Payment.amountCents` is the sum of the
+ * captured rows below it — that is the invariant these tests are about.
+ */
+function primaryLedgerRow(
+  amountCents: number,
+  status: PaymentStatus = PaymentStatus.SUCCEEDED,
+) {
+  return { kind: PaymentTransactionKind.PRIMARY, status, amountCents };
+}
+
+function additionalLedgerRow(
+  amountCents: number,
+  status: PaymentStatus = PaymentStatus.SUCCEEDED,
+) {
+  return { kind: PaymentTransactionKind.ADDITIONAL, status, amountCents };
 }
 
 function occupancyRate(occupiedBedNights: number, dayCount = 1): number {
@@ -164,10 +196,12 @@ describe("finance-booking-metrics", () => {
         FAILED: 0,
         NONE: 4,
       },
-      capturedPrimaryCents: 42000,
+      capturedGrossCents: 42000,
       capturedAdditionalCents: 0,
       outstandingAdditionalCents: 0,
       outstandingAdditionalBookings: 0,
+      additionalLedgerGapCents: 0,
+      additionalLedgerGapBookings: 0,
       refundedCents: 2000,
       netCollectedCents: 40000,
       creditAppliedCents: 1000,
@@ -489,6 +523,10 @@ describe("finance-booking-metrics", () => {
           changeFeeCents: 0,
           additionalAmountCents: 21_000,
           additionalPaymentStatus: "PENDING",
+          transactions: [
+            primaryLedgerRow(9_000),
+            additionalLedgerRow(21_000, PaymentStatus.PENDING),
+          ],
         },
       },
       {
@@ -506,9 +544,15 @@ describe("finance-booking-metrics", () => {
           changeFeeCents: 0,
           additionalAmountCents: 4_000,
           additionalPaymentStatus: "FAILED",
+          transactions: [
+            primaryLedgerRow(6_000),
+            additionalLedgerRow(4_000, PaymentStatus.FAILED),
+          ],
         },
       },
       {
+        // Gross capture: an $11,000 booking whose $9,000 increase was collected
+        // carries amountCents = 20,000, both ledger rows captured.
         id: "booking-collected-extra",
         checkIn: new Date("2026-04-10T00:00:00.000Z"),
         checkOut: new Date("2026-04-11T00:00:00.000Z"),
@@ -523,6 +567,10 @@ describe("finance-booking-metrics", () => {
           changeFeeCents: 0,
           additionalAmountCents: 9_000,
           additionalPaymentStatus: "SUCCEEDED",
+          transactions: [
+            primaryLedgerRow(11_000),
+            additionalLedgerRow(9_000),
+          ],
         },
       },
     ]);
@@ -535,6 +583,295 @@ describe("finance-booking-metrics", () => {
     expect(metrics.paymentSummary.outstandingAdditionalBookings).toBe(2);
     // A collected extra stays in the captured column and out of the shortfall.
     expect(metrics.paymentSummary.capturedAdditionalCents).toBe(9_000);
+    // #2408: and it is counted ONCE. The gross figure already contains it, so
+    // the net is 9,000 + 6,000 + 20,000 — not 44,000.
+    expect(metrics.paymentSummary.capturedGrossCents).toBe(35_000);
+    expect(metrics.paymentSummary.netCollectedCents).toBe(35_000);
+    expect(metrics.paymentSummary.additionalLedgerGapCents).toBe(0);
+  });
+
+  /*
+    #2408. The bug, stated as the arithmetic a treasurer would do: a booking
+    that grew from $100 to $121 and had the $21 collected shows $121 of cash,
+    because `reconcilePaymentAggregates` already put the $21 inside
+    `Payment.amountCents`. Adding the additional column back on top reported
+    $142 — money the club never took.
+  */
+  it("counts a collected price increase once, not twice", async () => {
+    mockPrisma.booking.findMany.mockResolvedValue([
+      {
+        id: "booking-grew-and-paid",
+        checkIn: new Date("2026-04-10T00:00:00.000Z"),
+        checkOut: new Date("2026-04-11T00:00:00.000Z"),
+        status: BookingStatus.PAID,
+        finalPriceCents: 12_100,
+        guests: [{ id: "g-1" }],
+        payment: {
+          status: PaymentStatus.SUCCEEDED,
+          amountCents: 12_100,
+          refundedAmountCents: 0,
+          creditAppliedCents: 0,
+          changeFeeCents: 0,
+          additionalAmountCents: 2_100,
+          additionalPaymentStatus: "SUCCEEDED",
+          transactions: [
+            primaryLedgerRow(10_000),
+            additionalLedgerRow(2_100),
+          ],
+        },
+      },
+    ]);
+
+    const metrics = await getFinanceBookingMetrics({
+      realized: { from: "2026-04-10", to: "2026-04-11" },
+    });
+
+    expect(metrics.paymentSummary.netCollectedCents).toBe(12_100);
+    expect(metrics.paymentSummary.capturedGrossCents).toBe(12_100);
+    expect(metrics.paymentSummary.capturedAdditionalCents).toBe(2_100);
+    expect(metrics.paymentSummary.outstandingAdditionalCents).toBe(0);
+    expect(metrics.paymentSummary.additionalLedgerGapCents).toBe(0);
+    expect(metrics.paymentSummary.additionalLedgerGapBookings).toBe(0);
+  });
+
+  /*
+    #2408, the cases either side of the double count. Neither ever had the bug,
+    and neither may move because of the fix: a booking that never grew, and one
+    that grew but whose extra is still owed (#2397's "not covered" cash
+    settlement writes exactly this shape - $100 recorded, $21 left owing).
+  */
+  it("leaves an unchanged booking and a still-owed increase counted once each", async () => {
+    mockPrisma.booking.findMany.mockResolvedValue([
+      {
+        id: "booking-never-grew",
+        checkIn: new Date("2026-04-10T00:00:00.000Z"),
+        checkOut: new Date("2026-04-11T00:00:00.000Z"),
+        status: BookingStatus.PAID,
+        finalPriceCents: 10_000,
+        guests: [{ id: "g-1" }],
+        payment: {
+          status: PaymentStatus.SUCCEEDED,
+          amountCents: 10_000,
+          refundedAmountCents: 0,
+          creditAppliedCents: 0,
+          changeFeeCents: 0,
+          additionalAmountCents: 0,
+          additionalPaymentStatus: null,
+          transactions: [primaryLedgerRow(10_000)],
+        },
+      },
+      {
+        id: "booking-grew-still-owing",
+        checkIn: new Date("2026-04-10T00:00:00.000Z"),
+        checkOut: new Date("2026-04-11T00:00:00.000Z"),
+        status: BookingStatus.PAID,
+        finalPriceCents: 12_100,
+        guests: [{ id: "g-2" }],
+        payment: {
+          status: PaymentStatus.SUCCEEDED,
+          amountCents: 10_000,
+          refundedAmountCents: 0,
+          creditAppliedCents: 0,
+          changeFeeCents: 0,
+          additionalAmountCents: 2_100,
+          additionalPaymentStatus: "PENDING",
+          transactions: [
+            primaryLedgerRow(10_000),
+            additionalLedgerRow(2_100, PaymentStatus.PENDING),
+          ],
+        },
+      },
+    ]);
+
+    const metrics = await getFinanceBookingMetrics({
+      realized: { from: "2026-04-10", to: "2026-04-11" },
+    });
+
+    expect(metrics.paymentSummary.netCollectedCents).toBe(20_000);
+    expect(metrics.paymentSummary.capturedAdditionalCents).toBe(0);
+    // Owed, not collected: reported beside the cash, never inside it.
+    expect(metrics.paymentSummary.outstandingAdditionalCents).toBe(2_100);
+    // An uncollected increase is NOT the guarded shape - it is absent from the
+    // captured total on purpose, so nothing is missing and nothing alarms.
+    expect(metrics.paymentSummary.additionalLedgerGapBookings).toBe(0);
+    expect(mockLogger.error).not.toHaveBeenCalled();
+  });
+
+  /*
+    #2408, the partly-collected case. An increase is collected in one go, so the
+    nearest thing to "half collected" is a collected increase that was later
+    partly refunded. The refund comes off the same gross figure, which is why
+    the net has to be gross-minus-refunds and not a sum of parts.
+  */
+  it("takes a refund off a collected increase without double-counting it", async () => {
+    mockPrisma.booking.findMany.mockResolvedValue([
+      {
+        id: "booking-grew-then-partly-refunded",
+        checkIn: new Date("2026-04-10T00:00:00.000Z"),
+        checkOut: new Date("2026-04-11T00:00:00.000Z"),
+        status: BookingStatus.PAID,
+        finalPriceCents: 12_100,
+        guests: [{ id: "g-1" }],
+        payment: {
+          status: PaymentStatus.PARTIALLY_REFUNDED,
+          amountCents: 12_100,
+          refundedAmountCents: 500,
+          creditAppliedCents: 0,
+          changeFeeCents: 0,
+          additionalAmountCents: 2_100,
+          additionalPaymentStatus: "SUCCEEDED",
+          transactions: [
+            primaryLedgerRow(10_000),
+            additionalLedgerRow(2_100, PaymentStatus.PARTIALLY_REFUNDED),
+          ],
+        },
+      },
+    ]);
+
+    const metrics = await getFinanceBookingMetrics({
+      realized: { from: "2026-04-10", to: "2026-04-11" },
+    });
+
+    expect(metrics.paymentSummary.capturedGrossCents).toBe(12_100);
+    expect(metrics.paymentSummary.refundedCents).toBe(500);
+    expect(metrics.paymentSummary.netCollectedCents).toBe(11_600);
+    expect(metrics.paymentSummary.additionalLedgerGapBookings).toBe(0);
+  });
+
+  /*
+    #2408 guard. Counting the gross alone is right BECAUSE a collected increase
+    is inside it, and it is inside it because a captured ADDITIONAL payment
+    record put it there. A payment claiming the collection with no such record
+    is the one shape where that reasoning fails and the cash figure would be
+    short. None exist in this club's data today; an import or a future write
+    path could make one, and it must not pass quietly.
+  */
+  it("shouts when a collected increase has no payment record behind it", async () => {
+    mockPrisma.booking.findMany.mockResolvedValue([
+      {
+        id: "booking-unproven-extra",
+        checkIn: new Date("2026-04-10T00:00:00.000Z"),
+        checkOut: new Date("2026-04-11T00:00:00.000Z"),
+        status: BookingStatus.PAID,
+        finalPriceCents: 12_100,
+        guests: [{ id: "g-1" }],
+        payment: {
+          status: PaymentStatus.SUCCEEDED,
+          amountCents: 10_000,
+          refundedAmountCents: 0,
+          creditAppliedCents: 0,
+          changeFeeCents: 0,
+          additionalAmountCents: 2_100,
+          additionalPaymentStatus: "SUCCEEDED",
+          // The column says collected; the ledger has only the primary leg.
+          transactions: [primaryLedgerRow(10_000)],
+        },
+      },
+      {
+        // Same gap, subtler: there IS an ADDITIONAL record, but it never
+        // captured, so the gross figure does not contain it either. Only a
+        // CAPTURED record proves the money arrived.
+        id: "booking-stalled-extra",
+        checkIn: new Date("2026-04-10T00:00:00.000Z"),
+        checkOut: new Date("2026-04-11T00:00:00.000Z"),
+        status: BookingStatus.PAID,
+        finalPriceCents: 13_000,
+        guests: [{ id: "g-2" }],
+        payment: {
+          status: PaymentStatus.SUCCEEDED,
+          amountCents: 10_000,
+          refundedAmountCents: 0,
+          creditAppliedCents: 0,
+          changeFeeCents: 0,
+          additionalAmountCents: 3_000,
+          additionalPaymentStatus: "SUCCEEDED",
+          transactions: [
+            primaryLedgerRow(10_000),
+            additionalLedgerRow(3_000, PaymentStatus.PENDING),
+          ],
+        },
+      },
+    ]);
+
+    const metrics = await getFinanceBookingMetrics({
+      realized: { from: "2026-04-10", to: "2026-04-11" },
+    });
+
+    expect(metrics.paymentSummary.additionalLedgerGapCents).toBe(5_100);
+    expect(metrics.paymentSummary.additionalLedgerGapBookings).toBe(2);
+    // The figure is still reported, and reported honestly: it is the cash the
+    // ledger can prove, with the unprovable part named beside it.
+    expect(metrics.paymentSummary.netCollectedCents).toBe(20_000);
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bookingIds: ["booking-unproven-extra", "booking-stalled-extra"],
+        bookingCount: 2,
+        additionalLedgerGapCents: 5_100,
+      }),
+      expect.stringContaining("no captured ADDITIONAL PaymentTransaction"),
+    );
+  });
+
+  /*
+    #2408, the case the fix must NOT break. Not every settled payment has a
+    ledger row behind its primary leg: an organiser-settled group booking, and
+    any payment written before the transaction ledger existed, can carry a
+    captured `amountCents` with no PRIMARY row at all. The cash figure therefore
+    reads the payment's own captured amount and uses the ledger only to prove
+    or disprove a CLAIMED increase — never to derive the total. Deriving it from
+    ledger rows would report the $121 the club took as the $21 it did not.
+  */
+  it("counts the full captured amount when no ledger row backs the payment", async () => {
+    mockPrisma.booking.findMany.mockResolvedValue([
+      {
+        id: "booking-organiser-settled",
+        checkIn: new Date("2026-04-10T00:00:00.000Z"),
+        checkOut: new Date("2026-04-11T00:00:00.000Z"),
+        status: BookingStatus.PAID,
+        finalPriceCents: 12_100,
+        guests: [{ id: "g-1" }],
+        payment: {
+          status: PaymentStatus.SUCCEEDED,
+          amountCents: 12_100,
+          refundedAmountCents: 0,
+          creditAppliedCents: 0,
+          changeFeeCents: 0,
+          additionalAmountCents: 0,
+          additionalPaymentStatus: null,
+          // Settled without a ledger row of its own.
+          transactions: [],
+        },
+      },
+      {
+        // Older still: the relation is absent from the record entirely.
+        id: "booking-pre-ledger",
+        checkIn: new Date("2026-04-10T00:00:00.000Z"),
+        checkOut: new Date("2026-04-11T00:00:00.000Z"),
+        status: BookingStatus.PAID,
+        finalPriceCents: 8_000,
+        guests: [{ id: "g-2" }],
+        payment: {
+          status: PaymentStatus.SUCCEEDED,
+          amountCents: 8_000,
+          refundedAmountCents: 0,
+          creditAppliedCents: 0,
+          changeFeeCents: 0,
+          additionalAmountCents: 0,
+          additionalPaymentStatus: null,
+        },
+      },
+    ]);
+
+    const metrics = await getFinanceBookingMetrics({
+      realized: { from: "2026-04-10", to: "2026-04-11" },
+    });
+
+    // The whole $201, not the $0 the ledger could prove.
+    expect(metrics.paymentSummary.capturedGrossCents).toBe(20_100);
+    expect(metrics.paymentSummary.netCollectedCents).toBe(20_100);
+    // Nothing CLAIMS a collected increase, so there is nothing to disprove.
+    expect(metrics.paymentSummary.additionalLedgerGapBookings).toBe(0);
+    expect(mockLogger.error).not.toHaveBeenCalled();
   });
 
   /*

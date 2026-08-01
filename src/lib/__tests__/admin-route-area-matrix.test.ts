@@ -271,6 +271,7 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/members/[id]/audit-log": "membership",
   "/api/admin/members/[id]/credits": "finance",
   "/api/admin/members/[id]/credits/[requestId]": "finance",
+  "/api/admin/members/[id]/dependent-email-source": "membership",
   "/api/admin/members/[id]/dependents/[dependentId]": "membership",
   "/api/admin/members/[id]/dependents/link": "membership",
   "/api/admin/members/[id]/family": "membership",

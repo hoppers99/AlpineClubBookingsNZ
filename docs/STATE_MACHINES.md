@@ -1675,9 +1675,20 @@ unknown (the check runs) rather than a silent "off" (the check is skipped) —
 the ordinary loader degrades to defaults whose archive flag is false. "Unpaid" means
 AUTHORISED or SUBMITTED with `AmountDue > 0` (the finance dashboard's own open-
 invoice definition), across ACCREC and ACCPAY, minus the member's current-season
-subscription invoice when the approval is itself about to credit it — mirroring
-`queueApprovedMembershipCancellationXeroOperations`, which would otherwise
-deadlock the ordinary unpaid-subscription cancellation. If Xero cannot be
+subscription invoice when the approval is itself STILL about to credit it IN
+FULL — mirroring `queueApprovedMembershipCancellationXeroOperations`, which would
+otherwise deadlock the ordinary unpaid-subscription cancellation. That predicate
+is `excusesUnpaidInvoiceBlocker` from
+`loadMembershipCancellationSubscriptionCreditPlansByMemberId` (#2400), the same
+module the credit note consults, so the exclusion set is exactly the set the
+approval clears: an invoice that will NOT be credited — because it still covers
+other members who have not been cancelled, or because its credit-note operation
+has already had its single run and skipped — blocks like any other, or the
+archive would take a Xero contact with a live balance out of circulation. The
+recorded-outcome half is what makes the archive re-check safe: by the time it
+runs the credit note has settled, so recomputing "would this credit in full?"
+would answer yes for a whole cancelled family and excuse an invoice nobody is
+going to credit (#2400 review). If Xero cannot be
 reached the check FAILS CLOSED: the participant gets an
 `invoice_check_unavailable` blocker (`disconnected` / `rate_limited` /
 `unavailable` / `invalid_request` / `too_many_invoices`) and the approval is
@@ -1694,8 +1705,55 @@ reads through a 60s in-process memo; the approval guard always passes
 failures are never memoised. Because the archive is an outbox operation drained
 later, `syncXeroMembershipCancellationContact` re-runs the same check `fresh`
 immediately before archiving and DEFERS (fails for retry, like the credit-note
-guard) if anything is owing. See
+guard) if anything is owing. The QUEUE RENDER is additionally scoped (#2402):
+`getAdminMembershipCancellationRequests` asks about participants satisfying
+`isMembershipCancellationParticipantAwaitingApproval`
+(`membership-cancellation-approval-readiness.ts`) — the conjunction of both
+approval guards' own preconditions, held in agreement with them by test, and the
+same predicate the queue page's Approve button is enabled off, so the button is
+never live on a row whose check did not run. The BOOKING half loads for that set
+regardless of viewer. The INVOICE half additionally requires
+`viewerCanApprove`, which the route resolves from the same `membership: edit`
+requirement the review endpoint enforces, and is declined via
+`loadMembershipCancellationBlockersByMemberId`'s `invoiceCheck: "skip"` (default
+`"run"`, so omission is fail-closed). A declined participant is serialized with
+`invoiceCheckSkipped: true` so the queue states that the money check did not run
+rather than rendering an absent panel that reads as "nothing owing"; the
+shared-invoice notice and its credit-plan read are skipped with it, because its
+`blocksApproval` field is derived from the invoice blockers. Approval and
+archive-time checks are unaffected. See
 [`CANCELLATIONS.md`](CANCELLATIONS.md#unpaid-invoices-block-approval).
+
+Shared subscription invoices (#2400): one Xero invoice covers every member of a
+family or billing group, and `xero-subscription-invoices.ts` stamps its id on
+each covered `MemberSubscription`. `createXeroMembershipCancellationCreditNote`
+credits `amountDue` — the WHOLE remaining balance — so it now raises the note
+only when the leaver is the last covered member still with the club. "Covered"
+is the union of the subscription invoice link and the charge's ACTIVE
+(`releasedAt IS NULL`) coverage claims, because those two records can disagree
+and an uncertain covered set must not authorise wiping a balance; a covered
+member drops out of it once `Member.cancelledAt` is set, so approving a whole
+family one participant at a time leaves the LAST approval to credit the invoice
+in full. Otherwise the operation completes SUCCEEDED with
+`skipped: shared_invoice_covers_remaining_members` and no Xero call is made at
+all — the check runs before the client is authenticated, and after the
+existing-credit-note lookup, so a partially-completed run still finishes its
+allocation. The determination is made afresh at each moment it is acted on
+(approval gate, then the credit note itself), never snapshotted at request time.
+
+Once that gate passes, the run takes a durable per-INVOICE claim before its first
+Xero call (`XeroObjectLink`, role
+`MEMBERSHIP_CANCELLATION_CREDIT_INVOICE_CLAIM`, inserted with `skipDuplicates`),
+because several siblings' cancellations can reach the same "nobody else is
+covered" state and the outbox claims per operation, not per invoice. A run that
+loses the claim performs no Xero call and completes SUCCEEDED with
+`skipped: invoice_credit_claimed_by_other_cancellation`; the holder's own retries
+proceed. Where a cancellation credits nothing AND no member the invoice covers is
+left with the club — the whole-family case whose last leaver has a PAID
+subscription — the operation records `sharedInvoiceLeftUncredited` and an admin
+alert names the invoice, so a balance nobody will ever credit is not left silent.
+See [`CANCELLATIONS.md`](CANCELLATIONS.md#shared-family-invoices) and
+[`CONCURRENCY_AND_LOCKING.md`](CONCURRENCY_AND_LOCKING.md).
 
 To verify: financial blockers, future booking blockers, family cleanup, Xero
 group/archive behavior, and email visibility.
@@ -1727,7 +1785,7 @@ member creates group -> memberless FamilyGroup + PENDING GROUP_CREATE (+ bundled
 create-group names an unregistered partner email -> single-use PartnerInviteToken minted + emailed (see Partner Invite Token Lifecycle) instead of an invitedMemberId
 create-group marks the named partner as a declared partner (#1742) -> registered partner gets a PENDING MemberPartnerLink request; unregistered partner's token carries createPartnerLink (see Partner Link Lifecycle)
 dependent inherits email or has explicit email inheritance source
-parent link requested -> ancestors(parent) + 1 + descendants(child) <= 3 links -> linked | 422 (four-generation cap) | 422 (would close a family loop)
+parent link requested -> parent is active + not archived + not an organisation account (ANY age tier) -> ancestors(parent) + 1 + descendants(child) <= 3 links -> linked | 422 (parent inactive/archived/organisation) | 422 (four-generation cap) | 422 (would close a family loop)
 dependent inherits email -> walk up from the chosen parent to the nearest adult, non-archived, real-address ancestor -> store that terminal source | 422 (nobody reachable)
 family removal/cancellation/delete -> relationship cleanup while preserving history
 cancellation approved for a middle generation -> its dependants' links cleared, NOT re-parented -> detached members named in the response and the audit log
@@ -1736,6 +1794,17 @@ cancellation approved for a middle generation -> its dependants' links cleared, 
 A `CHILD_REQUEST` whose family group still has zero memberships (a bundled
 group-creation child) cannot be approved until the `GROUP_CREATE` request for
 that group is approved first (422 guard).
+
+A parent link may be recorded at **any age tier** (#2282): a 16 or 17 year old
+can genuinely be a parent, so recording the relationship is age-blind while
+every responsibility function — the contact of record for a dependant's mail,
+details confirmation, booking delegation — stays gated on an active adult, none
+of which consults the parent link. A dependant of a non-adult parent therefore
+inherits email from the nearest adult ancestor, and the admin member page names
+that adult before the dependant is added. Organisation and school ACCOUNTS are
+the one exclusion, and it is by role rather than by age tier: they are not
+people, and `NOT_APPLICABLE` is the age-exempt tier that age-exempt humans carry
+too.
 
 Family links run to at most **four generations** (great-grandparent →
 grandparent → parent → child) and two parents per member, checked symmetrically

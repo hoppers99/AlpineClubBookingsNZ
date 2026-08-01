@@ -55,7 +55,29 @@ full booking state machine is in
    group who can be booked as a linked member, the wizard offers a one-click
    **Add as member guest** suggestion — a suggestion only, never forced. Taking
    it books them at the member rate with a bed held (no provisional hold).
-4. **Make this a group trip** (optional): tick it if you want other people to
+4. **Adding another member who is not in your family group** (only if your club
+   has turned this on): a **+ Add Member Guest** button sits beside **+ Add
+   Non-Member Guest**. Most clubs ask you for the person's **exact email
+   address** — the one the club has for them — because the club does not list its
+   members here. Type it in and press **Find**. If more than one member uses that
+   address (a household), you pick the right person from a short list showing
+   their name and age group and nothing else. Some clubs also turn on searching
+   by **name**, in which case the same box takes either a name or an address; the
+   admin who turns that on is told, in plain words, that it makes the club's
+   member list browsable to anyone who can start a booking.
+
+   Two things worth knowing before you add someone:
+
+   - **They can see the booking straight away**, including the other guests'
+     names, from the moment you add them — before they have said yes.
+   - **Their answer covers the whole booking**, including changes you make later.
+     If you move the dates, you are not asked again.
+
+   If the club cannot add that person, you get one short sentence saying so and
+   no reason. That is deliberate: the club will not tell one member about
+   another's bookings, subscription or details. If you think it is wrong, ask
+   them directly, or ask the club.
+5. **Make this a group trip** (optional): tick it if you want other people to
    book their **own** beds on the same dates. You choose whether each person pays
    their own bill or you pay one combined bill, and you get a join code/link to
    share. Full detail is in

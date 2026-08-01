@@ -20,6 +20,32 @@ export interface GuestData {
   // "Multiple date ranges" mode; undefined means the guest stays the whole
   // booking range.
   nights?: string[];
+  /**
+   * DISPLAY ONLY, and never sent to the server or trusted for anything
+   * ("+ Add Member Guest", epic #2305, MG3 #2308).
+   *
+   * Set when the booker adds a cross-family member through the finder, so the
+   * wizard can show them what WILL happen when they confirm: the club asks the
+   * person first (`"PENDING"`), or tells them (`"NOTIFY_ONLY"`). Nothing has
+   * been persisted at this point — the booking does not exist yet — so this is a
+   * prediction derived from the club's own `approvalRequired` setting, not a
+   * consent record.
+   *
+   * IT IS TRANSMITTED, and the first version of this note wrongly claimed it was
+   * not (correctness review of MG3 #2308, LOW-1). `buildGuestPayload` SPREADS the
+   * guest rows, and `handleSubmit` / `handleJoinWaitlist` send `guests:
+   * guestPayload` whole, so this field does travel to `POST /api/bookings`. That
+   * is harmless — the route's zod schema does not declare it and strips it — but
+   * the reason it is harmless has to be the true one:
+   *
+   * NOTHING SERVER-SIDE READS IT, FORGED OR OTHERWISE. Every consent column is
+   * written by `buildMemberGuestConsentWrite` from the family boundary the server
+   * recomputes itself, so a client that sends
+   * `memberGuestConsentPreview: "NOTIFY_ONLY"` for a stranger still gets a
+   * PENDING row and still triggers the consent request. `member-guest-add-call-sites`
+   * and the wizard's own tests pin that.
+   */
+  memberGuestConsentPreview?: "PENDING" | "NOTIFY_ONLY";
 }
 
 interface GuestFormProps {
@@ -35,6 +61,27 @@ interface GuestFormProps {
   onMultiDateRangesEnabledChange?: (enabled: boolean) => void;
   // Optional nightly price (cents) for a guest on a night, from the live quote.
   nightlyPriceForGuest?: (guestIndex: number, nightKey: string) => number | null;
+  /**
+   * Extra controls for the "Guests (n/max)" header row, rendered BEFORE the
+   * "+ Add Non-Member Guest" button (MG3 #2308: "+ Add Member Guest" sits first,
+   * because a member guest is the cheaper, better-recorded outcome and should be
+   * the one that catches the eye).
+   */
+  headerActions?: React.ReactNode;
+  /** Rendered immediately under the header row — MG3's inline find panel. */
+  belowHeader?: React.ReactNode;
+  /** Optional per-guest badge (MG3's consent states), rendered in the guest row header. */
+  renderGuestBadge?: (guest: GuestData, index: number) => React.ReactNode;
+  /**
+   * Optional replacement for the one explanatory sentence under a guest row.
+   *
+   * The default sentence for a member-linked row says "Linked family members
+   * keep their member details and member pricing" — true for every such row
+   * until MG3, and false for the cross-family people the finder now adds
+   * (#2308). Returning a string replaces it; returning null keeps the default,
+   * which is what every existing caller gets by passing nothing at all.
+   */
+  renderGuestHelper?: (guest: GuestData, index: number) => string | null;
 }
 
 function shiftDateOnly(date: string, days: number): string {
@@ -66,6 +113,10 @@ export function GuestForm({
   multiDateRangesEnabled = false,
   onMultiDateRangesEnabledChange,
   nightlyPriceForGuest,
+  headerActions,
+  belowHeader,
+  renderGuestBadge,
+  renderGuestHelper,
 }: GuestFormProps) {
   const ageTierOptions = useAgeTierOptions();
   const showPerGuestDatesToggle = Boolean(
@@ -135,20 +186,25 @@ export function GuestForm({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-lg font-semibold">
           Guests ({guests.length}/{maxGuests} max)
         </h3>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={addGuest}
-          disabled={guests.length >= maxGuests}
-        >
-          + Add Non-Member Guest
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          {headerActions}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={addGuest}
+            disabled={guests.length >= maxGuests}
+          >
+            + Add Non-Member Guest
+          </Button>
+        </div>
       </div>
+
+      {belowHeader}
 
       {guests.length === 0 && (
         <p className="text-sm text-muted-foreground">
@@ -204,8 +260,10 @@ export function GuestForm({
         const earliestStayEnd = stayStart ? shiftDateOnly(stayStart, 1) : bookingCheckIn;
         return (
           <div key={index} className="rounded-lg border p-4 space-y-3">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="text-sm font-medium">Guest {index + 1}</span>
+            {renderGuestBadge?.(guest, index)}
+            <span className="flex-1" />
             <Button
               type="button"
               variant="ghost"
@@ -257,9 +315,10 @@ export function GuestForm({
           </div>
 
           <p className="text-sm text-muted-foreground">
-            {isLinkedMember
-              ? "Linked family members keep their member details and member pricing."
-              : "Typed-in guests are treated as non-members and charged at non-member rates."}
+            {renderGuestHelper?.(guest, index) ??
+              (isLinkedMember
+                ? "Linked family members keep their member details and member pricing."
+                : "Typed-in guests are treated as non-members and charged at non-member rates.")}
           </p>
           {perGuestDatesEnabled && !multiDateRangesEnabled && bookingCheckIn && bookingCheckOut && (
             <div className="grid grid-cols-1 gap-3 border-t pt-3 sm:grid-cols-2">

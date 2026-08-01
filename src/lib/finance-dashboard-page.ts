@@ -367,6 +367,21 @@ async function buildBookingsDashboard(
     warnings.push("Realized booking metrics were unavailable for the selected range.");
   }
 
+  // #2408. Net collected cash is the gross captured figure from the payment
+  // rows, which contains a collected price increase because the payment ledger
+  // put it there. A payment that says its increase was collected without a
+  // ledger row to prove it is the one shape where that is not true, so the card
+  // below would understate the cash. Say so where the treasurer reads the
+  // number, and say by how much, rather than publishing a figure that is
+  // quietly short.
+  const ledgerGapBookings =
+    metrics.paymentSummary.additionalLedgerGapBookings;
+  if (ledgerGapBookings > 0) {
+    warnings.push(
+      `Net collected cash may understate by ${formatDollarsDisplay(metrics.paymentSummary.additionalLedgerGapCents)}: ${formatNumber(ledgerGapBookings)} booking${ledgerGapBookings === 1 ? "" : "s"} in this range record an extra payment as collected without a matching payment record behind it. Ask a developer to re-check those payments before reconciling this figure.`
+    );
+  }
+
   const realizedTotals = realized?.totals;
   const compareTotals = compareRealized?.totals;
   const cards: FinanceDashboardKpiCard[] = [
@@ -397,8 +412,15 @@ async function buildBookingsDashboard(
     {
       title: "Net collected cash",
       value: formatDollarsDisplay(metrics.paymentSummary.netCollectedCents),
-      description: "Captured payments less refunds from local payment rows.",
-      footnote: "Cash is local payment-derived and separate from Xero revenue.",
+      // #2408: one figure, counted once. The captured amount on a payment row
+      // already includes any later price increase that was collected, so this
+      // is the whole of the cash and not a part of it.
+      description:
+        "Captured payments less refunds from local payment rows, including any collected price increase.",
+      footnote:
+        ledgerGapBookings > 0
+          ? `May understate by ${formatDollarsDisplay(metrics.paymentSummary.additionalLedgerGapCents)} - see the warning above. Cash is local payment-derived and separate from Xero revenue.`
+          : "Cash is local payment-derived and separate from Xero revenue.",
     },
     {
       title: "Forward demand",

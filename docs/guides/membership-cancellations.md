@@ -49,7 +49,8 @@ allocated Xero credit note.
 
 1. Go to **Admin → Members → Cancellation Requests**. The page shows an **Archive
    Review Queue** and a **Cancellation Review Queue**, with a status filter (Open,
-   Completed, Rejected, Withdrawn, All) and a **Refresh** button.
+   Completed, Rejected, Withdrawn, All), **Reset**, and a separate **Refresh**
+   button. Reset restores Open; Refresh reloads the current filtered queues.
 
    ![Cancellation Requests page: the status filter, the Archive Review Queue, and the Cancellation Review Queue](../images/admin/admin-membership-cancellations.png)
 
@@ -64,9 +65,33 @@ allocated Xero credit note.
    if the club would rather not archive Xero contacts at all. See
    [unpaid invoices block approval](../CANCELLATIONS.md#unpaid-invoices-block-approval)
    for what counts as owing and the ways to clear it.
+
+   If your admin role can **view** membership but not edit it, the request
+   carries a short blue note instead: *The money-owing check was not run for …
+   member(s) below*, and each affected row is marked. Asking Xero what a contact
+   owes uses one of the club's metered API calls, so the queue only spends one
+   for an admin who could act on the answer. Read that note literally — it does
+   not mean the member owes nothing, it means nobody asked. An admin who can
+   approve sees the real answer on this same page. Outstanding **bookings** are
+   still checked and still listed for you, so only the money side is missing.
 2. Add an optional **Admin note** (sent to the member and the audit log). The blue
    notice reminds you: paid subscriptions are not refunded; unpaid/overdue
    subscription invoices are cleared with an allocated Xero credit note.
+   A second blue notice appears beside a participant whose membership was billed
+   on a **shared family invoice** that other members are still covered by. It
+   says plainly that approving will raise **no** credit note, names who is
+   staying, and links the invoice into Xero. It also tells you which of two
+   things is about to happen, because it is not always the same one: either the
+   approval simply goes through and leaves that invoice alone, or — when the
+   invoice sits on this member's own Xero contact, which is the usual case for
+   whoever the family is billed to — **the approval is refused over it**, because
+   approving would archive a contact with a live balance behind it. The notice
+   ends with the way forward for this particular family: approve the others
+   first where that works, and where it cannot (the whole family shares one Xero
+   contact, or the members holding the invoice open are deactivated rather than
+   cancelled) it says so and points at Xero instead. If something is genuinely
+   owed back to the leaver, raise that credit note in Xero yourself. See
+   [shared family invoices](../CANCELLATIONS.md#shared-family-invoices).
 3. Click **Approve** or **Reject**. A dialog asks whether to email the member —
    the request is processed either way and your choice is recorded in the audit
    log.
@@ -127,6 +152,7 @@ The review queue itself has no persistent settings — only per-review inputs.
 | Control | What it does | Notes / constraints |
 | --- | --- | --- |
 | Status filter | Open / Completed / Rejected / Withdrawn / All | Default is Open |
+| Reset | Restore the Open filter | Always visible; disabled at the default |
 | Admin note / Review note | Note sent to the member and the audit log | Up to 1000 characters |
 | Notify choice (approve/reject) | Whether the member is emailed | Processed either way; recorded in the audit log |
 | Approve Archive | Archives the member | Two-admin rule: the requester cannot approve |
@@ -142,7 +168,9 @@ approval (checkbox).
 | --- | --- | --- |
 | Everything is read-only ("… can view membership cancellations but cannot approve or reject them") | Your admin role has membership view but not edit | Ask a full admin for membership edit access |
 | A participant can't be approved | Bookings are outstanding, or the member has not confirmed their own inclusion (member-raised requests only — an admin-raised one is already confirmed) | Resolve the listed bookings; wait for the member to confirm their request |
-| **Approve** says Xero still shows money owing, and names the invoices | Approving archives the member's Xero contact, and an archived contact cannot be invoiced, credited or paid — so the club would be archiving an account it still needs. Most often an organisation or school account, which is usually the billing contact for its booking invoices. Drafts, voided and paid invoices are ignored; a part-allocated credit note leaves the remainder, which still counts | The amber notice beside the participant lists them, each one a link into Xero — including bills and any invoice Xero never numbered, which are linked to the contact instead. Open each and do one of: take the payment, raise a credit note and **allocate** it against the invoice, or **void** the invoice if nobody intends to collect it. Then approve again. The member's own *current*-season subscription invoice is never the cause — the cancellation credits that one itself — but a *next*-season invoice at a club that bills early is not credited and does count; void it. If the club does not want Xero contacts archived at all, use the **Open Membership Cancellation settings** link in that same notice and switch **Archive Xero contacts after cancellation approval** off; that lifts the check entirely, because the contact is then left alone |
+| A request says "The money-owing check was not run for … below" | Your admin role has membership view but not edit. Asking Xero what a contact owes costs one of the club's metered API calls, so the queue only spends one for an admin who could act on the answer — the same reason the Approve and Reject buttons are disabled for you | Nothing is wrong with the request. Read the note literally: it does **not** say the member owes nothing, it says nobody asked. Outstanding bookings are still checked and listed for you; only the Xero and shared-family-invoice answers are missing. Ask an admin with membership edit access — they see those on this same page. Approval itself always runs the check live, so nothing can slip through unchecked |
+| **Approve** is greyed out on a *Ready for review* row, and the member is badged **Inactive** | The membership was deactivated or cancelled separately after the request was raised. The server refuses an approval in that state, so the button is disabled to match — and for the same reason its Xero and booking checks were not run | The line under the buttons says so. Either **Reject** the request, or reactivate the membership from the member's page first and then approve |
+| **Approve** says Xero still shows money owing, and names the invoices | Approving archives the member's Xero contact, and an archived contact cannot be invoiced, credited or paid — so the club would be archiving an account it still needs. Most often an organisation or school account, which is usually the billing contact for its booking invoices. Drafts, voided and paid invoices are ignored; a part-allocated credit note leaves the remainder, which still counts | The amber notice beside the participant lists them, each one a link into Xero — including bills and any invoice Xero never numbered, which are linked to the contact instead. Open each and do one of: take the payment, raise a credit note and **allocate** it against the invoice, or **void** the invoice if nobody intends to collect it. Then approve again. The member's own *current*-season subscription invoice is normally not the cause — the cancellation credits that one itself — with two exceptions that are: a *next*-season invoice at a club that bills early, and a shared family invoice that other, staying members are also covered by, because that one is no longer credited automatically either (cancel the rest of the family first, or settle it in Xero). If the club does not want Xero contacts archived at all, use the **Open Membership Cancellation settings** link in that same notice and switch **Archive Xero contacts after cancellation approval** off; that lifts the check entirely, because the contact is then left alone |
 | **Approve** says Xero is not connected, so its unpaid invoices could not be checked | Approving would archive the member's Xero contact, and the club's Xero authorisation is missing or no longer valid, so the check could not run. An unknown answer is treated as "there may be money owing", never as "nothing owing" | Reconnect Xero from **Admin → Xero**, then approve again. If the club is not using Xero archiving, switch **Archive Xero contacts after cancellation approval** off instead — with it off no contact is archived, so the check is not needed. This one will not clear by itself |
 | **Approve** says Xero could not be reached, or that its API limit has been reached | Same check, but a temporary failure rather than a broken connection | Wait a few minutes and approve again. Nothing is lost — the request stays in the queue, and during a Xero outage the contact archive would have failed anyway. The API limit is the slower one: Xero's daily limit resets at midnight UTC, about midday here, so if the cancellation cannot wait that long, switch **Archive Xero contacts after cancellation approval** off instead |
 | **Approve** says Xero refused the request for this member's contact | The Xero contact stored against the member no longer exists there — usually merged into another contact, or deleted. Waiting will not fix it, because the request itself is the problem | Open the member's page and re-link them to the right Xero contact, then approve again. Or switch **Archive Xero contacts after cancellation approval** off, since with it off there is no contact to archive and no check to run |
@@ -156,6 +184,9 @@ approval (checkbox).
 | **Approve** says the admin who raised the request is no longer on file | That admin's record has since been deleted, so the club can no longer show the approval was a second pair of eyes | Reject the request and raise a new one; it can then be approved normally |
 | Approve/Reject is disabled on an archive | You raised it — the two-admin rule needs a different reviewer | Ask another admin to review it |
 | A refund didn't happen on cancellation | Paid subscriptions are not refunded; unpaid/overdue invoices are cleared with a credit note | This is by policy — see [`CANCELLATIONS.md`](../CANCELLATIONS.md#refund-policy) |
+| No credit note was raised, and the blue notice said a shared invoice was involved | The member's membership was billed on one invoice covering a whole family or billing group, and other members it covers are staying. Crediting it would wipe their share of the bill too, so nothing is credited automatically | Nothing is wrong: the invoice stands and the club is still owed it by the members who remain. If money genuinely is due back to the leaver, open the invoice from the link in that notice and raise the credit note in Xero yourself. See [shared family invoices](../CANCELLATIONS.md#shared-family-invoices) |
+| **Approve** is refused over the family's own subscription invoice | Approving would archive that member's Xero contact, and this cancellation will not credit that invoice because other members it covers are staying — so the balance is real and stays behind the archived contact | Read the blue notice beside the participant: it names the way out for this particular family, and there are three. Usually it is "approve the other family members first" — the last one approved credits the invoice in full and the refusal clears by itself. But where the whole family shares one Xero contact (children who inherit a parent's email address do), every one of them is refused over the same invoice and approving them in any order gets nowhere; and where the members holding it open were *deactivated* rather than cancelled, there is nothing to approve for them at all. In those two cases — and any time you would rather not wait — settle, credit or void the invoice in Xero, or switch **Archive Xero contacts after cancellation approval** off |
+| No credit note was raised for the **last** member of a family to leave | Their season subscription was already **paid**, and paid subscriptions are never refunded automatically — so that last cancellation credited nothing either, and the family invoice keeps its balance | Nothing is broken and nothing is hidden: the club receives an admin alert naming that invoice, and the archive refusal keeps the Xero contact open behind it. Open the invoice in Xero and take the payment, credit it, or void it, whichever is right |
 
 ## Related links
 

@@ -3,6 +3,17 @@
 import { useEffect, type Dispatch, type SetStateAction } from "react";
 import { type GuestData } from "@/components/guest-form";
 import { Button } from "@/components/ui/button";
+import { Alert } from "@/components/ui/alert";
+import {
+  MEMBER_GUEST_REVIEW_EXPLAINER,
+  describeMemberGuestConsentBadge,
+  describeMemberGuestHoldSentence,
+  describeMemberGuestPendingHeading,
+} from "@/lib/member-guest-consent-card";
+import {
+  memberGuestConsentPreviewColumns,
+  pendingMemberGuestFirstNames,
+} from "./member-guest-preview";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -99,6 +110,7 @@ export function ReviewStep({
   handleSubmit,
   submitting,
   savingDraft,
+  memberGuestPendingHoldExpiryDays,
 }: {
   checkIn: Date | null;
   checkOut: Date | null;
@@ -161,7 +173,12 @@ export function ReviewStep({
   handleSubmit: () => void | Promise<void>;
   submitting: boolean;
   savingDraft: boolean;
+  /** D-4: the club's own configured hold length, for the explainer's sentence 1. */
+  memberGuestPendingHoldExpiryDays: number;
 }) {
+  // MG3 (#2308), owner sign-off answer 4: all four sentences, always visible,
+  // whenever anybody the booker added is still waiting.
+  const pendingMemberGuestNames = pendingMemberGuestFirstNames(reviewGuestPayload);
   const provisionalHoldWillBeCreated =
     guests.some((guest) => !guest.isMember) &&
     priceQuote.nonMemberHoldDecision?.shouldBePending === true;
@@ -277,6 +294,20 @@ export function ReviewStep({
                 <div key={i} className="flex flex-col gap-1 py-1 text-sm sm:flex-row sm:justify-between sm:gap-3">
                   <span>
                     {g.firstName} {g.lastName} ({g.ageTier}, {g.isMember ? "Member" : "Non-member"})
+                    {(() => {
+                      const columns = memberGuestConsentPreviewColumns(g);
+                      if (!columns) return null;
+                      const badge = describeMemberGuestConsentBadge({
+                        guest: { memberId: g.memberId ?? null, ...columns },
+                        audience: "WIZARD",
+                        targetFirstName: g.firstName,
+                      });
+                      return badge ? (
+                        <span className="block text-xs text-muted-foreground">
+                          {badge.label}
+                        </span>
+                      ) : null;
+                    })()}
                     {perGuestDatesEnabled && stayStart && stayEnd && (
                       <span className="block text-xs text-muted-foreground">
                         Date In {stayStart} - Date Out {stayEnd} ({guestNights} night{guestNights === 1 ? "" : "s"})
@@ -290,6 +321,40 @@ export function ReviewStep({
               );
             })}
           </div>
+
+          {/*
+            MG3 (#2308), owner sign-off answer 4: SAY ALL FOUR PLAINLY, ALWAYS
+            VISIBLE while anyone is still deciding — not folded behind a "what
+            happens next" link.
+
+            Two of the four exist only because of earlier owner decisions taken
+            against the recommendation, and they are the reason this block is
+            above the money rather than below it. D-11: a person the booker adds
+            can see the whole booking, other guests' names included, BEFORE they
+            decide. D-13: their agreement carries over if the booker later moves
+            the dates, so nobody is asked again. Both are defensible; neither is
+            obvious to a member who has not been told, and a member who meets
+            either after the fact has a legitimate complaint.
+
+            The wording itself lives in `member-guest-consent-card.ts` and is
+            pinned by a test, including the two phrases it is forbidden from
+            containing.
+          */}
+          {pendingMemberGuestNames.length > 0 && (
+            <Alert variant="warning">
+              <div className="space-y-2">
+                <p className="font-medium">
+                  {describeMemberGuestPendingHeading(pendingMemberGuestNames)}
+                </p>
+                <p>
+                  {describeMemberGuestHoldSentence(memberGuestPendingHoldExpiryDays)}
+                </p>
+                <p>{MEMBER_GUEST_REVIEW_EXPLAINER.decline}</p>
+                <p>{MEMBER_GUEST_REVIEW_EXPLAINER.disclosure}</p>
+                <p>{MEMBER_GUEST_REVIEW_EXPLAINER.scopeAndRemoval}</p>
+              </div>
+            </Alert>
+          )}
 
           {appliedPromo && appliedPromo.promoAdjustmentCents !== 0 ? (
             <>

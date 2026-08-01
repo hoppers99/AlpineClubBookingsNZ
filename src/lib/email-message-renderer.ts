@@ -71,8 +71,13 @@ export interface EmailTemplateValidationResult {
 // -{{promoAdjustment}}") re-creates the exact incident #2267 fixed: a member
 // reading "Discount: -+$1,370.00" on a surcharge, or a bare "Discount: -" on a
 // booking with no promo. The editor rejects it at save time instead.
+//
+// #2328 adds {{creditNote}} on the same grounds: its first line already reads
+// "Account credit applied: -$120.00", so a body written as "-{{creditNote}}"
+// renders "--$120.00" for a member who used credit and a bare "-" for the
+// majority who did not.
 const SIGN_CARRYING_TOKEN_PATTERN =
-  /[-+]\s*\{\{\s*(promoAdjustment|promoSummary)\s*\}\}/g;
+  /[-+]\s*\{\{\s*(creditNote|promoAdjustment|promoSummary)\s*\}\}/g;
 
 // #2267: plain-English copy for the required tokens whose requirement can be
 // satisfied more than one way (see REQUIRED_TOKEN_ALTERNATIVES). Naming a token

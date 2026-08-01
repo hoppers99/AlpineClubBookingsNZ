@@ -5,6 +5,20 @@ import {
 } from "@/lib/contextual-help";
 
 describe("contextual help registry", () => {
+  it.each([
+    ["/admin/members", "search, filters, sort, and page"],
+    ["/admin/bookings", "without changing the selected lodge"],
+    ["/admin/payments", "rolling three-month Updated range"],
+    ["/admin/subscriptions", "without changing the selected season"],
+    ["/admin/reports", "without changing the selected lodge"],
+  ])("documents dataset Reset behavior for %s", (pathname, expected) => {
+    const help = getContextualHelp(pathname, "admin");
+
+    expect(
+      help.actions.find((action) => action.startsWith("Use Reset")),
+    ).toContain(expected);
+  });
+
   it("returns route-specific admin help", () => {
     const help = getContextualHelp("/admin/members", "admin");
 
@@ -109,6 +123,18 @@ describe("contextual help registry", () => {
 
     expect(help.title).toBe("Finance Dashboard");
     expect(help.fields?.map((field) => field.name)).toContain("View");
+    expect(help.actions).toContainEqual(
+      expect.stringContaining("without changing the current view or lodge scope"),
+    );
+  });
+
+  it("documents the Reports Next Month quick range and retained filters", () => {
+    const help = getContextualHelp("/admin/reports", "admin");
+
+    expect(help.actions.join(" ")).toContain("Next Month");
+    expect(
+      help.fields?.find((field) => field.name === "Quick Range")?.description,
+    ).toContain("without changing the Lodge or Deleted filters");
   });
 
   it("covers the primary admin and finance menu surfaces", () => {

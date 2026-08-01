@@ -4,6 +4,15 @@ import type {
   MembershipTypeSubscriptionBehavior,
   Role,
 } from "@prisma/client";
+import {
+  computeMemberGuestBoundary,
+  type BookingGuestLookupDb,
+} from "@/lib/booking-guests";
+import {
+  MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE,
+  MEMBER_GUEST_CROSS_FAMILY_REFUSAL_STATUS,
+  MEMBER_GUEST_NOT_ADDABLE_CODE,
+} from "@/lib/member-guest-refusal";
 import { BUILT_IN_MEMBERSHIP_TYPES, defaultMembershipTypeKeyForRole } from "@/lib/membership-types";
 import { requiresPaidSubscriptionForBooking } from "@/lib/member-subscription-eligibility";
 import {
@@ -84,21 +93,98 @@ export type MembershipTypeBookingPolicyBlock = {
   membershipTypeKey: string;
   membershipTypeName: string;
   bookingBehavior: MembershipTypeBookingBehavior;
+  /**
+   * D-8: this block is about a member OUTSIDE the booker's family, so nothing in
+   * it may reach the caller (privacy re-review of MG3 #2308, finding 2).
+   *
+   * The block keeps its detail — `name`, `memberId`, the membership type — because
+   * an admin path is entitled to all of it and a log line is better for having it.
+   * What changes is that `buildMembershipTypeBookingPolicyMessage` and
+   * `getMembershipTypeBookingPolicyErrorBody` both refuse to serialise a block
+   * carrying this flag. Set by `getMembershipTypeBookingPolicyBlocks`, from the
+   * same family boundary every other collapse site uses.
+   */
+  crossFamily?: boolean;
 };
 
+/**
+ * The membership-type refusal — D-8's FOURTH collapsing refusal.
+ *
+ * WHY IT IS ON THE LIST AT ALL (privacy re-review of MG3 #2308, finding 2). MG3's
+ * documentation says a cross-family refusal never discloses WHY, and three
+ * refusals were made to honour that: the unpaid subscription, the person-night
+ * clash and the profile-completeness gate. This one was missed, and it was the
+ * most explicit of the four — it answered
+ *
+ *     "The following member guests cannot be booked for the 2026/2027 season:
+ *      Dana Doe."
+ *
+ * naming the member (or, with a blank name, their EMAIL ADDRESS), and its response
+ * body carried their member id and their membership category as structured
+ * fields. Against a stranger that is not an inference from a pattern of answers;
+ * it is a read-out, and a cheaper one than the C1 leak because it does not even
+ * depend on the dates asked about.
+ *
+ * SO A CROSS-FAMILY BLOCK NOW COLLAPSES INTO THE SAME ENVELOPE AS ITS THREE
+ * SIBLINGS: the neutral sentence, the 403, the `MEMBER_GUEST_NOT_ADDABLE` code,
+ * and `crossFamilyMemberIds` for the audit trail. That last field is what lets a
+ * route hand this error straight to `handleMemberGuestAddRefusal`, so the refusal
+ * is throttled, audited and held to the timing floor exactly like the others —
+ * without it the fourth refusal would be collapsed but uncounted, which is how
+ * #2388's whole mitigation set gets a hole in it.
+ *
+ * FAMILY SCOPE AND ADMIN PATHS KEEP THE DETAILED SENTENCE, verbatim. A booker
+ * adding their own child needs to be told which of their household cannot be
+ * booked and why, and an officer acting on behalf is entitled to the same. Only
+ * the beyond-family blocks collapse, and only on a path that enforces
+ * authorization.
+ */
 export class MembershipTypeBookingPolicyError extends Error {
-  public readonly code = MEMBERSHIP_TYPE_BLOCKS_BOOKING_CODE;
-  public readonly status = 403;
+  public readonly code: string;
+  public readonly status: number;
+
+  /**
+   * The beyond-family members this refusal was about, when it collapsed —
+   * otherwise undefined. Same field name and same meaning as
+   * `BookingGuestValidationError.crossFamilyMemberIds`, so
+   * `handleMemberGuestAddRefusal` accepts either without a second overload.
+   *
+   * NEVER SERIALISED. Echoing the ids back would confirm which of several
+   * requested members the club refused to discuss, which is most of what the
+   * collapse just removed.
+   */
+  public readonly crossFamilyMemberIds?: readonly string[];
 
   constructor(public readonly blockedMembers: MembershipTypeBookingPolicyBlock[]) {
     super(buildMembershipTypeBookingPolicyMessage(blockedMembers));
     this.name = "MembershipTypeBookingPolicyError";
+    const collapsed = blockedMembers.filter((block) => block.crossFamily);
+    this.crossFamilyMemberIds =
+      collapsed.length > 0 ? collapsed.map((block) => block.memberId) : undefined;
+    this.code =
+      collapsed.length > 0
+        ? MEMBER_GUEST_NOT_ADDABLE_CODE
+        : MEMBERSHIP_TYPE_BLOCKS_BOOKING_CODE;
+    // Both are 403 today. Read from the constant rather than repeated as a
+    // literal so the collapsed refusal cannot drift away from its three siblings
+    // — a different status is a distinction all by itself, which is why D-8's
+    // person-night collapse gave up its 409.
+    this.status =
+      collapsed.length > 0 ? MEMBER_GUEST_CROSS_FAMILY_REFUSAL_STATUS : 403;
   }
 }
 
 export function getMembershipTypeBookingPolicyErrorBody(
   error: MembershipTypeBookingPolicyError,
 ) {
+  if (error.crossFamilyMemberIds && error.crossFamilyMemberIds.length > 0) {
+    // Byte-identical to the shape `getBookingGuestValidationErrorResponse`
+    // returns for the other three collapsed refusals — no `blockedMembers` key
+    // at all, rather than an emptied one, because a caller can read the
+    // difference between "the array is empty" and "there is no array".
+    return { code: error.code, error: error.message };
+  }
+
   return {
     error: error.message,
     code: error.code,
@@ -321,6 +407,21 @@ function buildMembershipTypeBookingPolicyMessage(
     return "Membership type booking policy blocks this booking.";
   }
 
+  // ANY beyond-family block collapses the WHOLE sentence (privacy re-review of
+  // MG3 #2308, finding 2). Not "the collapsed part is omitted and the rest is
+  // listed": a caller who can see which members were named and which were merely
+  // counted can subtract, and one line of arithmetic would give back the name
+  // the collapse just removed. One neutral sentence is the only shape that
+  // cannot be differenced.
+  //
+  // The cost is a booker whose OWN membership type also blocks the booking
+  // losing that actionable sentence while a cross-family guest is in the party.
+  // That is rare, recoverable (remove the guest and the detailed message
+  // returns), and much cheaper than the alternative.
+  if (blocks.some((block) => block.crossFamily)) {
+    return MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE;
+  }
+
   const ownerBlock = blocks.find((block) => block.scope === "BOOKING_OWNER");
   if (ownerBlock && blocks.length === 1) {
     return `Your ${formatSeasonDisplay(ownerBlock.seasonYear)} membership type (${ownerBlock.membershipTypeName}) does not allow lodge bookings.`;
@@ -334,12 +435,127 @@ function buildMembershipTypeBookingPolicyMessage(
   return `One or more members cannot be booked for the ${formatSeasonDisplay(blocks[0].seasonYear)} season under their membership type policy.`;
 }
 
+/**
+ * Can this `db` answer the family-boundary question?
+ *
+ * `getMembershipTypeBookingPolicyBlocks` takes `db: unknown` — it is called with
+ * a `PrismaClient`, a transaction client and a long tail of narrowed test doubles
+ * — so the boundary backstop has to ask before it reads, exactly as
+ * `isMembershipTypePolicyDb` already does for the policy reads themselves.
+ */
+function canComputeMemberGuestBoundary(db: unknown): db is BookingGuestLookupDb {
+  const candidate = db as
+    | { familyGroupMember?: { findMany?: unknown } }
+    | null
+    | undefined;
+  return typeof candidate?.familyGroupMember?.findMany === "function";
+}
+
+/**
+ * Which of the blocked member guests sit beyond the booker's family (finding 2).
+ *
+ * TWO SOURCES, AND THE ORDER MATTERS FOR COST RATHER THAN CORRECTNESS.
+ *
+ *   1. The `crossFamilyMemberGuest` MARKER the caller's party already carries.
+ *      Every member-facing add and quote path has run either
+ *      `planMemberGuestConsentWrites`, `markCrossFamilyMemberGuests` or
+ *      `markCrossFamilyGuestsOnBooking` before it gets here, so on those paths
+ *      the answer is already in hand and costs nothing.
+ *   2. The LIVE BOUNDARY, for any blocked member the marker does not cover.
+ *      `confirm-draft`, the guest-removal path and the promo validator all price
+ *      or re-check a party they never marked, and a marker-only implementation
+ *      would leak on exactly those — which is the same shape of mistake C1 was.
+ *
+ * IT RUNS ONLY ON A REFUSAL. The boundary read happens after the blocks are
+ * built, so a booking whose members are all bookable — every ordinary booking —
+ * pays nothing at all. On the refusal path it is the two `FamilyGroupMember`
+ * reads `getAllowedGuestMemberIds` already does everywhere else.
+ *
+ * IT ABSTAINS RATHER THAN GUESSES. With no `ownerMemberId` there is no family to
+ * be outside of, and with a `db` that cannot read `FamilyGroupMember` there is no
+ * boundary to compute; in both cases only the marker speaks. The admin approval
+ * pipeline is the real instance of the first — it converts a booking request with
+ * no member owner — and it passes `skipAuthorization` anyway.
+ */
+async function resolveCrossFamilyPolicyBlocks(
+  db: unknown,
+  params: {
+    ownerMemberId?: string | null;
+    guests?: ReadonlyArray<{
+      isMember: boolean;
+      memberId?: string | null;
+      crossFamilyMemberGuest?: boolean;
+    }>;
+    skipAuthorization?: boolean;
+  },
+  blocks: MembershipTypeBookingPolicyBlock[],
+): Promise<void> {
+  if (params.skipAuthorization) return;
+
+  const guestBlocks = blocks.filter((block) => block.scope === "MEMBER_GUEST");
+  if (guestBlocks.length === 0) return;
+
+  const markedMemberIds = new Set(
+    (params.guests ?? [])
+      .filter((guest) => guest.crossFamilyMemberGuest === true)
+      .map((guest) => guest.memberId?.trim())
+      .filter((memberId): memberId is string => Boolean(memberId)),
+  );
+
+  const beyondFamily = new Set(
+    guestBlocks
+      .map((block) => block.memberId)
+      .filter((memberId) => markedMemberIds.has(memberId)),
+  );
+
+  const unresolved = guestBlocks
+    .map((block) => block.memberId)
+    .filter((memberId) => !beyondFamily.has(memberId));
+  if (
+    unresolved.length > 0 &&
+    params.ownerMemberId &&
+    canComputeMemberGuestBoundary(db)
+  ) {
+    const boundary = await computeMemberGuestBoundary(
+      db,
+      params.ownerMemberId,
+      unresolved,
+    );
+    for (const memberId of boundary.beyondFamilyMemberIds) {
+      beyondFamily.add(memberId);
+    }
+  }
+
+  for (const block of guestBlocks) {
+    if (beyondFamily.has(block.memberId)) {
+      block.crossFamily = true;
+    }
+  }
+}
+
 export async function getMembershipTypeBookingPolicyBlocks(
   db: unknown,
   params: {
     seasonYear: number;
     ownerMemberId?: string | null;
-    guests?: ReadonlyArray<{ isMember: boolean; memberId?: string | null }>;
+    guests?: ReadonlyArray<{
+      isMember: boolean;
+      memberId?: string | null;
+      /**
+       * D-8's marker, when the caller has already computed it — see
+       * `resolveCrossFamilyPolicyBlocks`. Optional and absent on every
+       * non-widened path, so nothing about a family booking changes.
+       */
+      crossFamilyMemberGuest?: boolean;
+    }>;
+    /**
+     * True on an admin/officer on-behalf path. Keeps the detailed, actionable
+     * message and the structured `blockedMembers` body: an officer is entitled to
+     * know which member their club's policy blocked, and collapsing it for them
+     * would buy nothing and cost support tickets. Same exemption
+     * `applyMemberGuestAddThrottle` and `markCrossFamilyGuestsOnBooking` make.
+     */
+    skipAuthorization?: boolean;
   },
 ): Promise<MembershipTypeBookingPolicyBlock[]> {
   const guestMemberIds =
@@ -387,6 +603,8 @@ export async function getMembershipTypeBookingPolicyBlocks(
       bookingBehavior: policy.bookingBehavior,
     });
   }
+
+  await resolveCrossFamilyPolicyBlocks(db, params, blocks);
 
   return blocks;
 }
@@ -540,6 +758,15 @@ export async function priceBookingGuestsWithMembershipTypePolicy(
     seasons: SeasonRateData[];
     groupDiscount?: GroupDiscountConfig;
     seasonYear?: number;
+    /**
+     * Forwarded to the policy guard below (privacy re-review of MG3 #2308,
+     * finding 2). An admin/on-behalf or unattended system path passes `true` and
+     * keeps the detailed refusal; everything else leaves it unset, which is the
+     * safe direction — the worst case of forgetting it is an officer being shown
+     * the neutral sentence, where the worst case of defaulting the other way is a
+     * stranger's name on a member's screen.
+     */
+    skipAuthorization?: boolean;
   },
 ): Promise<PriceBreakdown> {
   const seasonYear = input.seasonYear ?? getSeasonYear(input.checkIn);
@@ -547,6 +774,7 @@ export async function priceBookingGuestsWithMembershipTypePolicy(
     ownerMemberId: input.ownerMemberId,
     guests: input.guests,
     seasonYear,
+    skipAuthorization: input.skipAuthorization,
   });
   const [ratedGuests, groupDiscount] = await Promise.all([
     resolveGuestRateMembershipTypes(db, {

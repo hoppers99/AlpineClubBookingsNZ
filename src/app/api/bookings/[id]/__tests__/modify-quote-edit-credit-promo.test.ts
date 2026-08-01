@@ -105,6 +105,17 @@ vi.mock("@/lib/booking-modify", async () => {
   };
 });
 vi.mock("@/lib/booking-guests", () => ({
+  // MG3 (#2308) C1: `markCrossFamilyGuestsOnBooking` re-derives the D-8 marker
+  // over the WHOLE proposed party from this function. These fixtures are about
+  // pricing/payment rather than family boundaries, and were written when every
+  // member-linked guest in them was family scope, so an empty boundary states
+  // that assumption explicitly. The C1 behaviour itself is covered by
+  // `member-guest-cross-family-refusals.test.ts` and by the source contract in
+  // `review-findings-contracts.test.ts`.
+  computeMemberGuestBoundary: vi.fn().mockResolvedValue({
+    scopeByMemberId: new Map(),
+    beyondFamilyMemberIds: [],
+  }),
   resolveLinkedBookingMembers: vi.fn().mockResolvedValue([]),
   // MG2 (#2307): the widened call sites use the boundary-returning variant. An
   // empty boundary is "everybody is inside the booker's family", which is this

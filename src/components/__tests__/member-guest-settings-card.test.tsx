@@ -102,21 +102,25 @@ describe("MemberGuestSettingsCard", () => {
     expect(screen.queryByText(/switched off, so none of this is in use/)).toBeNull();
   });
 
-  it("says the two search settings are stored now and start working later", async () => {
-    // The toggles are writable a whole release before anything reads them. If
-    // the card reads as though the setting is already live, an admin arms a
-    // privacy decision that comes to life on its own at the next deploy with
-    // nobody re-deciding it — so the "not yet" has to be in the copy, and
-    // reachable by a screen reader, not just in a source comment.
+  it("no longer says the settings are stored but not in use — because they are (MG3, #2308)", async () => {
+    // THE INVERSE OF THE ASSERTION THIS REPLACES, and the inversion is the point.
+    // While the two toggles were writable but read by nothing, the card had to
+    // say so out loud: an admin who armed a privacy decision believing it live
+    // would have had it come to life on its own at a later deploy with nobody
+    // re-deciding it. MG3 gives both values a reader, so the notice became FALSE
+    // and came out in the same change — which is exactly what
+    // src/lib/member-guest-settings.ts promised would happen.
+    //
+    // Asserting its ABSENCE is not bookkeeping: a revert of the reader without a
+    // revert of the copy would leave the card claiming a "not yet" that had
+    // already happened, which is the same failure pointing the other way.
     await renderCard();
 
-    expect(screen.getByText("Not in use yet.")).toBeInTheDocument();
+    expect(screen.queryByText("Not in use yet.")).toBeNull();
     expect(
-      screen.getByText(/starts working on its own when that update arrives/),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(/a member always types the other member's exact email/),
-    ).toBeInTheDocument();
+      screen.queryByText(/starts working on its own when that update arrives/),
+    ).toBeNull();
+    expect(screen.queryByText(/still being built/)).toBeNull();
   });
 
   it("describes each search control with the consequence, not just the mechanics", async () => {
@@ -129,10 +133,15 @@ describe("MemberGuestSettingsCard", () => {
         .map((id) => document.getElementById(id)?.textContent ?? "")
         .join(" ");
 
+    // MG3 (#2308) removed the "not in use yet" sentence from both descriptions,
+    // because it stopped being true. THE TWO WARNINGS ARE UNTOUCHED, and that is
+    // the half worth pinning: they are the honest description of what these
+    // switches actually do, and the temptation to soften them into something
+    // more comfortable will not go away.
     const nameSearch = screen.getByRole("checkbox", {
       name: /^Let members search by name/,
     });
-    expect(describedText(nameSearch)).toMatch(/Not in use yet/);
+    expect(describedText(nameSearch)).not.toMatch(/Not in use yet/);
     expect(describedText(nameSearch)).toMatch(
       /makes your membership list browsable/,
     );
@@ -140,7 +149,7 @@ describe("MemberGuestSettingsCard", () => {
     const minors = screen.getByRole("checkbox", {
       name: /^Include under-18s in name search/,
     });
-    expect(describedText(minors)).toMatch(/Not in use yet/);
+    expect(describedText(minors)).not.toMatch(/Not in use yet/);
     expect(describedText(minors)).toMatch(
       /makes children's names browsable to any member/,
     );
