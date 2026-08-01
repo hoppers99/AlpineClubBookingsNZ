@@ -1,5 +1,6 @@
 import clearStarterFooterAffiliations from "./20260802140000_clear_starter_footer_affiliations";
 import clearWaldvogelLodgeAddress from "./20260802110000_clear_waldvogel_lodge_address";
+import updateStarterHomeGuestCopy from "./20260802150000_update_starter_home_guest_copy";
 import type { DataMigrationVerification } from "./types";
 
 /**
@@ -22,4 +23,5 @@ import type { DataMigrationVerification } from "./types";
 export const DATA_MIGRATION_VERIFICATIONS: DataMigrationVerification[] = [
   clearWaldvogelLodgeAddress,
   clearStarterFooterAffiliations,
+  updateStarterHomeGuestCopy,
 ];
