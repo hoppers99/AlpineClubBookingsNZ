@@ -596,6 +596,18 @@ const WAITLIST_MINIMUM_STAY_ERROR =
   "so this offer can no longer be confirmed. You've been returned to the waitlist.";
 
 /**
+ * The answer when the offer moved between the UNLOCKED pre-read that decides
+ * which checks to run and the locked transaction that claims it (#2363).
+ *
+ * This is not a refusal of the offer and it is not a policy verdict: nothing has
+ * been written, no offer consumed and no status changed, so the member simply
+ * confirms again and that attempt re-reads the row from scratch — with the
+ * minimum-stay guard evaluating for real this time.
+ */
+const WAITLIST_CONFIRM_RETRY_ERROR =
+  "This offer was updated a moment ago. Please try confirming it again.";
+
+/**
  * Confirm a waitlist offer. Re-checks capacity and transitions to
  * PAYMENT_PENDING or PENDING based on member/non-member rules.
  *
@@ -610,7 +622,10 @@ const WAITLIST_MINIMUM_STAY_ERROR =
  * other one. There is no admin branch here BY CONSTRUCTION: the transaction
  * below refuses any actor other than the booking's own member with "Forbidden",
  * so the only actor that ever reaches the check is a non-admin confirming their
- * own offer.
+ * own offer. The same-lodge check runs on an unlocked pre-read, so the claiming
+ * transaction carries a backstop: an offer it finds live but that the pre-read
+ * did not classify the same way is refused with "CONFIRM_RETRY" and no write,
+ * rather than claimed with the policy unevaluated.
  */
 export async function confirmWaitlistOffer(
   bookingId: string,
@@ -622,8 +637,10 @@ export async function confirmWaitlistOffer(
   newBookingId?: string;
   updatedPriceCents?: number;
   // Machine-readable rejection code the API route surfaces to the client:
-  // "DUPLICATE_STAY" forwarded from the cross-lodge path, or
-  // "MINIMUM_STAY_VIOLATION" from the policy re-check below.
+  // "DUPLICATE_STAY" forwarded from the cross-lodge path,
+  // "MINIMUM_STAY_VIOLATION" from the policy re-check below, or
+  // "CONFIRM_RETRY" when the offer changed under the pre-read and the claim
+  // refused without writing anything (the route answers 409 — retry).
   code?: string;
 }> {
   const offerKind = await prisma.booking.findUnique({
@@ -641,6 +658,13 @@ export async function confirmWaitlistOffer(
   if (offerKind?.waitlistOfferedLodgeId) {
     return confirmCrossLodgeWaitlistOffer(bookingId, memberId);
   }
+
+  // Did the same-lodge minimum-stay check below ACTUALLY run against this offer?
+  // The check is conditional (the pre-read has to have seen a live same-lodge
+  // offer this member owns), and its inputs come from an unlocked read, so this
+  // flag — not the presence of the check in the source — is what the claiming
+  // transaction treats as evidence that the policy was evaluated.
+  let minimumStayCheckedOffer = false;
 
   // #2363, same-lodge offer: evaluate the booking's own lodge against the
   // current policy set. Deliberately OUTSIDE the transaction below, like every
@@ -703,9 +727,15 @@ export async function confirmWaitlistOffer(
         code: "MINIMUM_STAY_VIOLATION",
       };
     }
+    minimumStayCheckedOffer = true;
   }
 
-  let result: { success: boolean; newStatus?: BookingStatus; error?: string };
+  let result: {
+    success: boolean;
+    newStatus?: BookingStatus;
+    error?: string;
+    code?: string;
+  };
 
   try {
     result = await prisma.$transaction(async (tx) => {
@@ -742,6 +772,31 @@ export async function confirmWaitlistOffer(
       const confirmedAt = new Date();
       if (booking.waitlistOfferExpiresAt && booking.waitlistOfferExpiresAt < confirmedAt) {
         return { success: false, error: "Waitlist offer has expired" };
+      }
+
+      // #2363 policy backstop for the check above, which ran on an UNLOCKED
+      // pre-read and only when that read saw a live same-lodge offer this member
+      // owns. `processWaitlistForDates` performs exactly the transition that
+      // invalidates it — WAITLISTED -> WAITLIST_OFFERED — and this route carries
+      // no rate limit, so an entry read as WAITLISTED (or as expired, or as
+      // somebody else's) can be a live same-lodge offer by the time this locked
+      // read happens. Without this gate the claim below would spend that offer
+      // with the current minimum-stay policy never evaluated.
+      //
+      // `waitlistOfferedLodgeId` is re-read here for the mirror image: an offer
+      // that became a CROSS-lodge one after the dispatch decision at the top of
+      // this function must go back through that dispatch, not be claimed as a
+      // same-lodge offer whose policy was checked at the wrong lodge.
+      //
+      // Refusing is retry-safe BY CONSTRUCTION: nothing is written, no status
+      // moves, no allocation is touched and the offer is not consumed, so the
+      // caller re-enters with a fresh pre-read and the guard evaluates for real.
+      if (!minimumStayCheckedOffer || booking.waitlistOfferedLodgeId) {
+        return {
+          success: false,
+          error: WAITLIST_CONFIRM_RETRY_ERROR,
+          code: "CONFIRM_RETRY",
+        };
       }
 
       // Re-check capacity

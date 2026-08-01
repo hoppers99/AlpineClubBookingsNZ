@@ -74,6 +74,23 @@ vi.mock("@/lib/capacity", () => ({
   LODGE_CAPACITY: 29,
 }));
 
+// #2363: confirmWaitlistOffer re-checks the CURRENT minimum-stay policy set
+// before it turns an offer into held capacity. Only that one export is stubbed
+// (partial mock) so the rest of the policy module stays real for every other
+// consumer in this graph.
+const mockValidateMinimumStay = vi.fn();
+vi.mock("@/lib/booking-policies", async () => {
+  const actual =
+    await vi.importActual<typeof import("@/lib/booking-policies")>(
+      "@/lib/booking-policies"
+    );
+  return {
+    ...actual,
+    validateMinimumStay: (...args: unknown[]) =>
+      mockValidateMinimumStay(...args),
+  };
+});
+
 vi.mock("@/lib/cancellation", () => ({
   getNonMemberHoldDays: vi.fn().mockResolvedValue(7),
   getNonMemberHoldPolicy: vi.fn().mockResolvedValue({
@@ -644,6 +661,27 @@ describe("processWaitlistForDates", () => {
 });
 
 describe("confirmWaitlistOffer", () => {
+  // The service reads the offer once OUTSIDE its claiming transaction to decide
+  // which pre-write checks apply, then claims it under the lodge lock. This
+  // suite used to leave that first read unmocked, so every case here silently
+  // exercised the "the row vanished between the two reads" path rather than the
+  // ordinary one; since #2363 the claim refuses that state outright (the policy
+  // guard hangs off the unlocked read, so a claim it never classified must not
+  // proceed). Default it to the same live, member-owned, same-lodge offer the
+  // transaction sees — cases that want a divergence override it.
+  beforeEach(() => {
+    mockBookingFindUnique.mockResolvedValue({
+      waitlistOfferedLodgeId: null,
+      memberId: "m1",
+      status: "WAITLIST_OFFERED",
+      lodgeId: "lodge-1",
+      checkIn: new Date("2026-07-01"),
+      checkOut: new Date("2026-07-03"),
+      waitlistOfferExpiresAt: new Date(Date.now() + 86400000),
+    });
+    mockValidateMinimumStay.mockResolvedValue({ valid: true, violations: [] });
+  });
+
   it("transitions to PAYMENT_PENDING for all-member bookings", async () => {
     const { confirmWaitlistOffer } = await import("@/lib/waitlist");
     const { checkCapacityForGuestRanges: mockCheckCapacity } = await import("@/lib/capacity");

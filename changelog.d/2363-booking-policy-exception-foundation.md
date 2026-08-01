@@ -30,6 +30,10 @@
   Accepting a waitlist offer is now checked too, including an offer for a
   different lodge, which has its own rules. If the rule no longer allows those
   nights, nothing is booked or charged and you keep your place on the waitlist.
+  In the rare case where your offer changes in the moment you accept it — the
+  waitlist sweep reaching it at the same time, say — the accept is not taken and
+  you are asked to try again, so an offer can never be taken up without the rule
+  being applied to it.
 
   When a member is stopped, they are told which rule and which nights, rather
   than a general "couldn't save" message.

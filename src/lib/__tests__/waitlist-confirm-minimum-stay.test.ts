@@ -22,6 +22,7 @@ const h = vi.hoisted(() => ({
   getDefaultLodgeId: vi.fn(),
   logAudit: vi.fn(),
   warn: vi.fn(),
+  confirmCrossLodgeWaitlistOffer: vi.fn(),
 }));
 
 const txClient = {
@@ -53,7 +54,7 @@ vi.mock("@/lib/lodges", () => ({
   lodgeNullTolerantScope: () => ({}),
 }));
 vi.mock("@/lib/waitlist-cross-lodge", () => ({
-  confirmCrossLodgeWaitlistOffer: vi.fn(),
+  confirmCrossLodgeWaitlistOffer: h.confirmCrossLodgeWaitlistOffer,
   getWaitlistCrossLodgeOrder: vi.fn(),
   quoteWaitlistEntryAtLodge: vi.fn(),
 }));
@@ -242,5 +243,96 @@ describe("confirmWaitlistOffer minimum-stay guard (#2363)", () => {
 
     expect(h.validateMinimumStay).not.toHaveBeenCalled();
     expect(result.error).toContain("expired");
+  });
+});
+
+// The guard above hangs off an UNLOCKED pre-transaction read, and it only runs
+// when that read already saw a live same-lodge offer this member owns. The
+// claiming transaction — which does hold the lodge lock — therefore needs its
+// own evidence that the policy was actually evaluated for the offer it is about
+// to spend, because `processWaitlistForDates` makes exactly the transition that
+// invalidates the pre-read (WAITLISTED -> WAITLIST_OFFERED) and this confirm
+// route carries no rate limit.
+describe("confirmWaitlistOffer policy backstop inside the claim (#2363)", () => {
+  it("refuses retry-safely when the entry became a live offer after the pre-read, instead of claiming it with the policy unevaluated", async () => {
+    // Pre-read: still queued, so the minimum-stay guard is skipped...
+    h.prismaBookingFindUnique.mockResolvedValue(
+      offer({ status: BookingStatus.WAITLISTED, waitlistOfferExpiresAt: null }),
+    );
+    // ...and the offer sweep runs before the transaction takes the lodge lock,
+    // so the locked read finds a live WAITLIST_OFFERED entry.
+    h.txBookingFindUnique.mockReset();
+    h.txBookingFindUnique
+      .mockResolvedValueOnce({ lodgeId: LODGE })
+      .mockResolvedValue(offer());
+    // The rule tightened in the meantime; nothing must be able to spend the
+    // offer without that being evaluated.
+    h.validateMinimumStay.mockResolvedValue({
+      valid: false,
+      violations: [violation],
+    });
+
+    const result = await confirmWaitlistOffer("booking-1", "member-1");
+
+    expect(result.success).toBe(false);
+    expect(result.code).toBe("CONFIRM_RETRY");
+    expect(result.newStatus).toBeUndefined();
+    // The pre-read genuinely skipped the check — that is the hole this closes.
+    expect(h.validateMinimumStay).not.toHaveBeenCalled();
+    // Retry-safe: not one row written. No claim, no revert, no allocation
+    // churn, no audit entry — the offer is still there for the next attempt,
+    // which re-reads it and runs the guard for real.
+    expect(h.txBookingUpdateMany).not.toHaveBeenCalled();
+    expect(h.checkCapacityForGuestRanges).not.toHaveBeenCalled();
+    expect(h.reconcileBedAllocations).not.toHaveBeenCalled();
+    expect(h.logAudit).not.toHaveBeenCalled();
+  });
+
+  it("refuses retry-safely when a same-lodge classification goes stale and the offer is now cross-lodge", async () => {
+    // Pre-read saw no offered lodge, so this function took the same-lodge path
+    // and checked the policy at the booking's OWN lodge...
+    h.txBookingFindUnique.mockReset();
+    h.txBookingFindUnique
+      .mockResolvedValueOnce({ lodgeId: LODGE })
+      // ...but by the locked read the entry holds a cross-lodge offer, whose
+      // nights belong to a different lodge's policy set entirely.
+      .mockResolvedValue(offer({ waitlistOfferedLodgeId: "lodge-b" }));
+
+    const result = await confirmWaitlistOffer("booking-1", "member-1");
+
+    expect(result.success).toBe(false);
+    // The same-lodge check did run — on the pre-read's classification, which is
+    // exactly what went stale.
+    expect(h.validateMinimumStay).toHaveBeenCalledTimes(1);
+    expect(result.code).toBe("CONFIRM_RETRY");
+    // It is sent back through the dispatch at the top rather than claimed here.
+    expect(h.confirmCrossLodgeWaitlistOffer).not.toHaveBeenCalled();
+    expect(h.txBookingUpdateMany).not.toHaveBeenCalled();
+    expect(h.logAudit).not.toHaveBeenCalled();
+  });
+
+  it("keeps the offer's own answers when the pre-read skipped the check for a reason the transaction agrees with", async () => {
+    // Not this member's offer: the transaction's Forbidden answer wins over the
+    // retry, because it is a settled refusal rather than a stale read.
+    const forbidden = await confirmWaitlistOffer("booking-1", "someone-else");
+    expect(forbidden).toEqual({ success: false, error: "Forbidden" });
+
+    // Already expired: same story — "expired" is the true answer, not "retry".
+    vi.clearAllMocks();
+    h.transaction.mockImplementation(
+      async (callback: (tx: typeof txClient) => unknown) => callback(txClient),
+    );
+    const expired = offer({
+      waitlistOfferExpiresAt: new Date(Date.now() - 1_000),
+    });
+    h.prismaBookingFindUnique.mockResolvedValue(expired);
+    h.txBookingFindUnique.mockReset();
+    h.txBookingFindUnique
+      .mockResolvedValueOnce({ lodgeId: LODGE })
+      .mockResolvedValue(expired);
+
+    const result = await confirmWaitlistOffer("booking-1", "member-1");
+    expect(result.error).toContain("expired");
+    expect(result.code).toBeUndefined();
   });
 });
