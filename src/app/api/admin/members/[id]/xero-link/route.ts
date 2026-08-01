@@ -13,6 +13,7 @@ import { getXeroApiErrorInfo } from "@/lib/xero-api-errors";
 import logger from "@/lib/logger";
 import { z } from "zod";
 import { buildXeroContactUrl } from "@/lib/xero-links";
+import { getXeroOrgShortCode } from "@/lib/xero-link-short-code";
 import { upsertXeroObjectLink } from "@/lib/xero-sync";
 import { getSeasonYear } from "@/lib/utils";
 
@@ -170,7 +171,14 @@ export async function POST(
     return NextResponse.json({
       xeroContactId: parsed.data.xeroContactId,
       contactName: contact.name,
-      xeroLink: buildXeroContactUrl(parsed.data.xeroContactId),
+      // #2314: the RETURNED link carries the organisation short code so the
+      // admin who just linked lands in this club's Xero. The link PERSISTED on
+      // the XeroObjectLink row above deliberately does not — a stored short
+      // code would be wrong after a reconnect to a different organisation, so
+      // stored URLs stay generic and are scoped at render time.
+      xeroLink: buildXeroContactUrl(parsed.data.xeroContactId, {
+        shortCode: await getXeroOrgShortCode(),
+      }),
       ...(warning ? { warning } : {}),
     });
   } catch (err) {

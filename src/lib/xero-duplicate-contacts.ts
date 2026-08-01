@@ -9,6 +9,7 @@
 import type { Contact } from "xero-node";
 import { prisma } from "./prisma";
 import { buildXeroContactUrl } from "@/lib/xero-links";
+import { getXeroOrgShortCode } from "@/lib/xero-link-short-code";
 import {
   callXeroApi,
   getAuthenticatedXeroClient,
@@ -77,6 +78,12 @@ export async function findPotentialXeroContactsForMember(
   const normalizedMemberEmail = member.email.trim().toLowerCase();
 
   const { xero, tenantId } = await getAuthenticatedXeroClient();
+  // #2314: the suggested-contact card renders these links, and this producer
+  // used to be the one place in this file that omitted the short code while
+  // findDuplicateContacts below passed one. Both now resolve it the same way,
+  // off the shared 12-hour organisation cache; null degrades to the generic
+  // go.xero.com link rather than hiding it.
+  const shortCode = await getXeroOrgShortCode();
   const contactsById = new Map<string, Contact>();
 
   // Walk-in placeholder owners (#1935) have no real address on the reserved
@@ -196,7 +203,7 @@ export async function findPotentialXeroContactsForMember(
         isLinked: Boolean(linkedMemberName),
         linkedMemberName,
         matchReasons,
-        xeroLink: buildXeroContactUrl(contact.contactID ?? ""),
+        xeroLink: buildXeroContactUrl(contact.contactID ?? "", { shortCode }),
       };
     })
     .filter(
@@ -234,22 +241,12 @@ export async function findDuplicateContacts(): Promise<{
 }> {
   const { xero, tenantId } = await getAuthenticatedXeroClient();
 
-  // Get org shortCode for deep links
-  let shortCode = "";
-  try {
-    const orgResponse = await callXeroApi(
-      () => xero.accountingApi.getOrganisations(tenantId),
-      {
-        operation: "getOrganisations",
-        resourceType: "ORGANISATION",
-        workflow: "findDuplicateContacts",
-        context: "findDuplicateContacts getOrganisations",
-      }
-    );
-    shortCode = orgResponse.body.organisations?.[0]?.shortCode || "";
-  } catch {
-    // If we can't get shortCode, links will fall back to generic URL
-  }
+  // #2314: the short code now comes from the shared connected-organisation
+  // cache rather than a private `getOrganisations` call made on every scan.
+  // Same value, same swallow-and-degrade posture, but it costs no extra Xero
+  // request once any surface has warmed the 12-hour cache — and it is the same
+  // one line every other server-side producer uses.
+  const shortCode = await getXeroOrgShortCode();
 
   function xeroContactLink(contactID: string): string {
     return buildXeroContactUrl(contactID, { shortCode });
