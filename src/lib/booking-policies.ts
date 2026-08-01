@@ -7,6 +7,10 @@ import {
   validateMinimumStayWithPolicies,
   type MinimumStayViolation,
 } from "@/lib/policies/minimum-stay";
+import {
+  resolveAdultMemberHostingPolicy,
+  type ResolvedAdultMemberHostingPolicy,
+} from "@/lib/policies/adult-member-hosting";
 import { aggregatePolicyExceptionViolations } from "@/lib/booking-policy-exceptions";
 
 export {
@@ -86,6 +90,52 @@ export async function validateMinimumStay(
     policies,
     effectiveLodgeId,
   );
+}
+
+/** The narrow client the hosting-policy read needs (#2364). */
+export type AdultMemberHostingPolicyDb = Pick<
+  PrismaClient,
+  "adultMemberHostingPolicy" | "lodge"
+>;
+
+/**
+ * Resolve the adult-member hosting policy in force at one lodge (#2364).
+ *
+ * The table holds at most one club-wide row plus one row per lodge, so both
+ * candidate rows are fetched in a single query and
+ * `resolveAdultMemberHostingPolicy` decides between them. A lodge with no row,
+ * or an INHERIT row, falls through to the club default; a club with no row at
+ * all resolves DISABLED.
+ *
+ * COMPOSITION RULE — `db`. Identical to `validateMinimumStay` above and binding
+ * for the same reason: **a caller already inside `prisma.$transaction` MUST
+ * pass its own `tx`.** Reaching for the module-level client while the caller
+ * holds `pg_advisory_xact_lock(1)` and a per-lodge capacity lock checks out a
+ * SECOND pool connection underneath both, which is the pool-starvation shape
+ * the ordering rule at the top of `member-guest-add-policy.ts` forbids. Passing
+ * `tx` also makes the read see the transaction's own snapshot. Callers that are
+ * genuinely outside a transaction keep the default.
+ *
+ * Throws `UnknownAdultMemberHostingScopeError` when no lodge can be resolved,
+ * rather than answering "disabled" for a scope it could not identify.
+ */
+export async function loadAdultMemberHostingPolicy(
+  lodgeId?: string | null,
+  db: AdultMemberHostingPolicyDb = prisma,
+): Promise<ResolvedAdultMemberHostingPolicy> {
+  const effectiveLodgeId = lodgeId ?? (await getDefaultLodgeId(db));
+  const rows = await db.adultMemberHostingPolicy.findMany({
+    where: { OR: [{ lodgeId: effectiveLodgeId }, { lodgeId: null }] },
+    select: {
+      id: true,
+      scopeKey: true,
+      lodgeId: true,
+      mode: true,
+      capacityMode: true,
+      version: true,
+    },
+  });
+  return resolveAdultMemberHostingPolicy(rows, effectiveLodgeId);
 }
 
 export { aggregatePolicyExceptionViolations };

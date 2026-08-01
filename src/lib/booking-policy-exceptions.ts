@@ -86,8 +86,38 @@ export type MinimumStayPolicyExceptionViolation = FrozenExceptionFacts & {
 };
 
 /**
- * Contract reserved for #2364's evaluator. Defining it here makes the registry
- * closed and reviewable without implementing hosting policy early.
+ * One non-member guest on one NZ lodge night that no adult member covers.
+ *
+ * `guestRef` identifies the guest ROW where one exists (`BookingGuest.id`) and
+ * falls back to the pre-persist position `guest:<index>` on the create path,
+ * which evaluates a party that has no rows yet. Both forms are stable within one
+ * snapshot, which is all the comparison in `adultMemberHostingReviewChanged`
+ * needs; neither is a durable handle to be dereferenced later.
+ */
+export type UncoveredGuestNight = {
+  guestRef: string;
+  guestName: string;
+  /** NZ lodge night, YYYY-MM-DD. */
+  night: string;
+};
+
+/** The adult members whose participant rows cover one night, if any. */
+export type QualifyingHostsForNight = {
+  night: string;
+  /** Sorted Member ids. Empty means the night has no qualifying host. */
+  memberIds: string[];
+};
+
+/**
+ * Contract reserved by #2363 for #2364's evaluator, now implemented by
+ * `evaluateAdultMemberHostingWithPolicy` (`policies/adult-member-hosting.ts`).
+ *
+ * `requirements` carries the EVIDENCE as well as the rule, because the whole
+ * point of this violation is that it names which guest is uncovered on which
+ * night — a bare count would leave an admin unable to see what to fix, and would
+ * leave the reconciler unable to tell "the same hazard" from "a materially
+ * different one". Every list is sorted so two evaluations of the same facts
+ * produce byte-identical snapshots.
  */
 export type AdultMemberHostingPolicyExceptionViolation = FrozenExceptionFacts & {
   reasonCode: "ADULT_MEMBER_HOSTING_REQUIRED";
@@ -95,6 +125,10 @@ export type AdultMemberHostingPolicyExceptionViolation = FrozenExceptionFacts & 
     kind: "ADULT_MEMBER_HOSTING";
     requiredAdultMemberParticipantsPerGuestNight: 1;
     uncoveredNonMemberGuestNights: number;
+    /** Sorted by night then guestRef. */
+    uncovered: UncoveredGuestNight[];
+    /** One entry per affected night, in night order. */
+    qualifyingHostsByNight: QualifyingHostsForNight[];
   };
 };
 
