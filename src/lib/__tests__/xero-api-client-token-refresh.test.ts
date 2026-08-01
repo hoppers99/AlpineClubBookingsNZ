@@ -49,6 +49,8 @@ vi.mock("@/lib/xero-error-alert", () => ({
 import {
   getAuthenticatedXeroClient,
   resetXeroRateLimitStateForTests,
+  withXeroRetry,
+  XeroDailyLimitError,
   XeroReconnectRequiredError,
 } from "@/lib/xero-api-client";
 
@@ -303,5 +305,69 @@ describe("getAuthenticatedXeroClient error taxonomy (#2105)", () => {
     expect(err).toBeInstanceOf(Error);
     expect(err).not.toBeInstanceOf(XeroReconnectRequiredError);
     expect((err as Error).message).toBe(REFRESH_FAILED_MESSAGE);
+  });
+});
+
+// #2423 review F2. The outbox's FAILED->PENDING auto-re-drive keys on
+// `XeroDailyLimitError.preHttp` to tell a never-sent refusal from an attempted
+// call. That distinction is only sound if the marker is actually set correctly
+// on BOTH construction sites, so pin the real production paths here (not a
+// hand-built error): the pre-HTTP daily gate must mark `preHttp: true`, and the
+// post-HTTP conversion of a 429 Xero itself returned must mark `preHttp: false`.
+describe("XeroDailyLimitError pre-HTTP vs post-HTTP marker (#2423 F2)", () => {
+  beforeEach(() => {
+    resetXeroRateLimitStateForTests();
+  });
+
+  afterEach(() => {
+    resetXeroRateLimitStateForTests();
+  });
+
+  it("marks a real HTTP 429/day converted by withXeroRetry as preHttp: false (attempted)", async () => {
+    const day429 = Object.assign(new Error("rate limited"), {
+      response: {
+        statusCode: 429,
+        headers: { "x-rate-limit-problem": "day", "retry-after": "3600" },
+      },
+    });
+
+    const postHttpError = await withXeroRetry(async () => {
+      throw day429;
+    }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+
+    expect(postHttpError).toBeInstanceOf(XeroDailyLimitError);
+    // The call WAS attempted, so the outbox must keep it on the FAILED path.
+    expect((postHttpError as XeroDailyLimitError).preHttp).toBe(false);
+  });
+
+  it("marks the pre-HTTP daily gate refusal as preHttp: true (never attempted)", async () => {
+    // Arm the daily gate by driving one real 429/day through withXeroRetry.
+    const day429 = Object.assign(new Error("rate limited"), {
+      response: {
+        statusCode: 429,
+        headers: { "x-rate-limit-problem": "day", "retry-after": "3600" },
+      },
+    });
+    await withXeroRetry(async () => {
+      throw day429;
+    }).catch(() => undefined);
+
+    // A subsequent call is now refused BEFORE fn() runs by the armed gate.
+    let ran = false;
+    const gateRefusal = await withXeroRetry(async () => {
+      ran = true;
+      return "unreachable";
+    }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+
+    expect(ran).toBe(false);
+    expect(gateRefusal).toBeInstanceOf(XeroDailyLimitError);
+    // Never attempted, so the outbox may safely return the row to PENDING.
+    expect((gateRefusal as XeroDailyLimitError).preHttp).toBe(true);
   });
 });

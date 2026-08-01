@@ -308,7 +308,13 @@ group-settlement invoice.
    outbox loop (it only claims PENDING). Admins either replay immediately
    (`retryXeroSyncOperation`) or queue a background REQUEUE wrapper
    (`enqueueXeroSyncOperationRetry` → `processQueuedXeroOperationRetries`,
-   cron `?task=retries`).
+   cron `?task=retries`). Because FAILED is that terminal, an operation a
+   process-global cooldown refused **before any HTTP** is no longer failed at
+   all (#2423 review): it returns to PENDING with `startedAt: null`, the same
+   un-claim the applied-credit busy collision uses, so the next cron re-drives
+   work that never reached Xero. Otherwise the first failing operation of a
+   batch armed the breaker and condemned operations 2..N of that same batch,
+   un-attempted, to wait for an admin's Requeue.
 4. **Inbound event retry** — FAILED `XeroInboundEvent` rows are re-swept after
    `XERO_INBOUND_FAILED_RETRY_BACKOFF_MS`; stale PROCESSING rows are
    operator-replayable.
@@ -893,9 +899,8 @@ it refuses before any HTTP and reports the remaining wait — it just may not
 start one. A page decoration must never be able to stop invoicing, however
 often a human presses.
 
-Note the year-end read below keeps `maxTransientRetries: 1` and the default
-breaker behaviour: it has no button in front of it, and its storm control is the
-short post-failure throttle instead.
+Since #2423 the year-end read below takes the same pair for a different reason —
+it is unattended member traffic rather than a button.
 
 `getXeroFinancialYearEndMonth` (same module, feeding membership
 financial-year resolution) is **single-flight but deliberately not
@@ -905,14 +910,57 @@ of N, at the cost only that a joiner shares the leader's outcome rather than
 making its own attempt. Negative caching is the half that is not free here —
 this is a money-adjacent value, so a connection an admin has just fixed must be
 picked up by the very next call, not up to a minute later. What it **does**
-share with the summary read (#2283) is `maxRetries: 0` and the transient posture
-the summary read had *before* #2394 — `maxTransientRetries: 1`, so two
-consecutive transient failures are needed to arm the process-global breaker. A
-read that degrades immediately and re-attempts shortly gains nothing by waiting
-out a 429 inside the call. It does **not** take the summary read's
-`armTransientBreaker: false`: that opt-out exists because a human-pressed button
-sits in front of the summary read, and this one is ordinary member-facing
-traffic bounded by the throttle below.
+share with the summary read (#2283) is `maxRetries: 0` — a read that degrades
+immediately and re-attempts shortly gains nothing by waiting out a 429 inside
+the call — and, since #2423, the full `maxTransientRetries: 0,
+armTransientBreaker: false` pair.
+
+`maxTransientRetries` moved from 1 to 0 in #2423's review because the budget of
+1 had exactly one stated job: exhausting it is what arms the breaker, so a
+budget of 1 meant "two consecutive 5xx to arm". The opt-out deletes that job,
+and what the second attempt still cost was a second live Xero call on every
+failed read — during an outage, twice per throttle window against the
+**per-tenant daily cap invoicing shares** — plus, when the 5xx carries
+`Retry-After`, a sleep of up to `maxWaitSec` **inside the member request**, with
+every concurrent caller joined to it by the single flight. Zeroing the budget is
+only safe *alongside* the opt-out (otherwise the first 5xx would arm the
+breaker), which is why the two move together here exactly as they do on the
+summary read.
+
+The arming opt-out is the same mechanism as the summary read's, reached from the
+opposite direction. #2283 left the capability here on a **frequency** argument
+("it takes two consecutive 5xx"), not on a finding that this read should be able
+to stop the rest of the integration. That argument does not hold where the read
+actually sits: it is on **unattended member-facing traffic** (the subscription
+gate), so it fires with nobody choosing to trigger it, and failures cache
+nothing — while Xero is 5xx-ing, only the attempt throttle below bounded it, and
+at the 15 seconds it then had, one member request per window would have kept a
+120-second cooldown permanently armed. Meanwhile the read's own failure costs nothing (it degrades
+to the fallback month), where the breaker it armed turned queued invoicing into
+FAILED-unattempted rows that nothing auto-recovers — sharply enough that a single
+member `confirm-draft` request could arm the cooldown and then have its **own**
+invoice refused by it. Detection is untouched: arming remains the default for
+every call that matters — invoicing, sync, webhook replay and the lock-date read
+— so a genuine Xero outage still trips the breaker, just never from here. And as
+on the summary read, opting out of **arming** is not opting out of
+**respecting**: a cooldown armed by one of those calls still refuses this read
+before any HTTP, and it degrades exactly as any other failure does.
+
+Be precise about what the opt-out costs, because arming was doing **two** jobs.
+Detection is the one it keeps; the other was **storm control** — a read that
+armed the breaker thereby suppressed *itself*, pre-HTTP, for the cooldown. Drop
+arming and that suppression goes too, leaving the read free to make a live
+`getOrganisations` call every throttle window for the whole of an outage. So
+#2423's review restored it **locally** (see the throttle below): the read backs
+off for about as long as the breaker would have held it, without touching any
+other caller. That matters beyond quota tidiness, because the **daily-limit
+gate is a separate mechanism this change does not touch**:
+`rememberXeroDailyLimit` has no opt-out, is armed by any caller that sees
+`x-rate-limit-problem: day`, and is enforced inside `getAuthenticatedXeroClient`
+itself — so it stops **every** Xero call in the process for up to 24 hours,
+which is far worse than the 120-second breaker. Bounding this read's
+outage-time volume is what keeps a member page view from being a plausible
+route to it.
 
 Capping the retries removed something the waiting did as a side effect, so
 #2283's review restored both halves explicitly:
@@ -926,17 +974,39 @@ Capping the retries removed something the waiting did as a side effect, so
   `isSubscriptionEnforcementActive` — for the requests that hit it. Both
   sources are cleared by the same invalidation and guarded by the same
   generation counter, so neither can resurrect a previous organisation's month.
-- **Attempt throttling.** A failure records the time, and for **15 seconds**
-  non-forced callers are handed that same fallback without a live Xero call.
-  This is attempt control, not a negative value cache (the owner's option A
-  bans the latter): nothing is pinned, and `forceRefresh` ignores the window
-  entirely. It matters because this read sits behind member-facing traffic,
-  which is **serial** — single flight only collapses callers that overlap in
-  time, so without a throttle a broken connection became one live
-  `getOrganisations` per request, the fastest way to pin Xero's per-minute
-  limit and push an instance towards the daily limit and the global breaker.
-  Fifteen seconds is deliberately a quarter of the summary read's negative TTL:
-  this value is money-adjacent, so the recovery delay is kept small.
+- **Attempt throttling.** A failure records when the next live attempt is
+  allowed, and until then non-forced callers are handed that same fallback
+  without a live Xero call. This is attempt control, not a negative value cache
+  (the owner's option A bans the latter): nothing is pinned, and `forceRefresh`
+  ignores the window entirely. It matters because this read sits behind
+  member-facing traffic, which is **serial** — single flight only collapses
+  callers that overlap in time, so without a throttle a broken connection
+  became one live `getOrganisations` per request, the fastest way to pin Xero's
+  per-minute limit and push an instance towards the daily limit. (Before #2423
+  it also armed the global breaker; it no longer can, which is why the window
+  now has to carry the storm control on its own.)
+
+  Two window lengths, one rule (#2423 review):
+
+  - **15 seconds** by default. Deliberately a quarter of the summary read's
+    negative TTL: this value is money-adjacent, so a connection an admin has
+    just fixed comes back almost at once. It is what a `disconnected` failure
+    gets — an admin reconnecting is the fix, and the next request must see it —
+    and what **any** failure gets while the fallback is `null`, because a cold
+    cache serves the March default until a real month arrives, moving the season
+    boundary. The cold-cache exemption is capped at **eight consecutive
+    failures** (~2 minutes): #2283's rule is about a blip, not a licence to poll
+    Xero every 15 seconds for hours from a process that booted mid-outage, which
+    is ~4 calls a minute against the same shared daily cap. After that the long
+    window applies and recovery costs ≤2 minutes instead of ≤15 seconds — a
+    process that has already spent two minutes serving the March default.
+  - **~120 seconds** when the failure is `unavailable` or `rate_limited` (a
+    5xx/408, a refused socket, a live 429, or either process-global cooldown
+    refusing pre-HTTP) **and** a real month is already held. Nobody can fix that
+    by acting now, the answer served meanwhile is the true one, and the length
+    mirrors `XERO_TRANSIENT_FAILURE_COOLDOWN_SEC` — the suppression the breaker
+    used to provide for free. It is duplicated rather than imported so that a
+    test mocking `xero-api-client` wholesale cannot turn the window into `NaN`.
 
 All three organisation reads in that module — the year-end month, the
 connected-org summary, and `getXeroLockDates` — share **one generation

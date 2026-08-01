@@ -19,6 +19,7 @@ vi.mock("@/lib/logger", () => ({
   default: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 
+import type { MeteredXeroCallOptions } from "@/lib/xero-api-client";
 import {
   getXeroConnectedOrganisation,
   getXeroFinancialYearEndMonth,
@@ -611,6 +612,37 @@ describe("financial year-end month: single flight + retry caps (#2283)", () => {
     );
   }
 
+  /**
+   * Same live client, but `callXeroApi` hands the read's OWN option object to
+   * the REAL `withXeroRetry` (#2423) instead of just invoking the call.
+   *
+   * The process-global transient breaker is module state inside
+   * `xero-api-client`, which this file mocks wholesale, so a test that wants to
+   * assert on the breaker has to reach past the mock with `vi.importActual` —
+   * one real module instance, so the state the read touches is the state the
+   * assertions read. Every option that decides whether the breaker ARMS is the
+   * read's own; only `maxWaitSec` is overridden, so the retry backoff sleeps for
+   * nothing instead of really waiting a second.
+   *
+   * Callers must call `resetXeroRateLimitStateForTests()` on the returned module
+   * afterwards — the cooldown is process-global and would otherwise leak.
+   */
+  async function stubLiveClientThroughRealRetry() {
+    const real = await vi.importActual<typeof import("@/lib/xero-api-client")>(
+      "@/lib/xero-api-client",
+    );
+    real.resetXeroRateLimitStateForTests();
+    live.getAuthenticatedXeroClient.mockResolvedValue({
+      xero: { accountingApi: { getOrganisations: live.getOrganisations } },
+      tenantId: "tenant-1",
+    });
+    live.callXeroApi.mockImplementation(
+      async (fn: () => Promise<unknown>, options: MeteredXeroCallOptions) =>
+        real.withXeroRetry(fn, { ...options, maxWaitSec: 0 }),
+    );
+    return real;
+  }
+
   beforeEach(() => {
     vi.stubEnv("NODE_ENV", "test");
     // The year-end read has no mock-Xero branch: it is always the live path.
@@ -693,12 +725,17 @@ describe("financial year-end month: single flight + retry caps (#2283)", () => {
     );
   });
 
-  // `maxTransientRetries` defaults to `min(maxRetries, 1)`, so `maxRetries: 0`
-  // alone would ALSO zero the transient budget — and exhausting that budget
-  // arms `rememberXeroTransientOutage`, the process-global breaker that fails
-  // every Xero call (invoicing and sync included) for two minutes. The
-  // year-end read must not be one 5xx away from stopping invoicing.
-  it("keeps the transient budget so one 5xx cannot trip the global outage breaker", async () => {
+  // #2423. Two options, one posture — the same pairing the summary read takes.
+  // The read must NOT be able to ARM `rememberXeroTransientOutage`, the
+  // process-global breaker that fails every Xero call (invoicing, sync,
+  // webhook replay) for two minutes: it sits on unattended member-facing
+  // traffic, so one member request per throttle window could hold that cooldown
+  // open indefinitely. And once it cannot arm, the transient retry has no
+  // purpose left (its ONLY stated job was making arming take two 5xx) while
+  // still costing a second live call per failed read and, on a 5xx carrying
+  // `Retry-After`, a sleep inside the member request. Detection is unaffected:
+  // arming stays on by default for every call that matters.
+  it("takes exactly one attempt and never arms the global outage breaker", async () => {
     stubLiveClient();
     live.getOrganisations.mockResolvedValue({
       body: { organisations: [{ financialYearEndMonth: 6 }] },
@@ -708,8 +745,68 @@ describe("financial year-end month: single flight + retry caps (#2283)", () => {
 
     expect(live.callXeroApi).toHaveBeenCalledWith(
       expect.any(Function),
-      expect.objectContaining({ maxTransientRetries: 1 }),
+      expect.objectContaining({
+        maxTransientRetries: 0,
+        armTransientBreaker: false,
+      }),
     );
+  });
+
+  // The assertion above pins the OPTIONS; these two pin the CONSEQUENCE, by
+  // running the year-end read's own option object through the REAL retry loop
+  // (this file mocks `callXeroApi`, so the breaker it owns is reached past that
+  // mock). Without them, deleting `armTransientBreaker: false` would fail one
+  // literal-value assertion and nothing that describes what actually happens.
+  it("does not arm the breaker when the year-end read hits a 5xx", async () => {
+    const real = await stubLiveClientThroughRealRetry();
+    try {
+      // Xero is 5xx-ing. With no transient budget left, this is exactly the
+      // moment arming would otherwise happen — on the FIRST failure.
+      live.getOrganisations.mockRejectedValue({
+        response: { statusCode: 503 },
+        message: "Xero unavailable",
+      });
+
+      expect(await getXeroFinancialYearEndMonth()).toBeNull();
+      // One live call, not two: no transient retry, and no sleep inside the
+      // member request waiting to make it.
+      expect(live.getOrganisations).toHaveBeenCalledTimes(1);
+
+      // Invoicing's next Xero call is untouched — no cooldown was started, so
+      // it is attempted and succeeds rather than being refused up front.
+      const invoicePush = vi.fn(async () => "posted");
+      await expect(real.withXeroRetry(invoicePush)).resolves.toBe("posted");
+      expect(invoicePush).toHaveBeenCalledTimes(1);
+    } finally {
+      real.resetXeroRateLimitStateForTests();
+    }
+  });
+
+  // Opting out of ARMING is not opting out of RESPECTING: a cooldown started by
+  // a call that matters must still stop this one, and the read must degrade the
+  // way any other failure does rather than reaching Xero.
+  it("still refuses while a breaker armed by another caller is active", async () => {
+    const real = await stubLiveClientThroughRealRetry();
+    try {
+      // Invoicing (default posture) hits repeated 5xx and arms the breaker.
+      const outage = { response: { statusCode: 503 }, message: "Xero down" };
+      await expect(
+        real.withXeroRetry(() => Promise.reject(outage), {
+          maxRetries: 2,
+          maxWaitSec: 0,
+        }),
+      ).rejects.toBe(outage);
+
+      live.getOrganisations.mockResolvedValue({
+        body: { organisations: [{ financialYearEndMonth: 6 }] },
+      });
+
+      // Xero would answer, but the cooldown refuses before any HTTP.
+      expect(await getXeroFinancialYearEndMonth()).toBeNull();
+      expect(live.getOrganisations).not.toHaveBeenCalled();
+    } finally {
+      real.resetXeroRateLimitStateForTests();
+    }
   });
 
   it("does NOT negative-cache the VALUE: the first call past the throttle tries again", async () => {
@@ -772,6 +869,145 @@ describe("financial year-end month: single flight + retry caps (#2283)", () => {
     vi.setSystemTime(new Date(Date.now() + 16_000));
     expect(await getXeroFinancialYearEndMonth()).toBeNull();
     expect(live.getAuthenticatedXeroClient).toHaveBeenCalledTimes(2);
+  });
+
+  // #2423 review F1. Arming the process-global breaker was ALSO what suppressed
+  // this read during an outage: it refused itself, pre-HTTP, for the cooldown.
+  // Opting out of arming (rightly) removed that, leaving 15 seconds as the only
+  // bound on a read that goes live every window for the whole of an outage. The
+  // storm control comes back LOCALLY — same order of magnitude as the breaker's
+  // own cooldown, and nobody else's calls are touched.
+  it("backs off for about two minutes when Xero is unreachable and it already holds a real month", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-29T00:00:00.000Z"));
+    // Warm the fallback: the summary cache holds the SAME Xero field.
+    stubLiveClient();
+    live.getOrganisations.mockResolvedValue({
+      body: { organisations: [{ name: "Live Org", financialYearEndMonth: 9 }] },
+    });
+    await getXeroConnectedOrganisation();
+
+    // Xero is 5xx-ing. The read degrades to the month it already holds.
+    live.getAuthenticatedXeroClient.mockRejectedValue({
+      response: { statusCode: 503 },
+      message: "Xero unavailable",
+    });
+    expect(await getXeroFinancialYearEndMonth()).toBe(9);
+    const callsAfterFailure = live.getAuthenticatedXeroClient.mock.calls.length;
+
+    // Past the SHORT window and still suppressed: re-asking a service that is
+    // down only spends the daily quota invoicing needs, and the answer served
+    // meanwhile is the real month, not a guess.
+    vi.setSystemTime(new Date(Date.now() + 16_000));
+    expect(await getXeroFinancialYearEndMonth()).toBe(9);
+    expect(live.getAuthenticatedXeroClient).toHaveBeenCalledTimes(
+      callsAfterFailure,
+    );
+
+    // Past the outage window, one call goes live again — nothing is pinned.
+    vi.setSystemTime(new Date(Date.now() + 106_000));
+    expect(await getXeroFinancialYearEndMonth()).toBe(9);
+    expect(live.getAuthenticatedXeroClient).toHaveBeenCalledTimes(
+      callsAfterFailure + 1,
+    );
+  });
+
+  // The other half of the same decision (#2283's cold-cache concern). With no
+  // month held, the value served is null — which `getFinancialYearResolution`
+  // turns into the March default, moving the membership season boundary. A cold
+  // cache must therefore keep re-attempting at the SHORT window, so a real month
+  // arrives as soon as Xero can give one.
+  it("keeps the short window during an outage while the cache is COLD", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-29T00:00:00.000Z"));
+    live.getAuthenticatedXeroClient.mockRejectedValue({
+      response: { statusCode: 503 },
+      message: "Xero unavailable",
+    });
+
+    expect(await getXeroFinancialYearEndMonth()).toBeNull();
+    expect(live.getAuthenticatedXeroClient).toHaveBeenCalledTimes(1);
+
+    // Xero comes back 16 seconds later: the read must be free to notice.
+    vi.setSystemTime(new Date(Date.now() + 16_000));
+    stubLiveClient();
+    live.getOrganisations.mockResolvedValue({
+      body: { organisations: [{ financialYearEndMonth: 6 }] },
+    });
+    expect(await getXeroFinancialYearEndMonth()).toBe(6);
+    expect(live.getAuthenticatedXeroClient).toHaveBeenCalledTimes(2);
+  });
+
+  // ...but "keep re-attempting" is about a BLIP, not a licence to poll Xero
+  // every 15 seconds for hours. Unbounded, a process that booted during an
+  // outage spends ~4 live calls a minute against the shared per-tenant DAILY
+  // cap — and the daily gate is the 24-hour, no-opt-out suppression this whole
+  // review is keeping out of reach of member traffic.
+  it("stops the cold-cache fast retries once the failures stop looking like a blip", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-29T00:00:00.000Z"));
+    live.getAuthenticatedXeroClient.mockRejectedValue({
+      response: { statusCode: 503 },
+      message: "Xero unavailable",
+    });
+
+    // The first eight attempts stay fast — about two minutes of them.
+    for (let i = 0; i < 8; i += 1) {
+      expect(await getXeroFinancialYearEndMonth()).toBeNull();
+      vi.setSystemTime(new Date(Date.now() + 16_000));
+    }
+    expect(live.getAuthenticatedXeroClient).toHaveBeenCalledTimes(8);
+
+    // The ninth concedes this is an outage and takes the long window.
+    expect(await getXeroFinancialYearEndMonth()).toBeNull();
+    expect(live.getAuthenticatedXeroClient).toHaveBeenCalledTimes(9);
+
+    vi.setSystemTime(new Date(Date.now() + 16_000));
+    expect(await getXeroFinancialYearEndMonth()).toBeNull();
+    expect(live.getAuthenticatedXeroClient).toHaveBeenCalledTimes(9);
+
+    // Recovery is delayed by the long window at worst, never blocked.
+    vi.setSystemTime(new Date(Date.now() + 106_000));
+    stubLiveClient();
+    live.getOrganisations.mockResolvedValue({
+      body: { organisations: [{ financialYearEndMonth: 6 }] },
+    });
+    expect(await getXeroFinancialYearEndMonth()).toBe(6);
+    expect(live.getAuthenticatedXeroClient).toHaveBeenCalledTimes(10);
+  });
+
+  // And the longer window is only for failures nobody can fix by acting now. A
+  // disconnected Xero is fixed by an admin reconnecting; the reconnect that
+  // happens in THIS process clears the window outright (see the test below), so
+  // what this pins is the out-of-band case — another process's reconnect, or a
+  // token that refreshed itself — where only the window's length decides how
+  // long a fixed connection keeps being ignored.
+  it("keeps the short window for a disconnected failure, even holding a real month", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-29T00:00:00.000Z"));
+    stubLiveClient();
+    live.getOrganisations.mockResolvedValue({
+      body: { organisations: [{ name: "Live Org", financialYearEndMonth: 9 }] },
+    });
+    await getXeroConnectedOrganisation();
+
+    const reconnectRequired = new Error("Please reconnect Xero.");
+    reconnectRequired.name = "XeroReconnectRequiredError";
+    live.getAuthenticatedXeroClient.mockRejectedValue(reconnectRequired);
+    expect(await getXeroFinancialYearEndMonth()).toBe(9);
+    const callsAfterFailure = live.getAuthenticatedXeroClient.mock.calls.length;
+
+    // The authorisation is restored out of band; 16 seconds later this read
+    // picks it up rather than serving the stale month for two minutes.
+    vi.setSystemTime(new Date(Date.now() + 16_000));
+    stubLiveClient();
+    live.getOrganisations.mockResolvedValue({
+      body: { organisations: [{ financialYearEndMonth: 6 }] },
+    });
+    expect(await getXeroFinancialYearEndMonth()).toBe(6);
+    expect(live.getAuthenticatedXeroClient).toHaveBeenCalledTimes(
+      callsAfterFailure + 1,
+    );
   });
 
   it("serves the same fallback month inside the throttle window as a live failure would", async () => {

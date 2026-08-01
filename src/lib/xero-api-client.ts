@@ -60,25 +60,49 @@ let xeroTransientOutageUntilMs = 0;
 
 export class XeroDailyLimitError extends Error {
   retryAfterSec: number;
-  constructor(retryAfterSec: number) {
+  /**
+   * `true` only when this error was raised by the pre-HTTP daily gate
+   * (`throwIfXeroDailyLimitActive`, also re-checked inside
+   * `getAuthenticatedXeroClient`) — i.e. the operation was refused BEFORE any
+   * request reached Xero and nothing was sent. `false` when `withXeroRetry`
+   * minted it from a real HTTP 429 that Xero itself returned carrying
+   * `x-rate-limit-problem: day` — an ATTEMPTED call whose provider-side effect
+   * is unknown. The outbox keys its FAILED→PENDING auto-re-drive on this marker
+   * (#2423 review F2), so it only re-drives operations that provably never
+   * reached Xero; default `false` keeps any new construction site fail-safe
+   * (attempted → replayable FAILED path) until it opts in.
+   */
+  readonly preHttp: boolean;
+  constructor(retryAfterSec: number, preHttp = false) {
     super(
       `Xero daily API limit reached. Retry after ${retryAfterSec} seconds (~${Math.round(retryAfterSec / 3600)} hours). Please try again tomorrow.`
     );
     this.name = "XeroDailyLimitError";
     this.retryAfterSec = retryAfterSec;
+    this.preHttp = preHttp;
   }
 }
 
 // test seam
 export class XeroTransientOutageError extends Error {
   retryAfterSec: number;
+  /**
+   * See `XeroDailyLimitError.preHttp`. This class has only the pre-HTTP
+   * construction site today (`throwIfXeroTransientOutageActive`) — the
+   * post-HTTP transient path rethrows the raw Xero error, never this class — so
+   * it is always `true` in practice, but the marker is carried explicitly so
+   * the outbox's re-drive predicate is symmetric and stays safe if a future
+   * post-HTTP construction site is ever added (it would default to `false`).
+   */
+  readonly preHttp: boolean;
 
-  constructor(retryAfterSec: number) {
+  constructor(retryAfterSec: number, preHttp = false) {
     super(
       `Xero is temporarily unavailable. Suppressing further Xero calls for ${retryAfterSec} seconds to protect API quota.`
     );
     this.name = "XeroTransientOutageError";
     this.retryAfterSec = retryAfterSec;
+    this.preHttp = preHttp;
   }
 }
 
@@ -314,7 +338,9 @@ function getRemainingXeroDailyLimitSeconds(): number {
 function throwIfXeroDailyLimitActive(): void {
   const remainingSec = getRemainingXeroDailyLimitSeconds();
   if (remainingSec > 0) {
-    throw new XeroDailyLimitError(remainingSec);
+    // Pre-HTTP refusal: no request has been sent. Mark it so the outbox can
+    // safely return the row to PENDING rather than condemning it (#2423 F2).
+    throw new XeroDailyLimitError(remainingSec, true);
   }
 }
 
@@ -330,7 +356,9 @@ function getRemainingXeroTransientOutageSeconds(): number {
 function throwIfXeroTransientOutageActive(): void {
   const remainingSec = getRemainingXeroTransientOutageSeconds();
   if (remainingSec > 0) {
-    throw new XeroTransientOutageError(remainingSec);
+    // Pre-HTTP refusal: no request has been sent. Mark it so the outbox can
+    // safely return the row to PENDING rather than condemning it (#2423 F2).
+    throw new XeroTransientOutageError(remainingSec, true);
   }
 }
 
@@ -600,11 +628,15 @@ export async function withXeroRetry<T>(
           rateLimitCategory,
         });
 
-        // Daily limit — abort immediately, no point retrying for hours
+        // Daily limit — abort immediately, no point retrying for hours.
+        // This is a POST-HTTP conversion of a 429 Xero itself returned: the
+        // call WAS attempted, so `preHttp` stays false (the default) and the
+        // outbox keeps it on the replayable FAILED path rather than treating it
+        // as never-sent (#2423 review F2).
         if (rateLimitProblem === "day") {
           const retryAfterSec = parsedRetryAfterSec;
           rememberXeroDailyLimit(retryAfterSec);
-          throw new XeroDailyLimitError(retryAfterSec);
+          throw new XeroDailyLimitError(retryAfterSec, false);
         }
 
         // Minute/app limit — retry if we have attempts left
