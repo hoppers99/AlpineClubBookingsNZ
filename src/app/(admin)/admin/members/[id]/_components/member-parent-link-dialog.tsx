@@ -34,7 +34,8 @@ interface MemberParentLinkDialogProps {
   searchResults: LinkParentSearchResult[]
   /**
    * More people matched than the page shows (#2425). Rendered as a hint under
-   * the list; never as a count, and never on a list that holds everyone.
+   * the list, and announced in a polite live region (#2460); never as a count,
+   * and never on a list that holds everyone.
    */
   resultsTruncated?: boolean
   selected: LinkParentSearchResult | null
@@ -81,6 +82,21 @@ export function MemberParentLinkDialog({
   // 422 the write returns, so the save is refused here with the reason instead.
   const routing = useDependentEmailSource(selected ? notificationParentId : null)
   const routingNoticeId = useId()
+  /**
+   * The truncation hint's ONE gate (#2460).
+   *
+   * The sentence the admin reads and the sentence a screen reader hears are
+   * driven from this single expression, so the two can never come to disagree
+   * about whether the page was cut short. It repeats the conditions of the
+   * results branch below on purpose: the announcement lives outside that branch
+   * (see its own comment) and would otherwise be free to fire over a list that
+   * is not on screen at all.
+   */
+  const showTruncationHint =
+    !selected &&
+    search.trim().length >= 2 &&
+    searchResults.length > 0 &&
+    resultsTruncated
   const blockedByNoEmailSource =
     routing.status === "ready" && routing.source === null
   const notificationParentName = (() => {
@@ -189,7 +205,7 @@ export function MemberParentLinkDialog({
                   listed first, so the person being sought is normally on this
                   page — but a common surname can still overflow it, and before
                   this the list simply stopped with nothing to say it had. */}
-              {resultsTruncated && (
+              {showTruncationHint && (
                 <p className="mt-1.5 text-xs text-muted-foreground">
                   {MEMBER_SEARCH_TRUNCATED_HINT}
                 </p>
@@ -200,6 +216,49 @@ export function MemberParentLinkDialog({
           ) : (
             <p className="text-sm text-muted-foreground">Start typing at least 2 characters to search.</p>
           )}
+
+          {/*
+            The truncation sentence is ANNOUNCED as well as drawn (#2460).
+
+            It used to be a bare paragraph under the list, so an admin who had
+            just typed was never told the page had been cut short — under a
+            screen reader the list simply stopped, which is exactly the state
+            the sentence exists to explain. The member-guest finder carried the
+            identical defect; both are fixed together, because this dialog's
+            copy deliberately mirrors that one character for character
+            (`MEMBER_SEARCH_TRUNCATED_HINT`) and a one-sided fix would break
+            that claim.
+
+            Two things about the shape are load-bearing:
+
+            - THE WRAPPER IS MOUNTED FOR THE WHOLE LIFE OF THE OPEN DIALOG AND
+              ONLY ITS CONTENT IS GATED. That is the house live-region rule
+              (`AGENTS.md`: the banner "keeps its `role="status"` wrapper
+              permanently mounted and gates only the content, because a polite
+              live region injected already-populated is silently dropped by some
+              screen-reader/browser pairings" — same for `PolicyFeedback` and
+              `DependentNotice`, and the worked example is the #2244
+              export-truncation notice in `promo-redemptions-panel.tsx`). The
+              VISIBLE hint cannot carry the role itself: it lives inside the
+              results branch of the ternary above, which mounts in a single
+              commit already holding the sentence the moment a truncated search
+              lands — precisely the already-populated case that gets dropped.
+              Keep this element outside that ternary. The dialog does unmount
+              when it closes, so the guarantee is "registered empty before the
+              first search answers", which is the case this is about.
+            - THE ANNOUNCED WORDS ARE THE VISIBLE WORDS, VERBATIM. No count is
+              added for the screen reader. The sentence is pinned equal to the
+              member-guest finder's, where a count would describe members the
+              booker is not being shown; announcing a different sentence here
+              would fork that copy into a third string with nothing pinning it.
+          */}
+          <div
+            role="status"
+            className="sr-only"
+            data-testid="parent-link-truncation-status"
+          >
+            {showTruncationHint ? MEMBER_SEARCH_TRUNCATED_HINT : null}
+          </div>
 
           {selected && (
             <div className="space-y-4">

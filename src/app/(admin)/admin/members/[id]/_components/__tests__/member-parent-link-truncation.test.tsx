@@ -76,15 +76,8 @@ function buildMember(): MemberDetail {
   } as unknown as MemberDetail;
 }
 
-function renderDialog(overrides: Record<string, unknown> = {}) {
-  // The dialog resolves the notification mailbox over the network when a
-  // candidate is selected; nothing here selects one, so an inert fetch is
-  // enough.
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async () => ({ ok: true, json: async () => ({ source: null }) })) as never,
-  );
-  render(
+function dialogElement(overrides: Record<string, unknown> = {}) {
+  return (
     <MemberParentLinkDialog
       open
       onOpenChange={vi.fn()}
@@ -106,8 +99,19 @@ function renderDialog(overrides: Record<string, unknown> = {}) {
       onToggleFamilyGroup={vi.fn()}
       onSubmit={vi.fn()}
       {...overrides}
-    />,
+    />
   );
+}
+
+function renderDialog(overrides: Record<string, unknown> = {}) {
+  // The dialog resolves the notification mailbox over the network when a
+  // candidate is selected; nothing here selects one, so an inert fetch is
+  // enough.
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => ({ ok: true, json: async () => ({ source: null }) })) as never,
+  );
+  return render(dialogElement(overrides));
 }
 
 afterEach(() => {
@@ -125,7 +129,15 @@ describe("#2425 — the parent picker's truncation hint", () => {
 
   it("shows the hint under a page that was cut short", () => {
     renderDialog({ resultsTruncated: true });
-    expect(screen.getByText(HINT)).toBeInTheDocument();
+    // Two nodes carry the sentence since #2460 — the visible hint and the
+    // polite live region that announces it. The visible one is the paragraph
+    // that is not the region.
+    const drawn = screen
+      .getAllByText(HINT)
+      .filter((node) => node !== screen.getByTestId("parent-link-truncation-status"));
+    expect(drawn).toHaveLength(1);
+    expect(drawn[0]!.tagName).toBe("P");
+    expect(drawn[0]!.className).toContain("text-muted-foreground");
   });
 
   it("stays silent when the list holds everyone who matched", () => {
@@ -225,5 +237,83 @@ describe("#2425 — where the truncated flag comes from", () => {
     });
     expect(result.current.parentLinkSearchResults).toHaveLength(7);
     expect(result.current.parentLinkResultsTruncated).toBe(false);
+  });
+});
+
+/*
+  #2460 — the truncation hint is ANNOUNCED, not only drawn.
+
+  #2425 shipped this sentence as a bare paragraph under the list, copied
+  character for character from the #2308 member-guest finder — which had the
+  same defect. An admin using a screen reader typed, the list quietly stopped at
+  eight, and nothing said so. Both surfaces are fixed together, because the
+  shared copy's whole promise is "same words, same shape".
+
+  The shape is the house live-region rule (`AGENTS.md`, `PolicyFeedback`,
+  `DependentNotice`, and the #2244 export-truncation notice): the `role="status"`
+  wrapper is mounted for the whole life of the open dialog and only its CONTENT
+  is gated, because a polite region injected already-populated is silently
+  dropped by some screen-reader/browser pairings. Both halves are pinned below —
+  it must exist and be EMPTY with nothing to say, and be the SAME node once
+  there is, which is what stops anyone moving the role onto the visible
+  paragraph inside the results branch.
+
+  Mutation probes run against this block, each confirmed to turn it red: drop
+  the `role="status"` attribute; move the wrapper inside the results branch of
+  the ternary; render the wrapper only when truncated; announce a different
+  sentence from the drawn one; drop `resultsTruncated`, `searchResults.length`
+  or `!selected` from the `showTruncationHint` gate.
+*/
+describe("#2460 — the parent picker announces the truncation hint", () => {
+  function region() {
+    return screen.getByTestId("parent-link-truncation-status");
+  }
+
+  it("registers the polite region before there is anything to announce", () => {
+    // The state the dialog opens in: nothing typed, no results, nothing to say.
+    renderDialog({ search: "", searchResults: [], resultsTruncated: false });
+    expect(region()).toHaveAttribute("role", "status");
+    expect(region()).toBeEmptyDOMElement();
+  });
+
+  it("keeps the region mounted and empty when the list holds everyone", () => {
+    renderDialog({ resultsTruncated: false });
+    expect(region()).toBeEmptyDOMElement();
+  });
+
+  it("announces the sentence, verbatim, when the page was cut short", () => {
+    renderDialog({ resultsTruncated: true });
+    // Verbatim, and identical to the sentence on screen: no count is added for
+    // the screen reader, so the pinned copy stays one string.
+    expect(region().textContent).toBe(MEMBER_SEARCH_TRUNCATED_HINT);
+    expect(region().textContent).toBe(HINT);
+  });
+
+  it("says nothing when nobody matched at all", () => {
+    renderDialog({ searchResults: [], resultsTruncated: true });
+    expect(region()).toBeEmptyDOMElement();
+  });
+
+  it("says nothing once a parent is chosen, since the list is gone", () => {
+    renderDialog({ selected: buildCandidate(1), resultsTruncated: true });
+    expect(region()).toBeEmptyDOMElement();
+  });
+
+  it("swaps the content of the region that was already there, never mounts a new one", () => {
+    const { rerender } = renderDialog({
+      search: "k",
+      searchResults: [],
+      resultsTruncated: false,
+    });
+    const before = region();
+    expect(before).toBeEmptyDOMElement();
+
+    rerender(dialogElement({ resultsTruncated: true }));
+
+    // Same DOM node, now populated. A fresh node here would mean the region was
+    // injected already carrying the sentence, which is the case screen readers
+    // drop.
+    expect(region()).toBe(before);
+    expect(region().textContent).toBe(HINT);
   });
 });

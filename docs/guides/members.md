@@ -174,7 +174,10 @@ than with a screenshot:
   with the adults. When more people matched than the list can show,
   it says **"Keep typing to narrow this down."** underneath — the same sentence
   the booking screens use when a member search is cut short. If you see it, add
-  another letter or two, or type the person's email address or member ID.
+  another letter or two, or type the person's email address or member ID. That
+  sentence is also read out by a screen reader as soon as it appears (#2460), on
+  both screens, so an administrator who is not looking at the list is still told
+  it stopped short rather than being left to work it out.
   **A parent link is not a licence to see that parent's contact details** (#2424).
   You see them here, as an administrator, whatever the link. Members do not:
   their own family page lists parents by name and has never printed an address

@@ -405,6 +405,16 @@ export function MemberGuestFindPanel({
         : null
     : null;
 
+  /**
+   * The truncation hint's ONE gate (#2460).
+   *
+   * The sentence the booker reads and the sentence a screen reader hears are
+   * driven from this single expression, so the two can never come to disagree
+   * about whether the list was cut short — which is the whole failure the
+   * announcement exists to fix.
+   */
+  const showTruncationHint = !selected && candidates.length > 1 && truncated;
+
   // Everything the panel says out loud. A result count that changes silently is
   // unusable under a screen reader, and so is a zero-result answer — which used
   // to announce the empty string (F4).
@@ -586,7 +596,7 @@ export function MemberGuestFindPanel({
               );
             })}
           </ul>
-          {truncated && (
+          {showTruncationHint && (
             <p className="mt-1.5 text-xs text-muted-foreground">
               {MEMBER_GUEST_FIND_COPY.truncated}
             </p>
@@ -606,6 +616,44 @@ export function MemberGuestFindPanel({
           )}
         </div>
       )}
+
+      {/*
+        The truncation sentence is ANNOUNCED as well as drawn (#2460).
+
+        It used to be a bare paragraph under the list, so a booker who had just
+        typed was never told the results had been cut short — under a screen
+        reader the list simply stopped, which is exactly the state the sentence
+        exists to explain.
+
+        Two things about the shape are load-bearing:
+
+        - THE WRAPPER IS MOUNTED FROM THE FIRST PAINT AND ONLY ITS CONTENT IS
+          GATED. That is the house live-region rule (`AGENTS.md`: the banner
+          "keeps its `role="status"` wrapper permanently mounted and gates only
+          the content, because a polite live region injected already-populated
+          is silently dropped by some screen-reader/browser pairings" — same for
+          `PolicyFeedback`, and the worked example is the #2244 export-truncation
+          notice in `promo-redemptions-panel.tsx`). The VISIBLE hint cannot carry
+          the role itself: it lives inside the results block, which mounts in a
+          single commit already holding the sentence the moment a truncated
+          search lands — precisely the already-populated case that gets dropped.
+          Keep this element a direct child of the panel, outside every branch.
+        - THE ANNOUNCED WORDS ARE THE VISIBLE WORDS, VERBATIM. No count is added
+          for the screen reader: this sentence is load-bearing privacy copy that
+          must never grow one (see `MEMBER_GUEST_FIND_COPY`), and how many
+          members ARE being shown is already announced by the status line above.
+
+        The cost is that a booker browsing the panel meets the sentence twice —
+        once drawn, once here. That is the same trade the status line above
+        already makes, and it is the price of the mount-order rule.
+      */}
+      <div
+        role="status"
+        className="sr-only"
+        data-testid="member-guest-find-truncation-status"
+      >
+        {showTruncationHint ? MEMBER_GUEST_FIND_COPY.truncated : null}
+      </div>
 
       {addError && (
         <Alert variant="error">
