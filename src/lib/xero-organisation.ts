@@ -243,11 +243,12 @@ async function readXeroFinancialYearEndMonth(): Promise<number | null> {
         // hold it. The frequency argument does not survive contact with where
         // this read actually sits: unattended member-facing traffic (the
         // subscription gate), so it fires with nobody choosing to trigger it.
-        // Failures cache nothing, so while Xero is 5xx-ing only the 15-second
-        // throttle above bounds it — one member request every 15 seconds keeps
-        // a 120-second cooldown permanently armed, and queued invoicing turns
-        // into FAILED-unattempted rows that nothing auto-recovers. One member
-        // page view must not be able to stop the club's invoicing.
+        // Failures cache nothing, so while Xero is 5xx-ing only the attempt
+        // throttle above bounds it — at the flat 15 seconds it had then, one
+        // member request per window kept a 120-second cooldown permanently
+        // armed, and queued invoicing turned into FAILED-unattempted rows that
+        // nothing auto-recovers. One member page view must not be able to stop
+        // the club's invoicing.
         //
         // Nothing is lost in DETECTION: arming stays on by default for every
         // call that matters — invoicing, sync, webhook replay, the lock-date

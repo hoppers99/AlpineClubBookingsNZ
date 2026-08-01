@@ -729,7 +729,7 @@ describe("financial year-end month: single flight + retry caps (#2283)", () => {
   // The read must NOT be able to ARM `rememberXeroTransientOutage`, the
   // process-global breaker that fails every Xero call (invoicing, sync,
   // webhook replay) for two minutes: it sits on unattended member-facing
-  // traffic, so one member request every 15 seconds could hold that cooldown
+  // traffic, so one member request per throttle window could hold that cooldown
   // open indefinitely. And once it cannot arm, the transient retry has no
   // purpose left (its ONLY stated job was making arming take two 5xx) while
   // still costing a second live call per failed read and, on a 5xx carrying
