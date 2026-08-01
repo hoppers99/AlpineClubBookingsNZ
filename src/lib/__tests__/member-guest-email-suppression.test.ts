@@ -250,6 +250,8 @@ beforeEach(() => {
       email:
         args.where.id === "owner_1"
           ? "dave@example.nz"
+          : args.where.id === "admin_1"
+            ? "admin@example.nz"
           : args.where.id === "delegate_1"
             ? "delegate@example.nz"
             : "priya@example.nz",
@@ -260,7 +262,16 @@ beforeEach(() => {
       active: true,
       archivedAt: null,
       canLogin: true,
-      accessRoles: [],
+      accessRoles:
+        args.where.id === "admin_1"
+          ? [
+              {
+                role: "ADMIN_READONLY",
+                roleDefinitionId: null,
+                roleDefinition: null,
+              },
+            ]
+          : [],
     }),
   );
   mocks.getAdminEmails.mockResolvedValue([]);
@@ -458,4 +469,28 @@ describe("a muted member is still asked (#2307, D-16)", () => {
       });
     },
   );
+
+  it("includes the canonical detail link for a withdrawal recipient with independent bookings-view authority", async () => {
+    await sendMemberGuestRequestWithdrawnEmail({
+      bookingId: "bkg_1",
+      recipient: { kind: "member", memberId: "admin_1" },
+      email: "admin@example.nz",
+      firstName: "Alex",
+      bookerName: "Dave Ngata",
+      context: "TAKEN_OFF",
+      audience: {
+        kind: "DELEGATE",
+        guest: { firstName: "Priya", lastName: "Kaur" },
+      },
+      checkIn: CHECK_IN,
+      checkOut: CHECK_OUT,
+    });
+
+    const html = mocks.sendMail.mock.calls[0][0].html as string;
+    expect(html).toContain('/bookings/bkg_1');
+    expect(mocks.emailLogCreate.mock.calls[0][0].data).toMatchObject({
+      bookingRecipientMemberId: "admin_1",
+      bookingDetailLinkIncluded: true,
+    });
+  });
 });
