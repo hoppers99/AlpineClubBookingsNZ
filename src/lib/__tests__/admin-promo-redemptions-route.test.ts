@@ -452,7 +452,27 @@ describe("GET /api/admin/promo-codes/[id]/redemptions", () => {
       promoCodeId: "pc-1",
       filters: { from: "2026-07-01", to: "2026-07-31", lodgeId: "lodge-1" },
       rowCount: 3,
+      matchedRowCount: 3,
+      exportLimit: 10_000,
+      truncated: false,
     });
+    // A complete export says so in the body too, so the client never has to
+    // infer completeness from a row count it cannot compare against.
+    expect(body.export).toEqual({
+      truncated: false,
+      limit: 10_000,
+      rowCount: 3,
+      matchedRowCount: 3,
+    });
+  });
+
+  it("omits the export block on a normal paginated GET", async () => {
+    seedHappyPath();
+    const res = await GET(req(`${BASE_URL}?page=1&pageSize=1`), params("pc-1"));
+    const body = await res.json();
+    // A short page is not a truncated export: the marker exists only for
+    // `?export=1`, where the row set is what a CSV gets built from.
+    expect(body.export).toBeNull();
   });
 
   it("does not write an audit for a normal paginated (non-export) GET", async () => {
@@ -514,5 +534,147 @@ describe("GET /api/admin/promo-codes/[id]/redemptions - cap usage (#2299)", () =
     const [[args]] = mocks.prisma.promoRedemptionAllocation.groupBy.mock.calls;
     expect(args.where).not.toHaveProperty("createdAt");
     expect(args.where).not.toHaveProperty("booking");
+  });
+});
+
+// #2244: an export is capped at EXPORT_MAX_ROWS rows. A capped export used to
+// come back looking exactly like a complete one — the client built the CSV
+// unconditionally and the privacy audit recorded a bare row count that asserted
+// a completeness the file did not have.
+describe("GET /api/admin/promo-codes/[id]/redemptions - export truncation (#2244)", () => {
+  const EXPORT_MAX_ROWS = 10_000;
+
+  // One synthetic redemption row in the shape the route's mapper expects.
+  function redemptionRow(index: number) {
+    return {
+      id: `r${index}`,
+      createdAt: new Date("2026-07-01T02:00:00.000Z"),
+      member: {
+        id: `m${index}`,
+        firstName: "Alice",
+        lastName: `Alpha${index}`,
+        email: `alice${index}@example.com`,
+      },
+      booking: {
+        id: `bk-${String(index).padStart(8, "0")}`,
+        checkIn: new Date("2026-08-01T00:00:00.000Z"),
+        checkOut: new Date("2026-08-02T00:00:00.000Z"),
+        lodge: { id: "lodge-1", name: "Main Lodge" },
+      },
+      eligibleGuestCount: 1,
+      discountCents: 1000,
+      priceAdjustmentCents: 0,
+      freeNightsUsed: 0,
+      allocations: [
+        {
+          memberId: `m${index}`,
+          member: { id: `m${index}`, firstName: "Alice", lastName: `Alpha${index}` },
+          discountCents: 1000,
+          freeNightsUsed: 0,
+        },
+      ],
+    };
+  }
+
+  /**
+   * `returned` rows come back from the bounded rows findMany; `matched` is what
+   * the filtered aggregate counted. Real Postgres cannot return more than the
+   * cap, but the two numbers are independent inputs to the truncation decision,
+   * so the fixtures drive them independently.
+   */
+  function seedExportOfSize(returned: number, matched: number) {
+    mocks.prisma.promoCode.findUnique.mockResolvedValue(PROMO_CODE);
+    mocks.prisma.promoRedemption.count
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(0);
+    mocks.prisma.promoRedemption.aggregate
+      .mockResolvedValueOnce({
+        _count: { _all: matched },
+        _sum: { discountCents: matched * 1000, freeNightsUsed: 0 },
+      })
+      .mockResolvedValueOnce({
+        _count: { _all: matched },
+        _sum: { discountCents: matched * 1000, freeNightsUsed: 0 },
+      });
+    mocks.prisma.promoRedemption.groupBy
+      .mockResolvedValueOnce([{ memberId: "m1" }])
+      .mockResolvedValueOnce([{ memberId: "m1" }]);
+    mocks.prisma.promoRedemptionAllocation.groupBy.mockResolvedValue([
+      { memberId: "m1" },
+    ]);
+    const rows = Array.from({ length: returned }, (_, i) => redemptionRow(i + 1));
+    mocks.prisma.promoRedemption.findMany
+      .mockResolvedValueOnce(rows.map((r) => ({ id: r.id, memberId: r.member.id })))
+      .mockResolvedValueOnce(rows);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.auth.mockResolvedValue(bookingsUser("view"));
+    mocks.requireActiveSessionUser.mockResolvedValue(null);
+  });
+
+  it("flags an export cut off by the cap and records the shortfall in the audit", async () => {
+    // One row past the cap: the CSV can only hold EXPORT_MAX_ROWS of them.
+    seedExportOfSize(EXPORT_MAX_ROWS, EXPORT_MAX_ROWS + 1);
+
+    const res = await GET(req(`${BASE_URL}?export=1`), params("pc-1"));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    expect(body.export).toEqual({
+      truncated: true,
+      limit: EXPORT_MAX_ROWS,
+      rowCount: EXPORT_MAX_ROWS,
+      matchedRowCount: EXPORT_MAX_ROWS + 1,
+    });
+
+    const auditArg = mocks.createAuditLog.mock.calls[0][0];
+    // The audit entry must not assert a complete export: the count it carries
+    // is the file's, and the shortfall is spelled out beside it.
+    expect(auditArg.summary).toBe(
+      "Exported promo code redemptions CSV (truncated)",
+    );
+    expect(auditArg.metadata).toMatchObject({
+      rowCount: EXPORT_MAX_ROWS,
+      matchedRowCount: EXPORT_MAX_ROWS + 1,
+      exportLimit: EXPORT_MAX_ROWS,
+      truncated: true,
+    });
+  });
+
+  it("does not flag an export that matched exactly the cap", async () => {
+    // Boundary: filling the cap is not the same as being cut off by it — every
+    // matching row is in the file.
+    seedExportOfSize(EXPORT_MAX_ROWS, EXPORT_MAX_ROWS);
+
+    const res = await GET(req(`${BASE_URL}?export=1`), params("pc-1"));
+    const body = await res.json();
+
+    expect(body.export.truncated).toBe(false);
+    expect(body.export.rowCount).toBe(EXPORT_MAX_ROWS);
+    expect(mocks.createAuditLog.mock.calls[0][0].summary).toBe(
+      "Exported promo code redemptions CSV",
+    );
+    expect(mocks.createAuditLog.mock.calls[0][0].metadata).toMatchObject({
+      truncated: false,
+    });
+  });
+
+  it("does not flag a short export that never reached the cap", async () => {
+    // The aggregate and the rows findMany are separate queries in one
+    // Promise.all, so a concurrent write can leave the count above the rows
+    // returned. Below the cap that is a race, not a truncation.
+    seedExportOfSize(3, 5);
+
+    const res = await GET(req(`${BASE_URL}?export=1`), params("pc-1"));
+    const body = await res.json();
+
+    expect(body.export.truncated).toBe(false);
+    expect(mocks.createAuditLog.mock.calls[0][0].metadata).toMatchObject({
+      truncated: false,
+      rowCount: 3,
+      matchedRowCount: 5,
+    });
   });
 });

@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { ChevronDown, ChevronRight, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -106,6 +106,15 @@ interface RedemptionsResponse {
   };
   totals: { all: Totals; filtered: Totals };
   pagination: { page: number; pageSize: number; total: number };
+  // Present only on an `?export=1` response (#2244). The server caps an export
+  // at `limit` rows, so `truncated` says the rows below are only the newest
+  // `limit` of `matchedRowCount` and the CSV built from them is partial.
+  export: {
+    truncated: boolean;
+    limit: number;
+    rowCount: number;
+    matchedRowCount: number;
+  } | null;
   rows: RedemptionRow[];
 }
 
@@ -128,6 +137,15 @@ function formatStayDate(value: string): string {
     month: "short",
     year: "numeric",
   });
+}
+
+// A downloaded file outlives the on-screen notice, so a capped export (#2244)
+// says so in its own name. The suffix is the only truncation marker outside the
+// UI: the CSV body stays a plain row set, since a trailing "truncated" line
+// would corrupt every spreadsheet and parser that reads it.
+function csvFilename(code: string, truncated: boolean): string {
+  const dateStr = new Date().toISOString().slice(0, 10);
+  return `promo-${code}-redemptions-${dateStr}${truncated ? "-partial" : ""}.csv`;
 }
 
 function StatTile({
@@ -189,6 +207,13 @@ export function PromoRedemptionsPanel({
   const [error, setError] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [exporting, setExporting] = useState(false);
+  // Set when the last export came back capped (#2244): the downloaded CSV is
+  // short, so it must never be read as a complete discount reconciliation.
+  const [exportTruncation, setExportTruncation] = useState<{
+    limit: number;
+    rowCount: number;
+    matchedRowCount: number;
+  } | null>(null);
 
   const buildQuery = useCallback(
     (nextPage: number, nextPageSize: number) => {
@@ -227,11 +252,14 @@ export function PromoRedemptionsPanel({
     void fetchRedemptions();
   }, [fetchRedemptions]);
 
-  // Any filter change resets to the first page and collapses open rows.
+  // Any filter change resets to the first page and collapses open rows. The
+  // truncation notice describes the file the PREVIOUS filter produced, so it is
+  // cleared too rather than left to describe a set it no longer matches.
   function applyFilterChange(mutator: () => void) {
     mutator();
     setPage(1);
     setExpanded(new Set());
+    setExportTruncation(null);
   }
 
   function toggleExpanded(id: string) {
@@ -272,14 +300,10 @@ export function PromoRedemptionsPanel({
     .filter(Boolean)
     .join(" · ");
 
-  const csvFilename = useMemo(() => {
-    const dateStr = new Date().toISOString().slice(0, 10);
-    return `promo-${promo.code}-redemptions-${dateStr}.csv`;
-  }, [promo.code]);
-
   async function exportCSV() {
     setExporting(true);
     setError("");
+    setExportTruncation(null);
     try {
       // A single server-side export request returns the full filtered row set
       // (bounded server-side) and writes the privacy audit entry — no client
@@ -298,13 +322,27 @@ export function PromoRedemptionsPanel({
       }
       const json = (await res.json()) as RedemptionsResponse;
 
+      // The server caps an export at `export.limit` rows (#2244). The file is
+      // still downloaded — a partial export is more useful than none — but the
+      // shortfall is surfaced on screen and stamped into the filename, because
+      // the CSV body stays exactly the machine-parseable row set it claims to
+      // be and cannot carry the warning itself.
+      const truncation = json.export?.truncated ? json.export : null;
+      if (truncation) {
+        setExportTruncation({
+          limit: truncation.limit,
+          rowCount: truncation.rowCount,
+          matchedRowCount: truncation.matchedRowCount,
+        });
+      }
+
       const csvContent = buildPromoRedemptionsCsvContent(promo.code, json.rows);
 
       const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = csvFilename;
+      anchor.download = csvFilename(promo.code, truncation != null);
       anchor.click();
       URL.revokeObjectURL(url);
     } catch (err) {
@@ -356,6 +394,33 @@ export function PromoRedemptionsPanel({
           {error}
         </div>
       ) : null}
+
+      {/*
+        A capped export (#2244) is stated in the reading order, not left for the
+        operator to notice by counting rows. The `role="status"` wrapper is
+        mounted unconditionally and only its CONTENT is gated — the house rule
+        (PolicyFeedback, AdminViewOnlySectionBanner): a polite live region
+        injected already-populated is silently dropped by some
+        screen-reader/browser pairings, so the region has to be registered
+        before the message lands in it.
+      */}
+      <div role="status">
+        {exportTruncation ? (
+          <div className="rounded-md border border-warning-6 bg-warning-3 px-4 py-3 text-sm text-warning-11">
+            <p className="font-medium">
+              Incomplete export: {exportTruncation.rowCount} of{" "}
+              {exportTruncation.matchedRowCount} matching redemptions
+            </p>
+            <p className="mt-1">
+              A single export is capped at {exportTruncation.limit} rows, so the
+              downloaded file holds only the {exportTruncation.rowCount} most
+              recent. Do not reconcile discounts from it as though it were
+              complete — narrow the redeemed-date range (or the lodge) and
+              export each window separately to cover every row.
+            </p>
+          </div>
+        ) : null}
+      </div>
 
       {/*
         Every tile shows ONE population, and says which (#2299).

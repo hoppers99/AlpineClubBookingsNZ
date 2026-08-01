@@ -116,8 +116,16 @@ and stored as integer cents; dates are NZ date-only lodge nights.
    open it to see each member's share of the discount and free nights.
 6. Click **CSV** to download the full filtered list. The export is fetched in a
    single request and is recorded in the audit log as a privacy event (the
-   applied filters and the row count only — never the redemption rows
+   applied filters and the row counts only — never the redemption rows
    themselves); ordinary paginated browsing of the report is not audited.
+7. One export is capped at 10,000 rows. If the filter matches more than that,
+   the download still happens but holds only the 10,000 most recent
+   redemptions, an **Incomplete export** notice appears saying how many of how
+   many rows you got, and the file is named `…-partial.csv`. Do not reconcile
+   discounts from a partial file: narrow the redeemed-date range (or pick one
+   lodge at a time) and export each window separately. The audit entry records
+   the same shortfall, so a later reviewer can tell a partial export from a
+   complete one.
 
 ### What happens when a booking is edited and the code has run out
 
