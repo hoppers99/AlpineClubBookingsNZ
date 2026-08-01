@@ -103,13 +103,14 @@ const YEAR_END_FAILURE_THROTTLE_MS = 15 * 1000; // 15 seconds
  *
  * Two deliberate limits on it, both from #2283:
  *
- *   * Only when {@link yearEndFallbackMonth} is non-null. On a COLD cache the
+ *   * Only when {@link yearEndFallbackMonth} is non-null, for the first
+ *     {@link YEAR_END_COLD_CACHE_FAST_RETRIES} failures. On a COLD cache the
  *     served value is `null`, which `getFinancialYearResolution` turns into the
  *     March default — moving the membership season boundary (and with it the
- *     subscription-enforcement gate). A cold cache must therefore keep
- *     re-attempting at the short window until a real month arrives; backing off
- *     for two minutes is only acceptable when the answer we serve meanwhile is
- *     the real one.
+ *     subscription-enforcement gate). A cold cache therefore keeps re-attempting
+ *     at the short window until a real month arrives; backing off for two
+ *     minutes is only immediately acceptable when the answer we serve meanwhile
+ *     is the real one.
  *   * Only for failures nobody can fix by acting now. A `disconnected` failure
  *     is fixed by an admin reconnecting, and the very next request after they
  *     do must pick it up — so that keeps the 15-second window.
@@ -119,6 +120,34 @@ const YEAR_END_FAILURE_THROTTLE_MS = 15 * 1000; // 15 seconds
 const YEAR_END_OUTAGE_THROTTLE_MS = 120 * 1000; // 2 minutes
 
 /**
+ * How many consecutive cold-cache failures keep the SHORT window before an
+ * outage-class failure backs off anyway (#2423 review F1, residual).
+ *
+ * #2283's cold-cache rule is about a BLIP: "a single 429 on a fresh server
+ * process" must not leave the March default in place for longer than it takes
+ * Xero to answer. It is not a licence to poll Xero every 15 seconds for hours.
+ * Unbounded, that is ~4 live `getOrganisations` calls a minute from a process
+ * that booted during an outage — enough to walk the shared per-tenant DAILY cap
+ * down on its own, and the daily gate is precisely the 24-hour, no-opt-out
+ * suppression this review is trying to keep out of reach of member traffic.
+ *
+ * Eight attempts is about two minutes of fast retries, after which the same
+ * outage-class failure takes the long window. What that costs is recovery
+ * latency, bounded by the long window: once Xero comes back, this process picks
+ * the real month up within ~2 minutes instead of ~15 seconds — and only after
+ * two minutes of a genuine outage, during which it was serving the March
+ * default either way. A reconnect (which clears every cache here) and
+ * `forceRefresh` both reset to attempt one.
+ */
+const YEAR_END_COLD_CACHE_FAST_RETRIES = 8;
+
+/**
+ * Consecutive failed live year-end reads, reset by a success or a reconnect.
+ * Only used to bound the cold-cache fast-retry burst above.
+ */
+let yearEndConsecutiveFailures = 0;
+
+/**
  * How long this failure suppresses the next live attempt.
  *
  * `unavailable` covers a 5xx/408, a refused socket, AND the process-global
@@ -126,16 +155,24 @@ const YEAR_END_OUTAGE_THROTTLE_MS = 120 * 1000; // 2 minutes
  * and the daily-limit gate refusing pre-HTTP. Both mean "the wait is real and
  * re-asking sooner only spends quota" — exactly what the breaker used to
  * enforce for this read. Everything else (`disconnected`) keeps the short
- * window so an admin's reconnect is picked up at once.
+ * window so an admin's reconnect is picked up at once, as does a cold cache
+ * until the failures stop looking like a blip.
  */
 function yearEndFailureThrottleMs(
   failureKind: XeroOrganisationReadFailureKind,
   fallbackMonth: number | null,
+  consecutiveFailures: number,
 ): number {
-  if (fallbackMonth === null) return YEAR_END_FAILURE_THROTTLE_MS;
-  return failureKind === "unavailable" || failureKind === "rate_limited"
-    ? YEAR_END_OUTAGE_THROTTLE_MS
-    : YEAR_END_FAILURE_THROTTLE_MS;
+  if (failureKind !== "unavailable" && failureKind !== "rate_limited") {
+    return YEAR_END_FAILURE_THROTTLE_MS;
+  }
+  if (
+    fallbackMonth === null &&
+    consecutiveFailures <= YEAR_END_COLD_CACHE_FAST_RETRIES
+  ) {
+    return YEAR_END_FAILURE_THROTTLE_MS;
+  }
+  return YEAR_END_OUTAGE_THROTTLE_MS;
 }
 
 /**
@@ -272,8 +309,10 @@ async function readXeroFinancialYearEndMonth(): Promise<number | null> {
     if (generation === orgReadGeneration) {
       cached = { month, fetchedAt: Date.now() };
       // Recovery is immediate: a success clears the throttle, so the next
-      // failure starts a fresh window rather than extending an old one.
+      // failure starts a fresh window rather than extending an old one — and
+      // starts the cold-cache fast-retry budget over.
       yearEndSuppressedUntil = null;
+      yearEndConsecutiveFailures = 0;
     }
     return month;
   } catch (error) {
@@ -292,9 +331,16 @@ async function readXeroFinancialYearEndMonth(): Promise<number | null> {
     );
     if (generation === orgReadGeneration) {
       // Guarded like the cache write: a read abandoned by a reconnect must not
-      // throttle the FRESH connection's first attempt.
+      // throttle the FRESH connection's first attempt, nor spend its fast-retry
+      // budget.
+      yearEndConsecutiveFailures += 1;
       yearEndSuppressedUntil =
-        Date.now() + yearEndFailureThrottleMs(failureKind, fallbackMonth);
+        Date.now() +
+        yearEndFailureThrottleMs(
+          failureKind,
+          fallbackMonth,
+          yearEndConsecutiveFailures,
+        );
     }
     return fallbackMonth;
   }
@@ -905,8 +951,10 @@ export function resetXeroLockDatesCacheForTests(): void {
 function resetXeroOrganisationCaches(): void {
   cached = null;
   // The year-end failure throttle is scoped to the connection that failed: a
-  // reconnect must go live on the very next call, not wait the window out.
+  // reconnect must go live on the very next call, not wait the window out —
+  // and the fresh connection starts with its full fast-retry budget.
   yearEndSuppressedUntil = null;
+  yearEndConsecutiveFailures = 0;
   // Nulls positive AND negative summary entries: after a reconnect the next
   // read must go live even if the last attempt failed seconds ago.
   orgSummaryCache = null;

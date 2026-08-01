@@ -994,7 +994,12 @@ Capping the retries removed something the waiting did as a side effect, so
     gets — an admin reconnecting is the fix, and the next request must see it —
     and what **any** failure gets while the fallback is `null`, because a cold
     cache serves the March default until a real month arrives, moving the season
-    boundary.
+    boundary. The cold-cache exemption is capped at **eight consecutive
+    failures** (~2 minutes): #2283's rule is about a blip, not a licence to poll
+    Xero every 15 seconds for hours from a process that booted mid-outage, which
+    is ~4 calls a minute against the same shared daily cap. After that the long
+    window applies and recovery costs ≤2 minutes instead of ≤15 seconds — a
+    process that has already spent two minutes serving the March default.
   - **~120 seconds** when the failure is `unavailable` or `rate_limited` (a
     5xx/408, a refused socket, a live 429, or either process-global cooldown
     refusing pre-HTTP) **and** a real month is already held. Nobody can fix that

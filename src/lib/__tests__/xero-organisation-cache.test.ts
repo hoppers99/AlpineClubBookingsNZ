@@ -938,6 +938,44 @@ describe("financial year-end month: single flight + retry caps (#2283)", () => {
     expect(live.getAuthenticatedXeroClient).toHaveBeenCalledTimes(2);
   });
 
+  // ...but "keep re-attempting" is about a BLIP, not a licence to poll Xero
+  // every 15 seconds for hours. Unbounded, a process that booted during an
+  // outage spends ~4 live calls a minute against the shared per-tenant DAILY
+  // cap — and the daily gate is the 24-hour, no-opt-out suppression this whole
+  // review is keeping out of reach of member traffic.
+  it("stops the cold-cache fast retries once the failures stop looking like a blip", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-29T00:00:00.000Z"));
+    live.getAuthenticatedXeroClient.mockRejectedValue({
+      response: { statusCode: 503 },
+      message: "Xero unavailable",
+    });
+
+    // The first eight attempts stay fast — about two minutes of them.
+    for (let i = 0; i < 8; i += 1) {
+      expect(await getXeroFinancialYearEndMonth()).toBeNull();
+      vi.setSystemTime(new Date(Date.now() + 16_000));
+    }
+    expect(live.getAuthenticatedXeroClient).toHaveBeenCalledTimes(8);
+
+    // The ninth concedes this is an outage and takes the long window.
+    expect(await getXeroFinancialYearEndMonth()).toBeNull();
+    expect(live.getAuthenticatedXeroClient).toHaveBeenCalledTimes(9);
+
+    vi.setSystemTime(new Date(Date.now() + 16_000));
+    expect(await getXeroFinancialYearEndMonth()).toBeNull();
+    expect(live.getAuthenticatedXeroClient).toHaveBeenCalledTimes(9);
+
+    // Recovery is delayed by the long window at worst, never blocked.
+    vi.setSystemTime(new Date(Date.now() + 106_000));
+    stubLiveClient();
+    live.getOrganisations.mockResolvedValue({
+      body: { organisations: [{ financialYearEndMonth: 6 }] },
+    });
+    expect(await getXeroFinancialYearEndMonth()).toBe(6);
+    expect(live.getAuthenticatedXeroClient).toHaveBeenCalledTimes(10);
+  });
+
   // And the longer window is only for failures nobody can fix by acting now. A
   // disconnected Xero is fixed by an admin reconnecting; the reconnect that
   // happens in THIS process clears the window outright (see the test below), so

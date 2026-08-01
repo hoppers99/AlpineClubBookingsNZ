@@ -22,8 +22,10 @@
   *itself*, so it now backs off on its own instead: while Xero is unreachable
   and it already knows the month, it waits about two minutes between attempts
   rather than a few seconds, and it only asks Xero once per attempt instead of
-  twice. If it has no month yet it keeps checking every few seconds, so a fresh
-  server picks up the real month as soon as Xero can give it one, and an
+  twice. If it has no month yet it keeps checking every few seconds for the
+  first couple of minutes, so a fresh server picks up the real month as soon as
+  Xero can give it one after a brief wobble; if Xero stays down beyond that it
+  settles into the same two-minute rhythm rather than asking all day. An
   administrator's **Try again** always checks immediately.
 
 - **Invoices that Xero was never even asked about are now retried
