@@ -780,6 +780,14 @@ describe("consent columns have exactly one writer", () => {
       // own.
       "src/lib/booking-request.ts":
         "the held-booking guest swap reads the old consent state and clears it on substitution",
+      // A READER, and the narrowest one in the census: a single `where` clause
+      // asking which of a hold's guests carry a consent record, i.e. which
+      // members were told they were on it. That is the population owed a
+      // withdrawal notice when the hold is released, and the population to
+      // suppress when a stale hold is replaced by a fresh one over the same
+      // request. It writes nothing.
+      "src/lib/booking-request-shared.ts":
+        "the hold-release notice reads which guests carry a consent record, so it can tell exactly the members who were told",
       // --- MG4's edit surface (#2309). Neither WRITES a column.
       // The panel builds one of the two legal preview shapes for the pre-save
       // badge, exactly as the wizard's predictor does — no row exists yet.

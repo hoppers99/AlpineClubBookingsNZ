@@ -109,7 +109,7 @@ In every one of those the club can act, so contact the club office.
 
 ### If your place is taken away again
 
-If the request is called off before you answer, if the club takes you off a
+If the request is withdrawn before you answer, if the club takes you off a
 booking, or if a booking-request booking is re-arranged and your place goes to
 somebody else, you get one email saying so. Nothing is left for you to do, and
 the bed that was being held for you is released. If that looks like a mistake,
@@ -146,7 +146,7 @@ contact the club.
 | You never answered and the request disappeared | It lapsed at the answer-by date; the bed was released | If you did want to come, ask the person who made the booking to add you again |
 | There is no **Remove me from this booking** button at all | This booking is one the list above says you cannot come off yourself — most often it was priced by hand from a booking request | Contact the club office; only they can cancel or re-quote it |
 | Your dates changed and nobody asked you | Agreeing once covers the booking however it later changes | If the new dates do not suit you, take yourself off, or ask the club |
-| You got an email saying you are no longer on a booking | The request was called off, the club took you off, or a booking-request booking was re-arranged | Nothing to do. Contact the club if that looks wrong |
+| You got an email saying you are no longer on a booking | The request was withdrawn, the club took you off, or a booking-request booking was re-arranged | Nothing to do. Contact the club if that looks wrong |
 
 ## Related links
 

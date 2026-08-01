@@ -1742,16 +1742,27 @@ the edit path, admin parity and the booking-request pipeline. Its rules:
   you are off it are not courtesy messages. All six pass a real `bookingContext`,
   so a silenced booking withholds them and each withheld send lands on that
   booking's withheld-banner record where an operator can see what was held back.
-- **The officer's member picker is gated on `membership:view`, not on
+- **The officer's member picker gates its NAME mode on `membership:view`, not on
   `bookings:edit`** (owner decision D-20). It is deliberately NOT bound by the
   club's two member-facing privacy switches: an admin holding `membership:view`
   can already browse the whole roll from `/admin/members`, so gating their
   booking-side picker on a member-facing setting protects nothing. The rider is
   what keeps #1376 true — a Booking Officer whose role carries no membership
-  access gets a 404 on the NAME mode and falls back to exact-email resolve. Every
-  officer lookup is audited through the same two writers the member routes use,
-  so officers are not invisible in the trail that exists to make browsing
-  detectable.
+  access gets a 404 on the NAME mode and falls back to exact-email resolve, which
+  needs only `bookings:edit`. Every officer lookup is audited through the same two
+  writers the member routes use, including the malformed-address and
+  lookup-failed outcomes, so officers are not invisible in the trail that exists
+  to make browsing detectable. The **email mode is a `POST` with the address in
+  the body**, matching `POST /api/members/guest-candidates/resolve`: a member's
+  address must never travel in a URL, where it would reach the access log, the
+  browser history and the `Referer` of everything the page loads next.
+- **Which reader gets which picker is decided by ONE predicate**
+  (`resolveMemberGuestNameSearchAccess`), the same `viewerRole === "ADMIN"` the
+  edit panel uses to choose its routes. Deciding "may this reader search by name"
+  from a different permission than "which routes will this reader call" strands
+  the read-only bookings viewer between them: with `membership:view` they get a
+  name box that 404s on the member route, and without it they lose a search their
+  club turned on for every member.
 - **Exactly one file turns either open-search value into a decision about who is
   discoverable.** Routes declare the AUDIENCE they are serving;
   `member-guest-find-service.ts` decides what that means. A second decision site
@@ -3301,6 +3312,24 @@ the correct member identity — and therefore correct member pricing — instead
 silently re-adding the member as a mispriced non-member. The member-scoped
 `GET /api/admin/members/[id]/family` remains gated on `membership:view` for
 membership surfaces.
+MG4 (#2309) adds a **third** bookings-scoped picker, and it is the one
+exception to the sentence above — stated here rather than left for a reader to
+discover, because the exception is deliberate and owner-decided (D-20).
+`/api/admin/bookings/[id]/member-guest-candidates` finds a member to add as a
+**member guest** on the booking being edited, and it has two modes with two
+different gates. The **email mode** (`POST`, the address in the body so it never
+reaches an access log or a `Referer`) behaves exactly like the two pickers above:
+`bookings:edit` only, no membership access required. The **name mode** (`GET`,
+a name fragment) **does require `membership:view`**, and a Booking Officer
+without it gets a 404 on that mode alone — the same answer the member route
+gives when open search is off — and falls back to the exact-email box. That
+preserves #1376 in full: the officer keeps every capability, including correct
+member identity and member pricing, and loses only a type-ahead over the
+membership roll they were deliberately not given access to. A picker that
+browsed the whole roll from inside a booking would have undone #1376 through a
+door nobody thought to look at. The same decision statement governs whether the
+club's member-facing open-search setting binds an officer (it does not) — see
+the member-guest consent cluster above.
 On-behalf CREATION is aligned with modification (#1313/#1442): `/api/bookings`,
 `/api/bookings/quote`, and `/api/promo-codes/validate` authorize a
 `forMemberId` via `bookingManagementAuthorizationRole` (`bookings:edit`), so a

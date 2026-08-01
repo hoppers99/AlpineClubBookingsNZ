@@ -112,7 +112,7 @@ deliberate:
 removal, on the same edit panel — and on a row whose request nobody has answered
 yet the control reads **Cancel request** rather than Remove, because the two are
 different events to the member and send different emails. The member gets one email saying they are no
-longer on the booking (or that the request has been called off, if they had not
+longer on the booking (or that the request has been withdrawn, if they had not
 answered yet).
 
 **Do not confuse this with "Confirm pending guests".** That button is about
