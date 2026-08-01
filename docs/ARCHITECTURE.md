@@ -1755,6 +1755,17 @@ sensitive action lands under a broader prefix. New optional-module surfaces at
 brand-new prefixes must be added to `FEATURE_ROUTE_RULES` by hand — the guard
 only verifies existing feature prefixes still point at real files.
 
+A `FEATURE_ROUTE_RULES` entry for an **API** route needs a second edit to take
+effect: `config.matcher` in `src/proxy.ts` excludes the whole of `/api` bar an
+explicit list, so an `/api` path outside `/api/admin/*` (covered by the broad
+`/api/admin/:path*` entry) also needs its own literal matcher entry, or the
+proxy never runs on it and the module gate is dead code. That bit the
+member-guest consent endpoint (#2435), whose gate was written as a regex with no
+matcher entry to go with it. `src/lib/__tests__/csp-proxy.test.ts` now asserts
+the two lists in both directions — every gated prefix and every gated pattern
+(via a sample path per pattern, itself checked for completeness) must be a URL
+`config.matcher` runs on.
+
 Managing the definitions themselves is Full-Admin-only: the
 `/api/admin/access-roles` mutation handlers enforce an explicit `isFullAdmin`
 check on top of `requireAdmin()` (an editable role could otherwise widen

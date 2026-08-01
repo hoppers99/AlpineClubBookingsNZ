@@ -298,6 +298,15 @@ export default proxy;
  * those are `public/` asset shapes and running the proxy on them would mint a
  * nonce per image. `isPublicWebsitePath()` is aligned to agree, and
  * `csp-proxy.test.ts` asserts the two definitions cannot drift apart again.
+ *
+ * Because that lookahead drops the whole of `/api`, the explicit entries below
+ * are the ONLY way an API path reaches the proxy — so every `/api` prefix and
+ * every `/api` regex in `FEATURE_ROUTE_RULES` needs one here, or its module gate
+ * is dead code (#2435: the member-guest consent pattern had none, so the
+ * `memberGuests` gate never ran in front of that endpoint). Entries must be
+ * static literals; Next parses this list at build time. `csp-proxy.test.ts`
+ * asserts the two lists cannot drift apart again, for prefixes and patterns
+ * alike.
  */
 export const config = {
   matcher: [
@@ -331,6 +340,7 @@ export const config = {
     "/api/admin/work-parties/:path*",
     "/api/admin/xero/:path*",
     "/api/address-autocomplete/:path*",
+    "/api/bookings/:id/guests/:guestId/consent",
     "/api/bookings/:id/waitlist-confirm",
     "/api/admin/bookings/:id/force-confirm",
     "/api/chores/:path*",

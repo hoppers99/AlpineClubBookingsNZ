@@ -4,6 +4,25 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **The member-guests module switch now really does reach the consent endpoint
+  (#2435).** Turning a module off is meant to make its routes disappear at the
+  front door, before any of the app's own code runs. For `POST
+  /api/bookings/[id]/guests/[guestId]/consent` that never actually happened: the
+  rule naming the route was written, but the address was missing from the list of
+  URLs the proxy is asked to run on at all, so the rule sat there unable to fire.
+
+  **Nothing was left unprotected.** The endpoint checks the member-guests module
+  itself and answers the same `403 Forbidden` it gives every other refusal when
+  the module is off, before it reads a single booking or guest row — so a club
+  with the module switched off was, and always has been, refused. What was
+  missing was the second, outer layer that is supposed to sit in front of that
+  one. This restores it.
+
+  A new contract test now walks every module route rule — both the plain path
+  prefixes and the pattern-matched ones — and fails if any of them names an
+  address the proxy would never run on, so this particular gap cannot reappear
+  silently the next time a module gates a route by pattern.
+
 - **The cancellation queue stops spending Xero API calls on questions nobody can
   act on (#2402).** Opening **Admin → Members → Cancellation Requests** asked
   Xero, for every participant on the page, whether that member's contact still
