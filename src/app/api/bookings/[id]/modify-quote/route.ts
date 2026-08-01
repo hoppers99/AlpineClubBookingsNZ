@@ -1075,8 +1075,17 @@ export async function POST(
   // minimum-stay rule (the whole stay is at least as long as the already-valid
   // original), while a genuinely-short whole stay is still reported. Pre-stay
   // (future) edits are unchanged: `newCheckIn` is the requested check-in.
+  //
+  // #2363: gated on `targetDatesChanged` so this preview reports exactly what
+  // `modifyBookingBatch` will enforce on the save. The two predicates are
+  // deliberately identical — both compare the RESOLVED envelope (after any
+  // `guestStayRanges` widening) against the stored one — because an edit that
+  // moves no night cannot admit a new violation, and the apply path exempts it
+  // rather than hard-blocking an unrelated fix on a booking that already sat
+  // outside the policy. Any change to one of these two gates must change the
+  // other in the same commit, or preview and apply start disagreeing.
   let minimumStayViolations: MinimumStayViolation[] = [];
-  if (!isAdmin) {
+  if (!isAdmin && targetDatesChanged) {
     const { validateMinimumStay } = await import("@/lib/booking-policies");
     const stayResult = await validateMinimumStay(newCheckIn, newCheckOut, bookingLodgeId);
     minimumStayViolations = stayResult.violations;

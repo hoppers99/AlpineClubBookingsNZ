@@ -388,6 +388,65 @@ describe("POST /api/bookings/[id]/modify-quote in-stay minimum-stay (#2124)", ()
     );
   });
 
+  it("#2363: reports no violation for an edit that moves no night, so preview agrees with apply", async () => {
+    // `modifyBookingBatch` exempts an edit whose resolved envelope equals the
+    // stored one — a guest add, a name fix, a grid-mode `guestStayRanges`
+    // payload that changes nothing — because it cannot admit a NEW violation
+    // and hard-blocking it would leave a grandfathered booking uneditable. The
+    // preview must gate on the IDENTICAL predicate or the member sees a red
+    // banner for a save that will succeed.
+    asMember();
+    h.bookingFindUnique.mockResolvedValue(futureBooking());
+    h.validateMinimumStay.mockResolvedValue({
+      valid: false,
+      violations: [{ reasonCode: "MINIMUM_STAY", policyId: "p1" }],
+    });
+
+    const res = await POST(
+      req({
+        guestStayRanges: [
+          { guestId: "g1", stayStart: "2026-09-01", stayEnd: "2026-09-03" },
+        ],
+      }),
+      { params },
+    );
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.minimumStayValid).toBe(true);
+    expect(body.minimumStayViolations).toEqual([]);
+    expect(body.exceptionReview).toEqual({ violations: [], capacityMode: null });
+    expect(h.validateMinimumStay).not.toHaveBeenCalled();
+  });
+
+  it("#2363: reports the violation again the moment the same payload WIDENS the envelope", async () => {
+    // The mirror of the case above, and the reason the gate is the envelope
+    // rather than the request shape.
+    asMember();
+    h.bookingFindUnique.mockResolvedValue(futureBooking());
+    const violation = { reasonCode: "MINIMUM_STAY", policyId: "p1" };
+    h.validateMinimumStay.mockResolvedValue({ valid: false, violations: [violation] });
+
+    const res = await POST(
+      req({
+        checkOut: "2026-09-04",
+        guestStayRanges: [
+          { guestId: "g1", stayStart: "2026-09-01", stayEnd: "2026-09-04" },
+        ],
+      }),
+      { params },
+    );
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.minimumStayValid).toBe(false);
+    expect(h.validateMinimumStay).toHaveBeenCalledWith(
+      D("2026-09-01"),
+      D("2026-09-04"),
+      "lodge-1",
+    );
+  });
+
   it("skips the minimum-stay check entirely for an admin actor", async () => {
     // Default beforeEach actor is ADMIN.
     const res = await POST(req({ checkOut: "2026-08-20" }), { params });

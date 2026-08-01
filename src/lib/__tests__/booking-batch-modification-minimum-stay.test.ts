@@ -211,7 +211,8 @@ describe("modifyBookingBatch minimum-stay enforcement (#2363)", () => {
         actor: { id: "member-1", role: "USER" },
         input: {
           checkIn: formatDateOnly(storedCheckIn),
-          checkOut: formatDateOnly(storedCheckOut),
+          // A real move: one night longer than the stored envelope.
+          checkOut: formatDateOnly(addDaysDateOnly(getTodayDateOnly(), 34)),
         },
         ipAddress: "127.0.0.1",
       }),
@@ -291,7 +292,7 @@ describe("modifyBookingBatch minimum-stay enforcement (#2363)", () => {
     expect(h.validateMinimumStay).not.toHaveBeenCalled();
   });
 
-  it("exempts a price-preserving guest name fix, exactly as the preview reports it", async () => {
+  it("exempts a guest name fix, exactly as the preview reports it", async () => {
     // The modify-quote preview answers `minimumStayValid: true` for an
     // identity-only request because a name fix cannot change a single night.
     // Enforcing here would only block an unrelated typo fix on a booking that
@@ -334,7 +335,12 @@ describe("modifyBookingBatch minimum-stay enforcement (#2363)", () => {
     expect(h.validateMinimumStay).not.toHaveBeenCalled();
   });
 
-  it("still evaluates a member's guest-only edit (adding a guest reprices and re-checks capacity)", async () => {
+  it("exempts a guest ADD that leaves the nights alone — a grandfathered booking stays editable", async () => {
+    // The exemption is "the nights did not move", not "the request was one of
+    // two shapes". A booking that already sits outside a rule (grandfathered,
+    // or the rule was added after it was made) must still accept a guest add:
+    // the add cannot admit a NEW violation, and blocking it leaves the member
+    // with no remedy at all — they cannot shorten a rule they did not set.
     h.validateMinimumStay.mockResolvedValue({
       valid: false,
       violations: [violation],
@@ -356,12 +362,99 @@ describe("modifyBookingBatch minimum-stay enforcement (#2363)", () => {
         },
         ipAddress: "127.0.0.1",
       }),
+    ).rejects.toThrow(GUEST_PLAN_SENTINEL);
+
+    expect(h.validateMinimumStay).not.toHaveBeenCalled();
+  });
+
+  it("exempts a guest-stay-range payload that resolves to the SAME envelope", async () => {
+    // The member panel sends `guestStayRanges` unconditionally in grid and
+    // range modes, so this is the shape a plain guest edit actually arrives in.
+    // What matters is the envelope those ranges resolve to, not the presence of
+    // the field.
+    h.bookingFindUnique.mockReset();
+    h.bookingFindUnique.mockResolvedValueOnce({ lodgeId: LODGE_B }).mockResolvedValueOnce({
+      ...loadedBooking(),
+      guests: [
+        {
+          id: "g1",
+          stayStart: storedCheckIn,
+          stayEnd: storedCheckOut,
+          nights: [],
+          isMember: true,
+          memberId: "member-1",
+        },
+      ],
+    });
+    h.validateMinimumStay.mockResolvedValue({
+      valid: false,
+      violations: [violation],
+    });
+
+    await expect(
+      modifyBookingBatch({
+        bookingId: "booking-1",
+        actor: { id: "member-1", role: "USER" },
+        input: {
+          guestStayRanges: [
+            {
+              guestId: "g1",
+              stayStart: formatDateOnly(storedCheckIn),
+              stayEnd: formatDateOnly(storedCheckOut),
+            },
+          ],
+        },
+        ipAddress: "127.0.0.1",
+      }),
+    ).rejects.toThrow(GUEST_PLAN_SENTINEL);
+
+    expect(h.validateMinimumStay).not.toHaveBeenCalled();
+  });
+
+  it("still blocks the moment a guest-stay-range payload WIDENS the envelope", async () => {
+    // The mirror of the case above: the same field, but the resolved envelope
+    // now covers a night the stored booking did not, so the policy applies.
+    const widerCheckOut = addDaysDateOnly(getTodayDateOnly(), 34);
+    h.bookingFindUnique.mockReset();
+    h.bookingFindUnique.mockResolvedValueOnce({ lodgeId: LODGE_B }).mockResolvedValueOnce({
+      ...loadedBooking(),
+      guests: [
+        {
+          id: "g1",
+          stayStart: storedCheckIn,
+          stayEnd: storedCheckOut,
+          nights: [],
+          isMember: true,
+          memberId: "member-1",
+        },
+      ],
+    });
+    h.validateMinimumStay.mockResolvedValue({
+      valid: false,
+      violations: [violation],
+    });
+
+    await expect(
+      modifyBookingBatch({
+        bookingId: "booking-1",
+        actor: { id: "member-1", role: "USER" },
+        input: {
+          checkOut: formatDateOnly(widerCheckOut),
+          guestStayRanges: [
+            {
+              guestId: "g1",
+              stayStart: formatDateOnly(storedCheckIn),
+              stayEnd: formatDateOnly(widerCheckOut),
+            },
+          ],
+        },
+        ipAddress: "127.0.0.1",
+      }),
     ).rejects.toBeInstanceOf(MinimumStayPolicyViolationError);
 
-    // The stored (unchanged) envelope is what gets evaluated.
     expect(h.validateMinimumStay).toHaveBeenCalledWith(
       storedCheckIn,
-      storedCheckOut,
+      widerCheckOut,
       LODGE_B,
       txClient,
     );

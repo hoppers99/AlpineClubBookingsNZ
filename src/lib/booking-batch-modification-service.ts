@@ -388,17 +388,20 @@ export async function modifyBookingBatch({
     // claimed for a stay the policy refuses. The server is authoritative here:
     // the edit panel's banner is advisory only and never gates Save.
     //
-    // Price-preserving requests are exempt, exactly as the modify-quote preview
-    // reports them (`minimumStayValid: true` on its identity-only/credit-only
-    // echo): a guest name fix or a stored credit election cannot change a
-    // single night of the stay, so enforcing here could only block an unrelated
-    // fix on a booking that already sat outside the policy — never admit a new
-    // violation. Preview and apply therefore agree on every request.
-    if (
-      actor.role !== "ADMIN" &&
-      !requestIsIdentityOnly &&
-      !requestIsCreditElectionOnly
-    ) {
+    // THE EXEMPTION IS "THE NIGHTS DID NOT MOVE", not "the request was one of
+    // two shapes". `resolveTargetDates` has already resolved the effective
+    // envelope — including the widening a `guestStayRanges` payload can cause —
+    // so `dates.datesChanged` IS the predicate the rationale always described:
+    // an edit that leaves the stay's nights exactly as they were cannot admit a
+    // NEW violation, so enforcing on it could only hard-block an unrelated fix
+    // to a booking that was already grandfathered outside the policy, with no
+    // remedy available to the member. That is not hypothetical: the member panel
+    // sends `guestStayRanges` unconditionally in grid and range modes, so the
+    // narrower identity-only/credit-only test blocked ordinary guest adds and
+    // name fixes. `modify-quote` gates its own check on the identical
+    // `targetDatesChanged`, computed the same way from the same envelope logic,
+    // so preview and apply agree on EVERY request shape — keep the two in step.
+    if (actor.role !== "ADMIN" && dates.datesChanged) {
       const { validateMinimumStay, formatViolationsDetail } = await import(
         "@/lib/booking-policies"
       );

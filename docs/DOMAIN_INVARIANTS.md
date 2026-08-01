@@ -2202,11 +2202,15 @@ non-admin actor, and the list is exact:
   (`PUT /api/bookings/[id]/modify` → `modifyBookingBatch`) — HTTP 400, checked
   before the guest plan, pricing and capacity. Its sibling
   `PUT /api/bookings/[id]/modify-dates` (`modifyBookingDates`) carries the same
-  block. Price-preserving edits (an identity-only guest-name fix, a
-  credit-election-only edit) are exempt on the modify path, matching the
-  modify-quote preview's own `minimumStayValid: true` for those requests: they
-  cannot change a night of the stay, so the check could only block an unrelated
-  fix on a booking that already sat outside the policy.
+  block. On the batch path the check runs **only when the edit actually moves a
+  night** — the resolved envelope after any `guestStayRanges` widening differs
+  from the stored one (`resolveTargetDates().datesChanged`). An edit that leaves
+  every night where it was (a guest add, a guest removal, a name fix, a credit
+  election) cannot admit a NEW violation, so enforcing it could only hard-block
+  an unrelated fix to a booking already grandfathered outside the policy, with
+  no remedy the member can reach. `modify-quote` gates its own advisory check on
+  the identical predicate (`targetDatesChanged`, computed the same way), so
+  preview and apply agree on every request shape.
 - waitlist-offer confirmation (`POST /api/bookings/[id]/waitlist-confirm` →
   `confirmWaitlistOffer`), on **both** offer kinds. Confirming turns a queue
   placeholder into capacity-holding status, so it is a fresh commitment to those

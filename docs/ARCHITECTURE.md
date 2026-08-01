@@ -1554,9 +1554,12 @@ against the **offered** lodge, whose policy set replaces rather than merges with
 the club-wide one. Both run outside any transaction and fail closed without
 consuming the offer — the entry reverts to `WAITLISTED` under the relevant
 lodge's capacity lock and the member gets a plain sentence with code
-`MINIMUM_STAY_VIOLATION`. Price-preserving modify requests (identity-only name
-fixes, credit-election-only edits) are exempt, matching the modify-quote
-preview, which already answers `minimumStayValid: true` for them. Modify quote and policy check
+`MINIMUM_STAY_VIOLATION`. On the batch modify path the check runs only when the
+edit actually moves a night (`resolveTargetDates().datesChanged`, the resolved
+envelope after any `guestStayRanges` widening); a guest add, removal, name fix
+or credit election leaves the nights alone, cannot admit a new violation, and is
+exempt. `modify-quote` gates its advisory check on the identical
+`targetDatesChanged`, so preview and apply agree on every request shape. Modify quote and policy check
 expose the same structure as advisory data; policy check first resolves omitted
 lodge context to the active default and rejects an unknown/inactive explicit
 lodge. All evaluators receive the resolved booking lodge, so a lodge-specific
