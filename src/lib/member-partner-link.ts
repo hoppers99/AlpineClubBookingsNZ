@@ -51,6 +51,9 @@ const PARTNER_MEMBER_SELECT = {
   active: true,
   canLogin: true,
   ageTier: true,
+  // #2284 (S4): the deliberate "responsible adult" pointer the one-step partner
+  // declaration is now gated on, replacing the free-text FamilyGroupMember.role.
+  detailsConfirmedByMemberId: true,
 } as const;
 
 type PartnerMemberRecord = Prisma.MemberGetPayload<{
@@ -294,46 +297,50 @@ export async function getPartnerLinkState(memberId: string): Promise<PartnerLink
 
 /**
  * One-step declaration candidates for a member: active no-login ADULT
- * members of family groups where the caller holds the ADMIN role (the same
- * condition requestPartnerLink's one-step path enforces), minus anyone who
- * already has a CONFIRMED partner. Computed server-side so the profile UI
- * renders policy instead of re-implementing it.
+ * co-members this member is the RECORDED VOUCHER for
+ * (`detailsConfirmedByMemberId`), minus anyone who already has a CONFIRMED
+ * partner. Computed server-side so the profile UI renders policy instead of
+ * re-implementing it.
+ *
+ * #2284 (S4): re-anchored off the free-text `FamilyGroupMember.role` ADMIN
+ * value — which was an accident of which flow created the group — onto the
+ * deliberate responsible-adult pointer `detailsConfirmedByMemberId`, the same
+ * condition `requestPartnerLink`'s one-step path now enforces. The
+ * shared-family-group conjunct is retained so a stale voucher pointer left
+ * behind after a member leaves the group grants nothing.
  */
 export async function listOneStepPartnerCandidates(
   memberId: string
 ): Promise<PartnerLinkMemberView[]> {
-  const adminMemberships = await prisma.familyGroupMember.findMany({
-    where: { memberId, role: "ADMIN" },
-    select: {
-      familyGroup: {
-        select: {
-          memberships: {
-            select: { member: { select: PARTNER_MEMBER_SELECT } },
-          },
-        },
-      },
+  const groupLinks = await prisma.familyGroupMember.findMany({
+    where: { memberId },
+    select: { familyGroupId: true },
+  });
+  const groupIds = [...new Set(groupLinks.map((link) => link.familyGroupId))];
+  if (groupIds.length === 0) {
+    return [];
+  }
+
+  const voucheredMembers = await prisma.member.findMany({
+    where: {
+      canLogin: false,
+      active: true,
+      ageTier: "ADULT",
+      detailsConfirmedByMemberId: memberId,
+      id: { not: memberId },
+      familyGroupMemberships: { some: { familyGroupId: { in: groupIds } } },
     },
+    select: PARTNER_MEMBER_SELECT,
   });
 
   const candidates = new Map<string, PartnerLinkMemberView>();
-  for (const membership of adminMemberships) {
-    for (const groupMember of membership.familyGroup.memberships) {
-      const member = groupMember.member;
-      if (
-        member.id === memberId ||
-        member.canLogin ||
-        !member.active ||
-        member.ageTier !== "ADULT"
-      ) {
-        continue;
-      }
-      candidates.set(member.id, {
-        id: member.id,
-        firstName: member.firstName,
-        lastName: member.lastName,
-        canLogin: member.canLogin,
-      });
-    }
+  for (const member of voucheredMembers) {
+    candidates.set(member.id, {
+      id: member.id,
+      firstName: member.firstName,
+      lastName: member.lastName,
+      canLogin: member.canLogin,
+    });
   }
   if (candidates.size === 0) {
     return [];
@@ -469,25 +476,36 @@ export async function requestPartnerLink(params: {
   if (targetIneligible) return { ok: false, ...targetIneligible };
 
   // One-step "one login manages the family": only when the target has no
-  // login of their own to consent with AND the initiator is a family-group
-  // ADMIN of a group the target belongs to. A login-holding target always
-  // consents personally, whatever the initiator's family role.
+  // login of their own to consent with AND the initiator is the DELIBERATE
+  // responsible adult for them — the person recorded as having vouched for the
+  // target's details (`detailsConfirmedByMemberId`) — and still shares a family
+  // group with them. A login-holding target always consents personally.
+  //
+  // #2284 (S4): re-anchored off the free-text `FamilyGroupMember.role` ADMIN
+  // value, which was distributed by accident of which flow created the group,
+  // onto `detailsConfirmedByMemberId`, an action-derived responsible-adult
+  // signal. `initiator.id !== target.id` is already enforced above, so a
+  // self-confirmed target (`detailsConfirmedByMemberId === target.id`) can never
+  // satisfy this gate.
   let oneStep = false;
   if (!target.canLogin) {
-    const adminMembership = await prisma.familyGroupMember.findFirst({
-      where: {
-        memberId: initiator.id,
-        role: "ADMIN",
-        familyGroup: { memberships: { some: { memberId: target.id } } },
-      },
-      select: { familyGroupId: true },
-    });
-    if (!adminMembership) {
+    const isRecordedVoucher =
+      target.detailsConfirmedByMemberId === initiator.id;
+    const sharedGroup = isRecordedVoucher
+      ? await prisma.familyGroupMember.findFirst({
+          where: {
+            memberId: initiator.id,
+            familyGroup: { memberships: { some: { memberId: target.id } } },
+          },
+          select: { familyGroupId: true },
+        })
+      : null;
+    if (!isRecordedVoucher || !sharedGroup) {
       return {
         ok: false,
         status: 403,
         error:
-          "This member has no login to confirm the request. Only the admin of their family group can declare this partnership directly; otherwise ask an admin.",
+          "This member has no login to confirm the request. Only the adult who confirmed this member's details can declare this partnership directly; otherwise ask an admin.",
       };
     }
     oneStep = true;

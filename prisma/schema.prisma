@@ -4676,7 +4676,15 @@ model FamilyGroupMember {
   id            String   @id @default(cuid())
   familyGroupId String
   memberId      String
-  role          String   @default("MEMBER") // ADMIN or MEMBER (group admin can manage the group)
+  // #2284 (S4): NOT consulted for authorisation anywhere. The one power it ever
+  // gated — the one-step partner declaration (member-partner-link.ts) — was
+  // re-anchored onto Member.detailsConfirmedByMemberId, so this column now
+  // records nothing that grants anything. Written "ADMIN" or "MEMBER" by a
+  // scatter of flows (see the #2284 census); merge upgrades toward "ADMIN"
+  // (member-merge.ts maxFamilyRole) but nothing reads the result. Retained for
+  // now rather than dropped in the same PR as the re-anchor; scheduled for
+  // removal in a dedicated migration (see #2284 close-out / follow-up).
+  role          String   @default("MEMBER")
   joinedAt      DateTime @default(now())
 
   familyGroup FamilyGroup @relation(fields: [familyGroupId], references: [id], onDelete: Cascade)
