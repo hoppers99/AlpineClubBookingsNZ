@@ -152,5 +152,7 @@ is fed through a `where`-honouring database double to `getLodgeHeldNights` and
 to the board, and their night sets are compared; the synthesised rows are
 asserted to carry a null booking, a null guest and no age tier, and to name
 nobody. The suite is mutation-verified — removing the capacity-holding
-predicate, or either planner's feed, or either writer's re-check, each fails a
-distinct test.
+predicate, either planner's feed, either writer's re-check, any of the guards
+that keep a held bed-night occupied when the booking sharing it is evicted, or
+the filter that applies a displacement only when the re-checked payload still
+claims the bed-night it frees, each fails a distinct test.

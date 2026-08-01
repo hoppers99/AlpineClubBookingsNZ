@@ -1283,7 +1283,11 @@ hold** (#2286) and, since #2317, an **exclusive whole-lodge hold** — every
 active bed of the held lodge on every held night. Both are tierless, so both
 read as an adult: another booking's unaccompanied minors are kept out of the
 rooms, and no name, booking id or age tier of the held group ever reaches the
-planner. Neither can be displaced, because neither has a row to move.
+planner. Neither can be displaced: neither has a row to move, and — because a
+real allocation row may sit on the same bed on the same night, and planner
+occupancy is keyed `bedId:stayDate` — the planner also pins those bed-nights as
+permanently occupied, so evicting the co-located booking releases that
+booking's claim and never the hold's.
 
 Reconciliation widens its loads to the envelope of every booking overlapping
 the reconcile range (`min(checkIn) .. max(checkOut)` union the range) so the

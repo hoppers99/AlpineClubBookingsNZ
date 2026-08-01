@@ -68,9 +68,18 @@ anyone else.** If a booking holds the whole lodge for a night, every bed is
 counted as taken for that night even though the held group is never placed on
 individual beds — because the group really is sleeping in them. Auto-allocation
 will not put another booking's guest into one, and neither will the automatic
-placement that runs when a booking changes. Those guests stay in the
-awaiting-allocation list for the held nights, and the board says the reason is
-that no bed is available.
+placement that runs when a booking changes. Those guests simply stay in the
+awaiting-allocation list for the held nights.
+
+What you see on screen is the hold's own banner above the board, naming the
+group and its dates, and an **Overlaps exclusive hold** warning on the
+overlapping booking's card in the awaiting-allocation list. Read them together:
+the banner says which nights are taken, the warning says which booking is
+clashing with them. Note what the board does **not** do — the bed grid itself is
+unchanged. A held night's beds are drawn exactly like empty ones, with no
+marking and no name, and you can still drop a guest onto them. That is
+deliberate (see below), but it does mean the grid alone will not tell you a
+night is held; the banner is what tells you.
 
 That is on purpose. A booking overlapping a whole-lodge hold is never refused
 when it is made — the hold is shown to you as a clash to sort out, not blocked
@@ -79,8 +88,9 @@ changed is that the system no longer quietly makes that choice for you by
 filling beds the held group is using. You can still place a guest on one of
 those beds **by hand** if that is what you have agreed with the group: drag,
 **Select bed**, and **Assign range…** all work as usual. The held group's own
-name never appears on the bed grid for those nights — the beds simply read as
-taken, and the hold itself is shown as its own banner above the board.
+name is never written onto the bed grid either way: a hold is sometimes a
+public school's request, and the automatic placement is told only that the beds
+are taken, never by whom.
 
 ### Allocate a guest by hand
 
@@ -280,7 +290,8 @@ you place them yourself.
 | "Showing part of this stay" | You followed a link for a booking longer than the board window | Step forward with › to see the rest of the stay |
 | A range assign says "Nothing was written" | At least one night is blocked — held for a hut leader, bed taken, guest not booked, or a whole-lodge hold | Read the lists; fix the range, or use **Assign the N free nights** to take just the free ones (if any night is outside the guest's stay, you are asked to confirm that first). A hut-leader hold is cleared on the **Hut Leader Assignments** page, not here |
 | A range assign is refused on every night | This booking has an exclusive whole-lodge hold | Held bookings take the whole lodge and get no individual beds — remove the hold first if that is wrong |
-| Guests stay in the awaiting-allocation list, with no bed available, on certain nights | Another booking holds the whole lodge for those nights, so every bed counts as taken | Decide who really sleeps there: clear the hold if it is wrong, move the overlapping booking's dates, or place the guest by hand if you have agreed it with the group. Auto-allocation will not make that call for you |
+| Guests stay in the awaiting-allocation list on certain nights, and the beds look empty | Another booking holds the whole lodge for those nights, so every bed counts as taken for automatic placement. The grid does not mark held beds — look for the exclusive-hold banner above the board and the **Overlaps exclusive hold** warning on the booking's card | Decide who really sleeps there: clear the hold if it is wrong, move the overlapping booking's dates, or place the guest by hand if you have agreed it with the group. Auto-allocation will not make that call for you |
+| Beds are refused as if held, but no exclusive-hold banner is shown | The banner only lists holds whose own guest rows fall inside the board window; a hold takes the lodge whether or not its guests have been entered yet | Widen the board dates, or open the held booking directly to confirm — then add its guests so it appears on the board like any other booking |
 | "That took too long to save" | The range was large enough for the save to time out; nothing was written | Split it into shorter ranges and assign them one after the other |
 | The member says they can no longer change their requested room | A range assign approved their beds | That is expected: confirming beds locks the room request. Removing every approved allocation re-opens it |
 | The Bed allocation card is missing from a booking | The `bedAllocation` module is off, or your admin role can view but not edit bookings | Enable the module under **Admin → Setup → Modules**, or ask a full admin for bookings edit access — the board is still readable meanwhile |

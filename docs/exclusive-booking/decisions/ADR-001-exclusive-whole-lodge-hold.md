@@ -271,22 +271,40 @@ generated or demanded for held bookings.
     life as a PUBLIC school request — and **non-displaceable**: the planner only
     registers an evictable occupant for rows naming both a booking and a guest,
     so no `MOVE` or `UNALLOCATE` has anything to target.
+  - That protects the ROW. The BED-NIGHT needs one thing more, because decision
+    1 guarantees a real `BedAllocation` row can share it — the hold prune sweeps
+    only the held booking's own rows, and manual placement stays open — while
+    planner occupancy is keyed `bedId:stayDate`. The planner therefore pins
+    every null-booking bed-night as permanently occupied, so #1677
+    whole-booking eviction releases the evicted booking's claim and never the
+    hold's, and no room is sized as feasible off rows whose eviction frees
+    nothing. Without that, displacing the co-located booking would have handed
+    a held bed to a capacity-holding adult.
   - A tierless unknown occupant counts as an ADULT, so the #1768 age-mix
     invariant now treats a held lodge's rooms conservatively rather than being
     blind to the held group. The second accepted effect above is closed.
   - **The blocking predicate is the capacity engine's own** —
     `wholeLodgeHold` AND `bookingHoldsCapacity()` /
-    `capacityHoldingBookingFilter()`, exactly `getLodgeHeldNights`'s population.
+    `capacityHoldingBookingFilter()` over the same lodge, which is
+    `getLodgeHeldNights`'s population.
     A planner can therefore never report a night as held that admission would
     let a booking into, and a stale hold flag on a booking that stopped holding
     capacity blocks nothing in either place. This is deliberately NOT the #2285
     short-circuit's predicate (the raw flag), which answers a different question:
-    "may this booking own per-bed rows?".
+    "may this booking own per-bed rows?". Where a lodge cannot be resolved for a
+    hold or a room the planner treats the night as held — the conservative
+    direction, and a dead branch anyway (both columns are NOT NULL).
   - **Effect on the officer:** an overlapping booking the officer chose to keep
-    now reports `NO_BED_AVAILABLE` on the held nights and sits in the
-    awaiting-allocation list, instead of being quietly placed into a bed the
-    held group is sleeping in. More red on the board, for a clash the officer was
-    already shown when the hold was set — which is the point.
+    now sits in the awaiting-allocation list on the held nights instead of being
+    quietly placed into a bed the held group is sleeping in. More red on the
+    board, for a clash the officer was already shown when the hold was set —
+    which is the point. What they read is the existing exclusive-hold banner
+    plus the **Overlaps exclusive hold** chip; `NO_BED_AVAILABLE` is the
+    planner's internal reason code and is not rendered anywhere, the bed grid
+    does not mark held cells, and the banner comes from the board's booking
+    load (guest row required) rather than the unfiltered blocking query. Adding
+    a per-cell rendering or a per-night reason is deliberately out of scope
+    here: this decision is about what the planners DO, not about new board UI.
   - **Manual placement is unchanged, deliberately.** Decision 1 admits overlaps
     on purpose and hands them to the booking officer to resolve by hand
     (#119/#177); hard-blocking a manual placement would remove the very
@@ -294,10 +312,19 @@ generated or demanded for held bookings.
     ("should another booking's hold hard-block manual placement everywhere?")
     therefore stands answered **no** for now: the automatic paths stop guessing,
     the officer keeps the override.
-  - Both writers re-read the live holds under their existing per-lodge advisory
-    lock immediately before writing, mirroring the custodian re-filter — the
-    unallocatable-booking re-check cannot cover a hold set on somebody ELSE's
-    booking. Guard: `src/lib/__tests__/exclusive-hold-planner-occupancy.test.ts`.
+  - Both writers re-read the live holds on the client that is about to write,
+    mirroring the custodian re-filter — the unallocatable-booking re-check
+    cannot cover a hold set on somebody ELSE's booking. Every placement
+    transaction the code opens itself takes the per-lodge advisory lock as its
+    first statement; a reconcile inside a caller's transaction, and the
+    lifecycle's common no-displacement path (which opens none), rely on the
+    re-read alone — the same posture #2286 chose for custodian holds. A
+    displacement is applied only when the re-checked payload still claims the
+    bed-night it frees, so a partial drop can no longer evict a provisional
+    booking for an allocation that is never written. Guards:
+    `src/lib/__tests__/exclusive-hold-planner-occupancy.test.ts` and the
+    whole-lodge entries in
+    `src/lib/__tests__/custodian-write-path-contract.test.ts`.
 
 ## Post-implementation decisions (owner, 2026-07-14)
 

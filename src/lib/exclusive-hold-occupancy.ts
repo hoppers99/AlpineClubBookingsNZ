@@ -54,11 +54,18 @@ import { prisma } from "@/lib/prisma";
  *
  * A hold blocks when `wholeLodgeHold` is set AND the booking actually holds
  * capacity — {@link bookingHoldsCapacity} in memory, `capacityHoldingBookingFilter()`
- * in SQL. That is character-for-character the population `getLodgeHeldNights`
+ * in SQL — scoped to the lodge. That is the population `getLodgeHeldNights`
  * (`src/lib/capacity.ts`) uses, so the planners can never report a night as
  * held that the capacity engine would admit into, nor miss one it would refuse.
  * A stale `wholeLodgeHold = true` on a booking that has left a capacity-holding
  * status blocks nothing here for the same reason it blocks nothing there.
+ *
+ * One deliberate asymmetry, and it is direction-safe: the SQL scope is the
+ * engine's exact `lodgeId` equality, but the in-memory night predicate below is
+ * null-TOLERANT, so a hold or a room whose lodge cannot be resolved blocks
+ * rather than being ignored. That refuses a bed the engine would have admitted
+ * — never the reverse — and `Booking.lodgeId` / `LodgeRoom.lodgeId` are both
+ * NOT NULL, so it is a dead branch kept conservative rather than removed.
  *
  * This is deliberately NOT the same predicate as the #2285 short-circuit, which
  * asks a different question — "may this booking own per-bed rows?" — and is
@@ -86,8 +93,21 @@ import { prisma } from "@/lib/prisma";
  * bookings on held nights on purpose and hands the clash to the booking officer
  * to resolve by hand (#119/#177); a hard write-time refusal would take away the
  * very resolution path the ADR requires. The effect of #2317 is that the
- * officer's clash now surfaces as `NO_BED_AVAILABLE` in the awaiting-allocation
- * list instead of being hidden inside a bad automatic placement.
+ * officer's clash now sits in the awaiting-allocation list instead of being
+ * hidden inside a bad automatic placement.
+ *
+ * It also adds nothing to the BOARD's payload, so nothing here changes what an
+ * officer sees on the bed grid: a held night's cells are drawn like empty ones
+ * and stay droppable, which is what keeps manual placement possible. The
+ * officer-facing explanation of a hold remains the board's exclusive-hold
+ * banner and the "Overlaps exclusive hold" chip — both derived from
+ * `loadBookingRecords`, which requires a guest row overlapping the window.
+ * This query deliberately requires no such thing (see
+ * {@link findBlockingWholeLodgeHolds}), so a hold whose guest rows have not been
+ * entered yet blocks every bed without appearing in either. That is the
+ * intended direction — blocking must not depend on data entry — but it means
+ * the blocking population is wider than the explaining one; the officer guide's
+ * troubleshooting table names the symptom.
  */
 
 type PrismaClient = typeof prisma;

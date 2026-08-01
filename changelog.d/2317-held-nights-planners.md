@@ -7,10 +7,12 @@
   held group was using, with nothing to warn you.
 
   Both now count every bed as taken for the nights of a whole-lodge hold. Any
-  overlapping booking's guests stay in the awaiting-allocation list for those
-  nights, and the board gives "no bed available" as the reason. The held group
-  is never named on the bed grid — the beds simply read as taken, and the hold
-  keeps its own banner above the board.
+  overlapping booking's guests simply stay in the awaiting-allocation list for
+  those nights. The hold keeps its own banner above the board and the
+  overlapping booking keeps its **Overlaps exclusive hold** warning, which
+  together tell you which nights are taken and which booking is clashing. The
+  bed grid itself is unchanged: a held night's beds are still drawn like empty
+  ones, and the held group is never named on them.
 
   You will see more red on the board for a situation you have already been told
   about: a booking overlapping a hold is never refused when it is made, and the
