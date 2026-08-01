@@ -21,7 +21,13 @@
 
   Nothing else about the email changed. Confirmations for bookings that are
   paid, partly paid, or covered entirely by credit are exactly as they were, and
-  a club that has customised the booking-confirmed wording gets the new sentence
-  without editing anything, because it travels inside the payment token their
-  wording already uses. Showing the actual amount the invoice asks for, rather
-  than pointing at the invoice, is separate work still to come.
+  no new token was added: the sentence travels inside the same `{{paymentOutcome}}`
+  block the shipped wording already carries, so a club whose customised wording
+  still uses that block — or `{{paymentDueNote}}` on its own — gets the sentence
+  without editing anything. A customised body that spells the money out by hand
+  instead, from `{{totalDue}}` and friends, has never carried these payment
+  instructions on an unpaid booking and still does not; such a club should add
+  `{{paymentDueNote}}` to its wording. The editor now previews that token as the
+  real paragraph, and warns if you type a label in front of it. Showing the
+  actual amount the invoice asks for, rather than pointing at the invoice, is
+  separate work still to come.

@@ -6,6 +6,7 @@ import { buildXeroInvoiceUrl } from "@/lib/xero-links";
 import {
   adminSplitSettlementCancelledLeadParagraph,
   adminSplitSettlementUnpaidLeadParagraph,
+  bookingPaymentDueNote,
   duplicateCaptureRefundOutcomeParagraph,
   splitGuestPortionOwnBookingLine,
 } from "@/lib/email-message-notes";
@@ -1042,6 +1043,37 @@ export function sampleValue(token: string): string {
   if (token === "creditNote") {
     return "Account credit applied: -$23.45\nPaid by card: $100.00\n";
   }
+  // #2444: the UNPAID confirmation's whole paragraph, composed by the very
+  // function the send uses, so the preview cannot drift from the message and
+  // an admin who puts {{paymentDueNote}} on a line of its own sees the money
+  // advice a member reads instead of the bare word "paymentDueNote" (which is
+  // what the fallthrough at the bottom of this function returned before #2444,
+  // in breach of the pre-composed-token rule stated above).
+  //
+  // It names the same $123.45 the money tokens fall through to and the same
+  // reference {{paymentReference}} previews, so an override that builds its own
+  // unpaid lines previews one coherent booking. `invoiceEmailed: true` is the
+  // shape a club running the Xero module gets; the manual-invoice club differs
+  // only in one sentence.
+  //
+  // Like {{creditNote}} above, this is a mutually exclusive sibling of the
+  // {{paymentOutcome}} sample: a body carrying both previews the paid outcome
+  // and the unpaid one together, which no single send produces. That is the
+  // price of previewing every pre-composed token in its non-empty shape, and it
+  // is the same trade #2263 and #2328 already made for {{totalPaid}}/
+  // {{totalDue}} and for the credit pair.
+  if (token === "paymentDueNote") {
+    return bookingPaymentDueNote({
+      amount: "$123.45",
+      reference: "BOOKING-1234",
+      invoiceEmailed: true,
+    });
+  }
+  // #2444: the internet-banking reference an unpaid member must quote. It fell
+  // through to the literal word "paymentReference", which contradicted the
+  // composed paragraph above (and previewed the admin manual-invoice alert's
+  // "Payment reference:" line as a token name).
+  if (token === "paymentReference") return "BOOKING-1234";
   // #2267: one coherent booking-modified sample — a 2-guest stay whose dates
   // moved from 1–3 Jul to 8–10 Jul and whose price rose from $123.45 to
   // $150.00 with no change fee, leaving $26.55 to pay. Every token below tells

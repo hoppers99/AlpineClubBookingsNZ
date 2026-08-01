@@ -258,9 +258,17 @@ Two consequences worth knowing before you edit one:
   email. The sentence is conditional on purpose — for most members the two
   agree — and it states no second amount. Nothing puts a member's account credit
   towards such an invoice for you; if you want that, do it in Xero, and the
-  member has already been told to pay what the invoice asks. You do not need to
-  do anything to get the sentence: it is part of the same token an override
-  already uses, and it appears only on the unpaid confirmation.
+  member has already been told to pay what the invoice asks. No new token was
+  added, so if your wording keeps `{{paymentOutcome}}` (or uses
+  `{{paymentDueNote}}` on its own) the sentence arrives with no edit at all — but
+  the same caveat as `{{creditNote}}` above applies: a body that writes its own
+  money lines out of `{{totalDue}}` and friends and carries neither of those two
+  tokens has never told an unpaid member how to pay, and still does not. Add
+  `{{paymentDueNote}}` to such a body. It renders only on the unpaid
+  confirmation and is empty everywhere else, so put it on a line of its own — a
+  label typed in front of it ("Payment: `{{paymentDueNote}}`") would leave a bare
+  `Payment:` on every confirmation that is already paid, and the editor now warns
+  you about exactly that.
 
 ### Consent emails ignore a member's notification preferences
 

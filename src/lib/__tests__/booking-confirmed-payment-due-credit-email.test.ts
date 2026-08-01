@@ -52,7 +52,15 @@ vi.mock("@/lib/email-message-settings", () => ({
   buildEmailTemplateGlobalData: vi.fn(() => ({})),
 }));
 
-import { getEmailTemplateDefinition } from "@/lib/email-message-registry";
+import {
+  EXTRA_TEMPLATE_TOKENS,
+  getEmailTemplateDefinition,
+} from "@/lib/email-message-registry";
+import {
+  EMPTYABLE_OVERRIDE_TOKENS,
+  OPTIONAL_TEMPLATE_TOKENS,
+  findDanglingDefaultLines,
+} from "@/lib/email-message-token-contract";
 import { bookingPaymentDueNote } from "@/lib/email-message-notes";
 import {
   bookingConfirmedTemplate,
@@ -376,9 +384,101 @@ describe("#2444 the token contract is unchanged", () => {
     // and approves. A NEW token would have been invisible to every club that
     // saved an override before today — on the one branch where following the
     // email can make a member overpay.
+    //
+    // Review (1 Aug 2026): asserting that two pre-existing tokens are present
+    // does NOT pin "no token was added" — it would pass unchanged if a later
+    // edit added {{creditCaveat}} beside them. The exact supplied-token list is
+    // what holds the line, so a token added here has to be argued for in this
+    // test rather than slipped in.
+    expect(EXTRA_TEMPLATE_TOKENS["booking-confirmed"]).toEqual([
+      "creditNote",
+      "discount",
+      "doorCode",
+      "doorCodeNote",
+      "paymentDueNote",
+      "paymentOutcome",
+      "paymentReference",
+      "promoAdjustment",
+      "promoCode",
+      "promoSummary",
+      "provisionalGuestsNote",
+      "subtotal",
+      "totalDue",
+      "totalPaid",
+    ]);
+
     const definition = getEmailTemplateDefinition("booking-confirmed");
     if (!definition) throw new Error("missing booking-confirmed definition");
     expect(definition.allowedTokens).toContain("paymentDueNote");
     expect(definition.allowedTokens).toContain("paymentOutcome");
+  });
+
+  it("previews the real paragraph, not the word 'paymentDueNote'", async () => {
+    // Review (1 Aug 2026). The preview IS the admin's only picture of what a
+    // member reads, and a pre-composed token whose sample is its own name
+    // teaches an admin to lay a body out for a shape no member receives —
+    // here, invisible payment advice. #2263 registered the token without a
+    // sample; #2444 is what puts the club's payment instructions in it.
+    const definition = getEmailTemplateDefinition("booking-confirmed");
+    if (!definition) throw new Error("missing booking-confirmed definition");
+
+    const sample = definition.sampleData.paymentDueNote;
+    expect(sample).not.toBe("paymentDueNote");
+    // Composed by the SAME function the send uses, so the preview cannot drift
+    // from the message.
+    expect(sample).toBe(
+      bookingPaymentDueNote({
+        amount: "$123.45",
+        reference: "BOOKING-1234",
+        invoiceEmailed: true,
+      }),
+    );
+    expect(sample).toContain(CREDIT_SENTENCE);
+    // And it reconciles: the reference it tells a member to quote is the one
+    // {{paymentReference}} previews beside it.
+    expect(definition.sampleData.paymentReference).toBe("BOOKING-1234");
+    expect(sample).toContain(
+      `quoting reference ${definition.sampleData.paymentReference}.`,
+    );
+  });
+
+  it("is declared EMPTYABLE, so the editor warns about a label typed in front", () => {
+    // Review (1 Aug 2026) — mutation pin, mirroring #2328's for {{creditNote}}.
+    // The token is "" on every paid, partly-paid and credit-covered send (the
+    // cases above), so an override that writes "Payment: {{paymentDueNote}}"
+    // sends a bare "Payment:" to everyone who has already paid. Undeclared,
+    // guard 4 renders the token with its (non-empty) preview sample, sees a
+    // full line and stays quiet. This drives the guard exactly as
+    // `GET /api/admin/email-templates` does.
+    expect(EMPTYABLE_OVERRIDE_TOKENS["booking-confirmed"]).toContain(
+      "paymentDueNote",
+    );
+
+    const definition = getEmailTemplateDefinition("booking-confirmed");
+    if (!definition) throw new Error("missing booking-confirmed definition");
+    const findings = findDanglingDefaultLines(
+      {
+        "booking-confirmed": {
+          defaultSubject: "Booking Confirmed",
+          defaultBody:
+            "Hi {{firstName}}.\n\nPayment: {{paymentDueNote}}\n\nThanks.",
+        },
+      },
+      {
+        "booking-confirmed": [
+          ...(OPTIONAL_TEMPLATE_TOKENS["booking-confirmed"] ?? []),
+          ...(EMPTYABLE_OVERRIDE_TOKENS["booking-confirmed"] ?? []),
+        ],
+      },
+      (token) => definition.sampleData[token] ?? token,
+    );
+
+    expect(findings).toEqual([
+      {
+        key: "booking-confirmed",
+        field: "defaultBody",
+        detail: '"Payment:"',
+      },
+    ]);
   });
 });
