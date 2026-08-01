@@ -110,6 +110,11 @@ are listed on the booking for you to relay.
 
 This is a work queue. The controls per tab:
 
+Each tab keeps **Reset** visible beside its status choices. Reset restores that
+tab's default queue, while preserving the tab itself, any focused booking or
+request id, and unrelated URL context. A focused Approvals or Changes record
+therefore keeps its **All** context rather than disappearing from view.
+
 | Tab | Filters | Key actions |
 | --- | --- | --- |
 | Approvals | Pending (default), Approved, Rejected, All | Approve; Reject and cancel (Admin notes required to reject) |

@@ -7,6 +7,7 @@ import { useConfirm } from "@/components/confirm-dialog";
 import { useClubIdentity } from "@/components/club-identity-provider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
 import {
   Card,
   CardContent,
@@ -449,6 +450,13 @@ export function InductionRegisterTable() {
               <option value="DRAFT">Draft</option>
               <option value="VOIDED">Voided</option>
             </select>
+            <DatasetResetButton
+              disabled={search === "" && statusFilter === ""}
+              onReset={() => {
+                setSearch("");
+                setStatusFilter("");
+              }}
+            />
           </div>
 
           {loading ? (

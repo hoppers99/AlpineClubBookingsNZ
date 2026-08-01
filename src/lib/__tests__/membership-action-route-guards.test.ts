@@ -8,13 +8,24 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // matrix already infers (membership), so no matrix pin moves. We mock
 // `requireAdmin` to a denial and assert the exact permission each verb requests
 // and that the denial short-circuits before any handler work.
-const mocks = vi.hoisted(() => ({ requireAdmin: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  requireAdmin: vi.fn(),
+  // #2402: the cancellation QUEUE read. Stubbed so the guard test can inspect
+  // the one argument the route derives from the viewer's permissions.
+  getCancellationQueue: vi.fn(),
+}));
 
 // One of the queue libs pulls in `server-only`, which throws outside a real
 // server component build. Neutralise it for this node-environment guard test.
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/session-guards", () => ({ requireAdmin: mocks.requireAdmin }));
 vi.mock("@/lib/prisma", () => ({ prisma: {} }));
+vi.mock("@/lib/membership-cancellation-admin", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/lib/membership-cancellation-admin")
+  >()),
+  getAdminMembershipCancellationRequests: mocks.getCancellationQueue,
+}));
 
 import { POST as deletionPost } from "@/app/api/admin/deletion-requests/[id]/route";
 import { PATCH as lifecyclePatch } from "@/app/api/admin/member-lifecycle-action-requests/[requestId]/route";
@@ -25,6 +36,11 @@ import {
 import { POST as refreshPost } from "@/app/api/admin/member-applications/[id]/nominations/refresh/route";
 import { POST as replacePost } from "@/app/api/admin/member-applications/[id]/nominators/[slot]/replace/route";
 import { POST as participantPost } from "@/app/api/admin/membership-cancellation-requests/[requestId]/participants/[participantId]/route";
+import { GET as cancellationQueueGet } from "@/app/api/admin/membership-cancellation-requests/route";
+import {
+  emptyAdminPermissionMatrix,
+  type AdminPermissionLevel,
+} from "@/lib/admin-permissions";
 import {
   GET as familySuggestionsGet,
   POST as familySuggestionsPost,
@@ -148,6 +164,94 @@ describe("membership action route guards (#1997)", () => {
     expect(res.status).toBe(403);
     expect(mocks.requireAdmin).toHaveBeenCalledWith({
       permission: MEMBERSHIP_EDIT,
+    });
+  });
+
+  /*
+    #2402 — the wiring the whole change's safety rests on.
+
+    The cancellation QUEUE (GET) is readable by any admin, so it cannot simply
+    demand membership:edit at the guard. Instead it asks the SAME question
+    separately and uses the answer to decide whether to spend a metered Xero
+    call. If that question is ever simplified — to `role === "ADMIN"`, to the
+    raw JWT matrix, or to membership:view — a view-only admin silently starts
+    burning the club's quota again, and the library tests above would all still
+    pass because the library only ever sees the boolean it is handed.
+
+    So the boolean itself is pinned here, next to the participant POST whose
+    permission it must agree with.
+  */
+  describe("cancellation queue GET scopes its Xero check to approvers (#2402)", () => {
+    function grantMembership(level: AdminPermissionLevel, role = "USER") {
+      mocks.requireAdmin.mockResolvedValue({
+        ok: true,
+        session: {
+          user: {
+            id: "admin-1",
+            role,
+            accessRoles: [],
+            // The DB-verified matrix `requireAdmin` resolves, which is what the
+            // route must read — not the raw JWT claim, not the legacy role.
+            adminPermissionMatrix: {
+              ...emptyAdminPermissionMatrix(),
+              membership: level,
+            },
+          },
+        },
+      });
+      mocks.getCancellationQueue.mockResolvedValue({
+        requests: [],
+        pendingCount: 0,
+        total: 0,
+        page: 1,
+        pageSize: 25,
+        totalPages: 0,
+      });
+    }
+
+    /** The flag the route derived, as the library received it. */
+    function viewerCanApprove() {
+      return mocks.getCancellationQueue.mock.calls.at(-1)?.[0]
+        ?.viewerCanApprove;
+    }
+
+    it("asks membership:edit — the same permission the participant POST demands", async () => {
+      grantMembership("edit");
+
+      const res = await cancellationQueueGet(req("GET"));
+
+      expect(res.status).toBe(200);
+      expect(viewerCanApprove()).toBe(true);
+    });
+
+    it("still serves the page to a view-only admin, but without the Xero check", async () => {
+      grantMembership("view");
+
+      const res = await cancellationQueueGet(req("GET"));
+
+      // The queue is not an edit-gated page: they lose the check, not the page.
+      expect(res.status).toBe(200);
+      expect(viewerCanApprove()).toBe(false);
+    });
+
+    it("does not fall back to the legacy ADMIN role when the matrix says view", async () => {
+      // The regression this exists to catch: `session.user.role === "ADMIN"`
+      // looks like a reasonable simplification and is wrong — a club can narrow
+      // a definition-backed role below the legacy bundle, and the matrix is the
+      // only thing that knows.
+      grantMembership("view", "ADMIN");
+
+      await cancellationQueueGet(req("GET"));
+
+      expect(viewerCanApprove()).toBe(false);
+    });
+
+    it("treats no membership access at all as unable to approve", async () => {
+      grantMembership("none");
+
+      await cancellationQueueGet(req("GET"));
+
+      expect(viewerCanApprove()).toBe(false);
     });
   });
 });

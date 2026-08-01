@@ -1,7 +1,6 @@
 "use client";
 
 import { useRouter, useSearchParams } from "next/navigation";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -15,6 +14,7 @@ import {
   AdminFilterBar,
   type AdminFilterChip,
 } from "@/components/admin/admin-filter-bar";
+import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
 import { DateRangeControls } from "@/components/admin/date-range-controls";
 import { bookingFilterDateRangePresets } from "@/lib/date-range-presets";
 import { bookingStatusLabel } from "@/lib/status-colors";
@@ -49,6 +49,12 @@ const KNOWN_BOOKING_FILTER_QUERY_KEYS = [
   "changeState",
   "additionalOwed",
   "page",
+] as const;
+
+const BOOKING_RESET_QUERY_KEYS = [
+  ...KNOWN_BOOKING_FILTER_QUERY_KEYS.filter((key) => key !== "lodgeId"),
+  "consentState",
+  "upcoming",
 ] as const;
 
 // Chip display labels — mirror the SelectItem copy for each filter so an active
@@ -244,7 +250,7 @@ export function BookingFilters({
         if (liveSort.sortBy) params.set("sortBy", liveSort.sortBy);
         if (liveSort.sortDir) params.set("sortDir", liveSort.sortDir);
         const target = params.toString();
-        router.push(target ? `/admin/bookings?${target}` : "/admin/bookings");
+        router.replace(target ? `/admin/bookings?${target}` : "/admin/bookings");
       }
     }, 350);
     return () => {
@@ -252,7 +258,34 @@ export function BookingFilters({
     };
   }, [status, updatedFrom, updatedTo, checkInFrom, checkInTo, checkOutFrom, checkOutTo, search, month, deleted, paymentSource, xeroState, bedState, changeState, additionalOwed, showBedAllocation, lodgeId, showLodgeFilter, router]);
 
-  function clearFilters() {
+  const requestedSortBy = searchParams.get("sortBy") ?? searchParams.get("sort");
+  const requestedSortDir = searchParams.get("sortDir");
+  const hasDefaultSort =
+    (requestedSortBy === null || requestedSortBy === "lastUpdated") &&
+    (requestedSortDir === null || requestedSortDir === "desc");
+  const requestedPage = searchParams.get("page");
+  const isDatasetDefault =
+    status === "all" &&
+    updatedFrom === "" &&
+    updatedTo === "" &&
+    checkInFrom === "" &&
+    checkInTo === "" &&
+    checkOutFrom === "" &&
+    checkOutTo === "" &&
+    search === "" &&
+    month === "all" &&
+    deleted === "hide" &&
+    paymentSource === "all" &&
+    xeroState === "all" &&
+    (!showBedAllocation || bedState === "all") &&
+    changeState === "all" &&
+    additionalOwed === "all" &&
+    (searchParams.get("consentState") === null || searchParams.get("consentState") === "all") &&
+    searchParams.get("upcoming") === null &&
+    hasDefaultSort &&
+    (requestedPage === null || requestedPage === "1");
+
+  function resetDataset() {
     setStatus("all");
     setUpdatedFrom("");
     setUpdatedTo("");
@@ -268,8 +301,13 @@ export function BookingFilters({
     setBedState("all");
     setChangeState("all");
     setAdditionalOwed("all");
-    setLodgeId("all");
-    router.push("/admin/bookings");
+
+    const params = new URLSearchParams(window.location.search);
+    for (const key of BOOKING_RESET_QUERY_KEYS) params.delete(key);
+    const target = params.toString();
+    router.replace(target ? `/admin/bookings?${target}` : "/admin/bookings", {
+      scroll: false,
+    });
   }
 
   // Count of active filters that live under "More filters" (Status, Month,
@@ -464,9 +502,7 @@ export function BookingFilters({
         </>
       }
       actions={
-        <Button onClick={clearFilters} variant="outline" size="sm">
-          Clear
-        </Button>
+        <DatasetResetButton disabled={isDatasetDefault} onReset={resetDataset} />
       }
       advanced={
         <>
