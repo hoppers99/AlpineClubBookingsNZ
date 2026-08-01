@@ -27,7 +27,10 @@ import { RowValidator, asStr, coerceBool, nz, readCsvRows } from "../values";
 //     lodge.json          { slug, name, active, travelNote, isDefault, doorCode? }
 //     rooms.csv           name, sortOrder, active, notes
 //     beds.csv            roomName, name, sortOrder, active
-//     seasons.csv         name, type, startDate, endDate, active
+//     seasons.csv         name, type, startDate, endDate, active,
+//                         flatWholeLodgeNightCents (#2338; blank = no flat
+//                         whole-lodge rate — whole-lodge bookings then price
+//                         per guest)
 //     season-rates.csv    seasonName, membershipTypeKey, ageTier, pricePerNightCents
 //                         (ageTier blank = a flat type's single all-ages rate)
 //     Rates are keyed by membership type (#1930, E4). The old-bundle IMPORT
@@ -73,7 +76,14 @@ const DISPLAY_CONFIG_VALUE_MAX = 500;
 const DISPLAY_NOTICE_MAX = 2000;
 const ROOM_FIELDS = ["name", "sortOrder", "active", "notes"] as const;
 const BED_FIELDS = ["roomName", "name", "sortOrder", "active", "bedType", "bunkGroup"] as const;
-const SEASON_FIELDS = ["name", "type", "startDate", "endDate", "active"] as const;
+// `flatWholeLodgeNightCents` (#2338) is a per-season scalar, so it rides in
+// seasons.csv beside the window fields — NOT season-rates.csv, which is keyed
+// per membership type. Blank cell = no flat rate (null); a whole number of
+// cents otherwise. A pre-#2338 bundle simply omits the column, which imports as
+// "leave unset", so old bundles keep restoring cleanly.
+const SEASON_FIELDS = [
+  "name", "type", "startDate", "endDate", "active", "flatWholeLodgeNightCents",
+] as const;
 const RATE_FIELDS = ["seasonName", "membershipTypeKey", "ageTier", "pricePerNightCents"] as const;
 
 /** Folder-name segment for a lodge slug (slugs are url-safe; guard anyway). */
@@ -250,6 +260,8 @@ interface SeasonCurrent {
   startDate: Date;
   endDate: Date;
   active: boolean;
+  // Flat whole-lodge night rate in integer cents, or null when unset (#2338).
+  flatWholeLodgeNightCents: number | null;
 }
 interface LodgeBatch {
   lodges: Map<string, LodgeCurrent>; // by slug
@@ -296,7 +308,7 @@ async function loadLodgeBatch(db: ReadDb, slugs: string[]): Promise<LodgeBatch> 
     db.season.findMany({
       where: { lodgeId: { in: lodgeIds } },
       orderBy: [{ startDate: "asc" }, { id: "asc" }],
-      select: { id: true, lodgeId: true, name: true, type: true, startDate: true, endDate: true, active: true },
+      select: { id: true, lodgeId: true, name: true, type: true, startDate: true, endDate: true, active: true, flatWholeLodgeNightCents: true },
     }),
     // Membership-type-keyed rates (#1930, E4) — the only hut-rate table; the
     // legacy SeasonRate table was dropped by #2129 step 2.
@@ -397,7 +409,7 @@ export const lodgeConfigExporter: CategoryExporter = {
     });
     const seasons = await ctx.db.season.findMany({
       orderBy: [{ startDate: "asc" }, { name: "asc" }],
-      select: { name: true, type: true, startDate: true, endDate: true, active: true, lodge: { select: { slug: true } } },
+      select: { name: true, type: true, startDate: true, endDate: true, active: true, flatWholeLodgeNightCents: true, lodge: { select: { slug: true } } },
     });
     const rates = await ctx.db.membershipTypeSeasonRate.findMany({
       orderBy: [{ membershipTypeId: "asc" }, { ageTier: "asc" }],
@@ -421,7 +433,7 @@ export const lodgeConfigExporter: CategoryExporter = {
     };
     for (const r of rooms) push(roomsBy, r.lodge.slug, { name: r.name, sortOrder: r.sortOrder, active: r.active, notes: r.notes });
     for (const b of beds) push(bedsBy, b.room.lodge.slug, { roomName: b.room.name, name: b.name, sortOrder: b.sortOrder, active: b.active, bedType: b.bedType, bunkGroup: b.bunkGroup });
-    for (const s of seasons) push(seasonsBy, s.lodge.slug, { name: s.name, type: s.type, startDate: toDateStr(s.startDate), endDate: toDateStr(s.endDate), active: s.active });
+    for (const s of seasons) push(seasonsBy, s.lodge.slug, { name: s.name, type: s.type, startDate: toDateStr(s.startDate), endDate: toDateStr(s.endDate), active: s.active, flatWholeLodgeNightCents: s.flatWholeLodgeNightCents ?? "" });
     for (const r of rates) push(ratesBy, r.season.lodge.slug, { seasonName: r.season.name, membershipTypeKey: r.membershipType.key, ageTier: r.ageTier ?? "", pricePerNightCents: r.pricePerNightCents });
 
     const entries: BundleEntry[] = [];
@@ -584,8 +596,17 @@ function parseLodgeFolder(
     const startDate = blankOk && nz(raw.startDate) === null ? new Date(0) : v.date("startDate", raw.startDate);
     const endDate = blankOk && nz(raw.endDate) === null ? new Date(0) : v.date("endDate", raw.endDate);
     const active = blankOk && nz(raw.active) === null ? false : v.bool("active", raw.active);
+    // #2338 flat whole-lodge rate: NULLABLE, so a blank cell is ALWAYS legal and
+    // means "no flat rate" (null) — no blankOk gate, unlike the fields above. A
+    // present cell must be a whole number of cents. In merge mode a blank cell
+    // still leaves an existing value untouched (updateDataForMode drops blank
+    // raws); in overwrite mode a blank cell clears it to null.
+    const flatWholeLodgeNightCents =
+      nz(raw.flatWholeLodgeNightCents) === null
+        ? null
+        : v.moneyCents("flatWholeLodgeNightCents", raw.flatWholeLodgeNightCents);
     if (!v.ok) return;
-    out.seasons.push({ raw, name, data: { type: type as never, startDate, endDate, active } });
+    out.seasons.push({ raw, name, data: { type: type as never, startDate, endDate, active, flatWholeLodgeNightCents } });
   });
 
   // Row numbers below are `i + 2` — the physical CSV line (header is line 1) —
@@ -755,7 +776,7 @@ async function planLodgeConfig(ctx: PlanContext): Promise<CategoryPlanResult> {
         }
         current = target;
       }
-      fingerprintParts.push(`season:${key}:${current ? hashRow(["name", "type", "startDate", "endDate", "active"], current) : "absent"}`);
+      fingerprintParts.push(`season:${key}:${current ? hashRow(["name", "type", "startDate", "endDate", "active", "flatWholeLodgeNightCents"], current) : "absent"}`);
       // A resolved (renamed) season also writes the bundle's name.
       const data = resolvedId ? { name: row.name, ...row.data } : row.data;
       const write = updateDataForMode(ctx.mode, { ...row.raw, name: row.name }, data);
