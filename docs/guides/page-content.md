@@ -58,9 +58,11 @@ button. Page Content is edited under the **content** permission area.
    must also be individually marked for public listing).
 2. Under **Book Now button**, choose whether to **Show the Book Now button** and
    whether it goes to the **booking flow** or a **content page**. A page target
-   that is unpublished or removed falls back to the booking flow. The button
-   starts **off** until you tick it and save; once you have saved this panel your
-   choice is what counts, whichever way it went.
+   that is unpublished or removed falls back to the booking flow. The button is
+   **off** until you tick it and save — including for a club that had it on
+   before, because the release that shipped this change switched every club off
+   (see `docs/UPGRADING.md`). Ticking the box and saving brings it straight
+   back.
 3. Click **Save visibility**.
 
 ## Settings reference
@@ -74,7 +76,7 @@ button. Page Content is edited under the **content** permission area.
 | Content (rich text + tokens) | The page body | Per page | HTML sanitised; only recognised `{{tokens}}` render |
 | Joining fees / Annual membership fees / Hut fees | Whether fee tokens may publish those authoritative amounts | Off | Money stays in integer cents; types must also be marked public |
 | Booking policy summaries / Cancellation policies | Whether policy tokens may publish those blocks | Off | — |
-| Show the Book Now button | Whether the public header shows the booking button | Off | Saved once, your choice always wins over the shipped default |
+| Show the Book Now button | Whether the public header shows the booking button | Off | Off for every club since #2430, including clubs that had it on; tick and save to bring it back |
 | Book Now target | Booking flow, or a specific content page | Booking flow | An unpublished/removed target falls back to the booking flow |
 
 ## Troubleshooting
@@ -83,8 +85,7 @@ button. Page Content is edited under the **content** permission area.
 | --- | --- | --- |
 | A fee token shows nothing on the public page | Its family isn't enabled under Public fee and policy blocks | Tick the family and **Save visibility**; also mark the membership types public |
 | The Book Now button goes to the booking flow, not my page | The target page is unpublished or was removed | Publish the target page, or re-select it |
-| The button vanished after an upgrade | Your club had no stored public content settings at all, so the button followed the shipped default, which is now off | Tick **Show the Book Now button** and **Save visibility** |
-| The button is still showing although I never turned it on | Saving the **Club Contact** panel creates the same settings record, and the button's setting then took whatever default was in force at the time | Set **Show the Book Now button** the way you want it and **Save visibility** — a saved choice always wins |
+| The button vanished after an upgrade | Expected: #2430 switched the public Book Now button off for **every** club, whether or not the club had chosen to show it. Nothing else about your public content changed, and your Book Now target was kept | Tick **Show the Book Now button** and **Save visibility** |
 | Visitors see "Member booking", not "Book Now" | Expected: the label follows the visitor, not the target. Nobody who is signed out can book from that button — booking flow means the member login — so it names its audience, including when you have pointed it at a page of your own. Signed-in members still see **Book Now** | Nothing to do — it is not configurable |
 | I can't unpublish a page | It's a built-in page — anything the starter site ships (Home, About, Join, Apply, Rules, Contact, Committee, Privacy, Terms, FAQ, 404), not just the two **System** pages | Built-in pages can't be hidden by design; only pages you added yourself can be |
 | Save is rejected | A field exceeds `PAGE_CONTENT_LIMITS`, or the slug is invalid/reserved | Fix the flagged field; keep slugs valid and non-reserved |

@@ -134,8 +134,12 @@ export const DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS = {
  * `src/lib/public-page-content-tokens.ts`) and, since #2430, so is the public
  * "Book Now" button: a fresh install advertises no public booking CTA until an
  * admin ticks it on (`getBookNowConfig`, `src/lib/book-now-config.ts`). Absence
- * is the ONLY thing this constant governs — a club that has saved its choice
- * keeps it, saved-true and saved-false alike. Only the portable policy fields
+ * is the ONLY thing this constant governs — at read time a stored row always
+ * wins, saved-true and saved-false alike. What switched EXISTING clubs off is
+ * the one-off backfill in
+ * `20260802100000_public_book_now_default_off` (owner decision on PR #2466,
+ * widening #2430 from "fresh installs" to "every club"), not this constant.
+ * Only the portable policy fields
  * are declared here — `bookNowTarget`/`bookNowPageId` are instance-local (they
  * reference a specific install's `PageContent` id) and never travel, so they
  * have no effective-default to carry. These match the schema column defaults, which is

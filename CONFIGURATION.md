@@ -623,20 +623,18 @@ menu.
 The public website header's **Book Now** button is configured on the same
 Admin > Page Content panel (`PublicContentSettings`):
 
-- **Show the button** — off hides it entirely (desktop and mobile). **Ships off**
-  (#2430). The shipped default governs only an install with **no
-  `PublicContentSettings` row at all**; once the row exists its stored value
-  wins, on or off. Note the row is not created only by this panel — the Club
-  Contact panel (`/api/admin/club-contact`) upserts the same singleton while
-  writing just the contact committee role, so `showBookNow` there takes whatever
-  column default was in force when the row appeared, which for pre-#2430 rows is
-  `true`. So "shipped off" is not the same as "off everywhere", and a row can
-  advertise the button without an admin ever choosing to. Every operator gets
-  the same instruction in `docs/UPGRADING.md`: open **Admin → Setup &
-  Configuration → Site Appearance & Content → Page Content**, set **Show the
-  Book Now button** deliberately, and **Save visibility**. (A database error
-  while reading the row also falls back to showing the button — see the
-  fail-open contract below.)
+- **Show the button** — off hides it entirely (desktop and mobile). **Off
+  everywhere since #2430.** A fresh install ships with it off (the column
+  default), and `20260802100000_public_book_now_default_off` also switched it
+  off for **every existing club**, whether or not the club had chosen to show
+  it — the owner's decision (1 Aug 2026), which deliberately overrode saved
+  choices rather than only changing what new installs get. A club that wants
+  the button turns it back on in one click: **Admin → Setup & Configuration →
+  Site Appearance & Content → Page Content** → tick **Show the Book Now
+  button** → **Save visibility**. From that save on, the stored value is what
+  governs and nothing in the product moves it again. (A database error while
+  reading the row still falls back to showing the button — see the fail-open
+  contract below.)
 - **Target** — *booking flow* (the default: a logged-in member goes to `/book`,
   a guest is sent through login) or a chosen **published content page**.
 - A page target that becomes unpublished or is deleted **fails open** to the

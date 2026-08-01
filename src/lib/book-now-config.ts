@@ -68,8 +68,11 @@ export async function getBookNowConfig(
     // default — OFF since #2430, so a fresh install advertises no public
     // booking CTA at all. That value is the same portable one config transfer
     // exports for an unsaved singleton (#2200), sourced from one constant so
-    // the two cannot drift. A club that HAS saved its choice is unaffected:
-    // the row wins below, saved-true and saved-false alike.
+    // the two cannot drift. A club that HAS saved a value is read from the row
+    // below, saved-true and saved-false alike — the one-off backfill in
+    // 20260802100000_public_book_now_default_off is what set every existing
+    // club's stored value to false at upgrade (owner decision on PR #2466),
+    // not this branch.
     if (!settings)
       return {
         show: DEFAULT_PUBLIC_CONTENT_SETTINGS.showBookNow,

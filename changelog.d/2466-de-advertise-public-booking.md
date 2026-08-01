@@ -13,19 +13,18 @@
   anonymous visitor sees it even when an admin has pointed the button at a
   content page of their own.
 
-  **The button now ships switched off.** A fresh install advertises no public
-  booking button until an admin ticks **Show the Book Now button** under
-  **Admin → Setup & Configuration → Site Appearance & Content → Page Content**.
-  The migration changes a column default and writes no rows, so the shipped
-  default governs only a club with no stored public-content settings at all —
-  there the button disappears on upgrade, which is the intended direction and
-  one click undoes it. Any club that already has that settings record keeps
-  what the record says. Worth knowing which you are, because the record is not
-  created only by the panel above: saving the **Club Contact** panel creates it
-  too, and the button's column then silently takes whatever default was in force
-  at that moment — so some clubs are advertising the button today without anyone
-  having chosen to. Every operator gets the same one-line instruction in
-  `docs/UPGRADING.md`: open that panel once and set the box deliberately.
+  **The button is switched off for every club.** After this release every club's
+  public Book Now button is off, whether or not the club had chosen to show it —
+  a fresh install ships without it, and the migration also turns it off for
+  every club that already had stored public-content settings. That deliberately
+  overrides clubs that had turned it on, including any club advertising the
+  button today; the owner decided it that way (1 Aug 2026) because the public
+  site should not read as walk-in commercial accommodation. Turning it back on
+  is one click and loses nothing else: **Admin → Setup & Configuration → Site
+  Appearance & Content → Page Content** → tick **Show the Book Now button** →
+  **Save visibility**. Your pages, your fee and policy visibility and your Book
+  Now target are all untouched — only that checkbox moves. `docs/UPGRADING.md`
+  carries the same instruction for operators.
 
   **The bumped-booking email stops sending non-members to a login they cannot
   use.** When the lodge fills with member bookings and a provisional booking is

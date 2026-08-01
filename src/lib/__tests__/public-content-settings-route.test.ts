@@ -67,9 +67,14 @@ describe("public content settings route", () => {
     expect(body.settings.showBookNow).toBe(false);
   });
 
-  // The other half: a saved row always wins, so an existing club that ticked
-  // the button on keeps it (covered by the serialisation test above, which
-  // returns saved-true) and one that ticked it off keeps that too.
+  // The other half: the panel reports the stored value verbatim in both
+  // directions and never re-derives it from the shipped default.
+  //
+  // Deliberately NOT a claim that an existing club keeps its saved choice
+  // across the upgrade — the owner reversed that on PR #2466 (1 Aug 2026), and
+  // 20260802100000_public_book_now_default_off writes false over every stored
+  // row. This asserts only that whatever the column holds afterwards is what
+  // the admin panel shows.
   it("returns a saved showBookNow choice unchanged in both directions", async () => {
     mocks.findUnique.mockResolvedValue({ ...existing, showBookNow: false });
     const off = (await (await GET()).json()) as { settings: { showBookNow: boolean } };

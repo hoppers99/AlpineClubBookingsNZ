@@ -86,36 +86,31 @@ as a red flag and check the release notes before deploying.
 
 ## Unreleased
 
-### The public "Book Now" button now ships OFF (#2430)
+### The public "Book Now" button is switched OFF for every club (#2430)
 
-`20260802100000_public_book_now_default_off` flips the **column default** of
-`PublicContentSettings.showBookNow` from true to false. It writes no rows, so
-**every club that has ever saved Admin → Setup & Configuration → Site Appearance
-& Content → Page Content keeps exactly the setting it saved** — ticked stays
-ticked, unticked stays unticked.
+**After this release every club's public "Book Now" button is off, whether or
+not the club had chosen to show it.** If your public website shows that button
+today, it will be gone the moment you cut over. This is deliberate: the owner
+decided (1 Aug 2026) that the public site must not read as walk-in commercial
+accommodation, and accepted that switching it off everywhere overrides clubs
+that had deliberately turned it on.
 
-**Do this one thing after you upgrade, whichever club you are.** Open **Admin →
-Setup & Configuration → Site Appearance & Content → Page Content**, look at
-**Show the Book Now button**, set it the way you actually want it, and press
-**Save visibility**. One saved click ends every ambiguity below and pins your
-choice against any future change of the shipped default. Which of these you are
-decides what you will see when you look:
+**To turn it back on** — one click, and nothing was lost:
 
-- **You have saved that panel before.** Nothing changed for you. Your ticked or
-  unticked choice is stored and keeps winning.
-- **Your club has no stored public-content settings at all.** The new default is
-  what you get, so the public header's booking button **disappears on upgrade**.
-  That is the intended direction — the public site should not read as walk-in
-  commercial accommodation — and ticking the box above brings it straight back.
-- **You have never opened Page Content, but the button is still there.** Not a
-  bug, and worth a moment. The same settings record also gets created the first
-  time an admin saves the **Club Contact** panel (choosing which committee role
-  the public Contact page names). That save stores only the contact role; the
-  button's own column silently takes whatever default was in force at that
-  moment — true for any record created before this release. So the button is
-  being advertised on your public site although nobody ever chose to advertise
-  it, and no upgrade will change that: a stored value always beats the shipped
-  default. Set it deliberately now, either way.
+**Admin → Setup & Configuration → Site Appearance & Content → Page Content →
+tick "Show the Book Now button" → Save visibility.**
+
+`20260802100000_public_book_now_default_off` does two things. It flips the
+**column default** of `PublicContentSettings.showBookNow` from true to false, so
+a fresh install ships with no public booking button; and it runs
+`UPDATE "PublicContentSettings" SET "showBookNow" = false`, so every club that
+already has stored settings is switched off too. Nothing else about your public
+content is touched — your pages, your fee and policy visibility, your Book Now
+*target*, and your Club Contact role all stay exactly as they were. Only that
+one checkbox moves, and only in one direction.
+
+Nothing warns you in the product, so if your club wants the button, put the
+click above on your post-upgrade list.
 
 **The button is also renamed for signed-out visitors.** Where it is shown, a
 visitor who is not signed in now sees **Member booking** instead of **Book Now**,

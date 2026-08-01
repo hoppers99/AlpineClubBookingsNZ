@@ -42,8 +42,16 @@ describe("getBookNowConfig fail-open matrix (E3 #1929)", () => {
     expect(DEFAULT_PUBLIC_CONTENT_SETTINGS.showBookNow).toBe(false);
   });
 
-  // The half of #2430 that must NOT move: a club that ticked the box keeps its
-  // button. Absence is the only state the new default governs.
+  // A stored row still wins at READ time, saved-true and saved-false alike —
+  // the reader never second-guesses the column.
+  //
+  // What this no longer means, deliberately: the owner REVERSED the "existing
+  // clubs keep their saved choice" half of #2430 on PR #2466 (1 Aug 2026). The
+  // migration 20260802100000_public_book_now_default_off now writes
+  // showBookNow = false over every existing row, so a club that had ticked the
+  // box is switched off at upgrade and has to tick it again. That happens in
+  // SQL, not here; this assertion is the guarantee that once the column says
+  // true again, the button comes back.
   it("keeps a saved-true club's button shown", async () => {
     findUnique.mockResolvedValue({
       showBookNow: true,
