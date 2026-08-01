@@ -27,9 +27,78 @@ AUDIT_ARCHIVE_DATABASE_URL=postgresql://...
 AUDIT_LOG_ARCHIVE_DATABASE_URL=postgresql://...
 ```
 
-`AUDIT_ARCHIVE_DATABASE_URL` is preferred. If neither variable is set, the retention job logs `archive-db-not-configured`, still anonymizes request data, and still prunes expired main-database audit rows.
+`AUDIT_ARCHIVE_DATABASE_URL` is preferred. If neither variable is set, the retention job logs `archive-db-not-configured`, still anonymizes request data, and still prunes expired main-database audit rows. That applies only when no archive is *configured*. A configured archive that **fails** stops the pruning too — see "Adding a column to AuditLog", step 3.
 
 The archive database can be a separate PostgreSQL database. The job creates and maintains the `AuditLogArchive` table and supporting indexes automatically. Do not point the archive URL at the primary `DATABASE_URL`; archive movement deletes copied eligible rows from the main audit table.
+
+## Archive Table Columns
+
+`AuditLogArchive` mirrors **every** column of the `AuditLog` model. The archive copy is the only surviving record — archive movement deletes the source row — so a column left out of the archive would be lost permanently.
+
+Coverage is no longer a hand-kept list. `src/lib/audit-retention.ts` holds one manifest, `AUDIT_ARCHIVE_COLUMNS`, and generates all three archive surfaces from it: the Prisma `select` that reads eligible rows, the `CREATE TABLE` that provisions the archive, and the `INSERT` that writes each row. The manifest's key type comes from the `AuditLog` model itself, so the coverage is exhaustive by construction (#2290).
+
+Two columns are stored differently from the main table, by design:
+
+- `archivedAt` records when the copy was written and is `NOT NULL` in the archive, even though it is nullable in the main table.
+- `ipAddress` and `userAgent` are written as `NULL` unless the row is `incidentPreserved`, matching the 90-day request-data policy above.
+
+### Adding a column to AuditLog
+
+1. **Nothing to remember in the app.** Adding a column to the `AuditLog` model fails the TypeScript build in `src/lib/audit-retention.ts` until the column is added to `AUDIT_ARCHIVE_COLUMNS` (one line: its archive column type) or listed in `AUDIT_ARCHIVE_EXCLUDED_COLUMNS` with a written reason for dropping it on archival. `src/lib/__tests__/audit-archive-columns.test.ts` checks the same contract in CI.
+
+2. **An existing archive database needs a migration.** The job provisions the archive table with `CREATE TABLE IF NOT EXISTS`, so an archive database created before the new column will not gain it automatically. Add it once, on the archive database, before the next `data-pruning` run:
+
+   ```sql
+   ALTER TABLE "AuditLogArchive" ADD COLUMN IF NOT EXISTS "newColumn" TEXT;
+   ```
+
+   Use the manifest's SQL type (`TEXT`, `TIMESTAMP(3)`, `JSONB`, `BOOLEAN`, ...) but **add the column nullable, even when the manifest declares `NOT NULL`**. Rows already in the archive predate the column and genuinely have no value for it, so `ADD COLUMN ... NOT NULL` is rejected by PostgreSQL on a populated table (`column ... contains null values`). The manifest's `NOT NULL` describes a *freshly provisioned* archive, where every row is written by the `INSERT` and always carries a value.
+
+   The one exception is a manifest entry that declares a keyword default, such as `BOOLEAN NOT NULL DEFAULT false` — copy that verbatim, because PostgreSQL backfills the existing rows from the `DEFAULT`:
+
+   ```sql
+   ALTER TABLE "AuditLogArchive"
+     ADD COLUMN IF NOT EXISTS "newFlag" BOOLEAN NOT NULL DEFAULT false;
+   ```
+
+   Leaving the column nullable on an older archive is safe and expected: the `INSERT` supplies a value for every row it writes, and the nullable column additionally tolerates the older rows that predate it. Do not try to backfill old rows to make the column `NOT NULL` — there is no correct historical value to invent.
+
+3. **If step 2 is missed, the whole retention job stops — deliberately.** The `INSERT` names the new column, PostgreSQL rejects it, and the archive step raises before any row is deleted from the main table. Nothing is archived, **and no expired audit rows are pruned either** — not from the main database, and not from the archive. That is intentional: pruning deletes on `expiresAt` alone and does not check whether a row was archived, so letting it run while archiving is stalled would permanently delete audit rows the archive never received. Over-retaining for a few days is recoverable; deleting an unarchived row is not.
+
+   So the blast radius of a missed `ALTER TABLE` is: **archiving paused + audit-retention deletions paused**, on the club's whole audit trail, until the archive table is corrected. The cron records a `data-pruning` FAILURE whose message names both halves. Treat it as time-bound, not cosmetic — extended over-retention of expired audit rows is a data-minimisation problem in its own right. The next nightly run catches up on both once the column exists.
+
+### Checking an existing archive for drift
+
+The archive must carry every column of the `AuditLog` model (minus anything listed in `AUDIT_ARCHIVE_EXCLUDED_COLUMNS`, which is empty today). Both lists can be read straight from PostgreSQL, so no access to the source is needed. Run the first query on the **main application database** and the second on the **archive database**:
+
+```sql
+-- Main database: the columns the archive is expected to carry.
+SELECT string_agg(column_name, ', ' ORDER BY column_name) AS expected_columns
+FROM information_schema.columns
+WHERE table_schema = current_schema() AND table_name = 'AuditLog';
+```
+
+```sql
+-- Archive database: the columns it actually carries.
+SELECT string_agg(column_name, ', ' ORDER BY column_name) AS archive_columns
+FROM information_schema.columns
+WHERE table_schema = current_schema() AND table_name = 'AuditLogArchive';
+```
+
+The two strings must be identical. Anything in the first and not the second is the column to add with the `ALTER TABLE` above. `current_schema()` matches where the job creates the table, and keeps the result from picking up a same-named table in another schema on a shared server.
+
+To inspect types and nullability as well — for example after applying an `ALTER TABLE` by hand — list them per column:
+
+```sql
+SELECT column_name, data_type, is_nullable
+FROM information_schema.columns
+WHERE table_schema = current_schema() AND table_name = 'AuditLogArchive'
+ORDER BY column_name;
+```
+
+Expect `is_nullable = NO` only for `id`, `action`, `createdAt`, `archivedAt` and `incidentPreserved` on an archive provisioned from scratch. A column added later by hand shows `YES` even where the manifest says `NOT NULL`, which is the expected outcome of step 2 above and not drift.
+
+Rows archived before a column existed keep `NULL` for it; the archive is not backfilled.
 
 ## Operator Checks
 
@@ -37,3 +106,5 @@ The archive database can be a separate PostgreSQL database. The job creates and 
 2. Confirm the archive DB is included in infrastructure backups before enabling the URL.
 3. After the next `data-pruning` run, check the cron summary for `archiveSkipped=false` and non-error completion.
 4. If archive movement must be paused, remove the archive URL and restart only the cron-enabled app instance.
+5. After a release that adds a column to `AuditLog`, apply the `ALTER TABLE` in "Adding a column to AuditLog" to the archive database before the next `data-pruning` run. If you are not sure whether a release added one, run the two drift queries in "Checking an existing archive for drift" — they need only database access.
+6. Treat a `data-pruning` FAILURE that names the audit archive as time-bound. While it persists, expired audit rows are not being deleted from either database, so fix the archive schema (step 2) rather than waiting for it to clear on its own. The failure message states both halves.
