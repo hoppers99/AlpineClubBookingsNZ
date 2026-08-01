@@ -5,6 +5,7 @@ import { toast } from "sonner"
 import { humanizeStatus } from "@/lib/status-colors"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
@@ -39,6 +40,15 @@ export function RefundAppealButton({
   const [error, setError] = useState("")
   const [existingRequests, setExistingRequests] = useState<RefundRequestData[]>([])
   const [loading, setLoading] = useState(true)
+  /*
+    #2264: the amount box carried a "0.00" placeholder — grey text inside the
+    control that reads as an amount already requested, and that vanishes on the
+    first keystroke. The format example now lives in the SAME paragraph that
+    already stated the maximum, rather than as a second line saying much the
+    same thing, and that paragraph is wired to the input with aria-describedby
+    so it is announced on focus instead of being invisible to a screen reader.
+  */
+  const amountHint = useFieldHint()
 
   useEffect(() => {
     fetch(`/api/bookings/${bookingId}/refund-request`)
@@ -176,12 +186,12 @@ export function RefundAppealButton({
                   value={requestedAmount}
                   onChange={(e) => setRequestedAmount(e.target.value)}
                   className="w-32"
-                  placeholder="0.00"
+                  {...amountHint.fieldProps}
                 />
               </div>
-              <p className="text-xs text-muted-foreground">
-                Maximum: ${(maxRefundableCents / 100).toFixed(2)}
-              </p>
+              <FieldHint {...amountHint.hintProps}>
+                Example: 0.00 — maximum ${(maxRefundableCents / 100).toFixed(2)}
+              </FieldHint>
             </div>
 
             <div className="flex gap-2">

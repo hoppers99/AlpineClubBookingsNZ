@@ -3,6 +3,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  FieldHint,
+  describedByFieldHint,
+  useFieldHint,
+} from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { BackLink } from "@/components/admin/back-link";
@@ -82,6 +87,25 @@ interface LayoutListItem {
 interface ValidationIssue {
   path: string;
   message: string;
+}
+
+/*
+  #2264 — hint ids for the area rows, each spelled EXACTLY ONCE. The rows render
+  inside a `.map()`, so `useFieldHint` cannot be called per row and the id must
+  be derived from the row index instead. Deriving it at each use site would mean
+  the same template literal written twice, where a typo in either copy silently
+  orphans the hint with nothing failing.
+*/
+function areaKeyHintId(index: number) {
+  return `area-key-hint-${index}`;
+}
+
+function areaDescriptionHintId(index: number) {
+  return `area-description-hint-${index}`;
+}
+
+function areaDefaultHintId(index: number) {
+  return `area-default-hint-${index}`;
 }
 
 function emptyArea(): AreaDraft {
@@ -217,6 +241,13 @@ export default function AdminDisplayLayoutsPage() {
   // input, and the Save/Delete/Add/Duplicate write controls, stay disabled
   // (#1940).
   const canEdit = useAdminAreaEditAccess("lodge");
+  // #2264 — the authoring examples move out of the placeholders. Where a muted
+  // note already sat under the field, the example is folded INTO that note and
+  // the note is promoted to a FieldHint, so no field gains a second line.
+  const keyHint = useFieldHint();
+  const nameHint = useFieldHint();
+  const bodyHint = useFieldHint();
+  const cssHint = useFieldHint();
 
   // Closed registries surfaced read-only into the editor (client-safe pure data).
   const conditions = useMemo(() => listDisplayConditions(), []);
@@ -602,30 +633,33 @@ export default function AdminDisplayLayoutsPage() {
               <Input
                 id="layout-key"
                 className="w-56 font-mono"
-                placeholder="everyday-board"
                 value={draft.key}
                 disabled={draft.id !== null || !canEdit}
                 onChange={(event) =>
                   setDraft((current) => ({ ...current, key: event.target.value }))
                 }
+                {...keyHint.fieldProps}
               />
-              <p className="text-muted-foreground text-xs">
+              <FieldHint {...keyHint.hintProps}>
                 {draft.id
                   ? "Locked — the key is fixed once templates and seeds reference it."
-                  : "Lower-case slug. Fixed after creation."}
-              </p>
+                  : "Lower-case slug, for example everyday-board. Fixed after creation."}
+              </FieldHint>
             </div>
             <div className="min-w-64 flex-1 space-y-1">
               <Label htmlFor="layout-name">Name</Label>
               <Input
                 id="layout-name"
-                placeholder="Everyday board"
                 value={draft.name}
                 disabled={!canEdit}
                 onChange={(event) =>
                   setDraft((current) => ({ ...current, name: event.target.value }))
                 }
+                {...nameHint.fieldProps}
               />
+              <FieldHint {...nameHint.hintProps}>
+                Example: Everyday board
+              </FieldHint>
             </div>
           </div>
 
@@ -652,9 +686,6 @@ export default function AdminDisplayLayoutsPage() {
               className={`${textareaClass} min-h-40`}
               spellCheck={false}
               disabled={!canEdit}
-              placeholder={
-                '<main class="board">\n  {{area:arrivals}}\n  {{area:notice}}\n</main>'
-              }
               value={draft.bodyHtml}
               onChange={(event) =>
                 setDraft((current) => ({
@@ -662,13 +693,20 @@ export default function AdminDisplayLayoutsPage() {
                   bodyHtml: event.target.value,
                 }))
               }
+              {...bodyHint.fieldProps}
             />
-            <p className="text-muted-foreground text-xs">
+            <FieldHint {...bodyHint.hintProps}>
               Structural HTML with{" "}
               <code className="bg-muted rounded px-1">{"{{area:key}}"}</code>{" "}
               placeholders — one per area below. This is the layout skeleton, so
-              it is a plain editor, not the page-content rich editor.
-            </p>
+              it is a plain editor, not the page-content rich editor. Example:
+              {/* The example is multi-line, so it keeps its line breaks —
+                  `whitespace-pre-wrap` on a span rather than a <pre>, which
+                  cannot legally nest inside the hint's <p>. */}
+              <span className="mt-1 block whitespace-pre-wrap font-mono">
+                {'<main class="board">\n  {{area:arrivals}}\n  {{area:notice}}\n</main>'}
+              </span>
+            </FieldHint>
           </div>
 
           <div className="space-y-1">
@@ -678,7 +716,6 @@ export default function AdminDisplayLayoutsPage() {
               className={`${textareaClass} min-h-32`}
               spellCheck={false}
               disabled={!canEdit}
-              placeholder={".board { color: var(--display-ink); }"}
               value={draft.defaultCss}
               onChange={(event) =>
                 setDraft((current) => ({
@@ -686,9 +723,14 @@ export default function AdminDisplayLayoutsPage() {
                   defaultCss: event.target.value,
                 }))
               }
+              {...cssHint.fieldProps}
             />
-            <p className="text-muted-foreground text-xs">
-              Theme tokens you can reach for:{" "}
+            <FieldHint {...cssHint.hintProps}>
+              Example:{" "}
+              <code className="bg-muted rounded px-1">
+                {".board { color: var(--display-ink); }"}
+              </code>
+              . Theme tokens you can reach for:{" "}
               {cssTokens.map((token, i) => (
                 <span key={token.name}>
                   {i > 0 && ", "}
@@ -699,7 +741,7 @@ export default function AdminDisplayLayoutsPage() {
               ))}
               . External URLs, <code>@import</code>, and script vectors are
               stripped automatically on save.
-            </p>
+            </FieldHint>
           </div>
 
           <div className="space-y-3">
@@ -717,13 +759,18 @@ export default function AdminDisplayLayoutsPage() {
                     <Input
                       id={`area-key-${index}`}
                       className="w-44 font-mono"
-                      placeholder="arrivals"
                       value={area.key}
                       disabled={!canEdit}
                       onChange={(event) =>
                         updateArea(index, { key: event.target.value })
                       }
+                      aria-describedby={describedByFieldHint(
+                        areaKeyHintId(index),
+                      )}
                     />
+                    <FieldHint id={areaKeyHintId(index)}>
+                      Example: arrivals
+                    </FieldHint>
                   </div>
                   <div className="min-w-48 flex-1 space-y-1">
                     <Label
@@ -734,13 +781,18 @@ export default function AdminDisplayLayoutsPage() {
                     </Label>
                     <Input
                       id={`area-description-${index}`}
-                      placeholder="Today's arrivals board"
                       value={area.description}
                       disabled={!canEdit}
                       onChange={(event) =>
                         updateArea(index, { description: event.target.value })
                       }
+                      aria-describedby={describedByFieldHint(
+                        areaDescriptionHintId(index),
+                      )}
                     />
+                    <FieldHint id={areaDescriptionHintId(index)}>
+                      Example: Today&apos;s arrivals board
+                    </FieldHint>
                   </div>
                   <div className="space-y-1">
                     <Label className="text-xs" htmlFor={`area-kind-${index}`}>
@@ -812,7 +864,10 @@ export default function AdminDisplayLayoutsPage() {
                         id={`area-rotate-${index}`}
                         className="w-32"
                         inputMode="numeric"
-                        placeholder="12"
+                        /* #2264 — the bare "12" is deleted rather than
+                           relocated: the Label above already states the 3–300
+                           range and the blank-means-default rule, so a hint
+                           would only repeat it. */
                         value={area.rotateSeconds}
                         disabled={!canEdit}
                         onChange={(event) =>
@@ -914,22 +969,32 @@ export default function AdminDisplayLayoutsPage() {
                       className={`${textareaClass} min-h-20`}
                       spellCheck={false}
                       disabled={!canEdit}
-                      placeholder={"<p>Welcome</p> or {{module:notice}}"}
                       value={area.defaultContentHtml}
                       onChange={(event) =>
                         updateArea(index, {
                           defaultContentHtml: event.target.value,
                         })
                       }
+                      aria-describedby={describedByFieldHint(
+                        areaDefaultHintId(index),
+                      )}
                     />
-                    <p className="text-muted-foreground text-xs">
+                    <FieldHint id={areaDefaultHintId(index)}>
                       Fallback shown when a Template leaves this slot empty. HTML,
                       or a single{" "}
                       <code className="bg-muted rounded px-1">
                         {"{{module:name}}"}
                       </code>{" "}
-                      embed.
-                    </p>
+                      embed — for example{" "}
+                      <code className="bg-muted rounded px-1">
+                        {"<p>Welcome</p>"}
+                      </code>{" "}
+                      or{" "}
+                      <code className="bg-muted rounded px-1">
+                        {"{{module:notice}}"}
+                      </code>
+                      .
+                    </FieldHint>
                   </div>
                 )}
               </div>

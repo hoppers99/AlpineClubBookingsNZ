@@ -164,8 +164,10 @@ test("an admin records a past stay on behalf of a member without emailing them",
   ).toBeVisible();
 
   // Pick the target member through the search picker.
+  // #2264: the picker's visible label is now associated with its input, so
+  // select by accessible name instead of by placeholder.
   await page
-    .getByPlaceholder("Type a name or email...")
+    .getByRole("textbox", { name: "Search for a member to book on behalf of" })
     .fill(personas.booker.firstName);
   await page
     .getByRole("button", {

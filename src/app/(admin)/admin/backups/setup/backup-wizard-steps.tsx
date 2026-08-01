@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { AlertTriangle, CheckCircle2, Loader2 } from "lucide-react";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { WizardStepHelpers } from "@/components/admin/integration-wizard";
@@ -291,6 +292,10 @@ export function DestinationStep({
   context: BackupWizardContext;
   helpers: WizardStepHelpers;
 }) {
+  // #2264 — worded identically to the same two fields on the Backups settings
+  // page (backups-client.tsx), which are their twins.
+  const bucketHint = useFieldHint();
+  const regionHint = useFieldHint();
   const [bucket, setBucket] = useState(context.bucket ?? "");
   const [region, setRegion] = useState(context.region);
   const [saving, setSaving] = useState(false);
@@ -344,22 +349,28 @@ export function DestinationStep({
           <Input
             id="backup-wizard-bucket"
             autoComplete="off"
-            placeholder="my-club-backups"
             value={bucket}
             onChange={(e) => setBucket(e.target.value)}
             disabled={!canWrite || saving}
+            {...bucketHint.fieldProps}
           />
+          <FieldHint {...bucketHint.hintProps}>
+            Example: my-club-backups
+          </FieldHint>
         </div>
         <div className="space-y-1">
           <Label htmlFor="backup-wizard-region">Region</Label>
           <Input
             id="backup-wizard-region"
             autoComplete="off"
-            placeholder="ap-southeast-2"
             value={region}
             onChange={(e) => setRegion(e.target.value)}
             disabled={!canWrite || saving}
+            {...regionHint.fieldProps}
           />
+          <FieldHint {...regionHint.hintProps}>
+            Example: ap-southeast-2
+          </FieldHint>
         </div>
       </div>
 

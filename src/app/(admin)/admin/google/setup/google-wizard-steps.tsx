@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 import { ExternalLink } from "lucide-react";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { signIn } from "next-auth/react";
@@ -138,6 +139,12 @@ export function CredentialsStep({
   context: GoogleWizardContext;
   helpers: WizardStepHelpers;
 }) {
+  // #2264 — the ternary is SPLIT, not blanket-converted: the "already set"
+  // branch ("Enter a new value to replace") is live state about this field and
+  // stays inside the box; only the unset branch was an example value, and it
+  // moves to a hint that stays visible while the operator pastes.
+  const clientIdHint = useFieldHint();
+  const clientSecretHint = useFieldHint();
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
   const [saving, setSaving] = useState(false);
@@ -220,12 +227,16 @@ export function CredentialsStep({
           placeholder={
             context.credentials.client_id.set
               ? "Enter a new value to replace"
-              : "123456789-abc.apps.googleusercontent.com"
+              : undefined
           }
           value={clientId}
           onChange={(e) => setClientId(e.target.value)}
           disabled={canWrite !== true || saving}
+          {...clientIdHint.fieldProps}
         />
+        <FieldHint {...clientIdHint.hintProps}>
+          Example: 123456789-abc.apps.googleusercontent.com
+        </FieldHint>
       </div>
 
       <div className="space-y-1">
@@ -243,12 +254,16 @@ export function CredentialsStep({
           placeholder={
             context.credentials.client_secret.set
               ? "Enter a new value to replace"
-              : "GOCSPX-…"
+              : undefined
           }
           value={clientSecret}
           onChange={(e) => setClientSecret(e.target.value)}
           disabled={canWrite !== true || saving}
+          {...clientSecretHint.fieldProps}
         />
+        <FieldHint {...clientSecretHint.hintProps}>
+          Example: GOCSPX-…
+        </FieldHint>
       </div>
 
       {error ? <Alert variant="error">{error}</Alert> : null}

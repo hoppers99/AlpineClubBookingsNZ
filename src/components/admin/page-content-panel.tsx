@@ -33,6 +33,11 @@ import { toast } from "sonner";
 import { useConfirm } from "@/components/confirm-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  FieldHint,
+  describedByFieldHint,
+  useFieldHint,
+} from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -78,6 +83,9 @@ import {
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action";
 import { formatNZDateTime } from "@/lib/nzst-date";
+
+// #2264: one hint for the width/height pair, not one per box.
+const IMAGE_SIZE_HINT_ID = "page-content-image-size-hint";
 
 function stripHtml(html: string): string {
   return html
@@ -1276,25 +1284,42 @@ export const WysiwygEditor = forwardRef<
                     {selectedImagePath}
                   </p>
                 </div>
+                {/*
+                  #2264: "Width (px, e.g. 300)" was doing two jobs at once — it
+                  was the field's ONLY name AND carried an example. The name
+                  stays in the box (there is no room for a label in this
+                  two-up row, and an aria-label now states it properly); the
+                  example moves down into the paragraph that was already there,
+                  which becomes the row's single hint rather than a second one
+                  per box.
+                */}
                 <div className="flex items-center gap-2">
                   <span className="shrink-0 text-xs text-muted-foreground">Size:</span>
                   <Input
                     value={imageWidth}
                     onChange={(e) => setImageWidth(e.target.value)}
-                    placeholder="Width (px, e.g. 300)"
+                    aria-label="Image width in pixels"
+                    aria-describedby={describedByFieldHint(IMAGE_SIZE_HINT_ID)}
+                    placeholder="Width (px)"
                     className="h-7 flex-1 text-xs"
                   />
                   <span className="shrink-0 text-xs text-muted-foreground">×</span>
                   <Input
                     value={imageHeight}
                     onChange={(e) => setImageHeight(e.target.value)}
+                    aria-label="Image height in pixels"
+                    aria-describedby={describedByFieldHint(IMAGE_SIZE_HINT_ID)}
                     placeholder="Height (px, optional)"
                     className="h-7 flex-1 text-xs"
                   />
                 </div>
-                <p className="text-[10px] text-muted-foreground">
-                  Enter pixel values only. Leave blank for natural size.
-                </p>
+                <FieldHint
+                  id={IMAGE_SIZE_HINT_ID}
+                  className="text-[10px]"
+                >
+                  Enter pixel values only, for example 300. Leave blank for
+                  natural size.
+                </FieldHint>
               </div>
             ) : null}
 
@@ -1462,6 +1487,36 @@ export function PageContentPanel() {
   const [newSortOrder, setNewSortOrder] = useState(100);
   const bodyEditorRef = useRef<WysiwygEditorHandle | null>(null);
   const headerEditorRef = useRef<WysiwygEditorHandle | null>(null);
+  /*
+    #2264: the Add-Page dialog and the Edit-Page panel are twins — the same four
+    facts about a page, asked twice — so their example values are converted
+    together and worded identically. Grey example text inside a control reads as
+    a value the page already has (badly misleading in the EDIT panel, where the
+    boxes really do hold the page's current caption and menu title) and vanishes
+    the moment the admin types. Each example is helper text under its field now,
+    tied to the control with aria-describedby.
+
+    The slug hint ABSORBS the "Path preview:" line that already sat under that
+    box rather than stacking a second paragraph, and its example matches the one
+    the API rejects an invalid slug with (`src/app/api/admin/page-content/route.ts`)
+    so the form and the error agree on what a good slug looks like.
+
+    NOT converted here: the edit panel's "page-slug" and "Page title" and the
+    "Short intro text shown under the title" / "Enter page HTML here" strings are
+    label echoes and instructions, not specimens, so they stay in the control.
+
+    The Add dialog labels its fields with a plain `<p>`, which names nothing, so
+    every input that loses its placeholder gains an `aria-label` in the same
+    edit. The edit panel's fields are wrapped in a real `<label>`, so the hint is
+    rendered OUTSIDE that wrapper — text inside a `<label>` becomes part of the
+    control's accessible NAME, and an example is a description, not a name.
+  */
+  const newSlugHint = useFieldHint();
+  const newCaptionHint = useFieldHint();
+  const newMenuTitleHint = useFieldHint();
+  const newTitleHint = useFieldHint();
+  const draftCaptionHint = useFieldHint();
+  const draftMenuTitleHint = useFieldHint();
 
   const selectedPage = useMemo(
     () => pages.find((page) => page.id === selectedPageId) ?? null,
@@ -1943,11 +1998,12 @@ export function PageContentPanel() {
                 onChange={(event) =>
                   setNewSlug(event.target.value.trim().toLowerCase())
                 }
-                placeholder="trip-reports"
+                aria-label="Slug"
+                {...newSlugHint.fieldProps}
               />
-              <p className="text-xs text-muted-foreground">
-                Path preview: /{newSlug || "your-page"}
-              </p>
+              <FieldHint {...newSlugHint.hintProps}>
+                {`Example: trip-reports or join/apply. Path preview: /${newSlug || "your-page"}`}
+              </FieldHint>
             </div>
             <div className="space-y-1">
               <p className="text-sm font-medium text-foreground">Menu order</p>
@@ -1967,24 +2023,36 @@ export function PageContentPanel() {
               <Input
                 value={newCaption}
                 onChange={(event) => setNewCaption(event.target.value)}
-                placeholder="A practical alpine club"
+                aria-label="Caption"
+                {...newCaptionHint.fieldProps}
               />
+              <FieldHint {...newCaptionHint.hintProps}>
+                Example: A practical alpine club
+              </FieldHint>
             </div>
             <div className="space-y-1">
               <p className="text-sm font-medium text-foreground">Menu title</p>
               <Input
                 value={newMenuTitle}
                 onChange={(event) => setNewMenuTitle(event.target.value)}
-                placeholder="About"
+                aria-label="Menu title"
+                {...newMenuTitleHint.fieldProps}
               />
+              <FieldHint {...newMenuTitleHint.hintProps}>
+                Example: About
+              </FieldHint>
             </div>
             <div className="space-y-1">
               <p className="text-sm font-medium text-foreground">Page title</p>
               <Input
                 value={newTitle}
                 onChange={(event) => setNewTitle(event.target.value)}
-                placeholder="Trip Reports"
+                aria-label="Page title"
+                {...newTitleHint.fieldProps}
               />
+              <FieldHint {...newTitleHint.hintProps}>
+                Example: Trip Reports
+              </FieldHint>
             </div>
             <div className="space-y-1">
               <p className="text-sm font-medium text-foreground">Header text</p>
@@ -2086,30 +2154,40 @@ export function PageContentPanel() {
                   Public path: /{draftSlug || "page-slug"}
                 </div>
                 <div className="md:col-span-2 grid grid-cols-3 gap-3">
-                  <label className="space-y-1">
-                    <span className="text-xs font-medium text-muted-foreground">
-                      Caption
-                    </span>
-                    <Input
-                      value={draftCaption}
-                      onChange={(event) => setDraftCaption(event.target.value)}
-                      placeholder="A practical alpine club"
-                      readOnly={!canEdit}
-                    />
-                  </label>
-                  <label className="space-y-1">
-                    <span className="text-xs font-medium text-muted-foreground">
-                      Menu title
-                    </span>
-                    <Input
-                      value={draftMenuTitle}
-                      onChange={(event) =>
-                        setDraftMenuTitle(event.target.value)
-                      }
-                      placeholder="About"
-                      readOnly={!canEdit}
-                    />
-                  </label>
+                  <div className="space-y-1">
+                    <label className="block space-y-1">
+                      <span className="text-xs font-medium text-muted-foreground">
+                        Caption
+                      </span>
+                      <Input
+                        value={draftCaption}
+                        onChange={(event) => setDraftCaption(event.target.value)}
+                        readOnly={!canEdit}
+                        {...draftCaptionHint.fieldProps}
+                      />
+                    </label>
+                    <FieldHint {...draftCaptionHint.hintProps}>
+                      Example: A practical alpine club
+                    </FieldHint>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="block space-y-1">
+                      <span className="text-xs font-medium text-muted-foreground">
+                        Menu title
+                      </span>
+                      <Input
+                        value={draftMenuTitle}
+                        onChange={(event) =>
+                          setDraftMenuTitle(event.target.value)
+                        }
+                        readOnly={!canEdit}
+                        {...draftMenuTitleHint.fieldProps}
+                      />
+                    </label>
+                    <FieldHint {...draftMenuTitleHint.hintProps}>
+                      Example: About
+                    </FieldHint>
+                  </div>
                   <label className="space-y-1">
                     <span className="text-xs font-medium text-muted-foreground">
                       Page title

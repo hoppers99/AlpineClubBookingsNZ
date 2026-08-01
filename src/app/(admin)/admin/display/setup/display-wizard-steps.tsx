@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Check, ExternalLink } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -868,6 +869,10 @@ export function PairStep({
   /** Set (or change) the board the screen will be bound to at pairing. */
   onChoose: (templateId: string) => void;
 }) {
+  // #2264 — the suggested screen name moves under the field. Parked inside the
+  // box it read as a name already chosen, and it vanished on the first
+  // keystroke; the interpolated lodge name is carried across unchanged.
+  const deviceNameHint = useFieldHint();
   const [deviceName, setDeviceName] = useState("");
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1130,10 +1135,13 @@ export function PairStep({
                     <Input
                       id="pair-name"
                       value={deviceName}
-                      placeholder={`Lobby TV — ${lodgeName}`}
                       disabled={helpers.canEdit !== true}
                       onChange={(event) => setDeviceName(event.target.value)}
+                      {...deviceNameHint.fieldProps}
                     />
+                    <FieldHint {...deviceNameHint.hintProps}>
+                      {`Example: Lobby TV — ${lodgeName}`}
+                    </FieldHint>
                   </div>
                 ) : null}
                 <ViewOnlyActionButton

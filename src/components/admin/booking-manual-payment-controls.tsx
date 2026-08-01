@@ -12,6 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { BookingNoEmailsNotice } from "@/components/booking-no-emails-notice";
@@ -94,6 +95,17 @@ export function BookingManualPaymentControls({
   const [dialog, setDialog] = useState<null | "paid" | "unpaid">(null);
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  /*
+    #2264: the "e.g. …" specimens used to sit in each note box as a placeholder.
+    Grey example text INSIDE a control reads as a value the form already holds,
+    and it vanishes the moment the admin starts typing — exactly when the
+    example is still wanted. Both now render as helper text under the field,
+    wired to it with `aria-describedby`. The settle-note hint ABSORBS the
+    "kept with the club's records" paragraph that already sat there rather than
+    stacking a second line beneath it.
+  */
+  const paymentNoteHint = useFieldHint();
+  const reversalNoteHint = useFieldHint();
   /**
    * #2397: the admin's answer about the outstanding extra. Starts UNANSWERED
    * and has no default — recording the payment is blocked until they choose,
@@ -394,12 +406,12 @@ export function BookingManualPaymentControls({
                   value={note}
                   maxLength={NOTE_MAX_LENGTH}
                   onChange={(event) => setNote(event.target.value)}
-                  placeholder="e.g. cash at the lodge, or bank transfer ref 1234"
+                  {...paymentNoteHint.fieldProps}
                 />
-                <p className="text-xs text-muted-foreground">
-                  Kept with the club&apos;s records. The member never sees this
-                  note.
-                </p>
+                <FieldHint {...paymentNoteHint.hintProps}>
+                  e.g. cash at the lodge, or bank transfer ref 1234. Kept with
+                  the club&apos;s records — the member never sees this note.
+                </FieldHint>
               </div>
               {noEmails ? (
                 <BookingNoEmailsNotice />
@@ -471,8 +483,11 @@ export function BookingManualPaymentControls({
                   value={note}
                   maxLength={NOTE_MAX_LENGTH}
                   onChange={(event) => setNote(event.target.value)}
-                  placeholder="e.g. recorded against the wrong booking"
+                  {...reversalNoteHint.fieldProps}
                 />
+                <FieldHint {...reversalNoteHint.hintProps}>
+                  e.g. recorded against the wrong booking
+                </FieldHint>
               </div>
               <DialogFooter className="gap-2 sm:gap-2">
                 <Button

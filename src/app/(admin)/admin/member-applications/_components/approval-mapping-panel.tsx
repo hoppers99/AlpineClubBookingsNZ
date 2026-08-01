@@ -446,8 +446,20 @@ export default function ApprovalMappingPanel({
             )}
 
             <div className="flex gap-2">
+              {/*
+                #2264: a raw <input> with no label, no id and no aria-label —
+                its placeholder was the accessible name, which is why the e2e
+                spec had to reach it with `getByPlaceholder`. The name says what
+                this box is FOR, deliberately different from the "Replacement
+                member" box on the applications page itself: the two can render
+                together, and two identically-named textboxes on one page are
+                ambiguous to a screen reader and to Playwright alike. The
+                placeholder stays — it is a search instruction, not an example
+                value, so it belongs inside the control.
+              */}
               <input
                 className="w-full rounded-md border border-border px-3 py-2 text-sm"
+                aria-label="Search for an existing member to map to"
                 value={searchQueries[key] || ""}
                 onChange={(event) =>
                   setSearchQueries((prev) => ({ ...prev, [key]: event.target.value }))

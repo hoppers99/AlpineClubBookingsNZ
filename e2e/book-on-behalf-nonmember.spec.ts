@@ -142,8 +142,17 @@ async function pickDatesAddGuestAndQuote(
 
   // A non-member owner has no family quick-add, so the officer types the guest.
   await page.getByRole("button", { name: "+ Add Non-Member Guest" }).click();
-  await page.getByPlaceholder("First name").fill(guest.firstName);
-  await page.getByPlaceholder("Last name").fill(guest.lastName);
+  // #2264: the guest card is a named group and its fields are now
+  // label-associated, so select by role within the card rather than by
+  // placeholder. Scoping is essential here — this admin page ALSO renders the
+  // non-member contact form, whose fields are named almost identically.
+  const guestCard = page.getByRole("group", { name: "Guest 1" });
+  await guestCard
+    .getByRole("textbox", { name: "First Name" })
+    .fill(guest.firstName);
+  await guestCard
+    .getByRole("textbox", { name: "Last Name" })
+    .fill(guest.lastName);
 
   const [quoteResponse] = await Promise.all([
     page.waitForResponse(

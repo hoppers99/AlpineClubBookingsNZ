@@ -158,11 +158,15 @@ test("an admin maps a rejoining applicant onto their existing member record (E10
   const mapToExisting = card.getByRole("radio", { name: "Map to existing" });
   await mapToExisting.click();
   // Functional proof the mode actually switched to MAP: the member live-search
-  // (this placeholder) only renders when the person is set to Map to existing.
-  await expect(card.getByPlaceholder("Search name or email")).toBeVisible();
-  await card
-    .getByPlaceholder("Search name or email")
-    .fill(MAPPING_APPLICANT.email);
+  // only renders when the person is set to Map to existing. #2264 gave that
+  // box a real accessible name, so it is selected by role rather than by its
+  // placeholder — the name is distinct from the "Replacement member" box the
+  // applications page renders, which shares the same placeholder text.
+  const mappingSearch = card.getByRole("textbox", {
+    name: "Search for an existing member to map to",
+  });
+  await expect(mappingSearch).toBeVisible();
+  await mappingSearch.fill(MAPPING_APPLICANT.email);
   await card.getByRole("button", { name: "Search", exact: true }).click();
   await card.getByRole("button", { name: "Use" }).first().click();
   await expect(card.getByText(`Mapped to ${applicantName}`)).toBeVisible();

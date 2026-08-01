@@ -590,11 +590,14 @@ in the one place where the layout forces the hint away from its field). What
 remains in a `placeholder` is everything else: instructions ("First name",
 "Search name or email", "Optional — defaults to the club name") and format
 samples ("member@example.com", "0.00"). Two example-bearing placeholders
-survive on screens excluded from this pass (the display Templates page's HTML
-sample, and the page-content panel's "Width (px, e.g. 300)") — they belong to
-the #2248 rewrite and the #2264 sweep respectively. Those are unchanged in wording here and are
-#2264's problem, which is why the italic restyle matters — it covers the ones
-this issue does not move.
+survived that pass on screens it excluded (the display Templates page's HTML
+sample, and the page-content panel's "Width (px, e.g. 300)") — which is why
+the italic restyle mattered: it covered the ones #2257 did not move. **#2264
+has since moved both**: the Templates HTML sample now folds into that field's
+existing helper paragraph, and the size field was split into a `Width (px)`
+name plus an `e.g. 300` example in the row's one hint. What remains in a
+`placeholder` anywhere in the repo is an instruction, a blank-state statement,
+or a field name — never a specimen answer.
 
 `FieldHint` exists because the visually-obvious half of that move is the easy
 half. A `<p>` sitting below an input is invisible to a screen reader focused on
@@ -635,9 +638,50 @@ foreground ink, indistinguishable from a chosen value. It now styles through
 `data-[placeholder]:`, which is the attribute Radix actually stamps.
 
 The repo-wide sweep of the remaining placeholders (including the raw
-`<input>`/`<textarea>` elements that bypass the styled primitives) is
+`<input>`/`<textarea>` elements that bypass the styled primitives) landed as
 **#2264**; the display screens are rewritten by **#2248** and adopt
 `FieldHint` there.
+
+**What #2264 settled, so the next conversion does not have to re-decide it.**
+Every remaining `placeholder` in `src/` was classified into exactly one of
+three buckets, and the boundary between them is the rule to reuse:
+
+- **An example value converts.** A specimen of what a correct entry looks like
+  — `president@example.org`, `Lobby TV`, `75.00`, `sk_test_…`, `Locker A1`,
+  `64 27 123 4567`. The test is whether a reasonable operator could mistake it
+  for something already entered.
+- **An instruction stays inside the control.** Text describing what the control
+  DOES (`Search name or email`), or what leaving it blank MEANS
+  (`Use configured amount`, `Unlimited`, `Leave blank …`), or what a set
+  credential field now expects (`Enter a new value to replace`). Moving those
+  below the field would be a regression: they are about the box, not about the
+  answer.
+- **A name stays until the field has a real one.** Where the placeholder was
+  the field's only accessible name, the fix is a `<Label htmlFor>` or an
+  `aria-label` added in the SAME edit — never a bare removal.
+
+Three corollaries worth keeping:
+
+1. **A ternary placeholder is almost always two different things** and must be
+   split, not blanket-converted: the unset branch is usually an example, while
+   the set/disabled branch is live state. `non-member-contact-form.tsx` is the
+   worked example — `guest@example.com` converted, `No email address` stayed.
+2. **`<SelectValue placeholder>` is not an input placeholder.** It is the
+   Radix trigger's empty-state label; `FieldHint` does not apply to it, and
+   none were touched.
+3. **A row of micro-inputs gets one hint, not one per box** (phone
+   country/area/number, amount min/max). One hook cannot serve three controls
+   — the wiring contract pairs each `useFieldHint()` with exactly one
+   `fieldProps` spread — so those rows use `describedByFieldHint()` with a
+   deterministic id, the same mechanism the `.map()` rows use.
+
+#2264 also re-selected the tests and Playwright specs that had been reaching
+these fields through `getByPlaceholder`, because a placeholder is not a
+selector: a field whose only handle is its placeholder is a field with no
+accessible name. Each of those now selects by role and accessible name, and
+the components gained the names to make that possible — including a per-device
+name on the display pairing box and a named group per guest card, both of which
+also keep the selector unambiguous once a second row exists.
 
 ## Module Boundaries
 

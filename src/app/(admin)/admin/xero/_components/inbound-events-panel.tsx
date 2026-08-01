@@ -9,6 +9,7 @@ import {
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action"
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access"
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { resetXeroInboundDatasetSearchParams } from "@/lib/admin-dataset-reset-state"
@@ -45,6 +46,9 @@ export function InboundEventsPanel({
   // Replay writes the finance-area inbound-events replay route; a view-only
   // finance admin browses the events but cannot replay them (#1997).
   const canEdit = useAdminAreaEditAccess("finance")
+  // #2264 — the example event type moves under the box; inside it, grey text
+  // read as a filter already applied.
+  const eventTypeHint = useFieldHint()
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
@@ -284,7 +288,8 @@ export function InboundEventsPanel({
           </div>
           <div className="space-y-1">
             <Label className="text-xs text-muted-foreground" htmlFor="xero-in-event-type">Event Type</Label>
-            <Input id="xero-in-event-type" value={eventTypeFilter === "all" ? "" : eventTypeFilter} onChange={(event) => { setEventTypeFilter(event.target.value || "all"); resetPage() }} placeholder="UPDATE" />
+            <Input id="xero-in-event-type" value={eventTypeFilter === "all" ? "" : eventTypeFilter} onChange={(event) => { setEventTypeFilter(event.target.value || "all"); resetPage() }} {...eventTypeHint.fieldProps} />
+            <FieldHint {...eventTypeHint.hintProps}>Example: UPDATE</FieldHint>
           </div>
           <div className="space-y-1">
             <Label className="text-xs text-muted-foreground" htmlFor="xero-in-created-from">Created From</Label>

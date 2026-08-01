@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
@@ -12,6 +13,10 @@ export default function ForgotPasswordPage() {
   const [submitted, setSubmitted] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  // #2264 — the example address moves below the box. Greyed inside it, it reads
+  // as an address already filled in, which on a reset form invites a submit
+  // against the wrong account.
+  const emailHint = useFieldHint();
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -84,12 +89,15 @@ export default function ForgotPasswordPage() {
             <Input
               id="email"
               type="email"
-              placeholder="you@example.com"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
               autoComplete="email"
+              {...emailHint.fieldProps}
             />
+            <FieldHint {...emailHint.hintProps}>
+              Example: you@example.com
+            </FieldHint>
           </div>
         </CardContent>
 
