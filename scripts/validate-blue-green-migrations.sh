@@ -72,18 +72,40 @@ HOT_TABLE_SQL_REGEX='(ALTER TABLE|UPDATE|DELETE FROM|TRUNCATE|CREATE[[:space:]]+
 #     ALTER TYPE "BookingChangeRequestStatus"
 #       RENAME VALUE 'PENDING' TO 'REQUESTED';
 # would otherwise slip past (that exact split is how 20260525010000 writes its
-# ALTER INDEX statements). "RENAME VALUE" appears in no other PostgreSQL
-# statement, so the bare form costs no false positives beyond a line comment that
-# quotes the phrase — which fails closed, the safe direction.
+# ALTER INDEX statements).
+#
+# A bare phrase still cannot survive a wrap INSIDE itself — "RENAME" ending one
+# line and "VALUE"/"COLUMN" starting the next reads as neither. "RENAME COLUMN"
+# has always had a backstop for exactly that: the separate "ALTER TABLE .* RENAME"
+# alternative matches the first line on its own. "ALTER TYPE .* RENAME" (#2288) is
+# the matching backstop for "RENAME VALUE", so the two enum/column rename patterns
+# finally have the same two-pattern coverage. It closes a second hole in the same
+# edit: a standalone type rename, ALTER TYPE "X" RENAME TO "Y" — a spelling this
+# repo actually writes (20260411203000) — was matched by nothing in this list.
+#
+# The backstop costs nothing on the committed tree: exactly two migrations match
+# it (20260411203000 and 20260525010000), both of which already trip DROP TYPE /
+# ALTER COLUMN ... TYPE / RENAME COLUMN, and ALTER TYPE ... ADD VALUE contains no
+# RENAME so the additive enum migrations stay unmatched. Like its
+# "ALTER TABLE .* RENAME" sibling the ".*" is greedy across the line, so an
+# ADD VALUE whose new label literally contained the substring RENAME would match;
+# no committed migration does, and failing closed is the safe direction.
+#
+# False positives: a "--" comment on its own line is dropped by sql_lines before
+# the scan, so quoting the phrase there costs nothing. A TRAILING comment or a
+# string literal containing it does match — identically to the pre-existing
+# "DROP COLUMN" alternative, which is pre-existing accepted behaviour and again
+# fails closed.
 #
 # Deliberately NOT matched:
 #   * ALTER TYPE ... ADD VALUE — additive. The old colour never sends the new
-#     label, and every value it does send still exists. 43 committed migrations
-#     add enum values; matching them would make the gate noise.
+#     label, and every value it does send still exists. 29 committed migrations
+#     add enum values (44 ADD VALUE statements); matching them would make the
+#     gate noise.
 #   * ALTER INDEX ... RENAME TO — genuinely old-code compatible, because no
 #     application code references an index by name. Matching it would generate
 #     false positives forever and train operators to reach for the override.
-BREAKING_SQL_REGEX='(^|[^A-Z_])(DROP TABLE|DROP COLUMN|DROP TYPE|DROP CONSTRAINT|ALTER TABLE .* RENAME|RENAME COLUMN|RENAME VALUE|ALTER COLUMN .* TYPE|ALTER COLUMN .* SET NOT NULL)'
+BREAKING_SQL_REGEX='(^|[^A-Z_])(DROP TABLE|DROP COLUMN|DROP TYPE|DROP CONSTRAINT|ALTER TABLE .* RENAME|ALTER TYPE .* RENAME|RENAME COLUMN|RENAME VALUE|ALTER COLUMN .* TYPE|ALTER COLUMN .* SET NOT NULL)'
 # Destructive removals additionally have to be sequenced: phase=contract naming
 # the previous expand release. An enum-value rename is deliberately NOT on this
 # list (#2288 scope) — it is breaking, and must therefore be acknowledged as
@@ -385,17 +407,45 @@ ledger_field() {
   awk -F'\t' -v field_number="$field_number" '{ print $field_number }' <<<"$entry"
 }
 
-# Every migration name whose ledger row declares old_code_compatible=windowed
-# (#2288), newline-separated. Read ONCE, before the migration loop, because the
-# check below has to run for every migration — including ones whose SQL matches
-# no pattern at all — and a per-migration awk over the ledger would add a process
-# spawn per migration to the PR-time coverage sweep over the whole tree.
-# First row wins on a duplicated migration name, matching
-# ledger_entry_for_migration's own first-match semantics.
-windowed_ledger_migrations() {
+# ONE pass over the whole ledger, run BEFORE the migration loop (#2288). It emits
+# two kinds of tab-tagged record so a single awk invocation serves both jobs:
+#
+#   windowed<TAB><migration_name>   the row declares old_code_compatible=windowed
+#   error<TAB><message>             the row is malformed; the gate must fail
+#
+# Read once, up front, because the windowed check below has to run for every
+# migration — including ones whose SQL matches no pattern at all — and a
+# per-migration awk over the ledger would add a process spawn per migration to the
+# PR-time coverage sweep over the whole tree.
+#
+# WHY THE VOCABULARY LINT LIVES HERE and not in validate_ledger_entry: that
+# function only ever sees the rows of migrations that survive the
+# hot-table/breaking skip in the loop below, plus the ones this scan has already
+# recognised as EXACTLY "windowed". 73 of the 174 committed rows are for
+# migrations whose SQL matches no pattern at all, so their fourth column was
+# validated by nothing: a near-miss spelling ("Windowed", "WINDOWED", "maybe",
+# empty) was simultaneously not recognised as windowed AND never checked, and the
+# gate printed "safety check passed" and exited 0 — on exactly the data-only shape
+# the windowed value exists for (the #1440 AgeTier backfill, whose UPDATE flipped
+# rows to a label the draining colour's client could not deserialize). A
+# capitalisation would have silently disarmed the declaration the operator wrote
+# to prevent that outage.
+#
+# Linting the WHOLE ledger rather than only the pending rows is deliberate: the
+# file is committed and PR-gated, so a malformed row anywhere is a defect that
+# should never reach a deploy, and failing closed on it costs a correct ledger
+# nothing (all 174 committed rows are well-formed 5-field yes/no rows).
+#
+# Duplicate migration names are an error rather than silent first-row-wins.
+# ledger_entry_for_migration and this scan both take the first row, so a second
+# row appended by a concurrent lane is discarded without a diagnostic — and a
+# `windowed` declaration is precisely the thing a silent discard must not be
+# allowed to delete. The ledger is append-only hand-edited TSV, so two lanes
+# appending rows for the same migration merges cleanly and produces no conflict.
+scan_ledger() {
   [ -f "$MIGRATION_SAFETY_LEDGER" ] || return 0
 
-  awk -F'\t' '
+  awk -F'\t' -v ledger="$MIGRATION_SAFETY_LEDGER" '
     /^[[:space:]]*#/ { next }
     NF == 0 { next }
     {
@@ -403,8 +453,24 @@ windowed_ledger_migrations() {
       value = $4
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
-      if (seen[name]++) next
-      if (value == "windowed") print name
+
+      if (name == "") {
+        printf "error\t%s line %d: safety ledger data row has no migration name in column 1.\n", ledger, NR
+        next
+      }
+
+      if (seen[name]++) {
+        printf "error\t%s line %d: duplicate safety ledger row for %s (first declared on line %d). Only the first row is ever read, so a second row silently shadows it — merge the two into one row.\n", ledger, NR, name, seen_line[name]
+        next
+      }
+      seen_line[name] = NR
+
+      if (value != "yes" && value != "no" && value != "windowed") {
+        printf "error\t%s line %d: %s: safety ledger old_code_compatible must be yes, no, or windowed (found \"%s\").\n", ledger, NR, name, value
+        next
+      }
+
+      if (value == "windowed") printf "windowed\t%s\n", name
     }
   ' "$MIGRATION_SAFETY_LEDGER"
 }
@@ -500,7 +566,20 @@ validate_ledger_entry() {
 found_breaking=0
 found_failure=0
 pending_count=0
-WINDOWED_LEDGER_MIGRATIONS="$(windowed_ledger_migrations)"
+
+# Split the single ledger pass into its two outputs. awk (not grep) so a scan with
+# no matching records still exits 0 under `set -e`.
+LEDGER_SCAN="$(scan_ledger)"
+WINDOWED_LEDGER_MIGRATIONS="$(
+  printf '%s\n' "$LEDGER_SCAN" | awk -F'\t' '$1 == "windowed" { print $2 }'
+)"
+ledger_scan_errors="$(
+  printf '%s\n' "$LEDGER_SCAN" | awk '/^error\t/ { sub(/^error\t/, ""); print }'
+)"
+if [ -n "$ledger_scan_errors" ]; then
+  printf '%s\n' "$ledger_scan_errors" >&2
+  found_failure=1
+fi
 
 if [ "$ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS" = "1" ] &&
   [ -z "$(trim_whitespace "$BLUE_GREEN_MIGRATION_OVERRIDE_REASON")" ]; then
@@ -617,6 +696,22 @@ for migration_sql in "$@"; do
   if [ "$ledger_declared_windowed" = "1" ]; then
     found_breaking=1
     printf 'Ledger declares this migration windowed (old colour NOT kept compatible; deploy-window only): %s\n' "$migration_sql" >&2
+
+    # A windowed migration moves the rollback boundary back to the migrate step:
+    # once it commits, aborting the deploy no longer restores service, so the
+    # reverse script the policy mandates beside the migration is one of only three
+    # recovery paths (forward to cutover, rollback.sql, restore from backup) and
+    # the only one an operator can reach in seconds. The policy stated it as a MUST
+    # and the runbook offers it as a recovery path, but nothing checked it — an
+    # unenforced MUST in this gate is the same defect class as the previously
+    # unvalidated old_code_compatible column. It is a documentation failure
+    # (found_failure), so the ALLOW_BREAKING override cannot rescue it and the
+    # PR-time coverage gate — which sets that override — still enforces it.
+    rollback_sql="$(dirname "$migration_sql")/rollback.sql"
+    if [ ! -f "$rollback_sql" ]; then
+      echo "${migration_name}: windowed migrations must ship a reverse script beside the migration at ${rollback_sql} (see docs/BLUE_GREEN_MIGRATION_POLICY.md). If the change genuinely cannot be reversed, commit a rollback.sql that says so and names the recovery path instead of omitting the file." >&2
+      found_failure=1
+    fi
   fi
 done
 
