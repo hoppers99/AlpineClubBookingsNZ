@@ -346,6 +346,24 @@ Future reviews and issues should cite this file when proposing changes.
   (`setHours(0,0,0,0)`) instant: under the `TZ=Pacific/Auckland` server pin the
   latter resolves to `(D-1)T12:00Z` and shifts the boundary by a day for the
   first ~13h of each NZ day (F8/F32, #1888).
+- **Rendering** a date or a time is a separate invariant from storing or
+  comparing one, and has its own single seam: `src/lib/nzst-date.ts`. Its five
+  helpers — `formatNZDate` ("16 Apr 2026"), `formatNZDateTime`
+  ("16 Apr 2026, 11:30 am"), `formatNZTime` ("11:30 am"), `formatNZMonthYear`
+  ("April 2026") and `formatNZWeekdayDate` ("Thu, 16 Apr 2026") — each pin BOTH
+  `APP_LOCALE` and `APP_TIME_ZONE`. A bare `toLocaleDateString()` /
+  `toLocaleTimeString()` renders in the VIEWER's zone and locale, so an
+  administrator abroad read a different lodge night than the one stored, and a
+  lobby-display television reported its own local time (#2256, #2264). An
+  `eslint` `no-restricted-syntax` rule over `src/**` now blocks both calls; the
+  documented exclusions and the reason `toLocaleString` is deliberately NOT
+  restricted (it is `Number.prototype` thousands-separator formatting) are
+  written out in `eslint.config.mjs`. A screen whose format is legitimately none
+  of the five — weekday-bearing boards, compact grids, the seconds-bearing audit
+  log, an `en-CA` ISO extractor — declares a module-level
+  `new Intl.DateTimeFormat(APP_LOCALE, { timeZone: APP_TIME_ZONE, … })` constant
+  instead. That, not an `eslint-disable`, is the escape hatch, and there are no
+  disables in the tree.
 - Two check-out boundaries coexist by design (#2029). The completion cron flips
   PAID → COMPLETED only once `checkOut < todayNZ` — the entire NZ check-out day
   stays PAID and self-editable/extendable — whereas the admin "finished stay"
