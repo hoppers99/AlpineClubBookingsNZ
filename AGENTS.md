@@ -60,6 +60,10 @@ before changing Next.js APIs or conventions.
   implementation or operator notes. Keep code, tests, and docs in lockstep. Skip
   doc churn only for incidental internal refactors that change no contract or
   behavior.
+- Ship the changelog entry as a new `changelog.d/<pr-number>-<slug>.md` fragment
+  in the same PR — never by editing `CHANGELOG.md`'s `## Unreleased` list, which
+  is what made concurrent lanes conflict daily (#2452). `changelog.d/README.md`
+  documents the house entry style, the no-entry marker, and the release compile.
 - When writing or changing documentation, follow `docs/STYLE_GUIDE.md`: the
   audience labels (adopter/operator/developer/agent), the required operator-guide
   page skeleton, plain-English-first-with-technical-detail, and the screenshot
@@ -518,9 +522,12 @@ handed an epic-with-children or asked to run several related issues at once.
   caveat as an open loop never terminates. Each item is resolved, or written into
   the PR as a stated limit with its reasoning. It does not spawn another agent.
 - **Price the delay, because someone pays it.** Every hour a PR sits unready,
-  `main` moves under it: a `CHANGELOG.md` conflict at minimum, and on a schema
-  lane a migration-timestamp collision that fails `Migration drift check` and
-  `verify` together — each costing a re-resolve plus a full CI cycle. Optimise
+  `main` moves under it. The changelog no longer contributes: entries are per-PR
+  `changelog.d/` fragments (#2452) and `CHANGELOG.md` is `merge=union` (#2451),
+  so that daily conflict is gone. What is left still costs — a shared doc, test
+  matrix or workflow hunk two lanes both edited, and on a schema lane a
+  migration-timestamp collision that fails `Migration drift check` and `verify`
+  together, each costing a re-resolve plus a full CI cycle. Optimise
   **time-to-ready**, and get sibling PRs ready in the same window rather than
   serially, since each merge re-conflicts every branch still open behind it.
 
@@ -591,13 +598,20 @@ CI-green → evidence**.
     adjacent suites, mutation-test each new guard, re-read the changed hunks. It
     does not mean a fresh adversarial lens over the diff**, which §3 reserves for
     a security blocker or for code the fix round newly wrote.
-- **Housekeeping that bites parallel lanes.** Every branch adds a `CHANGELOG.md`
-  entry at the top of `## Unreleased`, so concurrent lanes reliably conflict
-  there — resolve by keeping **both** entries with an ordinary merge commit, never
-  a force-push, and consider writing the changelog entry as the last commit before
-  flipping to ready. Note also that GitHub honours `Closes #NNN` **only in the PR
-  description**, not in comments, so a linked issue referenced only in a comment
-  will stay open after merge.
+- **Housekeeping that bites parallel lanes.** Every branch used to add its entry
+  at the top of `CHANGELOG.md`'s `## Unreleased`, so concurrent lanes reliably
+  conflicted there. **Write the entry as a new fragment file
+  `changelog.d/<pr-number>-<slug>.md` instead** (#2452) — a new file per PR never
+  conflicts, and `changelog.d/README.md` documents the house entry style and the
+  explicit no-entry marker for a change that genuinely needs none. The `verify`
+  job fails a PR that changes `src/` or `prisma/` and carries neither. Do **not**
+  edit `## Unreleased` by hand; `scripts/release/compile-changelog.mjs` folds the
+  fragments (and any legacy direct entries) into the release section at release
+  time. If you must resolve a `CHANGELOG.md` conflict on an older branch, keep
+  **both** entries with an ordinary merge commit, never a force-push. Note also
+  that GitHub honours `Closes #NNN` **only in the PR description**, not in
+  comments, so a linked issue referenced only in a comment will stay open after
+  merge.
 - **PRs open as drafts and stay drafts** through review → fix → CI. Flip to
   ready-for-review only when the PR is fully reviewed, all confirmed findings are
   fixed, **every residual risk has been resolved inside the PR** (see §6 — a

@@ -24,6 +24,16 @@ All notable public reference-release changes should be recorded here.
   Finance-view-only users can still read Subscriptions, but the two Xero sync
   actions are now disabled with the standard view-only explanation; the POST
   route continues to require finance edit access.
+<!-- changelog-pointer-note:start -->
+
+Entries for the next release are written as one file per pull request in
+[`changelog.d/`](changelog.d/README.md), not added here by hand (#2452);
+`scripts/release/compile-changelog.mjs` folds them into a version section when a
+release is cut. Any entries still listed below were written before that change
+and are folded in the same way.
+
+<!-- changelog-pointer-note:end -->
+
 - **The cancellation queue stops spending Xero API calls on questions nobody can
   act on (#2402).** Opening **Admin → Members → Cancellation Requests** asked
   Xero, for every participant on the page, whether that member's contact still
