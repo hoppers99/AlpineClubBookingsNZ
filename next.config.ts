@@ -1,5 +1,6 @@
 import type { NextConfig } from "next";
 import { withSentryConfig } from "@sentry/nextjs";
+import { ASSET_NOT_FOUND_REWRITES } from "./src/lib/asset-url-404";
 
 const nextConfig: NextConfig = {
   images: {
@@ -9,6 +10,29 @@ const nextConfig: NextConfig = {
   poweredByHeader: false,
   turbopack: {
     root: process.cwd(),
+  },
+  /**
+   * Static-asset URLs nothing serves are answered without a document (#2404).
+   * The rules, their ORDER (load-bearing — the `/api` rule must come first, or
+   * #2405's module-state parity breaks), and why `_next/image` is absent are all
+   * documented in `src/lib/asset-url-404.ts`.
+   *
+   * `afterFiles` is the only stage that works here: Next checks `public/`,
+   * `_next/static` and the non-dynamic routes BEFORE it consults these rules, so
+   * a real asset is served exactly as before and never reaches them, while a
+   * miss is terminated before the dynamic `(website)/[...slug]` catch-all can
+   * turn it into a page render. `beforeFiles` would shadow every real asset;
+   * `fallback` runs after the catch-all has already claimed the URL.
+   *
+   * Relative import, not the `@/` alias: this file is loaded by Next's own
+   * config loader, which does not apply the tsconfig path mapping.
+   */
+  async rewrites() {
+    return {
+      beforeFiles: [],
+      afterFiles: [...ASSET_NOT_FOUND_REWRITES],
+      fallback: [],
+    };
   },
 };
 

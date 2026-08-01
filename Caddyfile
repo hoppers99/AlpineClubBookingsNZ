@@ -79,6 +79,23 @@
 		# style-src intentionally keeps 'unsafe-inline' there while Tailwind/Radix runtime styles are audited.
 		# Defensive baseline: only applied if Next omits the header (e.g. middleware regression).
 		# Caddy's `?` prefix means "set if not already present" so it never intersects with Next's policy.
+		#
+		# Note what this fallback CANNOT rescue, because it was mistaken for a
+		# safety net once (#2404). It carries no `'nonce-…'` source, so on an HTML
+		# document the app rendered WITHOUT its own policy this line does not
+		# protect the page — it breaks it, blocking every inline script Next
+		# emitted unnonced. That was the live failure on static-asset URLs nothing
+		# served: `/foo.png` answered 404 with ~29KB of HTML and unnonced inline
+		# scripts, and this header blocked all of them.
+		#
+		# The app closes that at its own end now rather than leaning on the edge.
+		# Asset-shaped misses are answered with no document at all, by
+		# `src/app/asset-not-found/route.ts` via the rewrites in `next.config.ts`
+		# — and that route sets its own, tighter `default-src 'none'`, so it does
+		# not depend on this line either. Keep this fallback: it is still the
+		# floor for a response that reaches Caddy without one (an upstream that is
+		# not our app, or a middleware regression). Just never read "Caddy
+		# supplies a CSP" as "a page without its own is safe".
 		?Content-Security-Policy "default-src 'self'"
 	}
 	# Guaranteed request-body backstop (#2235): drop oversize bodies at the

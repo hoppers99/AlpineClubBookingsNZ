@@ -80,7 +80,7 @@ the row, not open work. Open findings now live in labelled GitHub issues
 
 | Route or surface | Auth mechanism | Actor | Data touched | External calls | Rate, signature, or boundary controls | Logging and audit | Residual risk or follow-up |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `src/proxy.ts` global proxy, pre-setup gate, and module gates | No session auth. Applies CSP/security headers to page requests and selected API matcher paths; returns 404 for disabled module routes; returns 503 + the "Site setup in progress" screen for every public-website path until `ClubTheme.completedAt` is set (#2420, "The Pre-Setup Gate" below). | Anonymous and authenticated browser traffic. | Module settings via `loadEffectiveModuleFlags()`; setup state, club name and contact address via `setup-gate.ts` (memoised 15s, read only while setup is incomplete). | None. | CSP nonce, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, module route blocking, pre-setup 503 gate (fails closed, `no-store`, `Retry-After`). | No per-request audit. | API matcher is selective, not global for every API path. Keep route-level auth as the enforcement boundary. The setup gate never covers `/api/*`, the admin area, or the login flows — an operator must be able to finish setup. |
+| `src/proxy.ts` global proxy, pre-setup gate, and module gates | No session auth. Applies CSP/security headers to page requests and selected API matcher paths; returns 404 for disabled module routes; returns 503 + the "Site setup in progress" screen for every public-website path until `ClubTheme.completedAt` is set (#2420, "The Pre-Setup Gate" below). | Anonymous and authenticated browser traffic. | Module settings via `loadEffectiveModuleFlags()`; setup state, club name and contact address via `setup-gate.ts` (memoised 15s, read only while setup is incomplete). | None. | CSP nonce, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, module route blocking, pre-setup 503 gate (fails closed, `no-store`, `Retry-After`). | No per-request audit. | API matcher is selective, not global for every API path. Keep route-level auth as the enforcement boundary. The setup gate never covers `/api/*`, the admin area, or the login flows — an operator must be able to finish setup. The matcher also skips static-asset shapes on purpose, so a MISS on one is terminated without a document by the `afterFiles` rewrites (#2404) rather than rendered unnonced. |
 | `/api/health`, `/api/health/ready` | Public. | Load balancers, operators, anonymous callers. | DB reachability, runtime version/uptime, config readiness. Public responses omit provider error detail. | DB query only. | No rate limit. No secrets in response. | Logger debug/error only. | Anonymous callers can observe availability. #615 can decide whether to add light rate limiting or cache headers. |
 | `/api/age-tier-settings`, `/api/committee` | Public read endpoints. | Anonymous website users. | Public age-tier/rate settings and published committee assignment presentation fields; and, **only when `PublicContentSettings.committeePhotoDisplay != NONE`**, per-published-member photo metadata (member id + `photoUpdatedAt` version) so the roster can build the scoped `/api/members/[id]/photo` URL. | None. | No rate limit. Committee query selects active, published assignment fields only; member email is not selected or returned, phone is returned only when show-phone is enabled, and contact keys are returned only for contactable assignments. Photo metadata (incl. member id) is emitted **only** when the club has opted the roster into photos — with `committeePhotoDisplay = NONE` (the default), no member id or photo pointer is returned. | None beyond DB errors if thrown. | Public committee names and optional phone numbers are intentional once an admin publishes the assignment; email remains server-only. Committee-photo bytes are still served (and gated) by the scoped `/api/members/[id]/photo` endpoint — `committeePhotoDisplay` governs roster rendering/metadata only, not the serving rule. |
 | `/api/address-autocomplete/search`, `/api/address-autocomplete/details/[id]` | Public server-side proxy to Addy, gated by the `addressAutocomplete` Admin Module. | Anonymous website users. | Search terms, address suggestion ids, Addy result payloads. | Addy API via `src/lib/addy-api.ts`. | Module-route/proxy gate returns 404 while disabled, Zod query validation, `rateLimiters.addressAutocomplete` at 90/min/IP. Secrets stay server-side. | Minimal error responses, no audit. | Upstream-cost and enumeration surface remains public only when the module is enabled; manual address entry remains the fallback. |
@@ -1299,19 +1299,11 @@ lobby TV display (fork #54) and the global 404 (#2356).
 - **What this guard does NOT cover, and it is the bigger half of the class.** It
   reads emitted HTML, so it can only see pages Next prerendered. It cannot see a
   page that renders dynamically but never receives a CSP header in the first
-  place — and `src/proxy.ts`'s matcher excludes `/api/*` (bar an explicit list),
-  `_next/static`, `_next/image`, `favicon.ico`, `logo.png`, and any path ending
-  `.png|.jpg|.jpeg|.gif|.webp|.svg|.ico`. On those paths no nonce is minted, so
-  Next's 404 render carries none: measured post-fix, `/foo.png` returns 200 with
-  **no** `Content-Security-Policy` header and 11 unnonced inline scripts;
-  `/api/does-not-exist` and `/_next/static/chunks/nope.js` return 12 each.
-  `Caddyfile`'s set-if-absent `?Content-Security-Policy "default-src 'self'"`
-  then supplies a policy with no `'nonce-…'` source, which blocks every one of
-  them — the same end state as #2356, on the URL shapes bots actually hit.
-  **Treat this class as enforced for prerendered output only.** The proxy-matcher
-  gap is a separate change with its own blast radius (touching the matcher
-  changes what runs on static assets and API routes) and is tracked on its own
-  issue.
+  place — which was a live hole on every URL shape `src/proxy.ts`'s matcher
+  skips. **Closed in #2404**; the measurements, the fix, and the guards that now
+  cover the runtime half are in "Static-Asset URLs And The Nonce-Only CSP" below.
+  Read this bullet as "this particular script enforces prerendered output only",
+  not as "the runtime class is unenforced".
 - **Interaction with #2352.** The constant-per-deploy nonce proposed for public
   routes would make a fixed nonce value available at build time and so would
   dissolve this whole class — including Next's own built-in error shell, which
@@ -1502,6 +1494,154 @@ address — real page, typo, and bot probe alike — which is the configuration 
   stack without that flag now answers **503** for every public address rather
   than 200 — a different wrong reading of the same misconfiguration. Check
   `ClubTheme.completedAt` before trusting any locally measured status.
+
+## Static-Asset URLs And The Nonce-Only CSP - 2026-08-01
+
+Issue #2404, the runtime half of the class #2356 opened. **A URL the proxy matcher
+skips gets no nonce and no policy of ours — and until this landed, some of those
+URLs still rendered a full HTML page.**
+
+`src/proxy.ts` mints the CSP nonce per request, and its `config.matcher`
+deliberately skips static-asset shapes: anything ending in an image extension,
+plus `_next/static` and `_next/image`. That exclusion is correct and #2420
+re-affirmed it — `csp-proxy.test.ts` asserts those shapes stay outside the matcher
+so that a real asset never pays a nonce mint on the hottest path in the app.
+
+It was wrong for a file that does NOT exist. The miss fell through to the
+`(website)/[...slug]` CMS catch-all, which called `notFound()` and rendered the
+club's entire "page not found" document — with no nonce on any inline script,
+because the thing that mints nonces had been skipped, and with no
+`Content-Security-Policy` header at all. `Caddyfile`'s set-if-absent
+`?Content-Security-Policy "default-src 'self'"` then supplied a policy carrying no
+`'nonce-…'` source, which blocked every one of those scripts. The same end state as
+#2356, on the URL shapes bots actually hit.
+
+**Measured pre-fix, anonymously, against a production build of the app** —
+`/foo.png` 404 with ~29KB of `text/html`, no CSP header and 19 unnonced inline
+`<script>` tags; `/favicon.ico`, `/logo.png`, `/wp-content/uploads/x.jpg`,
+`/branding/favicon.ico`, `/_next/static/chunks/nope.js` and `/_next/staticfoo` all
+the same shape at 18 each; the control `/definitely-missing` 404 with a nonced
+policy and 0 unnonced. **Provenance matters here and is stated rather than
+implied:** those figures were taken on a developer-host build, so treat them as
+indicative of the defect's shape and size, not as a platform measurement. The
+authoritative runtime measurement is `e2e/asset-url-404.spec.ts`, which runs
+against the Linux container stack in CI's Playwright job and asserts the same
+properties on the wire.
+
+- **#2434 fixed the `/api` half of this and nothing else.** Unmatched `/api` URLs
+  terminate at `src/app/api/[[...unmatched]]/route.ts` with a JSON 404: no
+  document, no inline script, so the missing CSP header costs nothing there. #2434
+  also turned `/foo.png` from a soft 200 into a 404 — the status was fixed, the CSP
+  was not. Do not read "#2405 is closed" as "asset URLs are safe".
+- **#2420 fixed three bare prefixes, and left two.** Its finding F3 anchored `api`,
+  `favicon.ico` and `logo.png`, which had been excluding `/apiary`, `/api-docs`,
+  `/favicon.icons`, `/logo.pngs` and `/faviconXico`. `_next/static` and
+  `_next/image` were still bare, so `/_next/staticfoo`, `/_next/imagemap` and
+  `/_next/image/x` were skipped the same way — ordinary addresses no framework
+  handler claims, served with no CSP header. #2404 anchors those two.
+- **The two anchors deliberately differ in shape.** `_next/static` is a DIRECTORY,
+  so only `/_next/static/…` is ever served and a trailing slash is the whole
+  exclusion; `_next/image` is a single ENDPOINT taking a `?url=` query, so only the
+  exact path is served and `$` is. Each now excludes precisely what the framework
+  serves and nothing else.
+
+### The fix: two layers, and the ordering between them
+
+1. **The matcher keeps its asset exclusions**, exactly as #2420 set them. Widening
+   it was considered and rejected: it is the change #2420's reconciliation test
+   explicitly forbids, and it would make every real image pay a nonce mint while
+   leaving each probe of a nonexistent asset costing a full dynamic React render.
+2. **`afterFiles` rewrites remove the render instead** (`next.config.ts`; rules in
+   `src/lib/asset-url-404.ts`). A path ending in an asset extension, or anything
+   under `_next/static`, is rewritten to `src/app/asset-not-found/route.ts`, which
+   answers **404 with an empty body and no `content-type`**. An empty body is the
+   security property, not a shortcut: with no document there is nothing a
+   nonce-less policy has to permit, so the absent nonce stops mattering rather than
+   being worked around. It also removes a render amplifier — every probe of
+   `/wp-content/uploads/x.png` used to buy a full dynamic render, and bots probe
+   those addresses continuously.
+
+- **`afterFiles` is the only stage that works.** Next checks the filesystem —
+  `public/`, `_next/static`, the non-dynamic routes — BEFORE consulting an
+  `afterFiles` rewrite, so a real asset is served exactly as before and never
+  reaches these rules; only a miss does. `beforeFiles` would shadow every real
+  asset; `fallback` runs after `(website)/[...slug]` has already turned the URL
+  into a render. Getting this wrong 404s every image in the app, which is why the
+  E2E spec asserts a real `public/branding/*` file and a real
+  `/_next/static/chunks/*.js` still answer 200 with their bytes.
+- **The `/api` carve-out is an ORDERED RULE, not a lookahead, and that is a
+  security decision.** #2405's parity property is that a path under a module-gated
+  prefix that no handler claims must answer the same bytes AND headers whether the
+  module is ON or OFF. With it off, `src/proxy.ts`'s gate answers
+  `{"error":"Not found"}` as `application/json` — its matcher entries
+  (`/api/chores/:path*` and friends) match whatever the URL's tail looks like,
+  `.png` included. So an asset-shaped `/api` URL must not reach the empty-bodied
+  404. The first cut expressed that as a `(?!api…)` lookahead on the general rule,
+  and **that was itself a hole**: Next compiles the middleware matcher
+  case-SENSITIVELY and `rewrites` case-INSENSITIVELY (path-to-regexp's `sensitive`
+  defaults to false), so `/API/x.png` was skipped by the matcher (its `.png` tail)
+  AND skipped by the rewrite (its `/api` carve-out) and still rendered the unnonced
+  document. There is no portable way to write a case-sensitive lookahead inside a
+  case-insensitive regex. The carve-out is therefore an ordered rule: `/api` asset
+  shapes are claimed FIRST and rewritten to `/api/unmatched-asset`, and the general
+  rule that follows carries no exclusion and so has no case seam to leak through.
+- **That `/api` destination deliberately has no route file.** `afterFiles` rewrites
+  are applied before dynamic routes resolve, so the rewritten request lands on
+  `api/[[...unmatched]]` and is answered with the same JSON as any other unmatched
+  `/api` URL — byte-identical BY CONSTRUCTION, with no second copy of the body to
+  drift out of step. The guard asserts the destination stays route-less, because a
+  file appearing there would silently change the answer.
+- **A stale extension list is a cost regression, not a security one, and the
+  layering is what makes that true.** `/foo.avif` is not in the list, so it renders
+  the club's 404 page instead of an empty one — but the proxy DOES run on it, so it
+  is nonced. Only the extensions the matcher itself skips can produce the original
+  defect, and those are exactly the ones the rules cover; the guard fails if the two
+  copies of that list ever disagree.
+- **`/asset-not-found` is itself a reachable URL** and answers exactly what it
+  answers for rewritten traffic: an empty 404. It has no extension, so it cannot be
+  rewritten into itself, and a URL that does not exist answering 404 is the right
+  outcome whoever asks. It discloses nothing — the club's own 404 screen still
+  answers every page-shaped miss, which the E2E spec pins so this change cannot
+  quietly blank a human-plausible mistyped address.
+- **It also had to be exempted from the #2420 pre-setup gate, and that was caught
+  by a guard rather than by review.** Being a new top-level route, the gate's
+  `isPublicWebsitePath()` classified it as a public-website path, so on a club
+  whose `ClubTheme.completedAt` is NULL every missing image would have been
+  answered with the "Site setup in progress" screen — a 503 HTML **document**,
+  i.e. exactly the thing this fix exists to stop sending, reintroduced through the
+  back door. `asset-not-found` is now in `NON_WEBSITE_ROOT_SEGMENTS`.
+  `setup-gate.test.ts` walks the app directory and fails on any unexempted
+  top-level route, which is how this surfaced; `asset-url-404.test.ts` asserts the
+  same property directly so the coupling fails in the suite that owns it too. Any
+  future route added for machine traffic needs the same entry.
+- **The route sets its own headers rather than leaning on the edge.**
+  `default-src 'none'; frame-ancestors 'none'; base-uri 'none'` plus the app's own
+  security headers, so the property holds in dev, in the E2E stack, and in any
+  deployment that does not front the app with our reverse proxy. That policy needs
+  no nonce, so unlike the page-render path it cannot rot. Verb handling mirrors
+  `[[...unmatched]]`: HEAD is NOT exported, so Next derives it from GET and the two
+  cannot disagree on headers.
+
+### Guards
+
+- **`src/lib/__tests__/asset-url-404.test.ts`** holds the invariant in the ordinary
+  `npm test` run, with no stack required. Every shape is resolved through Next's own
+  routing primitives — `unstable_doesMiddlewareMatch()` and `getPathMatch()` — and
+  must be covered by the proxy, by a rewrite, by the `/api` JSON catch-all, or by
+  the image optimiser; a shape covered by none fails. It evaluates the rewrites in
+  the order Next applies them, so swapping the `/api` rule behind the general one
+  fails rather than silently reopening the parity oracle. It also pins the matcher
+  source string, asserts the extension lists cannot drift, asserts the `/api`
+  destination stays route-less, and asserts the terminal route's empty body and
+  headers on every served verb.
+- **`e2e/asset-url-404.spec.ts`** is the runtime measurement, against the Linux
+  container stack in CI. It asserts a miss ships no document and no unnonced
+  script; that a real `public/` file and a real hashed chunk still answer 200 with
+  their bytes; that the newly anchored `_next` lookalikes carry a nonced policy;
+  that an ordinary page miss still renders the club's own nonced 404 screen; and
+  that `/api` asset shapes — mixed case included — still answer the JSON 404.
+- `scripts/ci/check-prerendered-script-nonces.mjs` is unchanged and still covers the
+  build-output half of the class.
 
 ## Follow-Up Mapping
 

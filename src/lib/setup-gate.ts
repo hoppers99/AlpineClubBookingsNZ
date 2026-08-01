@@ -98,6 +98,13 @@ export const NON_WEBSITE_ROOT_SEGMENTS: ReadonlySet<string> = new Set([
   // app root, outside every group
   "api",
   "display",
+  // The terminal 404 asset-shaped misses are rewritten to (#2404). Not a
+  // website page in any setup state: it exists to answer a machine that asked
+  // for an image or a script with an empty 404 and no document. Left out of
+  // this set it would answer the "Site setup in progress" screen — a 503 HTML
+  // document — to every missing image on a club that has not launched yet,
+  // which is both wrong for the caller and the opposite of the point.
+  "asset-not-found",
 ]);
 
 /**

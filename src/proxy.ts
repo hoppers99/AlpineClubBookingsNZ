@@ -298,12 +298,37 @@ export default proxy;
  * those are `public/` asset shapes and running the proxy on them would mint a
  * nonce per image. `isPublicWebsitePath()` is aligned to agree, and
  * `csp-proxy.test.ts` asserts the two definitions cannot drift apart again.
+ *
+ * The two REMAINING bare prefixes were anchored in #2404 for the same reason F3
+ * gives, one namespace over: `_next/static` also excluded `/_next/staticfoo` and
+ * `_next/image` also excluded `/_next/imagemap` and `/_next/image/x`. No
+ * framework handler claims any of those, so they were ordinary website addresses
+ * being served with no CSP header — measured answering 404 with unnonced inline
+ * `<script>` tags.
+ *
+ * The two anchors differ in shape, and that is the point rather than an
+ * inconsistency: `_next/static` is a DIRECTORY, so only `/_next/static/…` is ever
+ * served and a trailing slash is the whole exclusion; `_next/image` is a single
+ * ENDPOINT taking a `?url=` query, so only the exact path is served and `$` is.
+ * Each now excludes precisely what the framework serves and nothing else, and
+ * `csp-proxy.test.ts` still asserts `/_next/static/chunks/main.js` stays outside.
+ *
+ * What no anchor here can fix is a MISS inside a namespace that stays excluded on
+ * purpose: `/foo.png` and `/_next/static/chunks/deleted.js` skip the proxy
+ * correctly — a real asset must not pay a nonce mint — and used to fall through
+ * to the CMS catch-all and render the club's 404 document with no nonce and no
+ * policy. That is closed one layer down, by the `afterFiles` rewrites in
+ * `next.config.ts` (see `src/lib/asset-url-404.ts`), which answer those misses
+ * with no document at all, so the absent nonce stops mattering rather than being
+ * worked around. Keep the two in step: an extension added to the alternation
+ * above must be added there too, and `src/lib/__tests__/asset-url-404.test.ts`
+ * fails if they diverge.
  */
 export const config = {
   matcher: [
     {
       source:
-        "/((?!api(?:/|$)|_next/static|_next/image|favicon\\.ico$|logo\\.png$|.*\\.(?:png|jpg|jpeg|gif|webp|svg|ico)$).*)",
+        "/((?!api(?:/|$)|_next/static/|_next/image$|favicon\\.ico$|logo\\.png$|.*\\.(?:png|jpg|jpeg|gif|webp|svg|ico)$).*)",
       missing: [
         { type: "header", key: "next-router-prefetch" },
         { type: "header", key: "purpose", value: "prefetch" },

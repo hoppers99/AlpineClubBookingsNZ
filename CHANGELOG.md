@@ -4,6 +4,34 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Requests for pictures and files that do not exist are answered properly,
+  instead of being handed a broken copy of the club's "page not found" screen
+  (#2404).** When something asks the site for a picture that is not there — an
+  old link, a search engine following a stale address, or one of the automated
+  scanners that probe every website continuously — the site used to reply with
+  its whole "page not found" page: about 29KB of the club's branding, fonts and
+  menus, sent to something that only wanted a picture. Worse, that particular
+  copy of the page arrived without the security instructions every other page
+  carries, so a browser receiving it would refuse to run any of it. It was a
+  broken page nobody could see was broken, because nobody looks at what a
+  scanner gets back.
+
+  These addresses now answer "not found" and nothing else — no page, no
+  branding, no wasted work. Two consequences are worth knowing. Addresses people
+  actually type are untouched: mistyping the address of a real page still shows
+  the club's own "page not found" screen, exactly as before. And the site now
+  does less work per stray request, because it no longer builds and throws away
+  a full page for a robot.
+
+  A second, quieter fault was found while measuring this and is fixed with it. A
+  few ordinary addresses were being mistaken for the site's internal machinery
+  because they merely began with the same letters, and they were being served
+  without those same security instructions. They are ordinary pages again. This
+  is the same kind of fault that was fixed for a different set of addresses in
+  the previous release note about the setup screen.
+
+  Nothing about how the site looks, how members use it, or how anything is
+  stored has changed.
 - **The cancellation queue stops spending Xero API calls on questions nobody can
   act on (#2402).** Opening **Admin → Members → Cancellation Requests** asked
   Xero, for every participant on the page, whether that member's contact still
