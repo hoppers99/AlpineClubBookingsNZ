@@ -19,6 +19,7 @@ import {
 import { modifyBookingBatch } from "@/lib/booking-batch-modification-service";
 import { adminShiftBookingDates } from "@/lib/booking-date-modification-service";
 import { BookingModifyReviewJustificationRequiredError } from "@/lib/booking-modify-validation";
+import { MinimumStayPolicyViolationError } from "@/lib/booking-policy-exceptions";
 import { OverCapacityConfirmationRequiredError } from "@/lib/over-capacity-confirmation";
 import { isBookingEnvelopeInvariantViolation } from "@/lib/booking-envelope-invariants";
 import {
@@ -328,6 +329,23 @@ export async function PUT(
       return NextResponse.json(xeroLockGuardResponse.body, {
         status: xeroLockGuardResponse.status,
       });
+    }
+    // #2363: the minimum-stay block on this save path carries the frozen review
+    // snapshot (policy id/version/scope/nights/requirements/capacity mode) so
+    // the edit panel can tell the member exactly which rule stopped the change.
+    // MUST stay above the generic ApiError branch — this error extends ApiError,
+    // and the generic branch would drop the code and the snapshot.
+    if (err instanceof MinimumStayPolicyViolationError) {
+      return NextResponse.json(
+        {
+          error: err.message,
+          code: err.code,
+          details: err.details,
+          violations: err.violations,
+          exceptionReview: err.exceptionReview,
+        },
+        { status: err.status },
+      );
     }
     if (err instanceof ApiError) {
       return NextResponse.json({ error: err.message }, { status: err.status });

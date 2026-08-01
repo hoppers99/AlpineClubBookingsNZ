@@ -9,6 +9,7 @@ import {
 
 import { logAudit } from "@/lib/audit";
 import { ApiError } from "@/lib/api-error";
+import { MinimumStayPolicyViolationError } from "@/lib/booking-policy-exceptions";
 import {
   applyChoreCleanup,
   applyGuestChanges,
@@ -376,6 +377,43 @@ export async function modifyBookingBatch({
       role: actor.role,
       input,
     });
+
+    // #2363: this is the live member/admin edit surface, so the minimum-stay
+    // policy is enforced on the SAVE and not only advised on the preview. It
+    // mirrors the protected sibling `modifyBookingDates` exactly: a non-admin
+    // actor is hard-blocked with the full frozen review snapshot
+    // (policy id/version/name, resolved scope, affected NZ nights, typed
+    // requirements, eligibility and capacity mode), and the check runs BEFORE
+    // the guest plan, pricing and the capacity check so nothing is priced or
+    // claimed for a stay the policy refuses. The server is authoritative here:
+    // the edit panel's banner is advisory only and never gates Save.
+    //
+    // Price-preserving requests are exempt, exactly as the modify-quote preview
+    // reports them (`minimumStayValid: true` on its identity-only/credit-only
+    // echo): a guest name fix or a stored credit election cannot change a
+    // single night of the stay, so enforcing here could only block an unrelated
+    // fix on a booking that already sat outside the policy — never admit a new
+    // violation. Preview and apply therefore agree on every request.
+    if (
+      actor.role !== "ADMIN" &&
+      !requestIsIdentityOnly &&
+      !requestIsCreditElectionOnly
+    ) {
+      const { validateMinimumStay, formatViolationsDetail } = await import(
+        "@/lib/booking-policies"
+      );
+      const stayResult = await validateMinimumStay(
+        dates.newCheckIn,
+        dates.newCheckOut,
+        bookingLodgeId,
+      );
+      if (!stayResult.valid) {
+        throw new MinimumStayPolicyViolationError(
+          formatViolationsDetail(stayResult.violations),
+          stayResult.violations,
+        );
+      }
+    }
 
     const guestPlan = await prepareGuestPlan(tx, {
       booking,
