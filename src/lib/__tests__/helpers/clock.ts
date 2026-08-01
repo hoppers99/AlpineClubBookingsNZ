@@ -46,20 +46,36 @@
  * Both are read fresh on every `frozenTestNow()` call and validated loudly — a
  * typo fails the run rather than silently falling back to the base instant.
  *
+ * ## When it installs, and why that matters
+ *
+ * `vitest.setup.ts` installs this during its own MODULE EVALUATION, not in a
+ * `beforeAll`. Setup files evaluate before the test file is imported, and a
+ * `beforeAll` runs after every module in the file's graph has already been
+ * evaluated — so a `beforeAll` install leaves module-level constants reading the
+ * REAL clock. That is not hypothetical: `src/components/admin-sidebar.tsx:123`
+ * computes `UNPAID_FINISHED_STAYS_HREF` from today's date at import time, and a
+ * hook-based freeze left the component on the real date while the test that
+ * checked it saw the frozen one.
+ *
  * ## Opting out
  *
  * A file that genuinely needs the real wall clock calls
- * `optOutOfFrozenClock("<reason>")` at module top level. The reason is
- * mandatory, and `frozen-test-clock.test.ts` pins the exact list and count of
- * opted-out files, so widening the opt-out is always a deliberate, reviewed
- * diff. A file that mixes real-time and frozen-time tests gets split rather than
- * opted out wholesale.
+ * `optOutOfFrozenClock("<reason>")` at module top level, which hands the real
+ * clock back immediately. The reason is mandatory, and
+ * `frozen-test-clock.test.ts` pins the exact list and count of opted-out files,
+ * so widening the opt-out is always a deliberate, reviewed diff. A file that
+ * mixes real-time and frozen-time tests gets split rather than opted out
+ * wholesale.
+ *
+ * One honest limitation: ES module imports are hoisted, so an opting-out file's
+ * own imports still evaluate under the freeze. If a module-level constant in
+ * your import graph must see the real clock, read it inside a test instead.
  *
  * A suite that just wants a DIFFERENT fixed instant does not opt out: it pins
  * its own with `vi.setSystemTime(...)` (or the `vi.mock("@/lib/date-only", …)`
- * idiom) in its own `beforeAll`/`beforeEach`, which runs after this one and
- * therefore wins. `vitest.config.ts` pins `sequence.hooks: "stack"` so that
- * ordering is a declared contract rather than a default we happen to inherit.
+ * idiom) in its own `beforeAll`/`beforeEach`, which runs after the freeze is
+ * already installed and therefore wins. `vitest.config.ts` pins
+ * `sequence.hooks: "stack"` so the `afterAll` restore stays last too.
  */
 import { vi } from "vitest";
 
@@ -71,18 +87,15 @@ export const FROZEN_TEST_CLOCK_BASE_ISO = "2026-07-01T00:00:00.000Z";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-/**
- * Set by `optOutOfFrozenClock` during the test file's module evaluation, which
- * always completes before any `beforeAll` hook runs — including this setup
- * file's, which is registered first but executed later.
- */
+/** Set by `optOutOfFrozenClock` during the test file's module evaluation. */
 let realClockReason: string | null = null;
 
 /**
- * Declare that THIS test file needs the real wall clock, with a reason.
+ * Declare that THIS test file needs the real wall clock, with a reason, and
+ * hand the real clock back straight away.
  *
- * Call it once at module top level (not inside a hook or a test — by the time
- * those run the freeze is already installed):
+ * Call it once at module top level — not inside a hook or a test, where the
+ * file's modules have already been evaluated against the frozen clock:
  *
  * ```ts
  * optOutOfFrozenClock("measures real elapsed time across a retry backoff");
@@ -101,6 +114,9 @@ export function optOutOfFrozenClock(reason: string): void {
     );
   }
   realClockReason = trimmed;
+  // The freeze is already installed by the time a test file runs, so opting out
+  // has to actively undo it rather than merely suppress a later install.
+  vi.useRealTimers();
 }
 
 /** The opt-out reason for the current test file, or `null` when frozen. */
@@ -142,13 +158,10 @@ export function frozenTestNow(): Date {
 
 /**
  * Install the frozen clock for the current test file. Called once from
- * `vitest.setup.ts`; a file that opted out is left on the real clock.
+ * `vitest.setup.ts`'s module body, before the test file (and everything it
+ * imports) is evaluated.
  */
 export function installFrozenTestClock(): void {
-  if (realClockReason) {
-    return;
-  }
-
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(frozenTestNow());
 }

@@ -19,7 +19,16 @@ vi.mock("@/lib/prisma", () => ({
 import { BookingStatus } from "@prisma/client";
 import { getWaitlistOfferEmailDeliveries } from "@/lib/waitlist-offer-email-visibility";
 
-const OFFERED_AT = new Date("2026-07-20T10:00:00.000Z");
+const OFFERED_AT = new Date("2026-06-20T10:00:00.000Z");
+
+/**
+ * An offer window that closed BEFORE the frozen "today" (2026-07-01, see
+ * docs/TESTING.md). These fixtures used to sit in late July 2026 and read as
+ * lapsed only because the real calendar had moved past them — the exact
+ * dependency #2481 removed. Anchored behind the frozen instant they stay lapsed
+ * for good, including under the rollover canary.
+ */
+const LAPSED_OFFER_EXPIRY = new Date("2026-06-21T10:00:00.000Z");
 
 function booking(
   overrides: {
@@ -35,7 +44,7 @@ function booking(
     waitlistOfferedAt: OFFERED_AT,
     waitlistOfferExpiresAt:
       overrides.offerExpiresAt === undefined
-        ? new Date("2026-07-21T10:00:00.000Z")
+        ? LAPSED_OFFER_EXPIRY
         : overrides.offerExpiresAt,
     noEmails: overrides.noEmails ?? false,
     member: { email: "member@example.com" },
@@ -169,7 +178,7 @@ describe("a silenced booking sitting on a LIVE offer needs operator action (#225
     mocks.emailLogFindMany.mockResolvedValue([]);
 
     const deliveries = await getWaitlistOfferEmailDeliveries([
-      booking({ noEmails: true, offerExpiresAt: new Date("2026-07-21T10:00:00.000Z") }),
+      booking({ noEmails: true, offerExpiresAt: LAPSED_OFFER_EXPIRY }),
     ]);
 
     const delivery = deliveries.get("bk_1")!;

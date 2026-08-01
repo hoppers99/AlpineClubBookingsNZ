@@ -13,7 +13,7 @@
 // is byte-for-byte identical to the unset behaviour and no test that asserts the
 // sender address changes. Set with ??= so any test that deliberately exercises a
 // different/!ok config by assigning or deleting these keeps control.
-import { afterAll, beforeAll, vi } from "vitest";
+import { afterAll, vi } from "vitest";
 import { SAFE_DEFAULT_CONFIG } from "@/config/club";
 import {
   installFrozenTestClock,
@@ -48,9 +48,15 @@ process.env.AWS_SES_SECRET_ACCESS_KEY ??= "test-ses-secret-access-key";
 // The canary workflow winds this forward via `TEST_CLOCK_OFFSET_DAYS` (integer
 // days) or `TEST_CLOCK_ISO` (an absolute instant); both are documented in
 // `src/lib/__tests__/helpers/clock.ts`.
-beforeAll(() => {
-  installFrozenTestClock();
-});
+//
+// Installed HERE, in the setup file's module body, and deliberately NOT in a
+// `beforeAll`: setup modules evaluate before the test file is imported, whereas
+// a `beforeAll` runs only after every module in the file's graph has already
+// been evaluated. Module-level date constants are real code —
+// `src/components/admin-sidebar.tsx:123` builds its deep link from today's date
+// at import time — and a hook-based freeze silently left those on the real
+// clock.
+installFrozenTestClock();
 
 afterAll(() => {
   restoreRealTestClock();
