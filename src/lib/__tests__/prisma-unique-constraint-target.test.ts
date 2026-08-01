@@ -16,6 +16,7 @@ import { isLoginEmailUniqueConflict } from "@/lib/member-email";
 import {
   compositeCollisionError,
   contradictoryAdapterAndMessageError,
+  emailChangeTokenIndexNameCollisionError,
   googleSubCollisionError,
   joinCodeCollisionError,
   loginEmailCollisionError,
@@ -239,6 +240,29 @@ describe("isLoginEmailUniqueConflict against the live shapes", () => {
 
   it("does not blame the email for another column", () => {
     expect(isLoginEmailUniqueConflict(googleSubCollisionError())).toBe(false);
+  });
+
+  it("does not read an index NAME that merely contains 'email' as the clash", () => {
+    // The target can be an index name rather than a column list, and a Prisma
+    // index name carries its model prefix: this one normalises to a single
+    // word that CONTAINS "email". Matching whole words is what keeps a token
+    // hash from telling a member their new address is taken (#2455).
+    const error = emailChangeTokenIndexNameCollisionError();
+    expect(describeUniqueConstraintTarget(error)).toBe(
+      "emailchangetoken_tokenhash_key",
+    );
+    expect(isLoginEmailUniqueConflict(error)).toBe(false);
+  });
+
+  it("recognises the login index by name when the column list is gone", () => {
+    // Same shape, the constraint the invariant actually rests on: still yes.
+    const error = Object.assign(
+      new Error(
+        "Unique constraint failed on the constraint: `Member_email_login_unique`",
+      ),
+      { code: "P2002" },
+    );
+    expect(isLoginEmailUniqueConflict(error)).toBe(true);
   });
 
   it("still owns a P2002 that names nothing", () => {
