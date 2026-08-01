@@ -41,6 +41,7 @@ import {
   buildSeedLodgeMemberData,
 } from "../../../prisma/seed-data";
 import { starterPageContent } from "../../../prisma/starter-page-content";
+import { starterSiteContent } from "../../../prisma/starter-site-content";
 import {
   ensureDefaultSeasonSubscriptionForNewMember,
   reconcileSeasonSubscriptionForAssignment,
@@ -226,12 +227,19 @@ describe("ensureMemberAccessRolesFromCompatibilityFields", () => {
   });
 });
 
+// The founding club's lodge name and the geography around it. This project is
+// a reusable product: none of these may appear in anything a fresh install
+// seeds, because the club installing it is somewhere else entirely. One shared
+// constant so the three surfaces below cannot drift apart (#1945, #2484,
+// #2490). Not a global regex, so repeated .test/.toMatch calls are independent.
+const FOUNDING_CLUB_GEOGRAPHY = /Waldvogel|Iwikau|Ruapehu|Whakapapa|Tokoroa/i;
+
 describe("buildSeedChoreTemplates", () => {
   it("contains no location-specific copy", () => {
     const text = JSON.stringify(buildSeedChoreTemplates());
     // Previously the seed referenced a specific recycling centre and supply days.
-    // Waldvogel is added for symmetry with the starter-page-content guard below.
-    expect(text).not.toMatch(/Waldvogel|Iwikau|Ruapehu|Whakapapa|Tokoroa/i);
+    // Waldvogel is added for symmetry with the starter-content guards below.
+    expect(text).not.toMatch(FOUNDING_CLUB_GEOGRAPHY);
   });
 
   it("keeps the full example template set", () => {
@@ -246,7 +254,40 @@ describe("starterPageContent location scrub (#1945)", () => {
     // ({{club-name}} / {{lodge-name}} / {{lodge-capacity}}). This guard fails if
     // any of those names re-enter the seeded privacy, terms, or FAQ copy.
     const text = JSON.stringify(starterPageContent);
-    expect(text).not.toMatch(/Waldvogel|Iwikau|Ruapehu|Whakapapa|Tokoroa/i);
+    expect(text).not.toMatch(FOUNDING_CLUB_GEOGRAPHY);
+  });
+});
+
+describe("starterSiteContent location scrub (#2490)", () => {
+  // The arm of this guard that was missing until #2490. The starter footer
+  // columns render on EVERY public page, and the affiliations column shipped a
+  // link to the Ruapehu Mountain Clubs Association — a regional body a club in
+  // another region does not belong to — which no guard could see, because this
+  // suite only ever covered buildSeedChoreTemplates() and starterPageContent.
+  it("seeds no club-specific affiliation, lodge name, or geography", () => {
+    const text = JSON.stringify(starterSiteContent);
+    expect(text).not.toMatch(FOUNDING_CLUB_GEOGRAPHY);
+  });
+
+  it("covers every starter site content section, not just the footer keys", () => {
+    // Fails if a section is added without content the guard above can read, so
+    // a future column cannot slip club-specific copy past a stale field list.
+    expect(starterSiteContent.length).toBeGreaterThan(0);
+    for (const section of starterSiteContent) {
+      expect(typeof section.contentHtml).toBe("string");
+      expect(section.contentHtml).not.toMatch(FOUNDING_CLUB_GEOGRAPHY);
+    }
+  });
+
+  it("lists no affiliations at all on a fresh install", () => {
+    // The recorded decision (#2490): this project cannot know a club's
+    // affiliations, so it ships none and the footer hides the column until an
+    // admin adds the club's own.
+    const affiliations = starterSiteContent.find(
+      (section) => section.key === "FOOTER_AFFILIATIONS",
+    );
+    expect(affiliations).toBeDefined();
+    expect(affiliations!.contentHtml).toBe("");
   });
 });
 
