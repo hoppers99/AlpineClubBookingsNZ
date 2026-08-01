@@ -282,25 +282,35 @@ export async function createCalendarEvent(
 
 type EventWithSeries = CalendarEvent & { series: CalendarEventSeries | null };
 
+/**
+ * Returns null when a concurrent admin deleted this occurrence between the
+ * caller's existence check and this write (P2025) — the route's documented
+ * "already gone" 404, never a 500.
+ */
 async function updateSingleOccurrence(
   existing: CalendarEvent,
   data: ResolvedEventData,
-): Promise<CalendarEvent> {
-  return prisma.calendarEvent.update({
-    where: { id: existing.id },
-    data: {
-      title: data.title,
-      location: data.location,
-      details: data.details,
-      allDay: data.allDay,
-      startsAt: data.startsAt,
-      endsAt: data.endsAt,
-      isMeeting: data.isMeeting,
-      meetingRoom: nextMeetingRoom(data.isMeeting, existing.meetingRoom),
-      // A per-occurrence edit becomes an exception so later series edits skip it.
-      detachedFromSeries: existing.seriesId ? true : existing.detachedFromSeries,
-    },
-  });
+): Promise<CalendarEvent | null> {
+  try {
+    return await prisma.calendarEvent.update({
+      where: { id: existing.id },
+      data: {
+        title: data.title,
+        location: data.location,
+        details: data.details,
+        allDay: data.allDay,
+        startsAt: data.startsAt,
+        endsAt: data.endsAt,
+        isMeeting: data.isMeeting,
+        meetingRoom: nextMeetingRoom(data.isMeeting, existing.meetingRoom),
+        // A per-occurrence edit becomes an exception so later series edits skip it.
+        detachedFromSeries: existing.seriesId ? true : existing.detachedFromSeries,
+      },
+    });
+  } catch (error) {
+    if (isRecordNotFoundError(error)) return null;
+    throw error;
+  }
 }
 
 /**
@@ -362,45 +372,57 @@ async function propagateSeriesFieldChanges(
  * Series edit that CHANGES the pattern (or the anchor day): rewrite the rule and
  * regenerate every non-detached occurrence from the edited occurrence as the new
  * anchor. Detached exceptions are left untouched.
+ *
+ * Returns false when a concurrent whole-series delete removed the series row
+ * before this transaction took the lock (P2025) — the series is already gone,
+ * so the caller 404s rather than surfacing a 500. The rollback leaves the
+ * occurrences exactly as that delete left them.
  */
 async function regenerateSeries(
   series: CalendarEventSeries,
   data: ResolvedEventData & { recurrence: RecurrenceRule },
   actorId: string,
-): Promise<void> {
-  await prisma.$transaction(async (tx) => {
-    await lockCalendarSeries(tx, series.id);
-    await tx.calendarEventSeries.update({
-      where: { id: series.id },
-      data: {
-        frequency: data.recurrence.frequency,
-        interval: data.recurrence.interval,
-        until: seriesUntil(data.recurrence),
-        count: seriesCount(data.recurrence),
-      },
-    });
-    // E2: capture the room slug of each surviving (non-detached) occurrence,
-    // keyed by its start instant, so a regenerated occurrence that lands on the
-    // same instant REUSES its room and its already-shared join link keeps
-    // working. Only occurrences that actually have a room are carried.
-    const surviving = await tx.calendarEvent.findMany({
-      where: { seriesId: series.id, detachedFromSeries: false },
-      select: { startsAt: true, meetingRoom: true },
-    });
-    const preservedRooms = new Map<number, string>();
-    for (const occ of surviving) {
-      if (occ.meetingRoom) {
-        preservedRooms.set(occ.startsAt.getTime(), occ.meetingRoom);
+): Promise<boolean> {
+  try {
+    await prisma.$transaction(async (tx) => {
+      await lockCalendarSeries(tx, series.id);
+      await tx.calendarEventSeries.update({
+        where: { id: series.id },
+        data: {
+          frequency: data.recurrence.frequency,
+          interval: data.recurrence.interval,
+          until: seriesUntil(data.recurrence),
+          count: seriesCount(data.recurrence),
+        },
+      });
+      // E2: capture the room slug of each surviving (non-detached) occurrence,
+      // keyed by its start instant, so a regenerated occurrence that lands on
+      // the same instant REUSES its room and its already-shared join link keeps
+      // working. Only occurrences that actually have a room are carried.
+      const surviving = await tx.calendarEvent.findMany({
+        where: { seriesId: series.id, detachedFromSeries: false },
+        select: { startsAt: true, meetingRoom: true },
+      });
+      const preservedRooms = new Map<number, string>();
+      for (const occ of surviving) {
+        if (occ.meetingRoom) {
+          preservedRooms.set(occ.startsAt.getTime(), occ.meetingRoom);
+        }
       }
-    }
-    await tx.calendarEvent.deleteMany({
-      where: { seriesId: series.id, detachedFromSeries: false },
+      await tx.calendarEvent.deleteMany({
+        where: { seriesId: series.id, detachedFromSeries: false },
+      });
+      const starts = generateOccurrenceStarts(data.startsAt, data.recurrence);
+      await tx.calendarEvent.createMany({
+        data: buildOccurrenceRows(starts, data, series.id, actorId, preservedRooms),
+      });
     });
-    const starts = generateOccurrenceStarts(data.startsAt, data.recurrence);
-    await tx.calendarEvent.createMany({
-      data: buildOccurrenceRows(starts, data, series.id, actorId, preservedRooms),
-    });
-  });
+    return true;
+  } catch (error) {
+    // A concurrent admin deleted the whole series first: treat as already gone.
+    if (isRecordNotFoundError(error)) return false;
+    throw error;
+  }
 }
 
 /**
@@ -493,7 +515,10 @@ export async function updateCalendarEvent(
 
   // Standalone event, or a per-occurrence edit: change just this row.
   if (!existing.seriesId || !existing.series || scope === "single") {
-    return { anchor: await updateSingleOccurrence(existing, data), scope: "single" };
+    const anchor = await updateSingleOccurrence(existing, data);
+    // A concurrent delete removed the row between the read and the write → 404.
+    if (!anchor) return null;
+    return { anchor, scope: "single" };
   }
 
   // Series edit that removes recurrence entirely.
@@ -510,12 +535,17 @@ export async function updateCalendarEvent(
     dateChanged || !seriesMatchesRule(existing.series, data.recurrence);
 
   if (patternChanged) {
-    await regenerateSeries(
+    const regenerated = await regenerateSeries(
       existing.series,
       { ...data, recurrence: data.recurrence },
       actorId,
     );
+    // A concurrent whole-series delete removed the series first → 404.
+    if (!regenerated) return null;
   } else {
+    // No P2025 guard here: propagate reads its occurrence set INSIDE the
+    // transaction, after taking the per-series lock that every series and
+    // single delete also takes, so no row it updates can vanish under it.
     await propagateSeriesFieldChanges(existing.seriesId, data);
   }
 

@@ -29,10 +29,15 @@ vi.mock("@/lib/prisma", () => ({
     lodge: { findUnique: vi.fn(async () => ({ name: "Lodge", address: null })) },
   },
 }));
-vi.mock("@/lib/page-content-html", () => ({
-  getSanitizedPageContentByPath: mocks.getPage,
-  pageContentHtmlToPlainText: () => "",
-}));
+// Shared factory mirrors the real published filter (#2440).
+vi.mock("@/lib/page-content-html", async () => {
+  const { pageContentHtmlModuleMock } = await import(
+    "@/lib/__tests__/helpers/page-content-html-mock"
+  );
+  return pageContentHtmlModuleMock(mocks.getPage, {
+    pageContentHtmlToPlainText: () => "",
+  });
+});
 vi.mock("@/lib/page-content-embeds", () => ({ buildEmbeddedBody: mocks.buildBody }));
 vi.mock("@/lib/auth-redirect", () => ({ buildBookingLoginPath: () => "/login" }));
 vi.mock("next/navigation", () => ({ notFound: () => { throw new Error("not found"); } }));

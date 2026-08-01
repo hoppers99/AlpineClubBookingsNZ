@@ -379,6 +379,17 @@ export default proxy;
  * The source string is repeated LITERALLY because Next extracts `export const
  * config` from the middleware source statically and cannot evaluate a shared
  * constant. `csp-proxy.test.ts` pins both copies and asserts they are identical.
+ *
+ * Because that lookahead drops the whole of `/api`, the explicit entries below
+ * are the ONLY way an API path reaches the proxy — so every `/api` prefix and
+ * every `/api` regex in `FEATURE_ROUTE_RULES` must be covered by an entry here,
+ * or its module gate is dead code (#2435: the member-guest consent pattern had
+ * none, so the `memberGuests` gate never ran in front of that endpoint). A
+ * PREFIX rule gates a whole subtree, so its entry has to end in `:path*` — a
+ * bare literal leaves every child gated-but-unmatched. Entries must be static
+ * literals; Next parses this list at build time. `csp-proxy.test.ts` asserts
+ * the two lists cannot drift apart again, probing each prefix at its bare path
+ * and at a child, and each pattern once per alternation branch.
  */
 export const config = {
   matcher: [
@@ -417,10 +428,11 @@ export const config = {
     "/api/admin/work-parties/:path*",
     "/api/admin/xero/:path*",
     "/api/address-autocomplete/:path*",
+    "/api/bookings/:id/guests/:guestId/consent",
     "/api/bookings/:id/waitlist-confirm",
     "/api/admin/bookings/:id/force-confirm",
     "/api/chores/:path*",
-    "/api/cron/xero",
+    "/api/cron/xero/:path*",
     "/api/display/:path*",
     "/api/finance/:path*",
     "/api/group-bookings/:path*",
@@ -430,7 +442,7 @@ export const config = {
     "/api/promo-codes/:path*",
     "/api/skifield-conditions/:path*",
     "/api/skifield-whakapapa/:path*",
-    "/api/webhooks/xero",
+    "/api/webhooks/xero/:path*",
     "/api/work-parties/:path*",
   ],
 };

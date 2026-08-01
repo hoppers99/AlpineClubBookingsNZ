@@ -1095,10 +1095,10 @@ lobby TV display (fork #54) and the global 404 (#2356).
   — not the rescue of a broken visitor-facing 404. Say so plainly anywhere this
   is described to clubs.
 - **Two latent defects travelled with the frozen artefact, both from "no request,
-  no database at build time".** In the artefact,
-  `getSanitizedPageContentByPath("/404")` had failed at build and been swallowed
-  by the surrounding catch, so the admin-authored `/404` CMS page could not
-  appear in it — the hardcoded fallback was baked in. And the root layout's
+  no database at build time".** In the artefact, the `/404` page-content lookup
+  (now `getPublishedPageContentByPath("/404")`, #2440) had failed at build and
+  been swallowed by the surrounding catch, so the admin-authored `/404` CMS page
+  could not appear in it — the hardcoded fallback was baked in. And the root layout's
   `generateMetadata()` fell back to `SAFE_DEFAULT_CONFIG`, baking the template
   placeholder club name and `http://localhost:3000` into that artefact's
   `<title>` and OG tags. Both were confined to the artefact, which is why they
@@ -1423,9 +1423,14 @@ address — real page, typo, and bot probe alike — which is the configuration 
     `if (!page)`, so pre-setup a miss answered with the club name while a HIT
     answered with the page's own title and header text — the enumeration oracle
     the guard existed to prevent, merely inverted. `/`, `/contact`, `/join` and
-    `/join/apply` had no guard at all, and `/contact` and `/join` look their
-    content up with no `published === false` filter, so an unlaunched club also
-    disclosed pages it had explicitly unpublished. Measured effect: an anonymous
+    `/join/apply` had no guard at all, and — until #2440 — `/contact` and
+    `/join` looked their content up with no `published === false` filter, so an
+    unlaunched club also disclosed pages it had explicitly unpublished. (Closed
+    post-setup as well as pre-setup: every public render path now reads through
+    `getPublishedPageContentByPath()` in `src/lib/page-content-html.ts`, which
+    treats an unpublished row as absent, and a contract test bans the
+    unfiltered by-path read from application code outside that module so the
+    routes cannot drift apart again.) Measured effect at the time: an anonymous
     prober with a slug wordlist could recover the full page inventory of a site
     that had never opened, plus each page's title and header text.
   - Closed by `src/lib/website-setup-metadata.ts`. Every `generateMetadata()`

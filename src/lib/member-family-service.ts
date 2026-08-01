@@ -6,7 +6,10 @@ import {
   type MemberProfileCompletenessInput,
   type MemberProfileCompletenessResult,
 } from "@/lib/member-profile-completeness";
-import { buildParentLinks } from "@/lib/member-parent-links";
+import {
+  buildMemberFacingParentLinks,
+  buildParentLinks,
+} from "@/lib/member-parent-links";
 import type { BookingGuestProfileAction } from "@/lib/booking-guests";
 
 type JsonRouteResult = {
@@ -54,6 +57,11 @@ const FAMILY_MEMBER_PROFILE_SELECT = {
   // the family whose consent is at stake could otherwise see no indication at
   // all of where their child's club email goes.
   inheritEmailFrom: { select: { id: true, firstName: true, lastName: true } },
+  // #2424: the parent's own family groups come back with the parent so the
+  // member-facing payload can decide, server-side, whether this VIEWER is
+  // allowed the parent's email address. A parent link carries no shared-group
+  // requirement, so a parent can be someone the viewer has no family
+  // relationship with at all.
   parent: {
     select: {
       id: true,
@@ -64,6 +72,7 @@ const FAMILY_MEMBER_PROFILE_SELECT = {
       active: true,
       canLogin: true,
       inheritEmailFromId: true,
+      familyGroupMemberships: { select: { familyGroupId: true } },
     },
   },
   secondaryParent: {
@@ -76,6 +85,7 @@ const FAMILY_MEMBER_PROFILE_SELECT = {
       active: true,
       canLogin: true,
       inheritEmailFromId: true,
+      familyGroupMemberships: { select: { familyGroupId: true } },
     },
   },
   familyGroupMemberships: {
@@ -101,8 +111,10 @@ type FamilyMemberRecord = MemberProfileCompletenessInput & {
     firstName: string;
     lastName: string;
   } | null;
-  parent?: Parameters<typeof buildParentLinks>[0]["parent"];
-  secondaryParent?: Parameters<typeof buildParentLinks>[0]["secondaryParent"];
+  parent?: Parameters<typeof buildMemberFacingParentLinks>[0]["parent"];
+  secondaryParent?: Parameters<
+    typeof buildMemberFacingParentLinks
+  >[0]["secondaryParent"];
   familyGroupMemberships?: Array<{
     familyGroupId: string;
     familyGroup?: { id: string; name: string | null } | null;
@@ -418,7 +430,7 @@ export async function getMemberFamily(memberId: string): Promise<JsonRouteResult
     action: BookingGuestProfileAction | null;
     dateOfBirth: string | null;
     familyGroupIds: string[];
-    parentLinks: ReturnType<typeof buildParentLinks>;
+    parentLinks: ReturnType<typeof buildMemberFacingParentLinks>;
     notificationEmailFromId: string | null;
     /**
      * #2255: who the notification address belongs to, when that is somebody
@@ -522,7 +534,9 @@ export async function getMemberFamily(memberId: string): Promise<JsonRouteResult
       action,
       dateOfBirth: toDateInputValue(member.dateOfBirth),
       familyGroupIds: sharedFamilyGroupIds,
-      parentLinks: buildParentLinks(member),
+      // #2424: `groupIds` is the VIEWER's own set of family groups, and a
+      // parent outside all of them is returned without an email address.
+      parentLinks: buildMemberFacingParentLinks(member, groupIds),
       notificationEmailFromId: member.inheritEmailFromId ?? null,
       notificationEmailFromName: notificationSourceBeyondParents(member),
     });

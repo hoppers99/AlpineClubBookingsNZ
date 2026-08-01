@@ -1833,6 +1833,14 @@ export function PageContentPanel() {
           // Only admin-created pages can be hidden; built-in/system pages stay
           // published because code routes, the footer, and the sitemap link them.
           const canHide = canUnpublishPage(page.slug);
+          // Recovery affordance (#2440): a built-in page can only be hidden by
+          // data no supported write produced (raw SQL, legacy rows), but since
+          // the public routes now honour the flag — /home even 404s the site
+          // root — the panel must offer a way back. The PATCH route only blocks
+          // UNPUBLISHING protected pages; re-publishing is always accepted, so
+          // showing the toggle whenever the page is hidden gives a one-click
+          // repair without ever exposing a Hide button on a protected page.
+          const showVisibilityToggle = canHide || !page.published;
 
           return (
             <Card key={page.slug}>
@@ -1890,7 +1898,7 @@ export function PageContentPanel() {
                     <Edit3 className="h-4 w-4" />
                     {canEdit ? "Edit" : "View"} {page.title}
                   </Button>
-                  {canHide && (
+                  {showVisibilityToggle && (
                     <ViewOnlyActionButton
                       canEdit={canEdit}
                       describeReason={false}

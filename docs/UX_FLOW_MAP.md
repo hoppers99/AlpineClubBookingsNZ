@@ -89,7 +89,10 @@ actually encounters in this release:
   missing guest, wrong booking, already answered, not your request — returns the
   **same 403 with the same body**, so neither id can be used to probe who is on
   which booking. That uniformity is deliberate and must not be "improved" into
-  helpful messages.
+  helpful messages. It describes a club with the member-guests module **on**;
+  with the module off the proxy's module gate answers **404** before the
+  endpoint runs at all, which says only that this club does not run member
+  guests.
 - **An honest refusal path.** Owner decision D-14 keeps the ordinary
   self-removal blockers in force for a member who never consented, so "No thanks"
   is sometimes refused. Predictable refusals state the reason and name who can

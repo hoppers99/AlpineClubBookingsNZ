@@ -226,6 +226,8 @@ const h = vi.hoisted(() => {
       series.set(row.id, row);
       return { ...row };
     },
+    // Prisma throws P2025 on a missing series row just as it does for events —
+    // the service maps that to "already gone" (404), never a 500.
     update: async ({
       where,
       data,
@@ -234,14 +236,14 @@ const h = vi.hoisted(() => {
       data: Record<string, unknown>;
     }) => {
       const existing = series.get(where.id);
-      if (!existing) throw new Error(`series ${where.id} not found`);
+      if (!existing) throw prismaError("P2025");
       const updated = { ...existing, ...data, updatedAt: new Date() } as SeriesRow;
       series.set(where.id, updated);
       return { ...updated };
     },
     delete: async ({ where }: { where: { id: string } }) => {
       const existing = series.get(where.id);
-      if (!existing) throw new Error(`series ${where.id} not found`);
+      if (!existing) throw prismaError("P2025");
       series.delete(where.id);
       return { ...existing };
     },
@@ -393,6 +395,117 @@ describe("updateCalendarEvent — single vs series, exception survival", () => {
     expect(detached).toHaveLength(1);
     expect(detached[0].title).toBe("Detached");
     expect(regenerated).toHaveLength(2);
+  });
+
+  // #2244: both writes below run AFTER the existence check, so a concurrent
+  // admin can remove the row (or the whole series) in between. Prisma raises
+  // P2025 there; the documented contract for "the thing you edited is gone" is
+  // the route's 404, so the service must return null rather than let the error
+  // escape as a 500.
+  it("treats a concurrent delete during a single-occurrence edit (P2025) as already gone → null", async () => {
+    const created = await createCalendarEvent(data(), "member-1");
+    const calendarEvent = h.prisma.calendarEvent as {
+      update: (args: {
+        where: { id: string };
+        data: Record<string, unknown>;
+      }) => Promise<unknown>;
+    };
+    const original = calendarEvent.update;
+    // Delete the row the instant the update is issued, then run the real fake:
+    // it raises P2025 exactly as Postgres/Prisma would.
+    calendarEvent.update = async (args) => {
+      h.events.delete(created.id);
+      return original(args);
+    };
+    try {
+      expect(
+        await updateCalendarEvent(
+          created.id,
+          data({ title: "Renamed" }),
+          "single",
+          "member-1",
+        ),
+      ).toBeNull();
+    } finally {
+      calendarEvent.update = original;
+    }
+  });
+
+  it("treats a concurrent whole-series delete during a pattern-change regenerate (P2025) as already gone → null", async () => {
+    const anchor = await createCalendarEvent(
+      data({ recurrence: WEEKLY_3 }),
+      "member-1",
+    );
+    const seriesId = h.events.get(anchor.id)!.seriesId!;
+    const calendarEventSeries = h.prisma.calendarEventSeries as {
+      update: (args: {
+        where: { id: string };
+        data: Record<string, unknown>;
+      }) => Promise<unknown>;
+    };
+    const original = calendarEventSeries.update;
+    calendarEventSeries.update = async (args) => {
+      h.series.delete(seriesId);
+      return original(args);
+    };
+    try {
+      // A pattern change (count 3 → 2) takes the regenerate path.
+      expect(
+        await updateCalendarEvent(
+          anchor.id,
+          data({ recurrence: { ...WEEKLY_3, count: 2 } }),
+          "series",
+          "member-1",
+        ),
+      ).toBeNull();
+    } finally {
+      calendarEventSeries.update = original;
+    }
+  });
+
+  it("still surfaces a non-P2025 failure from either update path", async () => {
+    // The mapping is narrow: only "record not found" becomes a 404. A genuine
+    // database failure must keep propagating, or a broken save reads as a
+    // missing event.
+    const created = await createCalendarEvent(data(), "member-1");
+    const calendarEvent = h.prisma.calendarEvent as {
+      update: (args: unknown) => Promise<unknown>;
+    };
+    const originalEventUpdate = calendarEvent.update;
+    calendarEvent.update = async () => {
+      throw Object.assign(new Error("connection lost"), { code: "P1001" });
+    };
+    try {
+      await expect(
+        updateCalendarEvent(created.id, data(), "single", "member-1"),
+      ).rejects.toThrow("connection lost");
+    } finally {
+      calendarEvent.update = originalEventUpdate;
+    }
+
+    const anchor = await createCalendarEvent(
+      data({ recurrence: WEEKLY_3 }),
+      "member-1",
+    );
+    const calendarEventSeries = h.prisma.calendarEventSeries as {
+      update: (args: unknown) => Promise<unknown>;
+    };
+    const originalSeriesUpdate = calendarEventSeries.update;
+    calendarEventSeries.update = async () => {
+      throw Object.assign(new Error("connection lost"), { code: "P1001" });
+    };
+    try {
+      await expect(
+        updateCalendarEvent(
+          anchor.id,
+          data({ recurrence: { ...WEEKLY_3, count: 2 } }),
+          "series",
+          "member-1",
+        ),
+      ).rejects.toThrow("connection lost");
+    } finally {
+      calendarEventSeries.update = originalSeriesUpdate;
+    }
   });
 });
 

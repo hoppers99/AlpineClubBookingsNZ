@@ -39,6 +39,13 @@ describe("repository agent workflow contract", () => {
     expect(claude).toContain("PR CI owns the full test, build, migration-drift");
     expect(claude).toContain("Do not duplicate them locally");
     expect(claude).not.toContain("Run the full `npm test` before opening a PR");
+    // #2468: `CLAUDE.md` is the file an interactive session reads instead of all
+    // of `AGENTS.md`, so the two `verify` gates that read the PR body rather than
+    // the code have to be named here — otherwise a lint-clean, typecheck-clean
+    // change fails CI for a reason nothing it was told to read explains.
+    expect(claude).toContain("changelog.d/<pr-number>-<slug>.md");
+    expect(claude).toContain("changelog.d/README.md");
+    expect(claude).toContain("editing the body alone does not re-run Actions");
 
     expect(codex).toContain("Root `AGENTS.md` is authoritative");
     expect(codex).toContain("last 10 merged PRs affecting the subsystem");

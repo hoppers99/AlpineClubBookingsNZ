@@ -5,7 +5,7 @@ import { getCachedClubIdentity } from "@/lib/public-layout-config";
 import { setupInProgressMetadata } from "@/lib/website-setup-metadata";
 import { buildEmbeddedBody } from "@/lib/page-content-embeds";
 import {
-  getSanitizedPageContentByPath,
+  getPublishedPageContentByPath,
   pageContentHtmlToPlainText,
 } from "@/lib/page-content-html";
 
@@ -18,7 +18,7 @@ export async function generateMetadata(): Promise<Metadata> {
   }
 
   const [page, { name: clubName }] = await Promise.all([
-    getSanitizedPageContentByPath("/join/apply"),
+    getPublishedPageContentByPath("/join/apply"),
     getCachedClubIdentity(),
   ]);
 
@@ -32,7 +32,7 @@ export async function generateMetadata(): Promise<Metadata> {
 
 export default async function JoinApplyPage() {
   const [page, clubIdentity] = await Promise.all([
-    getSanitizedPageContentByPath("/join/apply"),
+    getPublishedPageContentByPath("/join/apply"),
     getCachedClubIdentity(),
   ]);
   const embeddedBody = page ? await buildEmbeddedBody(page.contentHtml) : [];
