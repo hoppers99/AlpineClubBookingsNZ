@@ -148,9 +148,16 @@ export interface EmailLinkAction {
  * revokes the booking's payment links, and the request itself is CONVERTED, so
  * the club's contact page is the only live way back in.
  *
- * Shared by the hand-built HTML template and the `{{rebookNote}}` token the
- * admin-editable body renders, so the two paths cannot drift. The caller owns
- * the base URL — this module deliberately imports nothing.
+ * Whichever way it goes, the notice also names the club's support address (the
+ * `{{SUPPORT_EMAIL}}` line both the HTML template and the default body carry),
+ * because a club-authored Contact page need not host a contact form — without
+ * that line a recipient who cannot sign in could be left with no way to reply
+ * at all. Both branches carry it, so the two readers get the same courtesy.
+ *
+ * Shared by the hand-built HTML template and the `{{rebookLabel}}` /
+ * `{{rebookPath}}` tokens the admin-editable body renders, so the two paths
+ * cannot drift. The caller owns the base URL — this module deliberately
+ * imports nothing.
  */
 export function bookingBumpedRebookAction(
   recipientCanBookOnline: boolean,

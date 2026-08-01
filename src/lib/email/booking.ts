@@ -293,14 +293,19 @@ export async function sendBookingBumpedEmail(
   checkOut: Date,
   guestCount: number,
   // Booking's lodge (multi-lodge phase 8): see sendBookingConfirmedEmail.
-  lodgeId?: string | null,
+  // Required (pass `null` when unknown) so the recipient argument after it can
+  // be required too — TypeScript allows no required parameter behind an
+  // optional one, and that argument must not be omittable (below).
+  lodgeId: string | null,
   // #2430: whether the owner of the bumped booking can sign in and rebook.
   // Pass the owner's `Member.canLogin`: a booking converted from a public
   // booking request (#707), or any booking an admin made for a non-login
   // NON_MEMBER/SCHOOL contact, is owned by a member that cannot authenticate,
-  // so `/book` would send them to a login they can never complete. Defaults to
-  // the member case, which keeps the historical wording byte-for-byte.
-  recipientCanBookOnline: boolean = true,
+  // so `/book` would send them to a login they can never complete. REQUIRED,
+  // with no default: `true` is the leaky value, so a defaulted argument would
+  // let a future send site mail a login-less contact a members-only link
+  // without anyone noticing (#2430 review).
+  recipientCanBookOnline: boolean,
 ) {
   const rebook = bookingBumpedRebookAction(recipientCanBookOnline);
   await sendEmail({

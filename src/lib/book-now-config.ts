@@ -90,6 +90,12 @@ export async function getBookNowConfig(
     // BOOKING_FLOW, or a PAGE target whose page is missing/unpublished: fail open.
     return { show: true, href: defaultHref, label };
   } catch {
+    // Deliberately still FAIL-OPEN, and deliberately out of step with the
+    // no-row branch above, which fails closed since #2430: a database error is
+    // not a club's choice, and #1929 owns the "the button is never dead"
+    // contract this line implements. So a club whose button is off can, for the
+    // life of a database outage, show it — narrow the contract only with the
+    // owner's decision on #1929, not as a side effect of a default flip.
     return { show: true, href: defaultHref, label };
   }
 }

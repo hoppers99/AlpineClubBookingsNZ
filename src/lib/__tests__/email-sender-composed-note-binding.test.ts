@@ -204,6 +204,8 @@ describe("#2320 review — senders supply the composed notes their defaults rend
 // ---------------------------------------------------------------------------
 describe("#2430 booking-bumped points each recipient class somewhere it can go", () => {
   const BASE_URL = "https://club.example.org";
+  const SUPPORT_EMAIL = "club@example.org";
+  const SUPPORT_LINE = `If you have any questions, contact the club at ${SUPPORT_EMAIL}.`;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -228,13 +230,13 @@ describe("#2430 booking-bumped points each recipient class somewhere it can go",
       { templateName: string; templateData: EmailTemplateData },
     ];
     expect(args.templateName).toBe("booking-bumped");
-    // BASE_URL is a GLOBAL token resolved from the club's configured public URL
-    // at render time, which is exactly why the sender supplies only the caption
-    // and the path.
-    return { ...args.templateData, BASE_URL };
+    // BASE_URL and SUPPORT_EMAIL are GLOBAL tokens resolved from the club's own
+    // configured public URL and support address at render time, which is
+    // exactly why the sender supplies only the caption and the path.
+    return { ...args.templateData, BASE_URL, SUPPORT_EMAIL };
   }
 
-  it("a club member still gets the members-only booking flow, byte for byte", async () => {
+  it("a club member still gets the members-only booking flow", async () => {
     const rendered = renderDefaultBody(
       "booking-bumped",
       await bumpedTemplateData(true),
@@ -243,6 +245,8 @@ describe("#2430 booking-bumped points each recipient class somewhere it can go",
       `
 
 Book Again: ${BASE_URL}/book
+
+${SUPPORT_LINE}
 
 We apologise for the inconvenience.`,
     );
@@ -259,10 +263,26 @@ We apologise for the inconvenience.`,
 
 Contact the Club: ${BASE_URL}/contact
 
+${SUPPORT_LINE}
+
 We apologise for the inconvenience.`,
     );
     expect(rendered).not.toContain("Book Again");
     expect(rendered).not.toContain(`${BASE_URL}/book`);
+  });
+
+  // #2430 review: the contact page is a club-authored page and need not host a
+  // contact form, so a recipient who cannot sign in must be given an address
+  // too. Both classes get the same courtesy line.
+  it("names the club's support address for both classes", async () => {
+    for (const canBook of [true, false]) {
+      mocks.sendEmail.mockClear();
+      const rendered = renderDefaultBody(
+        "booking-bumped",
+        await bumpedTemplateData(canBook),
+      );
+      expect(rendered).toContain(SUPPORT_LINE);
+    }
   });
 
   it("leaves no dangling caption or bare base URL for either class", async () => {

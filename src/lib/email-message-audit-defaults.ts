@@ -40,7 +40,7 @@ export const EMAIL_AUDIT_DEFAULTS = {
   },
   "booking-bumped": {
     "defaultSubject": "Booking Update - {{CLUB_LODGE_NAME}}",
-    "defaultBody": "Booking Update\n\nHi {{firstName}}, unfortunately your pending lodge booking has been bumped due to member demand.\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\n\nYour card has not been charged.\n\nAs a non-member booking, priority is given to club members when the lodge reaches capacity. You're welcome to rebook for different dates where availability exists.\n\n{{rebookLabel}}: {{BASE_URL}}{{rebookPath}}\n\nWe apologise for the inconvenience."
+    "defaultBody": "Booking Update\n\nHi {{firstName}}, unfortunately your pending lodge booking has been bumped due to member demand.\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\n\nYour card has not been charged.\n\nAs a non-member booking, priority is given to club members when the lodge reaches capacity. You're welcome to rebook for different dates where availability exists.\n\n{{rebookLabel}}: {{BASE_URL}}{{rebookPath}}\n\nIf you have any questions, contact the club at {{SUPPORT_EMAIL}}.\n\nWe apologise for the inconvenience."
   },
   "booking-guests-cancelled": {
     "defaultSubject": "Booking Cancelled - {{CLUB_LODGE_NAME}}",

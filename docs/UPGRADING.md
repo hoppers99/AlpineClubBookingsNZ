@@ -90,18 +90,32 @@ as a red flag and check the release notes before deploying.
 
 `20260801170000_public_book_now_default_off` flips the **column default** of
 `PublicContentSettings.showBookNow` from true to false. It writes no rows, so
-**every club that has ever saved Admin → Site Appearance & Content → Page
-Content keeps exactly the setting it saved** — ticked stays ticked, unticked
-stays unticked.
+**every club that has ever saved Admin → Setup & Configuration → Site Appearance
+& Content → Page Content keeps exactly the setting it saved** — ticked stays
+ticked, unticked stays unticked.
 
-**Check this one thing before you upgrade.** The new default governs only a club
-that has *never saved that panel at all*, and such a club has no settings row for
-the button to read. If that is you, the public header's booking button
-**disappears on upgrade**. Deliberate — the public site should not read as
-walk-in commercial accommodation — but reversible in one click: open **Admin →
-Site Appearance & Content → Page Content**, tick **Show the Book Now button**,
-and **Save visibility**. Saving once also pins your choice against any future
-change of the shipped default.
+**Do this one thing after you upgrade, whichever club you are.** Open **Admin →
+Setup & Configuration → Site Appearance & Content → Page Content**, look at
+**Show the Book Now button**, set it the way you actually want it, and press
+**Save visibility**. One saved click ends every ambiguity below and pins your
+choice against any future change of the shipped default. Which of these you are
+decides what you will see when you look:
+
+- **You have saved that panel before.** Nothing changed for you. Your ticked or
+  unticked choice is stored and keeps winning.
+- **Your club has no stored public-content settings at all.** The new default is
+  what you get, so the public header's booking button **disappears on upgrade**.
+  That is the intended direction — the public site should not read as walk-in
+  commercial accommodation — and ticking the box above brings it straight back.
+- **You have never opened Page Content, but the button is still there.** Not a
+  bug, and worth a moment. The same settings record also gets created the first
+  time an admin saves the **Club Contact** panel (choosing which committee role
+  the public Contact page names). That save stores only the contact role; the
+  button's own column silently takes whatever default was in force at that
+  moment — true for any record created before this release. So the button is
+  being advertised on your public site although nobody ever chose to advertise
+  it, and no upgrade will change that: a stored value always beats the shipped
+  default. Set it deliberately now, either way.
 
 **The button is also renamed for signed-out visitors.** Where it is shown, a
 visitor who is not signed in now sees **Member booking** instead of **Book Now**,
@@ -121,7 +135,10 @@ contact whose booking came from a public booking request — a contact with no
 login, who could only ever reach a sign-in screen. The built-in wording now ends
 in `{{rebookLabel}}: {{BASE_URL}}{{rebookPath}}`, which renders
 `Book Again: …/book` for a member and `Contact the Club: …/contact` for a
-contact who cannot sign in.
+contact who cannot sign in. It also now names your support address, the same way
+most other built-in messages do, because a club's Contact page need not carry a
+contact form — without that line a reader who cannot sign in could be sent to a
+page that gives them no way to reply.
 
 **No saved wording is touched, and nothing warns you.** A club that saved its own
 copy of that message keeps it, exactly as it wrote it — which means it keeps
@@ -131,7 +148,10 @@ under the template with **Show differences**, and raises no warning, because a
 customisation differing from the built-in text is what a customisation is. If you
 have customised **Booking Update**, open it after upgrading and either replace
 the `Book Again: {{BASE_URL}}/book` line with
-`{{rebookLabel}}: {{BASE_URL}}{{rebookPath}}` or press **Restore Default**.
+`{{rebookLabel}}: {{BASE_URL}}{{rebookPath}}` — adding
+`If you have any questions, contact the club at {{SUPPORT_EMAIL}}.` if your copy
+names no email address — or press **Restore Default** to take the whole new
+wording.
 
 ### One-off repair of saved email template wording (#2269)
 

@@ -591,14 +591,28 @@ The public website header's **Book Now** button is configured on the same
 Admin > Page Content panel (`PublicContentSettings`):
 
 - **Show the button** — off hides it entirely (desktop and mobile). **Ships off**
-  (#2430): a club that has never saved this panel advertises no public booking
-  button at all. A club that HAS saved the panel keeps whatever it saved, on or
-  off — the shipped default only ever governs the never-saved case.
+  (#2430). The shipped default governs only an install with **no
+  `PublicContentSettings` row at all**; once the row exists its stored value
+  wins, on or off. Note the row is not created only by this panel — the Club
+  Contact panel (`/api/admin/club-contact`) upserts the same singleton while
+  writing just the contact committee role, so `showBookNow` there takes whatever
+  column default was in force when the row appeared, which for pre-#2430 rows is
+  `true`. So "shipped off" is not the same as "off everywhere", and a row can
+  advertise the button without an admin ever choosing to. Every operator gets
+  the same instruction in `docs/UPGRADING.md`: open **Admin → Setup &
+  Configuration → Site Appearance & Content → Page Content**, set **Show the
+  Book Now button** deliberately, and **Save visibility**. (A database error
+  while reading the row also falls back to showing the button — see the
+  fail-open contract below.)
 - **Target** — *booking flow* (the default: a logged-in member goes to `/book`,
   a guest is sent through login) or a chosen **published content page**.
 - A page target that becomes unpublished or is deleted **fails open** to the
-  booking flow, so the button is never dead. The authenticated dashboard's own
-  Book Now action is unaffected — a signed-in member can always book.
+  booking flow, so the button is never dead. So does a database error reading
+  the settings row: `getBookNowConfig`'s catch shows the button (#1929's
+  contract, deliberately unchanged by #2430 — the no-row branch fails closed
+  because that is a club's absent choice, whereas an outage is not). The
+  authenticated dashboard's own Book Now action is unaffected — a signed-in
+  member can always book.
 - **The label follows the visitor, not the target** (#2430). A signed-out
   visitor sees **Member booking**, because booking here is for members: with the
   booking-flow target the button sends them to the member login, and with a page
