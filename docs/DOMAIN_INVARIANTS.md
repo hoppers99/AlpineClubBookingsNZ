@@ -3448,9 +3448,17 @@ public `/api/images/[id]` content path — that content route enforces the split
 in code by returning 404 for any non-`CONTENT` row, so the invariant holds even
 if a `MEMBER_PHOTO` id is learned. A photo is public **only** when the member
 is active and holds an active, published `CommitteeAssignment` — the same
-predicate `/api/committee` uses (which is uncapped, so every publicly-rostered
-member is exactly the set whose photo is servable); otherwise it is visible
-solely to the member or a `membership:view` admin. The committee-public ETag is
+predicate `/api/committee` uses, so every publicly-rostered member is the set
+whose photo is servable; otherwise it is visible solely to the member or a
+`membership:view` admin. The photo rule is the predicate alone: the roster
+endpoint additionally applies a pathological `take: 500` backstop
+(`src/app/api/committee/route.ts`) against a misconfigured or hostile admin
+publishing an absurd number of assignments on an unauthenticated public route.
+That backstop is far above any real committee (typically <30) so it never trims
+a genuine roster, but it is a display bound, not a narrowing of the predicate —
+past 500 published assignments the roster would list fewer members than have
+servable photos, which is the safe direction (a photo is never made public by
+being trimmed off the roster). The committee-public ETag is
 an opaque digest, never the raw `MediaImage` id. Uploaded photos have their
 EXIF/XMP/comment metadata (camera GPS) stripped before storage. Whether the
 public committee roster renders those photos is a separate presentational opt-in
