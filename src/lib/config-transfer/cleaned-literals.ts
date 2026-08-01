@@ -65,12 +65,34 @@ export interface CleanedLiteral {
   issue: string;
   /** Operator-facing description of what the bundle would restore. */
   describe: string;
+  /**
+   * `true` when a config bundle CANNOT carry this field today: the field is not
+   * part of the entity's exported surface (absent from that category's exported
+   * FIELDS), so nothing round-trips it. The entry is kept as a pre-wired defence
+   * for the day the field is made portable. A dormant entry's field is asserted
+   * to be genuinely absent from its entity's exported fields by the contract
+   * test in `config-transfer-cleaned-literals.test.ts` — the moment someone adds
+   * it (e.g. `address` to `LODGE_FIELDS`) that test fails, forcing them to drop
+   * this flag, confirm the applier strip, and add a behavioural test. Omitted
+   * (falsy) for a LIVE literal a bundle round-trips.
+   */
+  dormant?: boolean;
 }
 
 /**
  * Every cleaned literal the config-transfer import path must refuse to re-plant.
  * One source of truth; extend it whenever a new value-scoped cleanup migration
  * removes starter/seed content that a config bundle round-trips.
+ *
+ * TRIGGER (enforced): when a migration's `UPDATE … WHERE` clause pins the byte
+ * value of an exportable content column (`PageContent.headerText`,
+ * `SiteContent.contentHtml`, or a `Lodge` field once it is in `LODGE_FIELDS`),
+ * add an entry here. `config-transfer-cleaned-literals.test.ts` scans the
+ * migrations for exactly that shape and turns CI red on any value-pinned cleanup
+ * that neither registers an entry nor sits on its explicit exempt list — so a
+ * new cleanup of exportable content cannot land unguarded silently. A rewrite
+ * matched only by `slug`/`key` (not by the old value) round-trips nothing
+ * removable and needs no entry.
  */
 export const CLEANED_LITERALS: readonly CleanedLiteral[] = [
   {
@@ -104,13 +126,19 @@ export const CLEANED_LITERALS: readonly CleanedLiteral[] = [
   {
     // #2484 — 20260802110000_clear_waldvogel_lodge_address cleared the founding
     // club's real lodge address that the migration chain stamped onto the
-    // default Lodge row. Registered here defensively: `Lodge.address` is NOT in
-    // the config-transfer bundle today (it is absent from LODGE_FIELDS in
-    // `categories/lodge-config.ts`), so this entry is DORMANT — nothing in a
-    // bundle can carry it. It is kept in the one registry so that if `address`
-    // is ever added to LODGE_FIELDS, wiring the same guard into the lodge
-    // applier immediately closes the exposure. Value-scoped across every lodge
-    // row (`key: null`), matching the migration's row-agnostic predicate.
+    // default Lodge row. Registered here defensively and marked DORMANT:
+    // `Lodge.address` is NOT in the config-transfer bundle today (it is absent
+    // from LODGE_FIELDS in `categories/lodge-config.ts`), so nothing in a bundle
+    // can carry it. The lodge planner/applier ALREADY route their write through
+    // `stripCleanedLiterals` (see `categories/lodge-config.ts`), so this entry is
+    // live-by-construction the instant `address` becomes portable — the strip is
+    // a guaranteed no-op until then. It does NOT close the exposure on its own:
+    // making `address` portable also demands a fresh behavioural strip test, and
+    // the `dormant` flag is what the contract test in
+    // `config-transfer-cleaned-literals.test.ts` keys on to FAIL the build the
+    // moment `address` is added to LODGE_FIELDS, so the transition is deliberate
+    // rather than silent. Value-scoped across every lodge row (`key: null`),
+    // matching the migration's row-agnostic predicate.
     entity: "lodge",
     key: null,
     field: "address",
@@ -118,6 +146,7 @@ export const CLEANED_LITERALS: readonly CleanedLiteral[] = [
     migration: "20260802110000_clear_waldvogel_lodge_address",
     issue: "#2484",
     describe: "another club's lodge address (Waldvogel Lodge)",
+    dormant: true,
   },
 ];
 
@@ -186,9 +215,13 @@ export function detectCleanedLiterals(
  * present in the base seed (so imports of them are UPDATEs, where a missing
  * field is exactly the intended "leave it" semantics), and every non-stripped
  * call returns the object unchanged. A stripped CREATE is unreachable on the
- * real path; were it ever reached, the missing field would surface as a normal
- * apply error and roll the transaction back — still fail-safe (never a
- * re-plant).
+ * real path (the seed always makes these rows present, so imports are UPDATEs);
+ * were it ever reached it is still fail-safe (never a re-plant), though the exact
+ * shape differs by column: `PageContent.headerText` has a schema `@default("")`,
+ * so a stripped home CREATE would silently default to empty; `SiteContent`
+ * `.contentHtml` is required (no default), so a stripped CREATE there would
+ * instead surface as an apply error and roll the transaction back. Either way
+ * the removed value is never written.
  */
 export function stripCleanedLiterals<T extends Record<string, unknown>>(
   entity: string,

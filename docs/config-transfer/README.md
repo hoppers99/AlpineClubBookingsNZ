@@ -519,17 +519,40 @@ interactive alike) the site-content planner/applier consult it:
   customised value never byte-matches, so it is imported untouched — value-scoped,
   exactly like the migrations themselves;
 - the boot auto-import is unattended, so "skip" is fail-safe **by construction**:
-  it cannot re-plant and needs no operator decision.
+  it cannot re-plant and needs no operator decision. It has no dry-run preview, so
+  it instead writes the same warnings to the **boot log** at `WARN`
+  (`bootstrap-import.ts`), naming each skipped literal — the DR operator learns a
+  stale bundle was cleaned rather than silently re-planted.
 
 The registry currently covers the front-page hero (#2431) and the footer
 affiliations (#2490), which the bundle round-trips, plus the lodge address
 (#2484) as a **dormant** entry — `Lodge.address` is not part of the bundle today
-(absent from `LODGE_FIELDS`), so nothing can carry it; the entry is kept so that
-if `address` is ever added, wiring the same guard closes the exposure. The
-literals are asserted byte-for-byte against the migrations by
+(absent from `LODGE_FIELDS`), so nothing can carry it. The lodge planner/applier
+**already route their write through the guard** (`categories/lodge-config.ts`),
+so the entry is **live-by-construction** — a guaranteed no-op until `address`
+becomes portable, and an active strip the instant it does. Adding `address` to
+`LODGE_FIELDS` does not silently reopen the exposure: the contract test in
+`config-transfer-cleaned-literals.test.ts` keys on the entry's `dormant` flag and
+**fails the build** the moment the field becomes exportable, forcing a deliberate
+transition (drop `dormant`, add a behavioural strip test).
+
+The literals are asserted byte-for-byte against the migrations by
 `config-transfer-cleaned-literals.test.ts`, so registry and migration cannot
-drift apart. Operators should still **re-export bundles after upgrading** — see
-`docs/UPGRADING.md`.
+drift apart. That same test also enforces the **reverse** link as far as is
+mechanically sound: any migration whose `UPDATE … WHERE` clause **pins the byte
+value** of an exportable content column (`headerText`, `contentHtml`, `address`)
+must either register a `CLEANED_LITERALS` entry or sit on a small, self-checked
+exempt list — so a future value-scoped cleanup of exportable content cannot land
+un-registered without turning CI red.
+
+**Authoring rule (for migration authors).** When you write a value-scoped cleanup
+migration that clears or replaces an **exportable** content value a config bundle
+round-trips — any `PageContent`/`SiteContent` value, or a `Lodge` field once it is
+in `LODGE_FIELDS` — add a matching entry to
+`src/lib/config-transfer/cleaned-literals.ts` so restoring a pre-cleanup bundle
+cannot put the old value back. A rewrite matched only by `slug`/`key` (not by the
+old value) round-trips nothing removable and needs no entry. Operators should
+still **re-export bundles after upgrading** — see `docs/UPGRADING.md`.
 
 ## Boot-time bootstrap auto-import (DR / clone, ADR-003, #1988)
 

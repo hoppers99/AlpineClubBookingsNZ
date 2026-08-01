@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
@@ -15,6 +15,11 @@ import {
   serialiseSiteContent,
   siteContentImporter,
 } from "@/lib/config-transfer/categories/site-content";
+// Side-effect import: registers the `lodge` entity so the wiring contract below
+// can read its exported field surface (page-content/site-content are registered
+// by the site-content import above).
+import "@/lib/config-transfer/categories/lodge-config";
+import { getRegisteredEntities } from "@/lib/config-transfer/registry";
 import type { ImportMode, ReadDb, TxDb } from "@/lib/config-transfer/import-types";
 
 // #2511 — a config bundle exported BEFORE a cleanup migration still carries the
@@ -418,3 +423,162 @@ describe.each(["overwrite", "merge"] as const)(
     });
   },
 );
+
+// ---------------------------------------------------------------------------
+// Registry ↔ applier wiring contract (#2511 F2). The registry only defends a
+// value a bundle can actually carry, and its DORMANT claim must stay honest:
+// the moment a dormant field becomes exportable the transition has to be
+// deliberate, never a silent reopening of the #2484 hole.
+// ---------------------------------------------------------------------------
+
+describe("cleaned-literal registry ↔ exported-field contract (#2511)", () => {
+  const registered = new Map(getRegisteredEntities().map((e) => [e.entity, e]));
+
+  it("every entity a cleaned literal targets is a registered config-transfer entity", () => {
+    for (const lit of CLEANED_LITERALS) {
+      expect(
+        registered.has(lit.entity),
+        `Cleaned literal ${lit.issue} targets entity "${lit.entity}", which is ` +
+          `not registered — import its category module here or fix the entity name.`,
+      ).toBe(true);
+    }
+  });
+
+  it("a DORMANT literal's field is genuinely absent from its entity's exported surface", () => {
+    // The honesty invariant behind the dormant Waldvogel address (#2484): the
+    // field a dormant entry names must NOT be an exported field of its entity,
+    // so no bundle can carry it. Adding `address` to LODGE_FIELDS puts it in the
+    // lodge entity's exported fields and fails this test — the forcing function
+    // that stops the #2484 exposure reopening silently. When it fails: drop
+    // `dormant`, confirm the applier still calls stripCleanedLiterals for that
+    // entity (the lodge applier already does), and add a behavioural strip test
+    // for the now-live field.
+    const dormant = CLEANED_LITERALS.filter((l) => l.dormant);
+    expect(dormant.length).toBeGreaterThan(0); // the Waldvogel address entry
+    for (const lit of dormant) {
+      const entity = registered.get(lit.entity)!;
+      expect(
+        entity.fields.includes(lit.field),
+        `Cleaned literal ${lit.issue} is marked dormant, but "${lit.field}" is ` +
+          `now an exported field of "${lit.entity}". A bundle can carry it, so it ` +
+          `is no longer dormant: drop \`dormant\`, confirm the "${lit.entity}" ` +
+          `applier strips it, and add a behavioural strip test.`,
+      ).toBe(false);
+    }
+  });
+
+  it("a LIVE literal's field IS on its entity's exported surface (the round-trip it defends)", () => {
+    for (const lit of CLEANED_LITERALS.filter((l) => !l.dormant)) {
+      const entity = registered.get(lit.entity)!;
+      expect(
+        entity.fields.includes(lit.field),
+        `Cleaned literal ${lit.issue} is live but "${lit.field}" is not an ` +
+          `exported field of "${lit.entity}" — mark it dormant or fix the registry.`,
+      ).toBe(true);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Forcing function: a value-scoped cleanup migration on an exportable content
+// column must be tied to the registry (#2511 F3). A full "detect every cleanup"
+// scan is infeasible — a value-pinned rewrite of exportable copy is not
+// mechanically distinguishable from a benign edit — so this enforces the
+// tractable subset (a WHERE clause that pins a guarded column's byte value, the
+// exact bytes a bundle would re-plant) and routes the one benign historical
+// rewrite through an explicit, self-checked exempt list. The broader rule lives
+// as a documented convention in cleaned-literals.ts and docs/config-transfer.
+// ---------------------------------------------------------------------------
+
+describe("value-scoped content cleanups stay tied to the registry (#2511)", () => {
+  // Exportable content columns a config bundle round-trips (PageContent.headerText,
+  // SiteContent.contentHtml, Lodge.address once it becomes portable).
+  const GUARDED_EXPORTED_COLUMNS = ["headerText", "contentHtml", "address"];
+
+  // Value-pinned content migrations that intentionally carry NO registry entry.
+  const UNREGISTERED_VALUE_PINNED_MIGRATIONS = new Set<string>([
+    // #716 — rewrote the starter "/home" hero to the club-agnostic wording that
+    // #2431 later removed. It value-pins the PREVIOUS hero in its WHERE, but that
+    // superseded string is not a harmful cleaned literal to block: the
+    // guest-booking hero this migration WROTE is the one #2511 guards (via
+    // 20260802150000, which is registered).
+    "20260613090000_update_starter_home_page_content",
+  ]);
+
+  /** Does any UPDATE statement's WHERE clause pin a guarded column's byte value? */
+  function valuePinsGuardedColumn(sql: string): boolean {
+    const withoutComments = sql
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("--"))
+      .join("\n");
+    for (const stmt of withoutComments.split(";")) {
+      if (!/\bUPDATE\b/i.test(stmt)) continue;
+      const whereIdx = stmt.search(/\bWHERE\b/i);
+      if (whereIdx < 0) continue;
+      const where = stmt.slice(whereIdx);
+      for (const col of GUARDED_EXPORTED_COLUMNS) {
+        // `"<col>" = '…'` or `"<col>" = $cms$…$cms$` — the byte-literal pin a
+        // value-scoped cleanup uses (and the exact bytes a bundle re-plants).
+        if (new RegExp(`"${col}"\\s*=\\s*('|\\$cms\\$)`, "i").test(where)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  function migrationDirs(): string[] {
+    return readdirSync(MIGRATIONS_DIR, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+  }
+
+  it("every migration that value-pins a guarded exported column is registered or explicitly exempt", () => {
+    const registeredMigrations = new Set(CLEANED_LITERALS.map((l) => l.migration));
+    const offenders: string[] = [];
+    for (const dir of migrationDirs()) {
+      const sqlPath = join(MIGRATIONS_DIR, dir, "migration.sql");
+      if (!existsSync(sqlPath)) continue;
+      if (!valuePinsGuardedColumn(readFileSync(sqlPath, "utf8"))) continue;
+      if (registeredMigrations.has(dir)) continue;
+      if (UNREGISTERED_VALUE_PINNED_MIGRATIONS.has(dir)) continue;
+      offenders.push(dir);
+    }
+    expect(
+      offenders,
+      `These migrations value-pin an exportable content column ` +
+        `(${GUARDED_EXPORTED_COLUMNS.join("/")}) but neither register a ` +
+        `CLEANED_LITERALS entry nor sit on the exempt list. A value-scoped ` +
+        `cleanup of exportable content a config bundle round-trips MUST add a ` +
+        `registry entry in cleaned-literals.ts (see its header). If the ` +
+        `migration genuinely re-plants nothing harmful, add it to ` +
+        `UNREGISTERED_VALUE_PINNED_MIGRATIONS with a reason: ` +
+        offenders.join(", "),
+    ).toEqual([]);
+  });
+
+  it("the registered cleanup migrations are themselves detected by the scan (no false negatives)", () => {
+    // Guards against the scan silently going blind: each registered migration
+    // must still trip the value-pin detector.
+    for (const lit of CLEANED_LITERALS) {
+      const sqlPath = join(MIGRATIONS_DIR, lit.migration, "migration.sql");
+      expect(
+        valuePinsGuardedColumn(readFileSync(sqlPath, "utf8")),
+        `registered migration ${lit.migration} (${lit.issue}) is no longer ` +
+          `detected as value-pinning a guarded column — the F3 scan has gone blind.`,
+      ).toBe(true);
+    }
+  });
+
+  it("the exempt list stays honest — every exempt migration exists and still value-pins", () => {
+    for (const dir of UNREGISTERED_VALUE_PINNED_MIGRATIONS) {
+      const sqlPath = join(MIGRATIONS_DIR, dir, "migration.sql");
+      expect(existsSync(sqlPath), `exempt migration ${dir} not found`).toBe(true);
+      expect(
+        valuePinsGuardedColumn(readFileSync(sqlPath, "utf8")),
+        `exempt migration ${dir} no longer value-pins a guarded column — ` +
+          `remove it from UNREGISTERED_VALUE_PINNED_MIGRATIONS.`,
+      ).toBe(true);
+    }
+  });
+});
