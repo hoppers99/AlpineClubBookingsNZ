@@ -17,7 +17,7 @@ import {
 import { logAudit } from "./audit";
 import logger from "@/lib/logger";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
-import { reconcileAdultMemberHostingReview } from "@/lib/adult-member-hosting-review";
+import { reconcileAdultMemberHostingReviewWithSiblings } from "@/lib/adult-member-hosting-review";
 import { priceBookingGuestsWithMembershipTypePolicy } from "@/lib/membership-type-policy";
 import {
   loadSeasonRateData,
@@ -893,7 +893,7 @@ export async function confirmWaitlistOffer(
       // the ones that applied when the booking joined the queue. Unlike minimum
       // stay this cannot refuse the confirmation: hosting is a review, so the
       // member gets their booking and the club gets the review.
-      await reconcileAdultMemberHostingReview(bookingId, tx);
+      await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx);
 
       return { success: true, newStatus };
     });

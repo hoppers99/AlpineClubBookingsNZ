@@ -18,7 +18,7 @@ import type {
  * It performs no I/O, so it is deterministic and directly testable, and the
  * decision about WHICH client reads the rows belongs to `booking-policies.ts`.
  *
- * Two rules are load-bearing and easy to get wrong:
+ * Three rules are load-bearing and easy to get wrong:
  *
  *  - **Booking ownership never proves attendance.** The owning member counts
  *    only through a participant row linked to them, and only on the nights that
@@ -29,6 +29,20 @@ import type {
  *    ADULT in good standing today is a fact about the Member row. A row whose
  *    member cannot be resolved is treated as a non-member guest — the safe
  *    direction, because that means it needs hosting rather than provides it.
+ *  - **A membership that has lapsed is not a membership.** APPLIED PRINCIPLE
+ *    (review of #2364; reversible by the owner): the safe direction above is
+ *    applied to a member who is resolvable but no longer in good standing.
+ *    A participant whose Member row is inactive, cancelled or archived is judged
+ *    exactly as a non-member guest: they cannot host, and their own nights need
+ *    hosting. Without this they fell between the two predicates and escaped the
+ *    rule entirely — the one shape in which the club's own rule protects the
+ *    club's guests LESS than it would for a plain non-member. Deliberately keyed
+ *    off standing only, never `ageTier`: a member CHILD or YOUTH still does not
+ *    need hosting (the minors rule in `booking-review.ts` owns children), and an
+ *    active `NOT_APPLICABLE` organisation member is treated exactly as before.
+ *    If the club's position is instead that the member LINK alone is the
+ *    authority, the reversal is to drop `active`/`cancelledAt`/`archivedAt` from
+ *    `participantQualifiesAsHost` — not to narrow the predicate below.
  */
 
 /** Mirrors the Prisma `AdultMemberHostingMode` enum without importing it. */
@@ -52,8 +66,9 @@ export interface AdultMemberHostingPolicyLike {
 /**
  * The authoritative Member facts a participant row is judged by. Deliberately
  * the live columns rather than anything cached on the guest row: a member who
- * has since been made inactive, cancelled, archived or aged down stops hosting
- * from that moment, which is what makes re-evaluation meaningful.
+ * has since been made inactive, cancelled or archived stops hosting from that
+ * moment AND starts needing a host themselves, and one who has aged down stops
+ * hosting — which is what makes re-evaluation meaningful.
  */
 export interface HostingMemberFacts {
   id: string;
@@ -71,6 +86,15 @@ export interface HostingParticipant {
   member: HostingMemberFacts | null;
   /** NZ lodge nights (YYYY-MM-DD) this participant's row actually covers. */
   nights: string[];
+  /**
+   * Whether this row is operationally present at the lodge (D-12). A member
+   * guest whose invite is still `PENDING` is not: the kiosk, the arrival roster,
+   * bed allocation and the arrival emails all leave them out, so they cannot be
+   * the responsible adult either. Absent means present — the pre-persist create
+   * path has no consent facts yet, and every other participant is a row that
+   * really is coming.
+   */
+  operationallyPresent?: boolean;
   /**
    * True for somebody who is staying with this party but is carried on a
    * SIBLING booking row — they can host, but their own nights are not this
@@ -212,30 +236,55 @@ export function resolveAdultMemberHostingPolicy(
 }
 
 /**
- * Whether this participant's row lets them host a non-member guest tonight.
- *
- * Every clause is a live Member fact. `NOT_APPLICABLE` (organisations/schools,
- * #1440) is not an adult and deliberately does not qualify: the rule is about a
- * responsible adult being present, and an organisation is not a person.
+ * Whether the club still recognises this participant as a member in good
+ * standing. The single fact both predicates below are built from, so the two can
+ * never disagree about the same row and let somebody fall between them.
  */
-export function participantQualifiesAsHost(
-  participant: Pick<HostingParticipant, "member">,
-): boolean {
-  const member = participant.member;
-  if (!member) return false;
+function memberIsInGoodStanding(
+  member: HostingMemberFacts | null,
+): member is HostingMemberFacts {
   return (
-    member.ageTier === AgeTier.ADULT &&
+    member !== null &&
     member.active === true &&
     member.cancelledAt === null &&
     member.archivedAt === null
   );
 }
 
-/** A participant with no resolvable Member row is a non-member guest. */
+/**
+ * Whether this participant's row lets them host a non-member guest tonight.
+ *
+ * Every clause is a live Member fact. `NOT_APPLICABLE` (organisations/schools,
+ * #1440) is not an adult and deliberately does not qualify: the rule is about a
+ * responsible adult being present, and an organisation is not a person. Nor does
+ * a row that is not operationally present (D-12) — an unaccepted member-guest
+ * invite is not a responsible adult at the lodge, and the arrival roster,
+ * the kiosk and bed allocation all already agree.
+ */
+export function participantQualifiesAsHost(
+  participant: Pick<HostingParticipant, "member" | "operationallyPresent">,
+): boolean {
+  if (participant.operationallyPresent === false) return false;
+  const member = participant.member;
+  if (!memberIsInGoodStanding(member)) return false;
+  return member.ageTier === AgeTier.ADULT;
+}
+
+/**
+ * A participant the rule treats as a non-member guest: no resolvable Member row,
+ * or one the club no longer recognises (inactive, cancelled or archived). See
+ * the third load-bearing rule in the module header — this is the exact
+ * complement of the standing test in `participantQualifiesAsHost`, so a lapsed
+ * member cannot escape by being neither.
+ *
+ * `ageTier` is deliberately absent: a member CHILD or YOUTH in good standing
+ * does not need hosting under THIS rule (the minors rule owns them), and an
+ * active `NOT_APPLICABLE` organisation member is unchanged by this predicate.
+ */
 export function participantIsNonMemberGuest(
   participant: Pick<HostingParticipant, "member">,
 ): boolean {
-  return participant.member === null;
+  return !memberIsInGoodStanding(participant.member);
 }
 
 function uniqueSortedNights(nights: readonly string[]): string[] {

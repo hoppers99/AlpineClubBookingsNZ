@@ -51,7 +51,7 @@ import {
   ADULT_SUPERVISION_REVIEW_REASON,
   minorsReviewAlertShouldFire,
 } from "@/lib/booking-review";
-import { reconcileAdultMemberHostingReview } from "@/lib/adult-member-hosting-review";
+import { reconcileAdultMemberHostingReviewWithSiblings } from "@/lib/adult-member-hosting-review";
 import logger from "@/lib/logger";
 import { createBookingModificationCredit } from "@/lib/member-credit";
 import {
@@ -758,7 +758,7 @@ export async function modifyBookingBatch({
     // exception is a deliberate act with a reason attached, not a side effect of
     // an unrelated change, so a newly-appeared hazard opens PENDING for
     // everybody and an already-decided one is left exactly as it was.
-    await reconcileAdultMemberHostingReview(bookingId, tx);
+    await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx);
 
     return {
       booking: updatedBooking,

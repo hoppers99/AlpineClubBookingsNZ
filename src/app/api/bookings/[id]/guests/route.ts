@@ -80,7 +80,7 @@ import {
   lockedNightPricesForGuest,
 } from "@/lib/booking-modify";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
-import { reconcileAdultMemberHostingReview } from "@/lib/adult-member-hosting-review";
+import { reconcileAdultMemberHostingReviewWithSiblings } from "@/lib/adult-member-hosting-review";
 import { getSeasonYear } from "@/lib/utils";
 import {
   authorizationRoleFromAccessRoles,
@@ -752,7 +752,7 @@ export async function POST(
       // adult member is added to cover them), so the review is re-derived from
       // the rows just written. `tx` because this transaction holds the per-lodge
       // capacity lock.
-      await reconcileAdultMemberHostingReview(bookingId, tx);
+      await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx);
 
       // Create BookingModification record
       const bookingModification = await tx.bookingModification.create({

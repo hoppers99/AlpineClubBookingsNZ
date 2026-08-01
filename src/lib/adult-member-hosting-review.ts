@@ -1,13 +1,21 @@
-import { AdminReviewStatus, Prisma, type PrismaClient } from "@prisma/client";
+import {
+  AdminReviewStatus,
+  BookingStatus,
+  Prisma,
+  type MemberGuestConsentStatus,
+  type PrismaClient,
+} from "@prisma/client";
 
 import type { AdultMemberHostingPolicyExceptionViolation } from "@/lib/booking-policy-exceptions";
 import { eachDateOnlyInRange, formatDateOnly } from "@/lib/date-only";
 import { getDefaultLodgeId } from "@/lib/lodges";
+import { isOperationallyPresentConsent } from "@/lib/member-guest-consent";
 import { prisma } from "@/lib/prisma";
 import {
   adultMemberHostingReviewChanged,
   evaluateAdultMemberHostingWithPolicy,
   resolveAdultMemberHostingPolicy,
+  type EffectiveAdultMemberHostingMode,
   type HostingParticipant,
   type ResolvedAdultMemberHostingPolicy,
 } from "@/lib/policies/adult-member-hosting";
@@ -19,13 +27,26 @@ import {
  * the only place that turns a persisted booking into evaluator input and turns
  * the answer back into review state. Keeping it in one place is what makes the
  * "any change re-evaluates" requirement tractable: every booking mutation calls
- * `reconcileAdultMemberHostingReview`, and none of them has to understand the
- * rule.
+ * `reconcileAdultMemberHostingReviewWithSiblings`, and none of them has to
+ * understand the rule.
  *
  * The reconciler is IDEMPOTENT and derives everything from live rows, so calling
  * it twice, or from a path that changed nothing, is a no-op that writes nothing.
  * That is deliberate — it means a new call site can be added anywhere without
  * having to reason about what the previous one did.
+ *
+ * WHICH ENTRY POINT TO CALL. `reconcileAdultMemberHostingReview` answers for ONE
+ * booking id. That is not enough for a mutator, because `loadSiblingHosts` makes
+ * a split child's answer a function of its PARENT's rows: shortening the
+ * member's own stay on the parent removes a host from the child, and extending
+ * it restores one, without a single row on the child changing. A mutator that
+ * reconciled only the id it was handed would therefore leave the other half of a
+ * #738 split pair asserting facts that are no longer true — in both directions,
+ * defeating hazard detection AND the issue's automatic clear. Every mutation
+ * path calls `reconcileAdultMemberHostingReviewWithSiblings`; the single-id form
+ * is for callers that already hold every id in the family and reconcile each one
+ * deliberately (booking creation, which must attach an admin's decision to the
+ * right row).
  */
 
 /** The narrow client this service needs; a `Prisma.TransactionClient` satisfies it. */
@@ -102,6 +123,10 @@ const BOOKING_HOSTING_SELECT = {
       lastName: true,
       stayStart: true,
       stayEnd: true,
+      // #2364 review finding: a member guest who has not accepted their invite
+      // is not operationally present (D-12), so they cannot host. See
+      // `toHostingParticipants`.
+      consentStatus: true,
       nights: { select: { stayDate: true } },
       member: {
         select: {
@@ -131,6 +156,7 @@ type LoadedHostingBooking = {
     lastName: string;
     stayStart: Date;
     stayEnd: Date;
+    consentStatus: MemberGuestConsentStatus | null;
     nights: Array<{ stayDate: Date }>;
     member: {
       id: string;
@@ -154,6 +180,15 @@ type LoadedHostingBooking = {
  *
  * `member` is the live Member row, not the guest's `isMember` snapshot. See the
  * module header of `policies/adult-member-hosting.ts` for why.
+ *
+ * `operationallyPresent` is the shared D-12 predicate (`member-guest-consent`),
+ * the same one the kiosk, the arrival roster, bed allocation and the arrival
+ * emails filter on. A member guest whose invite is still `PENDING` is kept off
+ * every one of those surfaces, so counting them as a host here would let a
+ * member suppress the review with an adult who never agreed to come — and the
+ * lodge would then receive the non-member guests unaccompanied, which is
+ * precisely the situation the rule exists to flag. `null` (no consent was ever
+ * needed) and `CONFIRMED` are present; nothing else is.
  */
 export function toHostingParticipants(
   booking: Pick<LoadedHostingBooking, "guests">,
@@ -169,6 +204,7 @@ export function toHostingParticipants(
       guestName: `${guest.firstName} ${guest.lastName}`.trim(),
       member: guest.member,
       nights,
+      operationallyPresent: isOperationallyPresentConsent(guest.consentStatus),
       ...(hostOnly ? { hostOnly: true } : {}),
     };
   });
@@ -185,27 +221,64 @@ export function toHostingParticipants(
  * never borrowed to host somebody else's guests. Cancelled, bumped and
  * soft-deleted rows are excluded — a bumped sibling is not staying.
  */
-async function loadSiblingHosts(
-  booking: LoadedHostingBooking,
-  db: AdultMemberHostingReviewDb,
-): Promise<HostingParticipant[]> {
-  const relatedIds: Array<{ id?: string; parentBookingId?: string }> = [
+function hostingSiblingWhere(
+  booking: Pick<LoadedHostingBooking, "id" | "memberId" | "parentBookingId">,
+): Prisma.BookingWhereInput {
+  const relatedIds: Prisma.BookingWhereInput[] = [
     { parentBookingId: booking.id },
   ];
   if (booking.parentBookingId) relatedIds.push({ id: booking.parentBookingId });
 
+  return {
+    OR: relatedIds,
+    memberId: booking.memberId,
+    deletedAt: null,
+    status: { notIn: [BookingStatus.CANCELLED, BookingStatus.BUMPED] },
+    id: { not: booking.id },
+  };
+}
+
+async function loadSiblingHosts(
+  booking: LoadedHostingBooking,
+  db: AdultMemberHostingReviewDb,
+): Promise<HostingParticipant[]> {
   const siblings = (await db.booking.findMany({
-    where: {
-      OR: relatedIds,
-      memberId: booking.memberId,
-      deletedAt: null,
-      status: { notIn: ["CANCELLED", "BUMPED"] },
-      id: { not: booking.id },
-    },
+    where: hostingSiblingWhere(booking),
     select: BOOKING_HOSTING_SELECT,
   })) as LoadedHostingBooking[];
 
-  return siblings.flatMap((sibling) => toHostingParticipants(sibling, true));
+  return siblings
+    // A sibling that arrived without its guest relation contributes no hosts.
+    // Dropping it is the safe direction here: fewer borrowed hosts can only
+    // OPEN a review for an admin to look at, never suppress one.
+    .filter((sibling) => Array.isArray(sibling.guests))
+    .flatMap((sibling) => toHostingParticipants(sibling, true));
+}
+
+/**
+ * The ids of the bookings whose hosting answer depends on THIS booking's rows —
+ * exactly the set `loadSiblingHosts` borrows from, computed with the same
+ * predicate so the two can never drift apart.
+ *
+ * The dependency is symmetric by construction: if A borrows B's adults, then a
+ * change to B's adults changes A's answer. That is why the fan-out below reads
+ * the same relation the borrow does.
+ */
+async function loadHostingSiblingIds(
+  bookingId: string,
+  db: AdultMemberHostingReviewDb,
+): Promise<string[]> {
+  const booking = (await db.booking.findUnique({
+    where: { id: bookingId },
+    select: { id: true, memberId: true, parentBookingId: true },
+  })) as Pick<LoadedHostingBooking, "id" | "memberId" | "parentBookingId"> | null;
+  if (!booking) return [];
+
+  const siblings = (await db.booking.findMany({
+    where: hostingSiblingWhere(booking),
+    select: { id: true },
+  })) as Array<{ id: string }>;
+  return siblings.map((sibling) => sibling.id);
 }
 
 /**
@@ -261,9 +334,9 @@ export function parseStoredHostingReview(
   return value as AdultMemberHostingPolicyExceptionViolation;
 }
 
-export type HostingReviewOutcome =
-  /** Nothing was written: no hazard before, no hazard now. */
-  | { action: "none"; violation: null }
+export type HostingReviewOutcome = (
+  | /** Nothing was written: no hazard before, no hazard now. */
+  { action: "none"; violation: null }
   /** The hazard cleared; any pending hosting review was released. */
   | { action: "cleared"; violation: null }
   /** A hazard is recorded and its review state was left exactly as it was. */
@@ -271,7 +344,17 @@ export type HostingReviewOutcome =
   /** A hazard appeared on a booking that had none, and now awaits a decision. */
   | { action: "opened"; violation: AdultMemberHostingPolicyExceptionViolation }
   /** A materially different hazard replaced a decided one; it awaits a decision again. */
-  | { action: "reopened"; violation: AdultMemberHostingPolicyExceptionViolation };
+  | { action: "reopened"; violation: AdultMemberHostingPolicyExceptionViolation }
+) & {
+  /**
+   * The mode the evaluation actually ran under; `null` when there was no
+   * booking row to evaluate. Reported so a caller can tell "no hazard" from
+   * "the club has not turned this on" without a second policy read — which is
+   * what lets the sibling fan-out below stay free for a club that is not using
+   * the rule.
+   */
+  mode: EffectiveAdultMemberHostingMode | null;
+};
 
 /**
  * Bring a booking's hosting review into line with its CURRENT authoritative
@@ -315,9 +398,21 @@ export async function reconcileAdultMemberHostingReview(
     where: { id: bookingId },
     select: BOOKING_HOSTING_SELECT,
   })) as LoadedHostingBooking | null;
-  if (!booking) return { action: "none", violation: null };
+  if (!booking) return { action: "none", violation: null, mode: null };
+  // A row that came back without its guest relation is a narrowed select or a
+  // partially-hydrated row, not a booking with nobody on it. Refuse to evaluate
+  // it rather than conclude "no hazard" from absent evidence — that conclusion
+  // would CLEAR a live review. Same reasoning as the `!= null` on `recorded`
+  // below: when the facts are missing, write nothing.
+  if (!Array.isArray(booking.guests)) {
+    return { action: "none", violation: null, mode: null };
+  }
 
-  const { violation } = await evaluateBookingAdultMemberHosting(booking, db);
+  const { violation, resolved } = await evaluateBookingAdultMemberHosting(
+    booking,
+    db,
+  );
+  const mode = resolved.mode;
   const previous = parseStoredHostingReview(booking.adultMemberHostingReview);
   // `!= null` on purpose: a narrowed select, a partially-hydrated row or a test
   // double can leave the field UNDEFINED, and treating that as "a status is
@@ -326,7 +421,7 @@ export async function reconcileAdultMemberHostingReview(
   const recorded = previous !== null || booking.adultMemberHostingReviewStatus != null;
 
   if (violation === null) {
-    if (!recorded) return { action: "none", violation: null };
+    if (!recorded) return { action: "none", violation: null, mode };
     await db.booking.update({
       where: { id: bookingId },
       data: {
@@ -340,7 +435,7 @@ export async function reconcileAdultMemberHostingReview(
         adultMemberHostingReviewedAt: null,
       },
     });
-    return { action: "cleared", violation: null };
+    return { action: "cleared", violation: null, mode };
   }
 
   if (!recorded) {
@@ -366,11 +461,11 @@ export async function reconcileAdultMemberHostingReview(
         adultMemberHostingReviewedAt: decision ? new Date() : null,
       },
     });
-    return { action: "opened", violation };
+    return { action: "opened", violation, mode };
   }
 
   if (!adultMemberHostingReviewChanged(previous, violation)) {
-    return { action: "unchanged", violation };
+    return { action: "unchanged", violation, mode };
   }
 
   await db.booking.update({
@@ -383,7 +478,47 @@ export async function reconcileAdultMemberHostingReview(
       adultMemberHostingReviewedAt: null,
     },
   });
-  return { action: "reopened", violation };
+  return { action: "reopened", violation, mode };
+}
+
+/**
+ * Reconcile a booking AND the split siblings whose answer depends on it (#2364).
+ *
+ * THE ENTRY POINT EVERY MUTATION PATH USES. `loadSiblingHosts` lets a #738 split
+ * child borrow its parent's adults, which makes the child's answer a function of
+ * rows the child does not own: the member shortening their own stay on the
+ * parent takes a host away from the child, and extending it gives one back,
+ * without touching a single row on the child. Reconciling only the mutated id
+ * would leave the other half of the pair asserting facts that are no longer
+ * true — no review where the club now has unhosted guest-nights, and a stale
+ * PENDING review where it no longer does.
+ *
+ * The fan-out is ONE LEVEL and that is exact, not a safety margin: the borrow
+ * relation is direct-parent / direct-child of the same member, so expanding from
+ * a sibling could only ever lead back to the booking just reconciled. Each
+ * sibling is reconciled with DEFAULT options — an admin's on-behalf decision
+ * belongs to the booking they were making, never to a row reached through it, so
+ * a hazard that appears on a sibling always opens PENDING.
+ *
+ * Costs nothing while the rule is off: the mode reported by the first
+ * reconciliation is the same one it evaluated under, so a club that has not
+ * turned the policy on pays no extra query on any booking write.
+ */
+export async function reconcileAdultMemberHostingReviewWithSiblings(
+  bookingId: string,
+  db: AdultMemberHostingReviewDb,
+  options: {
+    openedStatus?: AdminReviewStatus;
+    decision?: { reason: string; byMemberId: string } | null;
+  } = {},
+): Promise<HostingReviewOutcome> {
+  const outcome = await reconcileAdultMemberHostingReview(bookingId, db, options);
+  if (outcome.mode !== "ADMIN_REVIEW_REQUIRED") return outcome;
+
+  for (const siblingId of await loadHostingSiblingIds(bookingId, db)) {
+    await reconcileAdultMemberHostingReview(siblingId, db);
+  }
+  return outcome;
 }
 
 /**

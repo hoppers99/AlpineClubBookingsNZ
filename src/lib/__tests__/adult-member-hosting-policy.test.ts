@@ -8,6 +8,7 @@ import {
   UnknownAdultMemberHostingScopeError,
   adultMemberHostingReviewChanged,
   evaluateAdultMemberHostingWithPolicy,
+  participantIsNonMemberGuest,
   participantQualifiesAsHost,
   resolveAdultMemberHostingPolicy,
   type AdultMemberHostingPolicyLike,
@@ -207,6 +208,114 @@ describe("who may host (#2364 acceptance: adult member only)", () => {
     expect(participantQualifiesAsHost(nonMember("g1", ["2026-07-04"]))).toBe(
       false,
     );
+  });
+
+  it("rejects an adult member whose invite has not been accepted (D-12)", () => {
+    // The same row the kiosk, the arrival roster, bed allocation and the
+    // arrival emails all leave out. Counting them here would let a member
+    // suppress the review with an adult who never agreed to come.
+    expect(
+      participantQualifiesAsHost({
+        ...adult("m1", ["2026-07-04"]),
+        operationallyPresent: false,
+      }),
+    ).toBe(false);
+    // Present is the default: the pre-persist create path has no consent facts.
+    expect(participantQualifiesAsHost(adult("m1", ["2026-07-04"]))).toBe(true);
+  });
+});
+
+describe("who needs hosting (#2364 review: a lapsed membership is not a membership)", () => {
+  // The complement of the host table above, and the reason it exists: before
+  // this, a participant whose Member row was inactive, cancelled or archived
+  // fell BETWEEN the two predicates — they could not host, and they were not
+  // counted as a guest-night needing a host, so the club's own rule protected
+  // them LESS than a plain non-member. The applied principle is the module's
+  // own stated safe direction: not in good standing means judged as a
+  // non-member guest.
+  const disqualified: Array<
+    [string, Partial<NonNullable<HostingParticipant["member"]>>]
+  > = [
+    ["an inactive member", { active: false }],
+    ["a cancelled member", { cancelledAt: new Date("2026-01-01") }],
+    ["an archived member", { archivedAt: new Date("2026-01-01") }],
+  ];
+
+  for (const [label, overrides] of disqualified) {
+    it(`counts ${label} as a guest who needs hosting`, () => {
+      expect(
+        participantIsNonMemberGuest(adult("g1", ["2026-07-04"], overrides)),
+      ).toBe(true);
+
+      const violation = evaluateAdultMemberHostingWithPolicy(
+        [adult("g1", ["2026-07-04"], overrides)],
+        RESOLVED_LODGE,
+      );
+      expect(violation).not.toBeNull();
+      expect(violation!.requirements.uncovered).toEqual([
+        { guestRef: "g1", guestName: "Member g1", night: "2026-07-04" },
+      ]);
+    });
+
+    it(`does not let ${label} host anybody either`, () => {
+      const violation = evaluateAdultMemberHostingWithPolicy(
+        [
+          adult("m1", ["2026-07-04"], overrides),
+          nonMember("g1", ["2026-07-04"]),
+        ],
+        RESOLVED_LODGE,
+      );
+      // Two uncovered rows: the plain guest, and the lapsed member themselves.
+      expect(violation).not.toBeNull();
+      expect(violation!.requirements.uncoveredNonMemberGuestNights).toBe(2);
+    });
+  }
+
+  it("leaves member CHILDREN and YOUTH out of it — the minors rule owns them", () => {
+    // Deliberately keyed off standing, never ageTier. A member child does not
+    // need an adult MEMBER on the booking under this rule; they need an adult
+    // guest, which is `requiresAdminReview` in booking-review.ts.
+    for (const tier of [AgeTier.CHILD, AgeTier.YOUTH, AgeTier.INFANT]) {
+      expect(
+        participantIsNonMemberGuest(adult("c1", ["2026-07-04"], { ageTier: tier })),
+      ).toBe(false);
+      expect(
+        evaluateAdultMemberHostingWithPolicy(
+          [adult("c1", ["2026-07-04"], { ageTier: tier })],
+          RESOLVED_LODGE,
+        ),
+      ).toBeNull();
+    }
+  });
+
+  it("leaves an active organisation member exactly where it was", () => {
+    // NOT_APPLICABLE (#1440) cannot host — an organisation is not a person —
+    // and is unchanged by the widening: an active organisation member is still
+    // not counted as a guest-night needing a host.
+    const organisation = adult("org", ["2026-07-04"], {
+      ageTier: AgeTier.NOT_APPLICABLE,
+    });
+    expect(participantQualifiesAsHost(organisation)).toBe(false);
+    expect(participantIsNonMemberGuest(organisation)).toBe(false);
+    expect(
+      evaluateAdultMemberHostingWithPolicy([organisation], RESOLVED_LODGE),
+    ).toBeNull();
+  });
+
+  it("clears the moment the lapsed member is reinstated", () => {
+    const lapsed = adult("m1", ["2026-07-04"], { active: false });
+    expect(
+      evaluateAdultMemberHostingWithPolicy(
+        [lapsed, nonMember("g1", ["2026-07-04"])],
+        RESOLVED_LODGE,
+      ),
+    ).not.toBeNull();
+    expect(
+      evaluateAdultMemberHostingWithPolicy(
+        [adult("m1", ["2026-07-04"]), nonMember("g1", ["2026-07-04"])],
+        RESOLVED_LODGE,
+      ),
+    ).toBeNull();
   });
 });
 
@@ -475,5 +584,30 @@ describe("hosting policy set locking and migration shape (#2364)", () => {
     const sql = repoFile(`prisma/migrations/${MIGRATION}/migration.sql`);
     expect(sql).toMatch(/"capacityMode" "PolicyExceptionCapacityMode" NOT NULL,/);
     expect(sql).not.toMatch(/"capacityMode"[^\n]*DEFAULT/);
+  });
+
+  it("makes the D-R4 reviewer a real foreign key that merge and deletion can see", () => {
+    // A bare String id would outlive the member it names: member merge walks
+    // Prisma relations to repoint actor columns and deletion SetNulls them, so
+    // an unrelated id is skipped by both and "who accepted this hazard" decays
+    // into a dangling id the database would never surface. The DMMF
+    // completeness guard (member-merge-dmmf.test.ts) only sees Member-TYPED
+    // fields, which is exactly why the relation has to exist.
+    const sql = repoFile(`prisma/migrations/${MIGRATION}/migration.sql`);
+    expect(sql).toMatch(
+      /ADD CONSTRAINT "Booking_adultMemberHostingReviewedById_fkey"[\s\S]*?REFERENCES "Member"\("id"\)[\s\S]*?ON DELETE SET NULL/,
+    );
+    expect(sql).toContain(
+      'VALIDATE CONSTRAINT "Booking_adultMemberHostingReviewedById_fkey"',
+    );
+
+    const schema = repoFile("prisma/schema.prisma");
+    expect(schema).toMatch(
+      /adultMemberHostingReviewedBy\s+Member\?\s+@relation\("BookingsAdultMemberHostingReviewed", fields: \[adultMemberHostingReviewedById\], references: \[id\], onDelete: SetNull\)/,
+    );
+
+    const merge = repoFile("src/lib/member-merge.ts");
+    expect(merge).toContain('"adultMemberHostingReviewedBy"');
+    expect(merge).toContain('"adultMemberHostingReviewedById"');
   });
 });

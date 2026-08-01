@@ -21,7 +21,7 @@ import {
 } from "@/lib/booking-edit-policy";
 import { linkModificationToOutstandingChangeRequest } from "@/lib/booking-change-request-linkage";
 import { assertBookingEnvelopeInvariants } from "@/lib/booking-envelope-invariants";
-import { reconcileAdultMemberHostingReview } from "@/lib/adult-member-hosting-review";
+import { reconcileAdultMemberHostingReviewWithSiblings } from "@/lib/adult-member-hosting-review";
 import {
   createModificationAdditionalPaymentIntent,
   executeBookingModificationRefund,
@@ -947,7 +947,7 @@ export async function modifyBookingDates({
     // so the hazard can appear, disappear, or change shape without a single
     // guest changing. `tx` for the usual reason: this transaction holds the
     // global booking lock and the per-lodge capacity lock.
-    await reconcileAdultMemberHostingReview(bookingId, tx);
+    await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx);
 
     return {
       booking: updatedBooking,
@@ -1556,7 +1556,7 @@ export async function adminShiftBookingDates({
 
     // #2364. An admin date SHIFT keeps every price and every guest, but it does
     // move the nights, so the hosting evaluation has to run again.
-    await reconcileAdultMemberHostingReview(bookingId, tx);
+    await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx);
 
     return {
       booking: updatedBooking,

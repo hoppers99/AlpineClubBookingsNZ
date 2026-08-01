@@ -1,3 +1,6 @@
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+
 import { AdminReviewStatus, AgeTier } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -6,6 +9,7 @@ vi.mock("server-only", () => ({}));
 import {
   evaluateProposedAdultMemberHosting,
   reconcileAdultMemberHostingReview,
+  reconcileAdultMemberHostingReviewWithSiblings,
   recordAdultMemberHostingReviewForNewBooking,
   parseStoredHostingReview,
   toHostingParticipants,
@@ -41,6 +45,7 @@ function guest(
   id: string,
   nights: string[],
   memberRow: ReturnType<typeof member> | null = null,
+  consentStatus: string | null = null,
 ) {
   return {
     id,
@@ -48,6 +53,7 @@ function guest(
     lastName: "Person",
     stayStart: new Date(`${nights[0]}T00:00:00.000Z`),
     stayEnd: new Date(`${nights[nights.length - 1]}T00:00:00.000Z`),
+    consentStatus,
     nights: nights.map((night) => ({ stayDate: new Date(`${night}T00:00:00.000Z`) })),
     member: memberRow,
   };
@@ -63,6 +69,45 @@ function makeDb(booking: BookingRow | null, policies: unknown[], siblings: Booki
       booking: {
         findUnique: vi.fn().mockResolvedValue(booking),
         findMany: vi.fn().mockResolvedValue(siblings),
+        update,
+      },
+      adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue(policies) },
+      lodge: { findFirst: vi.fn() },
+      member: { findMany: vi.fn().mockResolvedValue([]) },
+    } as any,
+  };
+}
+
+/**
+ * A whole booking FAMILY behind one fake client: `findUnique` answers by id,
+ * `findMany` really applies the sibling predicate, and `update` mutates the row
+ * it names. The single-row `makeDb` above cannot express the bug this exists to
+ * pin — a mutation on one half of a #738 split pair changing the OTHER half's
+ * answer — because that needs two rows that can each be read and written.
+ */
+function makeFamilyDb(rows: BookingRow[], policies: unknown[]) {
+  const byId = new Map(rows.map((row) => [row.id as string, { ...row }]));
+  const update = vi.fn(async ({ where, data }: any) => {
+    Object.assign(byId.get(where.id)!, data);
+    return {};
+  });
+  return {
+    update,
+    rowFor: (id: string) => byId.get(id)!,
+    db: {
+      booking: {
+        findUnique: vi.fn(async ({ where }: any) => byId.get(where.id) ?? null),
+        findMany: vi.fn(async ({ where }: any) =>
+          [...byId.values()].filter((row) => {
+            if (row.id === where.id?.not) return false;
+            if (row.memberId !== where.memberId) return false;
+            return (where.OR as any[]).some((clause) =>
+              clause.id !== undefined
+                ? row.id === clause.id
+                : row.parentBookingId === clause.parentBookingId,
+            );
+          }),
+        ),
         update,
       },
       adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue(policies) },
@@ -300,6 +345,183 @@ describe("hosting review reconciliation (#2364)", () => {
     expect(db.booking.findMany).not.toHaveBeenCalled();
   });
 
+  it("scopes the policy read to this lodge and the club row, and nothing else", async () => {
+    // The resolver re-filters in memory, so a drift in this predicate would be
+    // invisible to every other test in the suite: dropping `{ lodgeId: null }`
+    // would silently answer DISABLED at every lodge without its own override,
+    // which switches the club's rule off and auto-clears live reviews.
+    const { db } = makeDb(bookingRow(), [CLUB_ON]);
+    await reconcileAdultMemberHostingReview("booking-1", db);
+    expect(db.adultMemberHostingPolicy.findMany.mock.calls[0][0].where).toEqual({
+      OR: [{ lodgeId: "lodge-1" }, { lodgeId: null }],
+    });
+  });
+
+  it("does not let an unaccepted member-guest invite host anybody (D-12)", async () => {
+    // The adult member covers every night on paper, but their invite is still
+    // PENDING, so the kiosk, the roster and bed allocation all leave them out.
+    // If they counted here, a member could suppress the review with somebody
+    // who never agreed to come — and the lodge would receive the non-member
+    // guests unaccompanied.
+    const pending = makeDb(
+      bookingRow({
+        guests: [
+          guest("g1", ["2026-07-04", "2026-07-05"]),
+          guest("m1", ["2026-07-04", "2026-07-05"], member(), "PENDING"),
+        ],
+      }),
+      [CLUB_ON],
+    );
+    await expect(
+      reconcileAdultMemberHostingReview("booking-1", pending.db),
+    ).resolves.toMatchObject({ action: "opened" });
+
+    // ...and the moment they accept, the review clears with no admin action.
+    const confirmed = makeDb(
+      bookingRow({
+        guests: [
+          guest("g1", ["2026-07-04", "2026-07-05"]),
+          guest("m1", ["2026-07-04", "2026-07-05"], member(), "CONFIRMED"),
+        ],
+      }),
+      [CLUB_ON],
+    );
+    await expect(
+      reconcileAdultMemberHostingReview("booking-1", confirmed.db),
+    ).resolves.toMatchObject({ action: "none" });
+    expect(confirmed.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("split-pair reconciliation (#2364 review finding)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  /** Parent = the member's own booking; child = the party's non-member half. */
+  function splitPair(parentNights: string[], childNights: string[]) {
+    return [
+      bookingRow({
+        id: "parent-1",
+        parentBookingId: null,
+        guests: [guest("m1", parentNights, member())],
+      }),
+      bookingRow({
+        id: "child-1",
+        parentBookingId: "parent-1",
+        guests: [guest("g1", childNights)],
+      }),
+    ];
+  }
+
+  it("opens the CHILD's review when the parent's member shortens their own stay", async () => {
+    // Nobody touches the child: its guest rows and nights are identical before
+    // and after. The hazard appears entirely because the PARENT changed.
+    const family = makeFamilyDb(
+      splitPair(["2026-07-04"], ["2026-07-04", "2026-07-05"]),
+      [CLUB_ON],
+    );
+    await reconcileAdultMemberHostingReviewWithSiblings("parent-1", family.db);
+
+    const child = family.rowFor("child-1");
+    expect(child.adultMemberHostingReviewStatus).toBe(AdminReviewStatus.PENDING);
+    expect((child.adultMemberHostingReview as any).affectedNights).toEqual([
+      "2026-07-05",
+    ]);
+    // The parent itself carries no hazard — one party, one review.
+    expect(family.rowFor("parent-1").adultMemberHostingReviewStatus).toBeNull();
+  });
+
+  it("clears the CHILD's review when the parent's member extends to cover it", async () => {
+    // The issue's automatic clear, on the shape it is most likely to be needed.
+    const [parent, child] = splitPair(
+      ["2026-07-04", "2026-07-05"],
+      ["2026-07-04", "2026-07-05"],
+    );
+    const family = makeFamilyDb(
+      [
+        parent,
+        {
+          ...child,
+          adultMemberHostingReview: {
+            reasonCode: "ADULT_MEMBER_HOSTING_REQUIRED",
+            policyId: "policy-club",
+            policyVersion: 3,
+            requirements: { uncovered: [{ guestRef: "g1", night: "2026-07-05" }] },
+          },
+          adultMemberHostingReviewStatus: AdminReviewStatus.PENDING,
+        },
+      ],
+      [CLUB_ON],
+    );
+    await reconcileAdultMemberHostingReviewWithSiblings("parent-1", family.db);
+
+    const reconciled = family.rowFor("child-1");
+    expect(reconciled.adultMemberHostingReviewStatus).toBeNull();
+    expect(reconciled.adultMemberHostingReviewedAt).toBeNull();
+  });
+
+  it("re-derives the PARENT when the child is the row that was mutated", async () => {
+    // Symmetric by construction: the fan-out reads the same relation the borrow
+    // does, so it works from either end.
+    const family = makeFamilyDb(
+      splitPair(["2026-07-04"], ["2026-07-04", "2026-07-05"]),
+      [CLUB_ON],
+    );
+    await reconcileAdultMemberHostingReviewWithSiblings("child-1", family.db);
+    expect(family.rowFor("child-1").adultMemberHostingReviewStatus).toBe(
+      AdminReviewStatus.PENDING,
+    );
+    expect(family.db.booking.findMany).toHaveBeenCalled();
+  });
+
+  it("never carries a caller's on-behalf decision onto a sibling", async () => {
+    // An admin's reason belongs to the booking they were making. A hazard that
+    // appears on a row they reached through it opens PENDING, so nothing is
+    // approved by anybody who was never asked (D-R4).
+    const family = makeFamilyDb(
+      splitPair(["2026-07-04"], ["2026-07-04", "2026-07-05"]),
+      [CLUB_ON],
+    );
+    await reconcileAdultMemberHostingReviewWithSiblings("parent-1", family.db, {
+      openedStatus: AdminReviewStatus.APPROVED,
+      decision: { reason: "Known to the committee", byMemberId: "admin-9" },
+    });
+    const child = family.rowFor("child-1");
+    expect(child.adultMemberHostingReviewStatus).toBe(AdminReviewStatus.PENDING);
+    expect(child.adultMemberHostingReviewReason).toBeNull();
+    expect(child.adultMemberHostingReviewedById).toBeNull();
+  });
+
+  it("costs a club that has not turned the rule on nothing at all", async () => {
+    const family = makeFamilyDb(
+      splitPair(["2026-07-04"], ["2026-07-04", "2026-07-05"]),
+      [CLUB_OFF],
+    );
+    await reconcileAdultMemberHostingReviewWithSiblings("parent-1", family.db);
+    expect(family.db.booking.findMany).not.toHaveBeenCalled();
+    expect(family.update).not.toHaveBeenCalled();
+  });
+
+  it("fans out one level only, and only over live same-member siblings", async () => {
+    const family = makeFamilyDb(
+      splitPair(["2026-07-04"], ["2026-07-04", "2026-07-05"]),
+      [CLUB_ON],
+    );
+    await reconcileAdultMemberHostingReviewWithSiblings("parent-1", family.db);
+    // Once for the mutated booking, once for the sibling lookup, once for the
+    // sibling's own evaluation — never a third round trip from the sibling.
+    const siblingWheres = family.db.booking.findMany.mock.calls.map(
+      (call: any[]) => call[0].where,
+    );
+    for (const where of siblingWheres) {
+      expect(where.memberId).toBe("owner-1");
+      expect(where.deletedAt).toBeNull();
+      expect(where.status).toEqual({ notIn: ["CANCELLED", "BUMPED"] });
+    }
+    expect(siblingWheres.filter((w: any) => w.id?.not === "child-1")).toHaveLength(
+      1,
+    );
+  });
+
   it("records an admin on-behalf decision, and refuses to approve without one", async () => {
     const approved = makeDb(bookingRow(), [CLUB_ON]);
     await recordAdultMemberHostingReviewForNewBooking("booking-1", approved.db, {
@@ -329,6 +551,112 @@ describe("hosting review reconciliation (#2364)", () => {
       }),
     ).rejects.toThrow(/explicit decision reason/i);
     expect(bad.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("source contract: no booking path may skip the hosting review (#2364)", () => {
+  // These two contracts generalise a review finding rather than re-pinning the
+  // one call site that had it. The finding was that four all-non-member
+  // creation paths (the booking-request approval, both school approvals, the
+  // held-booking conversion) committed with all five hosting columns NULL — the
+  // hazard present but unrecorded until an unrelated later edit materialised
+  // it. A per-site test would not stop the FIFTH such path being added.
+  const sourceFiles = (() => {
+    const roots = [join(process.cwd(), "src", "lib"), join(process.cwd(), "src", "app")];
+    const found: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name === "__tests__") continue;
+          walk(full);
+        } else if (/\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name)) {
+          found.push(full);
+        }
+      }
+    };
+    for (const root of roots) walk(root);
+    return found.map((path) => ({ path, source: readFileSync(path, "utf8") }));
+  })();
+
+  it("every module that creates a Booking row records its hosting review", () => {
+    const creators = sourceFiles.filter((file) =>
+      /\bbooking\.create\(/.test(file.source),
+    );
+    // Guard against the walk silently finding nothing.
+    expect(creators.length).toBeGreaterThanOrEqual(5);
+    const missing = creators
+      .filter(
+        (file) =>
+          !/(reconcileAdultMemberHostingReviewWithSiblings|recordAdultMemberHostingReviewForNewBooking)\(/.test(
+            file.source,
+          ),
+      )
+      .map((file) => file.path);
+    expect(missing).toEqual([]);
+  });
+
+  it("leaves no *_CONFIRM_REQUIRED 409 that no surface can answer", () => {
+    // The D-R4 refusal shipped with no client that could satisfy it: nothing in
+    // the repo sent `adultMemberHostingReason` or branched on the code, so once
+    // a club turned the policy on, admin on-behalf booking was permanently
+    // blocked for exactly the parties the feature targets. A warn-and-confirm
+    // is only half a feature until something can do the confirming.
+    const route = readFileSync(
+      join(process.cwd(), "src", "app", "api", "bookings", "route.ts"),
+      "utf8",
+    );
+    const codes = [
+      ...new Set(
+        [...route.matchAll(/code:\s*"([A-Z_]+_CONFIRM_REQUIRED)"/g)].map(
+          (match) => match[1],
+        ),
+      ),
+    ];
+    expect(codes).toContain("ADULT_MEMBER_HOSTING_CONFIRM_REQUIRED");
+
+    const clients = sourceFiles.filter((file) => file.path.endsWith(".tsx"));
+    const unanswerable = codes.filter(
+      (code) => !clients.some((file) => file.source.includes(code)),
+    );
+    expect(unanswerable).toEqual([]);
+  });
+
+  it("sends the hosting reason from both admin on-behalf submit paths", () => {
+    // The 409 is raised BEFORE the draft/confirmed fork, so it blocks both.
+    const page = readFileSync(
+      join(
+        process.cwd(),
+        "src",
+        "app",
+        "(admin)",
+        "admin",
+        "book",
+        "page.tsx",
+      ),
+      "utf8",
+    );
+    expect(
+      page.match(/adultMemberHostingReason: opts\.hostingReason/g) ?? [],
+    ).toHaveLength(2);
+    expect(
+      page.match(/ADULT_MEMBER_HOSTING_CONFIRM_REQUIRED/g) ?? [],
+    ).toHaveLength(2);
+  });
+
+  it("no mutation path uses the single-booking reconciler", () => {
+    // The single-id form leaves the other half of a #738 split pair asserting
+    // facts that are no longer true, in both directions. Only the review module
+    // itself may call it — from the sibling-aware wrapper, and from the create
+    // path's own `recordAdultMemberHostingReviewForNewBooking`.
+    const offenders = sourceFiles
+      .filter(
+        (file) =>
+          !file.path.endsWith("adult-member-hosting-review.ts") &&
+          /\breconcileAdultMemberHostingReview\(/.test(file.source),
+      )
+      .map((file) => file.path);
+    expect(offenders).toEqual([]);
   });
 });
 

@@ -16,9 +16,15 @@ vi.mock("@/lib/prisma", () => ({
       update: vi.fn(),
     },
     member: { create: vi.fn(), findUnique: vi.fn(), findMany: vi.fn().mockResolvedValue([]) },
+    // #2364: the hosting review is reconciled inside the approving/holding
+    // transaction, so every prisma/tx double a booking-writing path runs
+    // against needs this client. `findUnique` answering undefined is the
+    // "booking not found" branch, which writes nothing.
+    adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
     booking: {
       create: vi.fn(),
       findUnique: vi.fn(),
+      findMany: vi.fn().mockResolvedValue([]),
       update: vi.fn(),
       updateMany: vi.fn(),
     },
@@ -303,6 +309,62 @@ function seasonWithRates() {
       ],
     },
   ];
+}
+
+/**
+ * Arm the doubles the #2364 hosting reconciliation reads: a club-wide
+ * ADMIN_REVIEW_REQUIRED policy, and the created booking read back with the
+ * all-non-member party it just wrote.
+ */
+function armHostingPolicy(bookingId: string, memberId: string) {
+  vi.mocked(prisma.adultMemberHostingPolicy.findMany).mockResolvedValue([
+    {
+      id: "policy-club",
+      scopeKey: "club-wide",
+      lodgeId: null,
+      mode: "ADMIN_REVIEW_REQUIRED",
+      capacityMode: "NO_HOLD",
+      version: 2,
+    },
+  ] as never);
+  vi.mocked(prisma.booking.findUnique).mockResolvedValue({
+    id: bookingId,
+    memberId,
+    parentBookingId: null,
+    lodgeId: "lodge-1",
+    checkIn: new Date("2026-08-01T00:00:00.000Z"),
+    checkOut: new Date("2026-08-03T00:00:00.000Z"),
+    adultMemberHostingReview: null,
+    adultMemberHostingReviewStatus: null,
+    guests: [
+      {
+        id: "guest-1",
+        firstName: "School",
+        lastName: "Child 1",
+        stayStart: new Date("2026-08-01T00:00:00.000Z"),
+        stayEnd: new Date("2026-08-03T00:00:00.000Z"),
+        consentStatus: null,
+        nights: [
+          { stayDate: new Date("2026-08-01T00:00:00.000Z") },
+          { stayDate: new Date("2026-08-02T00:00:00.000Z") },
+        ],
+        member: null,
+      },
+    ],
+  } as never);
+}
+
+/** The `booking.update` this reconciliation wrote, or a failure if it did not. */
+function hostingWriteData(): Record<string, unknown> {
+  const call = vi
+    .mocked(prisma.booking.update)
+    .mock.calls.find(
+      (entry) =>
+        (entry[0].data as Record<string, unknown>)
+          .adultMemberHostingReviewStatus !== undefined,
+    );
+  expect(call).toBeDefined();
+  return call![0].data as Record<string, unknown>;
 }
 
 describe("generateSchoolGuests", () => {
@@ -719,6 +781,26 @@ describe("approveSchoolBookingRequest", () => {
     expect(mockedSendManualInvoice).not.toHaveBeenCalled();
     // No substitution on a normal conversion → no owner-substitution alert (#1377).
     expect(mockedSendOwnerSubstitution).not.toHaveBeenCalled();
+  });
+
+  it("records the adult-member hosting review on the approved school booking (#2364)", async () => {
+    // A school party is every non-member guest and no member participant, so at
+    // a club running the rule it always carries uncovered guest-nights. It used
+    // to commit with all five hosting columns NULL, invisible to the policy at
+    // approval time and then flagged out of nowhere by an unrelated later edit.
+    mockedFindUnique.mockResolvedValue(schoolRequest() as never);
+    armHostingPolicy("booking-1", "school-member");
+
+    await approveSchoolBookingRequest({
+      requestId: "req-school",
+      adminMemberId: "admin-1",
+    });
+
+    const data = hostingWriteData();
+    expect(data.adultMemberHostingReviewStatus).toBe("PENDING");
+    // Approving the REQUEST is not the reasoned acceptance D-R4 demands.
+    expect(data.adultMemberHostingReviewReason).toBeNull();
+    expect(data.adultMemberHostingReviewedById).toBeNull();
   });
 
   it("keeps a fresh-create approval lodge-only while re-reading the request under the lodge lock (#1881)", async () => {
@@ -1802,6 +1884,24 @@ describe("approveMemberWholeLodgeRequest (#2263)", () => {
     expect(data.wholeLodgeHold).toBe(true);
     expect(data.wholeLodgeHoldByMemberId).toBe("admin-1");
     expect(data.wholeLodgeHoldAt).toBeInstanceOf(Date);
+  });
+
+  it("records the adult-member hosting review, because ownership never proves attendance (#2364)", async () => {
+    // The requesting member OWNS this booking but is not a guest row on it, and
+    // its placeholder guests are NON_MEMBER-rated (OD-A) — so at a club running
+    // the rule nobody on the party can host, which is a real thing for an admin
+    // to look at. It never blocks the approval, and it clears itself the moment
+    // the member puts themselves or another adult member on the guest list.
+    armHostingPolicy("booking-wl", "member-9");
+
+    await approveMemberWholeLodgeRequest({
+      requestId: "req-member",
+      adminMemberId: "admin-1",
+    });
+
+    const data = hostingWriteData();
+    expect(data.adultMemberHostingReviewStatus).toBe("PENDING");
+    expect(data.adultMemberHostingReviewedById).toBeNull();
   });
 
   it("prices the placeholder guests at NON-MEMBER rates and marks the booking hasNonMembers (OD-A)", async () => {
