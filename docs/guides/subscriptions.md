@@ -29,7 +29,8 @@ configurable — see [Subscription lockout](subscription-lockout.md)).
 
 1. Go to **Admin → Members → Subscriptions**. Summary cards show Total, Paid,
    Unpaid, Overdue, and Not Required; filter by **Season Year**, **Status**, **Age
-   Group**, and **Xero Contact Group**.
+   Group**, and **Xero Contact Group**. **Reset** restores the list filters, sort,
+   and page while keeping the selected **Season Year** as the billing context.
 
    ![Subscriptions page: the season/status filters, summary cards, and the members table with subscription status and Xero invoice columns](../images/admin/admin-subscriptions.png)
 
@@ -195,6 +196,7 @@ stored exceptions.
 | Control | What it does | Default | Notes / constraints |
 | --- | --- | --- | --- |
 | Season Year / Status / Age Group / Xero Contact Group | Filter the member list | current season / all | Season year is April–March |
+| Reset | Restore list filters, sort, and page | all / default sort / page 1 | Keeps the selected Season Year; disabled at defaults |
 | Incremental Sync | Low-cost Xero paid-status refresh | — | Only checks linked members |
 | Repair Stale Linked Members | Broader backfill for stuck linked members | — | Slower; linked members only |
 | Decision date | The date the billing preview is computed for | today | NZ date-only |

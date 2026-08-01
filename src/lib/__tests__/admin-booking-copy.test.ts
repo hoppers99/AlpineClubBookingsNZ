@@ -1,4 +1,11 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import {
+  addDaysDateOnly,
+  formatDateOnly,
+  formatDateOnlyForTimeZone,
+  parseDateOnly,
+} from "@/lib/date-only";
 
 const mocks = vi.hoisted(() => ({
   bookingFindUnique: vi.fn(),
@@ -56,6 +63,36 @@ vi.mock("@/lib/audit", () => ({
 
 import { copyBookingToDraft } from "@/lib/admin-booking-copy";
 
+/**
+ * `copyBookingToDraft` refuses a target check-in that is already in the past,
+ * comparing it against `getTodayDateOnly()` — the NZ calendar date, read from
+ * the real clock. Every case below copies onto 2026-09-10, so left on the real
+ * clock the whole suite would have started failing on 11 September 2026 (#2401):
+ * the refusal is correct production behaviour, it is the FIXTURE that goes stale,
+ * and the failure would have looked like a copy regression rather than a test
+ * that outlived its dates.
+ *
+ * Pin the clock well before the target so the scenario under test — copying a
+ * booking FORWARD onto a future date — stays the intended one for good. The
+ * past-target guard keeps its own coverage in the last case below, so pinning
+ * hides nothing.
+ *
+ * Only `Date` is faked, so real timers still run and awaited promises resolve
+ * normally. 2026-07-01T00:00:00Z reads as 1 July in NZ (12:00 NZST) and in UTC
+ * alike — but `APP_TIME_ZONE` falls back to `process.env.TZ`, so on a runner
+ * with TZ set to a negative-offset zone the club-zone "today" under this pin is
+ * 2026-06-30. Any date the assertions compare against "today" is therefore
+ * DERIVED through the club timezone below rather than hardcoded, so the suite
+ * holds regardless of the runner's TZ.
+ */
+const FIXED_NOW = new Date("2026-07-01T00:00:00.000Z"); // NZ 2026-07-01 12:00
+
+// Club-zone boundary dates under the pin, derived the way production derives
+// "today" (`getTodayDateOnly` = `formatDateOnlyForTimeZone(now)`).
+const TODAY = formatDateOnlyForTimeZone(FIXED_NOW);
+const YESTERDAY = formatDateOnly(addDaysDateOnly(parseDateOnly(TODAY), -1));
+const TODAY_PLUS_3 = formatDateOnly(addDaysDateOnly(parseDateOnly(TODAY), 3));
+
 function makeSourceBooking(overrides: Record<string, unknown> = {}) {
   return {
     id: "source-booking",
@@ -95,6 +132,8 @@ function makeSourceBooking(overrides: Record<string, unknown> = {}) {
 describe("copyBookingToDraft", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIXED_NOW);
     mocks.resolveLinkedBookingMembers.mockResolvedValue(
       new Map([
         [
@@ -138,6 +177,10 @@ describe("copyBookingToDraft", () => {
       id: "draft-copy",
       status: "DRAFT",
     });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("creates a draft copy with shifted guest ranges and recalculated creation input", async () => {
@@ -217,5 +260,33 @@ describe("copyBookingToDraft", () => {
       status: 400,
     });
     expect(mocks.createDraftBooking).not.toHaveBeenCalled();
+  });
+
+  // The guard the clock pin above exists to keep out of the way. Stated against
+  // the DERIVED club-zone "today" rather than a date that merely happens to be
+  // behind the wall clock, so it asserts the boundary itself — yesterday is
+  // refused, today is not — in every runner timezone.
+  it("refuses a target check-in before today but allows today itself", async () => {
+    mocks.bookingFindUnique.mockResolvedValue(makeSourceBooking());
+
+    await expect(
+      copyBookingToDraft({
+        sourceBookingId: "source-booking",
+        targetCheckIn: YESTERDAY,
+        adminMemberId: "admin-1",
+      }),
+    ).rejects.toMatchObject({
+      message: "Target check-in date cannot be in the past",
+      status: 400,
+    });
+    expect(mocks.createDraftBooking).not.toHaveBeenCalled();
+
+    await expect(
+      copyBookingToDraft({
+        sourceBookingId: "source-booking",
+        targetCheckIn: TODAY,
+        adminMemberId: "admin-1",
+      }),
+    ).resolves.toMatchObject({ checkIn: TODAY, checkOut: TODAY_PLUS_3 });
   });
 });

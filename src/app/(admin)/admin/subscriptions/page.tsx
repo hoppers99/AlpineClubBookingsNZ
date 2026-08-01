@@ -7,6 +7,11 @@ import type { ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { format } from "date-fns";
 import { subscriptionStatusLabel } from "@/lib/status-colors";
+import {
+  resetSubscriptionsDatasetSearchParams,
+  SUBSCRIPTION_DATASET_QUERY_KEYS,
+  withoutDatasetQueryKeys,
+} from "@/lib/admin-dataset-reset-state";
 import { loadAdminXeroContactGroups } from "@/lib/admin-xero-contact-groups";
 import { getAgeTierLabel, useAgeTierOptions } from "@/lib/use-age-tier-options";
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
@@ -36,6 +41,7 @@ import {
   AdminFilterBar,
   type AdminFilterChip,
 } from "@/components/admin/admin-filter-bar";
+import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
 import { SortHeader } from "@/components/admin/sort-header";
 import { Pagination } from "@/components/admin/admin-pagination";
 import { StatusChip } from "@/components/ui/status-chip";
@@ -325,7 +331,10 @@ export default function SubscriptionsPage() {
   }, []);
 
   const buildSubscriptionsSearchParams = useCallback(() => {
-    const params = new URLSearchParams();
+    const params = withoutDatasetQueryKeys(
+      searchParams.toString(),
+      SUBSCRIPTION_DATASET_QUERY_KEYS,
+    );
     params.set("seasonYear", String(seasonYear));
     if (status !== "all") params.set("status", status);
     if (ageTier !== "all") params.set("ageTier", ageTier);
@@ -334,7 +343,7 @@ export default function SubscriptionsPage() {
     if (sortDir !== getDefaultSortDir(sortBy)) params.set("sortDir", sortDir);
     if (page > 1) params.set("page", String(page));
     return params;
-  }, [seasonYear, status, ageTier, xeroContactGroup, sortBy, sortDir, page]);
+  }, [seasonYear, status, ageTier, xeroContactGroup, sortBy, sortDir, page, searchParams]);
 
   const subscriptionsQuery = buildSubscriptionsSearchParams().toString();
   const currentSubscriptionsPath = subscriptionsQuery
@@ -381,6 +390,28 @@ export default function SubscriptionsPage() {
 
     setSortBy(column);
     setSortDir(getDefaultSortDir(column));
+  }
+
+  const isDatasetDefault =
+    status === "all" &&
+    ageTier === "all" &&
+    xeroContactGroup === "all" &&
+    sortBy === "member" &&
+    sortDir === getDefaultSortDir("member") &&
+    page === 1;
+
+  function resetDataset() {
+    setStatus("all");
+    setAgeTier("all");
+    setXeroContactGroup("all");
+    setSortBy("member");
+    setSortDir(getDefaultSortDir("member"));
+    setPage(1);
+    const params = resetSubscriptionsDatasetSearchParams(searchParams.toString());
+    const query = params.toString();
+    router.replace(query ? `/admin/subscriptions?${query}` : "/admin/subscriptions", {
+      scroll: false,
+    });
   }
 
   // Thin wrapper over the shared admin SortHeader (#1805): callback mode with the
@@ -466,6 +497,9 @@ export default function SubscriptionsPage() {
       <AdminFilterBar
         idPrefix="subscriptions-filters"
         chips={filterChips}
+        actions={
+          <DatasetResetButton disabled={isDatasetDefault} onReset={resetDataset} />
+        }
         primary={
           <>
             <div>

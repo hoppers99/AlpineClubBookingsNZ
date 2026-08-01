@@ -11,8 +11,19 @@ Setup & Configuration → Site Appearance & Content → Site Style**
 **Site Style** card on the Site Appearance & Content hub.
 
 Site Style is a first-run gate: **the public site — including the membership
-application form — stays hidden until this style is saved once.** After that,
-edits take effect as soon as you save. It is edited under the **content**
+application form — stays hidden until this style is saved once.** Until then
+every public web address answers with the same "Site setup in progress" holding
+screen, and answers it as **"not ready yet" (HTTP 503)** rather than as a normal
+page, so a search engine or an uptime monitor is told plainly that the site has
+not opened yet instead of being shown a page that looks fine. That applies to
+every public address alike — the home page, a page you have already written, and
+a mistyped address all get the same holding screen — because until the club
+chooses how the site looks, none of it is ready to be seen or indexed.
+
+Nothing you need in order to finish setup is affected: the admin area, this
+wizard, the login and password pages, the member and lodge areas, and the data
+addresses the app talks to all keep working normally throughout. After the first
+save, edits take effect as soon as you save. It is edited under the **content**
 permission area.
 
 ## When you'd use it
@@ -97,6 +108,8 @@ permission area.
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
 | The public site (and application form) shows nothing | The style has never been saved | Complete the wizard and save once; the **Complete** badge confirms it |
+| The public site shows "Site setup in progress", and a link checker or monitor reports it as unavailable | Same cause — the style has never been saved. The holding screen is deliberately reported as "not ready yet" so machines are not told a half-built site is fine | Complete the wizard and save once |
+| The site is still showing the holding screen a few seconds after saving | The setup state is re-checked at most every 15 seconds | Wait a few seconds and reload; no further action is needed |
 | A status colour won't change | Success/warning/information/danger are the fixed semantic layer | These are intentionally not brand pickers |
 | Everything is read-only | Your admin role can view but not edit under the content area | Ask a full admin for content edit access |
 | A colour looks low-contrast in the preview | The generator adjusted a pathological seed so the shipped scale stays accessible | This is expected — the wizard discloses the before → after adjustment; the preview and the swatch pair show what actually ships |

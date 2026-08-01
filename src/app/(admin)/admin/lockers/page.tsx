@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { useConfirm } from "@/components/confirm-dialog";
 import { AdminPageHeader } from "@/components/admin/admin-page-header";
 import { AdminDataTable } from "@/components/admin/admin-data-table";
+import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
 import {
   TableBody,
   TableCell,
@@ -518,10 +519,21 @@ export default function LockersPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Locker List</CardTitle>
-          <CardDescription>
-            Sort by locker name or allocated member.
-          </CardDescription>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <CardTitle>Locker List</CardTitle>
+              <CardDescription>
+                Sort by locker name or allocated member.
+              </CardDescription>
+            </div>
+            <DatasetResetButton
+              disabled={sortField === "name" && sortDirection === "asc"}
+              onReset={() => {
+                setSortField("name");
+                setSortDirection("asc");
+              }}
+            />
+          </div>
         </CardHeader>
         <CardContent>
           {loading ? (
