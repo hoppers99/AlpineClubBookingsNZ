@@ -249,7 +249,7 @@ export default function ReportsPage() {
     rows.push(["Booked Revenue", (data.summary.totalRevenueCents / 100).toFixed(2)]);
     rows.push(["Net Collected Cash", (data.summary.netCollectedCents / 100).toFixed(2)]);
     rows.push([
-      "Outstanding Additional Payments",
+      "Outstanding Additions",
       (data.summary.outstandingAdditionalCents / 100).toFixed(2),
     ]);
     rows.push([

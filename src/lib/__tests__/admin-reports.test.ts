@@ -135,6 +135,38 @@ describe("admin reports helpers", () => {
     });
   });
 
+  it("allocates a 100-cent cross-month stay before monthly bucketing", () => {
+    const row = booking({
+      checkIn: date("2026-04-30"),
+      checkOut: date("2026-05-03"),
+      finalPriceCents: 100,
+    });
+
+    expect(
+      getBookingRevenueByNight(row, date("2026-04-30"), date("2026-05-02")),
+    ).toEqual([
+      { date: "2026-04-30", revenueCents: 34 },
+      { date: "2026-05-01", revenueCents: 33 },
+      { date: "2026-05-02", revenueCents: 33 },
+    ]);
+
+    const result = buildRevenueSeries(
+      [row],
+      date("2026-02-01"),
+      date("2026-05-02"),
+    );
+    expect(result.granularity).toBe("monthly");
+    expect(result.data.find((bucket) => bucket.periodStart === "2026-04-01")).toMatchObject({
+      revenueCents: 34,
+      bookingCount: 1,
+    });
+    expect(result.data.find((bucket) => bucket.periodStart === "2026-05-01")).toMatchObject({
+      revenueCents: 66,
+      bookingCount: 1,
+    });
+    expect(result.data.reduce((sum, bucket) => sum + bucket.revenueCents, 0)).toBe(100);
+  });
+
   it("excludes the exhaustive literal non-report status list", () => {
     expect(Object.values(BookingStatus).sort()).toEqual(
       [...EXPECTED_REPORT_STATUS_VALUES, ...EXPECTED_EXCLUDED_REPORT_STATUS_VALUES].sort(),

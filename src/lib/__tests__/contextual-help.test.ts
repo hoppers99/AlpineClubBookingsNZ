@@ -135,6 +135,22 @@ describe("contextual help registry", () => {
     expect(
       help.fields?.find((field) => field.name === "Quick Range")?.description,
     ).toContain("without changing the Lodge or Deleted filters");
+
+    const metricContract = help.sections?.find(
+      (section) => section.title === "How report metrics are counted",
+    );
+    const details = metricContract?.details.join(" ") ?? "";
+    expect(details).toContain(
+      "across every lodge night in its complete stay, with any remainder assigned deterministically, before the selected date range is sliced",
+    );
+    expect(details).toContain("allocated booking value, not collected cash");
+    expect(details).toContain("captured payment amount less refunds");
+    expect(details).toContain("Outstanding Additions is shown separately");
+    expect(details).toContain(
+      "Pending, Payment Pending, Confirmed, Paid, Awaiting Review, and Completed",
+    );
+    expect(details).toContain("only Paid and Completed bookings occupy beds");
+    expect(details).toContain("custodian bed holds remain excluded");
   });
 
   it("covers the primary admin and finance menu surfaces", () => {

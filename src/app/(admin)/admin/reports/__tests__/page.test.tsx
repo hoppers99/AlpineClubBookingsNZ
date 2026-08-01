@@ -174,6 +174,7 @@ describe("ReportsPage quick ranges", () => {
 
     render(<ReportsPage />);
     expect(await screen.findByText("Booked Revenue")).toBeVisible();
+    expect(screen.getByText("$100")).toBeVisible();
     expect(screen.getByText("Net Collected Cash")).toBeVisible();
     expect(screen.getByText("Outstanding Additions")).toBeVisible();
     expect(screen.getByText("Booked Revenue by Month")).toBeVisible();
@@ -223,7 +224,8 @@ describe("ReportsPage quick ranges", () => {
     const csv = await blob.text();
     expect(csv).toContain("Booked Revenue,100.00");
     expect(csv).toContain("Net Collected Cash,75.00");
-    expect(csv).toContain("Outstanding Additional Payments,25.00");
+    expect(csv).toContain("Outstanding Additions,25.00");
+    expect(csv).not.toContain("Outstanding Additional Payments");
     expect(csv).toContain("Booked Revenue by Month");
     expect(csv).toContain("Month,Booked Revenue,Distinct Bookings");
     expect(csv).not.toContain("Booked Revenue Less Outstanding");
