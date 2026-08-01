@@ -28,6 +28,7 @@ describe("predictMemberGuestConsent", () => {
             familyMemberIds: FAMILY,
             familyMembersLoaded: true,
             approvalRequired,
+            actorKind: "MEMBER",
           }),
         ).toBeUndefined();
       }
@@ -41,6 +42,7 @@ describe("predictMemberGuestConsent", () => {
         familyMemberIds: FAMILY,
         familyMembersLoaded: true,
         approvalRequired: true,
+        actorKind: "MEMBER",
       }),
     ).toBe("PENDING");
   });
@@ -57,6 +59,7 @@ describe("predictMemberGuestConsent", () => {
         familyMemberIds: [],
         familyMembersLoaded: false,
         approvalRequired: true,
+        actorKind: "MEMBER",
       }),
     ).toBeUndefined();
     expect(
@@ -65,6 +68,7 @@ describe("predictMemberGuestConsent", () => {
         familyMemberIds: [],
         familyMembersLoaded: false,
         approvalRequired: true,
+        actorKind: "MEMBER",
       }),
     ).toBeUndefined();
   });
@@ -76,8 +80,56 @@ describe("predictMemberGuestConsent", () => {
         familyMemberIds: FAMILY,
         familyMembersLoaded: true,
         approvalRequired: false,
+        actorKind: "MEMBER",
       }),
     ).toBe("NOTIFY_ONLY");
+  });
+
+  it("predicts the admin-assigned outcome for an OFFICER, whatever the club asked for", () => {
+    // MG4 (#2309), and the divergence this parameter exists to close. The
+    // server's admin branch runs BEFORE `approvalRequired` is consulted at all
+    // (`buildMemberGuestConsentWrite`), so an officer's add is CONFIRMED and
+    // consent-free on an ask-first club exactly as on a notify-only one. A
+    // prediction that read only the setting told the officer their add was
+    // waiting for an answer that was never going to be asked for.
+    for (const approvalRequired of [true, false]) {
+      expect(
+        predictMemberGuestConsent({
+          candidateMemberId: "m-stranger",
+          familyMemberIds: FAMILY,
+          familyMembersLoaded: true,
+          approvalRequired,
+          actorKind: "ADMIN",
+        }),
+      ).toBe("ADMIN_ASSIGNED");
+    }
+  });
+
+  it("still predicts nothing for an officer adding somebody inside the OWNER's family", () => {
+    // The family boundary is not an admin-mode exception: a family-scope add is
+    // consent-free under D-6 whoever performs it, so an ADMIN_ASSIGNED badge
+    // over one would claim a record the server does not write.
+    expect(
+      predictMemberGuestConsent({
+        candidateMemberId: "m-child",
+        familyMemberIds: FAMILY,
+        familyMembersLoaded: true,
+        approvalRequired: true,
+        actorKind: "ADMIN",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("still predicts nothing for an officer when the family list never loaded", () => {
+    expect(
+      predictMemberGuestConsent({
+        candidateMemberId: "m-stranger",
+        familyMemberIds: [],
+        familyMembersLoaded: false,
+        approvalRequired: true,
+        actorKind: "ADMIN",
+      }),
+    ).toBeUndefined();
   });
 });
 
@@ -99,6 +151,22 @@ describe("memberGuestConsentPreviewColumns", () => {
     expect(classifyMemberGuestConsent(notifyOnly, "m-stranger")).toBe(
       "NOTIFY_ONLY_AUTO_CONFIRMED",
     );
+
+    // MG4 (#2309): an officer's add. It must classify as ADMIN_ASSIGNED and NOT
+    // as NOTIFY_ONLY_AUTO_CONFIRMED — the two differ only by the presence of a
+    // responder, and collapsing them would draw "Told, not asked" over a row the
+    // club itself placed.
+    const adminAssigned = memberGuestConsentPreviewColumns({
+      memberGuestConsentPreview: "ADMIN_ASSIGNED",
+    })!;
+    expect(classifyMemberGuestConsent(adminAssigned, "m-stranger")).toBe(
+      "ADMIN_ASSIGNED",
+    );
+    // The two non-null columns are sentinels, never rendered by the only
+    // audience a preview reaches. The epoch date is the point: a plausible
+    // timestamp is the one that survives into a surface that does render it.
+    expect(adminAssigned.consentRespondedAt?.getTime()).toBe(0);
+    expect(adminAssigned.consentExpiresAt).toBeNull();
   });
 
   it("gives every other guest row no columns at all, so it renders exactly as before", () => {

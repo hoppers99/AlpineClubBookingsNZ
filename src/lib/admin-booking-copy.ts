@@ -216,10 +216,45 @@ export async function copyBookingToDraft({
           entriesByMemberId: consentPlan.entriesByMemberId,
         });
   if (memberGuestRows.length > 0) {
-    // Loaded lazily on purpose: the sender pulls in the whole email/template
-    // graph, and only a booking that actually added a cross-family member guest
-    // needs it. A club with the module off never loads the mailer through this
-    // path at all.
+    /**
+     * SENT ON THE DRAFT, DELIBERATELY (MG4 #2309 review, declared decision).
+     *
+     * The review asked whether a copy that lands in DRAFT should hold this back
+     * until the copy becomes a real booking. It should not, and the reason is
+     * that the premise does not hold: the ORDINARY member create path already
+     * notifies on a draft — `api/bookings/route.ts` calls the same dispatcher
+     * immediately after `createDraftBooking` in its `if (draft)` branch — so
+     * deferring here would make the copy the ONLY writer that behaves
+     * differently, for the same booking in the same status.
+     *
+     * And the deferral would be worse than inconsistent. A cross-family row is
+     * written PENDING on an ask-first club and PENDING HOLDS A BED (D-4): the
+     * nightly sweep will expire it after N days whether or not anybody was
+     * asked. Waiting for the draft to be confirmed would leave a member holding
+     * a bed nobody had put a question to, and then take it away again with a
+     * "your request lapsed" notice for a request that was never sent. Telling
+     * them late is not a smaller harm than telling them early; it is a
+     * different, larger one.
+     *
+     * It would also need a column MG2 explicitly does not add — "has this row
+     * been notified?" — because without one a deferred send has no way to know
+     * whether the confirm step owes mail or would duplicate it. See the
+     * SEND-ONCE HONESTY note in `member-guest-consent-notifications.ts`: whoever
+     * adds that column adds the retry with it, and that is the issue in which
+     * deferral becomes buildable.
+     *
+     * What a DRAFT copy genuinely costs the target is stated rather than hidden:
+     * a copy an officer abandons leaves them told about a stay that never
+     * happens. The withdrawal notice covers the case where the draft is deleted
+     * or the guest removed; an abandoned draft that simply sits is the residue,
+     * and it is the same residue every abandoned member-created draft already
+     * has.
+     *
+     * Loaded lazily on purpose: the sender pulls in the whole email/template
+     * graph, and only a booking that actually added a cross-family member guest
+     * needs it. A club with the module off never loads the mailer through this
+     * path at all.
+     */
     const { sendMemberGuestAddNotifications } = await import(
       "@/lib/member-guest-consent-notifications"
     );

@@ -688,6 +688,10 @@ export function useBookingWizard() {
           familyMemberIds: familyMembers.map((fm) => fm.id),
           familyMembersLoaded,
           approvalRequired: memberGuestConfig.approvalRequired,
+          // `/book` is the MEMBER wizard — an officer booking on behalf uses
+          // `/admin/book`, which composes `GuestForm` itself and never reaches
+          // this hook. Stated rather than defaulted (MG4 #2309).
+          actorKind: "MEMBER",
         }),
         ...(perGuestDatesEnabled && dateStrings
           ? { stayStart: dateStrings.checkIn, stayEnd: dateStrings.checkOut }

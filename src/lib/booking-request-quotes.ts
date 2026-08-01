@@ -28,6 +28,18 @@ import {
 } from "@/lib/booking-request";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import {
+  collectNotifiedMemberGuestIds,
+  notifyMemberGuestsHoldReleased,
+  planBookingRequestGuestConsent,
+  toPipelineGuestCreateData,
+} from "@/lib/booking-request-shared";
+import {
+  loadMemberGuestAddPolicy,
+  matchMemberGuestNotificationRows,
+  type MemberGuestAddNotificationRow,
+} from "@/lib/member-guest-add-policy";
+import type { MemberGuestAddActor } from "@/lib/member-guest-consent";
+import {
   assertNoBookingMemberNightConflicts,
   findBookingMemberNightConflicts,
   type BookingMemberNightConflict,
@@ -904,7 +916,7 @@ export async function respondToBookingRequestQuote(input: {
         },
       });
       if (claimed.count === 0) {
-        return { finalised: true as const };
+        return { finalised: true as const, withdrawnMemberGuestIds: [] as string[] };
       }
       await tx.bookingRequestQuote.update({
         where: { id: quote.id },
@@ -913,6 +925,12 @@ export async function respondToBookingRequestQuote(input: {
           cancelledAt: respondedAt,
         },
       });
+      // MG4 (#2309): who was told they were on the hold that is about to go.
+      // Read BEFORE the cancellation, so this is the population as it stood
+      // when the requester pressed cancel.
+      const withdrawnMemberGuestIds = quote.bookingRequest.heldBookingId
+        ? await collectNotifiedMemberGuestIds(tx, quote.bookingRequest.heldBookingId)
+        : [];
       if (quote.bookingRequest.heldBookingId) {
         const heldBookingId = quote.bookingRequest.heldBookingId;
         await tx.booking.update({
@@ -930,7 +948,7 @@ export async function respondToBookingRequestQuote(input: {
           data: { heldBookingId: null, version: { increment: 1 } },
         });
       }
-      return { finalised: false as const };
+      return { finalised: false as const, withdrawnMemberGuestIds };
     });
     if (cancelled.finalised) {
       // A concurrent admin decline (or a prior cancel) already finalised the
@@ -942,6 +960,18 @@ export async function respondToBookingRequestQuote(input: {
         409
       );
     }
+    // MG4 (#2309), AFTER the commit: the hold is gone, so anybody the hold told
+    // they were on a booking has to be told they are not. Without this the
+    // member is left holding "the club has put you on a lodge booking" for a
+    // booking that no longer exists, and only finds out if they ask.
+    if (quote.bookingRequest.heldBookingId) {
+      await notifyMemberGuestsHoldReleased({
+        bookingId: quote.bookingRequest.heldBookingId,
+        targetMemberIds: cancelled.withdrawnMemberGuestIds,
+        logContext: { bookingRequestId: quote.bookingRequestId, quoteId: quote.id },
+      });
+    }
+
     logAudit({
       action: "booking_request.quote_cancelled",
       targetId: quote.bookingRequestId,
@@ -1222,6 +1252,9 @@ export async function holdBookingRequestSlots(input: {
   if (!holdableStatuses.includes(request.status as never)) {
     throw new BookingRequestError("This booking request cannot be held", 409);
   }
+  // MG4 (#2309): members a previous, now-dead hold over THIS request had
+  // already told. Empty on every first hold, which is nearly all of them.
+  let staleHoldNotifiedMemberIds: string[] = [];
   if (request.heldBookingId) {
     // Re-validate before reusing (#1254). An admin can now cancel a held
     // booking directly — every sent quote leaves one, tagged "Held" on the bed
@@ -1240,6 +1273,35 @@ export async function holdBookingRequestSlots(input: {
         reused: true,
       };
     }
+    /**
+     * MG4 (#2309): who the DEAD hold had already told they were on a booking.
+     *
+     * THE PROBLEM THIS SOLVES IS A SECOND STANDING NOTICE, not a missing one.
+     * The stale hold is being replaced by a fresh one over the same request —
+     * the same nights, the same lodge, the same guest list, because all three
+     * come from the `BookingRequest` row and none of them can change here. So a
+     * member who was on the old hold and is on the new one is not being added
+     * to anything: they are already, as far as they know, on this stay. Sending
+     * the added-notice again would put a second "the club has put you on a lodge
+     * booking" in their inbox for one request, which reads as a duplicate
+     * booking and invites them to ring the club about a problem that does not
+     * exist.
+     *
+     * SUPPRESSED RATHER THAN RETRACTED-AND-RE-ADDED, and the reason is what
+     * actually reaches this branch. The hold is detached here only when it is no
+     * longer live, and every path that cancels it deliberately (the requester's
+     * quote cancel, an officer's decline) detaches the pointer in the same
+     * breath — so those never arrive here at all. What does is a hold cancelled
+     * out from under the pointer, chiefly an admin cancelling the held booking
+     * directly from the bed board. Those members have had no withdrawal notice,
+     * so their standing belief — "I am on this stay" — is the one the fresh hold
+     * is about to make true again. A retract-then-re-add would send two emails
+     * to correct nothing.
+     */
+    staleHoldNotifiedMemberIds = await collectNotifiedMemberGuestIds(
+      prisma,
+      request.heldBookingId
+    );
     await prisma.bookingRequest.updateMany({
       where: { id: request.id, heldBookingId: request.heldBookingId },
       data: { heldBookingId: null, version: { increment: 1 } },
@@ -1270,6 +1332,14 @@ export async function holdBookingRequestSlots(input: {
   }
 
   const placeholderPasswordHash = await hash(randomBytes(32).toString("hex"), 13);
+  // MG4-D-b (#2309). Read BEFORE the transaction opens — the ordering rule in
+  // `member-guest-add-policy.ts`: a settings read under the per-lodge capacity
+  // lock is a second query held across the whole hold, for nothing.
+  const memberGuestPolicy = await loadMemberGuestAddPolicy();
+  const memberGuestActor: MemberGuestAddActor = {
+    kind: "BOOKING_REQUEST",
+    adminMemberId: input.adminMemberId,
+  };
   const linkedMembers = linkedGuestMemberMap(request.linkedGuestMembers);
   const guestPriceCents = splitPriceAcrossGuests(option.totalCents, guests.length);
   // Persist the rate-membership-type snapshot (#1930, E4, D3) on the held
@@ -1332,7 +1402,14 @@ export async function holdBookingRequestSlots(input: {
           select: { heldBookingId: true },
         });
         if (current?.heldBookingId) {
-          return { id: current.heldBookingId, reused: true };
+          // A concurrent hold already created the rows and already owes (or has
+          // already sent) their notifications: this call created nothing, so it
+          // notifies nobody. Sending here would double-mail the targets.
+          return {
+            id: current.heldBookingId,
+            reused: true,
+            memberGuestNotificationRows: [] as MemberGuestAddNotificationRow[],
+          };
         }
         throw new BookingRequestError("This booking request cannot be held", 409);
       }
@@ -1407,6 +1484,26 @@ export async function holdBookingRequestSlots(input: {
         });
       }
 
+      // MG4-D-b (#2309): the request pipeline is the LAST guest-write path that
+      // could put a member on somebody else's booking with no record and no
+      // word to them. The family boundary is computed against the held
+      // booking's owner — the non-login contact created (or mapped) just above,
+      // which is why this sits here and not beside `guestCreates`.
+      //
+      // In practice every linked member comes back BEYOND_FAMILY, because a
+      // freshly created contact is in no family group. It is computed rather
+      // than assumed for the mapped-contact case (`ownerContactMemberId`), where
+      // an Organisation contact could in principle share a family group with a
+      // linked member — and because assuming the answer is how a boundary
+      // silently stops being one.
+      const consentPlan = await planBookingRequestGuestConsent(tx, {
+        bookingOwnerMemberId: member.id,
+        guests: guestCreates,
+        actor: memberGuestActor,
+        policy: memberGuestPolicy,
+        bookingCheckIn: request.checkIn,
+      });
+
       const held = await tx.booking.create({
         data: {
           memberId: member.id,
@@ -1419,9 +1516,11 @@ export async function holdBookingRequestSlots(input: {
           hasNonMembers: true,
           notes: request.message,
           createdById: input.adminMemberId,
-          guests: { create: guestCreates },
+          guests: { create: consentPlan.guests.map(toPipelineGuestCreateData) },
         },
-        select: { id: true },
+        // The created rows' ids are needed to match the notification plan, and
+        // this is the only moment they exist in hand.
+        select: { id: true, guests: { select: { id: true, memberId: true } } },
       });
 
       await tx.bookingRequest.update({
@@ -1429,8 +1528,52 @@ export async function holdBookingRequestSlots(input: {
         data: { heldBookingId: held.id, version: { increment: 1 } },
       });
 
-      return { id: held.id, reused: false };
+      return {
+        id: held.id,
+        reused: false,
+        memberGuestNotificationRows:
+          consentPlan.entriesByMemberId.size === 0
+            ? []
+            : matchMemberGuestNotificationRows({
+                createdGuests: held.guests,
+                entriesByMemberId: consentPlan.entriesByMemberId,
+              }),
+      };
     });
+
+    // MG4-D-b (#2309), AFTER the commit and outside the capacity lock: no
+    // provider call may sit inside a booking transaction. The dispatcher is
+    // documented never to reject; the try/catch is belt and braces around an
+    // already-committed hold, which must not fail because a mail did.
+    //
+    // AND NEVER TWICE FOR ONE REQUEST. A member who was already told by the
+    // hold this one replaces is filtered out here rather than mailed again —
+    // see `staleHoldNotifiedMemberIds` above for why suppression is the right
+    // shape and a retract-then-re-add is not. The consent COLUMNS are written
+    // on the fresh rows either way; only the mail is suppressed.
+    const owedRows =
+      staleHoldNotifiedMemberIds.length === 0
+        ? booking.memberGuestNotificationRows
+        : booking.memberGuestNotificationRows.filter(
+            (row) => !staleHoldNotifiedMemberIds.includes(row.targetMemberId)
+          );
+    if (owedRows.length > 0) {
+      const { sendMemberGuestAddNotifications } = await import(
+        "@/lib/member-guest-consent-notifications"
+      );
+      try {
+        await sendMemberGuestAddNotifications({
+          bookingId: booking.id,
+          rows: owedRows,
+          actor: memberGuestActor,
+        });
+      } catch (err) {
+        logger.error(
+          { err, bookingId: booking.id, bookingRequestId: request.id },
+          "Failed to dispatch member-guest add notifications for a held booking",
+        );
+      }
+    }
 
     logAudit({
       action: "booking_request.capacity_held",

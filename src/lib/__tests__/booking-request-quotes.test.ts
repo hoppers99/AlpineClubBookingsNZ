@@ -33,6 +33,11 @@ const mocks = vi.hoisted(() => ({
       create: vi.fn(),
       update: vi.fn(),
     },
+    // MG4 (#2309): the pipeline computes the family boundary for its linked
+    // members against the converted booking's owner. That owner is a non-login
+    // contact in no family group, so both reads legitimately come back empty and
+    // every linked member classifies BEYOND_FAMILY — the real production shape.
+    familyGroupMember: { findMany: vi.fn().mockResolvedValue([]) },
     bookingGuest: {
       deleteMany: vi.fn(),
       findMany: vi.fn(),
@@ -58,12 +63,23 @@ const mocks = vi.hoisted(() => ({
   mockApproveSchoolBookingRequest: vi.fn(),
   mockSendQuoteEmail: vi.fn(),
   mockGetSettings: vi.fn(),
+  // MG4 (#2309): both post-commit dispatchers, which the pipeline imports
+  // lazily. Stubbed so these tests assert the WIRING — that the right people
+  // are told, in the right direction — without dragging the email graph in.
+  sendMemberGuestAddNotifications: vi.fn(),
+  sendMemberGuestWithdrawnNotifications: vi.fn(),
 }));
 
 const mockApproveBookingRequest = mocks.mockApproveBookingRequest;
 const mockSendQuoteEmail = mocks.mockSendQuoteEmail;
 
 vi.mock("@/lib/prisma", () => ({ prisma: mocks.prismaMock }));
+
+vi.mock("@/lib/member-guest-consent-notifications", () => ({
+  sendMemberGuestAddNotifications: mocks.sendMemberGuestAddNotifications,
+  sendMemberGuestWithdrawnNotifications:
+    mocks.sendMemberGuestWithdrawnNotifications,
+}));
 
 vi.mock("@/lib/booking-request", () => {
   class BookingRequestError extends Error {
@@ -185,6 +201,21 @@ vi.mock("@/lib/booking-member-night-conflicts", async (importOriginal) => {
   };
 });
 
+// MG4 (#2309): the pipeline reads the member-guest module and policy before it
+// opens its transaction. Default ON so the consent tests below exercise the
+// planner rather than the module flag; the module-off case sets it false.
+vi.mock("@/lib/admin-modules", () => ({
+  isEffectiveModuleEnabled: vi.fn().mockResolvedValue(true),
+}));
+vi.mock("@/lib/member-guest-settings", () => ({
+  loadMemberGuestSettings: vi.fn().mockResolvedValue({
+    approvalRequired: true,
+    pendingHoldExpiryDays: 7,
+    openMemberSearchEnabled: false,
+    openMemberSearchIncludesMinors: false,
+  }),
+}));
+
 import { prisma } from "@/lib/prisma";
 import {
   createBookingRequestQuote,
@@ -201,7 +232,9 @@ import {
 } from "@/lib/booking-member-night-conflicts";
 import { checkCapacityForGuestRanges } from "@/lib/capacity";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
 
+const mockedModuleEnabled = vi.mocked(isEffectiveModuleEnabled);
 const mockedAssertNoConflicts = vi.mocked(assertNoBookingMemberNightConflicts);
 const mockedCheckCapacity = vi.mocked(checkCapacityForGuestRanges);
 const mockedReconcile = vi.mocked(reconcileBedAllocationsForBooking);
@@ -257,6 +290,7 @@ function baseRequest(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockedModuleEnabled.mockResolvedValue(true);
   mocks.mockGetSettings.mockResolvedValue({
     showPricingToNonMembers: false,
     quoteResponseTtlDays: 14,
@@ -266,6 +300,10 @@ beforeEach(() => {
     (callback as (tx: typeof prisma) => Promise<unknown>)(prisma)) as never
   );
   vi.mocked(prisma.lodge.findFirst).mockResolvedValue({ id: "lodge-1" } as never);
+  // MG4 (#2309): `collectNotifiedMemberGuestIds` reads this on every hold
+  // release. Empty is the ordinary answer — a request whose guests are all
+  // free-text names owes nobody a withdrawal notice.
+  vi.mocked(prisma.bookingGuest.findMany).mockResolvedValue([] as never);
 });
 
 describe("createBookingRequestQuote", () => {
@@ -538,7 +576,12 @@ describe("sendBookingRequestQuote", () => {
       archivedAt: null,
       active: true,
     } as never);
-    vi.mocked(prisma.booking.create).mockResolvedValue({ id: "held-1" } as never);
+    vi.mocked(prisma.booking.create).mockResolvedValue({
+      id: "held-1",
+      // MG4 (#2309): the create selects its guest rows back, so the pipeline can
+      // match its notification plan to ids that only exist after the write.
+      guests: [],
+    } as never);
     vi.mocked(prisma.bookingRequest.update).mockResolvedValue({} as never);
     mockSendQuoteEmail.mockResolvedValue(undefined);
 
@@ -1252,7 +1295,12 @@ describe("holdBookingRequestSlots owner role", () => {
   beforeEach(() => {
     vi.mocked(prisma.bookingRequest.updateMany).mockResolvedValue({ count: 1 } as never);
     vi.mocked(prisma.member.create).mockResolvedValue({ id: "owner-1" } as never);
-    vi.mocked(prisma.booking.create).mockResolvedValue({ id: "held-1" } as never);
+    vi.mocked(prisma.booking.create).mockResolvedValue({
+      id: "held-1",
+      // MG4 (#2309): the create selects its guest rows back, so the pipeline can
+      // match its notification plan to ids that only exist after the write.
+      guests: [],
+    } as never);
     vi.mocked(prisma.bookingRequest.update).mockResolvedValue({} as never);
     // Default to no member-night conflict; individual tests override to reject.
     mockedAssertNoConflicts.mockResolvedValue(undefined);
@@ -1728,5 +1776,358 @@ describe("findLinkedGuestMemberNightConflicts (advisory pre-check #1226)", () =>
         links: [{ guestIndex: 0, memberId: "member-42" }],
       })
     ).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+/**
+ * MG4-D-b (#2309): a capacity hold that links real members to a stranger's
+ * booking.
+ *
+ * The pipeline was the last write path that could do this silently. These pin
+ * the two halves of the decision: the row carries a consent record naming the
+ * officer who stood behind it, and the member is actually told.
+ */
+describe("holdBookingRequestSlots — member-guest consent (MG4-D-b)", () => {
+  beforeEach(() => {
+    vi.mocked(prisma.bookingRequest.updateMany).mockResolvedValue({
+      count: 1,
+    } as never);
+    vi.mocked(prisma.member.create).mockResolvedValue({ id: "owner-1" } as never);
+    vi.mocked(prisma.bookingRequest.update).mockResolvedValue({} as never);
+    mockedAssertNoConflicts.mockResolvedValue(undefined);
+  });
+
+  function heldWithGuests() {
+    vi.mocked(prisma.booking.create).mockResolvedValue({
+      id: "held-1",
+      guests: [
+        { id: "bg-1", memberId: null },
+        { id: "bg-2", memberId: "m-sam" },
+      ],
+    } as never);
+  }
+
+  function requestLinking(memberId: string) {
+    vi.mocked(prisma.bookingRequest.findUnique).mockResolvedValue(
+      baseRequest({
+        type: BookingRequestType.GENERAL,
+        priceCents: 12000,
+        quotes: [],
+        // The officer linked the SECOND guest row to a real member account at
+        // quote time — the only way this data ever appears.
+        linkedGuestMembers: [{ guestIndex: 1, memberId }],
+      }) as never,
+    );
+  }
+
+  it("stamps a linked member CONFIRMED against the holding officer, never PENDING", async () => {
+    // MG4-D-b is explicit: the pipeline follows the ADMIN rule. A PENDING row
+    // here would hold a bed on a booking nobody has agreed to and would need an
+    // answer from somebody who never asked for the enquiry in the first place.
+    heldWithGuests();
+    requestLinking("m-sam");
+
+    await holdBookingRequestSlots({ requestId: "req-1", adminMemberId: "admin-1" });
+
+    const bookingArgs = vi.mocked(prisma.booking.create).mock.calls[0][0]
+      .data as { guests: { create: Array<Record<string, unknown>> } };
+    const rows = bookingArgs.guests.create;
+    const linked = rows.find((row) => row.memberId === "m-sam");
+    expect(linked).toMatchObject({
+      consentStatus: "CONFIRMED",
+      consentRequestedAt: null,
+      consentRespondedByMemberId: "admin-1",
+      consentExpiresAt: null,
+    });
+    // The unlinked guest is a free-text name with no member behind it, so it
+    // carries no consent record at all — unchanged from before MG4.
+    const unlinked = rows.find((row) => !row.memberId);
+    expect(unlinked).not.toHaveProperty("consentStatus");
+    // Neither planning field is ever a database column.
+    expect(linked).not.toHaveProperty("memberGuestConsent");
+    expect(linked).not.toHaveProperty("crossFamilyMemberGuest");
+  });
+
+  it("computes the boundary against the HELD BOOKING'S OWNER, not the acting officer", async () => {
+    // The owner is the non-login contact created moments earlier. Computing it
+    // against the officer instead would classify by the officer's household,
+    // which has nothing to do with this booking.
+    heldWithGuests();
+    requestLinking("m-sam");
+
+    await holdBookingRequestSlots({ requestId: "req-1", adminMemberId: "admin-1" });
+
+    expect(vi.mocked(prisma.familyGroupMember.findMany)).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { memberId: "owner-1" } }),
+    );
+  });
+
+  it("writes no consent record while the club has the module off", async () => {
+    // MG1's promise: a club that never opted in sees no change whatsoever. The
+    // linked member still lands on the booking exactly as they always did.
+    mockedModuleEnabled.mockResolvedValue(false);
+    heldWithGuests();
+    requestLinking("m-sam");
+
+    await holdBookingRequestSlots({ requestId: "req-1", adminMemberId: "admin-1" });
+
+    const bookingArgs = vi.mocked(prisma.booking.create).mock.calls[0][0]
+      .data as { guests: { create: Array<Record<string, unknown>> } };
+    for (const row of bookingArgs.guests.create) {
+      expect(row).not.toHaveProperty("consentStatus");
+    }
+  });
+
+  it("owes nobody anything when no guest row names a member", async () => {
+    // The overwhelming majority of booking requests. Nothing is planned, so the
+    // dispatcher is never even imported.
+    vi.mocked(prisma.booking.create).mockResolvedValue({
+      id: "held-1",
+      guests: [{ id: "bg-1", memberId: null }],
+    } as never);
+    vi.mocked(prisma.bookingRequest.findUnique).mockResolvedValue(
+      baseRequest({
+        type: BookingRequestType.GENERAL,
+        priceCents: 12000,
+        quotes: [],
+      }) as never,
+    );
+
+    await holdBookingRequestSlots({ requestId: "req-1", adminMemberId: "admin-1" });
+
+    const bookingArgs = vi.mocked(prisma.booking.create).mock.calls[0][0]
+      .data as { guests: { create: Array<Record<string, unknown>> } };
+    for (const row of bookingArgs.guests.create) {
+      expect(row).not.toHaveProperty("consentStatus");
+    }
+  });
+});
+
+/**
+ * MG4 (#2309): the hold's notifications, in BOTH directions.
+ *
+ * The column matrix above proves a consent record is written. These prove the
+ * two things a column cannot: that the member is actually told they are on the
+ * booking, and — the half the first cut was missing entirely — that they are
+ * told again when the hold that put them there is released.
+ */
+describe("holdBookingRequestSlots — who gets told (MG4-D-b)", () => {
+  beforeEach(() => {
+    vi.mocked(prisma.bookingRequest.updateMany).mockResolvedValue({
+      count: 1,
+    } as never);
+    vi.mocked(prisma.member.create).mockResolvedValue({ id: "owner-1" } as never);
+    vi.mocked(prisma.bookingRequest.update).mockResolvedValue({} as never);
+    mockedAssertNoConflicts.mockResolvedValue(undefined);
+    vi.mocked(prisma.booking.create).mockResolvedValue({
+      id: "held-1",
+      guests: [
+        { id: "bg-1", memberId: null },
+        { id: "bg-2", memberId: "m-sam" },
+      ],
+    } as never);
+    vi.mocked(prisma.bookingRequest.findUnique).mockResolvedValue(
+      baseRequest({
+        type: BookingRequestType.GENERAL,
+        priceCents: 12000,
+        quotes: [],
+        linkedGuestMembers: [{ guestIndex: 1, memberId: "m-sam" }],
+      }) as never,
+    );
+  });
+
+  it("tells the linked member the club has put them on a booking", async () => {
+    // Without this dispatch the whole of MG4-D-b is a database change nobody
+    // outside the club can see: a member holds a person-night on a stranger's
+    // stay and is never told.
+    await holdBookingRequestSlots({ requestId: "req-1", adminMemberId: "admin-1" });
+
+    expect(mocks.sendMemberGuestAddNotifications).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bookingId: "held-1",
+        // The actor decides which of the added notice's three sentences they
+        // read: "created from X's booking request", not the notify-only one.
+        actor: { kind: "BOOKING_REQUEST", adminMemberId: "admin-1" },
+      }),
+    );
+    const [call] = mocks.sendMemberGuestAddNotifications.mock.calls;
+    expect(call[0].rows).toEqual([
+      expect.objectContaining({
+        bookingGuestId: "bg-2",
+        targetMemberId: "m-sam",
+        notification: "ADDED_NOTICE",
+      }),
+    ]);
+  });
+
+  it("does NOT tell them a second time when a stale hold is replaced", async () => {
+    // A dead hold over the same request is detached and a fresh one created —
+    // same nights, same lodge, same guest list, because all three come from the
+    // BookingRequest row. The member was already told; a second "the club has
+    // put you on a lodge booking" for one request reads as a duplicate booking.
+    vi.mocked(prisma.bookingRequest.findUnique).mockResolvedValue(
+      baseRequest({
+        type: BookingRequestType.GENERAL,
+        priceCents: 12000,
+        quotes: [],
+        heldBookingId: "held-old",
+        linkedGuestMembers: [{ guestIndex: 1, memberId: "m-sam" }],
+      }) as never,
+    );
+    // The old hold is no longer live, so it is detached rather than reused.
+    vi.mocked(prisma.booking.findUnique).mockResolvedValue({
+      status: BookingStatus.CANCELLED,
+    } as never);
+    // ...and it had already told this member.
+    vi.mocked(prisma.bookingGuest.findMany).mockResolvedValue([
+      { memberId: "m-sam" },
+    ] as never);
+
+    await holdBookingRequestSlots({ requestId: "req-1", adminMemberId: "admin-1" });
+
+    // The fresh rows still carry their consent columns — only the MAIL is
+    // suppressed, so the booking's record of who stood behind the add is intact.
+    const bookingArgs = vi.mocked(prisma.booking.create).mock.calls[0][0]
+      .data as { guests: { create: Array<Record<string, unknown>> } };
+    expect(
+      bookingArgs.guests.create.find((row) => row.memberId === "m-sam"),
+    ).toMatchObject({ consentStatus: "CONFIRMED" });
+    expect(mocks.sendMemberGuestAddNotifications).not.toHaveBeenCalled();
+  });
+
+  it("still tells a member the stale hold had NOT told", async () => {
+    // The suppression is per member, not per hold: somebody linked for the
+    // first time on the fresh hold is owed the notice even though a previous
+    // hold existed.
+    vi.mocked(prisma.bookingRequest.findUnique).mockResolvedValue(
+      baseRequest({
+        type: BookingRequestType.GENERAL,
+        priceCents: 12000,
+        quotes: [],
+        heldBookingId: "held-old",
+        linkedGuestMembers: [{ guestIndex: 1, memberId: "m-sam" }],
+      }) as never,
+    );
+    vi.mocked(prisma.booking.findUnique).mockResolvedValue({
+      status: BookingStatus.CANCELLED,
+    } as never);
+    vi.mocked(prisma.bookingGuest.findMany).mockResolvedValue([
+      { memberId: "m-someone-else" },
+    ] as never);
+
+    await holdBookingRequestSlots({ requestId: "req-1", adminMemberId: "admin-1" });
+
+    expect(mocks.sendMemberGuestAddNotifications).toHaveBeenCalled();
+  });
+});
+
+describe("respondToBookingRequestQuote CANCEL — retracting the hold's notice (MG4 #2309)", () => {
+  function sentQuoteWithHold() {
+    vi.mocked(prisma.bookingRequestQuote.findUnique).mockResolvedValue({
+      id: "quote-1",
+      bookingRequestId: "req-1",
+      version: 1,
+      status: BookingRequestQuoteStatus.SENT,
+      createdByMemberId: "admin-1",
+      responseTokenExpiresAt: new Date(Date.now() + 60_000),
+      options: [
+        {
+          id: "STANDARD",
+          label: "Quote",
+          cateringOption: null,
+          totalCents: 1000,
+          pricingMode: BookingRequestPricingMode.OVERALL_TOTAL,
+          guestBreakdown: [],
+        },
+      ],
+      bookingRequest: baseRequest({ heldBookingId: "held-1" }),
+    } as never);
+    vi.mocked(prisma.bookingRequest.updateMany).mockResolvedValue({
+      count: 1,
+    } as never);
+  }
+
+  it("tells the member guests the hold had told, once the hold is gone", async () => {
+    // THE GAP THIS CLOSES. The hold emails "the club has put you on a lodge
+    // booking"; the requester then cancels the quote and the hold is cancelled
+    // and detached — and until now, in complete silence. The member was left
+    // holding an email that had stopped being true about a booking that no
+    // longer existed, and a person-night they did not know they had back.
+    sentQuoteWithHold();
+    vi.mocked(prisma.bookingGuest.findMany).mockResolvedValue([
+      { memberId: "m-sam" },
+      // De-duplicated, and free-text rows are excluded by the query itself.
+      { memberId: "m-sam" },
+    ] as never);
+
+    await respondToBookingRequestQuote({ token: "c".repeat(64), action: "CANCEL" });
+
+    expect(mocks.sendMemberGuestWithdrawnNotifications).toHaveBeenCalledWith({
+      bookingId: "held-1",
+      targetMemberIds: ["m-sam"],
+      // Names nobody: the booking's owner is a non-login contact the reader has
+      // never dealt with, so naming them would introduce a stranger.
+      context: "BOOKING_REQUEST_REPLACED",
+    });
+  });
+
+  it("reads the population BEFORE the hold is cancelled", async () => {
+    // Ordering matters and is not incidental: read after, and a cancel path
+    // that ever starts clearing guest rows would silently begin telling nobody.
+    sentQuoteWithHold();
+    const order: string[] = [];
+    vi.mocked(prisma.bookingGuest.findMany).mockImplementation((async () => {
+      order.push("read");
+      return [{ memberId: "m-sam" }];
+    }) as never);
+    vi.mocked(prisma.booking.update).mockImplementation((async () => {
+      order.push("cancel");
+      return {};
+    }) as never);
+
+    await respondToBookingRequestQuote({ token: "c".repeat(64), action: "CANCEL" });
+
+    expect(order).toEqual(["read", "cancel"]);
+  });
+
+  it("tells nobody when the request held nothing", async () => {
+    // A quote cancelled before any hold was taken. No booking, nobody told.
+    vi.mocked(prisma.bookingRequestQuote.findUnique).mockResolvedValue({
+      id: "quote-1",
+      bookingRequestId: "req-1",
+      version: 1,
+      status: BookingRequestQuoteStatus.SENT,
+      createdByMemberId: "admin-1",
+      responseTokenExpiresAt: new Date(Date.now() + 60_000),
+      options: [
+        {
+          id: "STANDARD",
+          label: "Quote",
+          cateringOption: null,
+          totalCents: 1000,
+          pricingMode: BookingRequestPricingMode.OVERALL_TOTAL,
+          guestBreakdown: [],
+        },
+      ],
+      bookingRequest: baseRequest({ heldBookingId: null }),
+    } as never);
+    vi.mocked(prisma.bookingRequest.updateMany).mockResolvedValue({
+      count: 1,
+    } as never);
+
+    await respondToBookingRequestQuote({ token: "c".repeat(64), action: "CANCEL" });
+
+    expect(mocks.sendMemberGuestWithdrawnNotifications).not.toHaveBeenCalled();
+  });
+
+  it("tells nobody when the hold's guests were all free-text names", async () => {
+    // The ordinary booking request. A row with no consent record was never the
+    // subject of any message, so releasing it owes no email.
+    sentQuoteWithHold();
+    vi.mocked(prisma.bookingGuest.findMany).mockResolvedValue([] as never);
+
+    await respondToBookingRequestQuote({ token: "c".repeat(64), action: "CANCEL" });
+
+    expect(mocks.sendMemberGuestWithdrawnNotifications).not.toHaveBeenCalled();
   });
 });

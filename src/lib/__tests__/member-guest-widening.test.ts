@@ -769,6 +769,41 @@ describe("consent columns have exactly one writer", () => {
       // its own test asserts through `classifyMemberGuestConsent`.
       "src/app/(authenticated)/book/_components/member-guest-preview.tsx":
         "the wizard's pre-persistence consent prediction",
+      // --- MG4's pipeline half (#2309, MG4-D-b). The booking-request approval
+      // is the one guest write that REUSES a row rather than creating it, so it
+      // reads the old `consentStatus` to tell a preserved guest from a
+      // substituted one, and clears the column explicitly when the person on the
+      // row changes. A stale ADMIN_ASSIGNED left behind by the previous occupant
+      // would claim consent for somebody who was never asked. The columns it
+      // WRITES still come from `buildMemberGuestConsentWrite` by way of
+      // `planBookingRequestGuestConsent`; nothing here composes a shape of its
+      // own.
+      "src/lib/booking-request.ts":
+        "the held-booking guest swap reads the old consent state and clears it on substitution",
+      // A READER, and the narrowest one in the census: a single `where` clause
+      // asking which of a hold's guests carry a consent record, i.e. which
+      // members were told they were on it. That is the population owed a
+      // withdrawal notice when the hold is released, and the population to
+      // suppress when a stale hold is replaced by a fresh one over the same
+      // request. It writes nothing.
+      "src/lib/booking-request-shared.ts":
+        "the hold-release notice reads which guests carry a consent record, so it can tell exactly the members who were told",
+      // --- MG4's edit surface (#2309). Neither WRITES a column.
+      // The panel builds one of the two legal preview shapes for the pre-save
+      // badge, exactly as the wizard's predictor does — no row exists yet.
+      "src/components/edit-booking-panel.tsx":
+        "the edit panel's pre-save consent prediction for a newly added member guest",
+      // Reads the status of a guest the edit REMOVED, to decide whether the
+      // member was ever told about this booking and which sentence they are
+      // owed. A null status means no message was ever sent about that row.
+      "src/lib/booking-batch-modification-service.ts":
+        "the batch edit reads a removed guest's consent state to decide who is owed a withdrawal notice",
+      // The same read on the single-guest removal route. It is the ONE of the
+      // three callers of removeBookingGuestInTransaction that owes a withdrawal
+      // notice — the decline endpoint and the expiry sweep each have their own
+      // message for the same event.
+      "src/app/api/bookings/[id]/guests/[guestId]/route.ts":
+        "the guest-removal route reads the removed row's consent state to decide who is owed a withdrawal notice",
     };
 
     const mentions = productionFilesUnder("src")
@@ -829,6 +864,14 @@ describe("the two open-search privacy toggles are off by default, and have exact
       "src/app/api/members/guest-candidates/search/route.ts",
       // Renders one find box or the other from the prop it was handed.
       "src/app/(authenticated)/book/_components/guests-step.tsx",
+      // MG4 (#2309). Decides which find box the EDIT panel draws, from the same
+      // already-decided boolean — and for an ADMIN reader does not consult the
+      // setting at all, because D-20 gates the officer's picker on
+      // `membership:view` instead. The routes still re-check.
+      "src/app/(authenticated)/bookings/[id]/page.tsx",
+      // MG4 (#2309). Obeys `loadMemberGuestFindGate`'s answer and names the
+      // AUDIENCE it is serving; the minors decision stays in the find service.
+      "src/app/api/admin/bookings/[id]/member-guest-candidates/route.ts",
     ]);
 
     const namers = sourceFilesUnder("src")
