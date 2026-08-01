@@ -4,6 +4,16 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+<!-- changelog-pointer-note:start -->
+
+Entries for the next release are written as one file per pull request in
+[`changelog.d/`](changelog.d/README.md), not added here by hand (#2452);
+`scripts/release/compile-changelog.mjs` folds them into a version section when a
+release is cut. Any entries still listed below were written before that change
+and are folded in the same way.
+
+<!-- changelog-pointer-note:end -->
+
 - **Requests for pictures and files that do not exist are answered properly,
   instead of being handed a broken copy of the club's "page not found" screen
   (#2404).** When something asks the site for a picture that is not there — an
@@ -158,6 +168,29 @@ All notable public reference-release changes should be recorded here.
   they cannot drift; clubs that write their own money lines in an override get a
   new `{{creditNote}}` token for the pair (existing overrides keep rendering and
   re-saving unchanged). Money stays in integer cents throughout.
+- **One unreadable booking request no longer takes down the whole queue
+  (#2342).** The **All** filter on the admin Booking Requests page returned a
+  server error on any database holding a request whose saved guest list could
+  not be read back — a missing surname was enough, and the demo seed shipped
+  exactly such a row. Every request on the page disappeared behind that one bad
+  row. Admin reads are now tolerant across all three saved blobs a request
+  carries — its guest list, its member links, and its latest quote — so a row
+  that fails validation renders in the list and in its own per-request payload
+  under a **Saved details need attention** note instead of erroring the page.
+  The note names only what actually failed, and shows the salvaged guest names
+  as they were saved (line breaks collapsed, over-long values trimmed) rather
+  than as confirmed details. Nothing about a well-formed request changed.
+  Acting on such a request is refused rather than merely discouraged: Save
+  quote, Send quote, Hold slots and Approve are turned off in the panel, and
+  the server refuses quoting, pricing, holding and approving — including a
+  school approval that supplies its own group numbers, which previously skipped
+  the saved guest list altogether and could have invoiced a large group as a
+  handful of people. Saving a quote no longer overwrites the stored member
+  links with what the page happens to be displaying. Declining still works, and
+  is the way out; the refusals now read as plain English rather than as a
+  server error. The demo seed's school children now carry surnames, matching
+  what the real school form writes.
+
 - **The finance dashboard was counting a paid price increase twice, and now
   counts it once (#2408).** When a booking's price goes up after it was made —
   someone adds a guest — the difference is tracked as an "additional payment".
