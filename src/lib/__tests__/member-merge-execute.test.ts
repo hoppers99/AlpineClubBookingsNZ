@@ -1206,6 +1206,168 @@ describe("family-link drift under the lock (#2437)", () => {
     return { memberDelegate, xeroObjectLink };
   }
 
+  /**
+   * A tiny predicate interpreter over an in-memory Member store, so the
+   * interleaving tests exercise the merge against QUERY SEMANTICS rather than
+   * canned per-call return values: step 1's value-conditional null, the
+   * id-bounded sweep and the step-5 re-reads all evaluate their real
+   * predicates against the same mutable rows, and a concurrent write injected
+   * mid-merge propagates — or is refused — exactly as it would in Postgres
+   * under READ COMMITTED. Supports the operators the merge actually issues:
+   * scalar equality, in / notIn / not, OR and AND.
+   */
+  function rowMatches(
+    row: Record<string, unknown>,
+    where: Record<string, unknown>,
+  ): boolean {
+    for (const [key, cond] of Object.entries(where)) {
+      if (cond === undefined) continue;
+      if (key === "OR") {
+        if (!(cond as Record<string, unknown>[]).some((c) => rowMatches(row, c))) {
+          return false;
+        }
+        continue;
+      }
+      if (key === "AND") {
+        const clauses = (Array.isArray(cond) ? cond : [cond]) as Record<string, unknown>[];
+        if (!clauses.every((c) => rowMatches(row, c))) return false;
+        continue;
+      }
+      const value = row[key] ?? null;
+      if (cond !== null && typeof cond === "object") {
+        const f = cond as { in?: unknown[]; notIn?: unknown[]; not?: unknown };
+        if (f.in !== undefined && !f.in.includes(value)) return false;
+        if (f.notIn !== undefined && f.notIn.includes(value)) return false;
+        if (f.not !== undefined && value === f.not) return false;
+        continue;
+      }
+      if (value !== cond) return false;
+    }
+    return true;
+  }
+
+  function storeMember(id: string, overrides: Record<string, unknown> = {}) {
+    return makeMember(id, {
+      parentMemberId: null,
+      secondaryParentId: null,
+      inheritEmailFromId: null,
+      detailsConfirmedByMemberId: null,
+      ...overrides,
+    });
+  }
+
+  function storeMemberDelegate(
+    store: Map<string, Record<string, unknown>>,
+    hooks: {
+      onFindMany?: (args: { where?: Record<string, unknown>; take?: number }) => void;
+    } = {},
+  ) {
+    return {
+      ...defaultDelegate(),
+      findUnique: vi.fn(({ where }: { where: { id: string } }) => {
+        const row = store.get(where.id);
+        // Clone on read, like a real row fetch: the transaction-opening
+        // snapshot must keep the pre-merge values after later steps mutate the
+        // stored row.
+        return Promise.resolve(row ? { ...row } : null);
+      }),
+      findMany: vi.fn(
+        (args: { where?: Record<string, unknown>; take?: number } = {}) => {
+          hooks.onFindMany?.(args);
+          const rows = [...store.values()].filter((r) =>
+            rowMatches(r, args.where ?? {}),
+          );
+          const limited =
+            typeof args.take === "number" ? rows.slice(0, args.take) : rows;
+          return Promise.resolve(limited.map((r) => ({ ...r })));
+        },
+      ),
+      // actorIsFullAdmin -> 1 for the actor; every aggregate count -> 0.
+      count: vi.fn(({ where }: { where?: { id?: unknown } } = {}) =>
+        Promise.resolve(where?.id === ACTOR_ID ? 1 : 0),
+      ),
+      updateMany: vi.fn(
+        ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
+          let count = 0;
+          for (const row of store.values()) {
+            if (rowMatches(row, where)) {
+              Object.assign(row, data);
+              count += 1;
+            }
+          }
+          return Promise.resolve({ count });
+        },
+      ),
+      update: vi.fn(
+        ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
+          const row = store.get(where.id);
+          if (row) Object.assign(row, data);
+          return Promise.resolve(row ? { ...row } : {});
+        },
+      ),
+      delete: vi.fn(({ where }: { where: { id: string } }) => {
+        const row = store.get(where.id);
+        store.delete(where.id);
+        return Promise.resolve(row ? { ...row } : {});
+      }),
+    };
+  }
+
+  it("REFUSES (409) at step 1 when the master's link flips from the duplicate to a THIRD member mid-merge — the clobber shape (#2437)", async () => {
+    // Snapshot: master.inheritEmailFromId = the duplicate (a self-cycle the
+    // merge legitimately clears). Between the token re-derivation and step 1 —
+    // the moved-id-sample stretch, dozens of sequential round-trips — another
+    // admin re-points the master's email inheritance to the REAL holder. An
+    // unconditional step-1 null keyed off the stale snapshot would destroy
+    // that write and then read its own null back as "expected" at step 5:
+    // silent loss with no drift report. The value-conditional null misses
+    // (count 0) and refuses instead.
+    const store = new Map<string, Record<string, unknown>>();
+    store.set(
+      MASTER_ID,
+      storeMember(MASTER_ID, { occupation: null, inheritEmailFromId: LOSER_ID }),
+    );
+    store.set(LOSER_ID, storeMember(LOSER_ID, { occupation: "Engineer" }));
+    const token = tokenFor(store.get(MASTER_ID)!, store.get(LOSER_ID)!);
+    let flipped = false;
+    const memberDelegate = storeMemberDelegate(store, {
+      // The moved-id sample is the first member read carrying `take`, and it
+      // runs AFTER the token counts were captured and BEFORE step 1 — the real
+      // window an unlocked family-link writer can land in.
+      onFindMany: (args) => {
+        if (flipped || typeof args.take !== "number") return;
+        flipped = true;
+        store.get(MASTER_ID)!.inheritEmailFromId = "real-holder-9";
+      },
+    });
+    const { client, auditLog } = makeClient({ member: memberDelegate });
+
+    await expect(
+      executeMemberMerge({
+        masterId: MASTER_ID,
+        loserId: LOSER_ID,
+        actorMemberId: ACTOR_ID,
+        previewToken: token,
+        confirmationText: "MERGE Dup Person",
+        db: client as never,
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      code: "merge_drift_in_transaction",
+      details: {
+        driftFamilyLinks: [{ column: "inheritEmailFromId", where: "master" }],
+      },
+    });
+
+    // The concurrent write SURVIVED: step 1's predicate missed so it wrote
+    // nothing, the merge never got further, and the admin's link is intact.
+    expect(store.get(MASTER_ID)!.inheritEmailFromId).toBe("real-holder-9");
+    expect(store.has(LOSER_ID)).toBe(true);
+    expect(
+      (auditLog as { create: ReturnType<typeof vi.fn> }).create,
+    ).not.toHaveBeenCalled();
+  });
+
   it.each(SELF_RELATION_COLUMNS)(
     "REFUSES (409) when a mid-merge write points the master's %s at the duplicate — the silent-loss shape",
     async (column) => {
@@ -1368,52 +1530,37 @@ describe("family-link drift under the lock (#2437)", () => {
 
   it("does NOT refuse the merge's own rewrites: a snapshot self-cycle nulled at step 1 reads clean at step 5", async () => {
     // The master legitimately inherited email from the duplicate at snapshot
-    // time. Step 1 nulls that pointer; the under-lock re-check must recognise
-    // the null as the merge's own write, not as drift — otherwise every
-    // self-cycle merge would 409 forever and the refusal's "re-run the
-    // preview" advice would be a lie.
-    const store: Record<string, Record<string, unknown>> = {
-      [MASTER_ID]: makeMember(MASTER_ID, {
-        occupation: null,
-        inheritEmailFromId: LOSER_ID,
-      }),
-      [LOSER_ID]: makeMember(LOSER_ID, { occupation: "Engineer" }),
-    };
-    const memberDelegate = {
-      ...defaultDelegate(),
-      // Clone on read, like a real row fetch: the transaction-opening snapshot
-      // must keep the pre-merge value after step 1 mutates the stored row.
-      findUnique: vi.fn(({ where }: { where: { id: string } }) =>
-        Promise.resolve(store[where.id] ? { ...store[where.id] } : null),
-      ),
-      count: vi.fn(({ where }: { where: { id?: string } }) =>
-        Promise.resolve(where?.id === ACTOR_ID ? 1 : 0),
-      ),
-      update: vi.fn(
-        ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
-          if (store[where.id]) Object.assign(store[where.id], data);
-          return Promise.resolve({});
-        },
-      ),
-      delete: vi.fn().mockResolvedValue({}),
-    };
+    // time and nobody raced. Step 1's VALUE-CONDITIONAL null must match
+    // (count 1) and the under-lock re-check must recognise the null as the
+    // merge's own write, not as drift — otherwise every self-cycle merge would
+    // 409 forever and the refusal's "re-run the preview" advice would be a lie.
+    const store = new Map<string, Record<string, unknown>>();
+    store.set(
+      MASTER_ID,
+      storeMember(MASTER_ID, { occupation: null, inheritEmailFromId: LOSER_ID }),
+    );
+    store.set(LOSER_ID, storeMember(LOSER_ID, { occupation: "Engineer" }));
+    const token = tokenFor(store.get(MASTER_ID)!, store.get(LOSER_ID)!);
+    const memberDelegate = storeMemberDelegate(store);
     const { client } = makeClient({ member: memberDelegate });
 
     const result = await executeMemberMerge({
       masterId: MASTER_ID,
       loserId: LOSER_ID,
       actorMemberId: ACTOR_ID,
-      previewToken: tokenFor(store[MASTER_ID], store[LOSER_ID]),
+      previewToken: token,
       confirmationText: "MERGE Dup Person",
       db: client as never,
     });
 
     expect(result.masterId).toBe(MASTER_ID);
-    // Step 1 nulled the self-cycle...
-    expect(memberDelegate.update.mock.calls.map(([arg]) => arg)).toContainEqual({
-      where: { id: MASTER_ID },
+    // Step 1 nulled the self-cycle with the value-conditional predicate — the
+    // shape that cannot clobber a concurrent write (#2437)...
+    expect(memberDelegate.updateMany.mock.calls.map(([arg]) => arg)).toContainEqual({
+      where: { id: MASTER_ID, inheritEmailFromId: LOSER_ID },
       data: { inheritEmailFromId: null },
     });
+    expect(store.get(MASTER_ID)!.inheritEmailFromId).toBeNull();
     // ...and the merge completed: the duplicate was deleted, no 409.
     expect(memberDelegate.delete).toHaveBeenCalledWith({ where: { id: LOSER_ID } });
   });

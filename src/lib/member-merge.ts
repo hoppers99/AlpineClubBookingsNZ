@@ -948,7 +948,13 @@ export type FamilyLinkDrift = {
  *
  *  - MASTER row: step 1 (`nullSelfRelationCycles`) nulls a snapshot value equal
  *    to the loser id, and `applyMoves` excludes the master's row, so the
- *    expected value is the snapshot's with that one transform applied.
+ *    expected value is the snapshot's with that one transform applied. Step 1
+ *    is VALUE-CONDITIONAL and 409s itself when the pointer moved under it, and
+ *    a successful null holds the master's row lock to commit — that pairing is
+ *    what makes the `null` expectation here enforceable rather than a
+ *    tautology over step 1's own write (the differ still fails closed on a
+ *    surviving pointer as defense-in-depth). The live master-arm detections at
+ *    this step are therefore the columns step 1 did NOT touch.
  *  - DUPLICATE row: step 3 (`applyMoves`) re-points ANY non-master row whose
  *    column equals the loser id — including, degenerately, the duplicate's own.
  *  - INBOUND rows: after step 3 no OTHER row may still reference the loser in
@@ -1003,6 +1009,24 @@ export function describeFamilyLinkDrift(drift: FamilyLinkDrift): string {
     case "inbound":
       return `${drift.column} (another member now links to the duplicate)`;
   }
+}
+
+/**
+ * The one 409 every family-link drift arm throws (#2437): step 1's
+ * value-conditional nulling when the master's pointer moved under it, and the
+ * step-5 under-lock differ. Same code and message register as the #2243 field
+ * drift so the route and the merge page need no new handling.
+ */
+function familyLinkDriftError(drifts: readonly FamilyLinkDrift[]): MemberMergeError {
+  return new MemberMergeError(
+    `These family links changed while the merge was running: ${drifts
+      .map(describeFamilyLinkDrift)
+      .join(", ")}. ` +
+      "Nothing was saved. Re-run the preview and try again.",
+    409,
+    "merge_drift_in_transaction",
+    { driftFamilyLinks: [...drifts] },
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1938,8 +1962,11 @@ export async function executeMemberMerge(params: {
     // Collect a bounded moved-id sample BEFORE mutating.
     const movedIdSample = await collectMovedIdSample(tx, loserId);
 
-    // 1) Null master self-relation cycles first.
-    await nullSelfRelationCycles(tx, masterFull, loserId);
+    // 1) Null master self-relation cycles first — value-conditionally: a
+    // pointer that moved since the snapshot refuses here with the family-link
+    // drift 409 (#2437) instead of being overwritten. On success the master's
+    // row lock is held to commit.
+    const selfRelationNulls = await nullSelfRelationCycles(tx, masterFull, loserId);
 
     // 2) Resolve collisions.
     const resolveResults = await resolveAllCollisions(tx, masterId, loserId);
@@ -2083,15 +2110,7 @@ export async function executeMemberMerge(params: {
       inboundAtWrite,
     });
     if (driftLinks.length > 0) {
-      throw new MemberMergeError(
-        `These family links changed while the merge was running: ${driftLinks
-          .map(describeFamilyLinkDrift)
-          .join(", ")}. ` +
-          "Nothing was saved. Re-run the preview and try again.",
-        409,
-        "merge_drift_in_transaction",
-        { driftFamilyLinks: driftLinks },
-      );
+      throw familyLinkDriftError(driftLinks);
     }
 
     const fieldsChanged = Object.keys(fieldOutcome.patch);
@@ -2328,21 +2347,50 @@ async function reconcileLoserMemberPhotos(
   });
 }
 
+/**
+ * Step 1 — null the master's own pointers at the duplicate, VALUE-CONDITIONALLY
+ * (#2437). The snapshot only decides which columns to LOOK at; each write
+ * re-checks `column = loserId` in its own predicate, so under READ COMMITTED it
+ * can only null the value it observed. A write that lands on the master between
+ * the transaction-opening snapshot and this step (the guards, the token
+ * re-derivation and the moved-id sample are dozens of round-trips) makes the
+ * predicate miss — `count === 0` — and the merge refuses with the same 409 the
+ * step-5 differ uses, instead of blindly overwriting the concurrent link with
+ * null and then reading its own null back as "unchanged" at step 5. That
+ * includes a concurrent UNLINK (loser -> null): the outcome would have been the
+ * same null, but the operator previewed a different starting state, so it
+ * refuses in the fail-closed direction like every other drift arm.
+ *
+ * A successful conditional null takes the master's exclusive row lock and holds
+ * it to commit, which is what makes the step-5 master-arm expectation (`null`)
+ * genuinely safe rather than tautological: nothing can re-set the column after
+ * this step succeeds.
+ *
+ * Returns the columns actually nulled, so the audit can record the clearance
+ * explicitly (they are deliberately NOT counted as relation moves).
+ */
 async function nullSelfRelationCycles(
   tx: Prisma.TransactionClient,
   master: Member,
   loserId: string,
-): Promise<void> {
-  const data: Record<string, null> = {};
+): Promise<{ nulledColumns: string[] }> {
+  const nulledColumns: string[] = [];
+  const drifts: FamilyLinkDrift[] = [];
   for (const s of MEMBER_MERGE_RELATION_SPECS) {
     if (!s.selfRelation) continue;
-    if ((master as unknown as Record<string, unknown>)[s.column] === loserId) {
-      data[s.column] = null;
+    if ((master as unknown as Record<string, unknown>)[s.column] !== loserId) continue;
+    const res = await tx.member.updateMany({
+      where: { id: master.id, [s.column]: loserId },
+      data: { [s.column]: null },
+    });
+    if (res.count === 0) {
+      drifts.push({ column: s.column, where: "master" });
+    } else {
+      nulledColumns.push(s.column);
     }
   }
-  if (Object.keys(data).length > 0) {
-    await tx.member.update({ where: { id: master.id }, data });
-  }
+  if (drifts.length > 0) throw familyLinkDriftError(drifts);
+  return { nulledColumns };
 }
 
 async function applyMoves(

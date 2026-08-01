@@ -470,8 +470,13 @@ describe("family-link drift under the lock (#2437, diffSelfRelationLinkState)", 
         masterAtWrite: links({ inheritEmailFromId: null }),
       }),
     ).toEqual([]);
-    // The same snapshot with the pointer STILL set at write time means a
-    // writer re-set it after step 1 ran — that IS drift.
+    // A pointer STILL set at write time cannot arise from a writer in
+    // production: step 1's null is VALUE-CONDITIONAL, so a pointer that moved
+    // 409s at step 1 itself (see the execute suite's flip test), and a
+    // successful null holds the master's row lock to commit. The differ still
+    // fails CLOSED on the state rather than assuming it away: reading the
+    // pointer back would mean step 1 was skipped or its locking broken, and
+    // silently accepting it would mask exactly that.
     expect(
       drift({
         masterSnapshot: links({ inheritEmailFromId: L }),
