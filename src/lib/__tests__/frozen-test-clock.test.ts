@@ -1,11 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
   FROZEN_TEST_CLOCK_BASE_ISO,
   frozenClockOptOutReason,
   frozenTestNow,
+  installFrozenTestClock,
   optOutOfFrozenClock,
 } from "@/lib/__tests__/helpers/clock";
 import { todayDateOnlyForTimeZone } from "@/lib/date-only";
@@ -147,6 +148,55 @@ describe("frozen test clock", () => {
     expect(todayDateOnlyForTimeZone("Pacific/Auckland")).toBe(
       frozenTestNow().toISOString().slice(0, 10)
     );
+  });
+});
+
+describe("a suite that pins its own instant", () => {
+  // The contract 64-odd already-pinned suites depend on, asserted rather than
+  // assumed: a per-file pin must WIN over the default freeze, or this work would
+  // have silently rewritten what every one of them tests. `batch-modify-payment`
+  // (2026-08-20) and the `vi.mock("@/lib/date-only", …)` suites are the live
+  // cases; this is the same shape in miniature.
+  const OWN_INSTANT = new Date("2027-03-04T05:06:07.000Z");
+
+  beforeAll(() => {
+    vi.setSystemTime(OWN_INSTANT);
+  });
+
+  afterAll(() => {
+    installFrozenTestClock();
+  });
+
+  it("keeps its own instant, not the default one", () => {
+    expect(new Date().toISOString()).toBe("2027-03-04T05:06:07.000Z");
+    expect(Date.now()).not.toBe(frozenTestNow().getTime());
+  });
+
+  it("keeps it across tests, so the root beforeEach cannot steal it back", () => {
+    // `ensureFrozenTestClock` runs before every test and must leave a deliberate
+    // pin alone — it only ever converts a REAL clock back to the frozen one.
+    expect(new Date().toISOString()).toBe("2027-03-04T05:06:07.000Z");
+  });
+});
+
+describe("a suite that hands the clock back to real time", () => {
+  // The escape the rollover canary found in `admin-booking-copy.test.ts` and
+  // `batch-modify-payment.test.ts`: an `afterEach` that undoes the suite's own
+  // pin, leaving every later test in the file on the real calendar.
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("is re-frozen by the next test rather than left on the real calendar", () => {
+    expect(Date.now()).toBe(frozenTestNow().getTime());
+    vi.useRealTimers();
+    // Deliberately NOT asserted as "later than": that would depend on the real
+    // date, which is the whole thing this file exists to forbid.
+    expect(Date.now()).not.toBe(frozenTestNow().getTime());
+  });
+
+  it("is frozen again here, after the afterEach handed the clock back", () => {
+    expect(Date.now()).toBe(frozenTestNow().getTime());
   });
 });
 

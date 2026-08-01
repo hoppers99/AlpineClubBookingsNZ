@@ -5,8 +5,8 @@ name: Clock rollover canary
 # directly: "winding the real system clock forward by a year does not change any
 # test result".
 #
-# Every test file is frozen at 2026-07-01T00:00:00.000Z by vitest.setup.ts, so a
-# properly frozen test cannot notice this job at all. What CAN notice it is
+# Every test file is frozen at 2026-07-01T00:00:00.000Z by vitest.clock-setup.ts,
+# so a properly frozen test cannot notice this job at all. What CAN notice it is
 # anything that escaped the freeze — a file on the opt-out allowlist, or code
 # reaching a date through a path the freeze does not cover. Those are exactly the
 # tests that will go red on their own one day and take `main` and every open PR
@@ -129,14 +129,19 @@ jobs:
       - name: Generate Prisma client
         run: npm run db:generate
 
-      # The generous timeouts are the libfaketime tax, not slack: every clock
-      # call (and every subprocess spawn, which inherits the LD_PRELOAD shim)
-      # goes through the interposer, and the default 5s tipped four unrelated
-      # suites into timeouts on the first real run. A timeout here would read as
-      # a date bug and waste the reader's morning, which is the opposite of the
+      # The timeouts and the retry are the libfaketime tax, not slack. Every
+      # clock call — and every subprocess spawn, which inherits the LD_PRELOAD
+      # shim — goes through the interposer, and on the first real run that alone
+      # tipped four suites past the default 5s test timeout and one React
+      # Testing Library `waitFor` past its own 1s. A timeout here would read as a
+      # date bug and waste the reader's morning, which is the opposite of the
       # point.
+      #
+      # `--retry` does not soften the signal: a test that reaches the real
+      # calendar fails identically on every attempt, because the clock is shifted
+      # for the whole run. Only a slowness flake passes on the retry.
       - name: Run the unit suite with the real clock ${{ matrix.label }}
-        run: faketime -f '${{ matrix.offset }}' npm test -- --testTimeout=30000 --hookTimeout=30000
+        run: faketime -f '${{ matrix.offset }}' npm test -- --testTimeout=30000 --hookTimeout=30000 --retry=2
 
       - name: Explain a red canary
         if: failure()
@@ -158,7 +163,7 @@ jobs:
             echo '```bash'
             echo "sudo apt-get install -y faketime"
             echo "FAKETIME_DONT_FAKE_MONOTONIC=1 faketime -f '${{ matrix.offset }}' \\"
-            echo "  npm test -- --testTimeout=30000 --hookTimeout=30000"
+            echo "  npm test -- --testTimeout=30000 --hookTimeout=30000 --retry=2"
             echo '```'
             echo
             echo "Fix the test so it reads the frozen clock. See docs/TESTING.md,"

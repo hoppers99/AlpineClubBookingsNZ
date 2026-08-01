@@ -198,9 +198,11 @@ Reproduce a canary job locally on Linux:
 ```bash
 sudo apt-get install -y faketime
 # -f is required: without it the offset is parsed by `date -d`, which rejects it.
-# The raised timeouts are the libfaketime tax — every clock call and every
-# subprocess spawn goes through the LD_PRELOAD shim.
-FAKETIME_DONT_FAKE_MONOTONIC=1 faketime -f '+366d'   npm test -- --testTimeout=30000 --hookTimeout=30000
+# The raised timeouts and the retry are the libfaketime tax — every clock call
+# and every subprocess spawn goes through the LD_PRELOAD shim. A test that really
+# reaches the real calendar fails on every retry, so this does not soften the
+# signal; only a slowness flake passes.
+FAKETIME_DONT_FAKE_MONOTONIC=1 faketime -f '+366d'   npm test -- --testTimeout=30000 --hookTimeout=30000 --retry=2
 ```
 
 ### Moving the frozen instant locally

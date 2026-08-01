@@ -169,8 +169,8 @@ export function frozenTestNow(): Date {
 
 /**
  * Install the frozen clock for the current test file. Called once from
- * `vitest.setup.ts`'s module body, before the test file (and everything it
- * imports) is evaluated.
+ * `vitest.clock-setup.ts`'s module body, before the test file (and everything
+ * it imports) is evaluated.
  */
 export function installFrozenTestClock(): void {
   vi.useFakeTimers({ toFake: ["Date"] });
