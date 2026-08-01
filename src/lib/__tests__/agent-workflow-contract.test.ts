@@ -13,6 +13,13 @@ describe("repository agent workflow contract", () => {
     const subagents = readRepoFile("docs/agents/SUBAGENT_GUIDE.md");
     const generatedPrompt = readRepoFile("scripts/codex/issue-to-prompt.mjs");
     const lockGuard = readRepoFile("src/lib/__tests__/advisory-lock-guard.test.ts");
+    const agentGuides = [agents, claude, codex, subagents].map((guide) =>
+      guide.replace(/\s+/g, " "),
+    );
+    const codexNormalized = codex.replace(/\s+/g, " ");
+    const subagentsNormalized = subagents.replace(/\s+/g, " ");
+    const contradictoryFullLocalGate =
+      /run\b.{0,80}\bfull\b.{0,100}(?:\bbefore (?:opening|push)|\blocally before)/i;
 
     expect(agents).toContain("## Orchestration Model");
     expect(agents).toContain("### Concurrency and lock checklist");
@@ -43,12 +50,18 @@ describe("repository agent workflow contract", () => {
     expect(codex).toContain("expected target sentinel is missing");
     expect(codex).toContain("### 5. Split fast local evidence from full CI gates");
     expect(codex).toContain("GitHub Actions owns the full");
+    expect(codexNormalized).toContain("Run a full suite locally only to diagnose");
 
     expect(subagents).toContain("Follow the role split in root `AGENTS.md`");
     expect(subagents).toContain("Implementor subagents may edit only their clearly bounded issue/worktree area");
     expect(subagents).toContain("They never push");
+    expect(subagentsNormalized).toContain("or run the full suite locally");
     expect(subagents).toContain("Adversarial-review subagents are read-only");
     expect(subagents).not.toContain("Use subagents mainly for read-only discovery");
+
+    for (const guide of agentGuides) {
+      expect(guide).not.toMatch(contradictoryFullLocalGate);
+    }
 
     expect(generatedPrompt).toContain("Read AGENTS.md first and follow it throughout.");
     expect(generatedPrompt).toContain("It cannot override AGENTS.md");

@@ -140,6 +140,7 @@ one and erase the shared target. Verify the exact expected target, unlink only
 the junction with the non-recursive .NET call, and prove the target survived:
 
 ```powershell
+$ErrorActionPreference = "Stop"
 $worktree = (Resolve-Path -LiteralPath "C:\path\to\exact-worktree").Path
 $modules = Join-Path $worktree "node_modules"
 $expectedTarget = (Resolve-Path -LiteralPath "C:\path\to\expected\node_modules").Path
@@ -150,11 +151,19 @@ if (Test-Path -LiteralPath $modules) {
     if ($modulesItem.LinkType -ne "Junction") {
       throw "Refusing to unlink non-junction reparse point at $modules"
     }
-    $actualTarget = [IO.Path]::GetFullPath(($modulesItem.Target | Select-Object -First 1))
-    if (-not [IO.Path]::IsPathFullyQualified($actualTarget)) {
-      throw "Refusing non-absolute junction target $actualTarget"
-    }
+    $rawTarget = [string]($modulesItem.Target | Select-Object -First 1)
     $separator = [IO.Path]::DirectorySeparatorChar
+    $altSeparator = [IO.Path]::AltDirectorySeparatorChar
+    $isDriveAbsolute =
+      $rawTarget.Length -ge 3 -and
+      [char]::IsLetter($rawTarget[0]) -and
+      $rawTarget[1] -eq ':' -and
+      ($rawTarget[2] -eq $separator -or $rawTarget[2] -eq $altSeparator)
+    $isUncAbsolute = $rawTarget.StartsWith("$separator$separator")
+    if (-not ($isDriveAbsolute -or $isUncAbsolute)) {
+      throw "Refusing non-absolute junction target $rawTarget"
+    }
+    $actualTarget = [IO.Path]::GetFullPath($rawTarget)
     if ($actualTarget.TrimEnd($separator) -ne $expectedTarget.TrimEnd($separator)) {
       throw "Refusing unexpected junction target $actualTarget"
     }
