@@ -4,6 +4,7 @@ import type { AgeTier } from "@prisma/client";
 import { useState, useEffect, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
+import { parseDateOnly } from "@/lib/date-only";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -101,8 +102,14 @@ function computeFrequencyInfo(
     const lastDateStr = lastRosteredDates[chore.id];
     if (!lastDateStr)
       return { choreId: chore.id, excluded: false, reason: null };
-    const lastDate = new Date(lastDateStr + "T00:00:00");
-    const currentDate = new Date(dateStr + "T00:00:00");
+    // #2478: both ends are date-only roster nights, so they are parsed at UTC
+    // midnight. Parsing them at the BROWSER's local midnight made the gap 23 or
+    // 25 hours across a daylight-saving change, and `Math.floor` then reported
+    // a whole day too few — a chore could read "next due in 1 day" on the day
+    // it was actually due. It also keeps this preview in step with the server
+    // allocator, which reads the same nights in UTC.
+    const lastDate = parseDateOnly(lastDateStr);
+    const currentDate = parseDateOnly(dateStr);
     const daysSince = Math.floor(
       (currentDate.getTime() - lastDate.getTime()) / (1000 * 60 * 60 * 24)
     );
@@ -120,8 +127,10 @@ function computeFrequencyInfo(
     const days = chore.frequencyDaysOfWeek;
     if (!days || days.length === 0)
       return { choreId: chore.id, excluded: false, reason: null };
-    const currentDate = new Date(dateStr + "T00:00:00");
-    const dow = currentDate.getDay() === 0 ? 7 : currentDate.getDay();
+    // Date-only night parsed at UTC midnight, so the weekday is read with the
+    // UTC getter (#2478) — matching `filterChoresByFrequency` on the server.
+    const currentDate = parseDateOnly(dateStr);
+    const dow = currentDate.getUTCDay() === 0 ? 7 : currentDate.getUTCDay();
     if (!days.includes(dow)) {
       const dayNames = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
       const scheduled = days.map((d) => dayNames[d]).join(", ");

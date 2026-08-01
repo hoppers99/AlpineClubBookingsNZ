@@ -11,6 +11,23 @@ import {
   ChoreHistoryEntry,
 } from "../chore-allocator";
 
+// Restoring the host zone is not `delete process.env.TZ`: Node applies a zone
+// when TZ is ASSIGNED and keeps it when the variable is removed, so deleting
+// would leave the whole worker on whichever zone this file set last. Assigning
+// the resolved starting zone first, then removing the variable, puts both the
+// zone and the environment back exactly as they were found.
+const ORIGINAL_TZ_ENV = process.env.TZ;
+const ORIGINAL_HOST_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+function restoreHostTimeZone() {
+  if (ORIGINAL_TZ_ENV === undefined) {
+    process.env.TZ = ORIGINAL_HOST_ZONE;
+    delete process.env.TZ;
+  } else {
+    process.env.TZ = ORIGINAL_TZ_ENV;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Test Factories
 // ---------------------------------------------------------------------------
@@ -678,6 +695,33 @@ describe("filterChoresByFrequency", () => {
     const result = filterChoresByFrequency(chores, new Map(), new Date("2026-04-06"));
     expect(result).toHaveLength(1);
   });
+
+  // #2478. The roster night arrives as a date-only value — UTC midnight, the
+  // way Prisma reads a `@db.Date` column — so its weekday must be read in UTC.
+  // Reading it off the server's wall clock made the answer depend on where the
+  // host happened to be: on any host BEHIND UTC, UTC midnight is still the
+  // previous evening locally, and a Monday-only chore silently became a Sunday
+  // chore. NZ and UTC hosts both hid this, which is why it survived.
+  it.each(["UTC", "Pacific/Auckland", "America/Los_Angeles", "Pacific/Honolulu"])(
+    "SPECIFIC_DAYS reads the roster night's weekday the same way on a %s host",
+    (timeZone) => {
+      process.env.TZ = timeZone;
+      try {
+        const mondayOnly = [
+          makeChore({ id: "c1", frequencyMode: "SPECIFIC_DAYS", frequencyDaysOfWeek: [1] }),
+        ];
+        // 2026-04-06 is a Monday; 2026-04-05 the Sunday before it.
+        expect(
+          filterChoresByFrequency(mondayOnly, new Map(), new Date("2026-04-06T00:00:00.000Z")),
+        ).toHaveLength(1);
+        expect(
+          filterChoresByFrequency(mondayOnly, new Map(), new Date("2026-04-05T00:00:00.000Z")),
+        ).toHaveLength(0);
+      } finally {
+        restoreHostTimeZone();
+      }
+    },
+  );
 
   it("mixed frequency chores filter correctly", () => {
     const chores = [

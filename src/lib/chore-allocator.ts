@@ -212,7 +212,14 @@ export function filterChoresByFrequency(
   choreLastRosteredDates: Map<string, Date>,
   currentDate: Date
 ): ChoreTemplateInput[] {
-  const currentDayOfWeek = currentDate.getDay() === 0 ? 7 : currentDate.getDay(); // ISO: 1=Mon, 7=Sun
+  // #2478: `currentDate` is a date-only roster night (UTC midnight), so its
+  // weekday must be read with the UTC getter. `getDay()` reads the SERVER's
+  // wall clock: on any host behind UTC, UTC midnight is still the PREVIOUS
+  // evening locally, and every SPECIFIC_DAYS chore would then be filtered
+  // against the wrong weekday. Reading it in UTC keeps one calendar-day
+  // contract from the URL through the query to the roster.
+  const currentDayOfWeek =
+    currentDate.getUTCDay() === 0 ? 7 : currentDate.getUTCDay(); // ISO: 1=Mon, 7=Sun
 
   return chores.filter((chore) => {
     const mode = chore.frequencyMode ?? "DAILY";
