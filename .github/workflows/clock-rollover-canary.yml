@@ -111,9 +111,14 @@ jobs:
         run: |
           real_ms=$(node -e 'process.stdout.write(String(Date.now()))')
           faked_ms=$(faketime -f '${{ matrix.offset }}' node -e 'process.stdout.write(String(Date.now()))')
-          shift_days=$(( (faked_ms - real_ms) / 86400000 ))
-          echo "real=$real_ms faked=$faked_ms shift_days=$shift_days"
-          if [ "$shift_days" -lt "$(( ${{ matrix.min_shift_days }} - 1 ))" ]; then
+          delta_ms=$(( faked_ms - real_ms ))
+          # Compared in milliseconds, with a minute of slack for the gap between
+          # the two process starts. A day-granularity check would pass on a shift
+          # of zero for the +1d job, which is precisely the vacuous green this
+          # step exists to refuse.
+          min_ms=$(( ${{ matrix.min_shift_days }} * 86400000 - 60000 ))
+          echo "real=$real_ms faked=$faked_ms delta_ms=$delta_ms min_ms=$min_ms"
+          if [ "$delta_ms" -lt "$min_ms" ]; then
             echo "libfaketime did not shift Node's clock — refusing to report a meaningless pass"
             exit 1
           fi
