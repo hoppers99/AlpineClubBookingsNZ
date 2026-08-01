@@ -1494,13 +1494,23 @@ requires it. A runtime object carrying a non-allowlisted reason is rejected.
 
 `MinimumStayPolicy.capacityMode` is required and existing rows migrate to
 `HOLD`; `MinimumStayPolicy.version` is the optimistic concurrency token for
-admin writes and config transfer. Booking create, member group join, and member
-date modification still return their existing blocking HTTP 400, now with the
-frozen `violations` and `exceptionReview`. Modify quote and policy check expose
-the same structure as advisory data; policy check first resolves omitted lodge
-context to the active default and rejects an unknown/inactive explicit lodge.
-All evaluators receive the resolved booking lodge, so a lodge-specific policy
-cannot silently fall back to the club default.
+admin writes and config transfer. Enforcement is server-side on every
+member-facing mutation path, for non-admin actors only: booking create, member
+group join, the live member date modification (`PUT /api/bookings/[id]/modify` →
+`modifyBookingBatch`, checked before the guest plan, pricing and capacity) and
+its `modify-dates` sibling all return their blocking HTTP 400 with the frozen
+`violations` and `exceptionReview`. The public non-member group join enforces at
+**both** stages: staging refuses before a verification token, join row or email
+exists, and verification re-reads the current policy set and fails closed with a
+409 `minimum_stay` outcome before any member, booking, payment or pay link is
+created — the emailed link lives 48 hours, long enough for a rule to change
+under it. Price-preserving modify requests (identity-only name fixes,
+credit-election-only edits) are exempt, matching the modify-quote preview, which
+already answers `minimumStayValid: true` for them. Modify quote and policy check
+expose the same structure as advisory data; policy check first resolves omitted
+lodge context to the active default and rejects an unknown/inactive explicit
+lodge. All evaluators receive the resolved booking lodge, so a lodge-specific
+policy cannot silently fall back to the club default.
 
 This is intentionally not the approval workflow. No exception row is persisted,
 no `HOLD` capacity is reserved, no hard failure becomes reviewable, and no

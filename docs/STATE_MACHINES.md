@@ -20,12 +20,19 @@ AWAITING_REVIEW -> PENDING (quote accepted, #1254) or CONFIRMED/PAID or CANCELLE
 ### Minimum-stay exception foundation (#2363)
 
 A minimum-stay violation causes **no booking-state transition** in this release.
-Member booking create, group join, and ordinary date modification keep their
-blocking HTTP 400 behavior; quote and policy-check endpoints return advisory
-facts, and the booking wizard continues to show the existing message without
-advancing. The response now carries a frozen `exceptionReview` whose violations
-include the policy version, so the later workflow can present one combined
-review without reconstructing what the member encountered.
+Member booking create, member group join, and ordinary date modification (on the
+live `modify` route as well as `modify-dates`) keep their blocking HTTP 400
+behavior for non-admin actors. The public non-member group join now blocks at
+both of its stages: the staging request never reaches `GroupBookingJoin` (no
+token, no row, no email), and the verification step re-reads the current policy
+set and returns a 409 `minimum_stay` outcome instead of creating the non-login
+member, the PENDING child booking, the PENDING payment and the pay link — so a
+rule tightened during the link's 48-hour life fails closed rather than admitting
+the stay. Quote and policy-check endpoints return advisory facts, and the
+booking wizard continues to show the existing message without advancing. The
+response now carries a frozen `exceptionReview` whose violations include the
+policy version, so the later workflow can present one combined review without
+reconstructing what the member encountered.
 
 The `HOLD`/`NO_HOLD` value in that snapshot is policy metadata today. No
 exception request is persisted and no capacity is held or released because of

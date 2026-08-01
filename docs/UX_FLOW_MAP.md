@@ -29,8 +29,15 @@ using `{{booking-policies}}` show the configured choice in plain language.
 For members, this release deliberately keeps the existing journey: create,
 group join, and date-change mutations stop on minimum stay; quote/policy-check
 surfaces can describe the exact affected nights and policy, but the booking
-wizard does not offer a submit-for-review action or advance. No capacity is
-reserved from the configured `HOLD` value yet. The combined review interaction,
+wizard does not offer a submit-for-review action or advance. The edit panel's
+minimum-stay banner stays advisory and Save stays enabled — the server decides —
+and a refused save now names the rule and the affected nights in the panel
+rather than showing a generic failure. A non-member signing up to a group by
+its public link is told the stay is too short and to contact the organiser
+(only the organiser can move those dates); if the rules change between their
+request and their confirmation click, the confirmation page says so plainly and
+confirms nothing was booked or charged. No capacity is reserved from the
+configured `HOLD` value yet. The combined review interaction,
 durable request, approval, and reservation behavior belong to #2365. Capacity,
 date, authentication, subscription/membership, duplicate member-night,
 payment, privacy, and data-integrity failures never become exception choices.

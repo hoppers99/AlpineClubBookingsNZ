@@ -132,6 +132,7 @@ function makeBooking() {
     totalPriceCents: 10000,
     discountCents: 0,
     promoAdjustmentCents: 0,
+    promo: null,
     canEditNonMemberGuestNames: true,
     canFixNonMemberGuestNameTypos: true,
     editPolicy: {

@@ -115,8 +115,12 @@ rules — see
    any trigger day in the range. Existing policies start in **Hold** mode.
    This release stores, transfers, and publishes the choice, but a member who
    hits the rule is still stopped; submitting and approving exception requests
-   arrives in the follow-up review workflow. Admins can still override the rule
-   when booking on behalf.
+   arrives in the follow-up review workflow. The rule is applied wherever a
+   member commits to nights: making a booking, changing the dates of an existing
+   one, and joining a group booking — including a non-member signing up through
+   a group's public link, who is checked both when they ask to join and again
+   when they click the confirmation email, so a rule you tighten in between is
+   honoured. Admins can still override the rule when booking on behalf.
 3. The public `{{booking-policies}}` block states the selected capacity handling
    in plain language. Check that copy wherever your club publishes booking
    rules, especially before the exception-review workflow is enabled.

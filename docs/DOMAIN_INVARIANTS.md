@@ -2128,15 +2128,41 @@ eligibility, message, and `HOLD`/`NO_HOLD` capacity mode. Multiple eligible
 violations sort deterministically and aggregate to `HOLD` if any row says
 `HOLD`.
 
-That snapshot is transport data only in #2363. Booking create, group join, and
-ordinary member date modification still stop with HTTP 400; modify quote and
-policy check report the same facts without authorising a save. No request row is
-persisted, no capacity is reserved from `HOLD`, and evaluation never bypasses
-capacity, subscription, membership, linked-member-night, authentication,
-payment, privacy, date, or data-integrity gates. #2365 owns durable request
-state, approval/revalidation, capacity reservation, and the mixed soft/hard
-admission order. Every caller evaluates against the resolved booking lodge;
-unknown or inactive explicit lodge ids are refused rather than falling back.
+That snapshot is transport data only in #2363: it explains a refusal, it never
+authorises one. **Every** member-facing mutation path stops server-side for a
+non-admin actor, and the list is exact:
+
+- booking create (`POST /api/bookings`) — HTTP 400;
+- member group join (`POST /api/group-bookings/[code]/join`) — HTTP 400 with
+  code `MINIMUM_STAY_VIOLATION`;
+- public non-member group join, at **both** stages — staging
+  (`POST /api/group-bookings/[code]/join-request`) refuses with HTTP 400 before
+  a verification token, join row, or email exists, and verification
+  (`POST /api/group-bookings/join/verify/[token]`) re-reads the CURRENT policy
+  set and fails closed with HTTP 409 `minimum_stay` before any member, booking,
+  payment or pay link is created — an emailed link lives 48 hours, so a rule
+  tightened inside that window must not be honoured;
+- member date modification through the live edit surface
+  (`PUT /api/bookings/[id]/modify` → `modifyBookingBatch`) — HTTP 400, checked
+  before the guest plan, pricing and capacity. Its sibling
+  `PUT /api/bookings/[id]/modify-dates` (`modifyBookingDates`) carries the same
+  block. Price-preserving edits (an identity-only guest-name fix, a
+  credit-election-only edit) are exempt on the modify path, matching the
+  modify-quote preview's own `minimumStayValid: true` for those requests: they
+  cannot change a night of the stay, so the check could only block an unrelated
+  fix on a booking that already sat outside the policy.
+
+An ADMIN actor (Full Admin or Booking Officer) is never blocked on any of them,
+including admin-on-behalf edits. Advisory surfaces — modify quote, policy check,
+and the edit panel's banner — report the same facts without gating anything;
+the panel deliberately leaves Save enabled because the server is authoritative.
+No request row is persisted, no capacity is reserved from `HOLD`, and evaluation
+never bypasses capacity, subscription, membership, linked-member-night,
+authentication, payment, privacy, date, or data-integrity gates. #2365 owns
+durable request state, approval/revalidation, capacity reservation, and the
+mixed soft/hard admission order. Every caller evaluates against the resolved
+booking lodge; unknown or inactive explicit lodge ids are refused rather than
+falling back.
 
 Minimum-stay policy administration is versioned. Every create supplies
 `capacityMode`; every update/toggle/delete carries the loaded `version` and a
