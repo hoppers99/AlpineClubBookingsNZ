@@ -165,4 +165,27 @@ describe("public PageContent token rendering", () => {
     expect(booking).toContain("No public information is currently available.");
     expect(cancellation).toContain("No public information is currently available.");
   });
+
+  it("explains exception capacity handling in public minimum-stay copy", () => {
+    const html = renderToStaticMarkup(
+      <BookingPolicyToken
+        policy={{
+          lodge: null,
+          hold: null,
+          periods: [],
+          minimumStays: [{
+            name: "Winter weekends",
+            dateRange: "1 Jun 2026 to 30 Sep 2026",
+            minimumNights: 2,
+            triggerDays: "Saturday",
+            capacityHandling:
+              "An exception request does not reserve capacity until the club approves it.",
+          }],
+          groupDiscount: null,
+        }}
+      />,
+    );
+
+    expect(html).toContain("An exception request does not reserve capacity");
+  });
 });

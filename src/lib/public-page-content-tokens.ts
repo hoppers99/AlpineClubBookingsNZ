@@ -44,7 +44,13 @@ export type PublicBookingPolicy = {
   lodge: PublicTokenLodge | null;
   hold: string | null;
   periods: Array<{ name: string; dateRange: string; hold: string | null }>;
-  minimumStays: Array<{ name: string; dateRange: string; minimumNights: number; triggerDays: string }>;
+  minimumStays: Array<{
+    name: string;
+    dateRange: string;
+    minimumNights: number;
+    triggerDays: string;
+    capacityHandling: string;
+  }>;
   groupDiscount: string | null;
 };
 
@@ -548,7 +554,7 @@ export async function loadPublicBookingPolicy(slug?: string): Promise<PublicBook
         ...(lodge ? { OR: [{ lodgeId: lodge.id }, { lodgeId: null }] } : { lodgeId: null }),
       },
       orderBy: [{ startDate: "asc" }, { name: "asc" }],
-      select: { name: true, startDate: true, endDate: true, minimumNights: true, triggerDays: true, lodgeId: true },
+      select: { name: true, startDate: true, endDate: true, minimumNights: true, triggerDays: true, capacityMode: true, lodgeId: true },
     }),
     prisma.groupDiscountSetting.findUnique({
       where: { id: "default" },
@@ -575,6 +581,9 @@ export async function loadPublicBookingPolicy(slug?: string): Promise<PublicBook
       triggerDays: policy.triggerDays.length === 0
         ? "all check-in days"
         : policy.triggerDays.map((day) => ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][day] ?? "").filter(Boolean).join(", "),
+      capacityHandling: policy.capacityMode === "HOLD"
+        ? "If an exception is requested, the requested capacity is held while the club reviews it."
+        : "An exception request does not reserve capacity until the club approves it.",
     })),
     // Type-neutral copy (#1933, E7): the E4 re-key means "member rate" is no
     // longer a single binary, so describe the outcome without naming a type.

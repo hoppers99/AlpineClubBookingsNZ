@@ -486,11 +486,14 @@ describe("public PageContent token view models", () => {
   it("summarizes only customer-facing booking policy fields", async () => {
     mocks.defaults.mockResolvedValue({ nonMemberHoldEnabled: true, nonMemberHoldDays: 7, waitlistCrossLodgeOrder: "MERGED" });
     mocks.periods.mockResolvedValue([{ name: "School holidays", startDate: new Date("2026-09-01"), endDate: new Date("2026-09-10"), nonMemberHoldEnabled: false, nonMemberHoldDays: 3, lodgeId: null, cancellationRules: [{ secret: true }] }]);
-    mocks.minimumStays.mockResolvedValue([{ name: "Weekend", startDate: new Date("2026-07-01"), endDate: new Date("2026-08-01"), minimumNights: 2, triggerDays: [6], lodgeId: null }]);
+    mocks.minimumStays.mockResolvedValue([{ name: "Weekend", startDate: new Date("2026-07-01"), endDate: new Date("2026-08-01"), minimumNights: 2, triggerDays: [6], capacityMode: "NO_HOLD", lodgeId: null }]);
     mocks.discount.mockResolvedValue({ enabled: true, minGroupSize: 5, summerOnly: true, id: "internal" });
     const policy = await loadPublicBookingPolicy();
     expect(policy).toEqual(expect.objectContaining({ hold: expect.stringContaining("7 days"), groupDiscount: expect.stringContaining("5") }));
     expect(policy?.minimumStays[0]?.triggerDays).toBe("Saturday");
+    expect(policy?.minimumStays[0]?.capacityHandling).toContain(
+      "does not reserve capacity until",
+    );
     expect(JSON.stringify(policy)).not.toContain("waitlistCrossLodgeOrder");
     expect(JSON.stringify(policy)).not.toContain("secret");
     expect(JSON.stringify(policy)).not.toContain("internal");

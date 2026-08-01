@@ -33,6 +33,10 @@ interface MinStayDraft {
   endDate: string
   triggerDays: number[]
   minimumNights: number
+  /** Empty only for a new row: the admin must make an explicit decision. */
+  capacityMode: "" | "HOLD" | "NO_HOLD"
+  /** Immutable CAS token carried by the open editor, not an editable field. */
+  version: number | null
 }
 
 /**
@@ -48,6 +52,8 @@ const NEW_MIN_STAY_DRAFT: MinStayDraft = {
   endDate: "",
   triggerDays: [6], // default Saturday
   minimumNights: 2,
+  capacityMode: "",
+  version: null,
 }
 
 function toDraft(policy: MinStayPolicy): MinStayDraft {
@@ -57,6 +63,8 @@ function toDraft(policy: MinStayPolicy): MinStayDraft {
     endDate: policy.endDate.split("T")[0],
     triggerDays: [...policy.triggerDays].sort((a, b) => a - b),
     minimumNights: policy.minimumNights,
+    capacityMode: policy.capacityMode,
+    version: policy.version,
   }
 }
 
@@ -66,6 +74,7 @@ function draftsEqual(a: MinStayDraft, b: MinStayDraft) {
     a.startDate === b.startDate &&
     a.endDate === b.endDate &&
     a.minimumNights === b.minimumNights &&
+    a.capacityMode === b.capacityMode &&
     // Both sides are kept sorted ascending, so index-wise comparison is a set
     // comparison here — ticking a day and unticking it again is not a change.
     a.triggerDays.length === b.triggerDays.length &&
@@ -106,7 +115,8 @@ function MinStayForm({
       Boolean(draft.name) &&
       Boolean(draft.startDate) &&
       Boolean(draft.endDate) &&
-      draft.triggerDays.length > 0,
+      draft.triggerDays.length > 0 &&
+      draft.capacityMode !== "",
   })
 
   const { draft, saving, dirty, valid, error } = section
@@ -179,6 +189,30 @@ function MinStayForm({
               onChange={(e) => section.setDraft({ endDate: e.target.value })}
             />
           </div>
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="msCapacityMode">Exception capacity handling</Label>
+          <select
+            id="msCapacityMode"
+            value={draft.capacityMode}
+            onChange={(event) =>
+              section.setDraft({
+                capacityMode: event.target.value as MinStayDraft["capacityMode"],
+              })
+            }
+            className="h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+          >
+            <option value="" disabled>
+              Select how capacity is handled
+            </option>
+            <option value="HOLD">Hold requested capacity during review</option>
+            <option value="NO_HOLD">Do not hold capacity until approval</option>
+          </select>
+          <p className="text-xs text-muted-foreground">
+            This applies when a booking needs an approved exception to this
+            minimum-stay rule. New policies have no automatic choice.
+          </p>
         </div>
 
         <div className="space-y-2">
@@ -358,6 +392,8 @@ export function MinimumNightStaySection() {
           endDate: draft.endDate,
           triggerDays: draft.triggerDays,
           minimumNights: draft.minimumNights,
+          capacityMode: draft.capacityMode,
+          ...(editingMinStayId ? { version: draft.version } : {}),
           // Partition is set at creation; edits keep the row's partition.
           ...(editingMinStayId ? {} : scopeLodgeId ? { lodgeId: scopeLodgeId } : {}),
         }),
@@ -403,7 +439,13 @@ export function MinimumNightStaySection() {
     [editingMinStayId, scopeLodgeId, fetchMinStay],
   )
 
-  async function handleDeleteMinStay(id: string) {
+  // The synchronous ref is the real guard for every direct row write. A
+  // state-only disabled button cannot stop two events dispatched before React
+  // commits the first state update.
+  const rowActionRef = useRef(false)
+  const [rowActionId, setRowActionId] = useState<string | null>(null)
+
+  async function handleDeleteMinStay(policy: MinStayPolicy) {
     if (
       !confirm(
         "Delete this minimum stay policy? It stops applying immediately and stays listed as inactive, so the change is auditable.",
@@ -411,13 +453,29 @@ export function MinimumNightStaySection() {
     ) {
       return
     }
+    if (rowActionRef.current) return
+    rowActionRef.current = true
+    setRowActionId(policy.id)
     try {
-      const res = await fetch(`/api/admin/booking-policies/minimum-stay/${id}`, { method: "DELETE" })
-      if (!res.ok) throw new Error("Failed to deactivate")
-      fetchMinStay()
+      const res = await fetch(
+        `/api/admin/booking-policies/minimum-stay/${policy.id}`,
+        {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ version: policy.version }),
+        },
+      )
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || "Failed to deactivate")
+      }
+      await fetchMinStay()
       setSuccess("Minimum stay policy deleted — it is listed as inactive")
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error")
+    } finally {
+      rowActionRef.current = false
+      setRowActionId(null)
     }
   }
 
@@ -432,30 +490,33 @@ export function MinimumNightStaySection() {
    *
    * The ref is the real guard: it is set synchronously, so a genuine
    * double-click dispatched inside one tick — where both handlers close over the
-   * same pre-update state — still only fires once. `togglingId` is the visible
+   * same pre-update state — still only fires once. `rowActionId` is the visible
    * half, disabling the button for the round trip, and the refresh is awaited so
    * it stays disabled until the row it re-reads is on screen.
    */
-  const togglingRef = useRef(false)
-  const [togglingId, setTogglingId] = useState<string | null>(null)
-
   async function handleToggleMinStay(policy: MinStayPolicy) {
-    if (togglingRef.current) return
-    togglingRef.current = true
-    setTogglingId(policy.id)
+    if (rowActionRef.current) return
+    rowActionRef.current = true
+    setRowActionId(policy.id)
     try {
       const res = await fetch(`/api/admin/booking-policies/minimum-stay/${policy.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ active: !policy.active }),
+        body: JSON.stringify({
+          active: !policy.active,
+          version: policy.version,
+        }),
       })
-      if (!res.ok) throw new Error("Failed to update")
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || "Failed to update")
+      }
       await fetchMinStay()
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error")
     } finally {
-      togglingRef.current = false
-      setTogglingId(null)
+      rowActionRef.current = false
+      setRowActionId(null)
     }
   }
 
@@ -550,7 +611,8 @@ export function MinimumNightStaySection() {
                   </CardTitle>
                   <CardDescription>
                     Require a minimum number of nights when a booking touches specific days of the week
-                    within a date range. Admins can override these rules.
+                    within a date range. Each policy says whether an exception
+                    request holds the requested capacity while it is reviewed.
                     {scopeLodgeName ? (
                       <>
                         {" "}
@@ -609,12 +671,12 @@ export function MinimumNightStaySection() {
                               describeReason={false}
                               variant="outline"
                               size="sm"
-                              disabled={togglingId === policy.id}
+                              disabled={rowActionId === policy.id}
                               onClick={() => void handleToggleMinStay(policy)}
                             >
                               {policy.active ? "Deactivate" : "Activate"}
                             </ViewOnlyActionButton>
-                            <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="outline" size="sm" onClick={() => startEditMinStay(policy)}>
+                            <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="outline" size="sm" disabled={rowActionId === policy.id} onClick={() => startEditMinStay(policy)}>
                               Edit
                             </ViewOnlyActionButton>
                             {/*
@@ -631,7 +693,7 @@ export function MinimumNightStaySection() {
                               say what a soft delete actually leaves behind.
                             */}
                             {policy.active && (
-                              <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="destructive" size="sm" onClick={() => handleDeleteMinStay(policy.id)}>
+                              <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="destructive" size="sm" disabled={rowActionId === policy.id} onClick={() => void handleDeleteMinStay(policy)}>
                                 Delete
                               </ViewOnlyActionButton>
                             )}
@@ -646,6 +708,12 @@ export function MinimumNightStaySection() {
                             Min <strong>{policy.minimumNights}</strong> nights
                           </span>
                         </div>
+                        <p className="mt-2 text-sm text-muted-foreground">
+                          {policy.capacityMode === "HOLD"
+                            ? "Exception requests hold the requested capacity during review."
+                            : "Exception requests do not hold capacity until approval."}{" "}
+                          Revision {policy.version}.
+                        </p>
                       </CardContent>
                     </Card>
                   ))}

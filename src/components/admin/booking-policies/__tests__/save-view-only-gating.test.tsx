@@ -251,6 +251,8 @@ describe("MinimumNightStaySection Save gating (#2142, #2143)", () => {
     endDate: "2026-09-30T00:00:00.000Z",
     triggerDays: [6],
     minimumNights: 2,
+    capacityMode: "HOLD",
+    version: 4,
     active: true,
   };
 
@@ -260,7 +262,9 @@ describe("MinimumNightStaySection Save gating (#2142, #2143)", () => {
     return fetchMock;
   }
 
-  async function openForm() {
+  async function openForm(
+    options: { capacityMode?: "HOLD" | "NO_HOLD" | null } = {},
+  ) {
     stub([]);
     const { rerender } = render(<MinimumNightStaySection />);
     await waitFor(() =>
@@ -276,6 +280,13 @@ describe("MinimumNightStaySection Save gating (#2142, #2143)", () => {
     fireEvent.change(screen.getByLabelText("End Date"), {
       target: { value: "2026-09-30" },
     });
+    const capacityMode =
+      options.capacityMode === undefined ? "HOLD" : options.capacityMode;
+    if (capacityMode) {
+      fireEvent.change(screen.getByLabelText("Exception capacity handling"), {
+        target: { value: capacityMode },
+      });
+    }
     return () => rerender(<MinimumNightStaySection />);
   }
 
@@ -304,6 +315,15 @@ describe("MinimumNightStaySection Save gating (#2142, #2143)", () => {
   it("enables Create Policy for an edit-capable admin", async () => {
     await openForm();
     expect(createButton().disabled).toBe(false);
+  });
+
+  it("does not enable Create until capacity handling is chosen explicitly", async () => {
+    await openForm({ capacityMode: null });
+    expect(createButton().disabled).toBe(true);
+    expect(
+      (screen.getByLabelText("Exception capacity handling") as HTMLSelectElement)
+        .value,
+    ).toBe("");
   });
 
   it("disables Create Policy when the actor is narrowed mid-edit", async () => {
@@ -641,6 +661,9 @@ describe("open-editor save failures reach the section feedback (#2142)", () => {
     });
     fireEvent.change(screen.getByLabelText("End Date"), {
       target: { value: "2026-09-30" },
+    });
+    fireEvent.change(screen.getByLabelText("Exception capacity handling"), {
+      target: { value: "HOLD" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Create Policy" }));
   }
@@ -2020,6 +2043,8 @@ describe("row toggles are guarded against a double-click (#2143)", () => {
     endDate: "2026-09-30T00:00:00.000Z",
     triggerDays: [6],
     minimumNights: 2,
+    capacityMode: "HOLD",
+    version: 4,
     active: true,
   };
 
@@ -2085,6 +2110,9 @@ describe("row toggles are guarded against a double-click (#2143)", () => {
 
     await waitFor(() => expect(writeCalls(fetchMock).length).toBeGreaterThan(0));
     expect(writeCalls(fetchMock)).toHaveLength(1);
+    expect(
+      JSON.parse(String(writeCalls(fetchMock)[0][1]?.body)),
+    ).toEqual({ active: false, version: 4 });
   });
 
   // #2142 review: an active minimum-stay row used to carry TWO buttons both
