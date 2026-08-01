@@ -25,9 +25,11 @@ deeper reference for what each category contains and the import safety model.
   categories or resolve renames → confirm to apply. The server takes a
   `pg_dump` backup first, then in ONE transaction takes the single-flight
   advisory lock, re-plans against in-lock state, refuses on any drift, and
-  applies; success and refused/failed attempts are both audited. Import
-  **never deletes**, so a "restore" won't remove anything added since the
-  export; the pre-apply backup is the true rollback.
+  applies; success and refused/failed attempts are both audited. Ordinary
+  categories **never delete**. The deliberate exception is minimum-stay booking
+  policy transfer: that category replaces the complete exported policy set and
+  previews every deletion before Apply. The pre-apply backup is the true
+  rollback.
 - **Validation blocks apply:** every row is strictly validated at plan time —
   malformed dates, unknown enum values, non-integer/negative money, and
   invalid or reserved page slugs (the same rules the admin page editor
@@ -75,7 +77,7 @@ deeper reference for what each category contains and the import safety model.
   rejection, and the import reads the files actually present (files-first).
   "Reseal edited bundle" regenerates the manifest so an edited bundle validates
   clean again. Only structural/safety problems (not a zip, missing/invalid
-  manifest, a newer format version, resource caps — enforced BEFORE inflation —
+  manifest, an unsupported format version, resource caps — enforced BEFORE inflation —
   or unsafe entry paths) are hard-refused. Re-zip mistakes are forgiven (a
   single wrapper folder is stripped, macOS cruft ignored) and anything
   discarded or uncovered warns loudly: a file outside the wrapper, or files
@@ -184,8 +186,9 @@ deeper reference for what each category contains and the import safety model.
   (registered); `ClubTheme` is registered in the site-content category and listed
   in `SINGLETON_MODELS_REGISTERED_ELSEWHERE`.
 
-  **No format-version bump for the three additions.** `CONFIG_TRANSFER_FORMAT_VERSION`
-  stays `2`. Adding a model is purely additive and tolerated in both directions:
+  **Those three additions did not require a version bump.** At the time,
+  `CONFIG_TRANSFER_FORMAT_VERSION` stayed `2`. Adding a model was purely
+  additive and tolerated in both directions:
   a post-#2200 bundle imported by a pre-#2200 app (both v2) carries three extra
   `club-settings/*.json` files the older importer simply never reads (it iterates
   its own `SINGLETONS` list), and a pre-#2200 bundle imported by a post-#2200 app
@@ -193,8 +196,15 @@ deeper reference for what each category contains and the import safety model.
   untouched. This is unlike the v1→v2 bump (#2187), which was forced by an
   INCOMPATIBLE column collapse on `ClubTheme` that would have silently discarded
   data; adding models loses nothing in either direction, so a bump would only
-  gratuitously reject otherwise-importable v2 bundles (`readBundle` rejects any
-  `formatVersion != CONFIG_TRANSFER_FORMAT_VERSION`).
+  gratuitously reject otherwise-importable v2 bundles.
+
+  **Minimum-stay replace semantics require format version 3 (#2363).** A v2
+  reader does not understand the destructive `booking-policies` category, and a
+  v3 reader must not silently treat an older bundle as a complete policy set.
+  Compatibility is therefore exact: `readBundle` rejects any
+  `formatVersion != CONFIG_TRANSFER_FORMAT_VERSION`. Re-export with the current
+  app before importing; resealing changes checksums, not the bundle's semantic
+  version.
 
   **A singleton the source club never saved is still exported (#2171).** Every
   entry in `SINGLETONS` always produces its JSON file; where the `id = "default"`
@@ -269,6 +279,18 @@ deeper reference for what each category contains and the import safety model.
     older bundle that omits a singleton still imports and leaves that singleton
     untouched — covered by a test. The same reasoning carried the #2200 model
     additions (see "Model-level completeness" above).
+- **booking-policies** - the complete club-wide and lodge-scoped minimum-stay
+  policy set in `booking-policies/minimum-stay.csv`. This is the one deliberate
+  replace-set category: a policy omitted from the file is previewed as
+  **Deleted** and removed on Apply. The file must have this exact ordered header:
+  `scope,name,startDate,endDate,triggerDays,minimumNights,capacityMode,active`.
+  `scope` is either `club-wide` or `lodge:<slug>`; the prefix keeps a real lodge
+  whose slug is `club-wide` distinct from the club-wide scope. Names are
+  preserved exactly, including legal leading/trailing spaces and quotes, but
+  must contain a non-whitespace character and be at most 200 characters. A
+  header-only file is the explicit way to clear the set. An empty, malformed,
+  missing-column, extra-column, or reordered-header file blocks Apply and can
+  never be interpreted as a clear.
 - **lodge-config** — lodges, rooms, beds, seasons, season rates, lodge
   instructions (content images bundled + remapped), and chore templates. Each
   lodge is a **self-contained folder**, `lodge-config/lodges/<slug>/` with a
@@ -355,10 +377,11 @@ deeper reference for what each category contains and the import safety model.
   carries ≥1 component whose amounts sum **exactly** to the fee total. An
   annual-fee row must therefore always travel with its full component set (as
   the export always emits), and components whose parent fee is absent from the
-  bundle are a clean error. Apply is **upsert-only** (like every category):
+  bundle are a clean error. Apply is **upsert-only** (like every ordinary
+  category):
   joining fees and annual fees upsert by their natural key; components upsert by
   `(parent fee, label)`. A component the bundle drops on an existing install is
-  **not** deleted (config transfer never deletes) — remove a component from a
+  **not** deleted (this category never deletes) — remove a component from a
   fee on the Fees page, not by re-import.
 
   **Precedence over the #1931 item-code path:** when a bundle carries
@@ -429,10 +452,10 @@ Intentionally excluded / deferred:
   in the attack-surface doc).
 - Per-lodge capacity / `LodgeSettings` — the `id="default"`-vs-`lodgeId` storage
   duality is unsafe to round-trip; set it on the lodge page (ADR-001).
-- Cancellation / booking-period / minimum-stay policies — these use
-  replace-the-whole-tier-set semantics that conflict with the upsert-only model
-  and touch refund maths, so they are deferred rather than risk a subtly wrong
-  refund configuration.
+- Cancellation and booking-period policies remain deferred. Minimum-stay
+  policies now travel through the dedicated `booking-policies` category above;
+  cancellation policy still touches refund maths and booking periods have not
+  adopted its reviewed replace-set contract.
 - Xero contact-group rules / accepted groups — FK to member types / age-tier
   settings and are Xero-org-specific.
 
@@ -514,8 +537,9 @@ validated pipeline (`src/lib/config-transfer/bootstrap-import.ts`).
   nothing to protect; the waiver requires a branded proof object only the
   positive empty-target probe can mint, so no other caller compiles. Every
   other ADR-002 safeguard (validation, allowlist, DMMF type-checks,
-  single-flight lock, fingerprint drift refusal, atomic upsert-only
-  transaction, audit) still applies.
+  single-flight lock, fingerprint drift refusal, atomic transaction, audit)
+  still applies. On a fresh target the minimum-stay replace-set has nothing to
+  delete; malformed or ambiguous policy input still refuses the whole import.
 - **Audited + idempotent.** A success writes a `configuration.bootstrap_imported`
   audit row in the apply transaction (system/deploy actor, bundle sha256,
   outcome; shown as "System" in the admin audit log); a second boot with the

@@ -1,8 +1,8 @@
-import { strToU8 } from "fflate";
+import { strFromU8, strToU8 } from "fflate";
 import type { PolicyExceptionCapacityMode } from "@prisma/client";
 
 import type { BundleEntry } from "../bundle";
-import { serialiseCsv } from "../csv";
+import { parseCsv, serialiseCsv } from "../csv";
 import type { CategoryExporter, ExportContext } from "../export-types";
 import {
   changedFields,
@@ -20,7 +20,7 @@ import {
   folderLodgeSlug,
   lodgeFolderSegments,
 } from "./lodge-config";
-import { RowValidator, readCsvRows, type Valid } from "../values";
+import { asStr, RowValidator, type Valid } from "../values";
 
 // Unlike the other upsert-only config-transfer entities, minimum-stay policy is
 // a complete replace-set. A header-only file intentionally clears the set, and
@@ -78,20 +78,25 @@ type CurrentPolicy = PolicyData & {
   id: string;
   name: string;
   lodgeId: string | null;
-  scope: string;
+  scope: "club-wide" | `lodge:${string}`;
   version: number;
 };
 
 type ParsedPolicy = {
   key: string;
   displayKey: string;
-  scope: string;
+  scope: "club-wide" | `lodge:${string}`;
+  lodgeSlug: string | null;
   name: string;
   data: PolicyData;
 };
 
 function naturalKey(scope: string, name: string): string {
   return `${scope}\u0000${name}`;
+}
+
+function lodgeScope(slug: string): `lodge:${string}` {
+  return `lodge:${slug}`;
 }
 
 function toDateOnly(value: Date): string {
@@ -153,15 +158,16 @@ async function loadCurrent(db: ReadDb): Promise<{
   const byKey = new Map<string, CurrentPolicy>();
   const errors: string[] = [];
   for (const policy of policies) {
-    const scope = policy.lodgeId
+    const slug = policy.lodgeId
       ? lodgeSlugById.get(policy.lodgeId)
-      : "club-wide";
-    if (!scope) {
+      : null;
+    if (policy.lodgeId && !slug) {
       errors.push(
         `Target minimum-stay policy "${policy.name}" references missing lodge id ${policy.lodgeId}; repair the data before transfer.`,
       );
       continue;
     }
+    const scope = slug ? lodgeScope(slug) : "club-wide";
     const key = naturalKey(scope, policy.name);
     if (byKey.has(key)) {
       errors.push(
@@ -184,11 +190,36 @@ function parsePolicies(
   errors: string[],
 ): ParsedPolicy[] {
   const parsed: ParsedPolicy[] = [];
+  const bytes = ctx.files.get(MINIMUM_STAY_POLICIES_FILE);
+  if (!bytes) {
+    errors.push(`${MINIMUM_STAY_POLICIES_FILE} is missing`);
+    return parsed;
+  }
+  let rows: Record<string, string>[];
+  try {
+    const csv = parseCsv(strFromU8(bytes), { strictColumnCount: true });
+    const exactHeader =
+      csv.headers.length === FIELDS.length &&
+      csv.headers.every((header, index) => header === FIELDS[index]);
+    if (!exactHeader) {
+      errors.push(
+        `${MINIMUM_STAY_POLICIES_FILE}: header must be exactly ${FIELDS.join(",")}`,
+      );
+      return parsed;
+    }
+    rows = csv.rows;
+  } catch (error) {
+    errors.push(
+      `${MINIMUM_STAY_POLICIES_FILE}: ${error instanceof Error ? error.message : "invalid CSV"}`,
+    );
+    return parsed;
+  }
+
   const seen = new Set<string>();
-  readCsvRows(ctx.files, MINIMUM_STAY_POLICIES_FILE).forEach((raw, index) => {
+  rows.forEach((raw, index) => {
     const v = new RowValidator(MINIMUM_STAY_POLICIES_FILE, index, errors);
-    const scope = v.required("scope", raw.scope);
-    const name = v.required("name", raw.name);
+    const scopeCell = v.required("scope", raw.scope);
+    const name = asStr(raw.name);
     const startDate = v.date("startDate", raw.startDate);
     const endDate = v.date("endDate", raw.endDate);
     const triggerDays = v.custom(
@@ -204,9 +235,34 @@ function parsePolicies(
     );
     const active = v.bool("active", raw.active);
     let rowValid = v.ok;
-    if (scope !== "club-wide" && !knownLodgeSlugs.has(scope)) {
+    if (name.trim().length === 0) {
       errors.push(
-        `${MINIMUM_STAY_POLICIES_FILE} row ${index + 2}: scope — lodge slug "${scope}" does not exist in the target or selected lodge-config bundle`,
+        `${MINIMUM_STAY_POLICIES_FILE} row ${index + 2}: name — must not be blank`,
+      );
+      rowValid = false;
+    }
+    if (name.length > 200) {
+      errors.push(
+        `${MINIMUM_STAY_POLICIES_FILE} row ${index + 2}: name — must be at most 200 characters`,
+      );
+      rowValid = false;
+    }
+    let scope: ParsedPolicy["scope"] = "club-wide";
+    let lodgeSlug: string | null = null;
+    if (scopeCell === "club-wide") {
+      scope = "club-wide";
+    } else if (scopeCell.startsWith("lodge:") && scopeCell.length > 6) {
+      lodgeSlug = scopeCell.slice(6);
+      scope = lodgeScope(lodgeSlug);
+    } else {
+      errors.push(
+        `${MINIMUM_STAY_POLICIES_FILE} row ${index + 2}: scope — expected "club-wide" or "lodge:<slug>"`,
+      );
+      rowValid = false;
+    }
+    if (lodgeSlug !== null && !knownLodgeSlugs.has(lodgeSlug)) {
+      errors.push(
+        `${MINIMUM_STAY_POLICIES_FILE} row ${index + 2}: scope — lodge slug "${lodgeSlug}" does not exist in the target or selected lodge-config bundle`,
       );
       rowValid = false;
     }
@@ -235,6 +291,7 @@ function parsePolicies(
       key,
       displayKey: `${scope} / ${name}`,
       scope,
+      lodgeSlug,
       name,
       data: {
         startDate,
@@ -296,6 +353,12 @@ async function planBookingPolicies(ctx: PlanContext): Promise<CategoryPlanResult
   const knownLodgeSlugs = new Set(current.lodgeIdBySlug.keys());
   for (const slug of bundledLodgeSlugs(ctx)) knownLodgeSlugs.add(slug);
   const parsed = parsePolicies(ctx, knownLodgeSlugs, errors);
+  // A replace-set may classify deletions only after the ENTIRE incoming set is
+  // structurally and semantically valid. Otherwise an empty/malformed file
+  // could look like an intentional clear in the preview.
+  if (errors.length > 0) {
+    return { items, warnings, errors, fingerprintParts };
+  }
   const parsedKeys = new Set(parsed.map((policy) => policy.key));
 
   for (const policy of [...current.byKey.values()].sort((a, b) => a.id.localeCompare(b.id))) {
@@ -304,9 +367,9 @@ async function planBookingPolicies(ctx: PlanContext): Promise<CategoryPlanResult
     );
   }
   for (const policy of parsed) {
-    const lodgeId = policy.scope === "club-wide"
+    const lodgeId = policy.lodgeSlug === null
       ? null
-      : current.lodgeIdBySlug.get(policy.scope) ?? null;
+      : current.lodgeIdBySlug.get(policy.lodgeSlug) ?? null;
     fingerprintParts.push(
       `minimum-stay-policy-lodge:${policy.scope}:${lodgeId ?? "pending"}`,
     );
@@ -351,10 +414,10 @@ async function applyBookingPolicies(ctx: ApplyContext): Promise<CategoryApplyRes
 
   for (const policy of parsed) {
     const existing = current.byKey.get(policy.key) ?? null;
-    const lodgeId = policy.scope === "club-wide"
+    const lodgeId = policy.lodgeSlug === null
       ? null
-      : current.lodgeIdBySlug.get(policy.scope);
-    if (policy.scope !== "club-wide" && !lodgeId) {
+      : current.lodgeIdBySlug.get(policy.lodgeSlug);
+    if (policy.lodgeSlug !== null && !lodgeId) {
       throw new Error(`Lodge ${policy.scope} was not created before booking policies`);
     }
     if (!existing) {

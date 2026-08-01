@@ -71,11 +71,17 @@ parent's natural key (a bed row carries its lodge slug + room name).
   settings singletons.
 - **Key-weak entities** (no enforced unique) are exported as **document
   entities** and matched by candidate fields (name, date range, lodge scope):
-  Season, BookingPeriod, MinimumStayPolicy, ChoreTemplate,
+  Season, BookingPeriod, ChoreTemplate,
   InductionChecklistTemplate (with sections/items nested in its document),
   XeroContactGroupRule, CommitteeMember. A confident candidate match
   upserts; anything ambiguous is deferred to the interactive resolution step
   (ADR-002) — the importer never guesses.
+
+  `MinimumStayPolicy` remains key-weak in the database but is the reviewed
+  exception to candidate matching (#2363): its complete replace-set uses exact
+  `(scope, name)` identity, with `scope` encoded as `club-wide` or
+  `lodge:<slug>`. Duplicate identities in either the bundle or target block the
+  whole policy plan rather than opening a match picker or guessing.
 
 Renames are handled by the interactive matcher (the user can point an
 apparently-new row at an existing one); no separate stable alias identifier
@@ -94,10 +100,19 @@ upload is streamed and capped (~50 MB for the MVP).
 
 ### Version tolerance
 
-Import maps by column/field name: missing columns take defaults, unknown
-columns are ignored with a warning surfaced in the plan. The manifest's
-format version gates structural changes: same major → proceed;
-newer-major bundle into an older app → refuse with a clear message.
+Ordinary import categories map by column/field name: missing columns take
+defaults, and unknown columns are ignored with a warning surfaced in the plan.
+The minimum-stay replace-set file is deliberately stricter: because omission
+means deletion, `booking-policies/minimum-stay.csv` requires its exact ordered
+header and any empty, malformed, missing, extra, or reordered schema blocks the
+entire policy plan. Only a valid header-only file means "clear this set".
+
+The manifest version is an exact capability boundary, not a semver range:
+`readBundle` accepts only `formatVersion === CONFIG_TRANSFER_FORMAT_VERSION`.
+Version 3 introduces the destructive minimum-stay replace-set category, so both
+v3-into-v2 and v2-into-v3 are refused with a clear re-export message. That keeps
+an old reader from overlooking deletions and a new reader from interpreting an
+old bundle as a complete policy set.
 
 ### Category layout (per the feature issue)
 
@@ -147,5 +162,5 @@ Considerations).
   import reads the files actually present (files-first). A "reseal" action
   regenerates the manifest after edits. Bundles are untrusted regardless and
   fully validated + sanitised on import; only structural/safety problems (not a
-  zip, missing/invalid manifest, newer format version, size/count caps, unsafe
+  zip, missing/invalid manifest, unsupported format version, size/count caps, unsafe
   entry paths) are hard-refused (ADR-002).

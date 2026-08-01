@@ -80,8 +80,8 @@ export const SITE_CONTENT_FIELDS = ["key", "contentHtml"] as const;
 // #2187: only the three seed columns cross the wire. The four former brand
 // columns (the charcoal/ridge/mist/snow surfaces) are dead to code and derived
 // at render time from the substrate, so a bundle neither emits nor imports them.
-// CONFIG_TRANSFER_FORMAT_VERSION is 2 and the importer rejects any v1 bundle
-// that still carries them.
+// Format v2 introduced this shape; the exact-version importer rejects every
+// older bundle that still carries the removed columns.
 export const CLUB_THEME_FIELDS = [
   "brandGold",
   "brandDeep",

@@ -64,7 +64,7 @@ function planContext(
 
 function csvRow(overrides: Record<string, string> = {}): string {
   const row = {
-    scope: "tukino",
+    scope: "lodge:tukino",
     name: "Winter weekends",
     startDate: "2026-06-01",
     endDate: "2026-09-30",
@@ -98,7 +98,7 @@ describe("config-transfer booking policies (#2363)", () => {
     expect(parsed.headers).not.toContain("version");
     expect(parsed.rows).toEqual([
       expect.objectContaining({
-        scope: "tukino",
+        scope: "lodge:tukino",
         triggerDays: "5|6",
         capacityMode: "HOLD",
       }),
@@ -153,15 +153,15 @@ describe("config-transfer booking policies (#2363)", () => {
     ];
     const csv = csvRow({ minimumNights: "3" }) +
       "club-wide,Club rule,2026-06-01,2026-09-30,5|6,2,NO_HOLD,true\n" +
-      "tukino,New rule,2027-01-01,2027-02-01,0,2,NO_HOLD,false\n";
+      "lodge:tukino,New rule,2027-01-01,2027-02-01,0,2,NO_HOLD,false\n";
     const plan = await bookingPoliciesImporter.plan(planContext(csv, db(target)));
     expect(plan.errors).toEqual([]);
     expect(plan.warnings.join(" ")).toMatch(/complete replace-set.*deleted/i);
     expect(plan.items).toEqual(expect.arrayContaining([
-      expect.objectContaining({ key: "tukino / Winter weekends", action: "update" }),
+      expect.objectContaining({ key: "lodge:tukino / Winter weekends", action: "update" }),
       expect.objectContaining({ key: "club-wide / Club rule", action: "unchanged" }),
-      expect.objectContaining({ key: "tukino / New rule", action: "create" }),
-      expect.objectContaining({ key: "tukino / Omitted policy", action: "delete" }),
+      expect.objectContaining({ key: "lodge:tukino / New rule", action: "create" }),
+      expect.objectContaining({ key: "lodge:tukino / Omitted policy", action: "delete" }),
     ]));
   });
 
@@ -174,9 +174,133 @@ describe("config-transfer booking policies (#2363)", () => {
       const plan = await bookingPoliciesImporter.plan(ctx);
       expect(plan.errors).toEqual([]);
       expect(plan.items).toEqual([
-        expect.objectContaining({ action: "delete", key: "tukino / Winter weekends" }),
+        expect.objectContaining({ action: "delete", key: "lodge:tukino / Winter weekends" }),
       ]);
     }
+  });
+
+  it.each([
+    ["empty file", ""],
+    [
+      "wrong header order",
+      "name,scope,startDate,endDate,triggerDays,minimumNights,capacityMode,active\n",
+    ],
+    [
+      "missing header column",
+      "scope,name,startDate,endDate,triggerDays,minimumNights,active\n",
+    ],
+    [
+      "extra header column",
+      "scope,name,startDate,endDate,triggerDays,minimumNights,capacityMode,active,extra\n",
+    ],
+    [
+      "extra row value",
+      "scope,name,startDate,endDate,triggerDays,minimumNights,capacityMode,active\n" +
+        "club-wide,Weekend,2026-06-01,2026-09-30,5|6,2,HOLD,true,extra\n",
+    ],
+    [
+      "malformed CSV",
+      'scope,name,startDate,endDate,triggerDays,minimumNights,capacityMode,active\nlodge:tukino,"unterminated\n',
+    ],
+  ])("blocks a %s without previewing or applying deletes", async (_label, csv) => {
+    const plan = await bookingPoliciesImporter.plan(planContext(csv));
+    expect(plan.errors.length).toBeGreaterThan(0);
+    expect(plan.items.filter((item) => item.action === "delete")).toEqual([]);
+
+    const deleteMany = vi.fn();
+    const tx = {
+      lodge: { findMany: vi.fn().mockResolvedValue([lodge]) },
+      minimumStayPolicy: {
+        findMany: vi.fn().mockResolvedValue([policy]),
+        create: vi.fn(),
+        updateMany: vi.fn(),
+        deleteMany,
+      },
+    } as unknown as TxDb;
+    await expect(
+      bookingPoliciesImporter.apply({
+        tx,
+        files: files(csv),
+        manifest: {} as never,
+        mode: "overwrite",
+        resolutions: new Map(),
+        actorMemberId: "admin-1",
+        imageRemap: new Map(),
+        notes: { doorCodesWritten: [] },
+      } as ApplyContext),
+    ).rejects.toThrow();
+    expect(deleteMany).not.toHaveBeenCalled();
+  });
+
+  it("preserves a legal policy name byte-for-byte while rejecting blank and overlong names", async () => {
+    const exactName = '  Winter "quoted" policy  ';
+    const csv =
+      "scope,name,startDate,endDate,triggerDays,minimumNights,capacityMode,active\n" +
+      'lodge:tukino,"  Winter ""quoted"" policy  ",2026-06-01,2026-09-30,5|6,2,HOLD,true\n';
+    const create = vi.fn().mockResolvedValue({ id: "new" });
+    const tx = {
+      lodge: { findMany: vi.fn().mockResolvedValue([lodge]) },
+      minimumStayPolicy: {
+        findMany: vi.fn().mockResolvedValue([]),
+        create,
+        updateMany: vi.fn(),
+        deleteMany: vi.fn(),
+      },
+    } as unknown as TxDb;
+    await bookingPoliciesImporter.apply({
+      tx,
+      files: files(csv),
+      manifest: {} as never,
+      mode: "merge",
+      resolutions: new Map(),
+      actorMemberId: "admin-1",
+      imageRemap: new Map(),
+      notes: { doorCodesWritten: [] },
+    } as ApplyContext);
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ name: exactName }),
+    }));
+
+    for (const name of ["   ", "x".repeat(201)]) {
+      const invalid = await bookingPoliciesImporter.plan(
+        planContext(csvRow({ name }), db([])),
+      );
+      expect(invalid.errors.join(" ")).toMatch(/name .* (blank|200 characters)/i);
+      expect(invalid.items).toEqual([]);
+    }
+  });
+
+  it("namespaces club-wide identity from a lodge whose legal slug is club-wide", async () => {
+    const collisionLodge = { id: "lodge-collision", slug: "club-wide" };
+    const rows = [
+      { ...policy, id: "club-policy", name: "Same name", lodgeId: null },
+      {
+        ...policy,
+        id: "lodge-policy",
+        name: "Same name",
+        lodgeId: collisionLodge.id,
+      },
+    ];
+    const context = {
+      db: db(rows, [collisionLodge]),
+      includeDoorCodes: false,
+      media: { reference: vi.fn() },
+    } as ExportContext;
+    const [entry] = await bookingPoliciesExporter.export(context);
+    const exported = parseCsv(strFromU8(entry.bytes));
+    expect(exported.rows.map((row) => row.scope)).toEqual([
+      "club-wide",
+      "lodge:club-wide",
+    ]);
+
+    const plan = await bookingPoliciesImporter.plan(
+      planContext(strFromU8(entry.bytes), db(rows, [collisionLodge])),
+    );
+    expect(plan.errors).toEqual([]);
+    expect(plan.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "club-wide / Same name", action: "unchanged" }),
+      expect.objectContaining({ key: "lodge:club-wide / Same name", action: "unchanged" }),
+    ]));
   });
 
   it("blocks ambiguous natural keys and malformed policy values", async () => {
@@ -208,14 +332,14 @@ describe("config-transfer booking policies (#2363)", () => {
     const newLodge = strToU8(JSON.stringify({ slug: "new-lodge", name: "New" }));
     const plan = await bookingPoliciesImporter.plan(
       planContext(
-        csvRow({ scope: "new-lodge" }),
+        csvRow({ scope: "lodge:new-lodge" }),
         db([], []),
         [["lodge-config/lodges/new-lodge/lodge.json", newLodge]],
       ),
     );
     expect(plan.errors).toEqual([]);
     expect(plan.items[0]).toMatchObject({
-      key: "new-lodge / Winter weekends",
+      key: "lodge:new-lodge / Winter weekends",
       action: "create",
     });
   });

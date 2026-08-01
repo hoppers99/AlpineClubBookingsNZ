@@ -18,6 +18,10 @@ import {
   CONFIG_TRANSFER_CATEGORIES,
   type ConfigTransferCategory,
 } from "@/lib/config-transfer/manifest";
+import {
+  formatConfigImportTotals,
+  visibleImportPlanItems,
+} from "@/lib/config-transfer/preview";
 
 // Full-admin Configuration Export & Import page. Export selected categories to a
 // portable zip; import a bundle via a mandatory dry-run before applying (the
@@ -257,15 +261,23 @@ export default function ConfigTransferPage() {
         body: form,
       });
       const data = (await res.json().catch(() => null)) as
-        | { result?: { totals: Record<string, number> }; error?: string }
+        | {
+            result?: {
+              totals: {
+                created: number;
+                updated: number;
+                deleted: number;
+                unchanged: number;
+              };
+            };
+            error?: string;
+          }
         | null;
       if (!res.ok || !data?.result) {
         throw new Error(data?.error ?? "Apply failed.");
       }
       const t = data.result.totals;
-      setApplied(
-        `Applied: ${t.created} created, ${t.updated} updated, ${t.unchanged} unchanged.`,
-      );
+      setApplied(`Applied: ${formatConfigImportTotals(t)}.`);
       setPlan(null);
       setResolutions([]);
       setImportCategories(null);
@@ -536,17 +548,13 @@ export default function ConfigTransferPage() {
               )}
 
               {plan.categories.map((cat) => {
-                // Show changed rows (create/update) before unchanged, so real
-                // changes are never hidden under the 50-row display cap in a big
-                // category (e.g. lodge-config's rooms/beds/seasons).
-                const sorted = [...cat.items].sort((a, b) => {
-                  const rank = (x: PlanItem) => (x.action === "unchanged" ? 1 : 0);
-                  return rank(a) - rank(b);
-                });
-                const shown = sorted.slice(0, 50);
-                const hiddenUnchanged = sorted
-                  .slice(50)
-                  .filter((i) => i.action === "unchanged").length;
+                // Every mutation is shown, even when there are more than 50.
+                // Only unchanged rows may be capped; otherwise a destructive
+                // replace-set could tell the admin to review "every Deleted
+                // row above" while silently hiding some of them.
+                const { shown, hiddenUnchanged } = visibleImportPlanItems(
+                  cat.items,
+                );
                 return (
                 <div key={cat.category}>
                   <p className="font-medium">{CATEGORY_LABELS[cat.category]}</p>

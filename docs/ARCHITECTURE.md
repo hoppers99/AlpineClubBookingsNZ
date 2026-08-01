@@ -123,8 +123,10 @@ Important route groups:
 > from them and the app brand utilities / wizard preview / muted-tone clamp still
 > read them (the website's legal-callout and mobile-menu `bg-brand-*` utilities
 > are a small remaining consumer, left for their own render review). Config-transfer
-> bundles are **format version 2** (`CONFIG_TRANSFER_FORMAT_VERSION`) and reject
-> any version-1 bundle.
+> bundles are **format version 3** (`CONFIG_TRANSFER_FORMAT_VERSION`) and require
+> an exact version match. Version 3 adds the destructive, fully previewed
+> minimum-stay policy replace-set; both older and newer bundle versions are
+> refused rather than interpreted under the wrong semantics.
 
 Every app-shell layout (`(public)`, `(authenticated)`, `(admin)`, `(finance)`)
 injects the admin-configured theme via `getWebsiteThemeRenderState()` inside an

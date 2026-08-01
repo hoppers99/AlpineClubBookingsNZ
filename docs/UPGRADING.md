@@ -86,6 +86,21 @@ as a red flag and check the release notes before deploying.
 
 ## Unreleased
 
+### Re-export configuration bundles for format version 3 (#2363)
+
+Configuration bundles now require exact **format version 3** compatibility. The
+new version adds a reviewed replace-set for minimum-stay booking policies, where
+an omitted policy is deleted after appearing in the dry-run. Version 1 and 2
+bundles are refused because they cannot state that complete, namespaced policy
+set safely; a version 2 reader likewise refuses version 3 instead of overlooking
+the destructive category.
+
+Before upgrading, re-export any configuration bundle you rely on from the
+upgraded source app. Do not change only `manifest.json` or assume **Reseal edited
+bundle** upgrades an old bundle's meaning: a valid v3 export must include
+`booking-policies/minimum-stay.csv` with the complete intended policy set (or its
+exact header alone when clearing the set is intentional).
+
 ### One-off repair of saved email template wording (#2269)
 
 `20260801150000_strip_email_override_bracket_annotations` is a **data-only

@@ -118,7 +118,7 @@ export type ApplyConfigImportParams = {
    * `assessBootstrapReadiness` probe, so the interactive route cannot even
    * compile a skip. Every other ADR-002 safeguard (parse/validate, sanitise,
    * single-flight lock, in-lock re-plan + fingerprint drift refusal, atomic
-   * upsert-only transaction, audit) still applies unchanged, and the skip
+   * transaction, audit) still applies unchanged, and the skip
    * variant ADDS two safeguards of its own: the in-lock emptiness re-check
    * and the in-transaction bootstrap marker (see {@link BootstrapBackupSkip}).
    */
