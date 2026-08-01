@@ -218,8 +218,15 @@ type CaseOutcome = {
 /** One whole run of a fixture's cases against one version of its migration. */
 type RunOutcome = {
   outcomes: Map<string, CaseOutcome>;
-  /** True when at least one case failed — i.e. this version was DETECTED. */
+  /** True when at least one case failed — raised OR read a mismatching row. */
   detected: boolean;
+  /**
+   * True when at least one case read a MISMATCHING row. Strictly stronger than
+   * `detected`: a mutant that merely makes the SQL invalid is caught by `detected`
+   * for free (the case raises), but that proves nothing about the value the
+   * migration writes — only a mismatch does (#2418, F3).
+   */
+  detectedByMismatch: boolean;
 };
 
 const runs = new Map<string, RunOutcome>();
@@ -230,8 +237,8 @@ const noMigrationKey = (migration: string) => `${migration}::not-applied`;
 const mutantKey = (migration: string, mutant: string) =>
   `${migration}::mutant::${mutant}`;
 
-function outcomeDetected(outcome: CaseOutcome): boolean {
-  if (outcome.error !== null) return true;
+/** True when a case read a row that did not match its expectation. */
+function outcomeMismatched(outcome: CaseOutcome): boolean {
   return outcome.readings.some((reading) => {
     try {
       deepStrictEqual(reading.actual, reading.expected);
@@ -240,6 +247,16 @@ function outcomeDetected(outcome: CaseOutcome): boolean {
       return true;
     }
   });
+}
+
+/**
+ * True when a version was DETECTED: a case raised, or a case read a mismatching
+ * row. Detection-by-error is real — an invalid mutant IS caught — but it says
+ * nothing about what the transform writes, so callers that need that stronger
+ * proof read `detectedByMismatch` (#2418, F3).
+ */
+function outcomeDetected(outcome: CaseOutcome): boolean {
+  return outcome.error !== null || outcomeMismatched(outcome);
 }
 
 const describeWithDatabase = databaseUrl ? describe : describe.skip;
@@ -305,6 +322,7 @@ describeWithDatabase("data migrations against a real PostgreSQL (#2418)", () => 
     const outcome: RunOutcome = {
       outcomes,
       detected: [...outcomes.values()].some(outcomeDetected),
+      detectedByMismatch: [...outcomes.values()].some(outcomeMismatched),
     };
     return outcome;
   }
@@ -387,7 +405,12 @@ describeWithDatabase("data migrations against a real PostgreSQL (#2418)", () => 
       // The mutant nobody has to declare: the migration simply never ran.
       runs.set(noMigrationKey(fixture.migration), await runCases(fixture, []));
       for (const mutant of fixture.mutants) {
-        const mutated = sql.replace(mutant.find, mutant.replace);
+        // A replacer FUNCTION, not a string: `String.prototype.replace` expands
+        // `$$`, `$&`, `$\`` and `$'` in a string replacement, and this repo's SQL
+        // is full of `$$`/`$cms$` dollar-quoting — so a string replacement could
+        // silently produce different SQL than the fixture declares. A function
+        // inserts `mutant.replace` verbatim (#2418, R8).
+        const mutated = sql.replace(mutant.find, () => mutant.replace);
         runs.set(
           mutantKey(fixture.migration, mutant.name),
           await runCases(fixture, [mutated]),
@@ -471,6 +494,24 @@ describeWithDatabase("data migrations against a real PostgreSQL (#2418)", () => 
           ).toBe(true);
         });
       }
+
+      it("proves a mutant by a row MISMATCH, not just a raised error", () => {
+        // An execution error counts as detection (an invalid mutant is caught for
+        // free), so the per-mutant checks above can be satisfied without any
+        // expectation pinning the rewritten value — a fixture could pass with
+        // assertions that never look at what the transform writes. Require at
+        // least one declared mutant to be caught by a real post-state MISMATCH, so
+        // the expectations demonstrably pin the value (#2418, F3).
+        const provenByMismatch = fixture.mutants.some(
+          (mutant) =>
+            runs.get(mutantKey(fixture.migration, mutant.name))
+              ?.detectedByMismatch,
+        );
+        expect(
+          provenByMismatch,
+          `${fixture.migration}: every mutant was caught only by raising, so no expectation pins the value the migration writes. Add a semantically-valid mutant whose changed row a case compares.`,
+        ).toBe(true);
+      });
     });
   }
 });

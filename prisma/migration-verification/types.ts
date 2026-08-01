@@ -71,7 +71,15 @@ export type DataMigrationCase = {
  * A deliberate breakage of the migration, and the reason it must be caught.
  *
  * `find` must appear EXACTLY ONCE in the migration SQL — the runner refuses an
- * ambiguous or absent match rather than silently testing an unmutated file.
+ * ambiguous or absent match rather than silently testing an unmutated file. It is
+ * replaced verbatim, so `replace` may contain `$$`/`$cms$` dollar-quoting freely.
+ *
+ * A mutant that only makes the SQL INVALID proves nothing: the case raises, which
+ * counts as detection for free, but says nothing about the value the migration
+ * writes. At least one of a fixture's mutants must therefore be a semantically
+ * VALID change caught by a real post-state ROW MISMATCH — the runner enforces
+ * this, so a fixture cannot pass on expectations that never pin the rewrite
+ * (#2418).
  */
 export type DataMigrationMutant = {
   /** Plain English: what this mutant does to the migration. */
