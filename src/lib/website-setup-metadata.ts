@@ -26,9 +26,9 @@ import { SETUP_IN_PROGRESS_COPY } from "@/lib/setup-in-progress-screen";
  * `isPublicWebsitePath()` refuses asset-extension paths on purpose — the holding
  * screen is an HTML document and must never be the answer to a request for an
  * image — so a URL of that shape that reaches a render is rendered with no gate
- * in front of it. `/API/x.png` is the live case: the rewrites hand it back
- * unchanged and Next's case-sensitive route table then leaves it to the
- * `(website)` catch-all.
+ * in front of it. `/API/x.png` is the live case: the asset rewrites exclude the
+ * whole `/api` namespace case-insensitively, and Next's case-sensitive route
+ * table then leaves it to the `(website)` catch-all.
  *
  * `(website)/layout.tsx` catches those requests and substitutes the holding
  * screen for `{children}`, so the page component never runs. That suppresses the

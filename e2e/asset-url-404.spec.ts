@@ -293,52 +293,114 @@ test.describe("an uploaded image is still served — the rewrites must not shado
   });
 });
 
-test("unmatched /api URLs still answer JSON — the asset rewrite must not claim them", async ({
+/**
+ * The two rewrite headers Next stamps when an `afterFiles` rule fires, and the
+ * request shape that makes it stamp them.
+ *
+ * `resolve-routes.js` writes `x-nextjs-rewritten-path` when the destination
+ * PATHNAME differs from the request path and `x-nextjs-rewritten-query` when the
+ * destination SEARCH differs — both only on a request Next reads as a flight
+ * request, which `is-rsc-request.js` defines as `rsc: '1'` EXACTLY. A plain
+ * `request.get(url)` sends no such header, so an assertion made without one
+ * cannot fail whatever the rules say. The query string is needed as well: a
+ * destination never carries one, so the query header ships whenever the REQUEST
+ * has one, even for a rewrite that lands back on the same path.
+ *
+ * That combination is the whole anonymous attack: with a module ON the request
+ * reaches the rewrite stage and any rule that claims it stamps a header, while
+ * with the module OFF the gate answers from middleware and no rewrite runs at
+ * all — so the header's presence alone reads the flag. The property being
+ * measured here is that NO rule claims an `/api` URL, in either module state.
+ */
+const RSC_PROBE = { headers: { RSC: "1" } } as const;
+const REWRITE_HEADERS = [
+  "x-nextjs-rewritten-path",
+  "x-nextjs-rewritten-query",
+] as const;
+
+test("asset-shaped /api URLs nothing claims answer the frozen JSON 404", async ({
   request,
 }) => {
   // #2405's module-state parity: a path under a gated prefix that no handler
-  // claims must answer identically whether the module is on or off. Routing an
-  // asset-shaped /api URL anywhere at all would reopen that oracle — to the
-  // empty asset 404 on the BODY, and to any other destination on the HEADERS,
-  // because Next stamps `x-nextjs-rewritten-path` on an RSC request whenever a
-  // rewrite's destination differs from the request path, and with the module off
-  // no rewrite runs. So the ordered `/api` rule claims these (keeping the
-  // general rule off them) and hands them straight back to the same JSON
-  // catch-all any other unmatched `/api` URL reaches.
+  // claims must answer identically whether the module is on or off. These URLs
+  // are outside every gated prefix, so they measure the other half — that the
+  // asset rules never divert an `/api` URL to the empty asset 404, which would
+  // be a `content-type` present in one module state and absent in the other.
   for (const url of [
     "/api/does-not-exist.png",
-    "/api/chores/zzz.svg",
-    "/api/admin/lockers/zzz.png",
+    "/api/definitely-missing.jpg",
+    "/api/nope/deeper.webp",
   ]) {
-    const response = await request.get(url);
+    for (const probe of [url, `${url}?x=1`]) {
+      const response = await request.get(probe, RSC_PROBE);
 
-    expect(response.status(), `${url} must be a hard 404`).toBe(404);
+      expect(response.status(), `${probe} must be a hard 404`).toBe(404);
+      expect(
+        response.headers()["content-type"],
+        `${probe} must stay on the JSON path`,
+      ).toContain("application/json");
+      expect(await response.json()).toEqual({ error: "Not found" });
+
+      for (const header of REWRITE_HEADERS) {
+        expect(
+          response.headers()[header],
+          `${probe} must not advertise that a rewrite ran — that header is the module-state oracle`,
+        ).toBeUndefined();
+      }
+    }
+  }
+});
+
+test("an asset-shaped /api URL a real handler claims is left to that handler", async ({
+  request,
+}) => {
+  // The accepted-risk boundary, stated as a test rather than as prose (#2404
+  // re-review, owner decisions D1/D2 — see `docs/SECURITY-ATTACK-SURFACE.md`).
+  //
+  // These two addresses ARE claimed: `/api/chores/[token]` answers
+  // `/api/chores/zzz.svg` with its own "invalid or expired token" 404, and
+  // `/api/admin/lockers/[id]` claims `/api/admin/lockers/zzz.png` and exports no
+  // GET. Neither is the frozen `{"error":"Not found"}`, and asserting that it
+  // was is what made this test fail in CI. The property that IS worth holding is
+  // that the asset rules changed nothing for them: they answer exactly as they
+  // do on a build with no rewrite layer, and no rewrite header ships in EITHER
+  // module state, so the flag cannot be read off the reply.
+  //
+  // Deliberately not asserting a status: whether the module is on decides which
+  // of the two 404s (or, for lockers, a 405) arrives, and the fixtures may run
+  // either way. What must never happen is the empty-bodied asset 404, so that
+  // one shape is ruled out by name.
+  for (const url of ["/api/chores/zzz.svg", "/api/admin/lockers/zzz.png"]) {
+    const response = await request.get(`${url}?x=1`, RSC_PROBE);
+
+    for (const header of REWRITE_HEADERS) {
+      expect(
+        response.headers()[header],
+        `${url} must not advertise that a rewrite ran — that header is the module-state oracle`,
+      ).toBeUndefined();
+    }
+
+    const body = await response.text();
     expect(
-      response.headers()["content-type"],
-      `${url} must stay on the JSON path`,
-    ).toContain("application/json");
-    expect(await response.json()).toEqual({ error: "Not found" });
-    expect(
-      response.headers()["x-nextjs-rewritten-path"],
-      `${url} must not advertise that a rewrite ran — that header is the module-state oracle`,
-    ).toBeUndefined();
+      response.status() === 404 && body === "",
+      `${url} must not be diverted to the empty asset 404 — a real handler owns it`,
+    ).toBe(false);
   }
 });
 
 test("a mixed-case /API asset shape renders the club's nonced 404, not the JSON", async ({
   request,
 }) => {
-  // The recorded consequence of the `/api` rule being a case-PRESERVING
-  // identity. Rewrites compile case-insensitively, so `/API/x.png` is claimed by
-  // that rule and never terminated as a miss; the destination is the rule's own
-  // capture, so it is handed back spelled exactly as it arrived. Next's route
-  // table is case-SENSITIVE, so no `/api` route claims it and the CMS catch-all
-  // renders the club's 404 page.
+  // The recorded consequence of the asset rule excluding the whole `/api`
+  // namespace with a `(?!api/)` lookahead. Rewrites compile case-insensitively,
+  // so that lookahead excludes `/API/` too and no rule claims this URL; Next's
+  // route table IS case-sensitive, so no `/api` route claims it either, and the
+  // CMS catch-all renders the club's 404 page.
   //
-  // Pinned because the alternative — substituting a literal lowercase `/api` —
-  // would hand `/API/admin/lockers/1.png` to the real, module-gated handler with
-  // the gate never having run, the gate's own route table being case-sensitive
-  // too. This is the assertion that fails if that literal ever comes back.
+  // Pinned because the alternative — a rule that matched `/api` and substituted
+  // a literal lowercase `/api` destination — would hand `/API/admin/lockers/
+  // 1.png` to the real, module-gated handler with the gate never having run,
+  // the gate's own route table being case-sensitive too.
   //
   // The proxy runs on it, so the page is nonced and carries a policy: a wasted
   // render, never a missing nonce.

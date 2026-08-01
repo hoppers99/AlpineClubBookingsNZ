@@ -41,60 +41,63 @@
  * miss reaches them. `beforeFiles` would shadow every real asset; `fallback` runs
  * after `(website)/[...slug]` has already turned the URL into a render.
  *
- * **A rewrite is not the end of routing, and the `/api` rules depend on that.**
- * An `afterFiles` rewrite carries `check: true`
- * (`next/dist/server/lib/router-utils/filesystem.js`, `buildCustomRoute`), so
- * after the destination is substituted Next runs `checkTrue()`
- * (`resolve-routes.js`) over the REWRITTEN path: an exact filesystem/app match
- * first, then every DYNAMIC route. A rewrite whose destination is the matched
- * path itself is therefore not a no-op loop and not a diversion either — it
- * hands the request back to resolution exactly where it started, and the route
- * that would have claimed the URL still claims it.
- *
- * **`/api` is claimed by an IDENTITY rewrite, and that is a security decision
- * rather than a tidiness one.** Both `/api` rules below hand the path straight
- * back, so the only thing they do is claim the URL before the general rule can
- * terminate it. Two properties depend on that:
+ * **NO RULE HERE MAY MATCH AN `/api` URL, and that is a security constraint
+ * rather than a tidiness one.** The general rule below carries a leading
+ * `(?!api/)` lookahead, and there is no `/api` rule of any kind. Two properties
+ * depend on that:
  *
  *  1. **#2405's module-state parity survives on the HEADERS as well as the
  *     bytes.** A path under a module-gated prefix that no handler claims must
  *     answer identically whether the module is ON or OFF. With it off,
  *     `src/proxy.ts`'s gate answers the JSON 404 from middleware and routing
- *     stops there, so no rewrite runs. With it on, the request continues — and
- *     `resolve-routes.js` sets `x-nextjs-rewritten-path` on an RSC request
- *     whenever a rewrite's destination DIFFERS from the request path. A
- *     terminating `/api` rule therefore added a response header in one module
- *     state and not the other, and one anonymous
- *     `curl -H 'RSC: 1' /api/<gated>/zzz.png` read the flag off. An identity
- *     destination cannot: the paths are equal, so the header is never set and
- *     the request lands on `api/[[...unmatched]]` with the same bytes the gate
- *     would have sent.
+ *     stops there, so no rewrite runs at all. With it on the request continues
+ *     into the rewrite stage — and `resolve-routes.js` stamps TWO independent
+ *     headers on an RSC request there, not one:
+ *     `x-nextjs-rewritten-path` when the destination PATHNAME differs, and
+ *     `x-nextjs-rewritten-query` when the destination SEARCH differs. A
+ *     destination has no way to reproduce the request's own query string
+ *     (`prepareDestination()` sets `parsedDestination.search = ''` for a
+ *     query-less destination), so ANY rule matching an `/api` URL — identity
+ *     included — ships `x-nextjs-rewritten-query` the moment the prober appends
+ *     `?x=1`, and that header is present with the module on and absent with it
+ *     off. Measured with Next's own `getPathMatch()`/`prepareDestination()`
+ *     under `filesystem.js`'s exact compile options. Matching nothing under
+ *     `/api` is the only form that closes both headers, and it also restores
+ *     the pre-#2404 behaviour exactly: on `main` no rewrite layer exists, so no
+ *     `/api` URL could carry either header in either state.
  *  2. **`src/app/api/images/uploaded/[...path]/route.ts` keeps serving.** It is a
  *     REAL dynamic route whose URLs all end in an image extension
  *     (`src/lib/image-storage.ts`'s public URL prefix, and the `Caddyfile`
- *     `/images/*` rewrite that feeds the same route). Handing the path back is
- *     what lets `checkTrue()` resolve it onto that route.
+ *     `/images/*` rewrite that feeds the same route). Under the lookahead no
+ *     rule claims those URLs, so routing reaches that handler untouched. This
+ *     is not hypothetical: the first cut of #2404 terminated every asset-shaped
+ *     `/api` URL and 404'd every admin-uploaded image in the club.
  *
- * **Case sensitivity is the trap here, and CAPTURING the whole path is how it is
- * closed.** Next compiles the middleware matcher case-SENSITIVELY and `rewrites`
+ * **Why a lookahead is safe here now, when an earlier cut of #2404 rejected
+ * one.** That cut (commit 721bf02c7) argued a lookahead was itself a hole,
+ * because Next compiles the proxy matcher case-SENSITIVELY and `rewrites`
  * case-INSENSITIVELY (path-to-regexp's `sensitive` defaults to false, and
- * `next.config.ts` sets no `experimental.caseSensitiveRoutes`), so every rule
- * here also matches `/API/…` and `/Api/…`. A destination written with a literal
- * `/api/` prefix would substitute that LITERAL LOWERCASE spelling, which is not
- * an identity at all: it would rewrite `/API/admin/lockers/1.png` onto the real,
- * module-gated handler with nothing having gated it, because the module gate's
- * route table is case-SENSITIVE (`matchesPrefix` in
- * `src/config/feature-routes.ts` is a `startsWith` and its patterns carry no `i`
- * flag). Each rule therefore captures the ENTIRE path, prefix included, in one
- * `:path` parameter and substitutes that capture — so the destination is the
- * request's own spelling, byte for byte, whatever case it arrived in.
+ * `next.config.ts` sets no `experimental.caseSensitiveRoutes`), so `/API/x.png`
+ * was skipped by BOTH and still rendered an unnonced document. Option A removed
+ * the premise: the matcher no longer excludes asset extensions, so the proxy
+ * runs on `/API/x.png` and it is nonced and policy-carrying like any other page.
+ * The lookahead compiles with the same `i` flag as the rest of the rule, so it
+ * excludes `/API/`, `/Api/` and `/api/` symmetrically — no case seam, and no
+ * dependence on rule ORDER to keep a real route reachable.
  *
  * The consequence for an odd-cased `/API/x.png` is recorded rather than hidden:
- * handed back, it matches no `/api` route (Next's own route table is
+ * no rule claims it, it matches no `/api` route (Next's own route table is
  * case-sensitive) and the `(website)/[...slug]` catch-all renders the club's 404
  * page for it. That is a wasted render, not a missing nonce — since Option A the
  * proxy runs on it, so it is nonced and carries a policy — and it is the same
  * outcome `/foo.avif` already gets from an unlisted extension.
+ *
+ * **A rewrite is not the end of routing.** An `afterFiles` rewrite carries
+ * `check: true` (`next/dist/server/lib/router-utils/filesystem.js`,
+ * `buildCustomRoute`), so after the destination is substituted Next runs
+ * `checkTrue()` (`resolve-routes.js`) over the REWRITTEN path: an exact
+ * filesystem/app match first, then every DYNAMIC route. That is what lets
+ * `/asset-not-found` resolve onto its own route file.
  */
 
 /**
@@ -130,17 +133,6 @@ const EXTENSION_ALTERNATION = ASSET_URL_EXTENSIONS.join("|");
 export const ASSET_NOT_FOUND_PATH = "/asset-not-found";
 
 /**
- * The destination shared by both `/api` rules: the path the rule matched, given
- * straight back.
- *
- * `:path` is the rule's own single capture, which spans the WHOLE path including
- * the `/api` prefix — see the case-sensitivity note in this module's header. A
- * destination that spelled any part of the path as a literal would substitute
- * that literal's case and stop being an identity for `/API/…`.
- */
-export const IDENTITY_DESTINATION = "/:path";
-
-/**
  * Misses under `_next/static`. A stale browser tab asking for a chunk a deploy
  * removed is the ordinary case, and it wants JavaScript.
  *
@@ -153,76 +145,59 @@ export const NEXT_STATIC_MISS_SOURCE = "/_next/static/:path*";
  * The public URL prefix `src/lib/image-storage.ts` mints for every
  * admin-uploaded image, and the target of `Caddyfile`'s `/images/*` rewrite.
  *
- * Written out rather than imported because `next.config.ts` loads this module
- * through Next's own config loader and `image-storage.ts` pulls in `fs`/`path`
- * and reads `process.cwd()`. The copy is not left to trust: the guard in
- * `src/lib/__tests__/asset-url-404.test.ts` calls the real `imagePublicUrl()`
- * and asserts the URL it actually produces resolves to the real route.
+ * No rule uses it — the `/api` lookahead below covers this prefix along with the
+ * rest of the namespace. It is declared here because it is the sharpest thing
+ * the lookahead protects, and it is what the guard in
+ * `src/lib/__tests__/asset-url-404.test.ts` drives its assertion from: that
+ * guard calls the real `imagePublicUrl()` and requires the URL it actually mints
+ * to reach the real route untouched. Written out rather than imported because
+ * `next.config.ts` loads this module through Next's own config loader and
+ * `image-storage.ts` pulls in `fs`/`path` and reads `process.cwd()`.
  */
 export const UPLOADED_IMAGE_URL_PREFIX = "/api/images/uploaded";
 
 /**
- * The same prefix as a path-to-regexp PATTERN fragment: no leading slash,
- * because the rule below supplies the one slash the capture starts after.
+ * The lookahead that keeps the general rule off the whole `/api` namespace.
+ *
+ * Written without a leading slash because the capture below starts AFTER the
+ * one slash the source supplies, so the text the lookahead sees for
+ * `/api/chores/zzz.png` is `api/chores/zzz.png`.
+ *
+ * The trailing slash is the anchor and it is deliberate: `/api.png` is a file
+ * called `api.png` at the root and `/apiary-photo.png`, `/apis/logo.png` and
+ * `/nested/api/x.png` are ordinary addresses, so all four must still be
+ * terminated. Only a real `/api/…` URL is excluded.
+ *
+ * Compiled with the same `i` flag as the rest of the rule, so `/API/`, `/Api/`
+ * and `/api/` are excluded symmetrically — see this module's header for why
+ * that is now the right shape and why an earlier cut of #2404 rejected it.
  */
-const UPLOADED_IMAGE_URL_PATTERN = UPLOADED_IMAGE_URL_PREFIX.slice(1);
+const API_NAMESPACE_LOOKAHEAD = "(?!api/)";
 
 /**
- * The one route that legitimately SERVES extension-suffixed URLs, declared
- * exempt from termination in its own right.
+ * Every path ending in an asset extension, at any depth
+ * (`/wp-content/uploads/x.png`), except anything under `/api`.
  *
- * Claimed before the `/api` rule below, so the exemption holds however that rule
- * is written: if the `/api` destination is ever made terminating again — the
- * change #2405's parity pressure keeps inviting — every admin-uploaded image in
- * the app would 404 as JSON without this line, which is exactly what the first
- * cut of #2404 did.
- *
- * Scoped to the extension alternation, not `:path*`, so it stays symmetric with
- * the rule below and does not put a rewrite compile on `/api/images/uploaded`
- * URLs the terminating rules would never have touched. The `:path` capture spans
- * the prefix as well as the tail so the destination reproduces the request's own
- * spelling: the prefix appears inside the PATTERN, where case-insensitive
- * matching makes it accept `/API/…`, and never in the destination, where it
- * would impose lowercase.
+ * This is the ONLY rule that terminates by extension, and the lookahead is what
+ * keeps #2405's module-state parity intact on the response headers as well as
+ * the body: a rule that matched an `/api` URL would stamp
+ * `x-nextjs-rewritten-query` on any RSC probe carrying a query string, with the
+ * module on and not with it off. See this module's header.
  */
-export const UPLOADED_IMAGE_MISS_SOURCE = `/:path(${UPLOADED_IMAGE_URL_PATTERN}/(?:.*)\\.(?:${EXTENSION_ALTERNATION}))`;
-
-/**
- * Every OTHER asset-shaped URL under `/api`, claimed before the general rule so
- * that rule never sees them. Matched case-insensitively like every Next rewrite,
- * which is what makes `/API/x.png` and `/Api/x.png` land here too rather than
- * falling into the general rule and being terminated while their lowercase twins
- * were not.
- *
- * Claiming is all this rule does: the destination is the captured path, so the
- * request goes back to resolution untouched and `api/[[...unmatched]]` answers
- * the same `{"error":"Not found"}` JSON it answers for `/api/does-not-exist`.
- * That equality is what #2405's parity needs, and the identity is what keeps it
- * true of the response HEADERS too — see this module's header.
- */
-export const API_ASSET_MISS_SOURCE = `/:path(api/(?:.*)\\.(?:${EXTENSION_ALTERNATION}))`;
-
-/**
- * Every other path ending in an asset extension, at any depth
- * (`/wp-content/uploads/x.png`). No lookahead: `/api` is already gone by the time
- * this rule is reached, and a rule with no exclusion has no case seam to leak
- * through.
- */
-export const ASSET_MISS_SOURCE = `/:path((?:.*)\\.(?:${EXTENSION_ALTERNATION}))`;
+export const ASSET_MISS_SOURCE = `/:path(${API_NAMESPACE_LOOKAHEAD}(?:.*)\\.(?:${EXTENSION_ALTERNATION}))`;
 
 /**
  * The `afterFiles` rewrites, in the shape `next.config.ts` hands to Next.
  *
- * ORDER IS LOAD-BEARING — Next applies the first rule that matches, so this list
- * reads most-specific first:
  *  1. `_next/static` misses, to the empty 404;
- *  2. the uploaded-images route, handed back so real images still work;
- *  3. every other `/api` asset shape, handed back so `api/[[...unmatched]]`
- *     answers it (#2405 parity, bytes and headers);
- *  4. everything else, to the empty 404.
- * Move 3 behind 4 and the parity oracle reopens; move 2 behind 3 and the
- * uploaded-images exemption starts depending on rule 3's destination instead of
- * being declared. Both orderings are asserted in the guard.
+ *  2. everything else that is asset-shaped and outside `/api`, to the empty 404.
+ *
+ * Neither rule can claim an `/api` URL, so nothing under `/api` is rewritten at
+ * all and its routing is byte-identical to a build with no rewrite layer.
+ * Order between these two is not load-bearing (their sources are disjoint —
+ * `_next/static/…` chunks are `.js`, not an asset extension); the guard in
+ * `src/lib/__tests__/asset-url-404.test.ts` resolves them in shipped order
+ * anyway so a future rule cannot be inserted where order would start to matter.
  *
  * `_next/image` is deliberately absent: it is a REAL handler (the image
  * optimiser), so a rewrite would break optimised images rather than catch a miss.
@@ -231,7 +206,5 @@ export const ASSET_MISS_SOURCE = `/:path((?:.*)\\.(?:${EXTENSION_ALTERNATION}))`
  */
 export const ASSET_NOT_FOUND_REWRITES = [
   { source: NEXT_STATIC_MISS_SOURCE, destination: ASSET_NOT_FOUND_PATH },
-  { source: UPLOADED_IMAGE_MISS_SOURCE, destination: IDENTITY_DESTINATION },
-  { source: API_ASSET_MISS_SOURCE, destination: IDENTITY_DESTINATION },
   { source: ASSET_MISS_SOURCE, destination: ASSET_NOT_FOUND_PATH },
 ] as const;

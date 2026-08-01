@@ -12,10 +12,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * This file covers what the proxy CANNOT: the page guards themselves and the
  * member dashboard.
  *
- * Those page guards are load-bearing, not decoration. The proxy's page matcher
- * carries `missing: [next-router-prefetch]`, so a Next router prefetch skips the
- * proxy entirely and the feature-route gate never runs for that render — the
- * `notFound()` calls asserted here are the only thing standing in front of it.
+ * Rule 2 is load-bearing, not decoration: the proxy's feature-route gate
+ * enforces the module flag ALONE — `FEATURE_ROUTE_RULES` lists route prefixes
+ * and never reads the account type — so the `notFound()` asserted here for an
+ * ORG account is the only thing standing in front of the calendar for one.
  *
  * `@/lib/calendar-access` is deliberately NOT mocked: the ORG rule under test
  * lives inside it, so mocking it would assert the harness rather than the gate.

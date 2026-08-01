@@ -13,11 +13,10 @@ const nextConfig: NextConfig = {
   },
   /**
    * Static-asset URLs nothing serves are answered without a document (#2404).
-   * The rules, their ORDER (load-bearing — the two `/api` rules must precede the
-   * general one or asset-shaped `/api` URLs are terminated at the empty 404 and
-   * #2405's module-state parity breaks), why both `/api` destinations are
-   * identities that preserve the request's own spelling, and why `_next/image`
-   * is absent are all documented in `src/lib/asset-url-404.ts`.
+   * The rules, why NEITHER of them may match an `/api` URL (#2405's module-state
+   * parity holds on the response headers only while no rewrite runs on `/api` at
+   * all), and why `_next/image` is absent are all documented in
+   * `src/lib/asset-url-404.ts`.
    *
    * `afterFiles` is the only stage that works here: Next checks `public/`,
    * `_next/static` and the non-dynamic routes BEFORE it consults these rules, so

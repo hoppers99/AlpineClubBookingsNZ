@@ -63,8 +63,9 @@ export default async function WebsiteLayout({
     // asset-extension paths on purpose, because the holding screen is an HTML
     // document and must never answer a request for an image, so any such URL
     // that reaches a render lands here ungated: `/API/x.png` is the live case,
-    // handed back by the rewrite and then matched by no `/api` route, because
-    // Next's route table is case-sensitive. This branch is what stops those
+    // claimed by no rewrite rule (the general rule's `(?!api/)` lookahead is
+    // case-insensitive) and matched by no `/api` route either, because Next's
+    // route table is case-sensitive. This branch is what stops those
     // seeing the real site. Those responses are still 200, because a layout
     // cannot set a status; that is the whole reason the authoritative decision
     // moved to the proxy.

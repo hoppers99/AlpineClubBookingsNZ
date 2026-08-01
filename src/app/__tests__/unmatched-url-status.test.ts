@@ -230,9 +230,10 @@ describe("a published CMS page still answers 200", () => {
  * a path `isPublicWebsitePath()` claims, and asset-extension paths are refused
  * on purpose: the holding screen is an HTML document and must never answer a
  * request for an image. A URL of that shape that no route claims still reaches
- * this code with no gate in front of it — `/API/x.png`, handed back unchanged by
- * the asset rewrites and then matched by no `/api` route, because Next's route
- * table is case-sensitive. The point of this suite is that the answer must be
+ * this code with no gate in front of it — `/API/x.png`, which the asset
+ * rewrites exclude along with the rest of `/api` and which then matches no
+ * `/api` route either, because Next's route table is case-sensitive. The point
+ * of this suite is that the answer must be
  * uniform whether or not the gate ran.
  *
  * The property is therefore UNIFORMITY, not "misses are hidden": pre-setup,
@@ -388,6 +389,24 @@ describe("unmatched /api URLs answer JSON, not the website's HTML", () => {
         unmatched.headers.get("content-type"),
       );
       await expect(gated!.text()).resolves.toBe(await unmatched.text());
+    });
+
+    it("carries no `vary` of its own — the known, accepted difference", () => {
+      // Recorded as a measurement rather than left to prose, because the doc
+      // (`docs/SECURITY-ATTACK-SURFACE.md`, "known and accepted") states it and
+      // a claim in that file has to be checkable.
+      //
+      // The gate answers from middleware and the reply never enters the render
+      // pipeline. With the module ON the same address is served by an app route
+      // handler, and `base-server.js`'s `setVaryHeader` appends
+      // `vary: RSC, Next-Router-State-Tree, …` for every app path before any
+      // handler runs — so the module-ON reply carries a `vary` this one does
+      // not. Only the middleware half is measurable here; the route-handler half
+      // is traced through the framework, not asserted, and that asymmetry is
+      // stated in the doc rather than papered over.
+      const gated = getFeatureFlagBlockResponse("/api/chores/zzz", choresOff);
+
+      expect(gated!.headers.get("vary")).toBeNull();
     });
 
     it.each(["PROPFIND", "TRACE", "MKCOL"])(
