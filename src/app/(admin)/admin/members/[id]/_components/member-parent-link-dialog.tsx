@@ -83,20 +83,30 @@ export function MemberParentLinkDialog({
   const routing = useDependentEmailSource(selected ? notificationParentId : null)
   const routingNoticeId = useId()
   /**
+   * Whether the pick-list is what the dialog is currently showing.
+   *
+   * Declared once and used BOTH as the results branch of the ternary below and
+   * as the first half of the truncation gate (#2460 review). The two used to
+   * state the same three conditions separately; that read as deliberate, but it
+   * left the announcement free to drift away from the list it describes — raise
+   * the ternary's character floor to three and the live region would have gone
+   * on saying "Keep typing to narrow this down." at two, over a list that was
+   * no longer being drawn at all. One expression, so they cannot disagree. The
+   * `!selected` clause is redundant inside the ternary (that branch is only
+   * reached when nothing is selected) and load-bearing outside it, where the
+   * announcement is assembled.
+   */
+  const showingResultsList =
+    !selected && search.trim().length >= 2 && searchResults.length > 0
+  /**
    * The truncation hint's ONE gate (#2460).
    *
    * The sentence the admin reads and the sentence a screen reader hears are
    * driven from this single expression, so the two can never come to disagree
-   * about whether the page was cut short. It repeats the conditions of the
-   * results branch below on purpose: the announcement lives outside that branch
-   * (see its own comment) and would otherwise be free to fire over a list that
-   * is not on screen at all.
+   * about whether the page was cut short — and, through `showingResultsList`,
+   * neither can be said over a list that is not on screen.
    */
-  const showTruncationHint =
-    !selected &&
-    search.trim().length >= 2 &&
-    searchResults.length > 0 &&
-    resultsTruncated
+  const showTruncationHint = showingResultsList && resultsTruncated
   const blockedByNoEmailSource =
     routing.status === "ready" && routing.source === null
   const notificationParentName = (() => {
@@ -200,6 +210,19 @@ export function MemberParentLinkDialog({
               member-guest finder's, where a count would describe members the
               booker is not being shown; announcing a different sentence here
               would fork that copy into a third string with nothing pinning it.
+            - THE DRAWN PARAGRAPH IS DELIBERATELY LEFT IN THE ACCESSIBILITY TREE
+              (#2460 review). The sentence is therefore reachable twice in browse
+              mode: here, ahead of the list, and again as the visible hint under
+              it. `aria-hidden` on the visible one would collapse that to a
+              single node, and it was considered and rejected — the visible hint
+              is the one anchored to the place the list stops, which is the whole
+              point of the sentence, and hiding on-screen text from assistive
+              technology to tidy a duplicate trades a real loss for a cosmetic
+              gain. What must not happen is a second LIVE region: two regions
+              carrying one sentence announce it twice and, worse, race (the repo
+              grew a whole prop in `hut-leaders/_components/assignment-form.tsx`
+              to stop exactly that). One region, one utterance; two static nodes,
+              an entire results list apart.
           */}
           <div
             role="status"
@@ -235,7 +258,7 @@ export function MemberParentLinkDialog({
                 </Button>
               </div>
             </div>
-          ) : search.trim().length >= 2 && searchResults.length > 0 ? (
+          ) : showingResultsList ? (
             <div>
               <div className="max-h-56 overflow-y-auto rounded-md border border-border">
                 {searchResults.map((candidate) => (

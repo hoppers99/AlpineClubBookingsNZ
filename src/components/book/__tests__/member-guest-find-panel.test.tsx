@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemberGuestFindPanel } from "@/components/book/member-guest-find-panel";
 import { MEMBER_GUEST_FIND_COPY } from "@/lib/member-guest-find";
@@ -446,11 +446,17 @@ describe("the rate-limited and error states still render", () => {
     hint twice in browse mode, which the repo treats as a defect in its own
     right (`hut-leaders/_components/assignment-form.tsx`).
 
+  The status line and the pick-list are gated by ONE expression
+  (`showCandidateList`), so the panel can never announce a caveat about rows it
+  is not drawing; that property is pinned directly rather than left to the shape
+  of the code.
+
   Mutation probes run against this block, each confirmed to turn it red: drop
   the truncation clause from `announcement`; announce a string other than
   `MEMBER_GUEST_FIND_COPY.truncated`; drop `truncated`, `candidates.length > 1`
   or `!selected` from the `showTruncationHint` gate; read `truncated` from
-  RESULTS only, so it collapses while a search is in flight.
+  RESULTS only, so it collapses while a search is in flight; give the pick-list
+  block its own copy of the conditions and raise its row floor.
 */
 describe("#2460 — the truncation hint is announced to screen readers", () => {
   const TEN = Array.from({ length: 10 }, (_, i) => ({
@@ -574,5 +580,52 @@ describe("#2460 — the truncation hint is announced to screen readers", () => {
       release?.();
     });
     expect(screen.getAllByText(MEMBER_GUEST_FIND_COPY.truncated)).toHaveLength(1);
+  });
+
+  it("never speaks the caveat without the list it is about on screen", async () => {
+    // The announcement is assembled OUTSIDE the pick-list block, so "are there
+    // rows?" and "may the status line add the caveat?" are two questions that
+    // could come to disagree (#2460 review). They are one expression in the
+    // component (`showCandidateList`); this pins the property, so a future
+    // change to what puts rows on screen has to keep them together.
+    for (const body of [
+      { candidates: TEN, truncated: true },
+      { candidates: TEN, truncated: false },
+      { candidates: TEN.slice(0, 1), truncated: true },
+      { candidates: [], truncated: true },
+    ]) {
+      cleanup();
+      stubFetch(() => jsonResponse(body));
+      renderPanel();
+      await type("household@example.com");
+      fireEvent.click(screen.getByRole("button", { name: "Find" }));
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      await waitFor(() => expect(status().textContent).not.toBe(""));
+      if (!status().textContent?.includes(MEMBER_GUEST_FIND_COPY.truncated)) continue;
+      // Something was said about truncation: the rows it qualifies must be on
+      // screen, and so must the visible copy of the same sentence.
+      expect(screen.getByRole("listbox")).toBeInTheDocument();
+      expect(screen.getAllByRole("option").length).toBeGreaterThan(1);
+      expect(screen.getAllByText(MEMBER_GUEST_FIND_COPY.truncated)).toHaveLength(1);
+    }
+  });
+
+  it("keeps the announced copy and the drawn copy an entire list apart", async () => {
+    // Both the status line and the visible hint carry the sentence and neither
+    // is `aria-hidden` — a deliberate call (#2460 review): the drawn hint is the
+    // copy anchored to the place the list stops, and hiding on-screen text from
+    // assistive technology to tidy a duplicate is the worse trade. What makes it
+    // benign is the ORDER — status line, then every candidate row, then the
+    // visible hint — so browse mode never reads the sentence twice in
+    // succession.
+    const listbox = await search({ candidates: TEN, truncated: true });
+    const drawn = screen.getAllByText(MEMBER_GUEST_FIND_COPY.truncated)[0]!;
+    expect(status().contains(drawn)).toBe(false);
+    expect(
+      status().compareDocumentPosition(listbox) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      drawn.compareDocumentPosition(listbox) & Node.DOCUMENT_POSITION_PRECEDING,
+    ).toBeTruthy();
   });
 });

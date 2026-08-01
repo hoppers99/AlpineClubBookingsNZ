@@ -263,12 +263,17 @@ describe("#2425 — where the truncated flag comes from", () => {
   child still pushes the visible content above it around. It goes above the
   results, never below them.
 
+  The region and the list are gated by ONE expression (`showingResultsList`), so
+  the announcement can never be made about content that is not drawn; that
+  property is pinned directly rather than left to the shape of the code.
+
   Mutation probes run against this block, each confirmed to turn it red: drop
   the `role="status"` attribute; move the wrapper inside the results branch of
   the ternary; move it below the ternary, where it can end up last; render the
   wrapper only when truncated; announce a different sentence from the drawn one;
   drop `resultsTruncated`, `searchResults.length` or `!selected` from the
-  `showTruncationHint` gate.
+  `showTruncationHint` gate; give the ternary its own copy of the conditions and
+  raise its character floor to three.
 */
 describe("#2460 — the parent picker announces the truncation hint", () => {
   function region() {
@@ -342,5 +347,54 @@ describe("#2460 — the parent picker announces the truncation hint", () => {
     // is — the state the gap would be visible in.
     renderDialog({ selected: null, search: "", searchResults: [] });
     expect(region().parentElement?.lastElementChild).not.toBe(region());
+  });
+
+  it("never speaks about a list that is not on screen", () => {
+    // The announcement is assembled OUTSIDE the results branch, so "is there a
+    // list?" and "is the region allowed to talk?" are two questions that could
+    // come to disagree — announcing "Keep typing to narrow this down." over
+    // content nobody can see (#2460 review). They are one expression in the
+    // component (`showingResultsList`); this pins the property itself, so a
+    // future change to what puts rows on screen — a three-character floor, say
+    // — has to keep them together or turn this red.
+    const cases: Record<string, unknown>[] = [
+      { search: "", searchResults: [], resultsTruncated: true },
+      { search: "k", resultsTruncated: true },
+      // Exactly at the floor: the case a raised floor would break first.
+      { search: "ki", resultsTruncated: true },
+      { search: "  ", resultsTruncated: true },
+      { search: "kingi", searchResults: [], resultsTruncated: true },
+      { search: "kingi", resultsTruncated: true },
+      { search: "kingi", resultsTruncated: false },
+      { selected: buildCandidate(1), resultsTruncated: true },
+    ];
+    for (const props of cases) {
+      cleanup();
+      renderDialog(props);
+      if (region().textContent === "") continue;
+      // Something was said: the rows it is about must be on screen, and so must
+      // the visible copy of the same sentence.
+      const rows = screen.getAllByRole("button", { name: /Kingi/ });
+      expect(rows.length).toBeGreaterThan(0);
+      expect(
+        screen.getAllByText(HINT).filter((node) => node !== region()),
+      ).toHaveLength(1);
+    }
+  });
+
+  it("keeps the announced copy and the drawn copy an entire list apart", () => {
+    // Both nodes carry the sentence and neither is `aria-hidden`, which is a
+    // deliberate call (#2460 review): the drawn hint is the copy anchored to
+    // the place the list stops, and hiding on-screen text from assistive
+    // technology to tidy a duplicate is the worse trade. What makes it benign
+    // is the ORDER — region first, then every candidate row, then the visible
+    // hint — so browse mode never reads the sentence twice in succession.
+    renderDialog({ resultsTruncated: true });
+    const drawn = screen.getAllByText(HINT).filter((node) => node !== region())[0]!;
+    const rows = screen.getAllByRole("button", { name: /Kingi/ });
+    const before = region().compareDocumentPosition(rows[0]!);
+    const after = drawn.compareDocumentPosition(rows[rows.length - 1]!);
+    expect(before & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(after & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
   });
 });
