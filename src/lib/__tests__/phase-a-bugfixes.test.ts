@@ -213,7 +213,7 @@ describe("#21: Kiosk formatDate uses local date, not UTC", () => {
     expect(formatDate(d)).toBe("2026-01-05");
   });
 
-  it("kiosk page source uses local formatDate (not toISOString)", async () => {
+  it("kiosk page source derives 'today' from the club timezone, not the device clock (#2474 supersedes the #21 local-formatDate fix)", async () => {
     const fs = await import("fs");
     const path = await import("path");
     const kioskPath = path.resolve(
@@ -226,16 +226,15 @@ describe("#21: Kiosk formatDate uses local date, not UTC", () => {
       "page.tsx"
     );
     const content = fs.readFileSync(kioskPath, "utf-8");
-    // The formatDate function should use getFullYear/getMonth/getDate
-    expect(content).toContain("date.getFullYear()");
-    expect(content).toContain("date.getMonth()");
-    expect(content).toContain("date.getDate()");
-    // Should NOT use toISOString for date formatting
-    const formatFnMatch = content.match(
-      /function formatDate[\s\S]*?return[\s\S]*?}/
-    );
-    expect(formatFnMatch).toBeTruthy();
-    expect(formatFnMatch![0]).not.toContain("toISOString");
+    // #21 fixed a UTC bug by switching the kiosk to the DEVICE's local calendar day.
+    // #2474 supersedes that: the kiosk's "today" is now the CLUB's NZ day
+    // (todayDateOnlyForTimeZone), so a mis-set tablet clock/zone cannot select the
+    // wrong lodge night. The bespoke local formatDate helper was removed entirely.
+    expect(content).toContain("todayDateOnlyForTimeZone");
+    // The old device-local date derivation must be gone (getFullYear-based day
+    // extraction and the bespoke formatDate helper both removed by #2474).
+    expect(content).not.toContain("date.getFullYear()");
+    expect(content).not.toMatch(/function formatDate/);
   });
 });
 
