@@ -10,7 +10,7 @@ import {
   resolveLogoFields,
 } from "@/lib/club-theme-schema";
 import type { ClubThemeUpdateInput } from "@/lib/club-theme-update-schema";
-import { storableLogoDataUrl } from "@/lib/media-image";
+import { storableLogoDataUrl } from "@/lib/image-metadata";
 
 /** Sentinel distinguishing "the read threw" from "there is no row" (#2420 F4). */
 const READ_FAILED = Symbol("club-theme-read-failed");

@@ -6,7 +6,7 @@ import {
   normaliseThemeValues,
   resolveLogoFields,
 } from "@/lib/club-theme-schema";
-import { storableLogoDataUrl } from "@/lib/media-image";
+import { storableLogoDataUrl } from "@/lib/image-metadata";
 import { sanitizePageContentHtml } from "@/lib/page-content-html";
 import {
   canUnpublishPage,
