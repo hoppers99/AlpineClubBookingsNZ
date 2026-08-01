@@ -818,7 +818,7 @@ balance-sheet views) now resolve the short code server-side like every other
 producer: one read per server process per TTL, shared with every other caller,
 and a null one still degrades to the generic link.
 
-Two honest bounds on that. First, the organisation route is **finance-only** —
+Three honest bounds on that. First, the organisation route is **finance-only** —
 settled, not open (owner decision, #2314, 2 August 2026): it asks for
 `finance:view` in its own handler rather than leaving the area to be inferred
 from the request path, so the answer no longer depends on a header
@@ -834,6 +834,17 @@ Second, the short code arrives from a client fetch, so between mount and
 resolution the links render their degraded `href`; a very fast first click gets
 the session-scoped URL. That window is the pre-existing behaviour of the Xero
 Sync page's button, now shared by four more pages.
+Third, the 12-hour cache is per PROCESS and the invalidation bus
+(`xero-organisation-cache-bus.ts`) reaches only the process that handled the
+connect/disconnect. So after a reconnect to a **different** organisation, a web,
+cron or worker process that did not handle it can keep serving the previous
+organisation's short code until its entry expires. Accepted for screens — they
+re-render, and re-reading per render is the cost the shared cache exists to
+avoid; the alternative (stamping the summary with the `XeroToken` tenant id and
+re-reading that row to compare) would put a database round trip on every cache
+hit, including the operations list an admin polls. Not accepted for email: see
+`confirmLive` under rule 3. The bound is stated in full next to
+`ORG_CACHE_TTL_MS` in `src/lib/xero-organisation.ts`.
 
 `getXeroConnectedOrganisation` is single-flight and caches **failures** as well
 as successes. A present-but-failing connection (revoked refresh token awaiting
