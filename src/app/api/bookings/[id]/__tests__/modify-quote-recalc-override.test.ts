@@ -82,6 +82,9 @@ vi.mock("@/lib/membership-type-policy", () => ({
 }));
 vi.mock("@/lib/booking-modify", () => ({
   isQuotePricedBooking: vi.fn().mockResolvedValue(false),
+  // #2337: no link in these fixtures, so both new gate collaborators are inert.
+  isMemberWholeLodgeBooking: vi.fn().mockResolvedValue(false),
+  resolveGuestMemberLinks: vi.fn().mockReturnValue([]),
   resolveGuestNameUpdates: vi.fn().mockReturnValue([]),
   lockedNightPricesForGuest: vi.fn().mockReturnValue(null),
   calculateModificationSettlementOptions: vi.fn().mockResolvedValue(null),

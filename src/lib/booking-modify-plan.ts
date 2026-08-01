@@ -649,6 +649,11 @@ export async function prepareGuestPlan(
       const link = linkByGuestId.get(entry.guest.id);
       return {
         bookingGuestId: entry.guest.id,
+        // #2337: the link keeps the placeholder's OWN age tier (member whole-lodge
+        // placeholders are all ADULT), so it re-rates member-vs-non-member at the
+        // SAME age class the booking reserved and held. Changing the age class
+        // would change capacity/headcount and break the capacity-invariant the
+        // link is required to hold; an age-class change stays a remove-and-re-add.
         ageTier: entry.guest.ageTier as AgeTier,
         // #2337: a linked placeholder enters pricing with the MEMBER identity, so
         // the membership-type policy and the season-rate resolver price it at the

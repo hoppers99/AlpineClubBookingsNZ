@@ -337,6 +337,15 @@ interface BookingData {
     /** `MemberGuestSettings.approvalRequired` (D-3) — copy only. */
     approvalRequired: boolean;
   };
+  /**
+   * #2337: true when this booking is a MEMBER whole-lodge booking (not a SCHOOL
+   * one) AND the viewer is an admin/officer — the exact audience and booking
+   * class the placeholder→member link is fenced to. Server-computed
+   * (`isMemberWholeLodgeBooking`), never guessed here, so the panel only offers
+   * the "Link to member" control where the save path will honour it. Absent — not
+   * false-valued — on every other booking, so their payload is unchanged.
+   */
+  memberWholeLodge?: boolean;
 }
 
 // #2266: an eligible promo chip, as returned by GET /api/promo-codes/available
@@ -643,6 +652,21 @@ export function EditBookingPanel({
   const [quoteLoading, setQuoteLoading] = useState(false);
   const [quoteError, setQuoteError] = useState("");
   const [settlementMethod, setSettlementMethod] = useState<"card" | "credit" | null>(null);
+
+  // #2337: the placeholder→member links this edit will apply, keyed by the
+  // existing guest row id. `linkFinderGuestId` is the row currently choosing a
+  // member through the reused member finder.
+  const [linkedGuestMembers, setLinkedGuestMembers] = useState<
+    Record<string, MemberGuestCandidate>
+  >({});
+  const [linkFinderGuestId, setLinkFinderGuestId] = useState<string | null>(null);
+  // The link control is fenced to exactly the audience + booking class the save
+  // path honours, and requires the member finder (the reused member search).
+  const memberLinkEnabled =
+    Boolean(booking.memberWholeLodge) &&
+    booking.viewerRole === "ADMIN" &&
+    Boolean(booking.memberGuest?.enabled) &&
+    !overrideEnabled;
 
   // Add guest form
   const [showAddForm, setShowAddForm] = useState(false);
@@ -1108,6 +1132,13 @@ export function EditBookingPanel({
     if (guestNameUpdates.length > 0) {
       body.guestUpdates = guestNameUpdates;
     }
+    // #2337: the placeholder→member links, keyed to existing guest rows.
+    const links = Object.entries(linkedGuestMembers).map(
+      ([guestId, candidate]) => ({ guestId, memberId: candidate.memberId }),
+    );
+    if (links.length > 0) {
+      body.linkGuestToMember = links;
+    }
     if (promoAction.type === "remove") {
       body.removePromoCode = true;
     } else if (promoAction.type === "new") {
@@ -1153,6 +1184,7 @@ export function EditBookingPanel({
     checkOut,
     getExistingGuestRange,
     guestNameUpdates,
+    linkedGuestMembers,
     isInProgressEdit,
     perGuestDatesEnabled,
     multiDateRangesEnabled,
@@ -1288,6 +1320,27 @@ export function EditBookingPanel({
     setRemovedGuestIds((prev) => {
       const next = new Set(prev);
       next.delete(guestId);
+      return next;
+    });
+  }
+
+  // #2337: record that a placeholder row is now linked to a member. Clears the
+  // settlement choice and the promo (a re-rate changes the total), exactly as
+  // adding a member guest does — the quote is refetched from the serialised
+  // payload, and neither is recomputed by that refetch.
+  function handleLinkGuestToMember(guestId: string, candidate: MemberGuestCandidate) {
+    setAppliedNewPromo(null);
+    setPromoAction({ type: "keep" });
+    setSettlementMethod(null);
+    setLinkedGuestMembers((prev) => ({ ...prev, [guestId]: candidate }));
+    setLinkFinderGuestId(null);
+  }
+
+  function handleUnlinkGuest(guestId: string) {
+    setSettlementMethod(null);
+    setLinkedGuestMembers((prev) => {
+      const next = { ...prev };
+      delete next[guestId];
       return next;
     });
   }
@@ -2013,6 +2066,38 @@ export function EditBookingPanel({
               onCancel={closeMemberGuestFinder}
             />
           ) : null}
+          {/*
+            #2337: the SAME member finder, reused to link a placeholder to a
+            member rather than to add a new guest. `linkFinderGuestId` names the
+            placeholder row that opened it; the chosen candidate becomes that
+            row's member identity, and the panel re-quotes to show the re-rate.
+          */}
+          {memberLinkEnabled && linkFinderGuestId ? (
+            <EditMemberGuestFinder
+              bookingId={booking.id}
+              actingAsAdmin
+              openSearchEnabled={booking.memberGuest?.openSearchEnabled ?? false}
+              approvalRequired={booking.memberGuest?.approvalRequired ?? false}
+              existingMemberIds={[
+                ...remainingGuests
+                  .map((guest) => guest.memberId)
+                  .filter((id): id is string => Boolean(id)),
+                ...addedGuests
+                  .map((guest) => guest.memberId)
+                  .filter((id): id is string => Boolean(id)),
+                ...Object.values(linkedGuestMembers).map(
+                  (candidate) => candidate.memberId,
+                ),
+              ]}
+              atCapacity={false}
+              addError={null}
+              refusedCandidate={null}
+              onAdd={(candidate) =>
+                handleLinkGuestToMember(linkFinderGuestId, candidate)
+              }
+              onCancel={() => setLinkFinderGuestId(null)}
+            />
+          ) : null}
           {isInProgressEdit ? (
             <p className="text-sm text-muted-foreground">
               Added guests start on {minEditableDate}. Removing an existing
@@ -2166,10 +2251,18 @@ export function EditBookingPanel({
           {/* Existing guests */}
           {booking.guests.map((guest) => {
             const isRemoved = removedGuestIds.has(guest.id);
+            // #2337: this placeholder's pending member link, if any.
+            const linkedMember = linkedGuestMembers[guest.id];
+            const isLinked = Boolean(linkedMember);
+            // Only an unlinked, unremoved placeholder on a member whole-lodge
+            // booking may be linked — the same fence the server enforces.
+            const canLinkGuest =
+              memberLinkEnabled && !guest.isMember && !isRemoved && !isLinked;
             const canEditGuestName =
               nonMemberGuestNamesEditable &&
               !guest.isMember &&
               !isRemoved &&
+              !isLinked &&
               !overrideEnabled;
             // Fully paid: the field is open only for a spelling correction; a
             // change of who the booking is for must go through the office (#1386).
@@ -2227,6 +2320,14 @@ export function EditBookingPanel({
                   <p className="text-sm text-muted-foreground">
                     {getAgeTierLabel(ageTierOptions, guest.ageTier)} &middot; {guest.isMember ? "Member" : "Non-member"}
                   </p>
+                  {/* #2337: what saving this link will do, before it is saved. */}
+                  {isLinked ? (
+                    <p className="text-sm text-success-11">
+                      Linking to {linkedMember.firstName} {linkedMember.lastName} —
+                      re-rated at the member rate. The price change is shown below
+                      before you save.
+                    </p>
+                  ) : null}
                   {/*
                     MG4 (#2309): the two helper sentences the signed-off mockup
                     draws under a member-guest row, and the reason they are not
@@ -2285,6 +2386,25 @@ export function EditBookingPanel({
                 </div>
                 <div className="flex items-center gap-3">
                   <span className="text-sm">{formatCents(guest.priceCents)}</span>
+                  {/* #2337: link an unnamed placeholder to a member (admin, member
+                      whole-lodge only). Unlink reverts to the placeholder. */}
+                  {isLinked ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleUnlinkGuest(guest.id)}
+                    >
+                      Unlink
+                    </Button>
+                  ) : canLinkGuest ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setLinkFinderGuestId(guest.id)}
+                    >
+                      Link to member
+                    </Button>
+                  ) : null}
                   {isRemoved ? (
                     <Button
                       variant="outline"
