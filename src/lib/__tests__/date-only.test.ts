@@ -7,6 +7,7 @@ import {
   formatLocalDateOnly,
   getTodayDateOnly,
   isDateOnlyString,
+  localCalendarDayToDateOnly,
   endOfDateOnlyForTimeZone,
   parseDateOnly,
   startOfDateOnlyForTimeZone,
@@ -173,5 +174,51 @@ describe("todayDateOnlyForTimeZone", () => {
     vi.setSystemTime(new Date("2026-07-07T13:00:00.000Z"));
 
     expect(todayDateOnlyForTimeZone()).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+});
+
+describe("localCalendarDayToDateOnly (#2264)", () => {
+  // A date picker hands back `new Date(year, month, day)` — midnight where the
+  // BROWSER is. Formatting that instant with a club-pinned formatter names the
+  // day as Auckland sees it, which is a DIFFERENT day for anyone far enough
+  // east. These pin the re-encoding that removes the mismatch.
+  const NZ = new Intl.DateTimeFormat("en-NZ", {
+    timeZone: "Pacific/Auckland",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+
+  it("re-encodes a local-midnight calendar day at UTC midnight", () => {
+    const picked = new Date(2026, 3, 16); // 16 April, browser-local midnight
+    expect(localCalendarDayToDateOnly(picked).toISOString()).toBe(
+      "2026-04-16T00:00:00.000Z"
+    );
+  });
+
+  it("keeps the picked day when a club-pinned formatter renders it", () => {
+    const picked = new Date(2026, 3, 1); // 1 April, browser-local midnight
+    expect(NZ.format(localCalendarDayToDateOnly(picked))).toBe("1 Apr 2026");
+  });
+
+  it("names the same day the submitted value encodes, in club time", () => {
+    // `formatLocalDateOnly` is what the booking request actually carries. The
+    // contract that matters is that the club-pinned SCREEN text and the
+    // submitted VALUE name the same night — which is exactly what went wrong
+    // when a club-pinned formatter was handed the raw picker instant.
+    const picked = new Date(2026, 11, 31);
+    const submitted = formatLocalDateOnly(picked); // "2026-12-31"
+    expect(NZ.format(localCalendarDayToDateOnly(picked))).toBe(
+      NZ.format(parseDateOnly(submitted))
+    );
+  });
+
+  it("ignores a time of day, keeping only the local calendar date", () => {
+    // The booking wizard derives a hold deadline by subtracting whole days in
+    // milliseconds, which lands off midnight across a DST change.
+    const offMidnight = new Date(2026, 3, 16, 23, 30);
+    expect(localCalendarDayToDateOnly(offMidnight).toISOString()).toBe(
+      "2026-04-16T00:00:00.000Z"
+    );
   });
 });

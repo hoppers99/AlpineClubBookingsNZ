@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/select";
 import { type LodgeOption } from "@/components/lodge-select";
 import { sumDeferredGuestPortionCents } from "@/lib/deferred-guest-portion";
+import { localCalendarDayToDateOnly } from "@/lib/date-only";
 import { formatNZWeekdayDate } from "@/lib/nzst-date";
 import { PromoCodeInput, type PromoResult } from "@/components/promo-code-input";
 import { TimePicker } from "@/components/time-picker";
@@ -229,7 +230,12 @@ export function ReviewStep({
     checkIn && holdDays > 0
       ? new Date(checkIn.getTime() - holdDays * 24 * 60 * 60 * 1000)
       : null;
-  const holdDeadlineLabel = holdDeadline ? formatNZWeekdayDate(holdDeadline) : null;
+  // #2264: these are calendar days the picker encoded at the BROWSER's
+  // midnight, so re-encode before the club-pinned formatter reads them —
+  // otherwise a member abroad is shown a different night than they are booking.
+  const holdDeadlineLabel = holdDeadline
+    ? formatNZWeekdayDate(localCalendarDayToDateOnly(holdDeadline))
+    : null;
 
   useEffect(() => {
     if (!provisionalHoldWillBeCreated && cancelIfGuestsBumped) {
@@ -254,13 +260,13 @@ export function ReviewStep({
             <div>
               <span className="text-muted-foreground">Check-in:</span>{" "}
               <span className="font-medium">
-                {formatNZWeekdayDate(checkIn!)}
+                {formatNZWeekdayDate(localCalendarDayToDateOnly(checkIn!))}
               </span>
             </div>
             <div>
               <span className="text-muted-foreground">Check-out:</span>{" "}
               <span className="font-medium">
-                {formatNZWeekdayDate(checkOut!)}
+                {formatNZWeekdayDate(localCalendarDayToDateOnly(checkOut!))}
               </span>
             </div>
             <div>

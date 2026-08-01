@@ -6,7 +6,7 @@ import { MemberGuestFindPanel } from "@/components/book/member-guest-find-panel"
 import { GuestForm, type GuestData } from "@/components/guest-form";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { formatLocalDateOnly } from "@/lib/date-only";
+import { formatLocalDateOnly, localCalendarDayToDateOnly } from "@/lib/date-only";
 import {
   getFamilyMemberBookingActionLabel,
   getFamilyMemberBookingBlockMessage,
@@ -206,7 +206,8 @@ export function GuestsStep({
           Add Guests
           {checkIn && checkOut && (
             <span className="ml-2 text-sm font-normal text-muted-foreground">
-              {formatNZDate(checkIn)} - {formatNZDate(checkOut)} ({nights} night{nights !== 1 ? "s" : ""})
+              {formatNZDate(localCalendarDayToDateOnly(checkIn))} -{" "}
+              {formatNZDate(localCalendarDayToDateOnly(checkOut))} ({nights} night{nights !== 1 ? "s" : ""})
             </span>
           )}
         </CardTitle>

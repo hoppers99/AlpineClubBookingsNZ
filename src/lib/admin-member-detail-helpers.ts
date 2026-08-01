@@ -224,8 +224,19 @@ export function memberUsesSamePostalAddress(member: NullableMemberAddress) {
   return shouldDefaultPostalSameAsPhysical(member)
 }
 
+/**
+ * A member-facing date, in club time.
+ *
+ * #2264: the `toLocaleDateString` call this replaced quietly rendered the
+ * string "Invalid Date" for a value it could not parse; `Intl.format` THROWS a
+ * RangeError instead. This helper is fed straight from API payloads and from
+ * fallbacks like `joinedDate || createdAt`, so an absent or malformed value has
+ * to degrade to something readable rather than take a whole member page down
+ * with it.
+ */
 export function formatMemberDateNz(value: string) {
-  return formatNZDate(new Date(value))
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? "—" : formatNZDate(parsed)
 }
 
 export function formatMemberPhone(parts: {
