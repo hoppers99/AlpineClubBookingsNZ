@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   getParentEmailSourceId,
+  buildMemberFacingParentLinks,
   buildParentLinks,
   matchParentLinkIdForNotification,
   resolveInheritedEmailSourceId,
@@ -344,5 +345,231 @@ describe("buildParentLinks", () => {
 
   it("returns an empty list when there are no parents", () => {
     expect(buildParentLinks({})).toEqual([]);
+  });
+
+  it("keeps the email — admin surfaces still see it (#2424)", () => {
+    const links = buildParentLinks({ parent: { id: "p1", ...base } });
+    expect(links[0].email).toBe("a@b.test");
+  });
+});
+
+describe("buildMemberFacingParentLinks (#2424)", () => {
+  const base = {
+    firstName: "A",
+    lastName: "B",
+    email: "a@b.test",
+  };
+
+  /**
+   * A parent row carrying EVERY field the selects produce, so the key-set
+   * assertions below are testing the whitelist rather than an absent fixture.
+   */
+  const fullParent = {
+    ...base,
+    ageTier: "YOUTH",
+    active: true,
+    canLogin: false,
+    inheritEmailFromId: "gp1",
+  };
+
+  /**
+   * The EXACT key sets each branch may emit. Asserted as sorted key arrays
+   * rather than as "does not have `email`", because a builder that stopped
+   * whitelisting — `Object.assign(visible, link)` in the sharing branch, say —
+   * satisfies every field-by-field assertion while leaking the parent's whole
+   * row, `familyGroupMemberships` included.
+   */
+  const IN_GROUP_KEYS = [
+    "active",
+    "ageTier",
+    "canLogin",
+    "email",
+    "firstName",
+    "id",
+    "inheritEmailFromId",
+    "lastName",
+    "parentLinkType",
+  ];
+  /**
+   * Out of group there is no email AND no status: `ageTier`, `active` and
+   * `canLogin` are facts about a person the viewer has no family relationship
+   * with, and `ageTier` says whether a named stranger is a child. No
+   * member-facing client reads any of them.
+   */
+  const OUT_OF_GROUP_KEYS = [
+    "firstName",
+    "id",
+    "inheritEmailFromId",
+    "lastName",
+    "parentLinkType",
+  ];
+
+  it("returns the email when the parent shares a group with the viewer", () => {
+    const links = buildMemberFacingParentLinks(
+      {
+        parent: {
+          id: "p1",
+          ...base,
+          familyGroupMemberships: [{ familyGroupId: "g1" }],
+        },
+      },
+      ["g1"],
+    );
+    expect(links[0].email).toBe("a@b.test");
+  });
+
+  it("emits EXACTLY the whitelist for a parent in the viewer's group", () => {
+    const links = buildMemberFacingParentLinks(
+      {
+        parent: {
+          id: "p1",
+          ...fullParent,
+          familyGroupMemberships: [{ familyGroupId: "g1" }],
+        },
+      },
+      ["g1"],
+    );
+    expect(Object.keys(links[0]).sort()).toEqual(IN_GROUP_KEYS);
+    expect(links[0]).not.toHaveProperty("familyGroupMemberships");
+  });
+
+  it("emits EXACTLY the whitelist for a parent outside the viewer's groups", () => {
+    const links = buildMemberFacingParentLinks(
+      {
+        parent: {
+          id: "p1",
+          ...fullParent,
+          familyGroupMemberships: [{ familyGroupId: "g-other" }],
+        },
+      },
+      ["g1"],
+    );
+    expect(Object.keys(links[0]).sort()).toEqual(OUT_OF_GROUP_KEYS);
+    expect(links[0]).not.toHaveProperty("familyGroupMemberships");
+  });
+
+  it("withholds a stranger's status fields, not just their address", () => {
+    // #2282 records parentage at any age, so `ageTier` on an out-of-group
+    // parent would tell the viewer that a named stranger is a YOUTH.
+    const links = buildMemberFacingParentLinks(
+      {
+        parent: {
+          id: "p1",
+          ...fullParent,
+          familyGroupMemberships: [{ familyGroupId: "g-other" }],
+        },
+      },
+      ["g1"],
+    );
+    expect(links[0]).not.toHaveProperty("ageTier");
+    expect(links[0]).not.toHaveProperty("active");
+    expect(links[0]).not.toHaveProperty("canLogin");
+    // The notifications marker still works: it matches on this id.
+    expect(links[0].inheritEmailFromId).toBe("gp1");
+  });
+
+  it("omits the email when no group is shared, keeping name and link type", () => {
+    const links = buildMemberFacingParentLinks(
+      {
+        parent: {
+          id: "p1",
+          ...base,
+          familyGroupMemberships: [{ familyGroupId: "g-other" }],
+        },
+      },
+      ["g1"],
+    );
+    expect(links[0]).toEqual({
+      id: "p1",
+      firstName: "A",
+      lastName: "B",
+      parentLinkType: "PRIMARY",
+    });
+    expect(links[0]).not.toHaveProperty("email");
+  });
+
+  it("omits the email for a parent in no group at all", () => {
+    const links = buildMemberFacingParentLinks(
+      { parent: { id: "p1", ...base, familyGroupMemberships: [] } },
+      ["g1"],
+    );
+    expect(links[0]).not.toHaveProperty("email");
+  });
+
+  it("omits the email when the viewer belongs to no group", () => {
+    const links = buildMemberFacingParentLinks(
+      {
+        parent: {
+          id: "p1",
+          ...base,
+          familyGroupMemberships: [{ familyGroupId: "g1" }],
+        },
+      },
+      [],
+    );
+    expect(links[0]).not.toHaveProperty("email");
+  });
+
+  it("carries the optional fields through for a parent in the group", () => {
+    const links = buildMemberFacingParentLinks(
+      {
+        parent: {
+          id: "p1",
+          ...base,
+          ageTier: "YOUTH",
+          active: true,
+          canLogin: false,
+          inheritEmailFromId: "gp1",
+          familyGroupMemberships: [{ familyGroupId: "g1" }],
+        },
+      },
+      ["g1"],
+    );
+    expect(links[0]).toMatchObject({
+      ageTier: "YOUTH",
+      active: true,
+      canLogin: false,
+      inheritEmailFromId: "gp1",
+    });
+  });
+
+  it("is a whitelist: a field the query adds later cannot leak through", () => {
+    const links = buildMemberFacingParentLinks(
+      {
+        parent: {
+          id: "p1",
+          ...base,
+          familyGroupMemberships: [{ familyGroupId: "g-other" }],
+          // A future select could add contact fields; the builder copies only
+          // the fields it names, so this never reaches the payload.
+          phoneNumber: "0211234567",
+        } as Parameters<typeof buildMemberFacingParentLinks>[0]["parent"],
+      },
+      ["g1"],
+    );
+    expect(links[0]).not.toHaveProperty("phoneNumber");
+    expect(links[0]).not.toHaveProperty("familyGroupMemberships");
+  });
+
+  it("decides per parent, not per member", () => {
+    const links = buildMemberFacingParentLinks(
+      {
+        parent: {
+          id: "p1",
+          ...base,
+          email: "in@b.test",
+          familyGroupMemberships: [{ familyGroupId: "g1" }],
+        },
+        secondaryParent: {
+          id: "p2",
+          ...base,
+          email: "out@b.test",
+          familyGroupMemberships: [{ familyGroupId: "g-other" }],
+        },
+      },
+      ["g1"],
+    );
+    expect(links[0].email).toBe("in@b.test");
+    expect(links[1]).not.toHaveProperty("email");
   });
 });

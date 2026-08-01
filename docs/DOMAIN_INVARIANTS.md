@@ -3681,6 +3681,47 @@ classification, on the write routes and in the search's SQL alike. This is a
 restoration of what the ADULT clause excluded by accident, not a narrowing of
 "any age": every real age tier, INFANT included, may be recorded as a parent.
 
+**What one MEMBER may see about another member's parent** (#2424, owner decision
+2026-08-01). `GET /api/members/family` and `GET /api/member/onboarding` both
+list, for every member of the viewer's family groups, the parents recorded
+against them — and a parent link carries no shared-group requirement of its own,
+so a listed parent can be somebody the viewer has no family relationship with at
+all. The member-facing link is therefore built by WHITELIST, in two layers:
+
+- **Always, however the viewer is related: `id`, `firstName`, `lastName`,
+  `parentLinkType`, `inheritEmailFromId` — and nothing else.** That is the
+  literal always-list, not a summary of one. Name and link type are what let a
+  family see who the club believes their child's parents are;
+  `inheritEmailFromId` is what the "(notifications)" marker on the family page
+  is matched on, and an id pointing at whoever holds the mailbox is not itself a
+  contact detail.
+- **Only when the VIEWER shares a family group with that parent: `email`, plus
+  the status fields `ageTier`, `active` and `canLogin`.** For a parent in none
+  of the viewer's groups all four are ABSENT from the JSON — for the viewer's
+  own parents as much as for anyone else's. The address is the point, but the
+  status fields go with it because they are facts about a person the viewer has
+  no family relationship with, and `ageTier` in particular would say whether a
+  named stranger is a child. #2282 made that materially wider by allowing
+  parentage at any age, so what this payload could reach stopped being other
+  adults' details and started including children's. No member-facing client
+  reads any of the three: the family page renders a parent as a name plus the
+  notifications marker, and the onboarding wizard does not read parent links at
+  all.
+
+The rule is enforced server-side in `buildMemberFacingParentLinks`
+(`src/lib/member-parent-links.ts`) and never by a client declining to render a
+field: the JSON payload is the exposure, whatever the screen shows. Because the
+visible link is assembled field by field rather than by deleting from a spread,
+a column added to the query later cannot leak by default — and the tests pin
+each branch's key set exactly, so widening either one has to be deliberate. Both
+payloads read each parent's own `familyGroupMemberships` to decide — the family
+service inside `FAMILY_MEMBER_PROFILE_SELECT`, onboarding through
+`MEMBER_ONBOARDING_FAMILY_SELECT`, which exists so the onboarding GATE select
+(run on every authenticated page render) does not pay for two joins it never
+reads. **Admin surfaces are unchanged** — the admin member detail payload builds
+its links from `buildParentLinks`, which still carries the email, because an
+administrator's view of a member's contact details is not what this narrows.
+
 Alongside the cap, the admin link route requires: the parent must be active,
 non-archived and not an organisation account (**at any age tier**); the target
 must not be archived, must not already be linked to that parent, must not

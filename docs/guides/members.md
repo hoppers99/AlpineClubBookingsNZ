@@ -167,6 +167,14 @@ prose here rather than with a screenshot:
   it says **"Keep typing to narrow this down."** underneath — the same sentence
   the booking screens use when a member search is cut short. If you see it, add
   another letter or two, or type the person's email address or member ID.
+  **A parent link is not a licence to see that parent's contact details** (#2424).
+  You see them here, as an administrator, whatever the link. Members do not:
+  their own family page lists parents by name and has never printed an address
+  on it, and the club now **only sends a parent's email address to a member's
+  browser when that parent is in one of the member's own family groups**. For a
+  parent outside them all, all that member's browser is given is a name.
+  Recording a parent therefore never puts that person's address in the hands of
+  a family they are not part of.
   **Who the club emails is decided separately, and always resolves to an adult.**
   A dependent's club email goes to the nearest adult at or above them in the
   family who has a real address, so a dependent added under a young parent has
