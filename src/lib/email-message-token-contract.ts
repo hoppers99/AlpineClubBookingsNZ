@@ -50,6 +50,13 @@ export const OPTIONAL_TEMPLATE_TOKENS: Record<string, readonly string[]> = {
   // line (#2267) is composed whole by the sender and empty for a lodge with
   // no code recorded — declared here so guard 4 proves the default body
   // survives its absence (it was live-but-undeclared until the #2320 review).
+  // #2328: {{creditNote}} is deliberately NOT listed HERE. It is optional in
+  // exactly the same sense (empty for every booking that used no account
+  // credit), but guard 5 requires a declared token to appear in the default body
+  // it claims to describe, and this one does not: the shipped body carries the
+  // credit lines inside {{paymentOutcome}}, which the sender composes. That is
+  // precisely the shape EMPTYABLE_OVERRIDE_TOKENS below was added for, and it is
+  // declared there instead.
   "booking-confirmed": [
     "promoSummary",
     "provisionalGuestsNote",
@@ -167,6 +174,16 @@ export const EMPTYABLE_OVERRIDE_TOKENS: Record<string, readonly string[]> = {
   // applied, discount is "" unless the adjustment is a price CUT, promoCode is
   // `?? ""`, and totalPaid/totalDue are the two halves of one story — exactly
   // one of them is "" on every send.
+  //
+  // #2328 adds {{creditNote}}, which belongs here rather than in
+  // OPTIONAL_TEMPLATE_TOKENS for exactly the reason this table exists: it is
+  // supplied on every send, is "" for the great majority of bookings (which use
+  // no account credit), and is NOT in the current default body — the shipped
+  // body carries the credit lines inside {{paymentOutcome}}, which the sender
+  // composes. Only a hand-built override can put the bare token on a line, and
+  // a label typed in front of it ("Credit: {{creditNote}}") sends a bare
+  // "Credit:" to everyone who paid without credit. Declaring it is what turns
+  // guard 4 on for that line.
   "booking-confirmed": [
     "subtotal",
     "discount",
@@ -174,6 +191,7 @@ export const EMPTYABLE_OVERRIDE_TOKENS: Record<string, readonly string[]> = {
     "promoAdjustment",
     "totalPaid",
     "totalDue",
+    "creditNote",
   ],
   // sendBookingModifiedEmail: each of these is `?? ""` when the change did not
   // involve an additional payment.

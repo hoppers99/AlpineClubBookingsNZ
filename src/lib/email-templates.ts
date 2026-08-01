@@ -373,6 +373,171 @@ export function promoAdjustmentSummaryRows(
   ];
 }
 
+/**
+ * #2328: how the money that was NOT taken from the member's card was settled.
+ *
+ * Only ever used to label the second line of the applied-credit pair, so the
+ * confirmation never tells a member who bank-transferred that their card was
+ * charged. Mirrors the `refundMethod` parameter `sendBookingCancelledEmail`
+ * has always carried. Resolved from the booking's PERSISTED Payment row
+ * (`loadBookingAppliedCredit`), never from a policy re-computation.
+ */
+export type ConfirmationSettlementMethod = "card" | "bank_transfer" | "manual";
+
+/**
+ * #2328: the applied-account-credit facts a booking confirmation needs, read
+ * off the booking's own persisted records.
+ */
+export interface AppliedCreditSummary {
+  /**
+   * Account credit applied to this booking, as a POSITIVE integer-cents
+   * amount (the ledger's `|Σ BOOKING_APPLIED|`). Zero for the overwhelming
+   * majority of bookings, which renders no credit lines at all.
+   */
+  amountCents: number;
+  /** How the remainder was settled; labels the "Paid by …" line. */
+  settlementMethod: ConfirmationSettlementMethod;
+}
+
+const SETTLED_LINE_LABELS: Record<ConfirmationSettlementMethod, string> = {
+  card: "Paid by card",
+  bank_transfer: "Paid by bank transfer",
+  manual: "Paid by cash or bank transfer",
+};
+
+/**
+ * #2328 (review): the label used when the settled figure is EXACTLY $0.00 —
+ * account credit covered the whole stay and no money changed hands by any
+ * method.
+ *
+ * Method-NEUTRAL on purpose, because at $0.00 there is no evidence for a
+ * method claim. A fully-credit-covered booking is settled by writing a Payment
+ * row with `amountCents: 0` and NO `source`
+ * (`src/lib/booking-create.ts`, the `isZeroDollarConfirmed` branch; and the
+ * `paid_zero` upsert in
+ * `src/app/api/admin/bookings/[id]/confirm-pending-guests/route.ts`), so the
+ * row takes the schema default `PaymentSource.STRIPE` whatever the member
+ * actually elected — and the branch itself is payment-method agnostic. A
+ * method-bearing label therefore tells an Internet-Banking member with no card
+ * on file "Paid by card: $0.00", which is a claim the records do not support.
+ *
+ * The line is NOT dropped: `total − credit = $0.00` is exactly the arithmetic
+ * the pair exists to complete, and it is the case where "Total Paid: $300.00"
+ * alone was at its most misleading. Only the method word goes. Non-zero
+ * settlements keep the method-aware labels above, which ARE evidence-backed —
+ * a real card charge or bank transfer writes its own source.
+ */
+const NOTHING_SETTLED_LABEL = "Nothing more to pay";
+
+/**
+ * #2328: the single source of truth for how APPLIED ACCOUNT CREDIT shows on a
+ * booking confirmation — shared by the hand-built HTML confirmation
+ * (`bookingConfirmedTemplate`) and the flat `{{creditNote}}` token the
+ * admin-editable body renders, exactly as `promoAdjustmentSummaryRows` is
+ * shared for promos, so the two paths cannot drift.
+ *
+ * The bug it fixes: a member who paid $300.00 partly from account credit read
+ * "Total Paid: $300.00" while their card statement said $180.00, with nothing
+ * in the email to explain the gap. The pair below reconciles the two —
+ * "Total Paid" stays the booking's FULL price (that is what the stay cost, and
+ * the credit really did pay for part of it), and these rows say where the money
+ * came from, so `total − credit = card` adds up on the page.
+ *
+ * `settledCents` is what the club took by card/bank/cash for this booking,
+ * i.e. the settled amount MINUS the applied credit. Empty (no rows at all,
+ * never a ragged label) when no credit was applied — the byte-for-byte
+ * unchanged case — and also when `settledCents` is negative, which happens on
+ * a send that reports money as NOT yet taken (no "paid by" story to tell, and
+ * it must not invent one) or when more credit was consumed than the booking is
+ * now worth. Both of those suppressions are logged by the SENDER rather than
+ * here, where the booking id is in hand and the warning fires exactly once per
+ * send — see `sendBookingConfirmedEmail` in `src/lib/email/booking.ts`, which
+ * is the only caller of this module's confirmation template.
+ *
+ * At EXACTLY $0.00 settled the second line loses its method word (see
+ * `NOTHING_SETTLED_LABEL`) but stays, because the arithmetic is the point.
+ * Money is integer cents throughout; values are unescaped plain text, and the
+ * HTML path escapes at its own edge.
+ */
+export function appliedCreditSummaryRows(
+  appliedCreditCents: number,
+  settledCents: number,
+  settlementMethod: ConfirmationSettlementMethod = "card",
+): Array<{ label: string; value: string }> {
+  if (appliedCreditCents <= 0 || settledCents < 0) return [];
+  return [
+    {
+      label: "Account credit applied",
+      value: `-${formatMoneyCents(appliedCreditCents)}`,
+    },
+    {
+      // #2328 (review): a $0.00 settlement has no method to name — the Payment
+      // row behind it is written without a source and takes the schema default.
+      label:
+        settledCents === 0
+          ? NOTHING_SETTLED_LABEL
+          : SETTLED_LINE_LABELS[settlementMethod],
+      value: formatMoneyCents(settledCents),
+    },
+  ];
+}
+
+/**
+ * #2328: the settled-by-non-credit figure the pair above reports, for whichever
+ * of the confirmation's three money outcomes this send is.
+ *
+ * Kept beside the row builder, and used by BOTH the HTML template and the
+ * sender, because getting this wrong is how the two paths would disagree about
+ * the same booking:
+ *  - unpaid (`paymentDue`): nothing has been settled at all, so there is no
+ *    "paid by" figure — returns a negative sentinel that suppresses the rows.
+ *
+ *    WHY THAT IS SAFE, precisely (#2328 review). It is safe because this branch
+ *    never carries applied credit, NOT because suppressing a credit line here
+ *    would be the right answer if it did. There is exactly ONE send site that
+ *    passes `paymentDue`: the member whole-lodge request conversion in
+ *    `src/lib/school-booking-request.ts` (the `sendBookingConfirmedEmail` call
+ *    at ~:2101). That path mints a brand-new booking from an approved request
+ *    and never applies account credit to it — no `BOOKING_APPLIED` ledger row
+ *    is written anywhere on it — so `loadBookingAppliedCredit` returns zero and
+ *    there is nothing to suppress. `sendBookingConfirmedEmail` logs a warning
+ *    if that precondition ever stops holding, because the suppression would
+ *    then be hiding a real figure from a member.
+ *
+ *    An EARLIER version of this comment justified the suppression by saying the
+ *    amount owing is the figure the club's Xero invoice was raised for, so
+ *    netting credit off it would disagree with the invoice. That reasoning is
+ *    WRONG and is retracted: under #1620 "allocate-existing" the booking
+ *    invoice is raised for the FULL amount and the member's floating credit
+ *    notes are ALLOCATED against it (this very send site enqueues that
+ *    allocation a few lines above the send), so the invoice total is not the
+ *    net-of-credit figure the argument assumed;
+ *  - partly paid (`outstandingBalance`, #2397): the settled slice is the
+ *    booking's price minus what is still owing, and the credit comes out of
+ *    THAT, not out of the full price;
+ *  - paid in full: the whole price, minus the credit.
+ *
+ * Can return a NEGATIVE for a settled booking when more credit was consumed
+ * than the booking is now worth. Unreachable today — the #1887 reprice clamp
+ * refunds the over-consumed slice as a positive `BOOKING_APPLIED` offset on
+ * every repriceable path, so the derived sum never exceeds the price — and the
+ * rows are suppressed if it ever happens, which is why the sender logs it.
+ */
+export function settledByPaymentCents({
+  totalCents,
+  appliedCreditCents,
+  unpaid,
+  outstandingCents,
+}: {
+  totalCents: number;
+  appliedCreditCents: number;
+  unpaid: boolean;
+  outstandingCents: number;
+}): number {
+  if (unpaid) return -1;
+  return totalCents - outstandingCents - appliedCreditCents;
+}
+
 export function bookingConfirmedTemplate(
   firstName: string,
   checkIn: Date,
@@ -383,6 +548,10 @@ export function bookingConfirmedTemplate(
     discountCents?: number;
     promoAdjustmentCents?: number;
     promoCode?: string;
+    // #2328: account credit applied to this booking, read off the ledger by
+    // the sender and threaded through unchanged. Absent/zero renders no credit
+    // lines and leaves the message byte-for-byte as it was.
+    appliedCredit?: AppliedCreditSummary;
     lodgeTravelNote?: string;
     doorCode?: string | null;
     // Split-booking parent (#738): the non-member places on this party are held
@@ -463,6 +632,26 @@ export function bookingConfirmedTemplate(
   const paymentDue = options?.paymentDue;
   // #2397: only when nothing is due in full — the two states are exclusive.
   const outstandingBalance = paymentDue ? undefined : options?.outstandingBalance;
+  // #2328: the applied-credit pair, from the SHARED row builder the flat
+  // {{creditNote}} token uses, so the HTML table and an admin-editable body
+  // tell one story. Empty for every booking that used no credit, which is why
+  // those confirmations are byte-for-byte unchanged.
+  const appliedCreditCents = Math.max(0, options?.appliedCredit?.amountCents ?? 0);
+  const creditRows = appliedCreditSummaryRows(
+    appliedCreditCents,
+    settledByPaymentCents({
+      totalCents,
+      appliedCreditCents,
+      unpaid: Boolean(paymentDue),
+      outstandingCents: outstandingBalance?.amountCents ?? 0,
+    }),
+    options?.appliedCredit?.settlementMethod ?? "card",
+  ).map((row) => ({
+    // Labels and formatted money only — no club- or member-entered data — but
+    // escaped at this HTML edge on the same principle as the promo rows above.
+    label: escapeHtml(row.label),
+    value: escapeHtml(row.value),
+  }));
   if (paymentDue) {
     rows.push({ label: "Total Due", value: formatCents(totalCents) });
   } else if (outstandingBalance) {
@@ -472,10 +661,13 @@ export function bookingConfirmedTemplate(
         label: "Paid",
         value: formatCents(totalCents - outstandingBalance.amountCents),
       },
+      // Between "Paid" and "Still Owing": the credit pair breaks down the
+      // amount immediately above it, and the balance still owing stays last.
+      ...creditRows,
       { label: "Still Owing", value: formatCents(outstandingBalance.amountCents) },
     );
   } else {
-    rows.push({ label: "Total Paid", value: formatCents(totalCents) });
+    rows.push({ label: "Total Paid", value: formatCents(totalCents) }, ...creditRows);
   }
 
   // One composed sentence, shared with the {{paymentDueNote}} token in
