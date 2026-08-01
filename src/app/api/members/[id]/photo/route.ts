@@ -372,13 +372,22 @@ export async function POST(
     // concurrent replace/remove requests serialise instead of both deleting the
     // same stale blob and orphaning the other's new one. The pre-transaction
     // read is only used for the existence/authorisation gate above.
-    const locked = await tx.$queryRaw<Array<{ photoImageId: string | null }>>`
-      SELECT "photoImageId" FROM "Member" WHERE "id" = ${id} FOR UPDATE`;
-    if (locked.length === 0) {
+    //
+    // Lock raw, read typed (#2289): the raw statement takes the lock and nothing
+    // else — it selects a constant and its result is never inspected — and the
+    // pointer comes back through the Prisma model, which owns the column
+    // mapping. A `$queryRaw<{ photoImageId }>` here would be an unchecked cast,
+    // and this one decides which image blob gets DELETED.
+    await tx.$executeRaw`SELECT 1 FROM "Member" WHERE "id" = ${id} FOR UPDATE`;
+    const locked = await tx.member.findUnique({
+      where: { id },
+      select: { photoImageId: true },
+    });
+    if (!locked) {
       // Member was deleted between the pre-check and the lock.
       return null;
     }
-    const currentImageId = locked[0].photoImageId;
+    const currentImageId = locked.photoImageId;
 
     const created = await tx.mediaImage.create({
       data: {
@@ -475,12 +484,16 @@ export async function DELETE(
     // Lock the member row and read the current pointer under the lock so a
     // concurrent upload can't leave the blob we intended to delete orphaned
     // (or delete a blob a concurrent upload has just re-pointed to).
-    const locked = await tx.$queryRaw<Array<{ photoImageId: string | null }>>`
-      SELECT "photoImageId" FROM "Member" WHERE "id" = ${id} FOR UPDATE`;
-    if (locked.length === 0) {
+    // Lock raw, read typed (#2289) — see the POST handler above.
+    await tx.$executeRaw`SELECT 1 FROM "Member" WHERE "id" = ${id} FOR UPDATE`;
+    const locked = await tx.member.findUnique({
+      where: { id },
+      select: { photoImageId: true },
+    });
+    if (!locked) {
       return null;
     }
-    const currentImageId = locked[0].photoImageId;
+    const currentImageId = locked.photoImageId;
 
     await tx.member.update({
       where: { id },

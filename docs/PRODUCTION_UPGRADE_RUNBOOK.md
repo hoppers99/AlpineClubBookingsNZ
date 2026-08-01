@@ -328,13 +328,43 @@ Rollback follows `docs/BLUE_GREEN_MIGRATION_POLICY.md`. The policy's whole point
 is that migrations preserve old-code/new-schema compatibility until the previous
 color drains, which makes the rollback boundary the **cutover (step 16)**.
 
+That boundary holds only while every pending migration really is old-code
+compatible. It does **not** hold for a migration the ledger declares
+`old_code_compatible=windowed`: once its migrate step commits, the old color is
+already broken, so the boundary moves back to **step 13 (migrate)** and the
+recovery paths are forward to cutover, the migration's own `rollback.sql`, or the
+verified backup.
+
+**`v0.10.0` has one migration in that class already**, even though the ledger
+holds no `windowed` row — the value did not exist when the row was written.
+`20260707000100_backfill_org_age_tier_not_applicable` is declared
+`old_code_compatible=no`, and its `lock_impact_plan` states plainly that
+"old-color reads of the flipped rows … can error between migrate and cutover"
+(quoted in full at [§2.2](#22-agetier-not_applicable--deploy-in-a-quiet-window)).
+So do **not** check the ledger for a `windowed` row alone: check for a `windowed`
+row **or** any `yes`/`no` row whose `lock_impact_plan` carries an old-code caveat
+(`OLD-CODE CAVEAT`, `RESIDUAL WINDOW`, `CAUTION`, "until cutover", "idle or
+routed"). `docs/BLUE_GREEN_MIGRATION_POLICY.md` → "Historical note" gives the
+class rule and a starting-point filter.
+
 ### Before cutover (up to and including step 13/14/15)
 
-The **old color is still serving traffic**. Migrations are expand-shaped and
-old-code-compatible, so if the new color fails to come up healthy, or you abort
-before step 16, you can stop the deploy and leave the old color serving the
-already-migrated (backward-compatible) schema. This is a blocked upgrade, not an
-outage. No traffic ever reached the new color.
+The **old color is still serving traffic**. The rest of this set is
+expand-shaped and old-code-compatible, so if the new color fails to come up
+healthy, or you abort before step 16, you can stop the deploy and leave the old
+color serving the already-migrated (backward-compatible) schema. This is a
+blocked upgrade, not an outage. No traffic ever reached the new color.
+
+**Except once step 13 has applied `20260707000100`.** From that point the old
+color is reading `NOT_APPLICABLE` rows its Prisma client cannot deserialize, so
+aborting leaves the admin members list, those members' detail pages and the
+school flows erroring with no cutover coming — a blocked upgrade *and* a partial
+outage. If the new color fails its health check after that migration has
+committed, go **forward** to cutover if the new color can be made healthy;
+otherwise restore from the pre-migrate backup. This is why [§2.2](#22-agetier-not_applicable--deploy-in-a-quiet-window)
+offers the fallback of deferring that single migration until the old color has
+fully drained: taking it keeps the whole window inside the ordinary
+abort-is-safe boundary.
 
 ### After cutover (step 16 onward)
 
@@ -342,7 +372,12 @@ Traffic is on the new color. To fall back you re-point Caddy to the previous
 color (the engine restores the previous upstream file on a failed reload; a
 deliberate rollback is the same operation in reverse) while the old color
 containers are still present. Because the schema is expand-only and
-old-code-compatible, the previous color can serve against the migrated database.
+old-code-compatible, the previous color can serve against the migrated database —
+with the same `20260707000100` exception: the flipped `NOT_APPLICABLE` rows stay
+flipped, so a rolled-back old color still errors on the admin members list, those
+members' detail pages and the school flows. Re-pointing Caddy restores every
+other surface; treat those as still-down until you go forward again or un-flip the
+rows as an owner-approved data operation (see below).
 
 ### What is NOT reversible by rollback
 

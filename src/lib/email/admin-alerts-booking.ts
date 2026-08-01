@@ -15,6 +15,7 @@ import {
   adminBookingRequestHoldCancelledTemplate,
   adminSplitSettlementUnpaidTemplate,
   adminSplitSettlementCancelledTemplate,
+  wholeLodgeManualInvoiceAmountCents,
 } from "../email-templates";
 import {
   adminSplitSettlementCancelledLeadParagraph,
@@ -571,6 +572,13 @@ export async function sendAdminSchoolManualInvoiceEmail(data: {
  * is a real signed-in member, not a non-login school contact) and carrying the
  * payment reference the member was told to quote, so the hand-written invoice
  * matches what they will pay against.
+ *
+ * #2483 extends "matches what they will pay against" to the FIGURE: the amount
+ * is netted against the club's own applied-credit ledger by the same resolver
+ * the member's confirmation uses, so this branch — which has no Xero invoice
+ * and no allocation op to reconcile the two afterwards — cannot ask the admin
+ * for one number and the member for another. See
+ * `adminWholeLodgeManualInvoiceTemplate`.
  */
 export async function sendAdminWholeLodgeManualInvoiceEmail(data: {
   memberName: string;
@@ -579,6 +587,12 @@ export async function sendAdminWholeLodgeManualInvoiceEmail(data: {
   checkOut: Date;
   guestCount: number;
   totalCents: number;
+  /**
+   * #2483 — account credit the club's ledger has applied to this booking.
+   * Zero (or omitted) is every send on today's live path and renders the
+   * pre-#2483 email byte-for-byte.
+   */
+  appliedCreditCents?: number;
   paymentReference: string;
 }) {
   const baseUrl = process.env.NEXTAUTH_URL || "http://localhost:3000";
@@ -593,6 +607,7 @@ export async function sendAdminWholeLodgeManualInvoiceEmail(data: {
       checkOut: data.checkOut,
       guestCount: data.guestCount,
       totalCents: data.totalCents,
+      appliedCreditCents: data.appliedCreditCents ?? 0,
       paymentReference: data.paymentReference,
       reviewUrl,
     }),
@@ -603,7 +618,15 @@ export async function sendAdminWholeLodgeManualInvoiceEmail(data: {
       checkIn: formatNZDate(data.checkIn),
       checkOut: formatNZDate(data.checkOut),
       guestCount: data.guestCount,
-      amount: formatMoneyCents(data.totalCents),
+      // #2483: the amount to INVOICE, from the shared resolver the hand-built
+      // HTML above and the member's own confirmation both use — so an admin
+      // override of this body cannot ask for a different figure either.
+      amount: formatMoneyCents(
+        wholeLodgeManualInvoiceAmountCents(
+          data.totalCents,
+          data.appliedCreditCents ?? 0,
+        ),
+      ),
       paymentReference: data.paymentReference,
       reviewUrl,
     },

@@ -3,7 +3,8 @@ import "server-only";
 import { formatNZDate } from "@/lib/nzst-date";
 import { prisma } from "@/lib/prisma";
 import { formatCents } from "@/lib/utils";
-import { buildXeroObjectUrl } from "@/lib/xero-links";
+import { applyXeroOrgShortCode, buildXeroObjectUrl } from "@/lib/xero-links";
+import { getXeroOrgShortCode } from "@/lib/xero-link-short-code";
 import { getXeroOperationRetryMeta } from "@/lib/xero-operation-retry";
 import { buildLocalAdminUrl, type XeroLocalModel } from "@/lib/xero-record-links";
 import { canReplayXeroInboundEvent } from "@/lib/xero-stale-operations";
@@ -600,6 +601,15 @@ export async function getXeroRecordActivity(
     operationStatusCounts.map((item) => [item.status, item._count])
   );
 
+  // #2314: the record-activity panel renders these three sets of hrefs
+  // verbatim, so the organisation short code is applied here — once per call,
+  // off the 12-hour in-process organisation cache. Stored `xeroObjectUrl`
+  // values stay organisation-agnostic in the database (correct after a
+  // reconnect to a different Xero organisation) and are scoped at this point
+  // instead. A null short code degrades every link to the generic
+  // go.xero.com form; it never hides one.
+  const shortCode = await getXeroOrgShortCode();
+
   const mappedOperations: XeroRecordActivityOperation[] = operations.map((operation) => {
     const retryMeta = getXeroOperationRetryMeta(operation);
     const scopeRecord =
@@ -628,11 +638,13 @@ export async function getXeroRecordActivity(
       xeroObjectType: operation.xeroObjectType,
       xeroObjectId: operation.xeroObjectId,
       xeroObjectNumber: operation.xeroObjectNumber,
-      xeroObjectUrl:
+      xeroObjectUrl: applyXeroOrgShortCode(
         operation.xeroObjectUrl ??
-        (operation.xeroObjectType && operation.xeroObjectId
-          ? buildXeroObjectUrl(operation.xeroObjectType, operation.xeroObjectId)
-          : null),
+          (operation.xeroObjectType && operation.xeroObjectId
+            ? buildXeroObjectUrl(operation.xeroObjectType, operation.xeroObjectId)
+            : null),
+        { shortCode },
+      ),
       createdByMemberId: operation.createdByMemberId,
       startedAt: toIsoString(operation.startedAt),
       completedAt: toIsoString(operation.completedAt),
@@ -656,7 +668,11 @@ export async function getXeroRecordActivity(
         xeroObjectType: link.xeroObjectType,
         xeroObjectId: link.xeroObjectId,
         xeroObjectNumber: link.xeroObjectNumber,
-        xeroObjectUrl: link.xeroObjectUrl ?? buildXeroObjectUrl(link.xeroObjectType, link.xeroObjectId),
+        xeroObjectUrl: applyXeroOrgShortCode(
+          link.xeroObjectUrl ??
+            buildXeroObjectUrl(link.xeroObjectType, link.xeroObjectId),
+          { shortCode },
+        ),
         role: link.role,
         active: link.active,
         metadata: link.metadata,
@@ -684,7 +700,9 @@ export async function getXeroRecordActivity(
     payload: event.payload,
     xeroObjectUrl:
       event.eventCategory && event.resourceId
-        ? buildXeroObjectUrl(event.eventCategory, event.resourceId)
+        ? buildXeroObjectUrl(event.eventCategory, event.resourceId, {
+            shortCode,
+          })
         : null,
     canReplay: canReplayXeroInboundEvent(event),
   }));

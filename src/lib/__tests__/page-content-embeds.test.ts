@@ -402,20 +402,34 @@ describe("resolveTextTokens URL scheme validation", () => {
     expect(resolved).not.toContain("javascript:");
   });
 
-  it("never renders a javascript: href through the starter footer path", async () => {
+  it("never renders a javascript: href through the footer path", async () => {
     identityState.facebookUrl = "javascript:alert(1)";
-    const affiliations = starterSiteContent.find(
-      (section) => section.key === "FOOTER_AFFILIATIONS",
-    );
-    expect(affiliations).toBeDefined();
+    // The starter affiliations column carried this markup until #2490 emptied
+    // it (a fresh install now lists no affiliations), so the stored HTML an
+    // admin writes stands in for it here — the render path is what is under
+    // test, and {{facebook-url}} is still offered to admins as a footer token.
+    const storedFooterHtml =
+      '<h3>Affiliations</h3><ul><li><a href="{{facebook-url}}" target="_blank" rel="noopener noreferrer">Facebook</a></li></ul>';
 
     // Mirrors renderFooterSection in site-content.ts: sanitise the stored
     // HTML first, then resolve text tokens on the sanitised output.
-    const sanitised = sanitizePageContentHtml(affiliations!.contentHtml);
+    const sanitised = sanitizePageContentHtml(storedFooterHtml);
     const resolved = await resolveTextTokens(sanitised);
 
     expect(resolved).not.toContain("javascript:");
     expect(resolved).toContain('href="https://club.example.org"');
+  });
+
+  it("has no token left to resolve in the starter footer sections (#2490)", async () => {
+    // The seed ships no affiliations at all now, so nothing in the starter
+    // footer resolves a URL-bearing token on a fresh install.
+    for (const section of starterSiteContent) {
+      const resolved = await resolveTextTokens(
+        sanitizePageContentHtml(section.contentHtml),
+      );
+      expect(resolved).not.toContain("{{");
+      expect(resolved).not.toMatch(/RMCA|Ruapehu|Federated Mountain Clubs/i);
+    }
   });
 });
 

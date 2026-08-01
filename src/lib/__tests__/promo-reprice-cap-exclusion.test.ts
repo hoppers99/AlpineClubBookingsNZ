@@ -289,10 +289,11 @@ function makeRepriceTx(
   const lockedIds: string[] = [];
 
   const tx = {
-    $queryRaw: vi.fn(async (_s: TemplateStringsArray, ...values: unknown[]) => {
+    $executeRaw: vi.fn(async (_s: TemplateStringsArray, ...values: unknown[]) => {
       calls.push("lock");
       lockedIds.push(String(values[0]));
-      return [];
+      // $executeRaw returns an affected-row count, never rows (#2289).
+      return 1;
     }),
     promoCode: {
       findUnique: vi.fn(async () => {

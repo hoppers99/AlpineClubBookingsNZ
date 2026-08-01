@@ -15,6 +15,7 @@ const {
   mockRefreshFinancialYearConfig,
   mockSeasonFindMany,
   mockLodgeFindMany,
+  mockGetXeroOrgShortCode,
 } = vi.hoisted(() => ({
   mockBuildFinanceMonthlyPnlSummary: vi.fn(),
   mockBuildFinanceMonthlyBalanceSeries: vi.fn(),
@@ -29,6 +30,7 @@ const {
   mockRefreshFinancialYearConfig: vi.fn(),
   mockSeasonFindMany: vi.fn(),
   mockLodgeFindMany: vi.fn(),
+  mockGetXeroOrgShortCode: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -84,8 +86,18 @@ vi.mock("@/lib/finance-cash-snapshot", () => ({
   parseCashSnapshot: mockParseCashSnapshot,
 }));
 
+// #2314: the dashboard's "Open Xero reports" links are server-built, so they
+// resolve the organisation short code the same way every other server-side
+// producer does. Only the short-code read is mocked — the URL itself is built
+// by the real `xero-links` builder, so a link that quietly lost its
+// organisation would fail here.
+vi.mock("@/lib/xero-link-short-code", () => ({
+  getXeroOrgShortCode: mockGetXeroOrgShortCode,
+}));
+
 import { buildFinanceDashboardPageModel } from "@/lib/finance-dashboard-page";
 import type { FinanceDashboardView } from "@/lib/finance-dashboard-ranges";
+import { buildXeroReportsUrl } from "@/lib/xero-links";
 
 function financeManager() {
   return {
@@ -345,6 +357,7 @@ function balanceSeries() {
 describe("finance dashboard page model", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetXeroOrgShortCode.mockResolvedValue("!aBc12");
     mockSeasonFindMany.mockResolvedValue([]);
     // Single active lodge by default: the reporting-lodge selector stays hidden
     // (ADR-002) and metrics run club-wide, matching existing expectations.
@@ -484,6 +497,44 @@ describe("finance dashboard page model", () => {
     }
     expect(model.exportSections[0].title).toBe("Dashboard selection");
     expect(model.sourceNotes.length).toBeGreaterThan(0);
+  });
+
+  // #2314: "Open Xero reports" is the club's highest-value Xero deep link, and
+  // its readers are exactly the multi-organisation treasurers the rule exists
+  // for — a short-code-less link drops them into whichever organisation their
+  // Xero session last used, which may be another club's books.
+  it.each<FinanceDashboardView>([
+    "revenue",
+    "costs",
+    "balance-sheet",
+    "working-capital",
+  ])("scopes the %s view's Open Xero reports link to the club", async (view) => {
+    const model = await buildFinanceDashboardPageModel({
+      member: financeManager(),
+      searchParams: { view },
+    });
+
+    const note = model.sourceNotes.find(
+      (sourceNote) => sourceNote.linkLabel === "Open Xero reports",
+    );
+    expect(note?.href).toBe(buildXeroReportsUrl({ shortCode: "!aBc12" }));
+    expect(note?.href).toContain("shortcode=!aBc12");
+  });
+
+  it("degrades Open Xero reports to the generic link when no short code resolves", async () => {
+    mockGetXeroOrgShortCode.mockResolvedValue(null);
+
+    const model = await buildFinanceDashboardPageModel({
+      member: financeManager(),
+      searchParams: { view: "revenue" },
+    });
+
+    const note = model.sourceNotes.find(
+      (sourceNote) => sourceNote.linkLabel === "Open Xero reports",
+    );
+    // Live, just not organisation-scoped — degrading is never a dead link.
+    expect(note?.href).toBe(buildXeroReportsUrl());
+    expect(note?.href).not.toContain("shortcode");
   });
 
   it("maps sync-health sections onto status panels with tones, links, and warnings", async () => {

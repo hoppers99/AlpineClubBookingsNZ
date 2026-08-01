@@ -788,7 +788,13 @@ function assertBunkGroupTypeConsistency(
 // serialisation point. Callers run this inside a transaction (self-wrapped when
 // no client is supplied).
 async function lockRoomForBunkGroup(roomId: string, db: BedAllocationDb) {
-  await db.$queryRaw`SELECT id FROM "LodgeRoom" WHERE id = ${roomId} FOR UPDATE`;
+  // `$executeRaw`, and the identifier quoted, both for the same reason (#2289):
+  // the statement exists ONLY for its lock, so saying so in the call makes it
+  // impossible to mistake for a read whose shape somebody might later trust.
+  // `id` worked unquoted only because the column happens to be lowercase; every
+  // other raw statement in this repository quotes, and an unquoted identifier
+  // silently folds case the day a column is not.
+  await db.$executeRaw`SELECT 1 FROM "LodgeRoom" WHERE "id" = ${roomId} FOR UPDATE`;
 }
 
 async function assertBunkGroupCanAdmit(input: {

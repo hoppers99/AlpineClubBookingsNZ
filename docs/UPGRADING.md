@@ -47,15 +47,18 @@ columns:
 | `migration_name` | The `prisma/migrations/<timestamp>_<name>` folder. |
 | `phase` | `expand` (adds shape), `contract` (removes shape), or `metadata-only`. |
 | `previous_expand_release` | For a `contract` migration, the earlier expand/runtime release it depends on. Do not deploy a contract migration before the named expand release has fully drained. |
-| `old_code_compatible` | `yes` = the previously deployed app color keeps working while this migration is applied. **`no` = the old color can error against the migrated rows** — this migration needs a quiet window or a deferral, described in its `lock_impact_plan`. |
+| `old_code_compatible` | One of exactly three values, and **read the row's `lock_impact_plan` whichever one it is**. `yes` = the previously deployed app color keeps working while this migration is applied — but before `windowed` existed the gate *hard-required* `yes` for every breaking migration, so a number of `yes` rows are window-bounded in substance and say so in their plan text (`20260719170000_xero_grouping_age_tiers_multiselect`, for one, is `yes` while its admin grouping reads error with column-does-not-exist until cutover). **`windowed` = the old color *will* error between migrate and cutover** — only valid inside an announced maintenance window, and its `lock_impact_plan` states what breaks and what the plan is. `no` = the migration trips none of the deploy guard's breaking patterns, so there is nothing to acknowledge — but `no` was also how a genuinely old-code-incompatible data migration used to be flagged (`20260528120000_add_booking_admin_review_workflow`, `20260707000100_backfill_org_age_tier_not_applicable`). Those rows are left as they were declared; `docs/BLUE_GREEN_MIGRATION_POLICY.md` → "Historical note" gives the class rule for spotting them. |
 | `lock_impact_plan` | Plain-language notes: which tables it locks, when to run it, and any operator caveat (quiet window, defer option, "run during low X traffic"). |
 
 Before a deploy:
 
 1. List the migrations pending for your database (folders under
    `prisma/migrations` newer than the last one your database has applied).
-2. Look each up in the ledger. Note any row with `old_code_compatible=no`, any
-   `contract` row, and any `lock_impact_plan` that names a hot table (`Member`,
+2. Look each up in the ledger. Note any row with `old_code_compatible=windowed`
+   or `old_code_compatible=no`, any
+   `contract` row, any `yes` row whose `lock_impact_plan` carries an old-code
+   caveat (`OLD-CODE CAVEAT`, `RESIDUAL WINDOW`, `CAUTION`, "until cutover",
+   "idle or routed"), and any `lock_impact_plan` that names a hot table (`Member`,
    `Booking`, `Payment`, membership/finance/auth tables) or a traffic window.
 3. Schedule the deploy for the quietest window those rows require, and line up
    the post-upgrade actions from the release's Migration/deployment notes.
@@ -72,10 +75,17 @@ as a red flag and check the release notes before deploying.
 2. Read this release's `CHANGELOG.md` section end to end, especially its
    Migration/deployment notes, and cross-check the pending migrations against
    `docs/BLUE_GREEN_MIGRATION_SAFETY.tsv`.
-3. Take and verify a database backup.
-4. Choose the deploy window: low-traffic if any pending migration says so, and a
-   **quiet window** (or a deferral) if any pending migration is
-   `old_code_compatible=no`.
+3. Take and verify a database backup. If any pending migration is
+   `old_code_compatible=windowed`, take it **immediately before migrating** —
+   that is where the rollback boundary sits for a windowed migration
+   (`docs/BLUE_GREEN_MIGRATION_POLICY.md`).
+4. Choose the deploy window: low-traffic if any pending migration says so; an
+   announced **maintenance window** if any pending migration is
+   `old_code_compatible=windowed` (the old color will error until cutover, and
+   the deploy needs `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1` with a reason); and
+   a **quiet window** (or a deferral) if any pending migration is
+   `old_code_compatible=no` with an incompatibility caveat in its
+   `lock_impact_plan`.
 5. Run the deploy (`scripts/run-production-blue-green-deploy.sh` runs the
    migration-safety validator, then `prisma migrate deploy`, then cuts traffic
    over to the new color).
@@ -178,6 +188,141 @@ above.
 second run changes nothing. No audit row is written: the value removed is a
 string this project wrote into the row itself, quoted in full here and in the
 migration's own comment, not club-authored content that could be lost.
+
+### One-off cleanup of another club's footer affiliations (#2490)
+
+`20260802140000_clear_starter_footer_affiliations` is a **data-only cleanup**,
+and the sibling of the address cleanup above. It adds and removes no schema,
+touches no hot table, and is safe to run in the ordinary deploy window with the
+previous app colour still serving.
+
+**What it fixes.** `20260702124500_add_site_content` made the three public
+footer columns admin-editable and backfilled them with the copy that was, until
+then, hardcoded in the footer's own source. One of those columns is
+**Affiliations**, and the value it planted lists "Federated Mountain Clubs
+(FMC)" and "Ruapehu Mountain Clubs Association (RMCA)". That was right when it
+was written — this codebase *was* the Tokoroa Alpine Club's live site, and the
+step moved the club's own footer out of the code and into the database so
+nothing changed for it — but the same step now runs for everybody, so every
+install and every fork publishes a regional body it does not belong to, on the
+footer of **every public page**. This migration empties that column wherever it
+still holds exactly the original list.
+
+**What you will notice.** If your footer shows that exact list today, then after
+you cut over the **Affiliations column disappears** and the footer shows two
+columns instead of three. A footer column with no content in it is hidden
+entirely, by design, so there is no empty heading and no gap where it used to
+be. Nothing else changes: your club blurb, your quick links, the logo,
+copyright line, and privacy/terms links are all untouched.
+
+**Post-upgrade action: add your own affiliations, then check the footer.**
+**Admin → Setup & Configuration → Site Appearance & Content → Site Content →
+Footer: affiliations** (`/admin/site-content`), then **Save Footer:
+affiliations**. Public pages are cached briefly for logged-out visitors, so
+allow a minute or check while signed in. Nothing in the product prompts you, so
+add this to your post-upgrade list.
+
+**Then load a public page and confirm what the footer shows.** Do this even if
+you expect the cleanup to have emptied the column on its own. The Site Content
+editor loads all three columns when the page is opened and saves the one you
+press Save on, so an admin who had that page open *before* the upgrade and
+pressed **Save Footer: affiliations** *afterwards* writes the old list straight
+back — and this cleanup runs once, so it will not clear it a second time. If the
+old list is still there, open the same editor, clear it or replace it with your
+own, and save.
+
+**Affiliations you edited yourself are never touched.** The cleanup matches that
+one exact list and nothing else, so a club that has written its own links keeps
+them byte for byte — and so does a club that only deleted the RMCA line, because
+what remains no longer matches. The deliberate exception is a deployment that
+still holds the original list legitimately — Tokoroa's own fork, if it ports
+this release down — which is cleared like everyone else and re-enters its links
+with the steps above.
+
+**Running more than one install?** An emptied affiliations column does not
+travel between installs through a configuration bundle in the usual **Merge**
+mode, which only writes bundle fields that have a value in them: the plan
+reports the row as **Unchanged** and the target keeps its own list. Upgrade each
+install — the cleanup runs on every database of its own accord — or import in
+**Overwrite** mode. See the [Site Content guide](guides/site-content.md).
+
+**Re-running is safe.** After the cleanup the column is empty, so nothing
+matches the old list and a second run changes nothing. No audit row is written,
+for the same reason as the address cleanup: the value removed is markup this
+project wrote into the row itself, quoted in full in the migration's own
+comment, not club-authored content that could be lost. The section's **Last
+saved** stamp in the editor still shows the original backfill time until an
+admin saves it — cosmetic, and the migration deliberately leaves it alone
+because this is a system repair rather than an edit somebody made.
+
+### One-off rewrite of the front-page hero that advertised guest booking (#2431)
+
+`20260802150000_update_starter_home_guest_copy` is a **data-only cleanup**, the
+third sibling of the two above. It adds and removes no schema, touches no hot
+table, and is safe to run in the ordinary deploy window with the previous app
+colour still serving.
+
+**What it fixes.** `20260613090000_update_starter_home_page_content` set the
+home page's hero — the sentence under the club name, above the fold — to *"Our
+club lodge welcomes members and guests year-round. Book a stay, join the club,
+and explore New Zealand's mountains."* On the front page that reads as open
+visitor accommodation: anyone may come, anyone may book. The starter FAQ seeded
+beside it says the opposite — a non-member stays only as the invited guest of a
+financial member who is also staying — so the reference site contradicted
+itself, and the front page was the surface making the wrong promise. It is also
+the page's **meta description**, so it is what a search engine quotes under your
+club's name. This migration replaces that sentence wherever the hero still holds
+exactly it.
+
+**What you will notice.** If your front page shows that exact sentence today,
+then after you cut over it reads *"Our club lodge welcomes members year-round.
+Log in to book a stay, or apply to join and explore New Zealand's mountains."*
+instead. Nothing else on the page moves: the eyebrow line ("Welcome to the Club
+Lodge"), the heading ("Club Lodge"), your page body, and every other page are
+untouched. Unlike the two cleanups above, this one **replaces** the value rather
+than clearing it — the front page needs a hero, and an empty one would look
+broken rather than corrected.
+
+**Post-upgrade action: load your public front page and read the new sentence.**
+Do this even though there is nothing you are required to change. Two reasons.
+First, the wording is a default and your club may want its own — **Admin → Setup
+& Configuration → Site Appearance & Content → Page Content → Club Lodge**
+(`/admin/page-content`), edit the header text, then Save. Second, the Page
+Content editor loads a page's fields when it is opened and saves them all back,
+so an admin who had **Club Lodge** open *before* the upgrade and pressed Save
+*afterwards* writes the old sentence straight back — and this cleanup runs once,
+so it will not rewrite it a second time. Public pages are cached briefly for
+logged-out visitors, so allow a minute or check while signed in.
+
+**Re-export your configuration bundle after upgrading, and re-check the front
+page after any bundle import or disaster-recovery restore.** A configuration
+bundle carries the home page's header text, and an import writes it back — in
+**Merge** mode as well as **Overwrite**, because Merge only leaves out fields
+that are empty in the bundle and this one is a full sentence. So a bundle you
+exported *before* this release still contains the old sentence, and restoring it
+puts that sentence back on your public front page. This matters most where
+nobody is watching: rebuilding an install from a bundle (the disaster-recovery
+flow) or cloning one runs the migrations first and imports the bundle
+*afterwards*, and this cleanup runs once, so it will not correct the row a
+second time. Export a fresh bundle once you have upgraded, replace any archived
+one you would restore from, and load your front page after any import. The two
+cleanups above can come back the same way; see issue #2511.
+
+**A hero you edited yourself is never touched.** The cleanup matches that one
+exact sentence and nothing else, so a club that has written its own front-page
+line keeps it byte for byte — and so does a club that merely reworded part of
+it, because what remains no longer matches. There is no exception to note here,
+unlike the two cleanups above: no club legitimately owns this sentence, because
+this project wrote it as a placeholder for all of them. The caption and title
+are deliberately left out of the match, so a club that renamed its front page
+but never touched the hero is corrected like everyone else.
+
+**Re-running is safe.** After the rewrite the hero holds the new sentence, so
+nothing matches the old one and a second run changes nothing. No audit row is
+written, for the same reason as the two cleanups above. The page's **Updated:**
+stamp in the editor still shows the original backfill time until an admin saves
+it — cosmetic, and the migration deliberately leaves it alone because this is a
+system repair rather than an edit somebody made.
 
 ### The public "Book Now" button is switched OFF for every club (#2430)
 
