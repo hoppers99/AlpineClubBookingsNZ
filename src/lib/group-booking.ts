@@ -36,6 +36,11 @@ import {
   Prisma,
 } from "@prisma/client";
 import { getDefaultLodgeId, lodgeNullTolerantScope } from "@/lib/lodges";
+import {
+  aggregatePolicyExceptionViolations,
+  type AggregatedPolicyExceptions,
+  type PolicyExceptionViolation,
+} from "@/lib/booking-policy-exceptions";
 import { prisma } from "@/lib/prisma";
 import { hashActionToken, issueActionToken } from "@/lib/action-tokens";
 import {
@@ -110,17 +115,27 @@ export class GroupBookingError extends Error {
   code?: string;
   /** Optional extra payload (e.g. capacity-exceeded nights, unpaid members). */
   details?: unknown;
+  /** Frozen soft-policy facts; present only on the still-blocking 400 path. */
+  violations?: PolicyExceptionViolation[];
+  exceptionReview?: AggregatedPolicyExceptions;
 
   constructor(
     message: string,
     status = 400,
-    options?: { code?: string; details?: unknown }
+    options?: {
+      code?: string;
+      details?: unknown;
+      violations?: PolicyExceptionViolation[];
+      exceptionReview?: AggregatedPolicyExceptions;
+    }
   ) {
     super(message);
     this.name = "GroupBookingError";
     this.status = status;
     this.code = options?.code;
     this.details = options?.details;
+    this.violations = options?.violations;
+    this.exceptionReview = options?.exceptionReview;
   }
 }
 
@@ -721,14 +736,17 @@ export async function joinGroupBookingAsMember(
     const { validateMinimumStay, formatViolationsDetail } = await import(
       "@/lib/booking-policies"
     );
-    const stay = await validateMinimumStay(checkIn, checkOut);
+    const stay = await validateMinimumStay(checkIn, checkOut, groupLodgeId);
     if (!stay.valid) {
+      const exceptionReview = aggregatePolicyExceptionViolations(stay.violations);
       throw new GroupBookingError(
         "Booking does not meet the minimum stay requirement",
         400,
         {
           code: "MINIMUM_STAY_VIOLATION",
           details: formatViolationsDetail(stay.violations),
+          violations: exceptionReview.violations,
+          exceptionReview,
         }
       );
     }

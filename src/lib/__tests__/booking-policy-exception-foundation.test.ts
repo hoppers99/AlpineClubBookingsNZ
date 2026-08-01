@@ -65,6 +65,31 @@ describe("booking-policy exception registry (#2363)", () => {
     }
     expect(isPolicyExceptionReasonCode("CAPACITY_EXCEEDED")).toBe(false);
     expect(isPolicyExceptionReasonCode("MINIMUM_STAY")).toBe(true);
+    expect(HARD_STOP_BOOKING_FAILURE_CODES).toEqual(
+      expect.arrayContaining([
+        "CAPACITY_EXCEEDED",
+        "SUBSCRIPTION_REQUIRED",
+        "GUEST_SUBSCRIPTION_REQUIRED",
+        "BOOKING_MEMBER_NIGHT_CONFLICT",
+      ]),
+    );
+  });
+
+  it.each([
+    "CAPACITY_EXCEEDED",
+    "SUBSCRIPTION_REQUIRED",
+    "GUEST_SUBSCRIPTION_REQUIRED",
+    "BOOKING_MEMBER_NIGHT_CONFLICT",
+  ] as const)("refuses to aggregate the hard-stop code %s", (reasonCode) => {
+    const corrupted = { ...violation("policy-1", "NO_HOLD"), reasonCode };
+
+    expect(() =>
+      aggregatePolicyExceptionViolations([
+        corrupted as unknown as MinimumStayPolicyExceptionViolation,
+      ]),
+    ).toThrow(
+      `Non-allowlisted booking failure cannot enter policy exception review: ${reasonCode}`,
+    );
   });
 
   it("freezes exact date-only nights, policy identity/version and scope", () => {

@@ -7,6 +7,8 @@ import {
 } from "@/lib/booking-policies"
 import { z } from "zod"
 import { isDateOnlyString, parseDateOnly } from "@/lib/date-only"
+import { resolveOptionalActiveLodgeId } from "@/lib/lodges"
+import { prisma } from "@/lib/prisma"
 
 const dateOnlyString = z.string().refine(isDateOnlyString, {
   message: "Date must be YYYY-MM-DD",
@@ -46,7 +48,18 @@ export async function GET(request: NextRequest) {
     )
   }
 
-  const result = await validateMinimumStay(checkIn, checkOut, parsed.data.lodgeId)
+  const effectiveLodgeId = await resolveOptionalActiveLodgeId(
+    prisma,
+    parsed.data.lodgeId,
+  )
+  if (!effectiveLodgeId) {
+    return NextResponse.json(
+      { error: "Unknown or inactive lodgeId" },
+      { status: 400 },
+    )
+  }
+
+  const result = await validateMinimumStay(checkIn, checkOut, effectiveLodgeId)
   const review = aggregatePolicyExceptionViolations(result.violations)
 
   return NextResponse.json({

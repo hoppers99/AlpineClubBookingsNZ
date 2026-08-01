@@ -331,16 +331,44 @@ describe("POST /api/bookings/[id]/modify-quote in-stay minimum-stay (#2124)", ()
 
   it("still reports a genuinely-short whole stay", async () => {
     asMember();
+    h.bookingFindUnique.mockResolvedValue({
+      ...inProgressBooking(),
+      lodgeId: "lodge-b",
+    });
+    const violation = {
+      reasonCode: "MINIMUM_STAY",
+      policyId: "policy-lodge-b",
+      policyVersion: 11,
+      policyName: "Lodge B winter week",
+      resolvedScope: {
+        kind: "LODGE",
+        lodgeId: "lodge-b",
+        effectiveLodgeId: "lodge-b",
+      },
+      affectedNights: [
+        "2026-08-14",
+        "2026-08-15",
+        "2026-08-16",
+        "2026-08-17",
+        "2026-08-18",
+        "2026-08-19",
+      ],
+      exceptionEligible: true,
+      capacityMode: "NO_HOLD",
+      message: "Lodge B requires seven nights.",
+      triggerDay: "Friday",
+      minimumNights: 7,
+      actualNights: 6,
+      requirements: {
+        kind: "MINIMUM_STAY",
+        minimumNights: 7,
+        actualNights: 6,
+        triggerDays: [5],
+      },
+    } as const;
     h.validateMinimumStay.mockResolvedValue({
       valid: false,
-      violations: [
-        {
-          policyName: "Weekend minimum",
-          triggerDay: "2026-08-19",
-          minimumNights: 7,
-          actualNights: 6,
-        },
-      ],
+      violations: [violation],
     });
 
     const res = await POST(req({ checkOut: "2026-08-20" }), { params });
@@ -348,8 +376,16 @@ describe("POST /api/bookings/[id]/modify-quote in-stay minimum-stay (#2124)", ()
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.minimumStayValid).toBe(false);
-    expect(body.minimumStayViolations).toHaveLength(1);
-    expect(body.minimumStayViolations[0].policyName).toBe("Weekend minimum");
+    expect(body.minimumStayViolations).toEqual([violation]);
+    expect(body.exceptionReview).toEqual({
+      violations: [violation],
+      capacityMode: "NO_HOLD",
+    });
+    expect(h.validateMinimumStay).toHaveBeenCalledWith(
+      D("2026-08-14"),
+      D("2026-08-20"),
+      "lodge-b",
+    );
   });
 
   it("skips the minimum-stay check entirely for an admin actor", async () => {
@@ -359,6 +395,10 @@ describe("POST /api/bookings/[id]/modify-quote in-stay minimum-stay (#2124)", ()
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.minimumStayValid).toBe(true);
+    expect(body.exceptionReview).toEqual({
+      violations: [],
+      capacityMode: null,
+    });
     expect(h.validateMinimumStay).not.toHaveBeenCalled();
   });
 
@@ -378,6 +418,34 @@ describe("POST /api/bookings/[id]/modify-quote in-stay minimum-stay (#2124)", ()
 
   it("hard-blocks the save when the extension is over capacity", async () => {
     asMember();
+    const softViolation = {
+      reasonCode: "MINIMUM_STAY",
+      policyId: "policy-1",
+      policyVersion: 2,
+      policyName: "Weekend minimum",
+      resolvedScope: {
+        kind: "LODGE",
+        lodgeId: "lodge-1",
+        effectiveLodgeId: "lodge-1",
+      },
+      affectedNights: ["2026-08-19"],
+      exceptionEligible: true,
+      capacityMode: "NO_HOLD",
+      message: "A minimum-stay exception is required.",
+      triggerDay: "Wednesday",
+      minimumNights: 7,
+      actualNights: 6,
+      requirements: {
+        kind: "MINIMUM_STAY",
+        minimumNights: 7,
+        actualNights: 6,
+        triggerDays: [3],
+      },
+    } as const;
+    h.validateMinimumStay.mockResolvedValue({
+      valid: false,
+      violations: [softViolation],
+    });
     h.checkCapacityForGuestRanges.mockResolvedValue({
       available: false,
       minAvailable: -1,
@@ -389,6 +457,11 @@ describe("POST /api/bookings/[id]/modify-quote in-stay minimum-stay (#2124)", ()
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.capacityAvailable).toBe(false);
+    expect(body.minimumStayValid).toBe(false);
+    expect(body.exceptionReview).toEqual({
+      violations: [softViolation],
+      capacityMode: "NO_HOLD",
+    });
   });
 
   it("leaves the future (pre-stay) edit validating its own requested range", async () => {

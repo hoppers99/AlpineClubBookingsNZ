@@ -2173,7 +2173,7 @@ describe("minimum-stay mutation responses and stale-revision recovery (#2363)", 
     return fetchMock;
   }
 
-  async function fillNewPolicy() {
+  async function fillNewPolicy(capacityMode: "HOLD" | "NO_HOLD" = "HOLD") {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Add Policy" })).toBeTruthy(),
     );
@@ -2188,7 +2188,7 @@ describe("minimum-stay mutation responses and stale-revision recovery (#2363)", 
       target: { value: "2026-09-30" },
     });
     fireEvent.change(screen.getByLabelText("Exception capacity handling"), {
-      target: { value: "HOLD" },
+      target: { value: capacityMode },
     });
   }
 
@@ -2203,10 +2203,10 @@ describe("minimum-stay mutation responses and stale-revision recovery (#2363)", 
     expect(screen.queryByRole("button", { name: "Deactivate" })).toBeNull();
   }
 
-  it("sends the exact POST body, then fails closed when its refresh fails", async () => {
+  it("sends the selected NO_HOLD mode in the exact POST body, then fails closed when its refresh fails", async () => {
     const fetchMock = mutationThenFailedRefresh([], POLICY);
     render(<MinimumNightStaySection />);
-    await fillNewPolicy();
+    await fillNewPolicy("NO_HOLD");
     fireEvent.click(screen.getByRole("button", { name: "Create Policy" }));
 
     await waitFor(() => expect(writeCalls(fetchMock)).toHaveLength(1));
@@ -2216,7 +2216,7 @@ describe("minimum-stay mutation responses and stale-revision recovery (#2363)", 
       endDate: "2026-09-30",
       triggerDays: [6],
       minimumNights: 2,
-      capacityMode: "HOLD",
+      capacityMode: "NO_HOLD",
     });
     await expectUnknownAfterWrite();
     expect(screen.queryByText("Minimum stay policy created")).toBeNull();

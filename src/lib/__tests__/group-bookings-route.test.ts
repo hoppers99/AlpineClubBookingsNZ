@@ -15,6 +15,32 @@ const mocks = vi.hoisted(() => ({
   verifyAndCreateNonMemberJoin: vi.fn(),
   createGroupSettlementIntent: vi.fn(),
   loadEffectiveModuleFlags: vi.fn(),
+  GroupBookingError: class GroupBookingError extends Error {
+    status: number;
+    code?: string;
+    details?: unknown;
+    violations?: unknown[];
+    exceptionReview?: unknown;
+
+    constructor(
+      message: string,
+      status = 400,
+      options?: {
+        code?: string;
+        details?: unknown;
+        violations?: unknown[];
+        exceptionReview?: unknown;
+      },
+    ) {
+      super(message);
+      this.name = "GroupBookingError";
+      this.status = status;
+      this.code = options?.code;
+      this.details = options?.details;
+      this.violations = options?.violations;
+      this.exceptionReview = options?.exceptionReview;
+    }
+  },
 }));
 
 vi.mock("@/lib/auth", () => ({ auth: mocks.auth }));
@@ -34,14 +60,33 @@ vi.mock("@/lib/rate-limit", () => ({
 vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
 }));
+vi.mock("@/lib/member-guest-probe-guard", () => ({
+  handleMemberGuestAddRefusal: vi.fn().mockResolvedValue(undefined),
+  startMemberGuestRefusalClock: vi.fn().mockReturnValue(0),
+}));
+vi.mock("@/lib/booking-create", () => ({
+  BookingPromoError: class BookingPromoError extends Error {},
+  BookingReviewJustificationRequiredError:
+    class BookingReviewJustificationRequiredError extends Error {},
+}));
+vi.mock("@/lib/booking-guests", () => ({
+  BookingGuestValidationError: class BookingGuestValidationError extends Error {},
+  getBookingGuestValidationErrorResponse: (error: Error) => ({
+    error: error.message,
+  }),
+}));
+vi.mock("@/lib/membership-type-policy", () => ({
+  MembershipTypeBookingPolicyError:
+    class MembershipTypeBookingPolicyError extends Error {},
+  getMembershipTypeBookingPolicyErrorBody: (error: Error) => ({
+    error: error.message,
+  }),
+}));
 
 // The route imports the service; mock it so these are pure wiring tests.
-vi.mock("@/lib/group-booking", async () => {
-  const actual = await vi.importActual<typeof import("@/lib/group-booking")>(
-    "@/lib/group-booking"
-  );
+vi.mock("@/lib/group-booking", () => {
   return {
-    ...actual,
+    GroupBookingError: mocks.GroupBookingError,
     createGroupBooking: mocks.createGroupBooking,
     resolveGroupBookingByCode: mocks.resolveGroupBookingByCode,
     closeGroupBooking: mocks.closeGroupBooking,
@@ -57,14 +102,10 @@ vi.mock("@/lib/group-settlement", () => ({
   createGroupSettlementIntent: mocks.createGroupSettlementIntent,
 }));
 
-// Internet Banking module gate (join route). Partial-mock so the module's other
-// exports (used transitively by admin-modules etc.) stay intact.
-vi.mock("@/lib/module-settings", async () => {
-  const actual = await vi.importActual<typeof import("@/lib/module-settings")>(
-    "@/lib/module-settings"
-  );
-  return { ...actual, loadEffectiveModuleFlags: mocks.loadEffectiveModuleFlags };
-});
+// Internet Banking module gate (join route).
+vi.mock("@/lib/module-settings", () => ({
+  loadEffectiveModuleFlags: mocks.loadEffectiveModuleFlags,
+}));
 
 import { POST } from "@/app/api/group-bookings/route";
 import { GET, PATCH } from "@/app/api/group-bookings/[code]/route";
@@ -73,6 +114,7 @@ import { POST as joinRequestPOST } from "@/app/api/group-bookings/[code]/join-re
 import { POST as verifyPOST } from "@/app/api/group-bookings/join/verify/[token]/route";
 import { POST as settlePOST } from "@/app/api/group-bookings/[code]/settle/route";
 import { GroupBookingError } from "@/lib/group-booking";
+import type { MinimumStayPolicyExceptionViolation } from "@/lib/booking-policy-exceptions";
 
 /** A correctly-formatted (64 hex char) action token. */
 const VALID_TOKEN = "a".repeat(64);
@@ -356,6 +398,58 @@ describe("POST /api/group-bookings/[code]/join", () => {
     await expect(res.json()).resolves.toMatchObject({
       code: "CAPACITY_EXCEEDED",
       details: { fullNights: ["2026-07-01"] },
+    });
+  });
+
+  it("preserves the frozen minimum-stay review while keeping the join blocked", async () => {
+    const violation: MinimumStayPolicyExceptionViolation = {
+      reasonCode: "MINIMUM_STAY",
+      policyId: "policy-lodge-b",
+      policyVersion: 5,
+      policyName: "Lodge B weekends",
+      resolvedScope: {
+        kind: "LODGE",
+        lodgeId: "lodge-b",
+        effectiveLodgeId: "lodge-b",
+      },
+      affectedNights: ["2026-07-03"],
+      exceptionEligible: true,
+      capacityMode: "HOLD",
+      message: "Lodge B requires two nights.",
+      triggerDay: "Friday",
+      minimumNights: 2,
+      actualNights: 1,
+      requirements: {
+        kind: "MINIMUM_STAY",
+        minimumNights: 2,
+        actualNights: 1,
+        triggerDays: [5],
+      },
+    };
+    mocks.joinGroupBookingAsMember.mockRejectedValueOnce(
+      new GroupBookingError(
+        "Booking does not meet the minimum stay requirement",
+        400,
+        {
+          code: "MINIMUM_STAY_VIOLATION",
+          details: "Lodge B weekends: minimum 2 nights",
+          violations: [violation],
+          exceptionReview: { violations: [violation], capacityMode: "HOLD" },
+        },
+      ),
+    );
+
+    const res = await joinPOST(joinRequest(validBody), {
+      params: Promise.resolve({ code: "ABCD2345" }),
+    });
+
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toEqual({
+      error: "Booking does not meet the minimum stay requirement",
+      code: "MINIMUM_STAY_VIOLATION",
+      details: "Lodge B weekends: minimum 2 nights",
+      violations: [violation],
+      exceptionReview: { violations: [violation], capacityMode: "HOLD" },
     });
   });
 

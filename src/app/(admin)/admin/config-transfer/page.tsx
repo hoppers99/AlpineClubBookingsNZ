@@ -299,9 +299,10 @@ export default function ConfigTransferPage() {
         </h1>
         <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
           Move configuration, site content, and lodge setup between instances as a
-          portable file. This is not a database backup: importing never deletes,
-          so restoring a bundle will not remove anything added since it was
-          exported. Members and transactional data are never included.
+          portable file. This is not a database backup: ordinary categories do
+          not delete, while booking policies replace the complete minimum-stay
+          set after previewing every deletion. Members and transactional data
+          are never included.
         </p>
       </div>
 
@@ -421,7 +422,7 @@ export default function ConfigTransferPage() {
                   <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
                   Booking policies are a complete replace-set: policies omitted
                   from the bundle will be deleted, in both Merge and Overwrite
-                  modes. Review every Deleted row above before applying.
+                  modes. Review every Deleted row below before applying.
                 </p>
               )}
 

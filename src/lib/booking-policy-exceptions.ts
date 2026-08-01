@@ -1,4 +1,5 @@
 import { formatDateOnly } from "@/lib/date-only";
+import { ApiError } from "@/lib/api-error";
 
 /**
  * The complete, explicit soft-policy allowlist (#2363).
@@ -18,13 +19,14 @@ export type PolicyExceptionReasonCode =
 
 export const HARD_STOP_BOOKING_FAILURE_CODES = [
   "CAPACITY_EXCEEDED",
-  "FULL_LODGE",
   "INVALID_DATES",
   "PAST_DATES",
   "AUTHENTICATION_REQUIRED",
-  "SUBSCRIPTION_INELIGIBLE",
-  "MEMBERSHIP_INELIGIBLE",
-  "DUPLICATE_MEMBER_NIGHT",
+  "SUBSCRIPTION_REQUIRED",
+  "GUEST_SUBSCRIPTION_REQUIRED",
+  "MEMBERSHIP_TYPE_BLOCKS_BOOKING",
+  "MEMBER_GUEST_NOT_ADDABLE",
+  "BOOKING_MEMBER_NIGHT_CONFLICT",
   "PAYMENT_REQUIRED",
   "PRIVACY_RESTRICTION",
   "DATA_INTEGRITY_FAILURE",
@@ -106,6 +108,28 @@ export interface AggregatedPolicyExceptions {
   capacityMode: PolicyExceptionCapacityMode | null;
 }
 
+/**
+ * Typed transport for mutation paths that still hard-block minimum-stay
+ * violations. #2365 may add durable review; #2363 only preserves the frozen
+ * snapshot and aggregate alongside the legacy prose and HTTP 400.
+ */
+export class MinimumStayPolicyViolationError extends ApiError {
+  readonly code = "MINIMUM_STAY_VIOLATION";
+  readonly violations: MinimumStayPolicyExceptionViolation[];
+  readonly exceptionReview: AggregatedPolicyExceptions;
+
+  constructor(
+    public readonly details: string,
+    violations: MinimumStayPolicyExceptionViolation[],
+  ) {
+    super(details, 400);
+    this.name = "MinimumStayPolicyViolationError";
+    this.exceptionReview = aggregatePolicyExceptionViolations(violations);
+    this.violations = this.exceptionReview
+      .violations as MinimumStayPolicyExceptionViolation[];
+  }
+}
+
 export function isPolicyExceptionReasonCode(
   value: string,
 ): value is PolicyExceptionReasonCode {
@@ -138,6 +162,13 @@ export function sortPolicyExceptionViolations(
 export function aggregatePolicyExceptionViolations(
   violations: PolicyExceptionViolation[],
 ): AggregatedPolicyExceptions {
+  for (const violation of violations) {
+    if (!isPolicyExceptionReasonCode(violation.reasonCode)) {
+      throw new Error(
+        `Non-allowlisted booking failure cannot enter policy exception review: ${violation.reasonCode}`,
+      );
+    }
+  }
   const ordered = sortPolicyExceptionViolations(violations);
   return {
     violations: ordered,

@@ -1,6 +1,8 @@
 "use client";
 
 import type { AgeTier } from "@prisma/client";
+import type { MinimumStayViolation } from "@/lib/booking-policies";
+import type { AggregatedPolicyExceptions } from "@/lib/booking-policy-exceptions";
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
@@ -441,7 +443,8 @@ interface QuoteResult {
   // — rendered as a warning, never gates Save (matching the pre-existing
   // future-edit semantics; the hard block lives on the create path).
   minimumStayValid?: boolean;
-  minimumStayViolations?: { message: string }[];
+  minimumStayViolations?: MinimumStayViolation[];
+  exceptionReview?: AggregatedPolicyExceptions;
 }
 
 function previousDateOnly(dateString: string | null) {
