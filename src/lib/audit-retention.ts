@@ -78,13 +78,37 @@ type AuditArchiveInsertContext = {
   preserveRequestData: boolean;
 };
 
-type AuditArchiveColumnSpec = {
-  /** Column definition used verbatim by the archive `CREATE TABLE`. */
+type AuditArchiveColumnSpec<K extends ArchivedAuditLogColumn> = {
+  /**
+   * Column definition used verbatim by the archive `CREATE TABLE`.
+   *
+   * `NOT NULL` here describes a freshly provisioned archive only. An archive
+   * database that predates the column is migrated by hand and adds it nullable
+   * — see docs/AUDIT_RETENTION_ARCHIVE_RUNBOOK.md → "Adding a column to
+   * AuditLog", step 2.
+   */
   ddl: string;
   /** SQL cast appended to the bound parameter in the `INSERT`, e.g. `::jsonb`. */
   cast?: string;
-  /** Value written to the archive. Defaults to the source row's own value. */
-  value?: (row: AuditArchiveRow, context: AuditArchiveInsertContext) => unknown;
+  /**
+   * Value written to the archive. Defaults to the source row's own value.
+   *
+   * Deliberately typed to the column's own model type rather than `unknown`:
+   * in the old hand-written writer every bound value was syntactically the
+   * row's own field, so a mismatch was impossible by construction. `unknown`
+   * would let a transform return, say, an object for a `TEXT` column, which
+   * the pg driver would silently stringify into a seven-year archive row whose
+   * source row has already been deleted (#2290 review).
+   */
+  value?: (
+    row: AuditArchiveRow,
+    context: AuditArchiveInsertContext
+  ) => AuditArchiveRow[K];
+};
+
+/** One spec per archived column, each bound to that column's own value type. */
+type AuditArchiveManifest = {
+  [K in ArchivedAuditLogColumn]: AuditArchiveColumnSpec<K>;
 };
 
 /**
@@ -96,12 +120,9 @@ type AuditArchiveColumnSpec = {
 // freeze overload makes TypeScript report a missing column as a bewildering
 // `Type 'Function' is missing ...` overload failure, where the annotation alone
 // reports the crisp `Property '<column>' is missing in type ... but required in
-// type 'Record<ArchivedAuditLogColumn, AuditArchiveColumnSpec>'`. That message
-// is the whole point of the guard, so it wins over runtime immutability.
-export const AUDIT_ARCHIVE_COLUMNS: Record<
-  ArchivedAuditLogColumn,
-  AuditArchiveColumnSpec
-> = {
+// type 'AuditArchiveManifest'`. That message is the whole point of the guard,
+// so it wins over runtime immutability.
+export const AUDIT_ARCHIVE_COLUMNS: AuditArchiveManifest = {
   id: { ddl: "TEXT PRIMARY KEY" },
   action: { ddl: "TEXT NOT NULL" },
   memberId: { ddl: "TEXT" },
@@ -170,30 +191,48 @@ const ARCHIVE_IDENTIFIER_PATTERN = /^[A-Za-z][A-Za-z0-9_]*$/;
 const ARCHIVE_COLUMN_DDL_PATTERN = /^[A-Za-z0-9_() ]+$/;
 const ARCHIVE_COLUMN_CAST_PATTERN = /^::[a-z][a-z0-9_]*$/;
 
-function archiveIdentifier(name: string): string {
+// The three validators below are deliberately PURE (value in, checked value
+// out) and exported rather than reading the manifest themselves, so their
+// rejection paths can be driven with hostile input from
+// `src/lib/__tests__/audit-archive-columns.test.ts`. They are the only stated
+// compensating control for generating SQL instead of writing it literally, and
+// an untested guard is one a future readability refactor can delete with the
+// suite still green (#2290 review).
+
+/** test seam — quotes a column name, rejecting anything that is not a bare identifier. */
+export function archiveIdentifier(name: string): string {
   if (!ARCHIVE_IDENTIFIER_PATTERN.test(name)) {
     throw new Error(`Audit archive: unsafe column identifier "${name}"`);
   }
   return `"${name}"`;
 }
 
-function archiveColumnDefinition(name: ArchivedAuditLogColumn): string {
-  const { ddl } = AUDIT_ARCHIVE_COLUMNS[name];
+/** test seam — checks a manifest `ddl` before it is concatenated into `CREATE TABLE`. */
+export function archiveColumnDdl(column: string, ddl: string): string {
   if (!ARCHIVE_COLUMN_DDL_PATTERN.test(ddl)) {
-    throw new Error(`Audit archive: unsafe column definition for "${name}"`);
+    throw new Error(`Audit archive: unsafe column definition for "${column}"`);
   }
-  return `${archiveIdentifier(name)} ${ddl}`;
+  return ddl;
 }
 
-function archiveColumnCast(name: ArchivedAuditLogColumn): string | undefined {
-  const { cast } = AUDIT_ARCHIVE_COLUMNS[name];
-  if (cast === undefined) {
-    return undefined;
-  }
+/** test seam — checks a manifest `cast` before it is concatenated into the `INSERT`. */
+export function archiveColumnCast(column: string, cast: string): string {
   if (!ARCHIVE_COLUMN_CAST_PATTERN.test(cast)) {
-    throw new Error(`Audit archive: unsafe column cast for "${name}"`);
+    throw new Error(`Audit archive: unsafe column cast for "${column}"`);
   }
   return cast;
+}
+
+function archiveColumnDefinition(name: ArchivedAuditLogColumn): string {
+  const { ddl } = AUDIT_ARCHIVE_COLUMNS[name];
+  return `${archiveIdentifier(name)} ${archiveColumnDdl(name, ddl)}`;
+}
+
+function archiveColumnCastFor(
+  name: ArchivedAuditLogColumn
+): string | undefined {
+  const { cast } = AUDIT_ARCHIVE_COLUMNS[name];
+  return cast === undefined ? undefined : archiveColumnCast(name, cast);
 }
 
 type AuditRetentionDbClient = {
@@ -426,7 +465,7 @@ async function insertAuditArchiveRow(
     AUDIT_ARCHIVE_COLUMN_NAMES.map((name) => {
       const spec = AUDIT_ARCHIVE_COLUMNS[name];
       const value = spec.value ? spec.value(row, context) : row[name];
-      const cast = archiveColumnCast(name);
+      const cast = archiveColumnCastFor(name);
       return cast ? Prisma.sql`${value}${Prisma.raw(cast)}` : Prisma.sql`${value}`;
     })
   );
@@ -500,6 +539,14 @@ export async function archiveEligibleAuditLogs(
 }
 
 // test seam
+//
+// Deletes purely on `expiresAt` (plus the retention class and, for critical
+// rows, `createdAt`). It deliberately does NOT filter on `archivedAt`, because
+// the retention policy is about how long a row may be kept, not about where a
+// copy of it lives. That is why `runAuditLogRetentionJob` refuses to run this
+// step when archiving failed — see the reasoning comment there. The archive
+// step's `orderBy: { createdAt: "asc" }` keeps the two in step in normal
+// operation by always taking the oldest, most prune-exposed rows first.
 export async function pruneExpiredAuditLogs(
   db: AuditRetentionDbClient = prisma,
   now = new Date()
@@ -576,12 +623,54 @@ export async function runAuditLogRetentionJob(
 
   try {
     const requestData = await anonymizeExpiredAuditRequestData(db, now);
-    const archive = await archiveEligibleAuditLogs(
-      db,
-      createdArchiveDb,
-      now,
-      options.batchSize ?? DEFAULT_ARCHIVE_BATCH_SIZE
-    );
+    // -----------------------------------------------------------------------
+    // Why the steps below are NOT isolated from one another (#2290 review).
+    //
+    // A throw from `archiveEligibleAuditLogs` — most plausibly an archive
+    // database whose schema has drifted behind the AuditLog model — aborts the
+    // whole job, so neither prune runs. That is deliberate, not an oversight,
+    // and it is the opposite of the per-step isolation the cron applies at
+    // `src/instrumentation.node.ts` around independent cleanups.
+    //
+    // These steps are NOT independent. `pruneExpiredAuditLogs` deletes purely
+    // by `expiresAt` — it never looks at `archivedAt` — and the two eligibility
+    // sets overlap. A `sensitive_access` row is archive-eligible from 12 months
+    // (ARCHIVE_AFTER_MONTHS) and prune-eligible from 24 months
+    // (`getAuditRetentionExpiresAt` in src/lib/audit.ts); a `standard` row is
+    // archive-eligible from 12 months and prune-eligible at 7 years. So letting
+    // the prune run while archiving is stalled would permanently DELETE rows
+    // the archive never received — precisely the loss the archive exists to
+    // prevent, and unrecoverable.
+    //
+    // Stopping everything over-retains expired rows instead: a data-
+    // minimisation delay that reverses the moment the archive schema is fixed.
+    // Unrecoverable loss loses to recoverable delay, so the job fails closed.
+    //
+    // The over-retention is a real cost and must not surprise whoever triages
+    // the cron failure, so the error below names BOTH consequences, and
+    // docs/AUDIT_RETENTION_ARCHIVE_RUNBOOK.md states the same blast radius.
+    // -----------------------------------------------------------------------
+    let archive: AuditLogRetentionJobResult["archive"];
+    try {
+      archive = await archiveEligibleAuditLogs(
+        db,
+        createdArchiveDb,
+        now,
+        options.batchSize ?? DEFAULT_ARCHIVE_BATCH_SIZE
+      );
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        "Audit archive step failed, so the whole audit retention job stopped: " +
+          "nothing was archived AND no expired audit rows were pruned from the " +
+          "main database or the archive. Expired rows are over-retained on " +
+          "purpose until this is fixed, because pruning while archiving is " +
+          "stalled would delete rows that were never archived. Fix the archive " +
+          "database (docs/AUDIT_RETENTION_ARCHIVE_RUNBOOK.md, " +
+          `"Adding a column to AuditLog") and the next run catches up. Cause: ${reason}`,
+        { cause: error }
+      );
+    }
     const mainPrune = await pruneExpiredAuditLogs(db, now);
     const archivePrune = await pruneAuditArchive(createdArchiveDb, now);
 
