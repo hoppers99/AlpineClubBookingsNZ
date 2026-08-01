@@ -113,10 +113,35 @@ export async function resolvePromoInTransaction(
   // names can never drift from what the schema says, and a genuinely missing
   // column is a startup/query error rather than a silent `undefined`. The cost
   // is one extra round trip inside a transaction that already makes many.
-  await tx.$executeRaw`SELECT 1 FROM "PromoCode" WHERE "code" = ${normalizedCode} FOR UPDATE`;
-  const promoCode = await tx.promoCode.findUnique({
-    where: { code: normalizedCode },
-  });
+  //
+  // THE ZERO-MATCH GUARD IS LOAD-BEARING, not defensive tidiness. Splitting one
+  // statement into two is only behaviour-identical while the lock actually
+  // matches something. `FOR UPDATE` locks NOTHING when it matches nothing, and
+  // this repository runs at PostgreSQL's default READ COMMITTED deliberately
+  // (`member-merge.ts` documents the reliance), so the `findUnique` below takes
+  // a FRESH statement snapshot and can see a `PromoCode` that was INSERTED — or
+  // whose `code` was renamed to this one — after the lock statement ran. That
+  // row would be read, validated and have its redemption slot consumed with no
+  // lock held on it, so two concurrent bookings could both see
+  // `currentRedemptions = 0` and both redeem a `maxRedemptionsTotal: 1` code:
+  // exactly the check-then-consume race the lock exists to close. `code` is the
+  // only MUTABLE natural key any converted site locks on — every other site
+  // keys on an immutable cuid, or materialises its singleton before locking —
+  // so this is the one place it can happen.
+  //
+  // The old single `SELECT * … FOR UPDATE` could not do this: a row it had not
+  // locked could not appear in its result set, so the same interleaving refused
+  // with "Promo code not found". Reproduce that exactly rather than inventing a
+  // new outcome — no lock, no promo. Re-locking by the now-known id would also
+  // be correct, but it adds a second raw statement and a retry path to buy an
+  // outcome (a promo created DURING this transaction being honoured by it) that
+  // the code never had and nobody has asked for.
+  const lockedRowCount =
+    await tx.$executeRaw`SELECT 1 FROM "PromoCode" WHERE "code" = ${normalizedCode} FOR UPDATE`;
+  const promoCode =
+    lockedRowCount > 0
+      ? await tx.promoCode.findUnique({ where: { code: normalizedCode } })
+      : null;
 
   if (promoCode?.internal && !allowInternal) {
     throw new BookingPromoError("Promo code not found");
