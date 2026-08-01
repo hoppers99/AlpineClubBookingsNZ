@@ -154,11 +154,40 @@ describe("applyXeroOrgShortCode", () => {
     );
   });
 
-  it("leaves the URL alone when there is no short code", () => {
+  it("leaves an already-generic URL alone when there is no short code", () => {
     const generic = "https://go.xero.com/Contacts/View/contact-1";
     expect(applyXeroOrgShortCode(generic)).toBe(generic);
     expect(applyXeroOrgShortCode(generic, { shortCode: null })).toBe(generic);
     expect(applyXeroOrgShortCode(generic, { shortCode: "" })).toBe(generic);
+  });
+
+  // #2314 review: the "no migration was needed, reads neutralise a stale code"
+  // decision only holds if neutralising survives the state where a stale code
+  // is MOST likely — Xero disconnected, mid-reconnect, or the organisation read
+  // failing, all of which resolve a null short code. Passing the stored URL
+  // through there would render the previous organisation's books; it must
+  // degrade to the generic link instead.
+  it("degrades a foreign organisation's URL to the generic one when no short code resolves", () => {
+    const foreign = buildXeroInvoiceUrl("inv-1", { shortCode: "!old99" });
+
+    for (const options of [undefined, { shortCode: null }, { shortCode: "" }]) {
+      expect(applyXeroOrgShortCode(foreign, options)).toBe(
+        buildXeroInvoiceUrl("inv-1"),
+      );
+      expect(applyXeroOrgShortCode(foreign, options)).not.toContain(
+        "shortcode=",
+      );
+    }
+  });
+
+  it("leaves a malformed organisation-login URL alone when no short code resolves", () => {
+    // Nothing to redirect to: the same posture as the short-code path — a
+    // rewrite here would only bury the problem deeper.
+    const malformed =
+      "https://go.xero.com/organisationlogin/default.aspx?shortcode=!old99";
+    expect(applyXeroOrgShortCode(malformed, { shortCode: null })).toBe(
+      malformed,
+    );
   });
 
   it("passes null and undefined through as null", () => {
@@ -185,6 +214,30 @@ describe("applyXeroOrgShortCode", () => {
     expect(applyXeroOrgShortCode(malformed, { shortCode: "!new77" })).toBe(
       malformed,
     );
+  });
+
+  // #2314 review: these two helpers are the single chokepoint for the shape of
+  // a stored `xeroObjectUrl`, and both take a `redirecturl` out of an existing
+  // URL and hand it back to the builder. A value that is not root-relative
+  // would be pasted onto the origin (dead link) or — for `//host` and its `/\`
+  // spelling — re-wrapped as an OFF-SITE redirect target, an open redirect
+  // wearing a Xero URL. No writer in the tree can produce one; the chokepoint
+  // holds the contract anyway.
+  it("refuses to rebuild from a redirecturl that is not root-relative", () => {
+    for (const redirect of [
+      "//evil.example/Contacts",
+      "/\\evil.example/Contacts",
+      "https://evil.example/Contacts",
+      "Contacts/View/contact-1",
+    ]) {
+      const hostile = `https://go.xero.com/organisationlogin/default.aspx?shortcode=!old99&redirecturl=${encodeURIComponent(redirect)}`;
+      expect(applyXeroOrgShortCode(hostile, { shortCode: "!aBc12" })).toBe(
+        hostile,
+      );
+      // …and with no short code the neutralising path refuses too, rather than
+      // reducing it to a link built from the same value.
+      expect(applyXeroOrgShortCode(hostile, { shortCode: null })).toBe(hostile);
+    }
   });
 
   it("scopes every object type buildXeroObjectUrl knows", () => {
@@ -249,6 +302,18 @@ describe("stripXeroOrgShortCode", () => {
       "https://go.xero.com/organisationlogin/default.aspx?shortcode=!aBc12",
     ]) {
       expect(stripXeroOrgShortCode(other)).toBe(other);
+    }
+  });
+
+  it("refuses to rebuild from a redirecturl that is not root-relative", () => {
+    for (const redirect of [
+      "//evil.example/Contacts",
+      "/\\evil.example/Contacts",
+      "https://evil.example/Contacts",
+      "Contacts/View/contact-1",
+    ]) {
+      const hostile = `https://go.xero.com/organisationlogin/default.aspx?shortcode=!old99&redirecturl=${encodeURIComponent(redirect)}`;
+      expect(stripXeroOrgShortCode(hostile)).toBe(hostile);
     }
   });
 });
