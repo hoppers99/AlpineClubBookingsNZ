@@ -70,25 +70,44 @@ import {
 } from "@/lib/xero-operation-outbox-payload";
 
 /**
- * Was this operation REFUSED by one of the process-global Xero cooldowns rather
- * than attempted against Xero (#2423 review F2)?
+ * Was this operation REFUSED by a process-global Xero cooldown BEFORE any HTTP
+ * call — i.e. never attempted against Xero — rather than attempted and failed?
+ * (#2423 review F2)
  *
- * Name-keyed rather than `instanceof`, matching `getXeroApiErrorInfo` and
- * `classifyOrganisationReadFailure`: it keeps this module decoupled from
- * `xero-api-client`'s class identities, which differ across the mock/live paths
- * and under module mocking in tests.
+ * Keyed on the error NAME **plus its `preHttp` marker**, not `instanceof`.
+ * Name-keying keeps this module decoupled from `xero-api-client`'s class
+ * identities (which differ across the mock/live paths and under module mocking),
+ * matching `getXeroApiErrorInfo` and `classifyOrganisationReadFailure`; reading
+ * the plain `preHttp` property is equally identity-independent.
  *
- * Both are raised BEFORE any HTTP: `throwIfXeroDailyLimitActive` and
- * `throwIfXeroTransientOutageActive` are the first two statements of
- * `withXeroRetry`, and the daily gate is re-checked inside
- * `getAuthenticatedXeroClient` before a client is even handed out. So an
- * operation that hits one of them on its first Xero call did nothing at Xero at
- * all: there is no invoice, credit note or allocation to duplicate, and no
- * provider-side state for a re-drive to collide with.
+ * The marker is the load-bearing part. `XeroDailyLimitError` has TWO
+ * construction sites: the pre-HTTP daily gate (`throwIfXeroDailyLimitActive`,
+ * also re-checked inside `getAuthenticatedXeroClient`) sets `preHttp: true`, but
+ * `withXeroRetry` ALSO mints a fresh `XeroDailyLimitError` from a real HTTP 429
+ * that Xero itself returned carrying `x-rate-limit-problem: day` — an ATTEMPTED
+ * call — and that one carries `preHttp: false`. Keying on the bare name alone
+ * (the pre-fix behaviour) would misclassify that attempted 429 as never-sent and
+ * auto-re-drive an operation that may already have changed provider state.
+ * Requiring `preHttp === true` makes "never attempted" a genuine invariant of
+ * the classification rather than an accident of which queue types happen to
+ * re-drive safely today: only a refusal raised before `fn()` ran is returned to
+ * PENDING; every attempted failure — including a Xero-returned 429/day — keeps
+ * the replayable FAILED path. A pre-HTTP refusal sent nothing, so there is no
+ * invoice, credit note or allocation to duplicate and no provider-side state for
+ * a re-drive to collide with, whatever the queue type. `XeroTransientOutageError`
+ * has only the pre-HTTP construction site, but is marked and checked the same
+ * way for symmetry and to stay safe if a post-HTTP use is ever added.
  */
 function isXeroCooldownRefusal(error: unknown): boolean {
-  const name = error instanceof Error ? error.name : "";
-  return name === "XeroTransientOutageError" || name === "XeroDailyLimitError";
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const isCooldownName =
+    error.name === "XeroTransientOutageError" ||
+    error.name === "XeroDailyLimitError";
+  return (
+    isCooldownName && (error as { preHttp?: unknown }).preHttp === true
+  );
 }
 
 async function claimQueuedOutboxOperation(
@@ -2276,36 +2295,74 @@ export async function processQueuedXeroOutboxOperations(options?: {
         // operations 2..N of the SAME batch are then condemned without ever
         // reaching Xero.
         //
-        // Returning them to PENDING is idempotency-neutral: nothing was sent,
-        // so the next cron simply drives the same queued work. The residual is
-        // the narrow case where the cooldown is armed by another caller
-        // MID-operation, after an earlier Xero call in this handler already
-        // succeeded; re-driving is then exactly the re-run an operator's
-        // Requeue performs on the FAILED row today, against handlers written to
-        // short-circuit on an already-linked Xero document.
+        // The un-claim must match the state the HANDLER left the row in, not the
+        // state the outbox expects. Twelve of the fifteen queue types own a
+        // `catch { await failXeroSyncOperation(<this outbox row>, error); throw }`,
+        // and `failXeroSyncOperation` writes `status: FAILED` + `completedAt`
+        // with no status guard — so by the time this branch runs the row is
+        // already FAILED for those types, and a `status: "RUNNING"`-only guard
+        // would match zero rows and leave it terminally FAILED (the very bug the
+        // #2423 F2 review caught). The three handlers that do NOT self-fail
+        // (SUBSCRIPTION_INVOICE, APPLIED_CREDIT_ALLOCATION,
+        // APPLIED_CREDIT_DEALLOCATION) leave it RUNNING. Match BOTH, and clear
+        // `completedAt` so a returned row is indistinguishable from one never
+        // picked up.
         //
-        // Deliberately BEFORE the subscription-charge error exposure below: an
-        // un-attempted operation leaves its charge exactly as the enqueue left
-        // it (QUEUED / INVOICE_CREATED, errors cleared), which is the truth.
-        await prisma.xeroSyncOperation.updateMany({
-          where: { id: queuedOperation.id, status: "RUNNING" },
+        // Widening the guard to include FAILED is safe precisely because
+        // `isXeroCooldownRefusal` now requires the pre-HTTP marker: we only
+        // un-FAIL a row whose error proves nothing was sent. A genuine
+        // post-HTTP failure — including a 429 Xero itself returned, whose
+        // freshly-minted XeroDailyLimitError carries `preHttp: false` — is not a
+        // cooldown refusal, never reaches this branch, and keeps its replayable
+        // FAILED row untouched. (Chosen over rethrowing the refusal ahead of
+        // `failXeroSyncOperation` in all twelve handler catches: that is a far
+        // larger, money-path blast radius, and without this same marker it would
+        // be no safer — so the contained guard here is the more robust fix.)
+        //
+        // Returning the row to PENDING is idempotency-neutral: nothing was sent,
+        // so the next cron simply drives the same queued work. It is deliberately
+        // BEFORE the subscription-charge error exposure below, so a genuinely
+        // un-attempted operation leaves its charge exactly as the enqueue left it
+        // (QUEUED / INVOICE_CREATED, errors cleared), which is the truth.
+        const returned = await prisma.xeroSyncOperation.updateMany({
+          where: {
+            id: queuedOperation.id,
+            status: { in: ["RUNNING", "FAILED"] },
+          },
           data: {
             status: "PENDING",
             startedAt: null,
+            completedAt: null,
             lastErrorCode: null,
             lastErrorMessage: null,
           },
         });
+        if (returned.count > 0) {
+          logger.warn(
+            {
+              err: error,
+              queueOperationId: queuedOperation.id,
+              queueType: payload?.queueType ?? null,
+            },
+            "Returned un-attempted Xero outbox operation to PENDING: a Xero cooldown refused it before any call"
+          );
+          result.skipped += 1;
+          continue;
+        }
+        // The row was in neither RUNNING nor FAILED (e.g. a concurrent worker
+        // moved it out from under us). Do NOT report a return-to-PENDING that
+        // did not happen — that false "skipped" is what let an incident summary
+        // tell an operator the queue would self-heal while invoices sat stuck.
+        // Fall through to the honest FAILED path so the log and the failed
+        // counter reflect a row that was NOT recovered.
         logger.warn(
           {
             err: error,
             queueOperationId: queuedOperation.id,
             queueType: payload?.queueType ?? null,
           },
-          "Returned un-attempted Xero outbox operation to PENDING: a Xero cooldown refused it before any call"
+          "Xero cooldown refused an outbox operation but the row was not in a returnable state; failing it"
         );
-        result.skipped += 1;
-        continue;
       }
       if (payload?.queueType === XERO_OUTBOX_SUBSCRIPTION_INVOICE_TYPE) {
         const currentCharge = await prisma.membershipSubscriptionCharge.findUnique({
