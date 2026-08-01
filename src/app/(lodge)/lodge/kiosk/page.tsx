@@ -6,6 +6,7 @@ import { KioskLodgeInstructions } from "@/components/kiosk-lodge-instructions";
 import { useClubIdentity } from "@/components/club-identity-provider";
 import type { KioskTier } from "@/lib/kiosk-access";
 import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
+import { parseDateOnly, todayDateOnlyForTimeZone } from "@/lib/date-only";
 import {
   addDaysToDateKey,
   getWeekStartDateKey,
@@ -74,12 +75,40 @@ interface AccessInfo {
 
 type KioskView = "week" | "day";
 
-function formatDate(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
+/*
+  #2474 — a lodge night on this page is a date-only KEY ("2026-04-15"), never a
+  `Date`. Every "today" comes from `todayDateOnlyForTimeZone()` (the club's day)
+  and every step comes from `addDaysToDateKey` (UTC date-only arithmetic), so
+  the kiosk agrees with the server guards it calls and with the week strip it
+  renders.
+
+  What this replaced was two different things, and only one of them was a bug.
+
+  THE BUG: `formatDate(new Date())` read the DISPLAY DEVICE's calendar day. A
+  kiosk tablet left on a foreign zone — or simply set wrong, which is the common
+  case on a lodge device nobody administers — opened on the wrong night, while
+  every server route the page calls resolves the night in New Zealand.
+
+  THE SEAM ALIGNMENT: the day-stepping helpers used to round-trip through
+  `new Date(key + "T00:00:00")` + `setDate` + local getters. That was NOT
+  broken. Writing and reading with the same local getters is a closed round
+  trip: swept over every IANA zone and every day from 2008 to 2030, it agrees
+  with `addDaysToDateKey` on every DST transition, month end and year end (the
+  only divergence in the whole space is the 2011 Samoa dateline skip, where a
+  calendar day was deleted outright). It moved onto `addDaysToDateKey` so the
+  page speaks ONE date-only encoding end to end — the same UTC-midnight seam the
+  week strip and `src/lib/date-only.ts` use — and so no later edit can
+  reintroduce a device-local `Date` here by copying the pattern the file used to
+  set. Do not cite this file as prior art for a DST defect: there wasn't one.
+*/
+
+// How often the page asks the club's calendar whether the day has turned over.
+// A minute is the coarsest interval a hut leader would not notice at midnight,
+// and the check itself is one `Intl` format — far cheaper than the two-minute
+// data refresh it sits alongside. Deliberately NOT exported — this is an App
+// Router page file, and a named export here is an invalid page export; the
+// suite advances its fake clock by this many ms with a comment pointing back.
+const CLUB_DAY_TICK_MS = 60000;
 
 // Not one of the shared helpers: the kiosk header names the DAY OF THE WEEK in
 // full ("Wednesday, 15 April 2026") because that is what a hut leader scans for.
@@ -92,9 +121,10 @@ const LONG_WEEKDAY_DATE = new Intl.DateTimeFormat(APP_LOCALE, {
 });
 
 function displayDate(dateStr: string): string {
-  // Date-only lodge night: parse at UTC midnight so the club-time formatter
-  // cannot roll it back a day for a viewer outside New Zealand.
-  return LONG_WEEKDAY_DATE.format(new Date(dateStr + "T00:00:00Z"));
+  // Date-only lodge night: parse at UTC midnight (the repo's date-only seam) so
+  // the club-time formatter cannot roll it back a day for a viewer outside
+  // New Zealand.
+  return LONG_WEEKDAY_DATE.format(parseDateOnly(dateStr));
 }
 
 function formatArrivalTime(time: string): string {
@@ -131,11 +161,16 @@ export default function KioskPage() {
     },
     [previewAccount]
   );
-  const [date, setDate] = useState(() => formatDate(new Date()));
+  // #2474 — the club's day is HELD, not re-read in the render, and the night
+  // shown is seeded from that one snapshot. Reading it inline where the week
+  // strip is rendered would let the "Today" chip roll at NZ midnight while
+  // `date` — the night every fetch, every roster write and every check-in is
+  // keyed on — stayed on yesterday. That divergence would open at 00:00 NZ, the
+  // exact hour a late arrival is being checked in.
+  const [clubToday, setClubToday] = useState(() => todayDateOnlyForTimeZone());
+  const [date, setDate] = useState(clubToday);
   const [view, setView] = useState<KioskView>("week");
-  const [weekStart, setWeekStart] = useState(() =>
-    getWeekStartDateKey(formatDate(new Date()))
-  );
+  const [weekStart, setWeekStart] = useState(() => getWeekStartDateKey(clubToday));
   const [weekDays, setWeekDays] = useState<KioskWeekDaySummary[]>([]);
   const [bookings, setBookings] = useState<BookingGroup[]>([]);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
@@ -262,6 +297,44 @@ export default function KioskPage() {
     return () => clearInterval(timer);
   }, [failCount, fetchData]);
 
+  // #2474 — a kiosk is a wall tablet nobody reloads, so the club's new day has
+  // to arrive on its own. Watch for the rollover and carry the strip across WITH
+  // it, so the "Today" chip and the night being served never disagree.
+  //
+  // Two things it deliberately will NOT do, because 00:00 NZ is the check-in
+  // hour and not a quiet moment:
+  //
+  //  - it never moves a view somebody chose. Only a strip still parked on what
+  //    was today follows the club over; a night or a week a hut leader browsed
+  //    to stays exactly where they left it.
+  //  - it never touches the DAY view. Reaching a day list takes a deliberate
+  //    tap, and it is where arrivals are marked off — a list that re-pointed
+  //    itself at the new night mid-check-in would send the next tap to the
+  //    wrong lodge night. It waits for **Today**, or for a tap back to the
+  //    strip.
+  //
+  // `clubToday` itself always advances, so the chip is right the moment the
+  // strip is shown again. The effect re-arms on `clubToday` (once a day) and on
+  // `view`, so a tick restarts while somebody is actively moving around — which
+  // is the behaviour we want anyway.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const nextClubDay = todayDateOnlyForTimeZone();
+      if (nextClubDay === clubToday) return;
+
+      setClubToday(nextClubDay);
+      if (view !== "week") return;
+
+      setDate((current) => (current === clubToday ? nextClubDay : current));
+      setWeekStart((current) =>
+        current === getWeekStartDateKey(clubToday)
+          ? getWeekStartDateKey(nextClubDay)
+          : current
+      );
+    }, CLUB_DAY_TICK_MS);
+    return () => clearInterval(timer);
+  }, [clubToday, view]);
+
   const refreshNow = async () => {
     setRefreshing(true);
     try {
@@ -273,22 +346,16 @@ export default function KioskPage() {
 
   const canNavigateBack = () => {
     if (!access?.dateRange) return true;
-    const prev = new Date(date + "T00:00:00");
-    prev.setDate(prev.getDate() - 1);
-    return formatDate(prev) >= access.dateRange.minDate;
+    return addDaysToDateKey(date, -1) >= access.dateRange.minDate;
   };
 
   const canNavigateForward = () => {
     if (!access?.dateRange) return true;
-    const next = new Date(date + "T00:00:00");
-    next.setDate(next.getDate() + 1);
-    return formatDate(next) <= access.dateRange.maxDate;
+    return addDaysToDateKey(date, 1) <= access.dateRange.maxDate;
   };
 
   const changeDate = (delta: number) => {
-    const d = new Date(date + "T00:00:00");
-    d.setDate(d.getDate() + delta);
-    const newDate = formatDate(d);
+    const newDate = addDaysToDateKey(date, delta);
 
     // Enforce date range for restricted tiers
     if (access?.dateRange) {
@@ -326,7 +393,12 @@ export default function KioskPage() {
   };
 
   const showToday = () => {
-    const today = formatDate(new Date());
+    // Re-read rather than trusting `clubToday`: the rollover tick can be up to
+    // a minute behind the club at midnight, and **Today** must never send a hut
+    // leader to yesterday. Setting all three together keeps the chip, the
+    // served night and the week on the same day.
+    const today = todayDateOnlyForTimeZone();
+    setClubToday(today);
     setDate(today);
     setWeekStart(getWeekStartDateKey(today));
     setView("week");
@@ -712,7 +784,7 @@ export default function KioskPage() {
         <KioskWeekView
           days={weekDays}
           weekStart={weekStart}
-          todayDate={formatDate(new Date())}
+          todayDate={clubToday}
           selectedDate={date}
           lodgeName={access?.lodgeName}
           readOnly={effectiveTier === "staying-guest" || effectiveTier === "none"}

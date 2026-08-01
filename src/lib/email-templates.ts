@@ -35,6 +35,7 @@ import {
   bookingPaymentDueNote,
   duplicateCaptureRefundOutcomeParagraph,
   splitGuestPortionOwnBookingLine,
+  type BookingPaymentDueCredit,
 } from "./email-message-notes";
 
 const BASE_URL = getAppBaseUrl();
@@ -426,6 +427,14 @@ const SETTLED_LINE_LABELS: Record<ConfirmationSettlementMethod, string> = {
 const NOTHING_SETTLED_LABEL = "Nothing more to pay";
 
 /**
+ * #2328 × #2483: the one label under which account credit appears on a booking
+ * confirmation, whether the booking is settled (the pair below) or still owing
+ * (the netting rows further down). Shared so the two money outcomes cannot end
+ * up naming the same thing differently.
+ */
+const APPLIED_CREDIT_LABEL = "Account credit applied";
+
+/**
  * #2328: the single source of truth for how APPLIED ACCOUNT CREDIT shows on a
  * booking confirmation — shared by the hand-built HTML confirmation
  * (`bookingConfirmedTemplate`) and the flat `{{creditNote}}` token the
@@ -463,7 +472,7 @@ export function appliedCreditSummaryRows(
   if (appliedCreditCents <= 0 || settledCents < 0) return [];
   return [
     {
-      label: "Account credit applied",
+      label: APPLIED_CREDIT_LABEL,
       value: `-${formatMoneyCents(appliedCreditCents)}`,
     },
     {
@@ -488,27 +497,28 @@ export function appliedCreditSummaryRows(
  *  - unpaid (`paymentDue`): nothing has been settled at all, so there is no
  *    "paid by" figure — returns a negative sentinel that suppresses the rows.
  *
- *    WHY THAT IS SAFE, precisely (#2328 review). It is safe because this branch
- *    never carries applied credit, NOT because suppressing a credit line here
- *    would be the right answer if it did. There is exactly ONE send site that
- *    passes `paymentDue`: the member whole-lodge request conversion in
- *    `src/lib/school-booking-request.ts` (the `sendBookingConfirmedEmail` call
- *    at ~:2101). That path mints a brand-new booking from an approved request
- *    and never applies account credit to it — no `BOOKING_APPLIED` ledger row
- *    is written anywhere on it — so `loadBookingAppliedCredit` returns zero and
- *    there is nothing to suppress. `sendBookingConfirmedEmail` logs a warning
- *    if that precondition ever stops holding, because the suppression would
- *    then be hiding a real figure from a member.
+ *    That suppression is about the SETTLEMENT half of the pair only, and it is
+ *    unconditionally right: no money has moved, so there is no "Paid by card"
+ *    line to write. It does NOT mean an unpaid confirmation stays silent about
+ *    credit. Since #2483 the unpaid branch states the netting in its own shape
+ *    — booking total, credit applied, amount to transfer — built by
+ *    `unpaidMoneySummaryRows` below. Before #2483 the whole subject was
+ *    suppressed here, which was defensible only while no send site could pair
+ *    `paymentDue` with applied credit;
  *
  *    A #2444 DRAFT claimed the invoice for this booking has the member's
  *    floating credit notes ALLOCATED against it under #1620, because the send
  *    site enqueues an allocation op a few lines above the send. That is WRONG
- *    and is retracted (re-verified 1 Aug 2026):
- *    `enqueueXeroAppliedCreditAllocationOperation` only queues anything when
- *    the booking already carries `BOOKING_APPLIED` ledger rows, and this path
- *    writes none, so it always returns `{ queueOperationId: null }` and the
- *    invoice stands at the FULL amount. The suppression rests on the
- *    no-applied-credit precondition above and on nothing else;
+ *    as a statement about TODAY'S path and is retracted (re-verified 1 Aug
+ *    2026): `enqueueXeroAppliedCreditAllocationOperation` only queues anything
+ *    when the booking already carries `BOOKING_APPLIED` ledger rows, and the
+ *    one live `paymentDue` path writes none, so it always returns
+ *    `{ queueOperationId: null }` and the invoice stands at the FULL amount.
+ *    #2483 nets that branch LOCALLY because `deriveBookingAppliedCreditCents`
+ *    is the club's own amount-owing law, not a guess at Xero — see
+ *    `resolveUnpaidCreditNetting` below, which also states precisely where the
+ *    email's read and the allocation gate's read can come apart (the gate sees
+ *    only the `xeroCreditNoteId: null` subset) and what #2501 has to catch;
  *  - partly paid (`outstandingBalance`, #2397): the settled slice is the
  *    booking's price minus what is still owing, and the credit comes out of
  *    THAT, not out of the full price;
@@ -533,6 +543,196 @@ export function settledByPaymentCents({
 }): number {
   if (unpaid) return -1;
   return totalCents - outstandingCents - appliedCreditCents;
+}
+
+/**
+ * #2483: what a confirmed-but-UNPAID booking is really asking the member for,
+ * once the club's own account-credit ledger has been consulted.
+ *
+ * The bug. An unpaid confirmation states the booking's full price as
+ * "Total Due" and asks the member to transfer it. Where account credit has been
+ * applied to that booking app-side, the club's Xero invoice is reduced by
+ * exactly that credit (#1620 "allocate-existing" — the allocation is gated on
+ * the booking's `BOOKING_APPLIED` ledger rows), so the invoice asks for less
+ * than the email does and a member who follows the email OVERPAYS.
+ *
+ * Why the figure is computed HERE and not read back from Xero (owner decision,
+ * 2 Aug 2026). The allocation is asynchronous — queued on the Xero outbox and
+ * processed afterwards — so waiting for it would either delay a member-facing
+ * confirmation behind a provider operation or make the email's content depend
+ * on outbox timing. The owner's direction is that the email uses the booking
+ * app's OWN known credits, with no delay and an itemised amount, and that a
+ * SEPARATE reconciliation checker (#2501) warns admins whenever the club's
+ * ledger and Xero disagree. That split keeps the provider off the send path and
+ * puts drift in front of an admin instead of in front of a member.
+ *
+ * Why that local figure is trustworthy — stated precisely, because an earlier
+ * draft of this docblock overstated it (#2483 review, 2 Aug 2026).
+ * `deriveBookingAppliedCreditCents` is the club's OWN amount-owing law: it is
+ * the same figure `prepareManualSettlement` computes an effective price from
+ * (`payment-reconciliation.ts`, `finalPriceCents − derive`), the same figure the
+ * card-capture amount guard accepts, and the same `desiredAppliedCents` the Xero
+ * deallocation engine converges an invoice to. So the netted figure the member
+ * is asked for is exactly what the club would accept as full settlement — which
+ * is the property that matters here.
+ *
+ * What it is NOT is the same predicate the allocation gate reads.
+ * `enqueueXeroAppliedCreditAllocationOperation` aggregates only the
+ * `xeroCreditNoteId: null` UNALLOCATED subset — a work-remaining filter over the
+ * rows this sums — so the two agree only while a stamped row really does mean
+ * the credit is already off the LIVE invoice. Three things can break that, and
+ * all three are #2501's to surface, not the email's:
+ *  - a hand edit to the credit note or invoice in Xero afterwards;
+ *  - an allocation op that FAILED or was never processed, leaving the invoice at
+ *    the full price with the queued work stalled;
+ *  - a stamp that outlived the invoice it recorded (an invoice unlinked and
+ *    re-raised), after which the gate finds no unallocated rows and queues
+ *    nothing at all.
+ * #2501's checker should therefore compare Σ STAMPED `BOOKING_APPLIED` against
+ * the live invoice's own allocations, not merely club credits against Xero
+ * credits.
+ *
+ * THE FOUR OUTCOMES. Money is integer cents throughout and the only arithmetic
+ * is one subtraction, so no rounding is possible:
+ *  - `"none"` — no credit applied (the overwhelming majority, and every send on
+ *    today's one live `paymentDue` path), or a non-positive price. Renders the
+ *    #2444 message byte-for-byte.
+ *  - `"netted"` — credit smaller than the price. States the reconciling trio and
+ *    asks for the difference.
+ *  - `"covered"` — credit EQUALS the price. Not a contradiction: it is the
+ *    documented steady state of the #1887 reprice clamp, and the state the
+ *    club's own settle path calls "nothing owing". Folding it into a refusal
+ *    that printed the full price would ask a member to pay 100% of a booking
+ *    they owe nothing on — so it states `Total Due: $0.00` and asks for nothing.
+ *  - `"unreconciled"` — MORE credit applied than the booking costs. The ledger
+ *    contradicts the price, so no figure derived from the pair may be shown and
+ *    no payment may be asked for. The email states the booking's price as a fact
+ *    and nothing as an instruction; the sender logs it for an admin.
+ */
+export type UnpaidCreditNettingOutcome =
+  | "none"
+  | "netted"
+  | "covered"
+  | "unreconciled";
+
+export interface UnpaidCreditNetting {
+  /** Which of the four shapes above this send is. */
+  outcome: UnpaidCreditNettingOutcome;
+  /**
+   * Account credit the club's own ledger has applied to this booking, in
+   * integer cents. ZERO on `"none"` (none is applied) and on `"unreconciled"`
+   * (the figures contradict each other, so none may be stated).
+   */
+  creditCents: number;
+  /**
+   * What the member must transfer: the booking's price less `creditCents`.
+   * Equals the booking's price on `"none"`, is zero on `"covered"`, and is zero
+   * on `"unreconciled"` — where nothing may be asked for at all, so no caller
+   * can accidentally render a figure from it.
+   */
+  toTransferCents: number;
+}
+
+export function resolveUnpaidCreditNetting({
+  totalCents,
+  appliedCreditCents,
+}: {
+  totalCents: number;
+  appliedCreditCents: number;
+}): UnpaidCreditNetting {
+  const creditCents = Math.max(0, appliedCreditCents);
+  if (creditCents === 0 || totalCents <= 0) {
+    return { outcome: "none", creditCents: 0, toTransferCents: totalCents };
+  }
+  if (creditCents > totalCents) {
+    return { outcome: "unreconciled", creditCents: 0, toTransferCents: 0 };
+  }
+  return {
+    outcome: creditCents === totalCents ? "covered" : "netted",
+    creditCents,
+    toTransferCents: totalCents - creditCents,
+  };
+}
+
+/**
+ * #2483: the `accountCredit` argument `bookingPaymentDueNote` takes, derived
+ * from one netting by BOTH renderers so neither can pick a different paragraph
+ * shape than the money rows beside it. `format` is the caller's own money
+ * formatter, which is the only thing the two renderers differ in.
+ */
+export function unpaidCreditNoteInput(
+  totalCents: number,
+  netting: UnpaidCreditNetting,
+  format: (cents: number) => string,
+): BookingPaymentDueCredit | undefined {
+  if (netting.outcome === "none") return undefined;
+  if (netting.outcome === "unreconciled") return { outcome: "unreconciled" };
+  return {
+    outcome: netting.outcome,
+    bookingTotal: format(totalCents),
+    creditApplied: format(netting.creditCents),
+  };
+}
+
+/**
+ * #2483: the amount an admin must invoice BY HAND for a member whole-lodge
+ * booking when the Xero module is off — the same figure, from the same
+ * resolver, that the member's own confirmation asks them to transfer.
+ * See `adminWholeLodgeManualInvoiceTemplate` for why the two must agree and why
+ * `"unreconciled"` keeps the gross price.
+ */
+export function wholeLodgeManualInvoiceAmountCents(
+  totalCents: number,
+  appliedCreditCents: number,
+): number {
+  const netting = resolveUnpaidCreditNetting({ totalCents, appliedCreditCents });
+  return netting.outcome === "unreconciled"
+    ? totalCents
+    : netting.toTransferCents;
+}
+
+/**
+ * #2483: the money rows of an UNPAID confirmation — the single source of truth
+ * for them, shared by the hand-built HTML confirmation and the pre-composed
+ * `{{paymentOutcome}}` block an admin-editable body renders, exactly as
+ * `appliedCreditSummaryRows` is shared for a settled booking.
+ *
+ * Without netting it is the one "Total Due" line #2263 shipped, so an unpaid
+ * confirmation for a member holding no applicable credit is unchanged. With
+ * netting it is the reconciling trio #2328 established for a settled booking,
+ * in the tense an unpaid one needs: what the stay costs, what the club has
+ * already put towards it, and what is left to transfer. "Total Due" keeps its
+ * label — it is what the member owes, which is the point of the line — so a
+ * saved override built on `{{totalDue}}` states the netted figure with no edit.
+ * On `"covered"` that trio still reconciles and lands on `Total Due: $0.00`,
+ * which is the honest figure.
+ *
+ * `"unreconciled"` states the booking's price as `Booking Total` and stops.
+ * Calling a figure "Total Due" is an instruction to pay it, and the whole point
+ * of that outcome is that no figure derived from a contradictory ledger may be
+ * asked for; the paragraph beside these rows says the club will confirm what,
+ * if anything, is left.
+ *
+ * Values are unescaped plain text; the HTML path escapes at its own edge.
+ */
+export function unpaidMoneySummaryRows(
+  totalCents: number,
+  netting: UnpaidCreditNetting,
+): Array<{ label: string; value: string }> {
+  if (netting.outcome === "none") {
+    return [{ label: "Total Due", value: formatMoneyCents(totalCents) }];
+  }
+  if (netting.outcome === "unreconciled") {
+    return [{ label: "Booking Total", value: formatMoneyCents(totalCents) }];
+  }
+  return [
+    { label: "Booking Total", value: formatMoneyCents(totalCents) },
+    {
+      label: APPLIED_CREDIT_LABEL,
+      value: `-${formatMoneyCents(netting.creditCents)}`,
+    },
+    { label: "Total Due", value: formatMoneyCents(netting.toTransferCents) },
+  ];
 }
 
 export function bookingConfirmedTemplate(
@@ -649,8 +849,21 @@ export function bookingConfirmedTemplate(
     label: escapeHtml(row.label),
     value: escapeHtml(row.value),
   }));
+  // #2483: what an unpaid member is really being asked for, netted from the
+  // club's own credit ledger by the SHARED resolver the sender uses, so the
+  // table and the {{paymentOutcome}} block cannot disagree about the figure.
+  const unpaidNetting = resolveUnpaidCreditNetting({
+    totalCents,
+    appliedCreditCents,
+  });
   if (paymentDue) {
-    rows.push({ label: "Total Due", value: formatCents(totalCents) });
+    // One "Total Due" row when no credit applies (byte-for-byte the pre-#2483
+    // email), the reconciling trio when it does, and a bare "Booking Total"
+    // when the ledger contradicts the price — from the shared builder, escaped
+    // at this HTML edge on the same principle as the rows above.
+    for (const row of unpaidMoneySummaryRows(totalCents, unpaidNetting)) {
+      rows.push({ label: escapeHtml(row.label), value: escapeHtml(row.value) });
+    }
   } else if (outstandingBalance) {
     rows.push(
       { label: "Booking Total", value: formatCents(totalCents) },
@@ -673,11 +886,22 @@ export function bookingConfirmedTemplate(
   // must never appear on one renderer and not the other. The reference is
   // club-entered data, so it is escaped at this HTML edge (the composer takes
   // it already escaped, on the same principle as the shared money rows above).
+  // #2483: the amount is what the member must TRANSFER, so it is netted; the
+  // arithmetic behind it goes in the paragraph in words, for a body that
+  // renders {{paymentDueNote}} without the money table beside it. The paragraph
+  // shape comes from the SAME netting the rows above were built from, via the
+  // shared adapter, so the table and the prose can never disagree about whether
+  // this member is being asked for money at all.
   const paymentDueNote = paymentDue
     ? bookingPaymentDueNote({
-        amount: formatCents(totalCents),
+        amount: formatCents(unpaidNetting.toTransferCents),
         reference: escapeHtml(paymentDue.reference),
         invoiceEmailed: paymentDue.invoiceEmailed,
+        accountCredit: unpaidCreditNoteInput(
+          totalCents,
+          unpaidNetting,
+          formatCents,
+        ),
       })
     : "";
   // #2397, same convention: one composed sentence shared with the token path.
@@ -3602,6 +3826,30 @@ export function adminSchoolManualInvoiceTemplate(data: {
  * same grounds — muting it would let a confirmed whole-lodge stay go
  * un-invoiced.
  */
+/**
+ * #2263 × #2483 — the admin's instruction to raise a whole-lodge invoice BY
+ * HAND, because the Xero module is off.
+ *
+ * `Amount` is the amount to INVOICE, and it is the same figure the member's own
+ * confirmation asks them to transfer — both come from
+ * `resolveUnpaidCreditNetting` over the same two inputs. That is the whole
+ * point of `appliedCreditCents` being here (#2483 review, 2 Aug 2026): on this
+ * branch there is no Xero invoice and no allocation op, so nothing downstream
+ * would ever reconcile an admin who invoiced the booking's gross price against
+ * a member who was told to transfer the netted one. The club would chase a
+ * shortfall its own ledger says does not exist, holding an email that told the
+ * member not to pay it.
+ *
+ * `"unreconciled"` (more credit applied than the booking costs) keeps the gross
+ * price here. The member is asked for nothing on that outcome and told to wait
+ * for the club, so there is no figure to agree with, and the contradiction is
+ * already put in front of an admin by the send-time warning in
+ * `sendBookingConfirmedEmail`.
+ *
+ * Zero applied credit — which is every send on today's live path, because the
+ * conversion mints a brand-new booking and writes no `MemberCredit` row — is
+ * byte-for-byte the pre-#2483 email.
+ */
 export function adminWholeLodgeManualInvoiceTemplate(data: {
   memberName: string;
   contactEmail: string;
@@ -3609,6 +3857,8 @@ export function adminWholeLodgeManualInvoiceTemplate(data: {
   checkOut: Date;
   guestCount: number;
   totalCents: number;
+  /** #2483 — account credit the club's ledger has applied to this booking. */
+  appliedCreditCents?: number;
   paymentReference: string;
   reviewUrl: string;
 }): string {
@@ -3621,7 +3871,15 @@ export function adminWholeLodgeManualInvoiceTemplate(data: {
       { label: "Check-in", value: formatNZDate(data.checkIn) },
       { label: "Check-out", value: formatNZDate(data.checkOut) },
       { label: "Guests", value: String(data.guestCount) },
-      { label: "Amount", value: formatCents(data.totalCents) },
+      {
+        label: "Amount",
+        value: formatCents(
+          wholeLodgeManualInvoiceAmountCents(
+            data.totalCents,
+            data.appliedCreditCents ?? 0,
+          ),
+        ),
+      },
       { label: "Payment reference", value: escapeHtml(data.paymentReference) },
     ])}
     ${paragraph("The member has been told the booking is confirmed, that this amount is still owing, and that the club will send them an invoice — so please send one.")}
