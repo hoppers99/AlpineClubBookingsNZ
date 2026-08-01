@@ -1,7 +1,7 @@
 "use client";
 
 import type { AgeTier, SubscriptionStatus } from "@prisma/client";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import type { ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { format } from "date-fns";
@@ -37,6 +37,7 @@ import { MemberLoginStageChip } from "@/components/admin/member-login-stage-chip
 import { MemberDetailLink } from "@/components/admin/member-detail-link";
 import { AdminPageHeader } from "@/components/admin/admin-page-header";
 import { AdminDataTable } from "@/components/admin/admin-data-table";
+import { ViewOnlyActionButton } from "@/components/admin/view-only-action";
 import {
   AdminFilterBar,
   type AdminFilterChip,
@@ -223,31 +224,39 @@ export default function SubscriptionsPage() {
   const [summary, setSummary] = useState<Summary>({ total: 0, paid: 0, unpaid: 0, overdue: 0, notInvoiced: 0, notRequired: 0 });
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState<MembershipSyncMode | null>(null);
+  const [syncActionPending, setSyncActionPending] = useState(false);
+  const syncActionInFlight = useRef(false);
   const [syncMessage, setSyncMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [xeroContactGroupsList, setXeroContactGroupsList] = useState<XeroContactGroup[]>([]);
   const [xeroContactGroupsLoaded, setXeroContactGroupsLoaded] = useState(true);
 
   async function handleSync(mode: MembershipSyncMode) {
+    // The ref closes the same-tick double-dispatch window before React can
+    // paint the disabled state. The permission check is defense in depth for a
+    // stale/forged client event; the route independently requires finance:edit.
+    if (canEditFinance !== true || syncActionInFlight.current) return;
+    syncActionInFlight.current = true;
+    setSyncActionPending(true);
     // #2260: the last browser confirm() on this page. Plain confirmation with
     // no email choice, so the shared useConfirm helper is the right idiom here.
-    const confirmed = await confirm(
-      mode === "incremental"
-        ? {
-            title: "Run the incremental Xero refresh?",
-            description: `This re-reads paid status from Xero for linked members in the ${seasonYear} season.`,
-            confirmLabel: "Run refresh",
-          }
-        : {
-            title: "Run the repair backfill?",
-            description:
-              "This checks a broader stale-member set for linked members still showing Not Invoiced, and may take longer.",
-            confirmLabel: "Run repair",
-          },
-    );
-    if (!confirmed) return;
-    setSyncing(mode);
-    setSyncMessage(null);
     try {
+      const confirmed = await confirm(
+        mode === "incremental"
+          ? {
+              title: "Run the incremental Xero refresh?",
+              description: `This re-reads paid status from Xero for linked members in the ${seasonYear} season.`,
+              confirmLabel: "Run refresh",
+            }
+          : {
+              title: "Run the repair backfill?",
+              description:
+                "This checks a broader stale-member set for linked members still showing Not Invoiced, and may take longer.",
+              confirmLabel: "Run repair",
+            },
+      );
+      if (!confirmed) return;
+      setSyncing(mode);
+      setSyncMessage(null);
       const res = await fetch(
         `/api/admin/xero/sync-memberships?seasonYear=${seasonYear}&mode=${mode}`,
         { method: "POST" }
@@ -269,6 +278,8 @@ export default function SubscriptionsPage() {
       setSyncMessage({ type: "error", text: "Sync failed — check Xero connection" });
     } finally {
       setSyncing(null);
+      setSyncActionPending(false);
+      syncActionInFlight.current = false;
     }
   }
 
@@ -481,22 +492,24 @@ export default function SubscriptionsPage() {
         description="Track member subscription status by season"
         actions={
           <>
-            <Button
+            <ViewOnlyActionButton
+              canEdit={canEditFinance}
               variant="outline"
               onClick={() => handleSync("incremental")}
-              disabled={syncing !== null}
+              disabled={syncActionPending}
             >
               <RefreshCw className={`h-4 w-4 mr-1 ${syncing ? "animate-spin" : ""}`} />
               {syncing === "incremental" ? "Syncing..." : "Incremental Sync"}
-            </Button>
-            <Button
+            </ViewOnlyActionButton>
+            <ViewOnlyActionButton
+              canEdit={canEditFinance}
               variant="outline"
               onClick={() => handleSync("backfill")}
-              disabled={syncing !== null}
+              disabled={syncActionPending}
             >
               <RefreshCw className={`h-4 w-4 mr-1 ${syncing ? "animate-spin" : ""}`} />
               {syncing === "backfill" ? "Repairing..." : "Repair Stale Linked Members"}
-            </Button>
+            </ViewOnlyActionButton>
           </>
         }
       />

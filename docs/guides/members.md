@@ -36,7 +36,7 @@ cents; dates are NZ date-only.
    and page together; it stays visible but is disabled while the list is already
    at those defaults.
 
-   ![Members list: the search and filter bar, and the members table with Name, Email, Access, Type–Tier, Status, Family Group, Subscription, Xero, and Joined columns](../images/admin/admin-members.png)
+   ![Members list showing the search and filter bar and the complete table through Xero, Joined, and Actions with Open links](../images/admin/admin-members.png)
 
 2. Sort any sortable column (Name, Email, Access, Type–Tier, Status, Joined).
    **Access** describes account readiness, not role: **No login** is neutral,

@@ -79,6 +79,24 @@ export const LOGIN_STAGE_FILTER_VALUES: Record<MemberLoginStage, string> = {
 }
 
 /**
+ * Operator-facing sort order for the Access column. Keep this beside the
+ * labels and derivation so the server query cannot silently substitute a
+ * hidden database field (such as member role) for the status users see.
+ */
+export const LOGIN_STAGE_SORT_ORDER: readonly MemberLoginStage[] = [
+  "no-login",
+  "not-invited",
+  "invited",
+  "can-login",
+]
+
+export function getMemberLoginStageSortRank(
+  member: MemberPasswordActionState,
+): number {
+  return LOGIN_STAGE_SORT_ORDER.indexOf(getMemberLoginStage(member))
+}
+
+/**
  * The member's single current login-journey stage, derived from the same
  * {@link getMemberPasswordActionKind} the row action button uses so the column
  * and the button can never disagree.

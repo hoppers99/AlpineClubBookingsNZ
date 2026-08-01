@@ -348,6 +348,74 @@ describe("Phase 3: Admin Member Management", () => {
       expect(call.orderBy).toEqual({ email: "desc" });
     });
 
+    it.each([
+      ["asc", 2, ["invited", "can-login"]],
+      ["desc", 1, ["can-login", "invited"]],
+    ])(
+      "sorts and paginates the derived Access stages %s",
+      async (sortDir, page, expectedIds) => {
+        mockedAuth.mockResolvedValue(adminSession);
+        const candidates = [
+          {
+            id: "invited",
+            firstName: "Ivy",
+            lastName: "Invite",
+            canLogin: true,
+            passwordChangedAt: null,
+            lastLoginAt: null,
+            passwordResetTokens: [{ expiresAt: new Date("2999-01-01") }],
+          },
+          {
+            id: "no-login",
+            firstName: "Nora",
+            lastName: "Offline",
+            canLogin: false,
+            passwordChangedAt: null,
+            lastLoginAt: null,
+            passwordResetTokens: [],
+          },
+          {
+            id: "can-login",
+            firstName: "Cara",
+            lastName: "Ready",
+            canLogin: true,
+            passwordChangedAt: new Date("2026-01-01"),
+            lastLoginAt: null,
+            passwordResetTokens: [],
+          },
+          {
+            id: "not-invited",
+            firstName: "Neil",
+            lastName: "Waiting",
+            canLogin: true,
+            passwordChangedAt: null,
+            lastLoginAt: null,
+            passwordResetTokens: [],
+          },
+        ];
+        vi.mocked(prisma.member.findMany)
+          .mockResolvedValueOnce(candidates as any)
+          .mockResolvedValueOnce([]);
+
+        await getMembers(
+          new NextRequest(
+            `http://localhost/api/admin/members?sortBy=access&sortDir=${sortDir}&page=${page}&pageSize=2`,
+          ),
+        );
+
+        const candidateQuery = vi.mocked(prisma.member.findMany).mock.calls[0][0]!;
+        expect(candidateQuery.select?.passwordResetTokens).toMatchObject({
+          where: { used: false, expiresAt: { gt: expect.any(Date) } },
+          take: 1,
+        });
+        const pageQuery = vi.mocked(prisma.member.findMany).mock.calls[1][0]!;
+        expect(pageQuery.where).toEqual({
+          AND: [expect.any(Object), { id: { in: expectedIds } }],
+        });
+        expect(prisma.member.count).not.toHaveBeenCalled();
+      },
+    );
+
     it("rejects invalid sortBy values", async () => {
       mockedAuth.mockResolvedValue(adminSession);
       vi.mocked(prisma.member.findMany).mockResolvedValue([]);

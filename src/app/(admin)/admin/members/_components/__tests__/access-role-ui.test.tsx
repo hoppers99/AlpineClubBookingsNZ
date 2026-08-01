@@ -284,6 +284,32 @@ describe("admin member access-role UI", () => {
     expect(screen.queryByText("Can Login")).not.toBeInTheDocument();
   });
 
+  it("announces and requests the visible Access sort key", () => {
+    const onToggleSort = vi.fn();
+    render(
+      <MemberTable
+        members={[baseMember]}
+        loading={false}
+        debouncedSearch=""
+        selectedIds={new Set()}
+        canEdit
+        xeroOrgShortCode={null}
+        sortBy="access"
+        sortDir="asc"
+        membersListPath="/admin/members?sortBy=access"
+        onToggleSelect={vi.fn()}
+        onToggleSelectAll={vi.fn()}
+        onToggleSort={onToggleSort}
+        onOpenPasswordActionDialog={vi.fn()}
+      />,
+    );
+
+    const header = screen.getByRole("columnheader", { name: /Access/ });
+    expect(header).toHaveAttribute("aria-sort", "ascending");
+    fireEvent.click(screen.getByRole("button", { name: /Access/ }));
+    expect(onToggleSort).toHaveBeenCalledWith("access");
+  });
+
   it("relabels the login-access filter and offers all four stages including No login (#1444)", () => {
     render(
       <MemberFilterToolbar

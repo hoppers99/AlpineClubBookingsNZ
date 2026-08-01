@@ -13,8 +13,10 @@ vi.mock("@/lib/auth", () => ({
 }));
 
 vi.mock("@/lib/session-guards", () => ({
-  requireAdmin: async () =>
-    (await import("./helpers/require-admin-mock")).evaluateRequireAdminMock(),
+  requireAdmin: async (options?: {
+    permission?: { area: "finance"; level: "edit" };
+  }) =>
+    (await import("./helpers/require-admin-mock")).evaluateRequireAdminMock(options),
   requireActiveSessionUser: mocks.requireActiveSessionUser,
 }));
 
@@ -79,6 +81,26 @@ describe("POST /api/admin/xero/sync-memberships", () => {
     expect(mocks.refreshAllMembershipStatuses).toHaveBeenCalledWith(2026, {
       includeBackfillCandidates: true,
     });
+  });
+
+  it("rejects a finance-view-only user before calling Xero", async () => {
+    mocks.auth.mockResolvedValue({
+      user: {
+        id: "finance-viewer",
+        role: "USER",
+        accessRoles: [{ role: "FINANCE_USER" }],
+      },
+    });
+
+    const response = await POST(
+      new NextRequest(
+        "http://localhost/api/admin/xero/sync-memberships?seasonYear=2026",
+        { method: "POST" },
+      ),
+    );
+
+    expect(response.status).toBe(403);
+    expect(mocks.refreshAllMembershipStatuses).not.toHaveBeenCalled();
   });
 
   it("rejects invalid season years before calling the refresh", async () => {

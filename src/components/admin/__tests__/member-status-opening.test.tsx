@@ -49,6 +49,29 @@ describe("finance-only E2E boundary", () => {
     expect(financeOnlyBlock).toContain('page.goto("/admin/subscriptions")');
     expect(financeOnlyBlock).toContain('name: "Subscriptions"');
     expect(financeOnlyBlock).toContain('a[href^="/admin/members/"]');
+    expect(financeOnlyBlock).toContain('name: "Incremental Sync"');
+    expect(financeOnlyBlock).toContain('name: "Repair Stale Linked Members"');
+    expect(financeOnlyBlock?.match(/toBeDisabled\(\)/g)).toHaveLength(2);
+  });
+
+  it("keeps both Xero sync actions on finance edit with a same-tick guard", () => {
+    const source = readFileSync(
+      resolve(process.cwd(), "src/app/(admin)/admin/subscriptions/page.tsx"),
+      "utf8",
+    );
+    const headerActions = source.match(
+      /<AdminPageHeader[\s\S]*?\/>\s*\n\s*<SubscriptionBillingPanel/,
+    )?.[0];
+
+    expect(headerActions).toBeDefined();
+    expect(headerActions?.match(/<ViewOnlyActionButton/g)).toHaveLength(2);
+    expect(headerActions?.match(/canEdit=\{canEditFinance\}/g)).toHaveLength(2);
+    expect(headerActions).not.toContain("describeReason={false}");
+    expect(source).toContain(
+      "if (canEditFinance !== true || syncActionInFlight.current) return;",
+    );
+    expect(source).toContain("syncActionInFlight.current = true;");
+    expect(headerActions?.match(/disabled=\{syncActionPending\}/g)).toHaveLength(2);
   });
 });
 

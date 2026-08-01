@@ -149,11 +149,7 @@ export function MemberTable({
           {[
             ["name", "Name"],
             ["email", "Email"],
-            // Access shows the member's derived type plus their single login
-            // stage. The login stage is derived (no sortable DB column), so
-            // this header sorts by the stored `role` — an approximation of
-            // type order — rather than the rendered stage.
-            ["role", "Access"],
+            ["access", "Access"],
           ].map(([column, label]) => (
             <SortHeader
               key={column}

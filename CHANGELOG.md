@@ -10,7 +10,9 @@ All notable public reference-release changes should be recorded here.
   **Can log in** â€” with neutral, warning, information, and success tones. A
   member's admin or organisation role no longer changes that label or colour.
   Xero contact-group badges also keep the same categorical colour between the
-  two lists instead of changing with each row's group order.
+  two lists instead of changing with each row's group order. Sorting Members by
+  **Access** now follows that same four-stage status instead of the hidden
+  legacy role.
 
   The Members row action now says **Open** and is available to view-only
   membership admins as well as editors. The member's name remains a link, but
@@ -19,6 +21,9 @@ All notable public reference-release changes should be recorded here.
   for viewers who also have membership access. A finance-only viewer sees the
   member name as plain text, rather than a link to a page their role cannot
   open.
+  Finance-view-only users can still read Subscriptions, but the two Xero sync
+  actions are now disabled with the standard view-only explanation; the POST
+  route continues to require finance edit access.
 - **The cancellation queue stops spending Xero API calls on questions nobody can
   act on (#2402).** Opening **Admin → Members → Cancellation Requests** asked
   Xero, for every participant on the page, whether that member's contact still
@@ -973,9 +978,9 @@ All notable public reference-release changes should be recorded here.
   is stuck and what actually fixes it (cancel the booking, add another guest,
   re-quote the request), never a dead-end "ask the club".
   The published banner-coverage figures were re-measured with the new settings
-  card: **299** gated admin controls, **252** of them covered by a banner (226
+  card: **301** gated admin controls, **252** of them covered by a banner (226
   in their own file, 26 by a verified vouching parent — 5 of those through the
-  wizard frame), and **47** across 25 files deliberately keeping their own
+  wizard frame), and **49** across 26 files deliberately keeping their own
   reason.
   **Review hardening in the same change.** A "no thanks" that the system cannot
   carry out — an already-paid booking whose refund-or-credit choice only the club
@@ -1474,10 +1479,10 @@ All notable public reference-release changes should be recorded here.
   added its three, once more when #2286's Release/Change bed controls landed,
   again when the cash / off-Xero payment feature, #2262, landed its four
   per-button-reason controls, and again with #2307's Member guests settings
-  card): **299**
+  card): **301**
   gated admin controls, **252** of them covered by a banner (226 in their own
   file, 26 by a verified vouching parent — 5 of those through the wizard frame),
-  and **47** across 25 files deliberately keeping their own reason.
+  and **49** across 26 files deliberately keeping their own reason.
 - **Choosing to use your account credit and then saving the booking as a draft
   no longer throws that choice away (#2265).** Ticking "use my credit" in the
   booking wizard and pressing **Save as draft** used to discard the amount you

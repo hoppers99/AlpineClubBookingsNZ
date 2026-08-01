@@ -128,6 +128,20 @@ test("finance-only viewer reaches Subscriptions without member links", async ({
   await expect(page).toHaveURL(/\/admin\/subscriptions/);
   await expect(page.getByRole("table", { name: "Subscriptions" })).toBeVisible();
   await expect(page.locator('a[href^="/admin/members/"]')).toHaveCount(0);
+  const incrementalSync = page.getByRole("button", { name: "Incremental Sync" });
+  const repairSync = page.getByRole("button", {
+    name: "Repair Stale Linked Members",
+  });
+  await expect(incrementalSync).toBeDisabled();
+  await expect(repairSync).toBeDisabled();
+  await expect(incrementalSync).toHaveAttribute("aria-describedby", /.+/);
+  await expect(repairSync).toHaveAttribute("aria-describedby", /.+/);
+  await expect(
+    page.getByText(
+      "Your admin role can view this area but cannot make changes.",
+      { exact: true },
+    ),
+  ).toHaveCount(2);
 
   // Since #1184, FINANCE_USER carries finance: view in the admin matrix, so
   // an out-of-area admin page bounces to its first accessible admin page (the
