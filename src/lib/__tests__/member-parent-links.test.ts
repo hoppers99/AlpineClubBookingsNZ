@@ -360,6 +360,50 @@ describe("buildMemberFacingParentLinks (#2424)", () => {
     email: "a@b.test",
   };
 
+  /**
+   * A parent row carrying EVERY field the selects produce, so the key-set
+   * assertions below are testing the whitelist rather than an absent fixture.
+   */
+  const fullParent = {
+    ...base,
+    ageTier: "YOUTH",
+    active: true,
+    canLogin: false,
+    inheritEmailFromId: "gp1",
+  };
+
+  /**
+   * The EXACT key sets each branch may emit. Asserted as sorted key arrays
+   * rather than as "does not have `email`", because a builder that stopped
+   * whitelisting — `Object.assign(visible, link)` in the sharing branch, say —
+   * satisfies every field-by-field assertion while leaking the parent's whole
+   * row, `familyGroupMemberships` included.
+   */
+  const IN_GROUP_KEYS = [
+    "active",
+    "ageTier",
+    "canLogin",
+    "email",
+    "firstName",
+    "id",
+    "inheritEmailFromId",
+    "lastName",
+    "parentLinkType",
+  ];
+  /**
+   * Out of group there is no email AND no status: `ageTier`, `active` and
+   * `canLogin` are facts about a person the viewer has no family relationship
+   * with, and `ageTier` says whether a named stranger is a child. No
+   * member-facing client reads any of them.
+   */
+  const OUT_OF_GROUP_KEYS = [
+    "firstName",
+    "id",
+    "inheritEmailFromId",
+    "lastName",
+    "parentLinkType",
+  ];
+
   it("returns the email when the parent shares a group with the viewer", () => {
     const links = buildMemberFacingParentLinks(
       {
@@ -372,6 +416,56 @@ describe("buildMemberFacingParentLinks (#2424)", () => {
       ["g1"],
     );
     expect(links[0].email).toBe("a@b.test");
+  });
+
+  it("emits EXACTLY the whitelist for a parent in the viewer's group", () => {
+    const links = buildMemberFacingParentLinks(
+      {
+        parent: {
+          id: "p1",
+          ...fullParent,
+          familyGroupMemberships: [{ familyGroupId: "g1" }],
+        },
+      },
+      ["g1"],
+    );
+    expect(Object.keys(links[0]).sort()).toEqual(IN_GROUP_KEYS);
+    expect(links[0]).not.toHaveProperty("familyGroupMemberships");
+  });
+
+  it("emits EXACTLY the whitelist for a parent outside the viewer's groups", () => {
+    const links = buildMemberFacingParentLinks(
+      {
+        parent: {
+          id: "p1",
+          ...fullParent,
+          familyGroupMemberships: [{ familyGroupId: "g-other" }],
+        },
+      },
+      ["g1"],
+    );
+    expect(Object.keys(links[0]).sort()).toEqual(OUT_OF_GROUP_KEYS);
+    expect(links[0]).not.toHaveProperty("familyGroupMemberships");
+  });
+
+  it("withholds a stranger's status fields, not just their address", () => {
+    // #2282 records parentage at any age, so `ageTier` on an out-of-group
+    // parent would tell the viewer that a named stranger is a YOUTH.
+    const links = buildMemberFacingParentLinks(
+      {
+        parent: {
+          id: "p1",
+          ...fullParent,
+          familyGroupMemberships: [{ familyGroupId: "g-other" }],
+        },
+      },
+      ["g1"],
+    );
+    expect(links[0]).not.toHaveProperty("ageTier");
+    expect(links[0]).not.toHaveProperty("active");
+    expect(links[0]).not.toHaveProperty("canLogin");
+    // The notifications marker still works: it matches on this id.
+    expect(links[0].inheritEmailFromId).toBe("gp1");
   });
 
   it("omits the email when no group is shared, keeping name and link type", () => {
@@ -416,7 +510,7 @@ describe("buildMemberFacingParentLinks (#2424)", () => {
     expect(links[0]).not.toHaveProperty("email");
   });
 
-  it("carries the display fields the member view uses", () => {
+  it("carries the optional fields through for a parent in the group", () => {
     const links = buildMemberFacingParentLinks(
       {
         parent: {

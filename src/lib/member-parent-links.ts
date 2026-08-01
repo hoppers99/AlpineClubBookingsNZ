@@ -215,8 +215,10 @@ export function buildParentLinks(member: {
 }
 
 /**
- * A parent as one MEMBER may see another member's parent: the same link, with
- * the email address present only where the rule below allows it.
+ * A parent as one MEMBER may see another member's parent: the name and the link
+ * type always, the email address and the status fields only where the rule
+ * below allows them. Every optional field here is optional because the guard
+ * can withhold it, not merely because a select might omit it.
  */
 export type MemberFacingParentLink = Omit<ParentLinkSummary, "email"> & {
   email?: string;
@@ -243,6 +245,19 @@ export type ParentLinkWithGroups = Omit<ParentLinkSummary, "parentLinkType"> & {
  * render the field: the JSON is the leak, not the screen. The visible shape is
  * built by WHITELIST rather than by deleting `email` from a spread, so a field
  * added to the query later cannot leak by default.
+ *
+ * The withheld set is EMAIL PLUS THE STATUS FIELDS — `ageTier`, `active` and
+ * `canLogin`. Those are facts about a person the viewer has no family
+ * relationship with, and `ageTier` in particular says whether a named stranger
+ * is a child, which is the same disclosure this issue exists to stop. No
+ * member-facing client reads any of the three: the family page renders a parent
+ * as name plus the notifications marker
+ * (`src/app/(authenticated)/profile/family-group-section.tsx`), and the
+ * onboarding wizard does not read parent links at all. So an out-of-group
+ * parent yields exactly `id`, `firstName`, `lastName`, `parentLinkType` and
+ * `inheritEmailFromId` — the last stays because the notifications marker is
+ * matched on it, and an id pointing at a mailbox owner is not itself a contact
+ * detail.
  *
  * The viewer's own groups are the yardstick, not the subject member's: the
  * subject is by construction someone the viewer already shares a group with, and
@@ -274,9 +289,6 @@ export function buildMemberFacingParentLinks(
       lastName: link.lastName,
       parentLinkType: link.parentLinkType,
     };
-    if (link.ageTier !== undefined) visible.ageTier = link.ageTier;
-    if (link.active !== undefined) visible.active = link.active;
-    if (link.canLogin !== undefined) visible.canLogin = link.canLogin;
     if (link.inheritEmailFromId !== undefined) {
       visible.inheritEmailFromId = link.inheritEmailFromId;
     }
@@ -286,6 +298,9 @@ export function buildMemberFacingParentLinks(
     ).some((groupId) => viewerGroupIds.has(groupId));
     if (sharesFamilyGroupWithViewer) {
       visible.email = link.email;
+      if (link.ageTier !== undefined) visible.ageTier = link.ageTier;
+      if (link.active !== undefined) visible.active = link.active;
+      if (link.canLogin !== undefined) visible.canLogin = link.canLogin;
     }
     return visible;
   });

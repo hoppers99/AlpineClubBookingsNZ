@@ -44,11 +44,13 @@ Open **Profile** and find the **Family Group** section.
   three-generation family can be recorded as it really is. Recording the
   relationship is all it does — it does not decide who is billed, who can book
   for whom, or who can change someone's details.
-  Your family list names each parent it has on file, and says which of them the
-  club's email for that person goes to. It shows you a parent's **email address
-  only when that parent is in one of your own family groups** — a parent who is
-  not in any group of yours appears by name alone. Their address is not
-  withheld from the club: an administrator still sees it.
+  Your family list names each parent it has on file, and marks which of them the
+  club's email for that person goes to. It has never printed anyone's email
+  address on that list, and it still does not — but the club now also **only
+  sends a parent's address to your browser when that parent is in one of your
+  own family groups**. For a parent who is in none of your groups, all your
+  browser is given is a name. Their address is not withheld from the club: an
+  administrator still sees it.
   If a dependent has no email address of their own, club email for them goes to
   the nearest **adult** above them in the family who does have one. That is why
   it says "adult": the club's contact for a member always has to be one, so mail

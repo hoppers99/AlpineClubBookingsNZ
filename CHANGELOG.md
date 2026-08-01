@@ -12,14 +12,15 @@ All notable public reference-release changes should be recorded here.
   at all. Since the club started recording parents of any age, that could be a
   child's address as easily as an adult's.
 
-  From now on a parent's **email address is only sent when that parent is in one
-  of your own family groups**. A parent who is not appears by name, exactly as
-  before, and the page still tells you where the club's email for that person
-  goes — only the address itself is withheld. Nothing changes on screen for
-  ordinary families, where the parents listed are your own group's members. The
-  same rule now applies to the welcome/onboarding screens, which were sending
-  the same family list. Administrators are unaffected and still see every
-  member's contact details.
+  From now on a parent's **email address is only sent to your browser when that
+  parent is in one of your own family groups**. A parent who is not appears by
+  name, exactly as before, and the page still tells you where the club's email
+  for that person goes — the address and that person's membership status are
+  simply not sent. **Nothing changes on screen for anybody:** the page has never
+  printed a parent's email address, so this is a change in what the club
+  transmits, not in what you see. The same rule now applies to the
+  welcome/onboarding screens, which were sending the same family list.
+  Administrators are unaffected and still see every member's contact details.
 - **The finance dashboard was counting a paid price increase twice, and now
   counts it once (#2408).** When a booking's price goes up after it was made —
   someone adds a guest — the difference is tracked as an "additional payment".

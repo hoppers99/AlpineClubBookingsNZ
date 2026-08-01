@@ -110,6 +110,31 @@ type FamilyPayload = {
   }>;
 };
 
+/**
+ * The EXACT key sets the JSON may carry on each branch. Pinned as sorted key
+ * arrays, not as "no `email` field": a builder that stopped whitelisting still
+ * passes every field-by-field assertion while shipping the parent's whole row.
+ */
+const IN_GROUP_LINK_KEYS = [
+  "active",
+  "ageTier",
+  "canLogin",
+  "email",
+  "firstName",
+  "id",
+  "inheritEmailFromId",
+  "lastName",
+  "parentLinkType",
+];
+/** No address AND no status for someone outside the viewer's family. */
+const OUT_OF_GROUP_LINK_KEYS = [
+  "firstName",
+  "id",
+  "inheritEmailFromId",
+  "lastName",
+  "parentLinkType",
+];
+
 async function fetchFamily(): Promise<FamilyPayload> {
   const res = await getMemberFamilyRoute();
   expect(res.status).toBe(200);
@@ -156,14 +181,16 @@ describe("GET /api/members/family — parent email visibility (#2424)", () => {
     const links = parentLinksFor(await fetchFamily(), "child");
 
     expect(links).toHaveLength(1);
-    // Name and relationship still show — only the address drops.
+    // Name and relationship still show — the address and the status fields go.
     expect(links[0]).toMatchObject({
       id: "outsider",
       firstName: "Outsider",
       lastName: "Parent",
       parentLinkType: "PRIMARY",
     });
+    expect(Object.keys(links[0]).sort()).toEqual(OUT_OF_GROUP_LINK_KEYS);
     expect(links[0]).not.toHaveProperty("email");
+    expect(links[0]).not.toHaveProperty("familyGroupMemberships");
     expect(JSON.stringify(links)).not.toContain("outsider@example.test");
   });
 
@@ -193,6 +220,9 @@ describe("GET /api/members/family — parent email visibility (#2424)", () => {
 
     expect(links).toHaveLength(1);
     expect(links[0].email).toBe("insider@example.test");
+    // The sharing branch is a whitelist too — it does not hand over the row.
+    expect(Object.keys(links[0]).sort()).toEqual(IN_GROUP_LINK_KEYS);
+    expect(links[0]).not.toHaveProperty("familyGroupMemberships");
   });
 
   it("drops the address of a MINOR parent outside the viewer's groups (#2282)", async () => {
@@ -236,6 +266,8 @@ describe("GET /api/members/family — parent email visibility (#2424)", () => {
       "minor-insider",
     ]);
     expect(links[0]).not.toHaveProperty("email");
+    // Nor does the payload say that this named stranger is a YOUTH.
+    expect(links[0]).not.toHaveProperty("ageTier");
     expect(links[1].email).toBe("teenie@example.test");
     expect(JSON.stringify(links)).not.toContain("teen@example.test");
   });
@@ -322,18 +354,33 @@ describe("GET /api/members/family — parent email visibility (#2424)", () => {
 describe("GET /api/member/onboarding — parent email visibility (#2424)", () => {
   // The onboarding payload lists the same family members through the same
   // builder, so it carried the same exposure and takes the same rule.
+
+  /**
+   * A group-member row exactly as `MEMBER_ONBOARDING_FAMILY_SELECT` returns
+   * it — no `familyGroupMemberships` and no `inheritEmailFrom` at this level,
+   * because the onboarding select asks for neither. The viewer's own row adds
+   * `familyGroupMemberships` below, which its own select does read.
+   */
   function onboardingMember(params: {
     id: string;
     parent?: ReturnType<typeof parentRow> | null;
   }) {
     return {
-      ...memberRow({ id: params.id, firstName: "Fam" }),
+      id: params.id,
       email: `${params.id}@example.test`,
+      firstName: "Fam",
+      lastName: "Smith",
+      role: "MEMBER",
+      accessRoles: [],
+      ageTier: "ADULT",
+      active: true,
+      canLogin: true,
       dateOfBirth: new Date("1990-01-01T00:00:00.000Z"),
       profileCompletedAt: null,
       detailsConfirmedAt: null,
       detailsConfirmedByMemberId: null,
       onboardingConfirmedAt: null,
+      inheritEmailFromId: null,
       parent: params.parent ?? null,
       secondaryParent: null,
     };
@@ -396,6 +443,14 @@ describe("GET /api/member/onboarding — parent email visibility (#2424)", () =>
     expect(child.parentLinks[0]).not.toHaveProperty("email");
     expect(sibling.parentLinks[0].email).toBe("insider@example.test");
     expect(JSON.stringify(body)).not.toContain("outsider@example.test");
+
+    // Both branches are whitelists here too, pinned as exact key sets.
+    expect(Object.keys(child.parentLinks[0]).sort()).toEqual(
+      OUT_OF_GROUP_LINK_KEYS,
+    );
+    expect(Object.keys(sibling.parentLinks[0]).sort()).toEqual(
+      IN_GROUP_LINK_KEYS,
+    );
 
     // The family-scoped select is what feeds the guard; a mocked client cannot
     // notice it missing, so the query shape is pinned directly.
