@@ -117,9 +117,9 @@ export function MemberParentLinkDialog({
               with the adults rather than among the children. */}
           <DialogDescription>
             Link {member.firstName} {member.lastName} under an active member of
-            any age; adults are listed first, children and youth last.
-            Organisation and school accounts are not people, so they are not
-            offered. Club notifications still route to an adult.
+            any age; adults are listed ahead of any children or youth that
+            match. Organisation and school accounts are not people, so they are
+            not offered. Club notifications still route to an adult.
           </DialogDescription>
         </DialogHeader>
         {error && <div className="p-2 bg-danger-3 border border-danger-6 text-danger-11 rounded text-sm">{error}</div>}

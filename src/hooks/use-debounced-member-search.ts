@@ -22,6 +22,10 @@ const NO_RESULTS: never[] = [];
  * `total` is the endpoint's own count of everything the query matched, not the
  * number of rows returned: a caller passing `pageSize` can compare the two to
  * tell a page that was CUT SHORT from a complete answer, and say so (#2425).
+ * That comparison is only truthful ON THE FIRST PAGE (which is all any caller
+ * of this hook requests): on a later page's final partial screen `total`
+ * still exceeds `results.length` although nothing was cut — a caller that
+ * ever sends `page` must compare `total > page * pageSize` instead.
  * It is 0 whenever the search is inactive or failed, so `total > results.length`
  * is false in both — never a truncation hint on an empty list.
  *
