@@ -34,6 +34,8 @@ export type AdultMemberHostingReviewDb = Pick<
 
 const BOOKING_HOSTING_SELECT = {
   id: true,
+  memberId: true,
+  parentBookingId: true,
   lodgeId: true,
   checkIn: true,
   checkOut: true,
@@ -62,6 +64,8 @@ const BOOKING_HOSTING_SELECT = {
 
 type LoadedHostingBooking = {
   id: string;
+  memberId: string;
+  parentBookingId: string | null;
   lodgeId: string;
   checkIn: Date;
   checkOut: Date;
@@ -99,6 +103,7 @@ type LoadedHostingBooking = {
  */
 export function toHostingParticipants(
   booking: Pick<LoadedHostingBooking, "guests">,
+  hostOnly = false,
 ): HostingParticipant[] {
   return booking.guests.map((guest) => {
     const nights =
@@ -110,8 +115,43 @@ export function toHostingParticipants(
       guestName: `${guest.firstName} ${guest.lastName}`.trim(),
       member: guest.member,
       nights,
+      ...(hostOnly ? { hostOnly: true } : {}),
     };
   });
+}
+
+/**
+ * The people staying with this booking's party who are carried on a SIBLING
+ * booking row: its direct parent, or its direct children, belonging to the SAME
+ * member and still live.
+ *
+ * This is the split-booking shape (#738) and nothing else. The same-member
+ * filter is what keeps a group booking out: a joiner's booking hangs off the
+ * organiser's, but belongs to a different member, so the organiser's adults are
+ * never borrowed to host somebody else's guests. Cancelled, bumped and
+ * soft-deleted rows are excluded — a bumped sibling is not staying.
+ */
+async function loadSiblingHosts(
+  booking: LoadedHostingBooking,
+  db: AdultMemberHostingReviewDb,
+): Promise<HostingParticipant[]> {
+  const relatedIds: Array<{ id?: string; parentBookingId?: string }> = [
+    { parentBookingId: booking.id },
+  ];
+  if (booking.parentBookingId) relatedIds.push({ id: booking.parentBookingId });
+
+  const siblings = (await db.booking.findMany({
+    where: {
+      OR: relatedIds,
+      memberId: booking.memberId,
+      deletedAt: null,
+      status: { notIn: ["CANCELLED", "BUMPED"] },
+      id: { not: booking.id },
+    },
+    select: BOOKING_HOSTING_SELECT,
+  })) as LoadedHostingBooking[];
+
+  return siblings.flatMap((sibling) => toHostingParticipants(sibling, true));
 }
 
 /**
@@ -130,10 +170,17 @@ export async function evaluateBookingAdultMemberHosting(
   resolved: ResolvedAdultMemberHostingPolicy;
 }> {
   const resolved = await loadAdultMemberHostingPolicy(booking.lodgeId, db);
-  const violation = evaluateAdultMemberHostingWithPolicy(
-    toHostingParticipants(booking),
-    resolved,
-  );
+  // Skip the sibling read entirely while the policy is off: it is the only
+  // query this evaluation adds to every booking write, and a club that has not
+  // turned the rule on should pay nothing for it.
+  const participants =
+    resolved.mode === "ADMIN_REVIEW_REQUIRED"
+      ? [
+          ...toHostingParticipants(booking),
+          ...(await loadSiblingHosts(booking, db)),
+        ]
+      : [];
+  const violation = evaluateAdultMemberHostingWithPolicy(participants, resolved);
   return { violation, resolved };
 }
 
@@ -283,6 +330,30 @@ export async function reconcileAdultMemberHostingReview(
 }
 
 /**
+ * Record the hosting review for a booking that has just been created, INSIDE
+ * the creating transaction.
+ *
+ * In the transaction on purpose: a booking that committed without its review
+ * evaluated would sit unflagged until something else happened to touch it, and
+ * "we would have caught it eventually" is not a policy.
+ *
+ * `adminReason` is the admin's explicit on-behalf confirmation (D-R4). Supplying
+ * it opens the review already APPROVED, attributed to that admin; omitting it
+ * opens PENDING. There is no third option — an admin path that wants to approve
+ * must say why.
+ */
+export async function recordAdultMemberHostingReviewForNewBooking(
+  bookingId: string,
+  tx: AdultMemberHostingReviewDb,
+  admin: { reason: string; byMemberId: string } | null,
+): Promise<HostingReviewOutcome> {
+  return reconcileAdultMemberHostingReview(bookingId, tx, {
+    openedStatus: admin ? AdminReviewStatus.APPROVED : AdminReviewStatus.PENDING,
+    decision: admin,
+  });
+}
+
+/**
  * Evaluate a party that is not persisted yet (the create path).
  *
  * Create has to know BEFORE the transaction whether the rule will trip, because
@@ -302,13 +373,13 @@ export async function evaluateProposedAdultMemberHosting(
     lodgeId: string;
     checkIn: Date;
     checkOut: Date;
-    guests: Array<{
+    guests: ReadonlyArray<{
       firstName: string;
       lastName: string;
       memberId?: string | null;
       stayStart?: Date | null;
       stayEnd?: Date | null;
-      nights?: Array<string | Date | { stayDate: string | Date }> | null;
+      nights?: ReadonlyArray<string | Date | { stayDate: string | Date }> | null;
     }>;
   },
 ): Promise<AdultMemberHostingPolicyExceptionViolation | null> {
@@ -350,7 +421,7 @@ function proposedGuestNights(
   guest: {
     stayStart?: Date | null;
     stayEnd?: Date | null;
-    nights?: Array<string | Date | { stayDate: string | Date }> | null;
+    nights?: ReadonlyArray<string | Date | { stayDate: string | Date }> | null;
   },
   checkIn: Date,
   checkOut: Date,

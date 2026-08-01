@@ -71,6 +71,26 @@ export interface HostingParticipant {
   member: HostingMemberFacts | null;
   /** NZ lodge nights (YYYY-MM-DD) this participant's row actually covers. */
   nights: string[];
+  /**
+   * True for somebody who is staying with this party but is carried on a
+   * SIBLING booking row — they can host, but their own nights are not this
+   * booking's responsibility.
+   *
+   * This exists for the split-booking shape (#738): a mixed member/non-member
+   * party awaiting payment is stored as a member booking plus a linked
+   * non-member child. Judged in isolation the child contains no member at all,
+   * so a rule about "an adult member on the same booking" would fire on every
+   * single one of them while the member is demonstrably staying. The member is
+   * therefore fed in as a host-only participant, and the child's own non-member
+   * guests remain the ones that need covering. The parent, whose own guests are
+   * all members, has nothing to cover and produces no violation — so one party
+   * yields one hazard, not two.
+   *
+   * It is deliberately NOT how a group booking works: a group joiner's booking
+   * belongs to a different member, so the organiser's adults never leak in and
+   * "the same booking" keeps meaning what it says.
+   */
+  hostOnly?: boolean;
 }
 
 export interface ResolvedAdultMemberHostingPolicy {
@@ -287,6 +307,7 @@ export function evaluateAdultMemberHostingWithPolicy(
   const uncovered: UncoveredGuestNight[] = [];
   const candidateNights = new Set<string>();
   for (const participant of participants) {
+    if (participant.hostOnly === true) continue;
     if (!participantIsNonMemberGuest(participant)) continue;
     for (const night of uniqueSortedNights(participant.nights)) {
       candidateNights.add(night);
