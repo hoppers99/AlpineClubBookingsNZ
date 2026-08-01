@@ -120,7 +120,10 @@ rules — see
    one, and joining a group booking — including a non-member signing up through
    a group's public link, who is checked both when they ask to join and again
    when they click the confirmation email, so a rule you tighten in between is
-   honoured. Admins can still override the rule when booking on behalf.
+   honoured, and accepting a waitlist offer — including an offer for a different
+   lodge, which is checked against that lodge's own rules. Admins and booking
+   officers can still override the rule when booking or editing **on behalf of**
+   a member; an admin booking for themselves is held to it like anyone else.
 3. Your choice is stored, carried by configuration transfer, and shown on this
    card, but it is **not** published yet. The public booking-rules block lists
    each rule's nights, dates and trigger days only — it says nothing about

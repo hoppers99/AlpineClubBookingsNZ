@@ -19,8 +19,17 @@
   link are all checked. The public sign-up is checked twice — when they ask to
   join and again when they click the confirmation email — so a rule you tighten
   in between is honoured, and nothing is booked or charged if it now fails.
-  Admins and booking officers are never blocked, including when they book or
-  edit on behalf of a member.
+  Admins and booking officers are not blocked when they book or edit on behalf
+  of a member. An admin making a booking for themselves is held to the rule like
+  any other member, which is how it already worked.
+
+  It is not applied when nothing about the stay's nights changes: adding a guest
+  or fixing a name on a booking that already sits outside a rule still saves, so
+  a rule added after a booking was made never leaves a member stuck.
+
+  Accepting a waitlist offer is now checked too, including an offer for a
+  different lodge, which has its own rules. If the rule no longer allows those
+  nights, nothing is booked or charged and you keep your place on the waitlist.
 
   When a member is stopped, they are told which rule and which nights, rather
   than a general "couldn't save" message.

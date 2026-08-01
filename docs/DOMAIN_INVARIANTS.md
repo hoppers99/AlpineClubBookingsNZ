@@ -2229,8 +2229,23 @@ non-admin actor, and the list is exact:
   actor other than the booking's own member with `Forbidden`, so the only actor
   that ever reaches the check is a non-admin confirming their own offer.
 
-An ADMIN actor (Full Admin or Booking Officer) is never blocked on any of them,
-including admin-on-behalf edits. Advisory surfaces — modify quote, policy check,
+The admin exemption is **not one predicate**, and the difference is deliberate.
+State it per path:
+
+- **Booking create** exempts an authorised **on-behalf** booking only
+  (`isAuthorizedOnBehalf`). A dual-hat admin booking for THEMSELVES is still
+  checked — #1442's decision: acting as a member means being held to the members'
+  rules. Role alone buys nothing here.
+- **Both modify paths and the modify-quote preview** exempt any ADMIN actor
+  (`actor.role !== "ADMIN"` / `!isAdmin`), including admin-on-behalf edits.
+- **Member group join** exempts any ADMIN session (`sessionRole !== "ADMIN"`),
+  self-join included — the create path's narrower rule is not mirrored here.
+- **The two public non-member group-join stages and both waitlist-offer confirm
+  paths have no admin branch at all**, because no admin actor can reach them:
+  the public stages are unauthenticated non-member surfaces, and a confirm
+  refuses any actor other than the booking's own member with `Forbidden`.
+
+Advisory surfaces — modify quote, policy check,
 and the edit panel's banner — report the same facts without gating anything;
 the panel deliberately leaves Save enabled because the server is authoritative.
 No request row is persisted, no capacity is reserved from `HOLD`, and evaluation
