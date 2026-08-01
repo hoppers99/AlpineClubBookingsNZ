@@ -4,6 +4,7 @@ import { requireActiveSessionUser } from "@/lib/session-guards"
 import { prisma } from "@/lib/prisma"
 import { OPERATIONAL_STAY_BOOKING_STATUSES } from "@/lib/booking-status"
 import { countActiveGuestsForNight } from "@/lib/booking-guest-stay-ranges"
+import { parseDateOnly } from "@/lib/date-only"
 import { hasAdminAccess } from "@/lib/access-roles"
 import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent"
 
@@ -25,7 +26,15 @@ export async function GET(
   }
 
   const { date: dateStr } = await params
-  const date = new Date(dateStr + "T00:00:00")
+  // #2478: a roster night is a CALENDAR DAY, stored as `@db.Date` — UTC
+  // midnight — and matched here by equality. Parsing `dateStr + "T00:00:00"`
+  // read the SERVER's wall clock instead, so under the production
+  // `TZ=Pacific/Auckland` pin the filter became (D-1)T12:00Z and matched no
+  // assignment row: the print sheet rendered the right heading (the page parses
+  // at UTC midnight) over an empty roster. `parseDateOnly` is the single
+  // calendar-day contract every other roster route already uses, and it also
+  // rejects sloppy input the legacy `Date` parser would have accepted.
+  const date = parseDateOnly(dateStr)
   if (isNaN(date.getTime())) {
     return NextResponse.json({ error: "Invalid date" }, { status: 400 })
   }
