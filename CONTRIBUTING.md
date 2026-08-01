@@ -98,6 +98,31 @@ For UI and accessibility changes, use the staging workflow described in
 `docs/STAGING_ACCESSIBILITY.md`. Do not run broad browser automation against a
 live production site.
 
+### Tests never see the real date
+
+`npm test` runs with "today" frozen at **1 July 2026**
+(`2026-07-01T00:00:00.000Z` — midday in NZ, so a UTC runner and an NZ club agree
+on the calendar day). It is installed once for every test file in
+`vitest.setup.ts`, and only `Date` is faked, so real timers still drive awaited
+promises.
+
+Write date fixtures relative to that instant and they stay correct for good:
+`2026-08-01` is the future, `2026-06-01` is the past. Do not write a fixture
+against the real clock, and do not opt a file out because it wants a *different*
+fixed date — pin that one in the file's own `beforeAll`, which wins over the
+default.
+
+A file that genuinely needs the real wall clock calls
+`optOutOfFrozenClock("<reason>")` at module top level and is added to the counted
+allowlist in `src/lib/__tests__/frozen-test-clock.test.ts`. A nightly
+`Clock rollover canary` workflow re-runs the suite with the clock wound forward
+by a day, a month and a year to catch anything the freeze misses.
+
+`docs/TESTING.md` has the full convention, the `TEST_CLOCK_OFFSET_DAYS` /
+`TEST_CLOCK_ISO` overrides for reproducing a rollover locally, and why this
+exists (four separate calendar rollovers turned CI red on every open branch at
+once).
+
 ### Dead-code gate (knip)
 
 `npm run knip` is a blocking CI check (the `verify` job runs `npx knip` after
