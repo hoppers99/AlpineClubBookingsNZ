@@ -282,21 +282,32 @@ const PROMO_CODE_CONSTRAINT_NAMES = new Set(["code", "promocode_code_key"]);
  * "code", so `target.includes("code")` would call the sibling constraint a code
  * collision and retry it four more times for nothing.
  *
- * An unidentifiable P2002 answers "no", matching the join-code retry in
- * `group-booking.ts`: a collision on 31^8 generated codes is vanishingly
- * unlikely, so the honest default is to surface the failure rather than burn
- * the budget re-rolling a code that was fine.
+ * A P2002 that names NOTHING gets the benefit of the doubt and spends a retry,
+ * on this transaction's own arithmetic rather than any precedent: the only
+ * unique-bearing writes it makes are the generated `PromoCode.code` and
+ * `WorkPartyEvent.promoCodeId`, and that second one is the cuid minted by the
+ * statement immediately above, so it cannot collide with a row that already
+ * exists. An unnamed collision here is therefore almost certainly the code, and
+ * re-rolling it is exactly the right response. (The other two sites narrowed in
+ * #2455 keep the unnamed case for the same reason — each is the only collision
+ * its transaction can produce.) The join-code retry in `group-booking.ts`
+ * declines the same case, but its transaction ALSO writes
+ * `GroupBooking.organiserBookingId` from caller input, which genuinely can
+ * collide, so an unnamed P2002 there is ambiguous in a way this one is not.
  */
 function isGeneratedPromoCodeCollision(err: unknown): boolean {
   if (!isPrismaUniqueConstraintError(err)) {
     return false;
   }
   const target = describeUniqueConstraintTarget(err);
-  return (
-    target
-      ?.split(" ")
-      .some((name) => PROMO_CODE_CONSTRAINT_NAMES.has(name)) ?? false
-  );
+  if (target === null) {
+    logger.warn(
+      { err },
+      "Work party promo code collision carried no constraint name; retrying as a code collision"
+    );
+    return true;
+  }
+  return target.split(" ").some((name) => PROMO_CODE_CONSTRAINT_NAMES.has(name));
 }
 
 /**

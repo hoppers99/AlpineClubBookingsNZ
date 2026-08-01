@@ -71,6 +71,7 @@ import { POST as importMembers } from "@/app/api/admin/members/import/route";
 import { createWorkPartyEventWithPromo } from "@/lib/work-party";
 import {
   emailChangeTokenCollisionError,
+  emailChangeTokenIndexNameCollisionError,
   googleSubCollisionError,
   loginEmailCollisionError,
   promoCodeCollisionError,
@@ -131,6 +132,28 @@ describe("confirm-email-change only blames the address for an email clash", () =
     expect(target).not.toContain("emailChangeError=taken");
     expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
       expect.objectContaining({ constraint: "tokenhash", memberId: "m1" }),
+      "Email change confirmation hit an unexpected unique constraint",
+    );
+  });
+
+  it("does not blame the address when only the index NAME survives", async () => {
+    // The same token-hash collision as above, arriving as the index name
+    // instead of a column list — the shape left when Postgres withholds the
+    // `Key (…)` detail. Prisma index names carry the model prefix, so this
+    // normalises to `emailchangetoken_tokenhash_key`, which CONTAINS "email":
+    // a substring test sends the member off to change an address that is fine.
+    vi.mocked(prisma.$transaction).mockRejectedValue(
+      emailChangeTokenIndexNameCollisionError(),
+    );
+
+    const target = await redirectTarget();
+    expect(target).toContain("emailChangeError=error");
+    expect(target).not.toContain("emailChangeError=taken");
+    expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        constraint: "emailchangetoken_tokenhash_key",
+        memberId: "m1",
+      }),
       "Email change confirmation hit an unexpected unique constraint",
     );
   });
@@ -269,6 +292,10 @@ describe("work party promo code retry only re-rolls a code collision", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Reset, not just clear: these tests queue `…Once` behaviours, and a
+    // leftover one would otherwise answer the NEXT test's first call.
+    promoCreate.mockReset();
+    eventCreate.mockReset();
     promoCreate.mockResolvedValue({ id: "promo1" });
     eventCreate.mockResolvedValue({ id: "wp1", promoCode: { id: "promo1" } });
     vi.mocked(prisma.$transaction).mockImplementation((fn) =>
@@ -312,13 +339,24 @@ describe("work party promo code retry only re-rolls a code collision", () => {
     expect(eventCreate).toHaveBeenCalledTimes(1);
   });
 
-  it("does not spend a retry on a P2002 that names nothing", async () => {
-    promoCreate.mockRejectedValue(unidentifiableUniqueCollisionError());
+  it("re-rolls a P2002 that names nothing, and says the name was missing", async () => {
+    // The only uniques this transaction can violate are the generated `code`
+    // and `WorkPartyEvent.promoCodeId` — and that one is the cuid minted a
+    // statement earlier, so it cannot collide. An unnamed collision here is the
+    // code, and re-rolling is the one thing that can fix it.
+    promoCreate
+      .mockRejectedValueOnce(unidentifiableUniqueCollisionError())
+      .mockResolvedValueOnce({ id: "promo1" });
 
-    await expect(createWorkPartyEventWithPromo(eventInput)).rejects.toThrow(
-      Prisma.PrismaClientKnownRequestError,
+    await expect(
+      createWorkPartyEventWithPromo(eventInput),
+    ).resolves.toMatchObject({ id: "wp1" });
+    expect(promoCreate).toHaveBeenCalledTimes(2);
+    expect(new Set(attemptedCodes()).size).toBe(2);
+    expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining("carried no constraint name"),
     );
-    expect(promoCreate).toHaveBeenCalledTimes(1);
   });
 
   it("does not spend a retry on a failure that is not a unique violation", async () => {

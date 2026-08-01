@@ -30,6 +30,19 @@ export const MEMBER_LOGIN_EMAIL_TAKEN_MESSAGE =
   "A member with this email already exists";
 
 /**
+ * The names a login-email clash can arrive under. `@prisma/adapter-pg` reports
+ * the colliding COLUMN, which for the partial index below is plain `email`; the
+ * INDEX NAME is what survives when Postgres withholds the `Key (…)` detail, and
+ * the index the login invariant rests on is `Member_email_login_unique`
+ * (`prisma/migrations/20260408010000_add_can_login_field/migration.sql`),
+ * lowercased by `describeUniqueConstraintTarget`.
+ */
+const LOGIN_EMAIL_CONSTRAINT_NAMES = new Set([
+  "email",
+  "member_email_login_unique",
+]);
+
+/**
  * Does this failure mean "that address is already somebody's login"? (#2385)
  *
  * The backstop for the three admin writes that can claim an address as a login
@@ -65,6 +78,17 @@ export const MEMBER_LOGIN_EMAIL_TAKEN_MESSAGE =
  * a write and "that address is taken" would be provably wrong advice. A named
  * email clash is still honoured either way — the flag only decides who owns the
  * P2002 that names nothing.
+ *
+ * A NAMED target is matched WORD by word against the space-separated name
+ * `describeUniqueConstraintTarget` returns, never as a substring (#2455).
+ * That helper can hand back an INDEX NAME rather than a column list — from the
+ * adapter's `cause.constraint.index`, or from a message that only says
+ * ``on the constraint: `…` `` — and a Prisma index name carries its model
+ * prefix, so `EmailChangeToken_tokenHash_key` normalises to
+ * `emailchangetoken_tokenhash_key`. That CONTAINS "email", and a substring test
+ * would have told a member confirming an email change that their new address
+ * was taken because a token hash collided. A composite target still matches on
+ * its `email` member, because the helper space-separates the list.
  */
 export function isLoginEmailUniqueConflict(
   error: unknown,
@@ -74,5 +98,10 @@ export function isLoginEmailUniqueConflict(
     return false;
   }
   const target = describeUniqueConstraintTarget(error);
-  return target === null ? canClaimLoginEmail : target.includes("email");
+  if (target === null) {
+    return canClaimLoginEmail;
+  }
+  return target
+    .split(" ")
+    .some((name) => LOGIN_EMAIL_CONSTRAINT_NAMES.has(name));
 }
