@@ -141,11 +141,17 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   "src/lib/xero-contacts.ts": 2,
 };
 
+// Every entry here is now a LOCK-ONLY statement (#2289): it selects a constant,
+// runs through `$executeRaw`, and its result is never read. The data each one
+// protects is read back through the Prisma model under that same lock, so no row
+// lock in this repository doubles as an unchecked-cast read. The one raw
+// statement whose result IS read (`rate-limit.ts`) takes no lock and goes
+// through `decodeRawRows`. `raw-sql-shape-guard.test.ts` holds that line.
 const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   "src/lib/admin-bed-allocation.ts": 1,
   "src/lib/booking-create-promo.ts": 1,
   // Promo usage caps (#2299): `lockPromoCodeRowsForUpdate` takes a
-  // `SELECT "id" … FOR UPDATE` on the promo row for the modification paths,
+  // `SELECT 1 … FOR UPDATE` on the promo row for the modification paths,
   // which can now RELEASE a cap slot as well as take one. One raw statement
   // serves all four of them — the batch-modification path calls it directly
   // (it may lock two codes for a swap), and adding guests / changing dates /
@@ -153,23 +159,25 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // re-reads `currentRedemptions` under the lock. That wrapper has four call
   // sites, not three: the batch path also calls it on its no-swap reprice
   // branch, where the lock is already held and the refreshed counter is the
-  // point. Booking creation takes its own
-  // lock in booking-create-promo.ts above, by selecting and READING the whole
-  // row. Ids are sorted and locked one
+  // point. Booking creation takes its own lock in booking-create-promo.ts
+  // above, which since #2289 also selects a constant and reads the promo back
+  // through `tx.promoCode.findUnique` — it used to `SELECT *` and read the raw
+  // row, and that unchecked cast is what silently disabled a redemption cap and
+  // a FREE_NIGHTS discount. Ids are sorted and locked one
   // statement at a time so a promo swap (outgoing + incoming code in one
   // transaction) can never build a lock cycle with another swap; callers hold
   // the per-lodge capacity lock first, so the order stays lodge -> promo row.
-  // Only "id" is selected and the result discarded — a lock, never a read. See
-  // docs/CONCURRENCY_AND_LOCKING.md -> "Narrow row-lock protocols".
+  // A CONSTANT is selected and the result discarded — a lock, never a read. See
+  // docs/CONCURRENCY_AND_LOCKING.md -> "Narrow row- and table-lock protocols".
   "src/lib/promo.ts": 1,
   // Site-style save (#2322) locks the ClubTheme singleton
-  // (`SELECT "logoUrl" … FOR UPDATE`) so concurrent saves serialise and never
+  // (`SELECT 1 … FOR UPDATE`) so concurrent saves serialise and never
   // both delete the same replaced LOGO blob. Order: ClubTheme row -> MediaImage.
   // Singleton-keyed; no advisory lock; disjoint from booking/money writers. See
   // docs/CONCURRENCY_AND_LOCKING.md -> "Club-theme logo writer".
   "src/lib/club-theme.ts": 1,
   // Member-photo upload (POST) and remove (DELETE) each lock the member row
-  // (`SELECT "photoImageId" … FOR UPDATE`) so concurrent replace/remove
+  // (`SELECT 1 … FOR UPDATE`) so concurrent replace/remove
   // serialise and never orphan a MEMBER_PHOTO blob. Member-id keyed; no
   // advisory lock; disjoint from booking/money writers. See
   // docs/CONCURRENCY_AND_LOCKING.md → "Member photo writer".

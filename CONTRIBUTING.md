@@ -35,6 +35,21 @@ the full environment and club config contract.
   requires time-of-day semantics.
 - Keep external payment, accounting, and email calls outside long database
   transactions where possible.
+- Never type a raw-SQL result and read it. `$queryRaw<SomeRow[]>` is an
+  unchecked cast — raw SQL returns the *physical* column names, so a name the
+  type gets wrong arrives as `undefined` rather than as an error, and that
+  silently disabled a promo cap and a discount for months (#2289). Taking a row
+  lock? Use `$executeRaw` on a statement that selects a constant
+  (`SELECT 1 … FOR UPDATE`) and read what you need through the Prisma model.
+  Genuinely cannot express it through a model? Validate the rows with
+  `decodeRawRows` from `src/lib/raw-sql-rows.ts`, which also documents what
+  Postgres really sends (`COUNT(*)` is a BigInt; `numeric` is a
+  `Prisma.Decimal`). Lint and
+  `src/lib/__tests__/raw-sql-shape-guard.test.ts` both enforce this over
+  non-test code in `src/`, `scripts/` and `prisma/`, in either call form —
+  a tagged template or a `Prisma.sql` composition passed to the call. Tests are
+  deliberately exempt: a test's raw statement runs against a throwaway database
+  and its result is asserted on the spot.
 - Do not add plaintext token storage; bearer tokens should be stored hashed or
   encrypted as appropriate for their use.
 - Hand-edit `prisma/schema.prisma`; never run `npx prisma format`. The
