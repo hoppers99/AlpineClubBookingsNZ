@@ -2,12 +2,23 @@ import {
   getMemberProfileCompleteness,
   type MemberProfileCompletenessInput,
 } from "@/lib/member-profile-completeness";
-import { buildParentLinks } from "@/lib/member-parent-links";
+import { buildMemberFacingParentLinks } from "@/lib/member-parent-links";
 import {
   hasAccessRole,
   type AccessRoleAssignmentInput,
 } from "@/lib/access-roles";
 import { MEMBER_ACCESS_ROLE_SELECT } from "@/lib/access-role-definitions";
+
+const PARENT_LINK_SELECT = {
+  id: true,
+  firstName: true,
+  lastName: true,
+  email: true,
+  ageTier: true,
+  active: true,
+  canLogin: true,
+  inheritEmailFromId: true,
+} as const;
 
 export const MEMBER_ONBOARDING_PROFILE_SELECT = {
   id: true,
@@ -40,28 +51,29 @@ export const MEMBER_ONBOARDING_PROFILE_SELECT = {
   detailsConfirmedByMemberId: true,
   onboardingConfirmedAt: true,
   inheritEmailFromId: true,
+  parent: { select: PARENT_LINK_SELECT },
+  secondaryParent: { select: PARENT_LINK_SELECT },
+} as const;
+
+/**
+ * #2424: the same profile, plus each parent's family groups — the fact the
+ * MEMBER-facing family payload needs to decide whether this viewer may have the
+ * parent's email address. Kept separate from the select above because that one
+ * also loads the onboarding GATE on every authenticated page render, where the
+ * parents' group rows would be two joins nobody reads.
+ */
+export const MEMBER_ONBOARDING_FAMILY_SELECT = {
+  ...MEMBER_ONBOARDING_PROFILE_SELECT,
   parent: {
     select: {
-      id: true,
-      firstName: true,
-      lastName: true,
-      email: true,
-      ageTier: true,
-      active: true,
-      canLogin: true,
-      inheritEmailFromId: true,
+      ...PARENT_LINK_SELECT,
+      familyGroupMemberships: { select: { familyGroupId: true } },
     },
   },
   secondaryParent: {
     select: {
-      id: true,
-      firstName: true,
-      lastName: true,
-      email: true,
-      ageTier: true,
-      active: true,
-      canLogin: true,
-      inheritEmailFromId: true,
+      ...PARENT_LINK_SELECT,
+      familyGroupMemberships: { select: { familyGroupId: true } },
     },
   },
 } as const;
@@ -87,8 +99,10 @@ export type MemberOnboardingProfile = MemberProfileCompletenessInput & {
   profileCompletedAt?: Date | string | null;
   onboardingConfirmedAt?: Date | string | null;
   inheritEmailFromId?: string | null;
-  parent?: Parameters<typeof buildParentLinks>[0]["parent"];
-  secondaryParent?: Parameters<typeof buildParentLinks>[0]["secondaryParent"];
+  parent?: Parameters<typeof buildMemberFacingParentLinks>[0]["parent"];
+  secondaryParent?: Parameters<
+    typeof buildMemberFacingParentLinks
+  >[0]["secondaryParent"];
   forcePasswordChange?: boolean | null;
   financeAccessLevel?: string | null;
   accessRoles?: Array<AccessRoleAssignmentInput> | null;

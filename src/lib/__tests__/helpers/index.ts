@@ -7,6 +7,7 @@
  * treating any of these as routes.
  */
 export * from "./factories";
+export * from "./page-content-html-mock";
 export * from "./prisma-mocks";
 export * from "./requests";
 export * from "./sessions";
