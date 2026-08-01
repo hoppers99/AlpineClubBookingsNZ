@@ -700,7 +700,14 @@ settled by owner decision on 1 and 2 August 2026, is three sentences long:
    `getXeroOrgShortCode()` (`src/lib/xero-link-short-code.ts`) — the server-side
    twin of the `useXeroOrgShortCode` hook, wrapping
    `getXeroConnectedOrganisation`'s cache. It never throws and never hides a
-   link; a null short code degrades to the generic URL.
+   link; a null short code degrades to the generic URL. **Degrades, precisely:**
+   a null short code means Xero is disconnected, mid-reconnect, or its
+   organisation read failed — exactly when a stored URL is most likely to name
+   books the club no longer owns — so `applyXeroOrgShortCode` **strips** the
+   organisation in that case rather than passing the stored value through. A
+   read can therefore never emit an organisation the club is not currently
+   connected to, which is the half of the no-migration reasoning under rule 2
+   that has to hold in the bad state as well as the good one.
 2. **Nothing organisation-specific is ever persisted.**
    `XeroObjectLink.xeroObjectUrl` and `XeroSyncOperation.xeroObjectUrl`
    (`prisma/schema.prisma`) stay generic, because a short code baked into a row
@@ -708,21 +715,48 @@ settled by owner decision on 1 and 2 August 2026, is three sentences long:
    and nothing would ever correct it. `applyXeroOrgShortCode(url, { shortCode })`
    scopes a stored URL when it is read — and re-points one that already carries
    some other organisation's code, so a row written under a previous connection
-   heals itself. This is an **invariant of the columns, not a convention**: both
-   have exactly one write funnel in `xero-sync.ts` (`upsertXeroObjectLink` and
-   `completeXeroSyncOperation`), and each passes the value through
-   `stripXeroOrgShortCode` on the way in. So none of the ~50 call sites that
-   build a `xeroObjectUrl` has to remember the rule, and a legacy row carrying a
-   short code is normalised the next time it is written. No migration was needed
-   or written: reads already neutralise a stale code, and writes converge.
+   heals itself. This is an **invariant of the columns, not a convention**, and
+   it is enforced in two places rather than promised. Most writes go through the
+   two funnels in `xero-sync.ts` (`upsertXeroObjectLink` and
+   `completeXeroSyncOperation`), each of which passes the value through
+   `stripXeroOrgShortCode` on the way in — so none of the ~50 call sites that
+   build a `xeroObjectUrl` and hand it to a funnel has to remember the rule.
+   Three files cannot use a funnel and write the column with direct Prisma
+   calls: `membership-cancellation-xero.ts` (a first-writer-wins
+   `INSERT … ON CONFLICT DO NOTHING` claim, which an upsert would hand to the
+   *last* writer), `xero-subscription-invoices.ts` (two link upserts inside a
+   transaction whose shape the funnel's canonical de-duplication would change)
+   and `xero-hardening-backfill.ts` (bulk `createMany` reconstruction of
+   historical rows). Each strips at the write, and
+   `src/lib/__tests__/xero-object-url-write-guard.test.ts` fails CI on any
+   direct write of `xeroObjectUrl` that does not — including a fourth file
+   appearing, or a payload moved out of the call where the guard cannot read it.
+   A legacy row carrying a short code is normalised the next time it is written.
+   No migration was needed or written: reads neutralise a stale code
+   unconditionally (`applyXeroOrgShortCode` **strips** when no short code
+   resolves, rather than passing the stored value through — see the note under
+   rule 1 below), and writes converge.
 3. **Emailed links are stamped at send time**, inside the three senders in
    `src/lib/email/admin-alerts-finance.ts` (manual-settlement conflict, repeated
    Xero failure, reconciliation report). A screen can re-render and pick up the
    current organisation; an email cannot, so it is the surface that most needs
    the organisation named, and the alert is a point-in-time snapshot of
-   everything else it reports anyway.
+   everything else it reports anyway. Those three senders are also the only
+   callers that pass `getXeroOrgShortCode({ confirmLive: true })`: the 12-hour
+   cache is per process and its invalidation bus reaches only the process that
+   handled the connect/disconnect, so a cron or worker process can hold the
+   PREVIOUS organisation's short code for hours after a reconnect — and
+   `/organisationlogin/default.aspx?shortcode=…` actively switches the reader's
+   Xero session, which makes a stale code worse than none. `confirmLive` forces
+   the read and returns null unless it succeeded, so an email names the
+   organisation only when it was confirmed at send time and otherwise degrades
+   to the generic link. It is affordable because the senders bound it, not
+   traffic: the repeated-failure alert is deduplicated against `EmailLog` for
+   the window, the settlement conflict is throttled by a cross-instance
+   `AlertCooldown` claim, and the nightly report takes one read for the whole
+   email.
 
-The producers behind the five server-fed render sites, all covered:
+The producers behind the six server-fed render sites, all covered:
 
 | Render site | URL produced by |
 | --- | --- |
@@ -731,6 +765,7 @@ The producers behind the five server-fed render sites, all covered:
 | `xero/_components/setup-panels.tsx` (duplicate contacts) | `xero-duplicate-contacts.ts` |
 | `components/admin/xero-record-activity-panel.tsx` | `xero-record-activity.ts` |
 | `components/admin/xero-suggested-contact-card.tsx` | `api/admin/xero/import-member-contact/route.ts` |
+| `finance/_components/finance-dashboard-client.tsx` ("Open Xero reports") | `finance-dashboard-page.ts` |
 
 Three write routes also return a link in their JSON response — member
 `xero-link`, member `xero-push`, and Xero `force-sync` — and those returned
@@ -746,8 +781,10 @@ the first one made has been dropped in favour of the shared cache.
 
 The whole rule is pinned by `src/lib/__tests__/xero-server-deep-links.test.ts`
 (each producer, against the real builders),
-`src/lib/email/__tests__/xero-alert-deep-links.test.ts` (send-time stamping) and
-the `applyXeroOrgShortCode` cases in `src/lib/__tests__/xero-links.test.ts`.
+`src/lib/email/__tests__/xero-alert-deep-links.test.ts` (send-time stamping),
+`src/lib/__tests__/xero-object-url-write-guard.test.ts` (rule 2's write side, as
+a mechanism) and the `applyXeroOrgShortCode` cases in
+`src/lib/__tests__/xero-links.test.ts`.
 
 The identifier a Xero URL needs is the organisation **short code** (`!aBc12`),
 *not* the tenant GUID stored on the `XeroToken` row. The GUID is not usable in a
@@ -773,8 +810,13 @@ generic session-scoped URL, it never hides one. They join the setup wizard's
 org confirmation and the subscription-lockout settings panel as callers of the
 organisation route, and all of them share the one in-process cache, so a cold
 cache still costs at most one `getOrganisations` call per server process per
-12 hours. The finance dashboard makes the opposite trade and links without a
-short code rather than fetching one.
+12 hours. The finance dashboard used to make the opposite trade — link generic
+rather than fetch a short code — on the reasoning that a live Xero call per page
+load was too expensive. The shared cache is what retired that argument, so its
+two "Open Xero reports" source notes (`finance-dashboard-page.ts`, the P&L and
+balance-sheet views) now resolve the short code server-side like every other
+producer: one read per server process per TTL, shared with every other caller,
+and a null one still degrades to the generic link.
 
 Two honest bounds on that. First, the organisation route is **finance-only** —
 settled, not open (owner decision, #2314, 2 August 2026): it asks for

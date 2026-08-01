@@ -9,9 +9,10 @@
   the system builds behind the scenes. That covers the Xero Sync page's
   operations and inbound-events panels, the duplicate- and suggested-contact
   panels, the per-record Xero activity timeline, the link handed back after you
-  link, push or force-sync a member, and the Xero links inside the admin alert
-  emails (the cash-settlement conflict alert, the repeated-failure alert and the
-  nightly reconciliation report).
+  link, push or force-sync a member, the finance dashboard's "Open Xero reports"
+  links, and the Xero links inside the admin alert emails (the cash-settlement
+  conflict alert, the repeated-failure alert and the nightly reconciliation
+  report).
 
   Links saved against a record deliberately stay organisation-neutral, and the
   organisation is applied when the link is shown. That way, if the club ever
@@ -20,7 +21,11 @@
 
   Nothing is ever hidden. If Xero is disconnected or the organisation cannot be
   read, the link still works — it simply opens Xero without naming the
-  organisation, exactly as before.
+  organisation, exactly as before. In that state a saved link that still names an
+  older organisation is shown without it, rather than sending you to books the
+  club no longer has; and because an email cannot be re-rendered later, the
+  alert emails check the organisation with Xero as they are sent instead of
+  trusting a cached answer that could be hours old on a background worker.
 
   One access note: the small endpoint the deep links read the organisation code
   from is now explicitly restricted to admins with finance access, which is who
