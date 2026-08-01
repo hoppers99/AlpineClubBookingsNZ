@@ -1277,6 +1277,18 @@ decision 2026-07-11), not a pending hard-block. Same-booking mixing is unrestric
 night-level adult-coverage rule, and minors-only ROOMS are allowed whenever
 the booking has an adult on-site that night.
 
+Two occupancies with no booking behind them feed this invariant as
+attribution-less rows and so are covered by that last clause: a **custodian bed
+hold** (#2286) and, since #2317, an **exclusive whole-lodge hold** — every
+active bed of the held lodge on every held night. Both are tierless, so both
+read as an adult: another booking's unaccompanied minors are kept out of the
+rooms, and no name, booking id or age tier of the held group ever reaches the
+planner. Neither can be displaced: neither has a row to move, and — because a
+real allocation row may sit on the same bed on the same night, and planner
+occupancy is keyed `bedId:stayDate` — the planner also pins those bed-nights as
+permanently occupied, so evicting the co-located booking releases that
+booking's claim and never the hold's.
+
 Reconciliation widens its loads to the envelope of every booking overlapping
 the reconcile range (`min(checkIn) .. max(checkOut)` union the range) so the
 planner sees whole stays, while the set of bookings planned stays restricted
