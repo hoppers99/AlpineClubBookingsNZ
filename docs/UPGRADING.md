@@ -86,6 +86,49 @@ as a red flag and check the release notes before deploying.
 
 ## Unreleased
 
+### One-off cleanup of another club's lodge address (#2484)
+
+`20260802110000_clear_waldvogel_lodge_address` is a **data-only cleanup**. It
+adds and removes no schema, touches no hot table, and is safe to run in the
+ordinary deploy window with the previous app colour still serving.
+
+**What it fixes.** Two steps in the upgrade history combine to write
+`Waldvogel Lodge, Iwikau Village, Mt Ruapehu, New Zealand` — Tokoroa Alpine
+Club's real lodge — into the default lodge's address on every database built
+from this repository: `20260708000000_add_lodge_entity_and_multi_lodge_module`
+creates the default lodge, and `20260717160100_add_lodge_address` backfills that
+address into it. The public Contact page then shows it under Club Details. The
+backfill was right when it was written — this codebase *was* that club's live
+site, and the step moved the address out of the page's own source and into the
+database so the live deployment kept showing it — but the same step now runs for
+everybody. This migration sets the address back to empty wherever it is still
+exactly that string.
+
+**What you will notice.** If your Contact page shows that exact address today,
+its address block is **empty** after you cut over. Nothing else on the page
+changes: your Club Details block, contact role, and page content are untouched.
+
+**Post-upgrade action: put your own address in.** **Admin → Setup &
+Configuration → Site Appearance & Content → Club Identity → Lodge details →
+Address**, then **Save lodge details** (`/admin/appearance/identity`). It shows
+on the Contact page and in the `{{lodge-address}}` content token within
+seconds. A multi-lodge club sets each lodge's address under **Admin → Setup →
+Lodges** instead. Nothing in the product prompts you, so add this to your
+post-upgrade list — it is about a minute's work.
+
+**An address you entered yourself is never touched.** The cleanup matches that
+one exact string and nothing else, so a club that has already set its own
+address keeps it byte for byte, as does every additional lodge a multi-lodge
+club has created. The deliberate exception is a deployment that still holds the
+original string legitimately — Tokoroa's own fork, if it ports this release down
+— which is cleared like everyone else and re-enters the address with the steps
+above.
+
+**Re-running is safe.** After the cleanup no row matches that string, so a
+second run changes nothing. No audit row is written: the value removed is a
+string this project wrote into the row itself, quoted in full here and in the
+migration's own comment, not club-authored content that could be lost.
+
 ### The public "Book Now" button is switched OFF for every club (#2430)
 
 **After this release every club's public "Book Now" button is off, whether or
