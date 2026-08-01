@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
+import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
 import {
   ALLOWED_MEDIA_IMAGE_CONTENT_TYPES,
   MAX_MEDIA_IMAGE_BYTES,
@@ -121,9 +122,12 @@ describe("detectImageContentType", () => {
 
   it("does not hang on many unterminated comment markers (ReDoS guard)", () => {
     const adversarial = Buffer.from("<!--".repeat(2000), "utf8");
-    const start = Date.now();
+    // Monotonic, not `Date.now()`: #2481 freezes `Date` for every test file, so
+    // a `Date.now()` stopwatch would make this ReDoS guard a permanent
+    // `0 < 100` — green even while an attacker-supplied upload burns CPU.
+    const start = process.hrtime.bigint();
     expect(detectImageContentType(adversarial)).toBeNull();
-    expect(Date.now() - start).toBeLessThan(100);
+    expect(realElapsedMs(start)).toBeLessThan(100);
   });
 
   it("rejects unrecognised content even if the declared type claims to be an image", () => {

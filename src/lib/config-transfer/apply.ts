@@ -4,6 +4,7 @@ import type { PrismaClient } from "@prisma/client";
 
 import { createAuditLog } from "@/lib/audit";
 import { runDatabaseBackup, type BackupResult } from "@/lib/backup";
+import { lockMinimumStayPolicySet } from "@/lib/minimum-stay-policy-set";
 import { readBundle, sha256Hex } from "./bundle";
 import { buildImportPlanFromParsed, CATEGORY_IMPORTERS } from "./import";
 import { mediaApplies, recreateBundleMedia } from "./media";
@@ -22,7 +23,8 @@ import type { BootstrapEmptyTargetProof } from "./bootstrap-import";
 // ONE transaction { advisory lock → re-plan against in-lock state → refuse on
 // validation errors or ANY fingerprint mismatch (DB drift, substituted bundle,
 // switched mode/selection/resolutions) → apply every selected category } →
-// audit. Upsert-only, never deletes; any failure rolls back the entire import.
+// audit. Categories are upsert-only except the explicitly destructive,
+// previewed booking-policy replace-set; any failure rolls back the import.
 
 export class ConfigImportDriftError extends Error {
   constructor() {
@@ -116,7 +118,7 @@ export type ApplyConfigImportParams = {
    * `assessBootstrapReadiness` probe, so the interactive route cannot even
    * compile a skip. Every other ADR-002 safeguard (parse/validate, sanitise,
    * single-flight lock, in-lock re-plan + fingerprint drift refusal, atomic
-   * upsert-only transaction, audit) still applies unchanged, and the skip
+   * transaction, audit) still applies unchanged, and the skip
    * variant ADDS two safeguards of its own: the in-lock emptiness re-check
    * and the in-transaction bootstrap marker (see {@link BootstrapBackupSkip}).
    */
@@ -189,6 +191,7 @@ export async function applyConfigImport(
   const totals: CategoryApplyResult = {
     created: 0,
     updated: 0,
+    deleted: 0,
     unchanged: 0,
     skipped: 0,
   };
@@ -210,6 +213,18 @@ export async function applyConfigImport(
       // import queued behind the lock re-plans against the winner's committed
       // writes, so a stale preview can never apply (ADR-002).
       await acquireConfigImportLock(tx);
+
+      // The booking-policy importer is a replace-set. Its global set lock must
+      // be held BEFORE the in-lock re-plan so no live CRUD can move the set
+      // between the preview fingerprint and its mutations. The lock order is
+      // permanently config-transfer singleton -> policy set.
+      const bookingPoliciesSelected =
+        parsed.manifest.includedCategories.includes("booking-policies") &&
+        (!params.selectedCategories ||
+          params.selectedCategories.includes("booking-policies"));
+      if (bookingPoliciesSelected) {
+        await lockMinimumStayPolicySet(tx);
+      }
 
       // ADR-003 bootstrap only: re-run the emptiness probe INSIDE the lock,
       // before the re-plan and before anything is written. A concurrent
@@ -286,6 +301,7 @@ export async function applyConfigImport(
         perCategory.push({ category: importer.category, ...result });
         totals.created += result.created;
         totals.updated += result.updated;
+        totals.deleted += result.deleted;
         totals.unchanged += result.unchanged;
         totals.skipped += result.skipped;
       }

@@ -49,6 +49,10 @@ interface MinStayDraft {
   endDate: string
   triggerDays: number[]
   minimumNights: number
+  /** Empty only for a new row: the admin must make an explicit decision. */
+  capacityMode: "" | "HOLD" | "NO_HOLD"
+  /** Immutable CAS token carried by the open editor, not an editable field. */
+  version: number | null
 }
 
 /**
@@ -64,6 +68,8 @@ const NEW_MIN_STAY_DRAFT: MinStayDraft = {
   endDate: "",
   triggerDays: [6], // default Saturday
   minimumNights: 2,
+  capacityMode: "",
+  version: null,
 }
 
 function toDraft(policy: MinStayPolicy): MinStayDraft {
@@ -73,7 +79,40 @@ function toDraft(policy: MinStayPolicy): MinStayDraft {
     endDate: policy.endDate.split("T")[0],
     triggerDays: [...policy.triggerDays].sort((a, b) => a - b),
     minimumNights: policy.minimumNights,
+    capacityMode: policy.capacityMode,
+    version: policy.version,
   }
+}
+
+/** Accept only a complete server row that is safe to render and re-seed. */
+function parseMinStayPolicy(value: unknown): MinStayPolicy | null {
+  if (!value || typeof value !== "object") return null
+  const row = value as Record<string, unknown>
+  if (
+    typeof row.id !== "string" ||
+    typeof row.name !== "string" ||
+    typeof row.startDate !== "string" ||
+    typeof row.endDate !== "string" ||
+    !Array.isArray(row.triggerDays) ||
+    !row.triggerDays.every((day) => Number.isInteger(day)) ||
+    !Number.isInteger(row.minimumNights) ||
+    (row.capacityMode !== "HOLD" && row.capacityMode !== "NO_HOLD") ||
+    !Number.isInteger(row.version) ||
+    typeof row.active !== "boolean"
+  ) {
+    return null
+  }
+  return row as unknown as MinStayPolicy
+}
+
+async function responseMessage(
+  response: Response,
+  fallback: string,
+): Promise<string> {
+  const body = await response.json().catch(() => null) as
+    | { error?: unknown }
+    | null
+  return typeof body?.error === "string" ? body.error : fallback
 }
 
 function draftsEqual(a: MinStayDraft, b: MinStayDraft) {
@@ -82,6 +121,7 @@ function draftsEqual(a: MinStayDraft, b: MinStayDraft) {
     a.startDate === b.startDate &&
     a.endDate === b.endDate &&
     a.minimumNights === b.minimumNights &&
+    a.capacityMode === b.capacityMode &&
     // Both sides are kept sorted ascending, so index-wise comparison is a set
     // comparison here — ticking a day and unticking it again is not a change.
     a.triggerDays.length === b.triggerDays.length &&
@@ -108,6 +148,7 @@ function MinStayForm({
 }) {
   // #2257 — the example lives UNDER the field, not inside it as grey pseudo-content.
   const nameHint = useFieldHint()
+  const capacityHint = useFieldHint()
   const section = useSectionEditState<MinStayDraft>({
     initial,
     save: onSubmit,
@@ -122,7 +163,8 @@ function MinStayForm({
       Boolean(draft.name) &&
       Boolean(draft.startDate) &&
       Boolean(draft.endDate) &&
-      draft.triggerDays.length > 0,
+      draft.triggerDays.length > 0 &&
+      draft.capacityMode !== "",
   })
 
   const { draft, saving, dirty, valid, error } = section
@@ -195,6 +237,31 @@ function MinStayForm({
               onChange={(e) => section.setDraft({ endDate: e.target.value })}
             />
           </div>
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="msCapacityMode">Exception capacity handling</Label>
+          <select
+            id="msCapacityMode"
+            value={draft.capacityMode}
+            onChange={(event) =>
+              section.setDraft({
+                capacityMode: event.target.value as MinStayDraft["capacityMode"],
+              })
+            }
+            className="h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+            {...capacityHint.fieldProps}
+          >
+            <option value="" disabled>
+              Select how capacity is handled
+            </option>
+            <option value="HOLD">Hold requested capacity during review</option>
+            <option value="NO_HOLD">Do not hold capacity until approval</option>
+          </select>
+          <FieldHint {...capacityHint.hintProps}>
+            This applies when a booking needs an approved exception to this
+            minimum-stay rule. New policies have no automatic choice.
+          </FieldHint>
         </div>
 
         <div className="space-y-2">
@@ -278,15 +345,17 @@ export function MinimumNightStaySection() {
    * Load the list for the CURRENT scope.
    *
    * `scopeLoad` marks the fetch that a scope change (including the mount) is
-   * waiting on: only that one flips the section into its loading state, so an
-   * ordinary refresh after a write never blanks the list. Every state write is
+   * waiting on: mount, scope changes, and post-mutation refreshes use it to
+   * replace the list with a non-actionable loading state. Every state write is
    * guarded on the scope still being the one this call was made for, which is
    * also what keeps `loadedScope` honest — a dropped response leaves the new
    * scope UNKNOWN until its own load lands, rather than labelling one scope's
    * rows with another's.
    */
   const fetchMinStay = useCallback(
-    async (options: { signal?: AbortSignal; scopeLoad?: boolean } = {}) => {
+    async (
+      options: { signal?: AbortSignal; scopeLoad?: boolean } = {},
+    ): Promise<boolean> => {
       const { signal, scopeLoad = false } = options
       const scope = scopeLodgeId
       if (scopeLoad) setLoadingMinStay(true)
@@ -298,14 +367,28 @@ export function MinimumNightStaySection() {
           { signal }
         )
         if (!res.ok) throw new Error("Failed to fetch minimum stay policies")
-        const data = await res.json()
-        if (scopeRef.current !== scope) return
-        setMinStayPolicies(data)
+        const data: unknown = await res.json()
+        if (!Array.isArray(data)) {
+          throw new Error("Failed to read minimum stay policies")
+        }
+        const policies = data.map(parseMinStayPolicy)
+        if (policies.some((policy) => policy === null)) {
+          throw new Error("Failed to read minimum stay policies")
+        }
+        if (scopeRef.current !== scope) return false
+        setMinStayPolicies(policies as MinStayPolicy[])
         setLoadedScope(scope)
+        return true
       } catch (err) {
-        if (err instanceof DOMException && err.name === "AbortError") return
-        if (scopeRef.current !== scope) return
+        if (err instanceof DOMException && err.name === "AbortError") return false
+        if (scopeRef.current !== scope) return false
+        setLoadedScope(UNLOADED_SCOPE)
+        setMinStayPolicies([])
+        setShowMinStayForm(false)
+        setEditingMinStayId(null)
+        setEditingDraft(NEW_MIN_STAY_DRAFT)
         setError(err instanceof Error ? err.message : "Unknown error")
+        return false
       } finally {
         if (scopeLoad && scopeRef.current === scope) setLoadingMinStay(false)
       }
@@ -351,10 +434,38 @@ export function MinimumNightStaySection() {
     setShowMinStayForm(true)
   }
 
+  /** Apply a complete authoritative mutation row before the guarded refresh. */
+  const applyServerPolicy = useCallback(
+    (policy: MinStayPolicy) => {
+      if (scopeRef.current !== scopeLodgeId) return
+      setMinStayPolicies((current) => {
+        const found = current.some((row) => row.id === policy.id)
+        return found
+          ? current.map((row) => row.id === policy.id ? policy : row)
+          : [...current, policy]
+      })
+    },
+    [scopeLodgeId],
+  )
+
   /**
-   * The open editor's transport. Throws so `useSectionEditState` surfaces the
-   * message; on success it closes the form and refreshes the list, which is why
-   * the returned value (the hook's re-seed) is never actually rendered again.
+   * Close every write affordance until an awaited refresh proves the current
+   * keyed snapshot authoritative again. This also recovers from a 409 or from
+   * a successful write whose response body cannot be read.
+   */
+  const refreshAfterMutation = useCallback(async (): Promise<boolean> => {
+    if (scopeRef.current !== scopeLodgeId) return false
+    setLoadedScope(UNLOADED_SCOPE)
+    setShowMinStayForm(false)
+    setEditingMinStayId(null)
+    setEditingDraft(NEW_MIN_STAY_DRAFT)
+    return fetchMinStay({ scopeLoad: true })
+  }, [fetchMinStay, scopeLodgeId])
+
+  /**
+   * The open editor's transport. Ordinary failures throw so
+   * `useSectionEditState` surfaces them. A 409 or a successful-but-unreadable
+   * response closes the stale editor and awaits a fresh authoritative list.
    */
   const submitMinStay = useCallback(
     async (draft: MinStayDraft): Promise<MinStayDraft> => {
@@ -374,52 +485,53 @@ export function MinimumNightStaySection() {
           endDate: draft.endDate,
           triggerDays: draft.triggerDays,
           minimumNights: draft.minimumNights,
+          capacityMode: draft.capacityMode,
+          ...(editingMinStayId ? { version: draft.version } : {}),
           // Partition is set at creation; edits keep the row's partition.
           ...(editingMinStayId ? {} : scopeLodgeId ? { lodgeId: scopeLodgeId } : {}),
         }),
       })
       if (!res.ok) {
         if (res.status === 403) throw new ForbiddenSaveError()
-        const data = await res.json()
-        throw new Error(data.error || "Failed to save")
+        const message = await responseMessage(res, "Failed to save")
+        if (res.status === 409) {
+          const refreshed = await refreshAfterMutation()
+          setError(
+            refreshed
+              ? message
+              : `${message} The latest policies could not be loaded; try again.`,
+          )
+          return draft
+        }
+        throw new Error(message)
       }
       const wasEditing = editingMinStayId !== null
-      // Parse the SERVER row into the re-seed value BEFORE closing the form, so
-      // a malformed response surfaces as a save error rather than after a
-      // success message has already been shown.
-      let reseeded: MinStayDraft
-      try {
-        const saved = await res.json()
-        reseeded = toDraft({
-          ...saved,
-          triggerDays: saved.triggerDays ?? draft.triggerDays,
-        })
-      } catch {
-        // The write ALREADY SUCCEEDED at this point, so what a parse failure
-        // may safely do depends on the verb. An edit is an idempotent PUT: keep
-        // the form open with the error and the natural retry re-writes the same
-        // row. A create is not: the row exists, but the form still has
-        // `policyId === null`, so the same retry would POST a SECOND row. There
-        // we swallow the parse failure, fall back to the submitted draft, and
-        // close the form — the list refresh below shows what was really stored.
-        if (wasEditing) {
-          throw new Error(
-            "The policy was saved, but the server's reply could not be read. Reload the page to see what is stored.",
-          )
-        }
-        reseeded = draft
+      const saved = parseMinStayPolicy(await res.json().catch(() => null))
+      if (saved) applyServerPolicy(saved)
+      const refreshed = await refreshAfterMutation()
+      if (refreshed) {
+        setSuccess(
+          wasEditing ? "Minimum stay policy updated" : "Minimum stay policy created",
+        )
       }
-      resetMinStayForm()
-      void fetchMinStay()
-      setSuccess(
-        wasEditing ? "Minimum stay policy updated" : "Minimum stay policy created",
-      )
-      return reseeded
+      return saved ? toDraft(saved) : draft
     },
-    [editingMinStayId, scopeLodgeId, fetchMinStay],
+    [
+      editingMinStayId,
+      scopeLodgeId,
+      applyServerPolicy,
+      refreshAfterMutation,
+    ],
   )
 
-  async function handleDeleteMinStay(id: string) {
+  // The synchronous ref is the real guard for every direct row write. A
+  // state-only disabled button cannot stop two events dispatched before React
+  // commits the first state update.
+  const rowActionRef = useRef(false)
+  const [rowActionId, setRowActionId] = useState<string | null>(null)
+
+  async function handleDeleteMinStay(policy: MinStayPolicy) {
+    if (rowActionRef.current) return
     if (
       !confirm(
         "Delete this minimum stay policy? It stops applying immediately and stays listed as inactive, so the change is auditable.",
@@ -427,13 +539,44 @@ export function MinimumNightStaySection() {
     ) {
       return
     }
+    rowActionRef.current = true
+    setRowActionId(policy.id)
     try {
-      const res = await fetch(`/api/admin/booking-policies/minimum-stay/${id}`, { method: "DELETE" })
-      if (!res.ok) throw new Error("Failed to deactivate")
-      fetchMinStay()
-      setSuccess("Minimum stay policy deleted — it is listed as inactive")
+      const res = await fetch(
+        `/api/admin/booking-policies/minimum-stay/${policy.id}`,
+        {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ version: policy.version }),
+        },
+      )
+      if (!res.ok) {
+        const message = await responseMessage(res, "Failed to deactivate")
+        if (res.status === 409) {
+          const refreshed = await refreshAfterMutation()
+          setError(
+            refreshed
+              ? message
+              : `${message} The latest policies could not be loaded; try again.`,
+          )
+          return
+        }
+        throw new Error(message)
+      }
+      const body = await res.json().catch(() => null) as
+        | { policy?: unknown }
+        | null
+      const saved = parseMinStayPolicy(body?.policy)
+      if (saved) applyServerPolicy(saved)
+      const refreshed = await refreshAfterMutation()
+      if (refreshed) {
+        setSuccess("Minimum stay policy deleted — it is listed as inactive")
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error")
+    } finally {
+      rowActionRef.current = false
+      setRowActionId(null)
     }
   }
 
@@ -448,30 +591,44 @@ export function MinimumNightStaySection() {
    *
    * The ref is the real guard: it is set synchronously, so a genuine
    * double-click dispatched inside one tick — where both handlers close over the
-   * same pre-update state — still only fires once. `togglingId` is the visible
+   * same pre-update state — still only fires once. `rowActionId` is the visible
    * half, disabling the button for the round trip, and the refresh is awaited so
    * it stays disabled until the row it re-reads is on screen.
    */
-  const togglingRef = useRef(false)
-  const [togglingId, setTogglingId] = useState<string | null>(null)
-
   async function handleToggleMinStay(policy: MinStayPolicy) {
-    if (togglingRef.current) return
-    togglingRef.current = true
-    setTogglingId(policy.id)
+    if (rowActionRef.current) return
+    rowActionRef.current = true
+    setRowActionId(policy.id)
     try {
       const res = await fetch(`/api/admin/booking-policies/minimum-stay/${policy.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ active: !policy.active }),
+        body: JSON.stringify({
+          active: !policy.active,
+          version: policy.version,
+        }),
       })
-      if (!res.ok) throw new Error("Failed to update")
-      await fetchMinStay()
+      if (!res.ok) {
+        const message = await responseMessage(res, "Failed to update")
+        if (res.status === 409) {
+          const refreshed = await refreshAfterMutation()
+          setError(
+            refreshed
+              ? message
+              : `${message} The latest policies could not be loaded; try again.`,
+          )
+          return
+        }
+        throw new Error(message)
+      }
+      const saved = parseMinStayPolicy(await res.json().catch(() => null))
+      if (saved) applyServerPolicy(saved)
+      await refreshAfterMutation()
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error")
     } finally {
-      togglingRef.current = false
-      setTogglingId(null)
+      rowActionRef.current = false
+      setRowActionId(null)
     }
   }
 
@@ -566,7 +723,8 @@ export function MinimumNightStaySection() {
                   </CardTitle>
                   <CardDescription>
                     Require a minimum number of nights when a booking touches specific days of the week
-                    within a date range. Admins can override these rules.
+                    within a date range. Each policy says whether an exception
+                    request holds the requested capacity while it is reviewed.
                     {scopeLodgeName ? (
                       <>
                         {" "}
@@ -625,12 +783,12 @@ export function MinimumNightStaySection() {
                               describeReason={false}
                               variant="outline"
                               size="sm"
-                              disabled={togglingId === policy.id}
+                              disabled={rowActionId === policy.id}
                               onClick={() => void handleToggleMinStay(policy)}
                             >
                               {policy.active ? "Deactivate" : "Activate"}
                             </ViewOnlyActionButton>
-                            <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="outline" size="sm" onClick={() => startEditMinStay(policy)}>
+                            <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="outline" size="sm" disabled={rowActionId === policy.id} onClick={() => startEditMinStay(policy)}>
                               Edit
                             </ViewOnlyActionButton>
                             {/*
@@ -647,7 +805,7 @@ export function MinimumNightStaySection() {
                               say what a soft delete actually leaves behind.
                             */}
                             {policy.active && (
-                              <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="destructive" size="sm" onClick={() => handleDeleteMinStay(policy.id)}>
+                              <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="destructive" size="sm" disabled={rowActionId === policy.id} onClick={() => void handleDeleteMinStay(policy)}>
                                 Delete
                               </ViewOnlyActionButton>
                             )}
@@ -662,6 +820,12 @@ export function MinimumNightStaySection() {
                             Min <strong>{policy.minimumNights}</strong> nights
                           </span>
                         </div>
+                        <p className="mt-2 text-sm text-muted-foreground">
+                          {policy.capacityMode === "HOLD"
+                            ? "Exception requests hold the requested capacity during review."
+                            : "Exception requests do not hold capacity until approval."}{" "}
+                          Revision {policy.version}.
+                        </p>
                       </CardContent>
                     </Card>
                   ))}

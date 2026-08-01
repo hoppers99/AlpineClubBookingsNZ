@@ -26,6 +26,11 @@
  * lock/rollback behavior.
  */
 import type { Prisma, PrismaClient } from "@prisma/client";
+// #2363 reuses this suite's already-guarded, disposable hosted PostgreSQL but
+// creates/drops its own unique schema. Importing registers the trigger proofs in
+// the explicit CI race command without changing the workflow or making ordinary
+// `npm test` depend on a database.
+import "./minimum-stay-policy-trigger.realdb.test";
 import {
   afterAll,
   beforeAll,
@@ -34,6 +39,8 @@ import {
   expect,
   it,
 } from "vitest";
+
+import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
 
 let prisma: typeof import("@/lib/prisma")["prisma"];
 let markGroupSettlementIntentFailed: typeof import("@/lib/group-settlement")["markGroupSettlementIntentFailed"];
@@ -138,13 +145,25 @@ function deferred() {
   return { promise, resolve };
 }
 
+/**
+ * How long the lock pollers below wait before giving up with their own named
+ * diagnostic (far more useful than Vitest's generic test timeout).
+ *
+ * Measured with `process.hrtime.bigint()`, never `Date.now()`: since #2481 every
+ * test file runs with `Date` frozen, so a `Date.now()` deadline can never expire
+ * — the poller would spin against PostgreSQL until the test was killed, with no
+ * lock named. This file is not in the fast local gate; it runs in CI's required
+ * `Migration drift check` job, so the failure would surface at its least useful.
+ */
+const LOCK_POLL_TIMEOUT_MS = 5_000;
+
 async function waitForTableLock(params: {
   mode: "RowExclusiveLock" | "ShareRowExclusiveLock";
   granted: boolean;
   applicationName?: string;
 }): Promise<void> {
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline) {
+  const startedAt = process.hrtime.bigint();
+  while (realElapsedMs(startedAt) < LOCK_POLL_TIMEOUT_MS) {
     const applicationName = params.applicationName ?? null;
     const rows = await prisma.$queryRaw<Array<{ count: number }>>`
       SELECT COUNT(*)::int AS "count"
@@ -164,8 +183,8 @@ async function waitForTableLock(params: {
 }
 
 async function waitForPendingGlobalAdvisoryLock(): Promise<void> {
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline) {
+  const startedAt = process.hrtime.bigint();
+  while (realElapsedMs(startedAt) < LOCK_POLL_TIMEOUT_MS) {
     const rows = await prisma.$queryRaw<Array<{ count: number }>>`
       SELECT COUNT(*)::int AS "count"
       FROM pg_locks

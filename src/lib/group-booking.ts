@@ -36,6 +36,14 @@ import {
   Prisma,
 } from "@prisma/client";
 import { getDefaultLodgeId, lodgeNullTolerantScope } from "@/lib/lodges";
+import {
+  aggregatePolicyExceptionViolations,
+  type AggregatedPolicyExceptions,
+  type PolicyExceptionViolation,
+} from "@/lib/booking-policy-exceptions";
+// Leaf module (no Prisma, no email): the generic public sentence lives beside
+// the detailed formatter it deliberately replaces on these two surfaces.
+import { PUBLIC_GROUP_JOIN_MINIMUM_STAY_MESSAGE } from "@/lib/policies/minimum-stay";
 import { prisma } from "@/lib/prisma";
 import { hashActionToken, issueActionToken } from "@/lib/action-tokens";
 import {
@@ -110,17 +118,27 @@ export class GroupBookingError extends Error {
   code?: string;
   /** Optional extra payload (e.g. capacity-exceeded nights, unpaid members). */
   details?: unknown;
+  /** Frozen soft-policy facts; present only on the still-blocking 400 path. */
+  violations?: PolicyExceptionViolation[];
+  exceptionReview?: AggregatedPolicyExceptions;
 
   constructor(
     message: string,
     status = 400,
-    options?: { code?: string; details?: unknown }
+    options?: {
+      code?: string;
+      details?: unknown;
+      violations?: PolicyExceptionViolation[];
+      exceptionReview?: AggregatedPolicyExceptions;
+    }
   ) {
     super(message);
     this.name = "GroupBookingError";
     this.status = status;
     this.code = options?.code;
     this.details = options?.details;
+    this.violations = options?.violations;
+    this.exceptionReview = options?.exceptionReview;
   }
 }
 
@@ -721,14 +739,17 @@ export async function joinGroupBookingAsMember(
     const { validateMinimumStay, formatViolationsDetail } = await import(
       "@/lib/booking-policies"
     );
-    const stay = await validateMinimumStay(checkIn, checkOut);
+    const stay = await validateMinimumStay(checkIn, checkOut, groupLodgeId);
     if (!stay.valid) {
+      const exceptionReview = aggregatePolicyExceptionViolations(stay.violations);
       throw new GroupBookingError(
         "Booking does not meet the minimum stay requirement",
         400,
         {
           code: "MINIMUM_STAY_VIOLATION",
           details: formatViolationsDetail(stay.violations),
+          violations: exceptionReview.violations,
+          exceptionReview,
         }
       );
     }
@@ -950,6 +971,60 @@ export async function createNonMemberJoinRequest(
     );
   }
 
+  // #2363: the public non-member join is held to the same minimum-stay policy
+  // as the member join (joinGroupBookingAsMember) — this contact is never an
+  // admin, so there is no override branch. Staging is refused BEFORE a
+  // verification token is issued or a GroupBookingJoin row is written, so a
+  // stay the policy refuses never reaches a mailbox as a live confirmation
+  // link. The joiner inherits the organiser's dates at the group's own lodge,
+  // so those are what is evaluated.
+  //
+  // The refusal is surfaced like the guest-cap refusal above: the plain
+  // sentence and its code, no frozen snapshot. It is not on the route's
+  // neutral list because it discloses nothing about who or what exists — a
+  // caller already holding a valid, joinable group code learns only that the
+  // organiser's own dates are too short, which the group's public page already
+  // shows them.
+  const { validateMinimumStay, formatViolationsDetail } = await import(
+    "@/lib/booking-policies"
+  );
+  const stay = await validateMinimumStay(
+    group.organiserBooking.checkIn,
+    group.organiserBooking.checkOut,
+    groupLodgeId
+  );
+  if (!stay.valid) {
+    const exceptionReview = aggregatePolicyExceptionViolations(stay.violations);
+    logger.warn(
+      {
+        groupBookingId: group.id,
+        groupLodgeId,
+        // The detailed sentence lives HERE and only here, exactly as it does at
+        // the verification stage: rule name, required nights and trigger
+        // weekdays are for the club reading its own log, not for an
+        // unauthenticated 400 body.
+        detail: formatViolationsDetail(stay.violations),
+        violations: exceptionReview.violations.map((violation) => ({
+          policyId: violation.policyId,
+          policyVersion: violation.policyVersion,
+        })),
+      },
+      "Group join staging refused: minimum-stay policy not satisfied"
+    );
+    throw new GroupBookingError(
+      // A non-member cannot move these dates — only the organiser can — so the
+      // sentence they read on /join/[code] names the fix rather than the rule.
+      PUBLIC_GROUP_JOIN_MINIMUM_STAY_MESSAGE,
+      400,
+      // Message and code ONLY. The detailed sentence and the frozen snapshot are
+      // deliberately absent from the thrown error rather than merely unread by
+      // the route: this error is caught one `...err` spread away from an
+      // unauthenticated response body, and the club already has both in the log
+      // line above.
+      { code: "MINIMUM_STAY_VIOLATION" }
+    );
+  }
+
   // A real login member should use the authenticated member path so we don't
   // create a duplicate non-login member for them.
   const existingMember = await prisma.member.findFirst({
@@ -1019,6 +1094,15 @@ export type VerifyNonMemberJoinResult =
   | { outcome: "expired" }
   | { outcome: "not_joinable"; message: string }
   | { outcome: "capacity_full"; fullNights: string[] }
+  // #2363: the minimum-stay policy set is re-read at verification time, so a
+  // rule tightened (or newly created) after this request was staged fails
+  // closed here instead of admitting a stay the club no longer allows. It is
+  // its own outcome, not a thrown error, because a throw becomes a generic 500
+  // at the verify route. Carries the generic member-facing sentence and nothing
+  // else: this result reaches an unauthenticated route, so the frozen snapshot
+  // and the rule-naming sentence stay in the server log the service writes
+  // beside it rather than travelling one field-spread from the wire.
+  | { outcome: "minimum_stay"; message: string }
   | { outcome: "already_done"; bookingId: string }
   | {
       outcome: "created";
@@ -1167,6 +1251,69 @@ export async function verifyAndCreateNonMemberJoin(
   // organiser's lodge.
   const groupLodgeId =
     organiserBooking.lodgeId ?? (await getDefaultLodgeId(prisma));
+
+  // #2363: re-validate minimum stay against the CURRENT policy set before any
+  // booking is created. Stage 1 (createNonMemberJoinRequest) checked it when
+  // the link was emailed, but that link lives for 48 hours, during which an
+  // admin or a config import can tighten or add a rule — and the organiser's
+  // own dates can move. Re-reading here makes the second stage fail CLOSED
+  // rather than admitting a stay under a rule that now applies.
+  //
+  // Deliberately outside the booking transaction, like every other pre-write
+  // check on this path. The argument is about the CONNECTION POOL, not lock
+  // order: running it inside would leave `validateMinimumStay` reading through
+  // the module-level Prisma client while the per-lodge capacity lock is held,
+  // taking a second pool connection underneath that lock — the shape
+  // `member-guest-add-policy.ts` forbids. (The two in-transaction callers that
+  // genuinely cannot hoist the check — the two modify services — pass their own
+  // `tx` instead; see docs/CONCURRENCY_AND_LOCKING.md.) There is no lock-order
+  // hazard to weigh either way: no minimum-stay policy writer ever takes a
+  // per-lodge capacity lock and no booking path takes the policy-set key, so
+  // the two keyspaces are disjoint and cannot cycle. The residual window is the
+  // few milliseconds between this read and the claim below, which is the same
+  // footing as the member join path.
+  const {
+    validateMinimumStay: validateVerifyMinimumStay,
+    formatViolationsDetail: formatVerifyViolationsDetail,
+  } = await import("@/lib/booking-policies");
+  const verifyStay = await validateVerifyMinimumStay(
+    checkIn,
+    checkOut,
+    groupLodgeId
+  );
+  if (!verifyStay.valid) {
+    const exceptionReview = aggregatePolicyExceptionViolations(
+      verifyStay.violations
+    );
+    logger.warn(
+      {
+        joinId: join.id,
+        groupLodgeId,
+        // The detailed sentence lives HERE and only here: rule name, required
+        // nights and trigger weekdays are for the club reading its own log, not
+        // for an unauthenticated 409 body.
+        detail: formatVerifyViolationsDetail(verifyStay.violations),
+        violations: exceptionReview.violations.map((violation) => ({
+          policyId: violation.policyId,
+          policyVersion: violation.policyVersion,
+        })),
+      },
+      "Group join verification refused: minimum-stay policy no longer satisfied"
+    );
+    return {
+      outcome: "minimum_stay",
+      // The same generic sentence stage 1 answers with — see
+      // PUBLIC_GROUP_JOIN_MINIMUM_STAY_MESSAGE. This used to be the detailed
+      // formatter output, which contradicted the route's own comment and turned
+      // the unauthenticated confirm into a policy-configuration read.
+      //
+      // Outcome and message ONLY: the frozen snapshot rode this result as far as
+      // the route, which forwards these two fields — one `...result` spread from
+      // being published on an unauthenticated surface. It stays in the log line
+      // above instead, matching stage 1.
+      message: PUBLIC_GROUP_JOIN_MINIMUM_STAY_MESSAGE,
+    };
+  }
 
   // All joiner guests are non-members; price them from the live season rates.
   const guests: PricedGuestInput[] = snapshotGuests.map((g) => ({
