@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
 import { ApiError } from "@/lib/api-error";
+import { MinimumStayPolicyViolationError } from "@/lib/booking-policy-exceptions";
 import { auth } from "@/lib/auth";
 import {
   adminShiftBookingDates,
@@ -231,6 +232,18 @@ export async function PUT(
       return NextResponse.json(xeroLockGuardResponse.body, {
         status: xeroLockGuardResponse.status,
       });
+    }
+    if (err instanceof MinimumStayPolicyViolationError) {
+      return NextResponse.json(
+        {
+          error: err.message,
+          code: err.code,
+          details: err.details,
+          violations: err.violations,
+          exceptionReview: err.exceptionReview,
+        },
+        { status: err.status },
+      );
     }
     if (err instanceof ApiError) {
       return NextResponse.json({ error: err.message }, { status: err.status });

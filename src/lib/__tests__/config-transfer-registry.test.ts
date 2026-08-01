@@ -16,6 +16,7 @@ import {
 import "@/lib/config-transfer/categories/site-content";
 import "@/lib/config-transfer/categories/club-settings";
 import "@/lib/config-transfer/categories/lodge-config";
+import "@/lib/config-transfer/categories/booking-policies";
 import "@/lib/config-transfer/categories/lodge-ops";
 import "@/lib/config-transfer/categories/committee";
 import "@/lib/config-transfer/categories/induction";
@@ -158,6 +159,7 @@ describe("config-transfer registry — registered descriptors", () => {
         "page-content",
         "site-content",
         "club-theme",
+        "minimum-stay-policy",
         "club-module-settings",
         "email-message-setting",
         "lodge",

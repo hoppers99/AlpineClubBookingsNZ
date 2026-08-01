@@ -168,6 +168,23 @@ mirror the settlement threshold ranges, including implicit no-refund gaps and a
 separate post-check-in no-refund fallback. Disabled provisional holds are stated
 explicitly rather than silently omitted.
 
+Each minimum-stay row in `{{booking-policies}}` publishes its name, date range,
+required nights and trigger days. It deliberately publishes **no**
+exception-capacity sentence during the #2363 foundation release: a member who
+trips a minimum-stay rule today is simply refused and has no way to request an
+exception at all, so telling the public what happens to capacity "while the club
+reviews it" would advertise a button nobody can press. `capacityHandling` is
+therefore `null` on every row and the renderer omits it.
+
+The plumbing behind it stays in place — the loader still selects `capacityMode`,
+the two sentences still live in `exceptionCapacityCopy`, and the renderer still
+emits a sentence when one is supplied — so #2365 re-enables it by flipping
+`PUBLIC_EXCEPTION_CAPACITY_COPY_ENABLED` in `public-page-content-tokens.ts` once
+the review workflow ships. Even then the token receives only the display copy,
+never the policy id/version or the internal capacity-mode enum. The **admin**
+Minimum Night Stay card is unaffected and has always stated the stored mode: an
+operator configuring the rule needs to see what they chose.
+
 Content-area view roles can inspect visibility but cannot change it. Content
 edit roles can save it. Saves are audited with before/after state and invalidate
 all PageContent-backed public routes. Authority editors for fees, seasons, and

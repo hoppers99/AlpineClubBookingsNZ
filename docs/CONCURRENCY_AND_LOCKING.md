@@ -111,11 +111,71 @@ are the literal `1`.
 | **Membership applicant** | `hashtext(<applicant-email key>)` | `membershipApplicationApplicantLockKey` (`nomination.ts`) | — | Per-email applicant dedup at submit time. |
 | **Roster generation** | `hashtext("roster:<date>")` | inline (`admin-roster-service.ts`) | — | Roster generation for one calendar date. |
 | **Config-transfer import** | `hashtext("config-transfer-import")` | `acquireConfigImportLock(tx)` (`config-transfer/apply.ts`) | — | Single-flights configuration-bundle apply. |
+| **Minimum-stay policy set** | `hashtext("minimum-stay-policy-set")` | `lockMinimumStayPolicySet(tx)` (`minimum-stay-policy-set.ts`) plus the migration's `MinimumStayPolicy_lock_set` statement trigger | policy config | Serialises every live CRUD and config-transfer replacement across the small club/lodge policy set. The database trigger puts draining old-colour DML behind the exact same key before any tuple lock. |
 | **Membership subscription billing** | `hashtext("membership-subscription-billing:<seasonYear>")` | `confirmSubscriptionBillingPreview`, `reconcileSubscriptionBillingExceptions` (`membership-subscription-billing.ts`) | — | Annual/approval charge snapshot creation for one membership year; the #2148 refresh-reconciliation holds the same key so exception auto-resolution serialises with confirm and never resolves rows a concurrent confirm is regenerating. The #2161 operator family-marker writers (MARK/UNMARK on the subscription-billing route) deliberately take **no** advisory lock: they only insert/release a `FamilyGroupSeasonInvoiceMarker` row (single-active enforced by a partial unique index, so a concurrent double-mark is a benign no-op), and confirm re-derives suppression from the live marker rows under this same lock inside its transaction, so a mark landing mid-confirm either is seen by the in-tx re-preview or shifts the confirmation token — never a torn snapshot. |
 | **Authoritative fee schedule** | `hashtext("fee-schedule:<domain>:<key>")` | `lockFeeSchedule` (`authoritative-fees.ts`) | — | Serialises effective-dated membership or entrance-fee schedule changes for one configured key. |
 | **Member partner link** | sorted `hashtext("member-partner-link:<memberId>")` keys | `lockPartnerMembers` (`member-partner-link.ts`) | — | Serialises partner-link invariants across every member touched by a link; same-family keys are sorted. |
 | **Xero member contact link (legacy key)** | `hashtext(<memberId>)` | short local-link transactions (`xero-contacts.ts`) | — | First-writer-wins local `Member.xeroContactId` linking after provider work. This legacy unnamespaced key is shared by both Xero contact-link writers; do not copy it for new domains. |
 | **Backup run claim** | `hashtext("backup:run-lock")` | `claimBackupRun` (`backup-run.ts`, #2095) | — | Single-flights managed database backups across containers (nightly cron vs admin run-now). Held only for the milliseconds of the reap-stale → active-check → insert-RUNNING claim transaction; the `pg_dump`/upload pipeline runs entirely outside any transaction, so a crashed run can never wedge the lock (a dead RUNNING row is reaped by heartbeat age on the next claim). Single-lock holder; composes with no other family. The config-transfer pre-apply safety backup deliberately bypasses this claim (it must run inline; concurrent dumps are independent snapshots writing uniquely-named files). |
+
+### Composition: minimum-stay policy set (#2363)
+
+`POST /api/admin/booking-policies/minimum-stay` and the row-level `PUT` and
+`DELETE` routes call `lockMinimumStayPolicySet(tx)` before their first policy or
+lodge read, then re-read/validate and write inside the same transaction. The
+policy set is club-sized, so one global configuration key is intentionally
+preferred to per-scope concurrency: it gives every writer one unambiguous lock
+order across a blue/green drain.
+
+The additive migration also installs `MinimumStayPolicy_lock_set`, a `BEFORE
+STATEMENT` trigger for INSERT, UPDATE and DELETE. A draining old colour cannot
+call the TypeScript helper, but PostgreSQL takes the same
+`hashtext("minimum-stay-policy-set")` transaction lock before that statement
+reaches any row. New-runtime DML merely re-enters the lock it already holds.
+This keeps both colours in **advisory → tuple row** order; do not move this lock
+into a row trigger, which would invert old-colour order against the new routes.
+A separate `BEFORE ROW` trigger manages only the integer revision after the
+statement lock is held: material old-colour updates advance an unchanged token,
+new `OLD + 1` CAS writes are not double-incremented, and non-material writes keep
+the old token.
+
+Configuration transfer composes two global configuration keys in one fixed
+order: `config-transfer-import` **first**, then `minimum-stay-policy-set`, before
+the booking-policy category re-fingerprints or replaces any rows. Live CRUD
+takes only the second key, and no policy writer takes them in reverse, so this
+composition cannot form a cycle. The database statement trigger re-enters the
+second key during import DML.
+
+#### Which client reads the policy set
+
+`validateMinimumStay` (`booking-policies.ts`) takes an optional trailing `db`
+that defaults to the module-level Prisma client. The rule is one line: **a
+caller already inside `prisma.$transaction` MUST pass its own `tx`.** Two
+callers are in that position — `modifyBookingBatch`
+(`booking-batch-modification-service.ts`) and `modifyBookingDates`
+(`booking-date-modification-service.ts`) — and both run the check while holding
+`pg_advisory_xact_lock(1)` **and** the per-lodge capacity lock. Reading through
+the module client there checks out a **second pool connection underneath both
+locks**, which is the pool-starvation shape the ordering rule at the top of
+`member-guest-add-policy.ts` exists to forbid: under load every connection can
+end up held by a transaction waiting for a connection. Passing `tx` also gives
+the check the transaction's own snapshot instead of a second, later one.
+
+Every other caller is deliberately OUTSIDE a transaction and keeps the default:
+booking create, both public group-join stages, the member group join, the two
+waitlist-offer confirm paths, the advisory modify quote, and the policy-check
+route. Those are pre-write checks with no lock held, so the module client is
+correct and cheapest there. The residual window between such a read and the
+claim that follows it is milliseconds and is the same footing every other
+pre-write policy check on those paths sits on.
+
+This is a **pool** argument, not a lock-order one: no minimum-stay policy writer
+ever takes a per-lodge capacity lock, and no booking path takes the policy-set
+key, so the two keyspaces are disjoint and cannot deadlock in either order.
+`booking-batch-modification-minimum-stay.test.ts` and
+`booking-date-modification-minimum-stay.test.ts` each pin their call site to the
+transaction client so a future edit cannot silently reintroduce the second
+connection.
 
 ### Composition: application-approval mapping (E10, #1936)
 

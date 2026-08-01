@@ -17,6 +17,42 @@ WAITLISTED -> WAITLIST_OFFERED -> CONFIRMED/PAID or WAITLISTED/CANCELLED
 AWAITING_REVIEW -> PENDING (quote accepted, #1254) or CONFIRMED/PAID or CANCELLED
 ```
 
+### Minimum-stay exception foundation (#2363)
+
+A minimum-stay violation causes **no booking-state transition** in this release.
+Member booking create, member group join, and ordinary date modification (on the
+live `modify` route as well as `modify-dates`) keep their blocking HTTP 400
+behavior for non-admin actors. The public non-member group join now blocks at
+both of its stages: the staging request never reaches `GroupBookingJoin` (no
+token, no row, no email), and the verification step re-reads the current policy
+set and returns a 409 `minimum_stay` outcome instead of creating the non-login
+member, the PENDING child booking, the PENDING payment and the pay link — so a
+rule tightened during the link's 48-hour life fails closed rather than admitting
+the stay. Quote and policy-check endpoints return advisory facts, and the
+booking wizard continues to show the existing message without advancing. The
+authenticated responses now carry a frozen `exceptionReview` whose violations
+include the policy version, so the later workflow can present one combined
+review without reconstructing what the member encountered; the two PUBLIC
+non-member group-join stages deliberately carry none of it — they answer with a
+generic sentence and their code/outcome, and the snapshot reaches the club only
+through the server log line each stage writes.
+
+Accepting a waitlist offer can also end in **no transition at all** without
+being a refusal: the same-lodge minimum-stay check runs on an unlocked read
+before the claiming transaction, so the claim refuses with `CONFIRM_RETRY`
+(HTTP 409) when it finds a live offer the check never classified — an entry the
+offer sweep moved `WAITLISTED -> WAITLIST_OFFERED` in between, or one that
+became a cross-lodge offer. Nothing is written, so the state machine is exactly
+where it was and the member simply confirms again.
+
+The `HOLD`/`NO_HOLD` value in that snapshot is policy metadata today. No
+exception request is persisted and no capacity is held or released because of
+it. #2365 adds the durable request/approval states, revalidation, and capacity
+reservation rules. Until that work lands, capacity exhaustion, subscription or
+membership refusal, duplicate member-night, authentication, payment, privacy,
+invalid-date, and data-integrity failures remain hard stops with no transition
+into review.
+
 `DRAFT -> PAYMENT_PENDING` is also where a stored account-credit election is
 spent (#2265). A draft carries the member's election on
 `Booking.creditElectionCents` and consumes no credit while it may still be

@@ -9,6 +9,7 @@ import {
 } from "@prisma/client";
 
 import { ApiError } from "@/lib/api-error";
+import { MinimumStayPolicyViolationError } from "@/lib/booking-policy-exceptions";
 import { logAudit } from "@/lib/audit";
 import {
   queueSupersededPrimaryIntentCancellations,
@@ -398,11 +399,19 @@ export async function modifyBookingDates({
 
     if (actor.role !== "ADMIN") {
       const { validateMinimumStay, formatViolationsDetail } = await import("@/lib/booking-policies");
-      const stayResult = await validateMinimumStay(newCheckIn, newCheckOut);
+      // `tx`, never the module client — see the composition rule on
+      // `validateMinimumStay`: this check runs inside the transaction that
+      // already holds the global money lock and the per-lodge capacity lock.
+      const stayResult = await validateMinimumStay(
+        newCheckIn,
+        newCheckOut,
+        bookingLodgeId,
+        tx,
+      );
       if (!stayResult.valid) {
-        throw new ApiError(
+        throw new MinimumStayPolicyViolationError(
           formatViolationsDetail(stayResult.violations),
-          400,
+          stayResult.violations,
         );
       }
     }

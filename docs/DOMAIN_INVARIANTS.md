@@ -2212,8 +2212,118 @@ their check-out one night at a time even across a weekend minimum-stay rule —
 the added night alone would fail the minimum, but the whole stay satisfies it.
 A genuinely too-short whole stay is still reported. (The create path evaluates
 each new booking's own range, so a separate contiguous one-night booking is
-still subject to the minimum — deferred as scope B on #2124.) Issue #1668 adds an **admin-only
-override** (`adminOverride`, honoured solely when
+still subject to the minimum — deferred as scope B on #2124.)
+
+Minimum-stay is also the first consumer of the booking-policy exception
+foundation (#2363). The only soft-policy reason codes are `MINIMUM_STAY` and the
+reserved `ADULT_MEMBER_HOSTING_REQUIRED`; every other failure remains a hard
+stop and cannot enter `aggregatePolicyExceptionViolations`. A minimum-stay
+violation freezes its policy id/version, resolved club-wide or lodge-specific
+scope, exact affected NZ lodge nights, minimum/actual-night requirements,
+eligibility, message, and `HOLD`/`NO_HOLD` capacity mode. Multiple eligible
+violations sort deterministically and aggregate to `HOLD` if any row says
+`HOLD`.
+
+That snapshot is transport data only in #2363: it explains a refusal, it never
+authorises one. **Every** member-facing mutation path stops server-side for a
+non-admin actor, and the list is exact:
+
+- booking create (`POST /api/bookings`) — HTTP 400;
+- member group join (`POST /api/group-bookings/[code]/join`) — HTTP 400 with
+  code `MINIMUM_STAY_VIOLATION`;
+- public non-member group join, at **both** stages — staging
+  (`POST /api/group-bookings/[code]/join-request`) refuses with HTTP 400 before
+  a verification token, join row, or email exists, and verification
+  (`POST /api/group-bookings/join/verify/[token]`) re-reads the CURRENT policy
+  set and fails closed with HTTP 409 `minimum_stay` before any member, booking,
+  payment or pay link is created — an emailed link lives 48 hours, so a rule
+  tightened inside that window must not be honoured. Both stages are
+  unauthenticated, so both answer with the SAME generic sentence
+  (`PUBLIC_GROUP_JOIN_MINIMUM_STAY_MESSAGE`) and carry nothing else: staging
+  throws a `GroupBookingError` with a message and `MINIMUM_STAY_VIOLATION` only,
+  verification returns `{ outcome, message }` only. The rule-naming sentence and
+  the frozen snapshot exist solely in a `logger.warn` line each stage writes
+  beside its refusal — not merely unread by the route, but absent from what the
+  route holds, because both surfaces are one field-spread from the wire;
+- member date modification through the live edit surface
+  (`PUT /api/bookings/[id]/modify` → `modifyBookingBatch`) — HTTP 400, checked
+  before the guest plan, pricing and capacity. Its sibling
+  `PUT /api/bookings/[id]/modify-dates` (`modifyBookingDates`) carries the same
+  block. On the batch path the check runs **only when the edit actually moves a
+  night** — the resolved envelope after any `guestStayRanges` widening differs
+  from the stored one (`resolveTargetDates().datesChanged`). An edit that leaves
+  every night where it was (a guest add, a guest removal, a name fix, a credit
+  election) cannot admit a NEW violation, so enforcing it could only hard-block
+  an unrelated fix to a booking already grandfathered outside the policy, with
+  no remedy the member can reach. `modify-quote` gates its own advisory check on
+  the identical predicate (`targetDatesChanged`, computed the same way), so
+  preview and apply agree on every request shape.
+- waitlist-offer confirmation (`POST /api/bookings/[id]/waitlist-confirm` →
+  `confirmWaitlistOffer`), on **both** offer kinds. Confirming turns a queue
+  placeholder into capacity-holding status, so it is a fresh commitment to those
+  nights, and an offer lives 48 hours — long enough for a rule to be tightened
+  under it. A same-lodge offer is evaluated against the booking's own lodge; a
+  cross-lodge offer (ADR-004) is evaluated against the **offered** lodge, which
+  matters because per-lodge policy resolution replaces rather than merges, so
+  that lodge can carry rules the member's own lodge never had, and because the
+  cross-lodge path calls `createConfirmedBooking` directly and would otherwise
+  apply no rule at all. Both checks run outside any transaction and fail closed
+  **without consuming the offer**: the entry reverts to `WAITLISTED` under the
+  relevant lodge's capacity lock, exactly as the capacity-lost and
+  no-longer-eligible branches do, and the member gets a plain sentence with code
+  `MINIMUM_STAY_VIOLATION` while the frozen snapshot stays in the server log.
+  There is no admin branch on this path by construction: the confirm refuses any
+  actor other than the booking's own member with `Forbidden`, so the only actor
+  that ever reaches the check is a non-admin confirming their own offer.
+  Because the same-lodge check reads the offer OUTSIDE the claiming transaction
+  and runs only when that read already saw a live same-lodge offer this member
+  owns, the claim carries a backstop: it records whether the check actually ran,
+  and if it finds `WAITLIST_OFFERED` under the lodge lock either without that
+  evidence or with a `waitlistOfferedLodgeId` the pre-read did not see, it
+  refuses with code `CONFIRM_RETRY` (HTTP 409) and writes nothing at all. The
+  offer sweep (`processWaitlistForDates`) makes exactly the
+  `WAITLISTED -> WAITLIST_OFFERED` transition that invalidates the pre-read and
+  the route carries no rate limit, so without the backstop an offer created in
+  that window would be claimed with the policy never evaluated. Refusing is
+  retry-safe by construction — no status moves, no allocation is touched and the
+  offer is not consumed — so the next attempt re-reads the row and the guard
+  evaluates for real.
+
+The admin exemption is **not one predicate**, and the difference is deliberate.
+State it per path:
+
+- **Booking create** exempts an authorised **on-behalf** booking only
+  (`isAuthorizedOnBehalf`). A dual-hat admin booking for THEMSELVES is still
+  checked — #1442's decision: acting as a member means being held to the members'
+  rules. Role alone buys nothing here.
+- **Both modify paths and the modify-quote preview** exempt any ADMIN actor
+  (`actor.role !== "ADMIN"` / `!isAdmin`), including admin-on-behalf edits.
+- **Member group join** exempts any ADMIN session (`sessionRole !== "ADMIN"`),
+  self-join included — the create path's narrower rule is not mirrored here.
+- **The two public non-member group-join stages and both waitlist-offer confirm
+  paths have no admin branch at all**, because no admin actor can reach them:
+  the public stages are unauthenticated non-member surfaces, and a confirm
+  refuses any actor other than the booking's own member with `Forbidden`.
+
+Advisory surfaces — modify quote, policy check,
+and the edit panel's banner — report the same facts without gating anything;
+the panel deliberately leaves Save enabled because the server is authoritative.
+No request row is persisted, no capacity is reserved from `HOLD`, and evaluation
+never bypasses capacity, subscription, membership, linked-member-night,
+authentication, payment, privacy, date, or data-integrity gates. #2365 owns
+durable request state, approval/revalidation, capacity reservation, and the
+mixed soft/hard admission order. Every caller evaluates against the resolved
+booking lodge; unknown or inactive explicit lodge ids are refused rather than
+falling back.
+
+Minimum-stay policy administration is versioned. Every create supplies
+`capacityMode`; every update/toggle/delete carries the loaded `version` and a
+stale version is refused instead of overwriting a concurrent admin or import.
+Config transfer is the one replace-set exception: it takes the config-import
+lock then the shared policy-set lock, re-plans, and may delete omitted policies
+only after they appeared in Preview. Existing policies migrate to `HOLD`.
+
+Issue #1668 adds an **admin-only override** (`adminOverride`, honoured solely when
 `bookingManagementAuthorizationRole(session.user) === "ADMIN"`, i.e. Full Admin
 or Booking Officer) that lifts those date-window locks so an admin can move the
 dates of an in-progress or fully-past booking. The override is **date-only**:

@@ -48,6 +48,7 @@ const mockPaymentUpsert = vi.fn();
 const mockExecuteRaw = vi.fn().mockResolvedValue(undefined);
 const mockTxLodgeFindFirst = vi.fn().mockResolvedValue({ id: "lodge-1" });
 const mockTxMemberLodgeAccessFindMany = vi.fn().mockResolvedValue([]);
+const mockValidateMinimumStay = vi.fn();
 
 // Shared tx mock used by booking route
 const mockTx = {
@@ -131,8 +132,10 @@ vi.mock("@/lib/pricing", () => ({
   calculatePromoDiscount: vi.fn().mockReturnValue({ discountCents: 0, freeNightsUsed: 0 }),
 }));
 vi.mock("@/lib/booking-policies", () => ({
-  validateMinimumStay: vi.fn().mockResolvedValue({ valid: true, violations: [] }),
-  formatViolationsDetail: vi.fn().mockReturnValue(""),
+  validateMinimumStay: mockValidateMinimumStay,
+  formatViolationsDetail: vi
+    .fn()
+    .mockReturnValue("Lodge B weekends: minimum 2 nights"),
 }));
 
 const mockCheckCapacity = vi.fn();
@@ -312,6 +315,71 @@ describe("Booking Creation Route: zero-dollar handling", () => {
       minAvailable: 29,
       nightDetails: [],
     });
+    mockValidateMinimumStay.mockResolvedValue({ valid: true, violations: [] });
+  });
+
+  it("returns the exact frozen minimum-stay review without creating a booking", async () => {
+    setupStandardMocks();
+    mockTxLodgeFindFirst.mockResolvedValue({ id: "lodge-b" });
+    const violation = {
+      reasonCode: "MINIMUM_STAY",
+      policyId: "policy-lodge-b",
+      policyVersion: 6,
+      policyName: "Lodge B weekends",
+      resolvedScope: {
+        kind: "LODGE",
+        lodgeId: "lodge-b",
+        effectiveLodgeId: "lodge-b",
+      },
+      affectedNights: [tomorrow],
+      exceptionEligible: true,
+      capacityMode: "HOLD",
+      message: "Lodge B requires two nights.",
+      triggerDay: "Saturday",
+      minimumNights: 2,
+      actualNights: 1,
+      requirements: {
+        kind: "MINIMUM_STAY",
+        minimumNights: 2,
+        actualNights: 1,
+        triggerDays: [6],
+      },
+    } as const;
+    mockValidateMinimumStay.mockResolvedValue({
+      valid: false,
+      violations: [violation],
+    });
+
+    const res = await POST(
+      makeRequest({
+        checkIn: tomorrow,
+        checkOut: dayAfterTomorrow,
+        guests: [
+          {
+            firstName: "Alice",
+            lastName: "Smith",
+            ageTier: "ADULT",
+            isMember: true,
+          },
+        ],
+      }),
+    );
+
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toEqual({
+      error: "Booking does not meet minimum stay requirement",
+      details: "Lodge B weekends: minimum 2 nights",
+      code: "MINIMUM_STAY_VIOLATION",
+      violations: [violation],
+      exceptionReview: { violations: [violation], capacityMode: "HOLD" },
+    });
+    expect(mockValidateMinimumStay).toHaveBeenCalledWith(
+      expect.any(Date),
+      expect.any(Date),
+      "lodge-b",
+    );
+    expect(mockPrismaTransaction).not.toHaveBeenCalled();
+    expect(mockTxBookingCreate).not.toHaveBeenCalled();
   });
 
   it("creates a SUCCEEDED Payment inside the transaction for a $0 PAYMENT_PENDING booking", async () => {

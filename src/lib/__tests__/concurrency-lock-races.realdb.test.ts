@@ -26,6 +26,11 @@
  * lock/rollback behavior.
  */
 import type { Prisma, PrismaClient } from "@prisma/client";
+// #2363 reuses this suite's already-guarded, disposable hosted PostgreSQL but
+// creates/drops its own unique schema. Importing registers the trigger proofs in
+// the explicit CI race command without changing the workflow or making ordinary
+// `npm test` depend on a database.
+import "./minimum-stay-policy-trigger.realdb.test";
 import {
   afterAll,
   beforeAll,
