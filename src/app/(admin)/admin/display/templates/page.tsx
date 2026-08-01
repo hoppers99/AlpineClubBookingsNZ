@@ -111,6 +111,31 @@ function slotHtmlHintId(index: number) {
   return `slot-html-hint-${index}`;
 }
 
+/*
+  #2264 review — the HTML textarea's ONLY accessible name is built from the
+  slot's label, and a label is authored data: a layout can declare a slot with
+  a blank one (which would leave the textarea unnamed again) or two slots with
+  the SAME one (which would give two textareas the same name, ambiguous to a
+  screen reader and to Playwright alike). The slot key is unique by
+  construction — it is this list's React key — so it stands in for a blank
+  label and disambiguates a repeated one. The row index is the last resort, for
+  the theoretical slot with neither.
+*/
+function slotFieldName(
+  slots: readonly SlotDraft[],
+  slot: SlotDraft,
+  index: number,
+): string {
+  if (!slot.label.trim()) {
+    return slot.slotKey.trim() || `Slot ${index + 1}`;
+  }
+  const isDuplicate =
+    slots.filter((other) => other.label.trim() === slot.label.trim()).length > 1;
+  return isDuplicate && slot.slotKey.trim()
+    ? `${slot.label} (${slot.slotKey})`
+    : slot.label;
+}
+
 function emptyDraft(): TemplateDraft {
   return {
     id: null,
@@ -834,7 +859,7 @@ export default function AdminDisplayTemplatesPage() {
                         /* #2264 — this textarea had no Label; the placeholder
                            was its only accessible name, so it is named here in
                            the same edit that removes the example. */
-                        aria-label={`${slot.label} HTML`}
+                        aria-label={`${slotFieldName(draft.slots, slot, index)} HTML`}
                         value={slot.html}
                         onChange={(event) =>
                           updateSlot(index, { html: event.target.value })

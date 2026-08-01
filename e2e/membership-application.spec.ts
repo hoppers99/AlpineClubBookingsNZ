@@ -162,6 +162,12 @@ test("an admin maps a rejoining applicant onto their existing member record (E10
   // box a real accessible name, so it is selected by role rather than by its
   // placeholder — the name is distinct from the "Replacement member" box the
   // applications page renders, which shares the same placeholder text.
+  //
+  // The full name is person-scoped ("… to map to, for Ada Lovelace
+  // (applicant)"). This locator passes no `exact`, and `getByRole` name
+  // matching is substring and case-insensitive by default, so the shared
+  // prefix below still matches. Do NOT add `exact: true` here without
+  // spelling out the person suffix as well.
   const mappingSearch = card.getByRole("textbox", {
     name: "Search for an existing member to map to",
   });

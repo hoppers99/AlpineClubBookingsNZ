@@ -456,10 +456,17 @@ export default function ApprovalMappingPanel({
                 ambiguous to a screen reader and to Playwright alike. The
                 placeholder stays — it is a search instruction, not an example
                 value, so it belongs inside the control.
+
+                The name is also PERSON-scoped. This row renders once per person
+                on the application, so an applicant and three dependants all in
+                MAP mode would otherwise put four identically-named search boxes
+                on one page — exactly the ambiguity the name was added to
+                remove. The shared prefix stays intact and contiguous, so
+                Playwright's substring name matching still finds the box.
               */}
               <input
                 className="w-full rounded-md border border-border px-3 py-2 text-sm"
-                aria-label="Search for an existing member to map to"
+                aria-label={`Search for an existing member to map to, for ${label}`}
                 value={searchQueries[key] || ""}
                 onChange={(event) =>
                   setSearchQueries((prev) => ({ ...prev, [key]: event.target.value }))

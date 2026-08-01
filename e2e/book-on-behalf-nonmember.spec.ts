@@ -180,6 +180,16 @@ test("inline-creates a non-member owner, prices them as a non-member, and emails
   await openBookOnBehalf(page);
 
   // (1) Inline create of a non-login non-member contact.
+  //
+  // CAREFUL with `exact: true` here (#2264 review). Two forms can be on this
+  // page at once: the non-member contact form
+  // (`src/components/admin/non-member-contact-form.tsx`, "First name") and the
+  // guest form (`src/components/guest-form.tsx`, "First Name" with a capital
+  // N). `getByLabel` with `exact: true` is case-SENSITIVE, and that casing
+  // difference is the ONLY thing keeping this locator down to one match.
+  // Dropping `exact`, or normalising either form's label casing to match the
+  // other, breaks this spec with a strict-mode violation — change both
+  // surfaces together, or scope the locator to the contact form first.
   await page.getByLabel("First name", { exact: true }).fill(REAL_OWNER.firstName);
   await page.getByLabel("Last name", { exact: true }).fill(REAL_OWNER.lastName);
   await page.getByLabel("Email", { exact: true }).fill(REAL_OWNER.email);

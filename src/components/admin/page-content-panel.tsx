@@ -4,6 +4,7 @@ import {
   forwardRef,
   useCallback,
   useEffect,
+  useId,
   useImperativeHandle,
   useMemo,
   useRef,
@@ -84,8 +85,6 @@ import {
 } from "@/components/admin/view-only-action";
 import { formatNZDateTime } from "@/lib/nzst-date";
 
-// #2264: one hint for the width/height pair, not one per box.
-const IMAGE_SIZE_HINT_ID = "page-content-image-size-hint";
 
 function stripHtml(html: string): string {
   return html
@@ -242,6 +241,12 @@ export const WysiwygEditor = forwardRef<
   },
   ref,
 ) {
+  // #2264: ONE hint serves the width/height pair, but the id must still be
+  // per-instance — `WysiwygEditor` is rendered in several places and a module
+  // constant would collide the moment two of them mounted at once (today only
+  // the Radix dialog unmounting keeps that from happening). `useId` is safe
+  // here because this is the component body, not a `.map()` row.
+  const imageSizeHintId = useId();
   const [showHtmlFallback, setShowHtmlFallback] = useState(false);
   const [tokenHelpOpen, setTokenHelpOpen] = useState(false);
   const [imagePickerOpen, setImagePickerOpen] = useState(false);
@@ -1292,14 +1297,22 @@ export const WysiwygEditor = forwardRef<
                   example moves down into the paragraph that was already there,
                   which becomes the row's single hint rather than a second one
                   per box.
+
+                  Each aria-label repeats its placeholder VERBATIM so the
+                  spoken name matches the visible name (WCAG 2.5.3 label in
+                  name) — a voice-control user can say "Width (px)" and hit the
+                  box. The two are worded symmetrically: both dimensions are
+                  optional, and the single hint below says so once ("Leave
+                  blank for natural size") rather than one box claiming to be
+                  optional and its twin implying it is not.
                 */}
                 <div className="flex items-center gap-2">
                   <span className="shrink-0 text-xs text-muted-foreground">Size:</span>
                   <Input
                     value={imageWidth}
                     onChange={(e) => setImageWidth(e.target.value)}
-                    aria-label="Image width in pixels"
-                    aria-describedby={describedByFieldHint(IMAGE_SIZE_HINT_ID)}
+                    aria-label="Width (px)"
+                    aria-describedby={describedByFieldHint(imageSizeHintId)}
                     placeholder="Width (px)"
                     className="h-7 flex-1 text-xs"
                   />
@@ -1307,14 +1320,14 @@ export const WysiwygEditor = forwardRef<
                   <Input
                     value={imageHeight}
                     onChange={(e) => setImageHeight(e.target.value)}
-                    aria-label="Image height in pixels"
-                    aria-describedby={describedByFieldHint(IMAGE_SIZE_HINT_ID)}
-                    placeholder="Height (px, optional)"
+                    aria-label="Height (px)"
+                    aria-describedby={describedByFieldHint(imageSizeHintId)}
+                    placeholder="Height (px)"
                     className="h-7 flex-1 text-xs"
                   />
                 </div>
                 <FieldHint
-                  id={IMAGE_SIZE_HINT_ID}
+                  id={imageSizeHintId}
                   className="text-[10px]"
                 >
                   Enter pixel values only, for example 300. Leave blank for
