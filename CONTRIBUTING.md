@@ -45,6 +45,40 @@ the full environment and club config contract.
 - Update docs whenever a feature is added, changed, or removed, and when public
   setup, deployment, architecture, or environment contracts change. Ship the
   README, `docs/` guides, and implementation notes in the same PR as the code.
+- Write the changelog entry as a `changelog.d/` fragment, not as an edit to
+  `CHANGELOG.md` (see below).
+
+## Changelog Entries
+
+Changelog entries are written **one file per pull request** in `changelog.d/`,
+because every branch editing the top of `CHANGELOG.md` made concurrent branches
+conflict on that file daily (#2452).
+
+1. Add `changelog.d/<pr-number>-<short-slug>.md` — for example
+   `changelog.d/2448-booking-request-tolerant-reads.md`.
+2. Write the entry exactly as it should appear in the release notes: one or more
+   top-level `- ` bullets, opening with a bold plain-English headline that ends
+   with the issue number in brackets. No headings, no version, no date.
+   [`changelog.d/README.md`](changelog.d/README.md) carries the full house style
+   and a worked example.
+3. If the change genuinely needs no entry — a pure internal refactor, a
+   comment-only change — put the no-entry marker documented in
+   `changelog.d/README.md` on its own line in the pull request body instead.
+
+The `verify` job fails a pull request that changes anything under `src/` or
+`prisma/` (test files aside) and carries neither a fragment nor that marker.
+Documentation-only, test-only, and workflow-only pull requests are never asked
+for one. During the transition a pull request that still edits `CHANGELOG.md`
+directly also passes, and `CHANGELOG.md merge=union` in `.gitattributes` (#2451)
+keeps those merges conflict-free.
+
+At release time the maintainer compiles the fragments into a version section
+(`docs/MAINTENANCE.md`, "Public Reference Release Checklist"):
+
+```bash
+node scripts/release/compile-changelog.mjs 0.14.0 --dry-run   # show the plan
+node scripts/release/compile-changelog.mjs 0.14.0             # write it
+```
 
 ## Validation
 
@@ -104,6 +138,7 @@ For public contributions:
 Each PR should include:
 
 - a concise summary of the user-facing or operational change
+- a `changelog.d/` fragment, or the no-entry marker in the PR body
 - validation commands and results
 - migration notes, if schema or data behaviour changes
 - deployment or configuration notes, if environment variables or external

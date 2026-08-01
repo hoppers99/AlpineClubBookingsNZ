@@ -4,9 +4,11 @@ import { dirname, resolve } from "node:path";
 
 import {
   REQUIRED_FIELDS,
-  selectPrBody,
   validateConcurrencyDeclaration,
 } from "./check-pr-concurrency-declaration.mjs";
+// `selectPrBody` moved to the shared PR-body module when the changelog fragment
+// gate (#2452) needed the same live-body behaviour; its contract is unchanged.
+import { selectPrBody } from "./pr-body.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
