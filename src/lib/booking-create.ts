@@ -106,8 +106,10 @@ import {
   getCapacityFullNights,
   getCapacityGuestRanges,
   resolveAdminReviewFields,
+  resolveAdultMemberHostingDecision,
   resolveBookingDateEnvelope,
 } from "./booking-create-guests";
+import { recordAdultMemberHostingReviewForNewBooking } from "@/lib/adult-member-hosting-review";
 
 // The helper types, errors, and pure functions that used to live here now live
 // in three cohesive sibling modules (types <- promo, types <- guests). Re-export
@@ -230,8 +232,15 @@ export async function createDraftBooking(input: DraftBookingInput): Promise<Book
     applyCreditCents,
     groupDiscount,
     memberReviewJustification,
+    adultMemberHostingReason,
     lodgeId,
   } = input;
+  // #2364: null for every member-created booking, so their hazard opens PENDING.
+  const adultMemberHostingDecision = resolveAdultMemberHostingDecision({
+    isOnBehalf,
+    sessionUserId,
+    adultMemberHostingReason,
+  });
   // Auto-expand (issue #713): the persisted range covers every guest night,
   // never shrinking below the member's stated range.
   const { checkIn, checkOut } = resolveBookingDateEnvelope(
@@ -412,6 +421,18 @@ export async function createDraftBooking(input: DraftBookingInput): Promise<Book
       db: tx,
     });
 
+    // #2364. Inside the transaction, and reading the rows just written rather
+    // than the submitted party, so the stored snapshot always references real
+    // BookingGuest ids and stays comparable with every later evaluation. `tx` is
+    // passed for the reason `validateMinimumStay`'s db parameter exists: this
+    // runs under the lodge capacity lock, and the module client would check out
+    // a second pool connection beneath it.
+    await recordAdultMemberHostingReviewForNewBooking(
+      createdBooking.id,
+      tx,
+      adultMemberHostingDecision,
+    );
+
     return createdBooking;
   });
 
@@ -518,12 +539,19 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
     paymentMethod = DEFAULT_BOOKING_PAYMENT_METHOD,
     internetBankingSettings,
     memberReviewJustification,
+    adultMemberHostingReason,
     parentBookingId,
     organiserSettled,
     lodgeId,
     groupJoin,
     duplicateStayGuard,
   } = input;
+  // #2364: null for every member-created booking, so their hazard opens PENDING.
+  const adultMemberHostingDecision = resolveAdultMemberHostingDecision({
+    isOnBehalf,
+    sessionUserId,
+    adultMemberHostingReason,
+  });
   // Auto-expand (issue #713): cover every guest night (members + non-members)
   // so the member booking and any linked non-member child share one range.
   const { checkIn, checkOut } = resolveBookingDateEnvelope(
@@ -1129,6 +1157,15 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
           bookingId: childBooking.id,
           db: tx,
         });
+        // #2364. The split child carries the party's NON-MEMBER guests, so it is
+        // the row that can trip the hosting rule; the reconciler borrows the
+        // member booking's adults as host-only participants, which is why the
+        // parent has to exist first (it does — it is `newBooking` above).
+        await recordAdultMemberHostingReviewForNewBooking(
+          childBooking.id,
+          tx,
+          adultMemberHostingDecision,
+        );
         splitChild = {
           id: childBooking.id,
           finalPriceCents: childBooking.finalPriceCents,
@@ -1180,6 +1217,14 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
           });
         }
       }
+
+      // #2364, last inside the transaction so every guest row, split child and
+      // group-join row it evaluates already exists.
+      await recordAdultMemberHostingReviewForNewBooking(
+        newBooking.id,
+        tx,
+        adultMemberHostingDecision,
+      );
 
       return newBooking;
     });
@@ -1449,8 +1494,15 @@ export async function createWaitlistedBooking(input: WaitlistedBookingInput): Pr
     cancelIfGuestsBumped,
     groupDiscount,
     memberReviewJustification,
+    adultMemberHostingReason,
     lodgeId,
   } = input;
+  // #2364: null for every member-created booking, so their hazard opens PENDING.
+  const adultMemberHostingDecision = resolveAdultMemberHostingDecision({
+    isOnBehalf,
+    sessionUserId,
+    adultMemberHostingReason,
+  });
   // Auto-expand (issue #713): the persisted range covers every guest night,
   // never shrinking below the member's stated range.
   const { checkIn, checkOut } = resolveBookingDateEnvelope(
@@ -1657,6 +1709,17 @@ export async function createWaitlistedBooking(input: WaitlistedBookingInput): Pr
       data: { waitlistPosition },
       include: { guests: true },
     });
+
+    // #2364. A waitlisted booking holds no capacity, but it is still a party
+    // the club will have to admit if the offer is taken, so the hazard is
+    // recorded now rather than discovered at confirmation time. The confirm
+    // path re-reconciles, so a policy or membership change during the wait is
+    // still picked up.
+    await recordAdultMemberHostingReviewForNewBooking(
+      updatedBooking.id,
+      tx,
+      adultMemberHostingDecision,
+    );
 
     return { newBooking: updatedBooking, position: waitlistPosition };
   });

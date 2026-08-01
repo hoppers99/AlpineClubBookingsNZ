@@ -53,6 +53,9 @@ const mockValidateMinimumStay = vi.fn();
 // Shared tx mock used by booking route
 const mockTx = {
   $executeRaw: mockExecuteRaw,
+  // #2364: the hosting review is reconciled inside the booking write, so
+  // every prisma/tx double a booking path runs against needs this client.
+  adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
   booking: {
     findUnique: mockBookingFindUnique,
     findMany: mockTxBookingFindMany,
@@ -90,6 +93,9 @@ vi.mock("@/lib/prisma", () => ({
     },
     memberSubscription: { findFirst: vi.fn().mockResolvedValue({ id: "sub-1", status: "PAID" }) },
     familyGroupMember: { findMany: vi.fn().mockResolvedValue([]) },
+    // #2364: the hosting review is reconciled inside the booking write, so
+    // every prisma/tx double a booking path runs against needs this client.
+    adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
     booking: {
       findUnique: (...args: unknown[]) => mockBookingFindUnique(...args),
       findFirst: (...args: unknown[]) => mockBookingFindFirst(...args),

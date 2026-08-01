@@ -10,6 +10,9 @@ const mockTx = {
   $executeRaw: vi.fn().mockResolvedValue(undefined),
   $executeRawUnsafe: vi.fn().mockResolvedValue(undefined),
   $queryRaw: vi.fn().mockResolvedValue([]),
+  // #2364: the hosting review is reconciled inside the booking write, so
+  // every prisma/tx double a booking path runs against needs this client.
+  adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
   booking: {
     findMany: vi.fn(),
     findUnique: vi.fn(),
@@ -51,6 +54,9 @@ const mockTx = {
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
+    // #2364: the hosting review is reconciled inside the booking write, so
+    // every prisma/tx double a booking path runs against needs this client.
+    adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
     booking: {
       findUnique: vi.fn(),
       findMany: vi.fn(),
@@ -240,6 +246,7 @@ import { GET as getDrafts } from "@/app/api/bookings/drafts/route";
 import { POST as createPaymentIntent } from "@/app/api/payments/create-payment-intent/route";
 
 const mockPrisma = prisma as unknown as {
+  adultMemberHostingPolicy: { findMany: ReturnType<typeof vi.fn> };
   booking: {
     findUnique: ReturnType<typeof vi.fn>;
     findMany: ReturnType<typeof vi.fn>;

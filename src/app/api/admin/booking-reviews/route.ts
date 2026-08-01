@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
+import {
+  bookingReviewReasonCodes,
+  bookingReviewReasonSentences,
+} from "@/lib/booking-review";
 
 const querySchema = z.object({
   status: z.enum(["PENDING", "APPROVED", "REJECTED", "ALL"]).optional().default("PENDING"),
@@ -27,7 +31,7 @@ export async function GET(req: NextRequest) {
     ...(status === "ALL" ? { adminReviewStatus: { not: null } } : { adminReviewStatus: status }),
   } as const;
 
-  const [bookings, total] = await Promise.all([
+  const [rows, total] = await Promise.all([
     prisma.booking.findMany({
       where,
       include: {
@@ -48,8 +52,31 @@ export async function GET(req: NextRequest) {
     prisma.booking.count({ where }),
   ]);
 
+  /*
+    #2364: a booking can carry two review hazards at once — the minors-only rule
+    and the adult-member hosting policy — and they are stored separately on
+    purpose, because several booking paths wipe the minors columns the moment
+    that rule stops applying. An admin deciding one of them needs to see the
+    other, so each row is answered with both, as structured CODES plus their
+    sentences rather than one overloaded prose field.
+
+    The QUERY is deliberately unchanged: it still selects on `adminReviewStatus`,
+    so this endpoint lists exactly the bookings it always did. Listing a
+    hosting-only booking here would put a row in front of an admin that the
+    decision route (`PATCH .../review`) cannot action — a dead end. #2365 owns
+    broadening the queue together with the decision path that makes it usable.
+  */
+  const data = rows.map((booking) => {
+    const codes = bookingReviewReasonCodes(booking);
+    return {
+      ...booking,
+      reviewReasonCodes: codes,
+      reviewReasons: bookingReviewReasonSentences(codes),
+    };
+  });
+
   return NextResponse.json({
-    data: bookings,
+    data,
     pagination: { page, pageSize, total, totalPages: Math.ceil(total / pageSize) },
   });
 }

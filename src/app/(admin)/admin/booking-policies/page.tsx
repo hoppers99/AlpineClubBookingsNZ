@@ -11,6 +11,7 @@ import {
   Users,
   CalendarClock,
   Globe,
+  UserCheck,
 } from "lucide-react";
 
 const sections = [
@@ -43,6 +44,13 @@ const sections = [
     icon: CalendarClock,
   },
   {
+    href: "/admin/booking-policies/adult-member-hosting",
+    title: "Adult Member Hosting",
+    description:
+      "Ask that an adult member stays on the same booking as any non-member guest.",
+    icon: UserCheck,
+  },
+  {
     href: "/admin/booking-policies/public-requests",
     title: "Public Booking Requests",
     description:
@@ -58,7 +66,8 @@ export default function BookingPoliciesHubPage() {
         <h1 className="text-2xl font-bold text-foreground">Booking Policies</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Configure cancellation refund rules, date-specific overrides, group
-          discounts, minimum-stay requirements, and public request settings.
+          discounts, minimum-stay requirements, adult-member hosting, and public
+          request settings.
         </p>
       </div>
 

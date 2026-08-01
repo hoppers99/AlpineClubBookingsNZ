@@ -51,6 +51,7 @@ import {
   ADULT_SUPERVISION_REVIEW_REASON,
   minorsReviewAlertShouldFire,
 } from "@/lib/booking-review";
+import { reconcileAdultMemberHostingReviewWithSiblings } from "@/lib/adult-member-hosting-review";
 import logger from "@/lib/logger";
 import { createBookingModificationCredit } from "@/lib/member-credit";
 import {
@@ -745,6 +746,19 @@ export async function modifyBookingBatch({
     // Fire the deferred envelope constraint triggers here so a violation is
     // attributed to this service instead of the transaction's COMMIT.
     await assertBookingEnvelopeInvariants(tx);
+
+    // #2364. Re-derive the hosting hazard from the rows this edit just wrote:
+    // guests added or removed, nights moved, and a lodge change all land here,
+    // and so does the case that matters most — the member fixing the problem by
+    // adding an adult member, which clears the pending review with no admin
+    // action. Passed `tx` because this transaction holds the global booking lock
+    // and the per-lodge capacity lock; reaching for the module client under
+    // those is the second-connection shape the ordering rule forbids. No
+    // `decision` is offered here even for an admin edit: accepting a hosting
+    // exception is a deliberate act with a reason attached, not a side effect of
+    // an unrelated change, so a newly-appeared hazard opens PENDING for
+    // everybody and an already-decided one is left exactly as it was.
+    await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx);
 
     return {
       booking: updatedBooking,

@@ -246,7 +246,8 @@ policy, runbook, and architecture detail.
   runbook for upgrading a live deployment across a release (pre-flight backup,
   blue/green migrate, post-upgrade checklist, and rollback).
 - [`BLUE_GREEN_MIGRATION_POLICY.md`](BLUE_GREEN_MIGRATION_POLICY.md) — how
-  migrations must be structured for safe cutover.
+  migrations must be structured for safe cutover, and the verification fixture a
+  migration that rewrites existing club data must ship with it.
 - [`CANCELLATIONS.md`](CANCELLATIONS.md) — membership cancellation refund,
   credit-note, and GST policy.
 - [`AUTHORITATIVE_FEES.md`](AUTHORITATIVE_FEES.md) — membership/entrance fee

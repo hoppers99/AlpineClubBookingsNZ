@@ -80,6 +80,7 @@ import {
   lockedNightPricesForGuest,
 } from "@/lib/booking-modify";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import { reconcileAdultMemberHostingReviewWithSiblings } from "@/lib/adult-member-hosting-review";
 import { getSeasonYear } from "@/lib/utils";
 import {
   authorizationRoleFromAccessRoles,
@@ -745,6 +746,13 @@ export async function POST(
           checkOut: booking.checkOut,
         },
       });
+
+      // #2364. Adding guests is the most likely way a hosting hazard both
+      // appears (a non-member joins nights nobody covers) and disappears (an
+      // adult member is added to cover them), so the review is re-derived from
+      // the rows just written. `tx` because this transaction holds the per-lodge
+      // capacity lock.
+      await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx);
 
       // Create BookingModification record
       const bookingModification = await tx.bookingModification.create({

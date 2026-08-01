@@ -277,6 +277,16 @@ jobs:
       - name: Check migration safety ledger coverage
         run: bash scripts/check-migration-safety-coverage.sh
 
+      # #2418: a data-REWRITING migration (backfill, repair, value transform)
+      # must ship a verification fixture that the data-migration-verification
+      # job executes against a real PostgreSQL. This gate is read-only and needs
+      # no database, and it runs HERE as well as in that job on purpose:
+      # migration-drift is a required status check, so a migration that rewrites
+      # club data without a fixture cannot merge even before the new job is
+      # added to branch protection.
+      - name: Check data-migration verification coverage
+        run: bash scripts/check-data-migration-verification.sh
+
       - name: Set up Node.js
         uses: actions/setup-node@v7.0.0
         with:
@@ -362,6 +372,75 @@ jobs:
       - name: Check partial indexes match the manifest
         run: bash scripts/check-partial-indexes.sh
 
+  # #2418: data-REWRITING migrations, executed against a real PostgreSQL holding
+  # realistic pre-state.
+  #
+  # `migration-drift` above already applies every migration to a real database —
+  # but to an EMPTY one, so a backfill/repair/transform matches no rows and is
+  # proven only to parse. Every defect the three review rounds found in #2269's
+  # migration was semantic, and none of them was reachable from empty tables.
+  #
+  # This job replays the migration chain up to each fixture's migration, seeds
+  # the pre-state, runs the real migration.sql, asserts the rows, and then re-runs
+  # each fixture against deliberately broken copies of that same migration to
+  # prove the assertions have teeth. It is a separate job (owner decision on
+  # #2418, 1 Aug 2026) rather than more steps on migration-drift so that a
+  # failure reads as "a data migration does the wrong thing" instead of "schema
+  # drift".
+  #
+  # The suite creates and drops its own throwaway DATABASE, so the service user
+  # needs CREATEDB (the postgres superuser here). It MUST stay wired: the suite
+  # fails inside this job when the URL is absent, rather than skipping quietly.
+  data-migration-verification:
+    name: Data migration verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: data_migration_verification
+        ports:
+          - 55443:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Tests read DATABASE_URL through the app's env validation; it must parse
+      # but is never connected to here — the suite uses the URL below instead.
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:55443/data_migration_verification
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      # Fail fast, before Node or a database is needed, when a data-rewriting
+      # migration ships without a fixture (or a fixture is not registered).
+      - name: Check data-migration verification coverage
+        run: bash scripts/check-data-migration-verification.sh
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npm run db:generate
+
+      - name: Verify data migrations against PostgreSQL
+        env:
+          DATA_MIGRATION_VERIFICATION_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:55443/data_migration_verification
+        run: npx vitest run src/lib/__tests__/data-migration-verification.realdb.test.ts
+
   docker-image-security:
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -411,6 +490,12 @@ jobs:
     needs:
       - verify
       - migration-drift
+      # #2418: a data-rewriting migration whose fixture fails (a wrong post-state,
+      # or a mutant that goes undetected) must NOT ship an image an operator would
+      # apply to a live club database. The executing job is not yet a required PR
+      # check (branch protection is an owner action), so gate the release on it
+      # here — the same way migration-drift, its sibling schema gate, already is.
+      - data-migration-verification
       - static-analysis
       - gitleaks-full-repo
       - docker-image-security

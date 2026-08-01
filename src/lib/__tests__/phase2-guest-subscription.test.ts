@@ -9,6 +9,9 @@ import { NextRequest } from "next/server";
 const mockTx = {
   $executeRaw: vi.fn().mockResolvedValue(undefined),
   $executeRawUnsafe: vi.fn().mockResolvedValue(undefined),
+  // #2364: the hosting review is reconciled inside the booking write, so
+  // every prisma/tx double a booking path runs against needs this client.
+  adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
   booking: {
     findMany: vi.fn(),
     create: vi.fn(),
@@ -33,6 +36,9 @@ vi.mock("@/lib/prisma", () => ({
     },
     // #1982: default lodge capacity is a self-healed DB override.
     lodgeSettings: { findUnique: async () => ({ capacity: 100 }) },
+    // #2364: the hosting review is reconciled inside the booking write, so
+    // every prisma/tx double a booking path runs against needs this client.
+    adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
     booking: {
       findUnique: vi.fn(),
       findMany: vi.fn(),
