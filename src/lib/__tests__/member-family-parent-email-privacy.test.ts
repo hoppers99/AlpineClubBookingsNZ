@@ -74,8 +74,16 @@ function memberRow(params: {
   firstName: string;
   ageTier?: string;
   groupIds?: string[];
+  canLogin?: boolean;
   parent?: ReturnType<typeof parentRow> | null;
   secondaryParent?: ReturnType<typeof parentRow> | null;
+  detailsConfirmedByMemberId?: string | null;
+  detailsConfirmedAt?: Date | null;
+  detailsConfirmedBy?: {
+    id: string;
+    firstName: string;
+    lastName: string;
+  } | null;
 }) {
   return {
     id: params.id,
@@ -83,11 +91,14 @@ function memberRow(params: {
     lastName: "Smith",
     ageTier: params.ageTier ?? "ADULT",
     active: true,
-    canLogin: true,
+    canLogin: params.canLogin ?? true,
     role: "MEMBER",
     accessRoles: [],
     inheritEmailFromId: null,
     inheritEmailFrom: null,
+    detailsConfirmedByMemberId: params.detailsConfirmedByMemberId ?? null,
+    detailsConfirmedAt: params.detailsConfirmedAt ?? null,
+    detailsConfirmedBy: params.detailsConfirmedBy ?? null,
     parent: params.parent ?? null,
     secondaryParent: params.secondaryParent ?? null,
     familyGroupMemberships: (params.groupIds ?? []).map((familyGroupId) => ({
@@ -348,6 +359,97 @@ describe("GET /api/members/family — parent email visibility (#2424)", () => {
     const links = parentLinksFor(await fetchFamily(), "child");
 
     expect(links[0].email).toBe("second@example.test");
+  });
+});
+
+describe("GET /api/members/family — delegated-edit provenance (#2284 S3)", () => {
+  type ProvenancePayload = {
+    familyMembers: Array<{
+      id: string;
+      detailsConfirmedBy: { name: string; at: string | null } | null;
+    }>;
+  };
+
+  async function fetchProvenance(memberId: string) {
+    const res = await getMemberFamilyRoute();
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as ProvenancePayload;
+    return body.familyMembers.find((entry) => entry.id === memberId)!
+      .detailsConfirmedBy;
+  }
+
+  it("names who confirmed a non-login member's details on their behalf, and when", async () => {
+    mockPrisma.member.findUnique.mockResolvedValue(
+      memberRow({ id: "viewer", firstName: "Viewer", groupIds: ["g1"] }),
+    );
+    mockPrisma.familyGroupMember.findMany.mockResolvedValue([
+      {
+        member: memberRow({
+          id: "child",
+          firstName: "Child",
+          ageTier: "CHILD",
+          groupIds: ["g1"],
+          canLogin: false,
+          detailsConfirmedByMemberId: "viewer",
+          detailsConfirmedAt: new Date("2026-05-24T09:00:00.000Z"),
+          detailsConfirmedBy: {
+            id: "viewer",
+            firstName: "Vera",
+            lastName: "Viewer",
+          },
+        }),
+      },
+    ]);
+
+    expect(await fetchProvenance("child")).toEqual({
+      name: "Vera Viewer",
+      at: "2026-05-24",
+    });
+  });
+
+  it("shows nothing for a self-confirmed member (the self-confirmed sentinel)", async () => {
+    // Mutation guard: detailsConfirmedByMemberId === the member's own id means
+    // they vouched for themselves, so there is no delegate to attribute.
+    mockPrisma.member.findUnique.mockResolvedValue(
+      memberRow({
+        id: "viewer",
+        firstName: "Viewer",
+        groupIds: ["g1"],
+        detailsConfirmedByMemberId: "viewer",
+        detailsConfirmedAt: new Date("2026-05-24T09:00:00.000Z"),
+        detailsConfirmedBy: { id: "viewer", firstName: "Vera", lastName: "Viewer" },
+      }),
+    );
+
+    expect(await fetchProvenance("viewer")).toBeNull();
+  });
+
+  it("shows nothing when no details confirmation is recorded", async () => {
+    mockPrisma.member.findUnique.mockResolvedValue(
+      memberRow({ id: "viewer", firstName: "Viewer", groupIds: ["g1"] }),
+    );
+
+    expect(await fetchProvenance("viewer")).toBeNull();
+  });
+
+  it("asks the database for the confirmer's name (whitelist addition)", async () => {
+    // A mocked client cannot notice a missing SELECT field, so the query shape
+    // is pinned directly — the provenance line depends on this relation.
+    mockPrisma.member.findUnique.mockResolvedValue(
+      memberRow({ id: "viewer", firstName: "Viewer", groupIds: ["g1"] }),
+    );
+
+    await getMemberFamilyRoute();
+
+    const selfSelect = mockPrisma.member.findUnique.mock.calls[0][0].select;
+    const groupSelect =
+      mockPrisma.familyGroupMember.findMany.mock.calls[0][0].include.member
+        .select;
+    for (const select of [selfSelect, groupSelect]) {
+      expect(select.detailsConfirmedBy).toEqual({
+        select: { id: true, firstName: true, lastName: true },
+      });
+    }
   });
 });
 
