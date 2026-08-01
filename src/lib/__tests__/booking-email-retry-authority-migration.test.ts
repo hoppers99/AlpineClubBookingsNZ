@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const MIGRATION =
-  "20260801170000_add_email_retry_booking_authority_context";
+  "20260801180000_add_email_retry_booking_authority_context";
 
 function repoFile(path: string): string {
   return readFileSync(join(process.cwd(), path), "utf8");
