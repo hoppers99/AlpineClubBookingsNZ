@@ -280,6 +280,39 @@ beforeEach(() => {
 });
 
 describe("booking override delivery-copy URL sanitation", () => {
+  it("keeps mixed-line bearer actions when the optional booking CTA is unavailable", async () => {
+    const paymentAction = `${CURRENT_ORIGIN}/pay/bearer-payment`;
+    const respondAction = `${CURRENT_ORIGIN}/booking-requests/respond/bearer-response`;
+    const mixedOverride = {
+      ...storedOverride,
+      subject: "Action required — View this booking: {{bookingUrl}}",
+      bodyText: [
+        "Booking actions",
+        "",
+        `Pay now: ${paymentAction} | View this booking: {{bookingUrl}}`,
+        `Respond: ${respondAction} • Open booking details: {{bookingUrl}}`,
+        `Consent: ${CONSENT_ACTION}<br><a href="{{bookingUrl}}">View booking</a>`,
+        "Keep this operational sentence unchanged.",
+      ].join("\n"),
+    };
+    mocks.emailTemplateOverrideFindUnique.mockResolvedValue(mixedOverride);
+
+    await expect(
+      sendBookingModified({ kind: "non-login-public-contact" }),
+    ).resolves.toMatchObject({ status: "sent" });
+
+    const delivery = mocks.sendMail.mock.calls[0][0];
+    expect(delivery.subject).toBe("Action required");
+    expect(delivery.html).toContain(paymentAction);
+    expect(delivery.html).toContain(respondAction);
+    expect(delivery.html).toContain(CONSENT_ACTION_HTML);
+    expect(delivery.html).toContain("Keep this operational sentence unchanged.");
+    expect(delivery.html).not.toContain("View this booking");
+    expect(delivery.html).not.toContain("Open booking details");
+    expect(delivery.html).not.toContain("View booking");
+    expect(delivery.html).not.toContain('href=&quot;&quot;');
+  });
+
   it("removes visible detail URLs on an initial public send while preserving bearer and unrelated copy", async () => {
     const sourceSnapshot = { ...storedOverride };
     const prepared = await prepareOverride("");
