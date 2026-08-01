@@ -19,6 +19,12 @@ const NO_RESULTS: never[] = [];
  * so stale responses can never overwrite newer ones. A failed search clears
  * the results and surfaces its message via `error` ("" while healthy).
  *
+ * `total` is the endpoint's own count of everything the query matched, not the
+ * number of rows returned: a caller passing `pageSize` can compare the two to
+ * tell a page that was CUT SHORT from a complete answer, and say so (#2425).
+ * It is 0 whenever the search is inactive or failed, so `total > results.length`
+ * is false in both — never a truncation hint on an empty list.
+ *
  * `TMember` is the row shape the caller expects from the endpoint's `members`
  * array for its `params` (e.g. include `role`/`accessRoles` when the caller
  * post-filters on them). Post-filtering and any dropdown-open bookkeeping stay
@@ -34,9 +40,10 @@ export function useDebouncedMemberSearch<TMember>(options: {
   onResults?: (results: TMember[]) => void;
   /** `error` message when a failure carries no message of its own. */
   errorFallback?: string;
-}): { results: TMember[]; searching: boolean; error: string } {
+}): { results: TMember[]; searching: boolean; error: string; total: number } {
   const { query, enabled = true, errorFallback = "Failed to search members" } = options;
   const [results, setResults] = useState<TMember[]>([]);
+  const [total, setTotal] = useState(0);
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState("");
 
@@ -59,6 +66,7 @@ export function useDebouncedMemberSearch<TMember>(options: {
   useEffect(() => {
     if (!active) {
       setResults([]);
+      setTotal(0);
       setSearching(false);
       setError("");
       return;
@@ -76,12 +84,18 @@ export function useDebouncedMemberSearch<TMember>(options: {
         if (!cancelled) {
           const members = (data.members ?? []) as TMember[];
           setResults(members);
+          // Falls back to the page length rather than 0, so a response without
+          // the field reads as "nothing was cut" instead of as an empty set.
+          setTotal(
+            typeof data.total === "number" ? data.total : members.length,
+          );
           setError("");
           onResultsRef.current?.(members);
         }
       } catch (err) {
         if (!cancelled) {
           setResults([]);
+          setTotal(0);
           setError(err instanceof Error ? err.message : errorFallback);
         }
       } finally {
@@ -104,5 +118,6 @@ export function useDebouncedMemberSearch<TMember>(options: {
     results: active ? results : NO_RESULTS,
     searching: active ? searching : false,
     error: active ? error : "",
+    total: active ? total : 0,
   };
 }

@@ -3679,6 +3679,28 @@ dependants eat into the budget, the candidate parent's ancestors must fit in
 what is left, and the member's descendants are excluded outright so the dialog
 cannot offer a cycle.
 
+**Ranking is presentation; eligibility is not** (#2425, owner decision 1 Aug
+2026). That "no age clause at all" is a statement about who is ELIGIBLE, and it
+still holds exactly. What #2282 also did, though, was let a family's children
+compete for the picker's eight rows with the adult being searched for: ordered
+by `lastName` then `firstName`, a household of children with a shared surname
+filled every slot, and the adult was unreachable without extra typing the admin
+had no way of knowing was needed. So the parent-candidate search now returns
+**ADULTS first, then everyone else**, at the same page size — a re-ORDER of the
+same set, not a filter. It is implemented as two complementary queries
+(`ageTier: ADULT` and `ageTier: { not: ADULT }`) over one shared `where`, rather
+than an `orderBy`, because Prisma has no computed sort key and sorting on
+`ageTier` itself would depend on the enum's declaration order (and would rank
+age-exempt humans, `NOT_APPLICABLE`, above adults). The split is windowed
+correctly for pages beyond the first — this is a general list endpoint, and a
+ranking that reshuffled on page 2 would drop and duplicate rows — and the
+`total` the response carries is still the count of the WHOLE eligible set, which
+is what lets the dialog say the page was cut short ("Keep typing to narrow this
+down.", the #2308 member-guest finder's own sentence). The ranking is scoped to
+the `parentLinkEligibleFor` parameter, so every other caller of
+`GET /api/admin/members` — the members table, the exports, the other pickers —
+issues exactly the query it did before.
+
 Three rules about that predicate are load-bearing. First, the parent columns are
 **nullable**, so every "not this parent" clause must be written as
 `{ OR: [{ col: null }, { col: { not: id } }] }` — Prisma compiles a bare

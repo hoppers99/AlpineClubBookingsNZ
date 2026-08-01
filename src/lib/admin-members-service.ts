@@ -854,14 +854,73 @@ export async function listAdminMembers(
     },
   };
 
-  const [members, total] = await Promise.all([
-    prisma.member.findMany({
-      where,
+  const skip = (page - 1) * pageSize;
+
+  // #2425: the parent picker lists ADULTS FIRST. This is a PRESENTATION rule and
+  // nothing else — the `where` both halves run against is the same eligibility
+  // predicate assembled above, so every candidate the search offered before is
+  // still offered, at the same page size, and the write route's contract (the
+  // #2254 no-drift rule) is untouched. #2282 removed the adults-only clause
+  // because a 16 or 17 year old can genuinely be a parent; the side effect was
+  // that a surname shared by a family put the CHILDREN — sorted by the same
+  // lastName/firstName order — in every one of the eight slots before the adult
+  // the admin was actually looking for, who was then unreachable without extra
+  // typing they had no way of knowing was needed.
+  //
+  // Two complementary queries rather than one, because the ranking cannot be
+  // expressed as an `orderBy`: Prisma has no computed sort key, and sorting on
+  // `ageTier` itself would depend on the enum's DECLARATION order (and would put
+  // age-exempt humans, `NOT_APPLICABLE`, ahead of adults). Splitting on
+  // `ADULT` / `not ADULT` and concatenating is exact, and stays correct for
+  // pages beyond the first — the picker only ever asks for page 1, but this
+  // endpoint is a general list API and a ranking that silently reshuffled on
+  // page 2 would drop and duplicate rows.
+  async function findParentLinkCandidatesAdultsFirst() {
+    const rankedWhere = (ageClause: Prisma.MemberWhereInput) => ({
+      ...where,
+      AND: [...andConditions, ageClause],
+    });
+    // Page 1 needs no boundary: the adult block starts at row 0. A deeper page
+    // has to know where that block ENDS before it can slice across it, and only
+    // then is the extra count worth issuing.
+    const adultTotal =
+      skip > 0
+        ? await prisma.member.count({ where: rankedWhere({ ageTier: "ADULT" }) })
+        : null;
+    const adults =
+      adultTotal === null || skip < adultTotal
+        ? await prisma.member.findMany({
+            where: rankedWhere({ ageTier: "ADULT" }),
+            orderBy,
+            select,
+            skip,
+            take: pageSize,
+          })
+        : [];
+    if (adults.length >= pageSize) return adults;
+    const others = await prisma.member.findMany({
+      where: rankedWhere({ ageTier: { not: "ADULT" } }),
       orderBy,
       select,
-      skip: (page - 1) * pageSize,
-      take: pageSize,
-    }),
+      // Once the adult block is exhausted the remainder of the window continues
+      // into the non-adults, so the offset is whatever the window overshot it
+      // by (zero whenever the page started inside the adult block).
+      skip: adultTotal === null ? 0 : Math.max(0, skip - adultTotal),
+      take: pageSize - adults.length,
+    });
+    return [...adults, ...others];
+  }
+
+  const [members, total] = await Promise.all([
+    parentLinkEligibleFor
+      ? findParentLinkCandidatesAdultsFirst()
+      : prisma.member.findMany({
+          where,
+          orderBy,
+          select,
+          skip,
+          take: pageSize,
+        }),
     prisma.member.count({ where }),
   ]);
 

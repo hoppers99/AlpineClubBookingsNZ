@@ -18,6 +18,7 @@ import { Search } from "lucide-react"
 import {
   dedupeParentOptions,
   formatMemberDateNz,
+  MEMBER_SEARCH_TRUNCATED_HINT,
   parentLinkTypeLabel,
 } from "@/lib/admin-member-detail-helpers"
 import { useDependentEmailSource } from "@/hooks/use-dependent-email-source"
@@ -31,6 +32,11 @@ interface MemberParentLinkDialogProps {
   search: string
   searching: boolean
   searchResults: LinkParentSearchResult[]
+  /**
+   * More people matched than the page shows (#2425). Rendered as a hint under
+   * the list; never as a count, and never on a list that holds everyone.
+   */
+  resultsTruncated?: boolean
   selected: LinkParentSearchResult | null
   notificationParentId: string
   disableLogin: boolean
@@ -53,6 +59,7 @@ export function MemberParentLinkDialog({
   search,
   searching,
   searchResults,
+  resultsTruncated = false,
   selected,
   notificationParentId,
   disableLogin,
@@ -100,10 +107,16 @@ export function MemberParentLinkDialog({
               picker and the server resolve separately. "Any age" is also stated
               with its limit, so it cannot be read as covering organisation and
               school accounts — those carry no age at all and are excluded. */}
+          {/* #2425: "Adults are listed first" describes the ORDER, not the
+              offer — every eligible member of any age is still in the list,
+              further down. Said out loud because an admin who reads the list as
+              alphabetical would otherwise read an adult appearing above a child
+              with the same surname as a bug. */}
           <DialogDescription>
             Link {member.firstName} {member.lastName} under an active member of
-            any age. Organisation and school accounts are not people, so they
-            are not offered. Club notifications still route to an adult.
+            any age; adults are listed first. Organisation and school accounts
+            are not people, so they are not offered. Club notifications still
+            route to an adult.
           </DialogDescription>
         </DialogHeader>
         {error && <div className="p-2 bg-danger-3 border border-danger-6 text-danger-11 rounded text-sm">{error}</div>}
@@ -152,21 +165,32 @@ export function MemberParentLinkDialog({
               </div>
             </div>
           ) : search.trim().length >= 2 && searchResults.length > 0 ? (
-            <div className="max-h-56 overflow-y-auto rounded-md border border-border">
-              {searchResults.map((candidate) => (
-                <button
-                  key={candidate.id}
-                  type="button"
-                  onClick={() => onSelectCandidate(candidate)}
-                  className="w-full border-b border-border px-3 py-2 text-left text-sm last:border-b-0 hover:bg-accent"
-                >
-                  <span className="font-medium">
-                    {candidate.firstName} {candidate.lastName}
-                  </span>
-                  <span className="ml-2 text-muted-foreground">{candidate.email}</span>
-                  <span className="ml-2 text-xs text-muted-foreground">{candidate.ageTier}</span>
-                </button>
-              ))}
+            <div>
+              <div className="max-h-56 overflow-y-auto rounded-md border border-border">
+                {searchResults.map((candidate) => (
+                  <button
+                    key={candidate.id}
+                    type="button"
+                    onClick={() => onSelectCandidate(candidate)}
+                    className="w-full border-b border-border px-3 py-2 text-left text-sm last:border-b-0 hover:bg-accent"
+                  >
+                    <span className="font-medium">
+                      {candidate.firstName} {candidate.lastName}
+                    </span>
+                    <span className="ml-2 text-muted-foreground">{candidate.email}</span>
+                    <span className="ml-2 text-xs text-muted-foreground">{candidate.ageTier}</span>
+                  </button>
+                ))}
+              </div>
+              {/* #2425: only when the page really was cut short. Adults are
+                  listed first, so the person being sought is normally on this
+                  page — but a common surname can still overflow it, and before
+                  this the list simply stopped with nothing to say it had. */}
+              {resultsTruncated && (
+                <p className="mt-1.5 text-xs text-muted-foreground">
+                  {MEMBER_SEARCH_TRUNCATED_HINT}
+                </p>
+              )}
             </div>
           ) : search.trim().length >= 2 && !searching ? (
             <p className="text-sm text-muted-foreground">No eligible active members found.</p>

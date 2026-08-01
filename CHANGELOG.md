@@ -4,6 +4,29 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Finding the right parent again: the Link Parent search lists adults first,
+  and says when it ran out of room (#2425).** Recording a parent of any age was
+  the right call — a 16 or 17 year old can genuinely be a parent — but it had a
+  consequence nobody meant. The search shows eight people at a time, ordered by
+  surname then first name, so a family who all share a surname could put their
+  **children in all eight slots** and leave the adult the admin was actually
+  looking for off the list entirely, with nothing on screen to say the list had
+  been cut short. On a big family, the parent was simply unreachable.
+
+  The list now puts **adults at the top**, then everyone else. This changes the
+  ORDER and nothing else: exactly the same people are offered as before — any
+  active, non-archived member of any age who is not an organisation or school
+  account — and the younger candidates follow immediately below the adults. The
+  dialog now says so ("adults are listed first"), so the order does not read as a
+  fault. Who may be recorded as a parent, and who the club emails about a
+  dependent (always an adult), are both completely unchanged.
+
+  When more people matched than the list can show, it now says **"Keep typing to
+  narrow this down."** underneath — the same sentence the booking screens use
+  when a member search is cut short, so the product says one thing in one voice.
+  The hint appears only when the list really was truncated, never under a
+  complete one, and never when nothing matched at all.
+
 - **The cancellation queue stops spending Xero API calls on questions nobody can
   act on (#2402).** Opening **Admin → Members → Cancellation Requests** asked
   Xero, for every participant on the page, whether that member's contact still
