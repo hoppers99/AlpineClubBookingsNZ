@@ -182,6 +182,36 @@ describe("config-transfer club-settings", () => {
   });
 });
 
+// AI Diagnostics (AID-2, #2371): the aiDiagnostics module flag is NON-TRAVELLING
+// — enabling a paid, separately-keyed product is a per-deployment decision like
+// magicLink/googleLogin. Pin it so a future edit cannot silently make it travel.
+describe("aiDiagnostics is non-travelling (AID-2, #2371)", () => {
+  it("excludes aiDiagnostics from the travelling club-module-settings fields", () => {
+    const spec = SINGLETONS.find((s) => s.entity === "club-module-settings");
+    expect(spec).toBeDefined();
+    // It is NOT in the exported field set...
+    expect(spec?.fields).not.toContain("aiDiagnostics");
+    // ...and IS classified as deliberately-excluded with a reason (#2178 guard).
+    const excluded = excludedColumnsFor(spec!);
+    expect(excluded).toHaveProperty("aiDiagnostics");
+    expect(excluded.aiDiagnostics?.trim().length ?? 0).toBeGreaterThan(0);
+  });
+
+  it("registers NO travelling singleton for the Diagnostics settings/metering tables", () => {
+    // DiagnosticsSettings holds a deployment-local spend budget; the three usage
+    // tables are runtime metering. None is a config-transfer singleton, so a
+    // source club's budget/usage can never land on a target.
+    for (const forbidden of [
+      "diagnostics-settings",
+      "diagnostics-usage-monthly",
+      "diagnostics-usage-event",
+      "diagnostics-budget-reservation",
+    ]) {
+      expect(SINGLETONS.map((s) => s.entity)).not.toContain(forbidden);
+    }
+  });
+});
+
 // Guard against the #153 regression: every ClubModuleSettings read in this
 // category (export, plan, apply) must use the shared column select so a
 // retired-but-not-yet-dropped column never appears in the generated SQL (see

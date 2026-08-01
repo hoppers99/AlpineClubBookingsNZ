@@ -91,6 +91,7 @@ const effectiveModulesOn = {
   memberNotices: true,
   eventsCalendar: true,
   memberGuests: false,
+  aiDiagnostics: false,
 };
 
 describe("AdminBookingsPage", () => {

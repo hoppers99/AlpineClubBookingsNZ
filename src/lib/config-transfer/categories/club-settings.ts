@@ -163,6 +163,19 @@ export function excludedColumnsFor(spec: SingletonSpec): Record<string, string> 
 // configuration — a source club's cap should never silently reset a target's.
 // A fresh import gets the schema default (NZ$10) and the target operator sets
 // their own. (Recorded epic decision.)
+//
+// SAME DISPOSITION, DELIBERATELY, for AI Diagnostics (AID-2, #2371): none of the
+// four Diagnostics tables travels. DiagnosticsSettings holds a deployment-local
+// spend budget (same reasoning as AiAssistantSettings, and stricter — it defaults
+// to NZ$0 hard-off so an import can never plant a spend cap a target did not
+// choose). DiagnosticsUsageMonthly / DiagnosticsBudgetReservation /
+// DiagnosticsUsageEvent are runtime metering/audit records, never configuration.
+// The DEDICATED Anthropic credential lives in the encrypted IntegrationCredential
+// store (provider "anthropic-diagnostics"), which is outside config-transfer
+// entirely (secrets never travel — FORBIDDEN_FIELD_PATTERNS). So diagnostics
+// configuration is NON-TRAVELLING end to end, and the module flag itself is
+// excluded from the travelling module set below for the same per-deployment
+// reason as magicLink/googleLogin.
 export const SINGLETONS: SingletonSpec[] = [
   {
     entity: "club-module-settings",
@@ -221,6 +234,18 @@ export const SINGLETONS: SingletonSpec[] = [
       googleLogin:
         "auth-provider sign-in toggle gated on deployment-local Google OAuth " +
         "credentials (GOOGLE_CLIENT_ID/SECRET); a per-install auth decision — OWNER JUDGEMENT (#2178)",
+      // AI Diagnostics (AID-2, #2371): NON-TRAVELLING for the same class of reason
+      // as magicLink/googleLogin. Enabling it advertises a PAID product that is
+      // inert without a deployment-local dedicated Anthropic credential and a
+      // positive spend budget (both non-travelling), so an imported `true` on an
+      // unconfigured target would surface a not-ready paid surface the target
+      // never opted into. A fresh import keeps the target's own value (default
+      // OFF) and its admin turns it on deliberately after wiring the credential
+      // and budget. See the note above the SINGLETONS array.
+      aiDiagnostics:
+        "SEPARATE admin-only PAID product gated on a deployment-local dedicated " +
+        "Anthropic credential + positive spend budget (both non-travelling); a " +
+        "per-install decision, not portable club config (AID-2, #2371)",
     },
     // Every travelling column is a non-null Boolean toggle (schema @default),
     // so a present null fails the dry-run (#2200 model-level nullability audit).

@@ -90,6 +90,7 @@ const MODULES_ON = {
   memberNotices: true,
   eventsCalendar: true,
   memberGuests: true,
+  aiDiagnostics: false,
 };
 
 function exceptionRow(overrides: Record<string, unknown> = {}) {

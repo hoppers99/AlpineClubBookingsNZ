@@ -601,6 +601,27 @@ export const rateLimiters = {
    * tightens, never loosens, the paid-call backstop.
    */
   aiChatGlobal: { id: "ai-chat-global", limit: 300, windowSeconds: 86400, authSensitive: true } as RateLimitConfig,
+  // AI Diagnostics (AID-2, #2371) — a SEPARATE admin-only paid product with its
+  // OWN abuse throttles, deliberately NOT the page-help aiChat* limiters above.
+  // A diagnostics session is a multi-tool loop (several paid roundtrips), so
+  // these are sized per SESSION and much tighter than page-help chat. The real
+  // spend control is the concurrency-safe monthly reservation gate
+  // (reserveDiagnosticsBudget); these caps stop bursts and abuse. All three are
+  // authSensitive: on a degraded shared-store fallback they run at limit/4 so the
+  // paid-call budget can never be multiplied across replicas — a store-local
+  // fault TIGHTENS, never loosens, the paid-call backstop.
+  /** AI Diagnostics per admin: 15 sessions per 10 minutes. */
+  aiDiagnosticsAdmin: { id: "ai-diagnostics-admin", limit: 15, windowSeconds: 600, authSensitive: true } as RateLimitConfig,
+  /** AI Diagnostics per IP: 30 sessions per 10 minutes (shared-network backstop). */
+  aiDiagnosticsIp: { id: "ai-diagnostics-ip", limit: 30, windowSeconds: 600, authSensitive: true } as RateLimitConfig,
+  /**
+   * AI Diagnostics global backstop: 200 sessions per day across the deployment.
+   * authSensitive, so on a shared-store outage the degraded per-process fallback
+   * runs at limit/4 (~50/process): the global 200/day effectively becomes ~50
+   * per replica. That deliberately under-permits (fail-safe) — a degraded store
+   * tightens the paid-call backstop rather than loosening it.
+   */
+  aiDiagnosticsGlobal: { id: "ai-diagnostics-global", limit: 200, windowSeconds: 86400, authSensitive: true } as RateLimitConfig,
 } as const;
 
 // test seam
