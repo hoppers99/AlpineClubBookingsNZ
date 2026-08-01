@@ -38,6 +38,9 @@ vi.mock("@/lib/prisma", () => ({
       }
       return Promise.resolve();
     },
+    // #2364: the hosting review is reconciled inside the booking write, so
+    // every prisma/tx double a booking path runs against needs this client.
+    adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
     booking: {
       // Route-level (outside-transaction) booking read: today only the Xero
       // lock-date guard's advisory pre-read (#1729). Null skips the guard —
@@ -247,6 +250,9 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
     },
     // #1982: default lodge capacity is a self-healed DB override.
     lodgeSettings: { findUnique: async () => ({ capacity: 29 }) },
+    // #2364: the hosting review is reconciled inside the booking write, so
+    // every prisma/tx double a booking path runs against needs this client.
+    adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
     booking: {
       findUnique: vi.fn().mockResolvedValue(booking),
       update: vi.fn().mockImplementation(({ data }) => {

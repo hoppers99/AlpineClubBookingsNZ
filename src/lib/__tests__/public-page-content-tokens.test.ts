@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   defaults: vi.fn(),
   minimumStays: vi.fn(),
   discount: vi.fn(),
+  hostingPolicies: vi.fn(),
 }));
 vi.mock("@/lib/prisma", () => ({ prisma: {
   publicContentSettings: { findUnique: mocks.settings },
@@ -28,6 +29,7 @@ vi.mock("@/lib/prisma", () => ({ prisma: {
   ageTierSetting: { findMany: mocks.ageTiers },
   bookingDefaults: { findUnique: mocks.defaults },
   minimumStayPolicy: { findMany: mocks.minimumStays },
+  adultMemberHostingPolicy: { findMany: mocks.hostingPolicies },
   groupDiscountSetting: { findUnique: mocks.discount },
   cancellationPolicy: { findMany: mocks.cancellation },
   bookingPeriod: { findMany: mocks.periods },
@@ -52,6 +54,7 @@ describe("public PageContent token view models", () => {
     mocks.minimumStays.mockResolvedValue([]);
     mocks.discount.mockResolvedValue(null);
     mocks.defaults.mockResolvedValue(null);
+    mocks.hostingPolicies.mockResolvedValue([]);
   });
 
   it("keeps every block hidden when its persisted opt-in row is absent", async () => {

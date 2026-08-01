@@ -1,11 +1,13 @@
 import { AdminReviewStatus, Prisma, type PrismaClient } from "@prisma/client";
 
 import type { AdultMemberHostingPolicyExceptionViolation } from "@/lib/booking-policy-exceptions";
-import { loadAdultMemberHostingPolicy } from "@/lib/booking-policies";
 import { eachDateOnlyInRange, formatDateOnly } from "@/lib/date-only";
+import { getDefaultLodgeId } from "@/lib/lodges";
+import { prisma } from "@/lib/prisma";
 import {
   adultMemberHostingReviewChanged,
   evaluateAdultMemberHostingWithPolicy,
+  resolveAdultMemberHostingPolicy,
   type HostingParticipant,
   type ResolvedAdultMemberHostingPolicy,
 } from "@/lib/policies/adult-member-hosting";
@@ -31,6 +33,58 @@ export type AdultMemberHostingReviewDb = Pick<
   PrismaClient,
   "booking" | "adultMemberHostingPolicy" | "lodge"
 >;
+
+/** The narrow client the policy read needs on its own. */
+export type AdultMemberHostingPolicyDb = Pick<
+  PrismaClient,
+  "adultMemberHostingPolicy" | "lodge"
+>;
+
+/**
+ * Resolve the adult-member hosting policy in force at one lodge (#2364).
+ *
+ * The table holds at most one club-wide row plus one row per lodge, so both
+ * candidates come back in a single query and `resolveAdultMemberHostingPolicy`
+ * decides between them. A lodge with no row, or an INHERIT row, falls through to
+ * the club default; a club with no row at all resolves DISABLED.
+ *
+ * COMPOSITION RULE — `db`. The same rule `validateMinimumStay` carries
+ * (`booking-policies.ts`), and binding for the same reason: **a caller already
+ * inside `prisma.$transaction` MUST pass its own `tx`.** Reaching for the
+ * module-level client while the caller holds `pg_advisory_xact_lock(1)` and a
+ * per-lodge capacity lock checks out a SECOND pool connection underneath both,
+ * which is the pool-starvation shape the ordering rule at the top of
+ * `member-guest-add-policy.ts` exists to forbid; passing `tx` also makes the
+ * read see the transaction's own snapshot rather than a second, later one.
+ * Callers genuinely outside a transaction keep the default.
+ *
+ * Deliberately declared HERE rather than beside `validateMinimumStay`, even
+ * though the two are siblings. A dozen booking tests blanket-mock
+ * `@/lib/booking-policies` with non-spreading factories, so an export added
+ * there is missing from every one of them the moment a booking path calls it —
+ * the same reason `over-capacity-confirmation.ts` lives outside `@/lib/capacity`.
+ *
+ * Throws `UnknownAdultMemberHostingScopeError` when no lodge can be resolved,
+ * rather than answering "disabled" for a scope it could not identify.
+ */
+export async function loadAdultMemberHostingPolicy(
+  lodgeId?: string | null,
+  db: AdultMemberHostingPolicyDb = prisma,
+): Promise<ResolvedAdultMemberHostingPolicy> {
+  const effectiveLodgeId = lodgeId ?? (await getDefaultLodgeId(db));
+  const rows = await db.adultMemberHostingPolicy.findMany({
+    where: { OR: [{ lodgeId: effectiveLodgeId }, { lodgeId: null }] },
+    select: {
+      id: true,
+      scopeKey: true,
+      lodgeId: true,
+      mode: true,
+      capacityMode: true,
+      version: true,
+    },
+  });
+  return resolveAdultMemberHostingPolicy(rows, effectiveLodgeId);
+}
 
 const BOOKING_HOSTING_SELECT = {
   id: true,
@@ -265,8 +319,11 @@ export async function reconcileAdultMemberHostingReview(
 
   const { violation } = await evaluateBookingAdultMemberHosting(booking, db);
   const previous = parseStoredHostingReview(booking.adultMemberHostingReview);
-  const recorded =
-    previous !== null || booking.adultMemberHostingReviewStatus !== null;
+  // `!= null` on purpose: a narrowed select, a partially-hydrated row or a test
+  // double can leave the field UNDEFINED, and treating that as "a status is
+  // recorded" would make this write a clearing UPDATE to a booking that never
+  // had a hosting review.
+  const recorded = previous !== null || booking.adultMemberHostingReviewStatus != null;
 
   if (violation === null) {
     if (!recorded) return { action: "none", violation: null };

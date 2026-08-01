@@ -171,6 +171,9 @@ function buildTx(guests: Guest[]) {
     // $executeRaw, not $executeRawUnsafe — pg_advisory_xact_lock returns void
     // so $queryRaw can't deserialize it; every advisory lock uses $executeRaw.
     $executeRaw: vi.fn().mockResolvedValue(undefined),
+    // #2364: the hosting review is reconciled inside the booking write, so
+    // every prisma/tx double a booking path runs against needs this client.
+    adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
     booking: {
       findUnique: vi.fn().mockResolvedValue(preEditBooking(guests)),
       // Echo the written review fields + status so the service's real

@@ -5,6 +5,7 @@ import type { PrismaClient } from "@prisma/client";
 import { createAuditLog } from "@/lib/audit";
 import { runDatabaseBackup, type BackupResult } from "@/lib/backup";
 import { lockMinimumStayPolicySet } from "@/lib/minimum-stay-policy-set";
+import { lockAdultMemberHostingPolicySet } from "@/lib/adult-member-hosting-policy-set";
 import { readBundle, sha256Hex } from "./bundle";
 import { buildImportPlanFromParsed, CATEGORY_IMPORTERS } from "./import";
 import { mediaApplies, recreateBundleMedia } from "./media";
@@ -224,6 +225,11 @@ export async function applyConfigImport(
           params.selectedCategories.includes("booking-policies"));
       if (bookingPoliciesSelected) {
         await lockMinimumStayPolicySet(tx);
+        // #2364: the category's second replace-set. Permanent lock order is
+        // config-transfer singleton -> minimum-stay set -> hosting set; live
+        // CRUD takes only one of the last two, and no writer takes them in any
+        // other order, so the three cannot form a cycle.
+        await lockAdultMemberHostingPolicySet(tx);
       }
 
       // ADR-003 bootstrap only: re-run the emptiness probe INSIDE the lock,

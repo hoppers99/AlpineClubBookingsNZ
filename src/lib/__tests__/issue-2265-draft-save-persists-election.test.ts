@@ -20,7 +20,11 @@ const mocks = vi.hoisted(() => ({
 
 const tx = {
   $executeRaw: vi.fn().mockResolvedValue(1),
-  booking: { create: mocks.bookingCreate },
+  // #2364: the create transaction reconciles the hosting review from the rows it
+  // just wrote. `findUnique` answering undefined is the "booking not found"
+  // branch, which writes nothing — right for a double that models one create.
+  booking: { create: mocks.bookingCreate, findUnique: vi.fn() },
+  adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
   season: { findMany: vi.fn().mockResolvedValue([]) },
   memberCredit: { create: mocks.memberCreditCreate, aggregate: vi.fn() },
 };
