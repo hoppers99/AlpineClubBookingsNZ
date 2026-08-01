@@ -93,7 +93,7 @@ import {
   findLodgeGuestDepartingOnDate,
   validateRosterAllocationsForDate,
 } from "@/lib/lodge-date-scoping";
-import { routeParams } from "@/lib/__tests__/helpers/requests";
+import { nextRequest, routeParams } from "@/lib/__tests__/helpers/requests";
 
 function dateOnly(value: string) {
   return new Date(`${value}T00:00:00.000Z`);
@@ -340,8 +340,10 @@ describe("chore roster print sheet (D-12)", () => {
     });
 
     const { GET } = await import("@/app/api/chores/roster/[date]/print/route");
+    // A real NextRequest: the route reads `?lodgeId=` off `nextUrl` to scope
+    // the sheet to one lodge (#2478), which a bare `Request` does not carry.
     const res = await GET(
-      new Request("http://localhost/api/chores/roster/2026-07-10/print") as never,
+      nextRequest("/api/chores/roster/2026-07-10/print"),
       routeParams({ date: "2026-07-10" }),
     );
 
