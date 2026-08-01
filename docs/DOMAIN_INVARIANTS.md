@@ -346,6 +346,25 @@ Future reviews and issues should cite this file when proposing changes.
   (`setHours(0,0,0,0)`) instant: under the `TZ=Pacific/Auckland` server pin the
   latter resolves to `(D-1)T12:00Z` and shifts the boundary by a day for the
   first ~13h of each NZ day (F8/F32, #1888).
+- **Client-side, a selected lodge night is an NZ date-only `yyyy-MM-dd` string
+  carried end-to-end.** The booking calendar (`src/components/booking-calendar.tsx`),
+  the member booking wizard, and the admin "book on behalf" kiosk
+  (`src/app/(admin)/admin/book/page.tsx`) never hold a lodge night as a
+  local-midnight `new Date(year, month, day)` (#2474). That construction is
+  midnight in the BROWSER's zone, so the moment such a value reached an
+  instant-based API (a club-pinned `Intl` formatter, a UTC serialiser, or
+  DST-crossing day arithmetic) it named the day the browser sat on — off by one
+  for a booker far enough from New Zealand. The value submitted, the club-pinned
+  label displayed, the night count, and the hold deadline are all derived from
+  the string via `parseDateOnly` / `addDaysDateOnly` / `countNightsDateOnly`,
+  which pin the day to UTC midnight (rendered as club midday, the same calendar
+  day in every zone). `formatCalendarDayOnly(year, monthIndex, day)` is the
+  canonical encoder; the #2264 `localCalendarDayToDateOnly` bridge, which patched
+  only the display half of this hazard while the fragile encoding lived on, is
+  gone. `src/lib/__tests__/booking-calendar-timezone.test.tsx` pins the
+  lodge-night identity across browsers behind, at, and ahead of NZ, on an NZ
+  DST-transition night. (This is the CLIENT representation; server-side capacity
+  date arithmetic keeps its own `@db.Date`/date-only helpers, above.)
 - **Rendering** a date or a time is a separate invariant from storing or
   comparing one, and has its own single seam: `src/lib/nzst-date.ts`. Its six
   helpers — `formatNZDate` ("16 Apr 2026"), `formatNZDateTime`

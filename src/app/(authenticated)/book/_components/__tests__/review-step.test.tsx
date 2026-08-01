@@ -57,8 +57,8 @@ function renderReview(
   const priceQuote = buildQuote(guests, hold);
   return render(
     <ReviewStep
-      checkIn={new Date(2026, 6, 20)}
-      checkOut={new Date(2026, 6, 22)}
+      checkIn="2026-07-20"
+      checkOut="2026-07-22"
       nights={2}
       memberGuestPendingHoldExpiryDays={7}
       guests={guests}
@@ -325,6 +325,23 @@ describe("ReviewStep split provisional copy (#1942)", () => {
     expect(
       screen.queryByText(/of the total above is for your non-member guests/i),
     ).not.toBeInTheDocument();
+  });
+
+  it("names the hold deadline with DST-immune date-only arithmetic (#2474)", () => {
+    // The hold deadline is check-in minus the policy hold-days. Derived from the
+    // date-only lodge night with UTC day arithmetic (addDaysDateOnly), it names
+    // the correct night even across an NZ daylight-saving change — where the old
+    // `checkIn.getTime() - days * 86_400_000` millisecond subtraction landed off
+    // midnight and could roll the day. Check-in 7 Apr 2026 minus the 7-day hold
+    // is 31 Mar 2026, and the range spans the 5 Apr 2026 NZ DST-end boundary.
+    renderReview([memberGuest, nonMemberGuest], splitHold, {
+      checkIn: "2026-04-07",
+      checkOut: "2026-04-09",
+    });
+
+    expect(
+      screen.getByText(/If beds are still available around \w+, 31 Mar 2026/),
+    ).toBeInTheDocument();
   });
 
   it("shows no split banner when the booking is held for admin review — FIX 1", () => {

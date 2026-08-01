@@ -27,7 +27,7 @@ import {
 } from "@/components/ui/select";
 import { type LodgeOption } from "@/components/lodge-select";
 import { sumDeferredGuestPortionCents } from "@/lib/deferred-guest-portion";
-import { localCalendarDayToDateOnly } from "@/lib/date-only";
+import { addDaysDateOnly, parseDateOnly } from "@/lib/date-only";
 import { formatNZWeekdayDate } from "@/lib/nzst-date";
 import { PromoCodeInput, type PromoResult } from "@/components/promo-code-input";
 import { TimePicker } from "@/components/time-picker";
@@ -114,8 +114,9 @@ export function ReviewStep({
   savingDraft,
   memberGuestPendingHoldExpiryDays,
 }: {
-  checkIn: Date | null;
-  checkOut: Date | null;
+  // NZ date-only lodge nights (#2474).
+  checkIn: string | null;
+  checkOut: string | null;
   nights: number;
   guests: GuestData[];
   priceQuote: PriceQuote;
@@ -225,16 +226,16 @@ export function ReviewStep({
   const holdDays = priceQuote.nonMemberHoldDecision?.holdDays ?? 0;
   // Approximate hold deadline: check-in minus the policy's hold-days. The exact
   // hold-until timestamp is set server-side; this is the member-facing "around
-  // when" so the copy can say when the second charge is attempted.
+  // when" so the copy can say when the second charge is attempted. Computed with
+  // UTC date-only arithmetic (#2474): subtracting whole days from a lodge-night
+  // string is exact and DST-immune, where the old local-midnight `Date` minus a
+  // millisecond span landed off-midnight and could name the wrong night.
   const holdDeadline =
     checkIn && holdDays > 0
-      ? new Date(checkIn.getTime() - holdDays * 24 * 60 * 60 * 1000)
+      ? addDaysDateOnly(parseDateOnly(checkIn), -holdDays)
       : null;
-  // #2264: these are calendar days the picker encoded at the BROWSER's
-  // midnight, so re-encode before the club-pinned formatter reads them —
-  // otherwise a member abroad is shown a different night than they are booking.
   const holdDeadlineLabel = holdDeadline
-    ? formatNZWeekdayDate(localCalendarDayToDateOnly(holdDeadline))
+    ? formatNZWeekdayDate(holdDeadline)
     : null;
 
   useEffect(() => {
@@ -260,13 +261,13 @@ export function ReviewStep({
             <div>
               <span className="text-muted-foreground">Check-in:</span>{" "}
               <span className="font-medium">
-                {formatNZWeekdayDate(localCalendarDayToDateOnly(checkIn!))}
+                {formatNZWeekdayDate(parseDateOnly(checkIn!))}
               </span>
             </div>
             <div>
               <span className="text-muted-foreground">Check-out:</span>{" "}
               <span className="font-medium">
-                {formatNZWeekdayDate(localCalendarDayToDateOnly(checkOut!))}
+                {formatNZWeekdayDate(parseDateOnly(checkOut!))}
               </span>
             </div>
             <div>

@@ -16,9 +16,10 @@ export function DatesStep({
   selectedLodge,
 }: {
   subscriptionUnpaid: boolean | null;
-  handleDateSelect: (ci: Date, co: Date) => void;
-  checkIn: Date | null;
-  checkOut: Date | null;
+  // Lodge nights are NZ date-only strings end-to-end (#2474).
+  handleDateSelect: (ci: string, co: string) => void;
+  checkIn: string | null;
+  checkOut: string | null;
   lodges: LodgeOption[];
   lodgeId: string | null;
   lodgesLoading: boolean;
