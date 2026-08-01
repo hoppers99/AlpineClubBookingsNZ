@@ -37,11 +37,35 @@ import { getSetupInProgressResponse } from "./lib/setup-gate";
 const CACHEABLE_ANONYMOUS_PATHS = new Set(["/"]);
 
 /**
- * Both `max-age` and `s-maxage` on purpose: no shared cache was found in the
- * deployment path (Caddy runs without a cache module), so an `s-maxage`-only
- * value would be stored by nothing today. `max-age` earns the repeat-visit win
- * from the browser now, `s-maxage` is correct the moment a CDN is put in front.
- * `Vary: Cookie` keeps both honest.
+ * `private`, NOT `public`, and no `s-maxage` — a browser cache only (#2404
+ * re-review).
+ *
+ * The directive used to be `public, max-age=60, s-maxage=60, …`, with a check
+ * below meant to keep a flight (React Server Components) response out of it: a
+ * flight body is different bytes under the SAME URL, so a shared cache that
+ * ignores `Vary` could serve it to a browser asking for a page. **That check
+ * cannot work in middleware, so the `public` half had nothing holding it.**
+ * Next's middleware adapter DELETES every flight header before userland runs
+ * (`next/dist/server/web/adapter.js`, `FLIGHT_HEADERS` from
+ * `client/components/app-router-headers.js`: `rsc`, `next-router-state-tree`,
+ * `next-router-prefetch`, `next-router-segment-prefetch`, `next-hmr-refresh`) —
+ * measured through the real adapter, on both the node and edge middleware
+ * runtimes, and `?_rsc=` is stripped off `nextUrl` as well. `Purpose` and
+ * `Sec-Purpose` do survive, but they mark a PREFETCH, and a plain RSC
+ * navigation carries neither, so no surviving signal identifies a flight
+ * request. Middleware simply cannot tell the two apart.
+ *
+ * So the property is held by the directive itself instead: a shared cache is
+ * never invited to store the response, whatever body Next goes on to produce
+ * for it. `max-age` still earns the repeat-visit win from the browser, which is
+ * the only benefit that was ever measured — no shared cache exists in the
+ * deployment path today (Caddy runs without a cache module), so `s-maxage` was
+ * storing nothing anywhere.
+ *
+ * **Do not restore `public`/`s-maxage` without a mechanism that can distinguish
+ * a flight response, and middleware cannot be that mechanism.** #2352
+ * (static/ISR public pages) is where such a mechanism would come from; the
+ * pinning test is in `csp-proxy.test.ts`, which drives the real adapter.
  *
  * Survives the framework default: Next only writes its own `Cache-Control`
  * when the response does not already carry one
@@ -52,18 +76,15 @@ const CACHEABLE_ANONYMOUS_PATHS = new Set(["/"]);
  * The `Vary: Cookie` set alongside it also survives: Next APPENDS its RSC vary
  * rather than replacing the header (`base-server.js:1169` and `:1174` in the
  * vendored next@16.2.11 both use `res.appendHeader('vary', ...)`), so the
- * middleware value reaches the wire next to the framework's.
+ * middleware value reaches the wire next to the framework's. It still matters
+ * with `private`: one browser profile can hold sessions in sequence, and the
+ * anonymous render paints the header logged-out.
  *
- * Known, bounded trade-off: the cached body carries the PER-REQUEST CSP nonce,
- * so under a future shared cache/CDN `s-maxage` replays one visitor's nonce to
- * every anonymous visitor for up to 60s. That grants a third party nothing (a
- * nonce is not a secret and cannot be used without injecting markup into our own
- * response), but it does mean the nonce is not unique-per-response while a shared
- * cache is serving — never treat it as a CSRF token or session secret. Revisit
- * this trade-off if a CDN is put in front.
+ * The per-request CSP nonce is likewise no longer replayed to anyone else: with
+ * `private` the stored copy never leaves the one browser that fetched it.
  */
 const ANONYMOUS_PAGE_CACHE_CONTROL =
-  "public, max-age=60, s-maxage=60, stale-while-revalidate=300";
+  "private, max-age=60, stale-while-revalidate=300";
 
 /**
  * next-auth v5 session cookie — plain, `__Secure-` prefixed, and the chunked
@@ -78,25 +99,6 @@ const ANONYMOUS_PAGE_CACHE_CONTROL =
  */
 const SESSION_COOKIE_PATTERN =
   /^(?:__Secure-)?(?:authjs|next-auth)\.session-token(?:\.\d+)?$/;
-
-/**
- * Headers that mark a React Server Components navigation rather than a plain
- * document request (#2322). A flight response has a different body under the
- * SAME URL, so caching it beside the HTML risks a shared cache that ignores
- * `Vary` serving flight bytes to a browser asking for a page.
- *
- * All four can reach here, and since #2404 removed the matcher's prefetch
- * exemption every one of them does: a genuine flight prefetch of `/` now runs
- * the proxy like any other request. This list is therefore the only thing
- * keeping a flight response out of the anonymous page cache — it is not a
- * restatement of the matcher, it is the check the matcher no longer makes.
- */
-const RSC_REQUEST_HEADERS = [
-  "RSC",
-  "Next-Router-State-Tree",
-  "Next-Router-Prefetch",
-  "Next-Router-Segment-Prefetch",
-];
 
 function normalisePathname(pathname: string) {
   return pathname.length > 1 && pathname.endsWith("/")
@@ -122,12 +124,10 @@ export function getAnonymousPageCacheControl(
     return null;
   }
 
-  // Only plain document requests. On stable Next builds the RSC-header
-  // validation is off, so a crafted `RSC: 1` GET would otherwise be handed a
-  // cacheable flight body under the HTML's cache key.
-  if (RSC_REQUEST_HEADERS.some((header) => request.headers.has(header))) {
-    return null;
-  }
+  // There is deliberately no flight-request check here: Next's adapter strips
+  // every flight header before this function can see it, so any such check
+  // would be dead code that reads like a guarantee. The `private` directive
+  // above is what makes a flight body harmless — see its docblock.
 
   const hasSessionCookie = request.cookies
     .getAll()

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
+import { adapter } from "next/dist/server/web/adapter";
 import {
   unstable_doesMiddlewareMatch as unstable_doesProxyMatch,
 } from "next/experimental/testing/server";
@@ -657,6 +658,14 @@ describe("CSP proxy", () => {
 });
 
 describe("anonymous public-page cache headers (#2322)", () => {
+  /**
+   * The one directive the whole section is about. `private`, and no `s-maxage`:
+   * middleware cannot tell a flight request from a document request (see the
+   * adapter suite below), so no shared cache may be invited to store a response
+   * whose body Next may yet render as flight bytes under the HTML's URL.
+   */
+  const ANONYMOUS_CACHE_CONTROL = "private, max-age=60, stale-while-revalidate=300";
+
   function requestWithCookie(url: string, cookie?: string, method = "GET") {
     return new NextRequest(url, {
       method,
@@ -664,14 +673,12 @@ describe("anonymous public-page cache headers (#2322)", () => {
     });
   }
 
-  it("marks an anonymous GET of an allow-listed page cacheable by shared caches", async () => {
+  it("marks an anonymous GET of an allow-listed page cacheable by the BROWSER only", async () => {
     const response = await proxy(new NextRequest("https://example.org/"));
 
-    expect(response.headers.get("Cache-Control")).toBe(
-      "public, max-age=60, s-maxage=60, stale-while-revalidate=300",
-    );
-    // Without Vary: Cookie a shared cache would hand the stored anonymous
-    // render to a member who has a session.
+    expect(response.headers.get("Cache-Control")).toBe(ANONYMOUS_CACHE_CONTROL);
+    // Without Vary: Cookie the stored anonymous render — which paints the
+    // header logged-out — could be replayed to the same browser after sign-in.
     expect(response.headers.get("Vary")).toContain("Cookie");
   });
 
@@ -703,29 +710,28 @@ describe("anonymous public-page cache headers (#2322)", () => {
       getAnonymousPageCacheControl(
         requestWithCookie("https://example.org/", "theme=dark; locale=en-NZ"),
       ),
-    ).toBe("public, max-age=60, s-maxage=60, stale-while-revalidate=300");
+    ).toBe(ANONYMOUS_CACHE_CONTROL);
   });
 
-  it.each([
-    ["RSC", "RSC"],
-    ["Next-Router-State-Tree", "Next-Router-State-Tree"],
-    ["Next-Router-Prefetch", "Next-Router-Prefetch"],
-    ["Next-Router-Segment-Prefetch", "Next-Router-Segment-Prefetch"],
-  ])("never caches a flight request carrying %s (#2322)", (_label, header) => {
-    // A flight response is a different body under the SAME URL. On stable Next
-    // builds the RSC-header validation is off, so a crafted `RSC: 1` GET would
-    // otherwise be handed a cacheable flight body under the HTML's cache key.
-    const request = new NextRequest("https://example.org/", {
-      headers: { [header]: "1" },
-    });
+  it("never invites a SHARED cache to store the response", () => {
+    // The property, stated over the directive rather than over a request shape,
+    // because that is where it now lives. A flight response is different bytes
+    // under the SAME URL, and the proxy cannot tell one is coming — so the only
+    // safe answer is that no cache but the requesting browser may keep it.
+    const directive = getAnonymousPageCacheControl(
+      new NextRequest("https://example.org/"),
+    );
 
-    expect(getAnonymousPageCacheControl(request)).toBeNull();
+    expect(directive).toBe(ANONYMOUS_CACHE_CONTROL);
+    expect(directive).toContain("private");
+    expect(directive).not.toContain("public");
+    expect(directive).not.toContain("s-maxage");
   });
 
-  it("still caches a plain document request with no flight headers", () => {
+  it("still caches a plain document request", () => {
     expect(
       getAnonymousPageCacheControl(new NextRequest("https://example.org/")),
-    ).toBe("public, max-age=60, s-maxage=60, stale-while-revalidate=300");
+    ).toBe(ANONYMOUS_CACHE_CONTROL);
   });
 
   it("never caches a non-GET request", () => {
@@ -738,7 +744,7 @@ describe("anonymous public-page cache headers (#2322)", () => {
 
   it("caches the home page, the one allow-listed route", () => {
     expect(getAnonymousPageCacheControl(new NextRequest("https://example.org/"))).toBe(
-      "public, max-age=60, s-maxage=60, stale-while-revalidate=300",
+      ANONYMOUS_CACHE_CONTROL,
     );
   });
 
@@ -790,6 +796,112 @@ describe("anonymous public-page cache headers (#2322)", () => {
         `${path} must not be publicly cacheable`,
       ).toBeNull();
     }
+  });
+
+  /**
+   * The same property, measured through the REAL middleware adapter rather than
+   * by handing `proxy()` a `NextRequest` this file built.
+   *
+   * The distinction is the whole point. Every case above constructs
+   * `new NextRequest(url, { headers })` directly, so whatever headers the test
+   * sets are the headers the proxy sees. In production nothing reaches the proxy
+   * that way: Next wraps it in `adapter()`
+   * (`next/dist/server/web/adapter.js`, entered from
+   * `build/templates/middleware.js` on the node runtime and from the edge
+   * sandbox), and that function DELETES every `FLIGHT_HEADERS` entry —
+   * `rsc`, `next-router-state-tree`, `next-router-prefetch`,
+   * `next-router-segment-prefetch`, `next-hmr-refresh` — before userland runs,
+   * re-attaching them for the render afterwards. A guard written over those
+   * header names therefore passes every direct-construction test and never once
+   * fires in production, which is how the `public, s-maxage` directive came to
+   * be shipped on a flight body.
+   *
+   * These cases go through `adapter()` and assert what the response ACTUALLY
+   * leaves with. They fail on the directive this section exists to keep out.
+   */
+  describe("through Next's real middleware adapter", () => {
+    async function throughAdapter(
+      headers: Record<string, string>,
+      url = "https://example.org/",
+    ) {
+      let seenByProxy: Headers | null = null;
+
+      const result = await adapter({
+        page: "/",
+        handler: async (request: NextRequest) => {
+          seenByProxy = new Headers(request.headers);
+          return proxy(request);
+        },
+        request: {
+          url,
+          method: "GET",
+          headers,
+          nextConfig: {},
+          body: undefined,
+        },
+      } as unknown as Parameters<typeof adapter>[0]);
+
+      return {
+        seenByProxy: seenByProxy as unknown as Headers,
+        cacheControl: result.response.headers.get("Cache-Control"),
+      };
+    }
+
+    const FLIGHT_REQUEST_HEADERS = [
+      "RSC",
+      "Next-Router-State-Tree",
+      "Next-Router-Prefetch",
+      "Next-Router-Segment-Prefetch",
+    ];
+
+    it("hides every flight header from the proxy, so no proxy-side check can see one", async () => {
+      const { seenByProxy } = await throughAdapter(
+        {
+          rsc: "1",
+          "next-router-prefetch": "1",
+          "next-router-state-tree": "%5B%22%22%5D",
+          purpose: "prefetch",
+        },
+        "https://example.org/?_rsc=abc12",
+      );
+
+      for (const header of FLIGHT_REQUEST_HEADERS) {
+        expect(
+          seenByProxy.get(header),
+          `${header} must be assumed INVISIBLE to the proxy — the adapter strips it`,
+        ).toBeNull();
+      }
+      // `?_rsc=` is stripped as well, so the query is no signal either.
+      expect(seenByProxy.get("Purpose")).toBe("prefetch");
+    });
+
+    it.each([
+      [
+        "a genuine flight prefetch",
+        {
+          rsc: "1",
+          "next-router-prefetch": "1",
+          "next-router-state-tree": "%5B%22%22%5D",
+          purpose: "prefetch",
+        },
+      ],
+      // The case that rules out every remaining signal: a plain RSC navigation
+      // carries no `Purpose`, no `Sec-Purpose` and no `Next-Url`, so after the
+      // strip it is byte-identical to a document request at the proxy.
+      ["a plain RSC navigation", { rsc: "1", "next-router-state-tree": "%5B%22%22%5D" }],
+      ["a crafted bare RSC:1 GET", { rsc: "1" }],
+      ["a browser speculation-rules prefetch", { "sec-purpose": "prefetch" }],
+      ["a plain document GET", {}],
+    ])(
+      "%s leaves with no shared-cache directive on it",
+      async (_label, headers) => {
+        const { cacheControl } = await throughAdapter(headers);
+
+        expect(cacheControl).toBe(ANONYMOUS_CACHE_CONTROL);
+        expect(cacheControl).not.toContain("public");
+        expect(cacheControl).not.toContain("s-maxage");
+      },
+    );
   });
 });
 
