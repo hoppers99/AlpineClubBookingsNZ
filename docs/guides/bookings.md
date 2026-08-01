@@ -84,8 +84,10 @@ date-only lodge night (no times), matching the rules in
 
 There is no separate admin booking page in this app — you read a member's own
 booking page with admin tools on it — so this lives in the same place a member
-would find it. Open the booking, choose **Edit Booking**, and the guest section
-carries **+ Add Member Guest**.
+would find it. Open the booking, choose **Edit Booking**, and the Guests
+card header carries two buttons — **+ Add Member Guest** and **+ Add Non-Member
+Guest** — exactly as the booking wizard does. Pressing the first opens the finder
+inside the card.
 
 Three things about it differ from what a member sees, and all three are
 deliberate:
@@ -107,7 +109,9 @@ deliberate:
   Either way the lookup is recorded in the audit log against your name.
 
 **Withdrawing a request or taking a member guest off** is the ordinary guest
-removal, on the same edit panel. The member gets one email saying they are no
+removal, on the same edit panel — and on a row whose request nobody has answered
+yet the control reads **Cancel request** rather than Remove, because the two are
+different events to the member and send different emails. The member gets one email saying they are no
 longer on the booking (or that the request has been called off, if they had not
 answered yet).
 

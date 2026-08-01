@@ -106,10 +106,13 @@ import {
   formatConsentWeekdayDate,
   resolveBookingConsentCard,
 } from "@/lib/member-guest-consent-card";
-import {
-  isOperationallyPresentConsent,
-  MEMBER_GUEST_MODULE_KEY,
-} from "@/lib/member-guest-consent";
+// Kept as its OWN single-line import, deliberately: a source contract in
+// arrival-instructions-consent-gate.test.ts matches this line verbatim, because
+// D-12's exclusion has to be visibly the SHARED predicate on this page rather
+// than a hand-rolled filter. Folding it into the import below would satisfy the
+// compiler and break the guard.
+import { isOperationallyPresentConsent } from "@/lib/member-guest-consent";
+import { MEMBER_GUEST_MODULE_KEY } from "@/lib/member-guest-consent";
 import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
 import { loadMemberGuestSettings } from "@/lib/member-guest-settings";
 import { eachDateOnlyInRange, getTodayDateOnly } from "@/lib/date-only";

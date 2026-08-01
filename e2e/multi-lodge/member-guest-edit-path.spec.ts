@@ -34,8 +34,11 @@ import { clearMailbox, waitForEmail } from "../helpers/mailpit";
     1. A member who has ALREADY made a booking can add a cross-family member
        guest from the edit panel — the whole point of MG4, since before it the
        only way was to cancel and rebook.
-    2. The pre-save preview is honest: the new row says the person will be
-       emailed and asked, and their bed held, BEFORE anything is saved.
+    2. The Guests card header carries the signed-off TWO-BUTTON shape (owner
+       sign-off, 1 Aug 2026) — "+ Add Member Guest" then
+       "+ Add Non-Member Guest" — mirroring the wizard, and the pre-save preview
+       is honest: the new row says the person will be emailed and asked, and
+       their bed held, BEFORE anything is saved.
     3. Saving actually asks them — the consent request lands in Mailpit.
     4. An OFFICER adding on the same booking gets the other rule: the member is
        added immediately and TOLD, not asked, and the mail says so.
@@ -132,16 +135,25 @@ async function createSoloBooking(window: {
 async function findMemberGuest(page: Page, email: string) {
   const content = mainContent(page);
   await content.getByRole("button", { name: "Edit Booking" }).click();
-  await page
-    .getByRole("button", { name: "+ Add Member Guest" })
-    .click();
+
+  // THE SIGNED-OFF HEADER SHAPE, asserted rather than assumed: two buttons,
+  // member-guest first, replacing the generic "+ Add Guest" the panel used to
+  // carry. Both are checked so a regression to one button fails here rather
+  // than surfacing as a confusing "element not found" three lines down.
+  await expect(
+    page.getByRole("button", { name: "+ Add Member Guest" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "+ Add Non-Member Guest" }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "+ Add Guest" })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "+ Add Member Guest" }).click();
   const panel = page.getByTestId("member-guest-find-panel");
   await expect(panel).toBeVisible();
   await panel.getByRole("combobox").fill(email);
   await panel.getByRole("button", { name: "Find" }).click();
-  await panel
-    .getByRole("button", { name: "Add to booking" })
-    .click();
+  await panel.getByRole("button", { name: "Add to booking" }).click();
 }
 
 test.beforeAll(async ({ browser }) => {
@@ -226,18 +238,19 @@ test("an officer adding on somebody's booking tells the member instead of asking
   const bookingId = await createSoloBooking(adminEditWindow(testInfo.retry));
 
   await officerPage.goto(`/bookings/${bookingId}`);
-  // The admin copy states both halves before anything is picked.
   await officerPage
     .getByTestId("booking-detail-content")
     .getByRole("button", { name: "Edit Booking" })
     .click();
-  await expect(
-    officerPage.getByText(
-      "The member is added straight away and emailed to say so. They are not asked first.",
-    ),
-  ).toBeVisible();
-
   await officerPage.getByRole("button", { name: "+ Add Member Guest" }).click();
+
+  // The admin sentence lives INSIDE the opened finder (owner sign-off, 1 Aug
+  // 2026 — with no block there is nothing to hang it under), and it states both
+  // halves: immediate, and the member is told.
+  await expect(
+    officerPage.getByTestId("edit-member-guest-intent"),
+  ).toHaveText("This member will be added immediately and told by email.");
+
   const panel = officerPage.getByTestId("member-guest-find-panel");
   await panel.getByRole("combobox").fill(NOMINATOR_TWO.email);
   await panel.getByRole("button", { name: "Find" }).click();

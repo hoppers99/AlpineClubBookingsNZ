@@ -97,17 +97,31 @@ actually encounters in this release:
 - **Admin policy settings** at `GET`/`PUT /api/admin/member-guest-settings`,
   gated on the bookings permission area with a real view/manage split so a card
   can render read-only without ever showing a Save button that would 403.
-- **The edit path and admin parity** (MG4 #2309). The same "+ Add Member Guest"
-  section sits on the booking's own edit panel, between the family quick-add and
-  the partner block, so a booker who realises afterwards can add somebody
-  without cancelling and rebooking. There is no separate admin booking page in
-  this app, so an officer reads the same panel with admin copy: their add is
-  immediate and always notifies (MG4-D-a), and the section deliberately offers
-  no "…and email member" tick, because D-16 puts that notice outside the
-  per-action choice. The officer's picker is its own booking-scoped route whose
-  NAME mode is gated on `membership:view` rather than `bookings:edit`, so
-  #1376's directory-less Booking Officer falls back to exact-email resolve; both
-  modes are audited exactly as a member's are.
+- **The edit path and admin parity** (MG4 #2309), signed off as
+  `docs/member-guests/mockups/edit-path-and-admin.html` (1 Aug, all four
+  recommendations accepted plus one binding layout change) and built to it. The
+  booking's edit panel gains **the wizard's exact header shape**: the Guests
+  card header carries two buttons, `+ Add Member Guest` then
+  `+ Add Non-Member Guest`, replacing the generic `+ Add Guest`, and pressing
+  the first opens MG3's finder inline in the card content. There is deliberately
+  no dashed block of its own — a member who has used the wizard has learned this
+  control once, and a second surface that looked different would make them learn
+  it twice. Module off and the member-guest button is absent, not disabled, with
+  nothing in its place; the non-member button stays exactly where it was. There
+  is no separate admin booking page in this app, so an officer reads the same
+  panel with the same two buttons, and the admin sentence — *"This member will
+  be added immediately and told by email."* — sits inside the opened finder,
+  because with no block there is nothing to hang it under. The finder offers no
+  "…and email member" tick, because D-16 puts that notice outside the per-action
+  choice, and for an officer who actually has name search it carries the reach
+  hint *"Admins can search every active member by name, including under-18s."*
+  The officer's picker is its own booking-scoped route whose NAME mode is gated
+  on `membership:view` rather than `bookings:edit`, so #1376's directory-less
+  Booking Officer falls back to exact-email resolve and never sees that hint;
+  both modes are audited exactly as a member's are.
+- **A row whose request is unanswered offers "Cancel request", not "Remove"**,
+  because the two are different events to the person on the other end and send
+  different emails.
 - **A member guest who comes OFF a booking is told**, once, by whichever surface
   did it — the request called off before anybody answered, the guest taken off,
   or a booking-request booking re-arranged so somebody else has the place. A

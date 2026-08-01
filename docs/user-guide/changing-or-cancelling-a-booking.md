@@ -43,8 +43,9 @@ at the end.
    settle the extra (see [Paying for your stay](paying-for-your-stay.md)); if it
    costs less, you may be due a refund or credit.
 
-If your club has **member guests** turned on, the guest section also carries
-**+ Add Member Guest**, exactly as it does when you first make a booking: find
+If your club has **member guests** turned on, the Guests heading carries two
+buttons — **+ Add Member Guest** and **+ Add Non-Member Guest** — exactly as it
+does when you first make a booking: find
 another club member by email address (or by name, if your club has switched that
 on) and add them without cancelling and starting again. Before you save, the new
 person's row tells you what saving will do — whether they will be emailed and

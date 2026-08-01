@@ -19,7 +19,7 @@ import {
 import { formatCents } from "@/lib/utils";
 import { getAgeTierLabel, useAgeTierOptions } from "@/lib/use-age-tier-options";
 import { GuestNightGrid } from "@/components/guest-night-grid";
-import { EditMemberGuestSection } from "@/components/booking/edit-member-guest-section";
+import { EditMemberGuestFinder } from "@/components/booking/edit-member-guest-section";
 import { describeMemberGuestConsentBadge } from "@/lib/member-guest-consent-card";
 import type { MemberGuestCandidate } from "@/lib/member-guest-find";
 import { BookingNoEmailsNotice } from "@/components/booking-no-emails-notice";
@@ -178,6 +178,15 @@ interface Guest {
   stayEnd?: string | null;
   nights?: string[] | null;
   priceCents: number;
+  /**
+   * The member-guest consent badge, composed server-side (#2307) and threaded
+   * through unchanged. MG4 (#2309) reads only its TONE, and only to name the
+   * remove control honestly: taking a row off while its consent request is
+   * still unanswered is cancelling a request, not removing a guest, and the
+   * person on the other end gets a different email for each. Absent - not
+   * null-valued - on family and non-member rows.
+   */
+  consent?: { tone: "pending" | "ok" | "blocked"; label: string };
 }
 
 interface FamilyMember {
@@ -498,6 +507,20 @@ export function EditBookingPanel({
   const [memberGuestAddError, setMemberGuestAddError] = useState<string | null>(
     null,
   );
+  // Owner sign-off, 1 Aug 2026: the finder is opened from a button in the
+  // Guests card HEADER, beside "+ Add Non-Member Guest" - the wizard's exact
+  // shape - so the open/close state and the trigger ref live here rather than
+  // inside the finder, in the same place and for the same reason
+  // `guests-step.tsx` owns them for the wizard.
+  const [memberGuestFinderOpen, setMemberGuestFinderOpen] = useState(false);
+  // Who the last add was about, so a refusal renders beside a chip naming them
+  // rather than floating above an empty search box (MG3's F9).
+  const [lastMemberGuestAttempt, setLastMemberGuestAttempt] =
+    useState<MemberGuestCandidate | null>(null);
+  // Focus has to go somewhere when the panel closes, or Escape drops it on the
+  // document body and a keyboard user is stranded at the top of a long panel
+  // (MG3's F5).
+  const memberGuestTriggerRef = useRef<HTMLButtonElement>(null);
   // #1746: partner-sharer quick-adds (admin fetch only — the member family
   // route never returns them, so this stays empty for members).
   const [partnerCandidates, setPartnerCandidates] = useState<
@@ -1259,6 +1282,11 @@ export function EditBookingPanel({
    * promising "waiting for Mia to approve" over one would describe an email that
    * is never sent and a hold that does not exist.
    */
+  function closeMemberGuestFinder() {
+    setMemberGuestFinderOpen(false);
+    memberGuestTriggerRef.current?.focus();
+  }
+
   function handleAddMemberGuest(candidate: MemberGuestCandidate) {
     const alreadyAdded =
       booking.guests.some((guest) => guest.memberId === candidate.memberId) ||
@@ -1760,19 +1788,86 @@ export function EditBookingPanel({
       {/* Guests */}
       <Card>
         <CardHeader>
-          <div className="flex items-center justify-between">
+          {/*
+            TWO BUTTONS, member-guest first - owner sign-off, 1 Aug 2026, and the
+            wizard's exact header shape (`guest-form.tsx` renders the same pair,
+            with `headerActions` before its own non-member button). A member
+            guest leads because it is the cheaper, better-recorded outcome and
+            should be the one that catches the eye.
+
+            MODULE OFF: the member-guest button is ABSENT - not disabled, and
+            with nothing in its place - and the non-member button stays exactly
+            where it was. That is what the wizard does, and it is what keeps a
+            club that never adopted the feature looking untouched.
+          */}
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <CardTitle>Guests ({totalGuestCount})</CardTitle>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowAddForm(true)}
-              disabled={showAddForm || overrideEnabled}
-            >
-              {isInProgressEdit ? "+ Add Future Guest" : "+ Add Guest"}
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              {booking.memberGuest?.enabled && !overrideEnabled ? (
+                <Button
+                  ref={memberGuestTriggerRef}
+                  type="button"
+                  variant={memberGuestFinderOpen ? "secondary" : "outline"}
+                  size="sm"
+                  onClick={() => setMemberGuestFinderOpen((open) => !open)}
+                >
+                  + Add Member Guest
+                </Button>
+              ) : null}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowAddForm(true)}
+                disabled={showAddForm || overrideEnabled}
+              >
+                {isInProgressEdit
+                  ? "+ Add Future Non-Member Guest"
+                  : "+ Add Non-Member Guest"}
+              </Button>
+            </div>
           </div>
         </CardHeader>
         <CardContent className="space-y-2">
+          {/*
+            The finder, INLINE in the card content directly under the header -
+            the wizard's `belowHeader` slot, in the surface that has no such
+            slot. Gated on the server's module answer (never guessed here) AND
+            on `!overrideEnabled`, which matches both quick-add blocks below for
+            the reason they have it: an admin date-override edit is date-only by
+            construction, so growing a guest surface on it would offer a change
+            the override path does not carry.
+
+            No `isInProgressEdit` gate, deliberately - an in-progress edit can
+            still add a future guest, and a member guest is no different from
+            any other addition there.
+          */}
+          {booking.memberGuest?.enabled &&
+          !overrideEnabled &&
+          memberGuestFinderOpen ? (
+            <EditMemberGuestFinder
+              bookingId={booking.id}
+              actingAsAdmin={booking.viewerRole === "ADMIN"}
+              openSearchEnabled={booking.memberGuest.openSearchEnabled}
+              approvalRequired={booking.memberGuest.approvalRequired}
+              existingMemberIds={[
+                ...remainingGuests
+                  .map((guest) => guest.memberId)
+                  .filter((id): id is string => Boolean(id)),
+                ...addedGuests
+                  .map((guest) => guest.memberId)
+                  .filter((id): id is string => Boolean(id)),
+              ]}
+              atCapacity={false}
+              addError={memberGuestAddError}
+              refusedCandidate={memberGuestAddError ? lastMemberGuestAttempt : null}
+              onAdd={(candidate) => {
+                setLastMemberGuestAttempt(candidate);
+                handleAddMemberGuest(candidate);
+                closeMemberGuestFinder();
+              }}
+              onCancel={closeMemberGuestFinder}
+            />
+          ) : null}
           {isInProgressEdit ? (
             <p className="text-sm text-muted-foreground">
               Added guests start on {minEditableDate}. Removing an existing
@@ -1808,42 +1903,6 @@ export function EditBookingPanel({
               </div>
             </div>
           )}
-
-          {/*
-            MG4 (#2309): "+ Add Member Guest", between the family quick-add and
-            the partner block.
-
-            GATED ON THE SERVER'S FLAG **AND** `!overrideEnabled`. The module
-            answer is computed on the booking page, never guessed here. The
-            override gate matches both blocks above it for the same reason they
-            have it: an admin date-override edit is date-only by construction, so
-            growing a guest surface on it would offer a change the override path
-            does not carry.
-
-            No `isInProgressEdit` gate, deliberately — an in-progress edit can
-            still add a FUTURE guest (the panel's own "+ Add Future Guest"
-            label), and a member guest is no different from any other addition
-            there.
-          */}
-          {booking.memberGuest?.enabled && !overrideEnabled ? (
-            <EditMemberGuestSection
-              bookingId={booking.id}
-              actingAsAdmin={booking.viewerRole === "ADMIN"}
-              openSearchEnabled={booking.memberGuest.openSearchEnabled}
-              approvalRequired={booking.memberGuest.approvalRequired}
-              existingMemberIds={[
-                ...remainingGuests
-                  .map((guest) => guest.memberId)
-                  .filter((id): id is string => Boolean(id)),
-                ...addedGuests
-                  .map((guest) => guest.memberId)
-                  .filter((id): id is string => Boolean(id)),
-              ]}
-              atCapacity={false}
-              addError={memberGuestAddError}
-              onAdd={handleAddMemberGuest}
-            />
-          ) : null}
 
           {partnerCandidates.length > 0 && !overrideEnabled && (
             <div className="space-y-2 rounded-md border border-dashed p-3">
@@ -2084,7 +2143,11 @@ export function EditBookingPanel({
                         className="text-danger-11 hover:text-danger-11"
                         onClick={() => handleRemoveGuest(guest.id)}
                       >
-                        {isInProgressEdit ? "Remove Future" : "Remove"}
+                        {guest.consent?.tone === "pending"
+                          ? "Cancel request"
+                          : isInProgressEdit
+                            ? "Remove Future"
+                            : "Remove"}
                       </Button>
                     )
                   )}
