@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import KioskPage from "../page";
 import { frozenTestNow } from "@/lib/__tests__/helpers/clock";
@@ -139,8 +139,8 @@ describe("KioskPage week view", () => {
 });
 
 /*
-  #2474 — the kiosk's idea of "today", and its day stepping, belong to the CLUB,
-  not to the display device.
+  #2474 — the kiosk's idea of "today" belongs to the CLUB, not to the display
+  device, and it has to STAY the club's day on a screen nobody reloads.
 
   A lodge kiosk is a tablet on a wall. Nobody administers its clock, and a
   device on the wrong zone (or simply shipped on UTC) used to open the kiosk on
@@ -148,10 +148,20 @@ describe("KioskPage week view", () => {
   server route it calls resolves the night in New Zealand. The hut leader then
   saw one night's arrivals and the check-in write refused a different one.
 
-  Both cases below therefore run the page on a HOST that is deliberately NOT in
+  Every case below therefore runs the page on a HOST that is deliberately NOT in
   New Zealand, at an instant where the two calendars genuinely disagree. The
   fixture instants are absolute, so the rollover canary's shifted real clock
   cannot move them.
+
+  ONE THING THESE TESTS DO NOT PROVE, stated here so nobody mistakes them for it:
+  the day arrows also moved from a local-midnight `Date` round trip onto
+  `addDaysToDateKey`, and NO page-level test can tell those two apart. Written
+  and read back through the same local getters, the old round trip agreed with
+  the new arithmetic on every DST transition, month end and year end in every
+  IANA zone (swept 2008-2030; the sole divergence in the whole space is the 2011
+  Samoa dateline skip, which deleted a calendar day). That switch is a seam
+  alignment, not a repaired defect — the contract for the arithmetic itself is a
+  direct unit case in `_components/__tests__/kiosk-week-view.test.tsx`.
 */
 
 // Restoring the host zone is not `delete process.env.TZ`: Node applies a zone
@@ -219,8 +229,28 @@ function installKioskFetchMock() {
     throw new Error(`Unexpected fetch ${url}`);
   });
 
-  global.fetch = fetchMock as typeof fetch;
+  // `vi.stubGlobal` rather than a raw `global.fetch =`: a raw assignment is not
+  // undone by `vi.restoreAllMocks()`, so it would outlive this describe and
+  // silently serve whichever suite happened to be ordered after it.
+  vi.stubGlobal("fetch", fetchMock);
   return { accessDates, weekStarts, dayDates };
+}
+
+/**
+ * Drains the page's chained fetches (access -> week/day) without `waitFor`.
+ *
+ * The rollover case fakes `setInterval`, and `waitFor`/`findBy*` poll on a real
+ * interval — under a faked one they can only be woken by a DOM mutation, which
+ * is exactly the kind of near-miss that reports green. `setTimeout` stays real
+ * here, so awaiting a macrotask inside `act` flushes both the microtask queue
+ * and React's effects, deterministically.
+ */
+async function settleKiosk(): Promise<void> {
+  for (let round = 0; round < 6; round += 1) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
 }
 
 describe("KioskPage club-time dates (#2474)", () => {
@@ -233,6 +263,14 @@ describe("KioskPage club-time dates (#2474)", () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    // Put the harness's timer shape back whatever a case did to it: the
+    // rollover case additionally fakes `setInterval`, and the root re-freeze
+    // will not undo that (it only ever converts a REAL clock back to a frozen
+    // one). Uninstall first — reconfiguring in place would keep this file's
+    // pending fake intervals alive.
+    vi.useRealTimers();
+    vi.useFakeTimers({ toFake: ["Date"] });
     // The root re-freeze restores the DEFAULT instant only when nothing is
     // mocking Date, and these tests leave their own pin in place — so hand the
     // harness instant back explicitly rather than leaking a pin into the next
@@ -274,7 +312,7 @@ describe("KioskPage club-time dates (#2474)", () => {
     expect(screen.getAllByText("Today", { selector: "p" })).toHaveLength(1);
   });
 
-  it("steps a day across a month boundary and back", async () => {
+  it("steps across a month boundary and comes back to the club's day", async () => {
     // 13:00 UTC on 30 July 2026 is FRIDAY 31 July in Pacific/Auckland.
     vi.setSystemTime(new Date("2026-07-30T13:00:00.000Z"));
     const { dayDates } = installKioskFetchMock();
@@ -300,9 +338,114 @@ describe("KioskPage club-time dates (#2474)", () => {
       await screen.findByRole("heading", { name: "Friday, 31 July 2026" })
     ).toBeVisible();
 
-    // Nothing stepped into a neighbouring night: a local-midnight round trip on
-    // a host west of the club lands on 30 July / 31 July instead.
+    // One night per press, and the night the page ASKED FOR is the one it
+    // showed: no neighbouring night was ever fetched.
     expect(dayDates).not.toContain("2026-07-30");
     expect(dayDates).not.toContain("2026-08-02");
+
+    // Back on the strip, "today" is still the CLUB's Friday. This is the half
+    // of the case that discriminates: a device-derived today on this UTC host
+    // is Thursday 30 July, which sits in the very same week, so the chip would
+    // simply be on the wrong tile rather than absent.
+    fireEvent.click(screen.getByRole("button", { name: /Week$/ }));
+    expect(await screen.findByRole("heading", { name: "Week View" })).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Open Friday, 31 July" })
+    ).toHaveTextContent("Today");
+    expect(
+      screen.getByRole("button", { name: "Open Thursday, 30 July" })
+    ).not.toHaveTextContent("Today");
+  });
+
+  it("rolls a never-reloaded kiosk onto the club's new day at NZ midnight", async () => {
+    /*
+      The deployment shape that matters: a wall tablet left running. Before this
+      case existed, `todayDate` was read fresh in the render while `date` and
+      `weekStart` were mount-time state, so at 00:00 NZ the chip moved and the
+      night being served did not — and 00:00 NZ is the check-in hour, not a
+      harmless midday. Chip and served night now move together or not at all.
+
+      `setInterval` is faked here (Date-only faking is the harness default) so
+      the club-day tick can be driven deterministically instead of waited on.
+    */
+    vi.useRealTimers();
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    // 11:59 UTC is 23:59 on SUNDAY 2 August in Pacific/Auckland — one minute of
+    // club day left, and the host is still on Sunday morning UTC.
+    vi.setSystemTime(new Date("2026-08-02T11:59:00.000Z"));
+    const { accessDates, weekStarts } = installKioskFetchMock();
+
+    render(<KioskPage />);
+    await settleKiosk();
+
+    expect(screen.getByRole("heading", { name: "Week View" })).toBeVisible();
+    expect(accessDates).toContain("2026-08-02");
+    expect(weekStarts).toEqual(["2026-07-27"]);
+    expect(
+      screen.getByRole("button", { name: "Open Sunday, 2 August" })
+    ).toHaveTextContent("Today");
+
+    // The club crosses midnight into Monday 3 August. Nobody touches the
+    // tablet; only the clock moves.
+    vi.setSystemTime(new Date("2026-08-02T12:00:30.000Z"));
+    // One `CLUB_DAY_TICK_MS` (page.tsx) — raising that constant should fail
+    // this case rather than quietly slow the kiosk down.
+    await act(async () => {
+      vi.advanceTimersByTime(60000);
+    });
+    await settleKiosk();
+
+    // The night served, the week strip and the chip all followed the club.
+    expect(accessDates).toContain("2026-08-03");
+    expect(weekStarts).toContain("2026-08-03");
+    expect(
+      screen.getByRole("button", { name: "Open Monday, 3 August" })
+    ).toHaveTextContent("Today");
+    expect(screen.getAllByText("Today", { selector: "p" })).toHaveLength(1);
+  });
+
+  it("leaves a hut leader's chosen night alone when the club day turns over", async () => {
+    // Same rollover, but the kiosk has been navigated off "today" first. The
+    // club day advancing must not yank the screen out from under whoever is
+    // working on another night.
+    vi.useRealTimers();
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    vi.setSystemTime(new Date("2026-08-02T11:59:00.000Z"));
+    const { accessDates, weekStarts } = installKioskFetchMock();
+
+    render(<KioskPage />);
+    await settleKiosk();
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Friday, 31 July" }));
+    await settleKiosk();
+    expect(
+      screen.getByRole("heading", { name: "Friday, 31 July 2026" })
+    ).toBeVisible();
+
+    vi.setSystemTime(new Date("2026-08-02T12:00:30.000Z"));
+    await act(async () => {
+      vi.advanceTimersByTime(60000);
+    });
+    await settleKiosk();
+
+    // Still on the chosen night: no fetch for the new club day, and the header
+    // has not moved.
+    expect(
+      screen.getByRole("heading", { name: "Friday, 31 July 2026" })
+    ).toBeVisible();
+    expect(accessDates).not.toContain("2026-08-03");
+    expect(weekStarts).not.toContain("2026-08-03");
+
+    // ...and **Today** still goes to the club's CURRENT day, not the day the
+    // page was mounted on.
+    fireEvent.click(screen.getByRole("button", { name: /Week$/ }));
+    await settleKiosk();
+    fireEvent.click(screen.getByRole("button", { name: "Today" }));
+    await settleKiosk();
+
+    expect(accessDates).toContain("2026-08-03");
+    expect(
+      screen.getByRole("button", { name: "Open Monday, 3 August" })
+    ).toHaveTextContent("Today");
   });
 });
