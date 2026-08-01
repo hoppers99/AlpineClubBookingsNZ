@@ -398,6 +398,29 @@ describe("material-change detection (#2364 acceptance: reopen only on a differen
     expect(adultMemberHostingReviewChanged(base, extra)).toBe(true);
   });
 
+  it("notices that a DIFFERENT policy row now governs the same evidence", () => {
+    // A lodge that used to inherit the club rule now has its own. The uncovered
+    // nights are identical and both rows are at revision 4, so only the policy
+    // identity distinguishes them — and it must, because an admin's decision was
+    // made about the club's rule, not this lodge's.
+    const clubGoverned = evaluateAdultMemberHostingWithPolicy(
+      [nonMember("g1", ["2026-07-04"])],
+      resolveAdultMemberHostingPolicy([policyRow()], "lodge-1"),
+    );
+    const lodgeGoverned = evaluateAdultMemberHostingWithPolicy(
+      [nonMember("g1", ["2026-07-04"])],
+      resolveAdultMemberHostingPolicy(
+        [
+          policyRow(),
+          policyRow({ id: "lodge-policy", lodgeId: "lodge-1", scopeKey: "lodge-1" }),
+        ],
+        "lodge-1",
+      ),
+    );
+    expect(clubGoverned!.policyVersion).toBe(lodgeGoverned!.policyVersion);
+    expect(adultMemberHostingReviewChanged(clubGoverned, lodgeGoverned)).toBe(true);
+  });
+
   it("notices a new policy revision on identical evidence", () => {
     const rerevised = evaluateAdultMemberHostingWithPolicy(
       [nonMember("g1", ["2026-07-04"])],
@@ -418,7 +441,6 @@ describe("hosting policy set locking and migration shape (#2364)", () => {
         calls.push(`${strings.join("?")}::${String(values[0])}`);
         return Promise.resolve(1);
       },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
     expect(calls).toHaveLength(1);
     expect(calls[0]).toContain("pg_advisory_xact_lock");

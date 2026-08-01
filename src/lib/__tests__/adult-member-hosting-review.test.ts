@@ -68,7 +68,6 @@ function makeDb(booking: BookingRow | null, policies: unknown[], siblings: Booki
       adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue(policies) },
       lodge: { findFirst: vi.fn() },
       member: { findMany: vi.fn().mockResolvedValue([]) },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any,
   };
 }
@@ -271,6 +270,30 @@ describe("hosting review reconciliation (#2364)", () => {
     expect(where.status).toEqual({ notIn: ["CANCELLED", "BUMPED"] });
   });
 
+  it("does not charge a split PARENT with its child's guests — one party, one hazard", async () => {
+    // The mirror of the case above, and the reason siblings are host-only. The
+    // parent carries the member half; if its child's non-member guests counted
+    // against it, the same party would raise a review on BOTH bookings and an
+    // admin would decide the identical question twice.
+    // The member leaves a night early, so the child's guest has an uncovered
+    // night. That night is the CHILD's hazard to carry, not the parent's.
+    const parent = bookingRow({
+      id: "parent-1",
+      parentBookingId: null,
+      guests: [guest("m1", ["2026-07-04"], member())],
+    });
+    const child = bookingRow({
+      id: "child-1",
+      parentBookingId: "parent-1",
+      guests: [guest("g1", ["2026-07-04", "2026-07-05"])],
+    });
+    const { db, update } = makeDb(parent, [CLUB_ON], [child]);
+    await expect(
+      reconcileAdultMemberHostingReview("parent-1", db),
+    ).resolves.toMatchObject({ action: "none" });
+    expect(update).not.toHaveBeenCalled();
+  });
+
   it("does not borrow anybody when the policy is off — the sibling read is skipped", async () => {
     const { db } = makeDb(bookingRow(), [CLUB_OFF]);
     await reconcileAdultMemberHostingReview("booking-1", db);
@@ -391,7 +414,6 @@ describe("structured review reason codes (#2364)", () => {
 
   for (const [label, booking, expected] of cases) {
     it(`reports ${label}`, () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const codes = bookingReviewReasonCodes(booking as any);
       expect(codes).toEqual(expected);
       expect(bookingReviewReasonSentences(codes)).toHaveLength(expected.length);
@@ -415,7 +437,6 @@ describe("pre-persist evaluation for the create path (#2364)", () => {
       adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue(policies) },
       member: { findMany: vi.fn().mockResolvedValue(members) },
       lodge: { findFirst: vi.fn() },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     }) as any;
 
   const input = {

@@ -46,6 +46,14 @@ rules — see
 
    ![Booking Policies hub: five cards — Default Cancellation Policy, Date-Specific Periods, Group Discount, Minimum Night Stay, Public Booking Requests](../images/admin/admin-booking-policies.png)
 
+   <!--
+     The hub now carries a sixth card, Adult Member Hosting. Its own page is
+     registered for capture as `admin-booking-policies-adult-member-hosting`
+     (e2e/tools/capture-screenshots.ts); both images are refreshed by the usual
+     capture run against a seeded stack, which this change could not perform.
+   -->
+
+
 ### Default Cancellation Policy
 
 1. Open **Default Cancellation Policy** and click **Edit**.
