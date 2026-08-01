@@ -90,5 +90,10 @@ describe("repository agent workflow contract", () => {
     const ci = readRepoFile(".github/workflows/ci.yml");
     expect(ci).toContain("Validate PR concurrency declaration");
     expect(ci).toContain("node scripts/ci/check-pr-concurrency-declaration.mjs");
+    // #2452: the changelog-fragment gate is pinned the same way. A gate whose
+    // step name or command is edited out of ci.yml still has a green unit suite
+    // — nothing else notices that it stopped running on pull requests.
+    expect(ci).toContain("Validate PR changelog entry");
+    expect(ci).toContain("node scripts/ci/check-pr-changelog-fragment.mjs");
   });
 });

@@ -176,6 +176,20 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: node scripts/ci/check-pr-concurrency-declaration.mjs
 
+      # #2452: a code-bearing PR must carry its changelog entry as a
+      # `changelog.d/` fragment (or declare that it needs none in the PR body).
+      # Same live-body/event-body fallback as the gate above, so editing the PR
+      # body and re-running is enough to go green.
+      - name: Validate PR changelog entry
+        if: github.event_name == 'pull_request'
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/ci/check-pr-changelog-fragment.mjs
+
       - name: Install dependencies
         run: npm ci
 
