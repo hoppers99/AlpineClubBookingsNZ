@@ -177,7 +177,8 @@ Reproduce a canary job locally on Linux:
 
 ```bash
 sudo apt-get install -y faketime
-FAKETIME_DONT_FAKE_MONOTONIC=1 faketime '+366d' npm test
+# -f is required: without it the offset is parsed by `date -d`, which rejects it.
+FAKETIME_DONT_FAKE_MONOTONIC=1 faketime -f '+366d' npm test
 ```
 
 ### Moving the frozen instant locally

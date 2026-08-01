@@ -115,13 +115,14 @@ default.
 A file that genuinely needs the real wall clock calls
 `optOutOfFrozenClock("<reason>")` at module top level and is added to the counted
 allowlist in `src/lib/__tests__/frozen-test-clock.test.ts`. A nightly
-`Clock rollover canary` workflow re-runs the suite with the clock wound forward
-by a day, a month and a year to catch anything the freeze misses.
+`Clock rollover canary` workflow re-runs the suite with the machine's **real**
+clock wound forward by a day, a month and a year — which a frozen test cannot
+notice and an escaped one can — to catch anything the freeze misses.
 
 `docs/TESTING.md` has the full convention, the `TEST_CLOCK_OFFSET_DAYS` /
-`TEST_CLOCK_ISO` overrides for reproducing a rollover locally, and why this
-exists (four separate calendar rollovers turned CI red on every open branch at
-once).
+`TEST_CLOCK_ISO` overrides for reproducing a specific rollover locally, and why
+this exists (four separate calendar rollovers turned CI red on every open branch
+at once).
 
 ### Dead-code gate (knip)
 

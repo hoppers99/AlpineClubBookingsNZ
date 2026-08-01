@@ -30,21 +30,27 @@
  * elapsed-time measurements still work. This is the approach #2479 proved on
  * `payment-link.test.ts` before it was generalised here.
  *
- * ## Overriding the instant (the rollover canary)
+ * ## The rollover canary, and why it does NOT use the overrides below
  *
  * `.github/workflows/clock-rollover-canary.yml` re-runs the whole unit suite
- * with the clock wound forward, so anything that escapes the freeze surfaces on
- * a nightly job instead of turning `main` red on some arbitrary morning:
+ * with the machine's REAL clock wound forward (libfaketime, +1 day / +31 days /
+ * +366 days) on `main` pushes and nightly. A properly frozen test cannot notice
+ * that; anything that ESCAPED the freeze can, which is the whole population at
+ * risk. Moving the frozen instant instead would test something else entirely and
+ * would fail suites that are perfectly correct.
+ *
+ * ## Moving the frozen instant (a local diagnostic)
  *
  * - `TEST_CLOCK_OFFSET_DAYS` — integer days added to the base instant (may be
- *   negative). The canary uses `1`, `30` and `365`.
+ *   negative).
  * - `TEST_CLOCK_ISO` — an absolute ISO-8601 instant replacing the base entirely.
- *   Handy locally to reproduce a specific rollover, e.g.
+ *   Reproduces a specific rollover on demand, e.g.
  *   `TEST_CLOCK_ISO=2026-12-02T00:00:00.000Z npx vitest run <suite>` reproduces
- *   the #2443 breakage on demand.
+ *   the #2443 breakage exactly as that issue predicted it.
  *
  * Both are read fresh on every `frozenTestNow()` call and validated loudly — a
- * typo fails the run rather than silently falling back to the base instant.
+ * typo fails the run rather than silently falling back to the base instant,
+ * which would report green while checking something you did not ask for.
  *
  * ## When it installs, and why that matters
  *

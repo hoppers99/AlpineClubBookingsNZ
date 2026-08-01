@@ -110,7 +110,7 @@ jobs:
       - name: Prove the fake clock reaches Node
         run: |
           real_ms=$(node -e 'process.stdout.write(String(Date.now()))')
-          faked_ms=$(faketime '${{ matrix.offset }}' node -e 'process.stdout.write(String(Date.now()))')
+          faked_ms=$(faketime -f '${{ matrix.offset }}' node -e 'process.stdout.write(String(Date.now()))')
           shift_days=$(( (faked_ms - real_ms) / 86400000 ))
           echo "real=$real_ms faked=$faked_ms shift_days=$shift_days"
           if [ "$shift_days" -lt "$(( ${{ matrix.min_shift_days }} - 1 ))" ]; then
@@ -125,7 +125,7 @@ jobs:
         run: npm run db:generate
 
       - name: Run the unit suite with the real clock ${{ matrix.label }}
-        run: faketime '${{ matrix.offset }}' npm test
+        run: faketime -f '${{ matrix.offset }}' npm test
 
       - name: Explain a red canary
         if: failure()
@@ -133,7 +133,7 @@ jobs:
           {
             echo "## Clock rollover canary failed (real clock ${{ matrix.label }})"
             echo
-            echo "The unit suite was re-run under \`faketime '${{ matrix.offset }}'\`, so the"
+            echo "The unit suite was re-run under \`faketime -f '${{ matrix.offset }}'\`, so the"
             echo "machine's real clock read ${{ matrix.label }} while the test freeze stayed"
             echo "pinned at 2026-07-01."
             echo
@@ -146,7 +146,7 @@ jobs:
             echo
             echo '```bash'
             echo "sudo apt-get install -y faketime"
-            echo "FAKETIME_DONT_FAKE_MONOTONIC=1 faketime '${{ matrix.offset }}' npm test"
+            echo "FAKETIME_DONT_FAKE_MONOTONIC=1 faketime -f '${{ matrix.offset }}' npm test"
             echo '```'
             echo
             echo "Fix the test so it reads the frozen clock. See docs/TESTING.md,"

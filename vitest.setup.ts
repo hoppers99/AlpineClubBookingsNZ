@@ -39,14 +39,16 @@ process.env.AWS_SES_SECRET_ACCESS_KEY ??= "test-ses-secret-access-key";
 // that whole class.
 //
 // Only `Date` is faked, so real timers still drive awaited promises. A suite
-// that wants a different instant just pins its own: `sequence.hooks: "stack"`
-// (declared in vitest.config.ts) runs these setup hooks first, so any per-file
-// `vi.setSystemTime` overrides this one. A file that needs the REAL clock calls
-// `optOutOfFrozenClock("<reason>")` at module top level and is then pinned by
+// that wants a different instant just pins its own — the freeze is already in
+// place before any hook runs, so a per-file `vi.setSystemTime` overrides it. A
+// file that needs the REAL clock calls `optOutOfFrozenClock("<reason>")` at
+// module top level and is then pinned by
 // `src/lib/__tests__/frozen-test-clock.test.ts`.
 //
-// The canary workflow winds this forward via `TEST_CLOCK_OFFSET_DAYS` (integer
-// days) or `TEST_CLOCK_ISO` (an absolute instant); both are documented in
+// `.github/workflows/clock-rollover-canary.yml` re-runs the suite with the
+// machine's REAL clock wound forward, which a frozen test cannot notice and an
+// escaped one can. `TEST_CLOCK_OFFSET_DAYS` / `TEST_CLOCK_ISO` move this frozen
+// instant instead, as a local diagnostic; both are documented in
 // `src/lib/__tests__/helpers/clock.ts`.
 //
 // Installed HERE, in the setup file's module body, and deliberately NOT in a

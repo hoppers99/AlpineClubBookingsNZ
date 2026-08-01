@@ -26,8 +26,8 @@ import { todayDateOnlyForTimeZone } from "@/lib/date-only";
 // When this test fails because you added an opt-out: do not just paste the new
 // path in. Ask first whether the file actually needs the REAL date, or only a
 // DIFFERENT fixed one — the second case needs no opt-out at all, just a
-// `vi.setSystemTime(...)` in the file's own hook, which runs after the setup
-// file's and therefore wins. Files that mix both get split, not opted out.
+// `vi.setSystemTime(...)` in the file's own hook, which runs after the freeze is
+// installed and therefore wins. Files that mix both get split, not opted out.
 // ---------------------------------------------------------------------------
 
 /**
@@ -202,7 +202,7 @@ describe("frozen test clock opt-out allowlist", () => {
   });
 });
 
-describe("frozen test clock canary overrides", () => {
+describe("frozen test clock instant overrides", () => {
   const savedIso = process.env.TEST_CLOCK_ISO;
   const savedOffset = process.env.TEST_CLOCK_OFFSET_DAYS;
 
@@ -236,8 +236,9 @@ describe("frozen test clock canary overrides", () => {
   });
 
   it("fails loudly on a malformed override rather than silently ignoring it", () => {
-    // A canary that quietly fell back to the base instant would report green
-    // while testing nothing — the vacuous-pass failure mode again.
+    // An override that quietly fell back to the base instant would report green
+    // while testing something other than what was asked for — the vacuous-pass
+    // failure mode again.
     process.env.TEST_CLOCK_ISO = "not-a-date";
     expect(() => frozenTestNow()).toThrow(/parseable ISO-8601 instant/);
 
