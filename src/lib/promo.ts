@@ -1754,9 +1754,9 @@ export async function validatePromoCodeFull(
  *    `ORDER BY ... FOR UPDATE` keeps the ordering independent of the query
  *    plan. Callers already hold the per-lodge capacity lock, so the order stays
  *    lodge -> promo row, as documented.
- * 2. **No dependence on the raw result shape.** Only `"id"` is selected and the
- *    result is discarded; the statement exists purely for its lock, so it
- *    cannot repeat the raw-SQL shape trap of #2289.
+ * 2. **No dependence on the raw result shape.** A constant is selected through
+ *    `$executeRaw` and the result is discarded; the statement exists purely for
+ *    its lock, so it cannot repeat the raw-SQL shape trap of #2289.
  *
  * A missing id simply locks nothing — the caller's own lookup reports "Promo
  * code not found".
@@ -1767,7 +1767,10 @@ export async function lockPromoCodeRowsForUpdate(
 ): Promise<void> {
   const ids = [...new Set(promoCodeIds.filter((id): id is string => Boolean(id)))].sort();
   for (const id of ids) {
-    await tx.$queryRaw`SELECT "id" FROM "PromoCode" WHERE "id" = ${id} FOR UPDATE`;
+    // `$executeRaw` on a CONSTANT, not `$queryRaw` on a column (#2289): the
+    // statement exists only for its lock, so saying so in the call is what keeps
+    // it from ever being mistaken for a read whose shape somebody trusts.
+    await tx.$executeRaw`SELECT 1 FROM "PromoCode" WHERE "id" = ${id} FOR UPDATE`;
   }
 }
 

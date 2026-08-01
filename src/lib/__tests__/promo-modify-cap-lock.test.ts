@@ -24,9 +24,10 @@ function makeTx(promoRows: Record<string, Record<string, unknown>>) {
   const calls: Call[] = [];
 
   const tx = {
-    $queryRaw: vi.fn(async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+    $executeRaw: vi.fn(async (_strings: TemplateStringsArray, ...values: unknown[]) => {
       calls.push({ op: "lock", id: String(values[0]) });
-      return [];
+      // $executeRaw returns an affected-row count, never rows (#2289).
+      return 1;
     }),
     promoCode: {
       findUnique: vi.fn(async ({ where }: { where: { code?: string; id?: string } }) => {

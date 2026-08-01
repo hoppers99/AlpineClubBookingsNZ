@@ -27,6 +27,48 @@ const NO_BARE_TO_LOCALE_STRING = {
     "Use formatNZDateTime/formatNZDate from @/lib/nzst-date, or a module-level Intl.DateTimeFormat pinned to APP_LOCALE + APP_TIME_ZONE. A bare toLocaleString on a Date renders in the viewer's zone and locale (#2256, #2264). Formatting a NUMBER? Add the file to the Number-formatting block in this config with a one-line reason.",
 };
 
+// #2289 — the two shapes of raw SQL that can lie about their own result.
+//
+// `prisma.$queryRaw<SomeRow[]>` is an UNCHECKED CAST. Raw SQL returns the
+// PHYSICAL column names; the type argument declares whatever the author
+// believed. Nothing verifies the two agree — not the compiler (the cast silences
+// it) and not the tests (a mocked Prisma returns the shape the author believed,
+// which is the same wrong belief). Where they disagreed in a real deployment,
+// every property arrived `undefined`: `maxRedemptionsTotal` undefined made
+// `!== null` true and `n > undefined` false, so a promo's total-redemption cap
+// never fired, and `freeNightsPerIndividual` undefined made `?? 0` yield zero,
+// so FREE_NIGHTS promos applied no discount at booking creation while the quote
+// path showed the member one. Members were quoted a discount and charged without
+// it, for months, with nothing logged.
+//
+// The type argument IS the hazard, so it is the thing banned. It cannot tell you
+// a column name is wrong — only that somebody asserted a shape without checking
+// it. Two honest alternatives remain, and the message names both.
+const NO_RAW_SQL_RESULT_CAST = {
+  selector:
+    "TaggedTemplateExpression[typeArguments][tag.property.name=/^\\$(queryRaw|executeRaw)$/]",
+  message:
+    "Do not type a raw-SQL result: `$queryRaw<T>` is an unchecked cast and a wrong column name arrives as `undefined`, not as an error (#2289). Taking a row lock? Use `$executeRaw` on a statement selecting a constant (`SELECT 1 … FOR UPDATE`) and read what you need through the Prisma model. Genuinely cannot express it as a model read? Validate the rows with `decodeRawRows` from @/lib/raw-sql-rows.",
+};
+
+const NO_RAW_SQL_UNSAFE_RESULT_CAST = {
+  selector:
+    "CallExpression[typeArguments][callee.property.name=/^\\$(queryRawUnsafe|executeRawUnsafe)$/]",
+  message:
+    "Do not type a raw-SQL result: `$queryRawUnsafe<T>` is an unchecked cast and a wrong column name arrives as `undefined`, not as an error (#2289). Validate the rows with `decodeRawRows` from @/lib/raw-sql-rows, or read through the Prisma model.",
+};
+
+// `SELECT *` in a raw template is the same hazard one step earlier: it makes the
+// returned column set whatever the DATABASE currently happens to have, so the
+// statement silently changes shape when a migration does — and there is nothing
+// in the source to review it against. Name the columns you actually want.
+const NO_SELECT_STAR_IN_RAW_SQL = {
+  selector:
+    "TaggedTemplateExpression[tag.property.name=/^\\$(queryRaw|executeRaw)$/] TemplateElement[value.raw=/SELECT\\s+\\*/i]",
+  message:
+    "Do not `SELECT *` in a raw statement (#2289): the returned column set becomes whatever the database currently has, so a migration changes the result shape with nothing in the source to review. Name the columns — or, if the statement is only there for a row lock, select a constant (`SELECT 1 … FOR UPDATE`).",
+};
+
 const eslintConfig = defineConfig([
   ...fixupConfigRules(nextVitals),
   ...fixupConfigRules(nextTs),
@@ -144,17 +186,32 @@ const eslintConfig = defineConfig([
         NO_BARE_TO_LOCALE_DATE_STRING,
         NO_BARE_TO_LOCALE_TIME_STRING,
         NO_BARE_TO_LOCALE_STRING,
+        NO_RAW_SQL_RESULT_CAST,
+        NO_RAW_SQL_UNSAFE_RESULT_CAST,
+        NO_SELECT_STAR_IN_RAW_SQL,
       ],
     },
   },
   {
-    // The helpers themselves, and the one documented format exclusion.
+    // The date helpers themselves, and the one documented format exclusion.
+    // Flat config replaces a rule's whole option list rather than merging it, so
+    // this block re-states the raw-SQL restrictions (#2289) instead of switching
+    // `no-restricted-syntax` off outright: none of these three files contains
+    // raw SQL, and the exemption they need is from the DATE rules only. Same
+    // reasoning in the Number-formatting block below.
     files: [
       "src/lib/nzst-date.ts",
       "src/lib/date-only.ts",
       "src/lib/email-templates.ts",
     ],
-    rules: { "no-restricted-syntax": "off" },
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        NO_RAW_SQL_RESULT_CAST,
+        NO_RAW_SQL_UNSAFE_RESULT_CAST,
+        NO_SELECT_STAR_IN_RAW_SQL,
+      ],
+    },
   },
   {
     // Number formatting, not dates: these three call
@@ -173,11 +230,21 @@ const eslintConfig = defineConfig([
         "error",
         NO_BARE_TO_LOCALE_DATE_STRING,
         NO_BARE_TO_LOCALE_TIME_STRING,
+        NO_RAW_SQL_RESULT_CAST,
+        NO_RAW_SQL_UNSAFE_RESULT_CAST,
+        NO_SELECT_STAR_IN_RAW_SQL,
       ],
     },
   },
   {
     // Test expectation builders mirror the component format under test.
+    //
+    // The raw-SQL restrictions (#2289) are off here too, deliberately. A test's
+    // raw statement runs against a throwaway database and its result is
+    // asserted on the spot, so a wrong shape fails the test rather than
+    // silently mispricing a booking — `concurrency-lock-races.realdb.test.ts`
+    // reads counts that way on purpose. What must never regress is PRODUCTION
+    // code, and `raw-sql-shape-guard.test.ts` pins that inventory file by file.
     files: ["src/**/__tests__/**/*.{ts,tsx}", "src/**/*.test.{ts,tsx}"],
     rules: { "no-restricted-syntax": "off" },
   },
