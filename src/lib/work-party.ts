@@ -15,6 +15,11 @@ import { randomInt } from "crypto";
 import { Prisma, PromoCodeType } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
+import logger from "@/lib/logger";
+import {
+  describeUniqueConstraintTarget,
+  isPrismaUniqueConstraintError,
+} from "@/lib/prisma-errors";
 import {
   addDaysDateOnly,
   formatDateOnly,
@@ -255,9 +260,42 @@ function internalPromoDataForEvent(input: WorkPartyEventInput) {
 
 const CODE_GENERATION_ATTEMPTS = 5;
 
-function isUniqueConstraintError(err: unknown): boolean {
+/**
+ * The names a `PromoCode.code` collision can arrive under: the COLUMN, which is
+ * what `@prisma/adapter-pg` reports, and the INDEX, which is all that survives
+ * if Postgres ever withholds the `Key (…)` detail.
+ */
+const PROMO_CODE_CONSTRAINT_NAMES = new Set(["code", "promocode_code_key"]);
+
+/**
+ * Was this P2002 the generated promo `code` colliding — the one thing the retry
+ * below exists for — rather than the event's own `promoCodeId`? (#2455)
+ *
+ * This used to be a bare "is it a P2002?", so ANY unique violation inside the
+ * transaction spent the whole five-attempt budget regenerating a code that was
+ * never the problem. See `describeUniqueConstraintTarget` for what the driver
+ * adapter really populates (measured, #2412): the colliding COLUMNS, quoted as
+ * Postgres quoted them, which the helper lowercases and unquotes.
+ *
+ * The comparison is deliberately WORD-level rather than a substring test:
+ * `WorkPartyEvent.promoCodeId` normalises to `promocodeid`, which contains
+ * "code", so `target.includes("code")` would call the sibling constraint a code
+ * collision and retry it four more times for nothing.
+ *
+ * An unidentifiable P2002 answers "no", matching the join-code retry in
+ * `group-booking.ts`: a collision on 31^8 generated codes is vanishingly
+ * unlikely, so the honest default is to surface the failure rather than burn
+ * the budget re-rolling a code that was fine.
+ */
+function isGeneratedPromoCodeCollision(err: unknown): boolean {
+  if (!isPrismaUniqueConstraintError(err)) {
+    return false;
+  }
+  const target = describeUniqueConstraintTarget(err);
   return (
-    err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002"
+    target
+      ?.split(" ")
+      .some((name) => PROMO_CODE_CONSTRAINT_NAMES.has(name)) ?? false
   );
 }
 
@@ -291,8 +329,21 @@ export async function createWorkPartyEventWithPromo(input: WorkPartyEventInput) 
         });
       });
     } catch (err) {
-      if (isUniqueConstraintError(err) && attempt < CODE_GENERATION_ATTEMPTS) {
-        continue;
+      if (isGeneratedPromoCodeCollision(err)) {
+        if (attempt < CODE_GENERATION_ATTEMPTS) {
+          continue;
+        }
+        // Unreachable in practice at 31^8 codes, so exhausting the budget on
+        // genuine collisions means something else is wrong. Logged with the
+        // constraint it read, because the raw P2002 that leaves here loses its
+        // `meta` to the pino `err` serializer.
+        logger.error(
+          {
+            attempts: CODE_GENERATION_ATTEMPTS,
+            constraint: describeUniqueConstraintTarget(err),
+          },
+          "Work party promo code generation exhausted its attempts"
+        );
       }
       throw err;
     }
