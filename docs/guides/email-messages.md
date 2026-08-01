@@ -72,6 +72,18 @@ it — or nothing whatsoever. Put one of those tokens on its own, with no label 
 your own in front of it, and the email reads correctly whether or not the value
 exists.
 
+A second, related pair works the other way round: **`{{rebookLabel}}` and
+`{{rebookPath}}`** in the **Booking Update** (bumped) message. That email goes to
+two very different people — a club member whose pending booking lost its beds,
+and the organisation or school contact whose booking came from a public booking
+request. The member can sign in and book again; the contact has no login at all,
+so sending them to the member booking page would land them on a sign-in screen
+they can never get past. The two tokens carry the caption and the destination, so
+the line `{{rebookLabel}}: {{BASE_URL}}{{rebookPath}}` reads
+`Book Again: …/book` for a member and `Contact the Club: …/contact` for a
+contact who cannot sign in. Keep them together on one line, and keep
+`{{BASE_URL}}` between them, or the link will not point anywhere useful.
+
 Two consequences worth knowing:
 
 - **Never write a label in front of a `…Note` / `…Line` token.** Writing
