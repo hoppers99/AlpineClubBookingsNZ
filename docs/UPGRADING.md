@@ -244,7 +244,7 @@ exactly it.
 
 **What you will notice.** If your front page shows that exact sentence today,
 then after you cut over it reads *"Our club lodge welcomes members year-round.
-Sign in to book a stay, or apply to join and explore New Zealand's mountains."*
+Log in to book a stay, or apply to join and explore New Zealand's mountains."*
 instead. Nothing else on the page moves: the eyebrow line ("Welcome to the Club
 Lodge"), the heading ("Club Lodge"), your page body, and every other page are
 untouched. Unlike the two cleanups above, this one **replaces** the value rather
@@ -261,6 +261,20 @@ so an admin who had **Club Lodge** open *before* the upgrade and pressed Save
 *afterwards* writes the old sentence straight back — and this cleanup runs once,
 so it will not rewrite it a second time. Public pages are cached briefly for
 logged-out visitors, so allow a minute or check while signed in.
+
+**Re-export your configuration bundle after upgrading, and re-check the front
+page after any bundle import or disaster-recovery restore.** A configuration
+bundle carries the home page's header text, and an import writes it back — in
+**Merge** mode as well as **Overwrite**, because Merge only leaves out fields
+that are empty in the bundle and this one is a full sentence. So a bundle you
+exported *before* this release still contains the old sentence, and restoring it
+puts that sentence back on your public front page. This matters most where
+nobody is watching: rebuilding an install from a bundle (the disaster-recovery
+flow) or cloning one runs the migrations first and imports the bundle
+*afterwards*, and this cleanup runs once, so it will not correct the row a
+second time. Export a fresh bundle once you have upgraded, replace any archived
+one you would restore from, and load your front page after any import. The two
+cleanups above can come back the same way; see issue #2511.
 
 **A hero you edited yourself is never touched.** The cleanup matches that one
 exact sentence and nothing else, so a club that has written its own front-page

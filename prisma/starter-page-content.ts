@@ -1,11 +1,20 @@
 // Starter editable page content shared by prisma/seed.ts and the
 // 20260611101500_backfill_starter_page_content,
 // 20260613090000_update_starter_home_page_content,
-// 20260702090000_backfill_policy_page_content, and
-// 20260702120000_update_starter_faq_accordion migrations. The migrations
+// 20260702090000_backfill_policy_page_content,
+// 20260702120000_update_starter_faq_accordion, and
+// 20260802150000_update_starter_home_guest_copy migrations. The migrations
 // duplicate these values as SQL because production deploys run migrations
 // without the seed; src/lib/__tests__/page-content-starter-backfill.test.ts
 // keeps them in sync.
+//
+// The "home" hero (headerText) is now written by
+// 20260802150000_update_starter_home_guest_copy (#2431), not by
+// 20260613090000_update_starter_home_page_content (#716) -- #716 only supplies
+// the superseded sentence that #2431's WHERE clause guards on. Changing any
+// starter value here needs a NEW migration: an applied migration must never be
+// edited, because Prisma records its checksum and a rewrite is migration drift
+// on every database that already ran it.
 export type StarterPageContent = {
   slug: string;
   path: string;
@@ -75,7 +84,7 @@ export const starterPageContent: StarterPageContent[] = [
     menuTitle: "",
     title: "Club Lodge",
     headerText:
-      "Our club lodge welcomes members year-round. Sign in to book a stay, or apply to join and explore New Zealand's mountains.",
+      "Our club lodge welcomes members year-round. Log in to book a stay, or apply to join and explore New Zealand's mountains.",
     sortOrder: 5,
     contentHtml: `<h2>Welcome</h2>`.trim(),
   },

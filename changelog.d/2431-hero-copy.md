@@ -9,10 +9,12 @@
   was the one making the wrong promise.
 
   **A fresh install's hero now reads:** *"Our club lodge welcomes members
-  year-round. Sign in to book a stay, or apply to join and explore New Zealand's
-  mountains."* Two doors, both real: members sign in, everyone else applies to
-  join. Nothing else on the page moves — the eyebrow line ("Welcome to the Club
-  Lodge"), the heading ("Club Lodge") and your page body are all unchanged.
+  year-round. Log in to book a stay, or apply to join and explore New Zealand's
+  mountains."* Two doors, both real: members log in — the same words as the
+  button in the header and the answer in your FAQ — and everyone else starts at
+  the Join page. Nothing else on the page moves — the eyebrow line ("Welcome to
+  the Club Lodge"), the heading ("Club Lodge") and your page body are all
+  unchanged.
 
   **If your front page still shows the old sentence, it is rewritten when you
   upgrade.** A one-off cleanup replaces the hero wherever it is still exactly the
@@ -22,6 +24,12 @@
   Configuration → Site Appearance & Content → Page Content → Club Lodge**, then
   Save. Public pages are cached briefly for logged-out visitors, so allow a
   minute or check while signed in.
+
+  **One thing to redo: export a fresh configuration bundle.** A bundle exported
+  before this release still holds the old sentence, and importing one writes it
+  back — so restoring an install from an older bundle would put the old wording
+  on your front page again. Re-export after upgrading, replace any archived
+  bundle you would restore from, and load your front page after any import.
 
   **A hero you have written yourself is not touched.** The cleanup matches that
   one exact sentence and nothing else, so a club that has edited its front page —

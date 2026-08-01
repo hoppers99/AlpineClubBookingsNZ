@@ -408,7 +408,7 @@ describe("starter home guest-copy update migration (#2431)", () => {
     // financial member who is also staying.
     expect(home!.headerText).not.toMatch(/guest/i);
     expect(home!.headerText).toBe(
-      "Our club lodge welcomes members year-round. Sign in to book a stay, or apply to join and explore New Zealand's mountains.",
+      "Our club lodge welcomes members year-round. Log in to book a stay, or apply to join and explore New Zealand's mountains.",
     );
     // ...and the seed stays clear of the founding club's geography (#1945).
     expect(home!.headerText).not.toMatch(

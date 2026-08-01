@@ -33,8 +33,19 @@
 -- renders, its hero sits under the page title above the fold, and an empty
 -- headerText would leave a fresh install's front page looking broken rather than
 -- corrected. So the value is rewritten to wording that matches the FAQ:
--- 'Our club lodge welcomes members year-round. Sign in to book a stay, or apply
+-- 'Our club lodge welcomes members year-round. Log in to book a stay, or apply
 -- to join and explore New Zealand''s mountains.'
+--
+-- "Log in", not "Sign in", deliberately: it is the label on the only control a
+-- visitor reading this hero can act on (src/components/website-header.tsx and
+-- website-mobile-menu.tsx both render "Log In"), and the starter FAQ seeded in
+-- the same file answers "How do I book a stay at the lodge?" with "Log in,
+-- click Book a Stay". The hero, the chrome and the FAQ now use one verb.
+-- "apply to join" points at "/join", a published nav page whose own starter
+-- hero states the route up front ('Nomination by two current members, induction
+-- process, and membership details'), so the second door names where to go
+-- without restating the club's nomination rules in the hero -- the #2421
+-- deference rule.
 --
 -- Keep the SET value in sync with the "home" entry in
 -- prisma/starter-page-content.ts (enforced by
@@ -116,16 +127,36 @@
 -- allow a minute (or check while signed in) before concluding anything.
 -- docs/UPGRADING.md carries that as part of the post-upgrade action.
 --
+-- A CONFIG BUNDLE IS THE SECOND WRITE PATH, and unlike the stale-editor hazard
+-- it is unattended. src/lib/config-transfer/categories/site-content.ts exports
+-- "PageContent"."headerText" into the bundle CSV (PAGE_CONTENT_FIELDS) and its
+-- applier writes the bundle value straight back with pageContent.update, in
+-- BOTH import modes -- merge included, because merge only skips fields that are
+-- blank in the bundle and this one is a full sentence. So a bundle exported
+-- BEFORE this release still carries the guest-booking sentence, and importing
+-- it re-plants it. src/lib/config-transfer/bootstrap-import.ts states the
+-- ADR-003 provisioning order verbatim: deploy env + bundle file -> migrations
+-- -> base seed -> boot auto-import -> operational site. The auto-import
+-- therefore runs AFTER this migration has already applied and found nothing to
+-- fix, and because this is one-shot DML it never corrects the row again. That
+-- makes a disaster-recovery rebuild or a clone from a pre-upgrade bundle, and
+-- an interactive Admin > Setup & Configuration restore of one, both able to put
+-- the old sentence back on the public front page permanently. Re-export every
+-- bundle after upgrading, and re-check the front page after ANY bundle import
+-- or DR restore. #2484 (20260802110000) and #2490 (20260802140000) share this
+-- exposure; issue #2511 tracks it for all three, including the mechanical fix.
+--
 -- TIMESTAMP COORDINATION. 20260802150000 sorts strictly after the latest
 -- committed migration, 20260802140000_clear_starter_footer_affiliations (#2490),
 -- and reuses no existing prefix (the duplicate-prefix ratchet in
--- scripts/check-migration-safety-coverage.sh turns main red on a collision). One
--- in-flight branch, #2364, currently holds a SECOND 20260802140000 that already
--- collides with the committed one and must be re-stamped above this migration
--- before it merges; its subject (member hosting policy) does not touch
--- "PageContent", so the applied order between the two is immaterial.
+-- scripts/check-migration-safety-coverage.sh turns main red on a collision).
+-- In-flight branch #2364 held a colliding 20260802140000 and has been
+-- re-stamped to 20260802160000, which sorts above this migration; its subject
+-- (member hosting policy) does not touch "PageContent", so the applied order
+-- between the two is immaterial either way. No local or remote branch holds a
+-- duplicate of 20260802150000.
 
 UPDATE "PageContent"
-SET "headerText" = 'Our club lodge welcomes members year-round. Sign in to book a stay, or apply to join and explore New Zealand''s mountains.'
+SET "headerText" = 'Our club lodge welcomes members year-round. Log in to book a stay, or apply to join and explore New Zealand''s mountains.'
 WHERE "slug" = 'home'
   AND "headerText" = 'Our club lodge welcomes members and guests year-round. Book a stay, join the club, and explore New Zealand''s mountains.';
