@@ -471,6 +471,46 @@ describe("sanitiseRawCss", () => {
     expect(sanitiseRawCss("a{}</style \n>b{}")).toBe("a{}b{}");
   });
 
+  /**
+   * Reassembly (#2420 review). `String.replace` makes one pass over the
+   * ORIGINAL string and never re-scans what its own deletions splice together,
+   * so a split token used to reassemble into a LIVE `</style>` in the output.
+   * These are the payloads that were executed against the pre-fix function.
+   *
+   * The postcondition is absolute and is asserted as such: the output contains
+   * no `</style` in any case, so nothing can leave the `<style>` element's
+   * rawtext mode. Surviving `<script>` TEXT is fine — inside `<style>` it is
+   * never parsed as markup, which is exactly why the closing tag is the only
+   * thing that matters.
+   */
+  it("closes reassembly bypasses by repeating to a fixpoint", () => {
+    expect(sanitiseRawCss("</sty</style>le><script>alert(1)</script>")).toBe(
+      "<script>alert(1)</script>",
+    );
+    // Nested twice over, so one extra pass would still not be enough.
+    expect(
+      sanitiseRawCss("</st</sty</style>le>yle><script>alert(1)</script>"),
+    ).toBe("<script>alert(1)</script>");
+    // Reassembly across an attribute-bearing token.
+    expect(sanitiseRawCss("a{}</sty</style x=1>le>b{}")).toBe("a{}b{}");
+  });
+
+  it("removes a trailing </style that has no > of its own", () => {
+    // It would otherwise borrow the `>` from the closing tag the consumer
+    // writes immediately after the raw CSS.
+    expect(sanitiseRawCss("a{}</style")).toBe("a{}");
+    expect(sanitiseRawCss("a{}</style ")).toBe("a{}");
+  });
+
+  it.each([
+    "</sty</style>le><script>alert(1)</script>",
+    "</st</sty</style>le>yle>",
+    "a{}</style",
+    "a{}</STY</STYLE>LE>",
+  ])("leaves no </style anywhere in the output for %j", (payload) => {
+    expect(sanitiseRawCss(payload).toLowerCase()).not.toContain("</style");
+  });
+
   it("leaves valid CSS unchanged", () => {
     const css = "body{font-size:16px}h1{color:var(--brand-gold)}";
     expect(sanitiseRawCss(css)).toBe(css);

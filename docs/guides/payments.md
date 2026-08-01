@@ -41,8 +41,9 @@ integer cents and shown as dollars.
 1. Type a name, email, or payment reference into **Member or reference**.
 2. Narrow with **Status**, **Source** (Stripe / Internet Banking), **Xero**
    state, **Settlement** kind, and the **Updated** date range. Open **More
-   filters** for exact/min/max amount and a check-in date range. Click **Clear**
-   to reset.
+   filters** for exact/min/max amount and a check-in date range. Click **Reset**
+   to restore all filters, sort, and page. The default **Updated** range is the
+   rolling NZ date three months before today through today, not all history.
 
 ### Generate a missing Xero invoice
 
@@ -208,6 +209,7 @@ Payments is a read-only ledger (aside from Generate Invoice). Its controls:
 | Updated range | Filter by last-updated date | last 3 months | NZ date-only, club time zone |
 | Amount exact / min / max | Filter by amount | empty | Entered in dollars |
 | Check-in range | Filter by booking check-in | empty | NZ date-only |
+| Reset | Restore filters, sort, and page | rolling three-month Updated range through today | Disabled while the ledger is already at its defaults |
 | Generate Invoice | Create a Xero invoice for a succeeded payment | — | Needs finance **edit**; only for succeeded, non-Internet-Banking payments with no invoice. Never offered for a manually recorded cash payment — no invoice is expected for one |
 | Record / Reverse manual payment | Record a cash or off-Xero bank-transfer settlement on a booking, or undo one | — | On the booking page, not here. Needs finance **edit**. Never contacts Xero |
 | Mark paid back / Dismiss | Close a hand-back task for a cancelled cash booking | — | Needs finance **edit**. "Mark paid back" writes the refund into the ledger; "Dismiss" needs a note |
@@ -219,7 +221,7 @@ the whole filtered set; **Success Rate** is computed from the visible page.
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
-| "No payments found" | Filters are too narrow, or the date range excludes the payment | Click **Clear** and widen the **Updated** range |
+| "No payments found" | Filters are too narrow, or the date range excludes the payment | Click **Reset** and widen the **Updated** range |
 | **Generate Invoice** is disabled | Your finance role is view-only, or the payment is not an eligible succeeded card payment | Ask a finance-edit admin; Internet Banking payments generate invoices differently |
 | Xero shows **Failed activity** or **Pending activity** | A Xero sync attempt failed or is still running | Open **View activity**, then retry from the finance/Xero tools |
 | A refund isn't reflected | The settlement is still processing, or you filtered it out | Check the **Settlement** filter and the row's settlement breakdown |

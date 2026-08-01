@@ -40,7 +40,8 @@ or replace a nominator. Money is in integer cents (shown as dollars).
 2. Use the filter buttons to switch the list: **Pending admin** (the default),
    **Waiting on nominators**, **Approved**, **Rejected**, or **All**. Each card
    shows a status chip — *Pending committee review*, *Waiting on nominators*,
-   *Approved*, or *Rejected*.
+   *Approved*, or *Rejected*. **Reset** restores Pending admin without changing
+   any in-progress nominator search or review input.
 
 ### Chase or replace a nominator
 
@@ -88,6 +89,7 @@ This is a review queue, not a settings page. The per-review inputs:
 | Control | What it does | Notes / constraints |
 | --- | --- | --- |
 | Status filter buttons | Pending admin / Waiting on nominators / Approved / Rejected / All | Default is Pending admin |
+| Reset | Restore Pending admin | Always visible; disabled at the default |
 | Committee notes | Free-text decision context stored on the application | Up to 4000 characters |
 | Create new / Map to existing (per person) | Whether approval creates a member or overwrites an existing one | Mapping overwrites name, DOB, phone, and both addresses; the applicant also overwrites email + age tier |
 | Preview mapping | Shows the field-by-field diff and validates the mapping | Required before approving anything mapped; a stale preview must be re-run |

@@ -35,6 +35,22 @@ export type LoadMembershipCancellationBlockersOptions = {
     string,
     MembershipCancellationSubscriptionCreditPlan | null
   >;
+  /**
+   * Whether to run the unpaid-invoice half at all (#2402).
+   *
+   * `"run"` (the default, and what every approval-path caller gets by omission)
+   * asks Xero. `"skip"` returns the BOOKING blockers alone and makes no Xero
+   * call — for the review queue rendering for an admin who cannot approve, where
+   * the answer would inform no decision and would still cost the club a metered
+   * API call.
+   *
+   * Defaulted to `"run"` deliberately: a caller that forgets the option gets the
+   * full, fail-closed check rather than a quietly partial one. A `"skip"` result
+   * is NOT a clean bill of health and must never be presented as one — see
+   * `getAdminMembershipCancellationRequests`, which serializes
+   * `invoiceCheckSkipped` alongside it so the queue can say so in words.
+   */
+  invoiceCheck?: "run" | "skip";
 };
 
 export function emptyMembershipCancellationBlockerMap(memberIds: readonly string[]) {
@@ -128,12 +144,32 @@ async function loadBookingBlockersByMemberId(
  *
  * Two families of blocker, deliberately behind one entry point so all three call
  * sites — the review queue, the approval guard, and the post-review reload —
- * agree by construction:
+ * ask the identical question and merge the answers identically:
  *
- * - future bookings and guest appearances (local, always checked);
+ * - future bookings and guest appearances. Local, and always checked: two
+ *   indexed reads against rows the queue is already looking at, costing nothing
+ *   external, so there is never a reason to withhold them from anybody.
  * - unpaid Xero invoices on the member's contact, which approval would archive
  *   (#2392 — see `membership-cancellation-invoice-blockers.ts` for what counts
  *   as unpaid, when the check runs at all, and why an unknown answer blocks).
+ *   This half is a LIVE, metered Xero call, and it is the ONLY half a caller may
+ *   decline: `invoiceCheck: "skip"` returns the booking blockers alone (#2402).
+ *   Nothing here presents a skipped check as a clean result — the map simply has
+ *   fewer entries, and the caller that asked for the skip is the one that must
+ *   say so.
+ *
+ * ## What the three call sites do NOT share
+ *
+ * Which MEMBERS they ask about. The approval guard asks about the one member it
+ * is deciding; the queue and the post-review reload ask only about participants
+ * still awaiting approval
+ * (`isMembershipCancellationParticipantAwaitingApproval`), and the queue
+ * additionally declines the invoice half for a viewer who cannot approve. That
+ * scoping is safe only because the predicate is exactly the approval guards'
+ * own preconditions — an agreement held by test, not by construction, in
+ * `membership-cancellation-admin.test.ts`. If the queue is not warning about
+ * something you expected, that predicate and the viewer's `membership: edit`
+ * access are the two things to check first.
  *
  * `db` reaches the BOOKING half only. The invoice half deliberately reads
  * through the global client, because it also calls Xero, and this repo's rule is
@@ -155,10 +191,16 @@ export async function loadMembershipCancellationBlockersByMemberId(
 
   const [bookingBlockers, invoiceBlockers] = await Promise.all([
     loadBookingBlockersByMemberId(uniqueMemberIds, db),
-    loadMembershipCancellationInvoiceBlockersByMemberId(uniqueMemberIds, {
-      fresh: options.freshInvoiceCheck,
-      creditPlansByMemberId: options.creditPlansByMemberId,
-    }),
+    // #2402: the one half a caller may decline, because it is the one half that
+    // costs the club a metered Xero call.
+    options.invoiceCheck === "skip"
+      ? Promise.resolve(
+          new Map<string, MembershipCancellationBlocker[]>(),
+        )
+      : loadMembershipCancellationInvoiceBlockersByMemberId(uniqueMemberIds, {
+          fresh: options.freshInvoiceCheck,
+          creditPlansByMemberId: options.creditPlansByMemberId,
+        }),
   ]);
 
   for (const memberId of uniqueMemberIds) {

@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Trash2, Plus, Users, X, Edit2, Search } from "lucide-react";
 import { FamilyGroupEditor } from "@/components/admin/family-group-editor";
+import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
 import { AgeTierBadge } from "@/components/admin/family-groups/age-tier-badge";
 import { FamilyGroupRequestReviewSection } from "@/components/admin/family-groups/request-review-section";
 import { AdminViewOnlySectionBanner, ViewOnlyActionButton } from "@/components/admin/view-only-action";
@@ -447,12 +448,10 @@ export default function FamilyGroupsPage() {
               />
               Has pending requests
             </label>
-            {hasActiveFilters && (
-              <Button variant="ghost" size="sm" onClick={clearFilters}>
-                <X className="h-4 w-4 mr-1" />
-                Clear
-              </Button>
-            )}
+            <DatasetResetButton
+              disabled={!hasActiveFilters}
+              onReset={clearFilters}
+            />
           </div>
           {hasActiveFilters && (
             <p className="text-xs text-muted-foreground">

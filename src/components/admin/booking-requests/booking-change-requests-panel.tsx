@@ -6,6 +6,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
+import { buildBookingRequestDatasetPath } from "@/lib/admin-dataset-reset-state";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -121,22 +123,20 @@ const EMPTY_SEARCH_PARAMS: Record<string, string> = {};
 
 function buildBookingChangeRequestsPath(
   basePath: string,
+  currentSearch: string,
   fixedSearchParams: Record<string, string>,
   status: RequestFilter,
   requestId: string | null,
 ) {
-  const params = new URLSearchParams(fixedSearchParams);
-
-  if (requestId) {
-    params.set("requestId", requestId);
-  }
-
-  if (status !== "REQUESTED") {
-    params.set("status", status);
-  }
-
-  const query = params.toString();
-  return query ? `${basePath}?${query}` : basePath;
+  return buildBookingRequestDatasetPath({
+    basePath,
+    currentSearch,
+    fixedSearchParams,
+    status,
+    defaultStatus: "REQUESTED",
+    recordKey: "requestId",
+    recordId: requestId,
+  });
 }
 
 export function BookingChangeRequestsPanel({
@@ -149,9 +149,10 @@ export function BookingChangeRequestsPanel({
   const searchParams = useSearchParams();
   const initialFilter = searchParams.get("status");
   const requestId = searchParams.get("requestId");
+  const defaultFilter: RequestFilter = requestId ? "ALL" : "REQUESTED";
   const [requests, setRequests] = useState<BookingChangeRequestData[]>([]);
   const [filter, setFilter] = useState<RequestFilter>(
-    isRequestFilter(initialFilter) ? initialFilter : requestId ? "ALL" : "REQUESTED"
+    isRequestFilter(initialFilter) ? initialFilter : defaultFilter
   );
   const [loading, setLoading] = useState(true);
   const [reviewingId, setReviewingId] = useState<string | null>(null);
@@ -160,6 +161,7 @@ export function BookingChangeRequestsPanel({
   const [error, setError] = useState("");
   const currentPath = buildBookingChangeRequestsPath(
     basePath,
+    searchParams.toString(),
     fixedSearchParams,
     filter,
     requestId,
@@ -292,6 +294,10 @@ export function BookingChangeRequestsPanel({
               : status.charAt(0) + status.slice(1).toLowerCase()}
           </Button>
         ))}
+        <DatasetResetButton
+          disabled={filter === defaultFilter}
+          onReset={() => setFilter(defaultFilter)}
+        />
       </div>
 
       {loading ? (

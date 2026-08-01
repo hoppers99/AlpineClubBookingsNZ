@@ -1,11 +1,10 @@
 "use client"
 
-import { X } from "lucide-react"
 import {
   AdminFilterBar,
   type AdminFilterChip,
 } from "@/components/admin/admin-filter-bar"
-import { Button } from "@/components/ui/button"
+import { DatasetResetButton } from "@/components/admin/dataset-reset-button"
 import { Input } from "@/components/ui/input"
 import {
   Select,
@@ -29,23 +28,23 @@ import { filterLabelMap, filterValueLabels } from "../_utils"
 interface MemberFilterToolbarProps {
   search: string
   filters: Filters
-  activeFilterCount: number
   xeroFeatures: XeroFeatureFlags
   xeroContactGroupsList: XeroContactGroup[]
   onSearchChange: (value: string) => void
   onSetFilter: (key: keyof Filters, value: string) => void
-  onClearFilters: () => void
+  resetDisabled: boolean
+  onReset: () => void
 }
 
 export function MemberFilterToolbar({
   search,
   filters,
-  activeFilterCount,
   xeroFeatures,
   xeroContactGroupsList,
   onSearchChange,
   onSetFilter,
-  onClearFilters,
+  resetDisabled,
+  onReset,
 }: MemberFilterToolbarProps) {
   const roleOptions = useAccessRoleOptions()
   const membershipTypeOptions = useMembershipTypeOptions()
@@ -171,12 +170,7 @@ export function MemberFilterToolbar({
         </>
       }
       actions={
-        activeFilterCount > 0 ? (
-          <Button variant="ghost" size="sm" onClick={onClearFilters}>
-            <X className="h-4 w-4 mr-1" />
-            Clear ({activeFilterCount})
-          </Button>
-        ) : null
+        <DatasetResetButton disabled={resetDisabled} onReset={onReset} />
       }
       advanced={
         <>

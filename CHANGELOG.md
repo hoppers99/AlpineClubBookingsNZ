@@ -4,6 +4,93 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **The cancellation queue stops spending Xero API calls on questions nobody can
+  act on (#2402).** Opening **Admin → Members → Cancellation Requests** asked
+  Xero, for every participant on the page, whether that member's contact still
+  owed the club money — on every page load, every filter change and every
+  refresh, whoever was looking. Xero meters those calls daily, and most of them
+  bought nothing: they were asked for participants who had already been rejected
+  or cancelled, and for admins whose role cannot approve a cancellation at all.
+
+  The check now runs only where its answer can still change what somebody does:
+  for an admin whose role has **edit** access to membership — the same permission
+  the Approve and Reject buttons need — and for a participant that is genuinely
+  still awaiting approval, meaning the request is open, the member has confirmed,
+  and the membership has not since been deactivated or cancelled.
+
+  Only the Xero half is affected. Outstanding **bookings and guest appearances**
+  come from ordinary database reads that cost nothing external, so they are still
+  loaded and still shown to everyone, including view-only admins.
+
+  There is a real cost to this and it was accepted deliberately: a **view-only**
+  membership admin is no longer told that money is owing on a participant. They
+  are not left to guess. A request holding affected rows now carries a short blue
+  note — *The money-owing check was not run for … below* — with each affected
+  member marked, because an absent warning panel and "nothing is owing" look
+  identical on screen and only one of them would have been true. The note says
+  plainly that the question was not asked, not that the answer was no.
+
+  The **Approve** button now follows the same rule the server does, rather than
+  the looser approximation it carried before. A membership deactivated after its
+  cancellation was raised no longer offers an Approve that the server would
+  refuse — the button is disabled and a line beneath it says why. That is what
+  makes the saving safe: a row is only left unchecked when an approval of it
+  would have been refused anyway.
+
+  Nothing about approving itself changed. Pressing **Approve** still asks Xero
+  live, every time, for everyone, still refuses while anything is owing, and
+  still refuses when Xero cannot be asked at all — as does the second check made
+  immediately before a Xero contact is archived.
+- **A club's website now says "not ready yet" until its setup is finished,
+  instead of quietly answering as though everything were fine (#2420).** Before
+  a club saves its site style for the first time, every public web address shows
+  a "Site setup in progress" holding screen. That screen was being handed over
+  with the hidden status line that means "here is your page" — so a search
+  engine could start listing a club's half-built site, and an uptime check would
+  report a site that has never opened as healthy. Every public address now
+  carries the status that means "temporarily unavailable, come back shortly",
+  along with a stated wait, which is what search engines and monitoring tools are
+  built to act on.
+
+  Every public address is treated the same way while setup is unfinished — the
+  home page, a page the club has already written, and a mistyped address all get
+  the same holding screen. Until the club has chosen how its site looks, none of
+  it is ready to be seen or listed, and answering differently for pages that
+  exist would tell anyone probing a half-built site exactly which pages are
+  there.
+
+  Nothing an administrator needs in order to finish setup is affected: the admin
+  area, the site style wizard itself, the login and password pages, the member
+  and lodge areas, the lobby display, and the data addresses the app talks to all
+  behave exactly as before. Once setup is complete, so does the public website —
+  this changes nothing at all for a club already running. The site opens within
+  about fifteen seconds of the setup being saved.
+
+  Reviewing this work turned up four further problems, all fixed here. An
+  unlaunched club was still naming its pages: the page titles and summaries that
+  browsers and search engines read are assembled separately from the page itself,
+  so they were still being sent even though the page was not — enough for a
+  stranger to list every page an unfinished site had, including ones the club had
+  written but deliberately not published. Every public page now gives the same
+  neutral "site setup in progress" title until the club opens, whether the page
+  exists or not.
+
+  A club's optional custom styling could also be crafted to break out of the
+  styling block and run as page code, because the check that removes the
+  dangerous sequence only looked once and a carefully split sequence reassembled
+  itself behind it. It now repeats until nothing is left to find. This one
+  predates the change — the ordinary website had the same exposure — so it is
+  fixed for every page that uses custom styling, not just the new one.
+
+  A handful of addresses that merely began with a reserved word (`/apiary`,
+  `/logo.pngs`) were skipping the check entirely and still answering as though
+  the site were open; they no longer do, and as a side effect they now receive
+  the same browser-security headers as every other page. And a brief database
+  interruption on a long-running club could make the site claim it was still
+  being set up, then leave that claim in visitors' browsers for a minute — the
+  club's own pages now tell the difference between "not set up" and "could not
+  check".
+
 - **Your family page no longer hands out the email address of a parent who is
   not in your family (#2424).** The page lists, for each person in your family
   groups, the parents the club has on file for them. Recording a parent does not
@@ -87,9 +174,11 @@ All notable public reference-release changes should be recorded here.
   completed, where an unfinished-setup holding screen answers every address. On
   a real club that holding screen only shows before the site goes live, but it
   does mean any address at all is answered as though it were fine until setup is
-  finished. That behaviour is deliberately untouched here — changing it halfway
-  would have let a stranger map an unlaunched club's page list by seeing which
-  addresses answered differently — and is being decided separately (#2420).
+  finished. That behaviour is deliberately untouched by this change — altering
+  it halfway would have let a stranger map an unlaunched club's page list by
+  seeing which addresses answered differently. It is settled by the #2420 entry
+  above, which turns the whole unfinished-setup site into a plain "not ready
+  yet".
 - **A member can now find and add another club member as a guest, and is told
   plainly what that commits the other person to (#2308).** The booking wizard's
   Guests step gains a **+ Add Member Guest** button beside the existing
@@ -370,6 +459,18 @@ All notable public reference-release changes should be recorded here.
   and leap-year February boundaries. Changing the quick range keeps the current
   Lodge and Deleted filters, and the shared Quick Range select now has an
   accessible programmatic label.
+- **Admin datasets now share one predictable Reset action (#2358).** Across 22
+  member, booking, finance, support, Xero, induction, promo, and locker lists,
+  **Reset** stays visible and is disabled only when search, filters, explicit
+  sort, and page are already at that dataset's defaults. It resets the whole
+  dataset rather than only the last control, uses replace-style URL updates so
+  filter changes do not fill browser history, and preserves work context such
+  as lodge, season, tab, cohort, focused record, sibling Xero panel state, and
+  unknown future URL keys. Payments returns to the rolling NZ three-month
+  Updated range through today (not all history), while Reports returns to its
+  month-boundary default through current month-end and keeps the selected
+  lodge. Finance Dashboard keeps the current view and lodge while restoring
+  Last Month, Previous Period, Next Month, and empty expense filters.
 - **Bed moves now stay on the guest's original lodge nights (#2366).** Dragging
   an existing allocation chip across date columns now chooses only the
   destination bed: the preview and keyboard announcement show the original NZ
