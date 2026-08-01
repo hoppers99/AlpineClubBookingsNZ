@@ -32,6 +32,16 @@ const { mockPrisma, mockTransporter, mockLogger } = vi.hoisted(() => {
     emailSuppression: {
       findFirst: vi.fn().mockResolvedValue(null),
     },
+    // #2328: the booking confirmation reads its applied account credit (and the
+    // Payment row that says how the rest was settled) before composing. No
+    // credit and no payment row here — the ordinary card confirmation these
+    // subject-safety cases are about.
+    memberCredit: {
+      aggregate: vi.fn().mockResolvedValue({ _sum: { amountCents: null } }),
+    },
+    payment: {
+      findUnique: vi.fn().mockResolvedValue(null),
+    },
     emailMessageSetting: {
       findUnique: vi.fn(),
     },

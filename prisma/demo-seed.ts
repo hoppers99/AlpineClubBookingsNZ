@@ -761,8 +761,14 @@ async function main() {
       checkOut: d(W.daveConfirmed.checkOut),
       guests: [
         { firstName: "Mr", lastName: "Teacher", ageTier: "ADULT" },
-        { firstName: "School Child 1", lastName: "", ageTier: "YOUTH" },
-        { firstName: "School Child 2", lastName: "", ageTier: "YOUTH" },
+        // Same shape the real school door writes (generateSchoolGuests in
+        // src/lib/school-booking-request.ts): "School Child" + a number as the
+        // surname. It used to seed `lastName: ""`, which no write path can
+        // produce — every stored guest goes through bookingRequestGuestSchema,
+        // which rejects an empty name — and that one row 500'd the admin
+        // queue's "All" filter (#2342).
+        { firstName: "School Child", lastName: "1", ageTier: "YOUTH" },
+        { firstName: "School Child", lastName: "2", ageTier: "YOUTH" },
       ],
       schoolName: "Demo High School",
       teachers: [{ firstName: "Mr", lastName: "Teacher", email: `teacher@${DEMO_DOMAIN}` }],

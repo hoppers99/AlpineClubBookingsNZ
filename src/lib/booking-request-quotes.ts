@@ -22,6 +22,7 @@ import {
   isMemberWholeLodgeRequest,
   linkedGuestMemberMap,
   parseBookingRequestGuests,
+  parseBookingRequestLinkedGuestMembers,
   splitPriceAcrossGuests,
   type BookingRequestLinkedGuestMember,
 } from "@/lib/booking-request";
@@ -214,14 +215,62 @@ function optionLabel(option: SchoolCateringOption | null) {
   return "Quote";
 }
 
+/**
+ * What the actor is told when a stored quote blob cannot be read back and they
+ * tried to ACT on it (#2342). Plain English, because the string reaches them
+ * verbatim; 409 rather than 500 because an unreadable stored blob is a data
+ * condition, not a server fault.
+ *
+ * Worded for BOTH audiences that can hit it: an admin sending a quote or
+ * holding beds against it, and a requester opening their emailed quote link
+ * (`GET /api/booking-requests/respond/[token]` surfaces this message as-is).
+ * So no admin-only verbs — "decline the request" would be meaningless to a
+ * requester, and the remedy that serves both is a fresh quote.
+ */
+export const UNREADABLE_STORED_QUOTE_MESSAGE =
+  "This quote's saved details could not be read, so it can't be sent, accepted, or used to reserve beds. A new quote needs to be created for this request.";
+
+/**
+ * STRICT read of a stored quote's options. Throws when the stored JSON does
+ * not satisfy `quoteOptionsSchema`.
+ *
+ * Every path that ACTS on a quote uses this — sending it, holding capacity
+ * against it, the requester's accept, and the expiry-reminder cron — because
+ * each turns the stored numbers into money or beds. Read-only ADMIN display
+ * goes through `readBookingRequestQuoteOptionsForDisplay` instead (#2342).
+ */
 export function parseBookingRequestQuoteOptions(
   raw: unknown
 ): NormalizedQuoteOption[] {
   const parsed = quoteOptionsSchema.safeParse(raw);
   if (!parsed.success) {
-    throw new BookingRequestQuoteError("Stored booking request quote is invalid", 500);
+    throw new BookingRequestQuoteError(UNREADABLE_STORED_QUOTE_MESSAGE, 409);
   }
   return parsed.data;
+}
+
+/**
+ * TOLERANT read of a stored quote's options for admin display (#2342).
+ *
+ * The third stored blob the admin queue parses per row, and — after the guest
+ * list and the member links were made tolerant — the last remaining way a
+ * single corrupt row could still 500 every filter on the Booking Requests
+ * page, by exactly the mechanism this work set out to remove.
+ *
+ * On failure the row keeps rendering with NO quote options rather than a
+ * salvaged half-list: an option id, a total, or a per-guest split we cannot
+ * trust is worse than none, and the caller flags the row so the panel can say
+ * the quote is not being shown. Actions stay strict — see
+ * `parseBookingRequestQuoteOptions`.
+ */
+export function readBookingRequestQuoteOptionsForDisplay(raw: unknown): {
+  options: NormalizedQuoteOption[];
+  needsAttention: boolean;
+} {
+  const parsed = quoteOptionsSchema.safeParse(raw);
+  return parsed.success
+    ? { options: parsed.data, needsAttention: false }
+    : { options: [], needsAttention: true };
 }
 
 function normalizeLinkedGuestMembers(
@@ -477,6 +526,16 @@ export async function createBookingRequestQuote(input: {
   }
 
   const guests = parseBookingRequestGuests(request.guests);
+  // #2342: the transaction below OVERWRITES request.linkedGuestMembers with
+  // whatever the client posted, and the admin panel posts its DISPLAY list —
+  // which is empty for a row whose stored link blob failed to parse, because
+  // the tolerant reader falls back to no links. Without this strict re-read one
+  // "Save quote" would permanently replace a recoverable member link with
+  // nothing, and the guest would later convert and invoice as a NON-MEMBER.
+  // Refuse instead: a row whose stored links cannot be read cannot be quoted.
+  // (Approval and hold already re-read the column strictly through
+  // linkedGuestMemberMap; this closes the one path that WRITES it.)
+  parseBookingRequestLinkedGuestMembers(request.linkedGuestMembers);
   const linkedGuestMembers = normalizeLinkedGuestMembers(
     input.quote.linkedGuestMembers,
     guests.length
