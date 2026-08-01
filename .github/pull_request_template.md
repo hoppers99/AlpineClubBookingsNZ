@@ -75,6 +75,14 @@
 
 -
 
+## Changelog Entry
+
+- Fragment added (`changelog.d/<pr-number>-<slug>.md`):
+- Or, if this change genuinely needs no entry, put the no-entry marker
+  documented in `changelog.d/README.md` on its own line here, with the reason.
+  (The marker is deliberately not pre-filled: a marker in every PR body would
+  switch the gate off for everyone.)
+
 ## Residual Risks
 
 -
