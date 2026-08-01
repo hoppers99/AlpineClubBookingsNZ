@@ -1090,6 +1090,57 @@ describe("membership cancellation admin review", () => {
     });
   });
 
+  // #2284 (S1): the reviewer is told when a NON-LOGIN member was put on the
+  // request by someone else, because that member has no login to confirm with
+  // and there is no second-adult signature — so the "Confirmed" stamp on their
+  // row was recorded on their behalf, not personally given.
+  describe("included-without-confirmation flag (#2284 S1)", () => {
+    function seedQueue(request: ReturnType<typeof adminRequest>) {
+      mocks.requestFindMany.mockResolvedValue([request]);
+      mocks.requestCount.mockResolvedValue(1);
+    }
+
+    async function flagOf(request: ReturnType<typeof adminRequest>) {
+      seedQueue(request);
+      const result = await getAdminMembershipCancellationRequests({
+        viewerCanApprove: true,
+      });
+      return result.requests[0].participants[0]
+        .includedWithoutOwnOrSecondAdultConfirmation;
+    }
+
+    it("flags a non-login member someone else put on the request", async () => {
+      expect(await flagOf(adminRequest({ member: { canLogin: false } }))).toBe(
+        true,
+      );
+    });
+
+    it("does NOT flag a login-holding member — they confirm personally", async () => {
+      // Mutation guard on the `!canLogin` conjunct.
+      expect(await flagOf(adminRequest({ member: { canLogin: true } }))).toBe(
+        false,
+      );
+    });
+
+    it("does NOT flag the requester's own membership row, even with no login", async () => {
+      // Mutation guard on the `memberId !== requestedByMemberId` conjunct: a
+      // member acting on their OWN membership is not being acted on unheard.
+      const flag = await flagOf(
+        adminRequest({
+          memberId: "requester-1",
+          member: { id: "requester-1", canLogin: false },
+          request: {
+            id: "request-1",
+            status: "REQUESTED",
+            reason: "Leaving",
+            requestedByMemberId: "requester-1",
+          },
+        }),
+      );
+      expect(flag).toBe(false);
+    });
+  });
+
   // #2383: an admin cancelling their OWN membership was previously unreachable
   // — the role gate refused an admin target, and the member-edit screen refuses
   // to demote yourself. It is now reachable through the front door, so the
