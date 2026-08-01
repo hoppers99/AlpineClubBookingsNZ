@@ -225,6 +225,48 @@ describe("site style admin API", () => {
     expect(written.logoDataUrl).toBe(dataUrl);
   });
 
+  it("strips EXIF/GPS from an inlined logo before storing it (#2242)", async () => {
+    // The inline column is the small hand-crafted/legacy escape hatch (new logos
+    // go through POST /api/admin/site-style/logo, which re-encodes through sharp
+    // and is metadata-free by construction), but a hand-crafted logo can still
+    // be a phone photo — and it renders inline on every public page.
+    const gps = Buffer.from("GPS:-41.29,174.78", "latin1");
+    const app1Payload = Buffer.concat([Buffer.from("Exif\0\0", "latin1"), gps]);
+    const app1Len = Buffer.alloc(2);
+    app1Len.writeUInt16BE(app1Payload.length + 2, 0);
+    const sof0 = Buffer.from([
+      0xff, 0xc0, 0x00, 0x09, 0x08, 0x00, 0x10, 0x00, 0x10, 0x01, 0x00,
+    ]);
+    const jpeg = Buffer.concat([
+      Buffer.from([0xff, 0xd8]),
+      Buffer.from([0xff, 0xe1]),
+      app1Len,
+      app1Payload,
+      sof0,
+      Buffer.from([0xff, 0xda, 0x00, 0x02, 0x01, 0x77, 0xff, 0xd9]),
+    ]);
+    const dataUrl = `data:image/jpeg;base64,${jpeg.toString("base64")}`;
+
+    const response = await PUT(
+      request({
+        ...DEFAULT_CLUB_THEME_VALUES,
+        logoUrl: null,
+        logoDataUrl: dataUrl,
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const written = mocks.clubThemeUpsert.mock.calls[0][0].data;
+    expect(written.logoDataUrl).not.toBe(dataUrl);
+    expect(written.logoDataUrl).toMatch(/^data:image\/jpeg;base64,/);
+    const stored = Buffer.from(
+      String(written.logoDataUrl).split(",")[1],
+      "base64",
+    );
+    expect(jpeg.includes(gps)).toBe(true);
+    expect(stored.includes(gps)).toBe(false);
+  });
+
   it("409s a stale tab whose logo blob is gone, deleting nothing (#2322)", async () => {
     // Two-tab sequence: tab B saved logo B (deleting A). Tab A, still open, now
     // saves referencing A. Writing it would dangle the theme, and on the next

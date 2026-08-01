@@ -14,7 +14,9 @@
   is no longer public: the setting stops the image being served to the outside
   world as well as hiding it from the roster. It changes nothing for the member
   themselves or for an administrator with membership access, who both still see
-  the photo on their own screens.
+  the photo on their own screens. Both admin screens that offer the setting now
+  say this plainly, so the choice can be made without needing to know how the
+  system works underneath.
 
   Separately, the part of the system that hands out a private member photo was
   doing its own permission check instead of using the club's shared one. That
@@ -29,10 +31,11 @@
   Finally, photographs carry hidden information: most phones record the exact
   location a picture was taken, along with the camera and often the owner's
   name. The club system already removed that from member profile photos, but not
-  from images uploaded through the image library, the image manager, or restored
-  from a configuration bundle — all of which end up on the public website, in
-  some cases cached for a year. Those three now have the same information
-  removed before the image is stored. Where an image is unusual enough that the
+  from images uploaded through the image library, the image manager, restored
+  from a configuration bundle, or held as the club's own small inline logo — all
+  of which end up on the public website, in some cases cached for a year, and the
+  logo on every single page. Those all now have the same information removed
+  before the image is stored. Where an image is unusual enough that the
   system cannot be certain it cleaned it, the upload is still accepted (blocking
   a legitimate club photo would be worse) and a warning is written to the system
   log so an operator can see it. Animated GIFs, AVIF images and SVG drawings have
@@ -40,4 +43,7 @@
   rather than being wrongly reported as cleaned.
 
   Nothing an administrator does day to day changes, and no existing image is
-  altered — the cleaning applies to images uploaded from now on.
+  altered — the cleaning applies to images uploaded from now on. The one
+  exception is a club whose logo is stored the old inline way: that one is
+  cleaned the next time the site style is saved or a configuration bundle is
+  restored, and it will look exactly the same afterwards.

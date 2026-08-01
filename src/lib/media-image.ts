@@ -627,6 +627,65 @@ export function storableImageBytes(
 }
 
 /**
+ * A `data:<type>;base64,<payload>` value, split into its declared media type and
+ * its payload. Deliberately permissive about the type: the caller has already
+ * validated the value against the club-theme logo pattern, and this helper must
+ * never widen or narrow what that pattern accepts — it only strips bytes.
+ */
+const BASE64_DATA_URL = /^data:([^;,]+);base64,([A-Za-z0-9+/]*={0,2})$/;
+
+/**
+ * Bytes to store for an image held INLINE as a base64 `data:` URI rather than as
+ * a `MediaImage` row — today that is `ClubTheme.logoDataUrl`, which the public
+ * header, footer and mobile menu render inline on every public page.
+ *
+ * Same FAIL-OPEN policy, log line and reasoning as `storableImageBytes` above
+ * (it delegates to it): a club logo that cannot be confirmed clean is stored
+ * unchanged and logged, because blocking a site-style save or an operator's
+ * whole configuration restore over one unparseable decorative image is the worse
+ * outcome. The inline column is a legacy/escape-hatch path — new logos go
+ * through `POST /api/admin/site-style/logo`, which re-encodes through sharp and
+ * is metadata-free by construction — but a hand-crafted or bundled inline logo
+ * can still be a straight-from-phone photo carrying GPS, and it renders on every
+ * public page, so it gets the same treatment as every other stored image.
+ *
+ * Returns the ORIGINAL string byte for byte whenever nothing was removed (an
+ * empty/absent value, a value that is not a base64 data URI, an unsniffable or
+ * unstrippable payload, or an image that simply had no metadata). That matters:
+ * re-emitting a re-encoded payload that decodes to identical bytes would churn
+ * the stored value — and, on the config-transfer import, would turn an
+ * "unchanged" dry-run into a spurious "update" — for no privacy gain.
+ */
+export function storableLogoDataUrl(
+  value: string | null | undefined,
+  context: Record<string, unknown> & { source: string },
+): string | null {
+  if (!value) return null; // no logo (null/undefined/empty) — nothing to strip
+  const match = BASE64_DATA_URL.exec(value.trim());
+  if (!match) {
+    // Not a base64 data URI at all. The caller's sanitiser normally rules this
+    // out; log rather than throw so a hand-edited row cannot break a save.
+    logger.warn(
+      { ...context, contentType: null, byteSize: value.length },
+      "Image stored without a confirmed metadata strip",
+    );
+    return value;
+  }
+  const [, declaredType, base64] = match;
+  const bytes = Buffer.from(base64, "base64");
+  const stored = storableImageBytes(bytes, detectImageContentType(bytes), {
+    ...context,
+    declaredContentType: declaredType,
+  });
+  if (stored.equals(bytes)) return value;
+  // Keep the DECLARED media type: a strip never changes the container format
+  // (JPEG keeps its SOI, PNG its signature, WebP its RIFF header), so rewriting
+  // the type here could only introduce a mismatch the browser then renders
+  // differently.
+  return `data:${declaredType};base64,${stored.toString("base64")}`;
+}
+
+/**
  * Strip directory components and unsafe characters from an uploaded
  * filename, keeping it short enough for storage and display.
  */

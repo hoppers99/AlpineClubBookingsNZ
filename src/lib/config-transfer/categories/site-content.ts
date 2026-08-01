@@ -6,6 +6,7 @@ import {
   normaliseThemeValues,
   resolveLogoFields,
 } from "@/lib/club-theme-schema";
+import { storableLogoDataUrl } from "@/lib/media-image";
 import { sanitizePageContentHtml } from "@/lib/page-content-html";
 import {
   canUnpublishPage,
@@ -150,9 +151,23 @@ export function deriveThemeWrite(
     ...theme,
     logoUrl: resolvedLogoUrl,
   });
+  const logoFields = resolveLogoFields(normalised);
   const sanitised: Record<string, unknown> = {
     ...normalised,
-    ...resolveLogoFields(normalised),
+    ...logoFields,
+    // #2242: the INLINE logo is image bytes too, and it renders on every public
+    // page (header, footer, mobile menu). A bundle's `logoDataUrl` used to be
+    // written verbatim, so a club's straight-from-phone inline logo published
+    // its GPS coordinates on every deployment the bundle was ever restored to —
+    // the same hole the bundled `MediaImage` bytes had (see ../media.ts). Same
+    // fail-open policy: an unconfirmable strip is stored and logged, never
+    // blocked, so one odd decorative logo cannot fail an operator's restore.
+    //
+    // Applied here, inside the single derivation BOTH plan and apply use, so the
+    // dry-run keeps disclosing exactly what the write will do (ADR-002).
+    logoDataUrl: storableLogoDataUrl(logoFields.logoDataUrl, {
+      source: "config-transfer club theme logo",
+    }),
   };
 
   // Pick back ONLY the keys the bundle actually carried: normaliseThemeValues

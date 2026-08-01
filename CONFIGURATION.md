@@ -429,8 +429,11 @@ second accent setting. The occupancy meter follows the primary accent. Semantic
 success, warning, information, danger/error, and waitlist colours stay curated,
 contrast-locked light/dark pairs and are not editable brand fields. Fresh
 deployments show a neutral public-site holding page until an admin finishes that
-wizard. The logo is public-site only and is stored in the database as a validated
-image data URL; there is no runtime upload directory to preserve.
+wizard. The logo is public-site only and is stored in the database — an uploaded
+logo as a served image (`/api/images/<id>`), with a small validated inline data
+URL kept for legacy and hand-crafted logos; there is no runtime upload directory
+to preserve. Either way the stored bytes have their EXIF/XMP/comment metadata
+(camera GPS) removed first, like every other image this system stores (#2242).
 
 Saved palettes must meet the **WCAG AA 4.5:1** minimum text-contrast ratio on
 the key public/app pairs — body and muted text on the page background, app text

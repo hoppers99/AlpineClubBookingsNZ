@@ -10,6 +10,7 @@ import {
   mediaImageServingUrl,
   sanitiseMediaImageFilename,
   storableImageBytes,
+  storableLogoDataUrl,
   stripImageMetadata,
 } from "@/lib/media-image";
 
@@ -704,5 +705,85 @@ describe("storableImageBytes (fail-open paths)", () => {
     expect(
       storableImageBytes(unknown, null, { source: "test" }).equals(unknown),
     ).toBe(true);
+  });
+});
+
+describe("storableLogoDataUrl (inline club logo, #2242)", () => {
+  const GPS = Buffer.from("GPS:-41.29,174.78", "latin1");
+  const ctx = { source: "test" };
+
+  function dataUrl(type: string, bytes: Buffer): string {
+    return `data:${type};base64,${bytes.toString("base64")}`;
+  }
+
+  /** A minimal JPEG carrying EXIF/GPS, terminated so the strip is confirmable. */
+  const EXIF_JPEG = Buffer.concat([
+    Buffer.from([0xff, 0xd8]),
+    jpegAppSegment(0xe1, Buffer.concat([Buffer.from("Exif\0\0", "latin1"), GPS])),
+    JPEG_SOF0,
+    JPEG_SOS_EOI,
+  ]);
+
+  it("strips EXIF/GPS from an inline logo and keeps the declared media type", () => {
+    // ClubTheme.logoDataUrl renders inline in the public header, footer and
+    // mobile menu, so an unstripped phone photo would publish its coordinates on
+    // every public page.
+    const before = dataUrl("image/jpeg", EXIF_JPEG);
+    expect(Buffer.from(before.split(",")[1], "base64").includes(GPS)).toBe(true);
+
+    const after = storableLogoDataUrl(before, ctx);
+
+    expect(after).not.toBeNull();
+    expect(after).toMatch(/^data:image\/jpeg;base64,/);
+    const decoded = Buffer.from((after as string).split(",")[1], "base64");
+    expect(decoded.includes(GPS)).toBe(false);
+    expect(decoded.length).toBeLessThan(EXIF_JPEG.length);
+    // Still a JPEG: the strip is byte surgery, never a re-encode.
+    expect(detectImageContentType(decoded)).toBe("image/jpeg");
+  });
+
+  it("is idempotent, so re-saving or re-importing converges", () => {
+    const once = storableLogoDataUrl(dataUrl("image/jpeg", EXIF_JPEG), ctx);
+    expect(storableLogoDataUrl(once, ctx)).toBe(once);
+  });
+
+  it("returns the ORIGINAL string byte for byte when nothing was removed", () => {
+    // Anything else would churn the stored value on every save, and would turn
+    // an "unchanged" config-transfer dry-run into a spurious update.
+    const clean = dataUrl("image/png", buildPng(4, 4));
+    expect(storableLogoDataUrl(clean, ctx)).toBe(clean);
+
+    // Fail-open cases, all returned verbatim: a type with no stripper, an
+    // unsniffable payload, and a payload the fail-closed parser cannot confirm.
+    const gif = dataUrl("image/gif", buildGif(4, 4));
+    expect(storableLogoDataUrl(gif, ctx)).toBe(gif);
+    const notAnImage = "data:image/png;base64,AAAA";
+    expect(storableLogoDataUrl(notAnImage, ctx)).toBe(notAnImage);
+    const noEoi = dataUrl(
+      "image/jpeg",
+      Buffer.concat([
+        Buffer.from([0xff, 0xd8]),
+        jpegAppSegment(
+          0xe1,
+          Buffer.concat([Buffer.from("Exif\0\0", "latin1"), GPS]),
+        ),
+        JPEG_SOF0,
+      ]),
+    );
+    expect(storableLogoDataUrl(noEoi, ctx)).toBe(noEoi);
+  });
+
+  it("passes an absent logo through untouched", () => {
+    expect(storableLogoDataUrl(null, ctx)).toBeNull();
+    expect(storableLogoDataUrl(undefined, ctx)).toBeNull();
+    expect(storableLogoDataUrl("", ctx)).toBeNull();
+  });
+
+  it("never rejects a value that is not a base64 data URI", () => {
+    // A hand-edited row must not be able to break a site-style save or an
+    // operator's whole configuration restore; the callers' sanitisers already
+    // rule this out, so this branch only logs.
+    const odd = "https://example.test/logo.png";
+    expect(storableLogoDataUrl(odd, ctx)).toBe(odd);
   });
 });

@@ -3558,16 +3558,20 @@ public that the assignment predicate does not already allow, and it never hides 
 photo from the member themselves or a `membership:view` admin (those responses
 switch to `private, no-store` instead of the short public cache).
 Every stored image has its EXIF/XMP/comment metadata (camera GPS) stripped
-first, on all four paths that store image bytes: the member-photo upload, the
-admin image library, the image manager's batch upload into `public/images`, and
-the config-transfer bundle import. The member-photo path fails **closed** (an
-unconfirmable strip rejects the upload, because it is personal data on a narrow
-purpose-built path); the other three fail **open** through
-`storableImageBytes` — they store the original and log a warning — because
-blocking a legitimate admin content upload or an operator's whole configuration
-restore is the worse outcome there. `gif`, `avif` and `svg+xml` have no stripper
-and are always reported as unconfirmed, so they log rather than claim a clean
-strip.
+first, on every path that stores image bytes: the member-photo upload, the
+admin image library, the image manager's batch upload into `public/images`, the
+config-transfer bundle import, and the inline club logo held as a base64 data URI
+on `ClubTheme.logoDataUrl` (written by the site-style save and by the bundle
+import, and rendered inline on every public page). The member-photo path fails
+**closed** (an unconfirmable strip rejects the upload, because it is personal
+data on a narrow purpose-built path); the others fail **open** through
+`storableImageBytes` / `storableLogoDataUrl` — they store the original and log a
+warning — because blocking a legitimate admin content upload, a site-style save,
+or an operator's whole configuration restore is the worse outcome there. `gif`,
+`avif` and `svg+xml` have no stripper and are always reported as unconfirmed, so
+they log rather than claim a clean strip. `POST /api/admin/site-style/logo` needs
+no strip step: it re-encodes through sharp, which drops metadata unless asked to
+keep it.
 Committee contact routing is chosen per assignment via
 `CommitteeAssignment.contactEmailMode` (`ROLE`, `MEMBER`, or `CUSTOM`, default
 `ROLE`). `ROLE` uses the role email alias stored on `CommitteeRole`, `MEMBER`

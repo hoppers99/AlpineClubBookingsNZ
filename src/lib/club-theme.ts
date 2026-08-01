@@ -10,6 +10,7 @@ import {
   resolveLogoFields,
 } from "@/lib/club-theme-schema";
 import type { ClubThemeUpdateInput } from "@/lib/club-theme-update-schema";
+import { storableLogoDataUrl } from "@/lib/media-image";
 
 /** Sentinel distinguishing "the read threw" from "there is no row" (#2420 F4). */
 const READ_FAILED = Symbol("club-theme-read-failed");
@@ -66,13 +67,30 @@ export async function saveClubTheme(input: ClubThemeUpdateInput) {
     logoDataUrl: input.logoDataUrl,
   });
 
+  // #2242: the inline logo is image bytes that render on every public page, so
+  // it is stripped of EXIF/XMP/comment metadata like every other stored image.
+  // New logos normally go through POST /api/admin/site-style/logo (re-encoded by
+  // sharp, metadata-free by construction) — this column is the small hand-
+  // crafted/legacy escape hatch, and a hand-crafted logo can still be a phone
+  // photo carrying GPS. Fail-open and log, matching the other admin image paths:
+  // a decorative logo must never fail a site-style save. Stripping only ever
+  // shrinks the value, so the route's 64KB write budget and the schema's 900KB
+  // read bound both still hold, and a byte-identical result is returned verbatim
+  // so an untouched logo does not churn on every colour change.
+  const storedLogoFields = {
+    ...logoFields,
+    logoDataUrl: storableLogoDataUrl(logoFields.logoDataUrl, {
+      source: "club theme inline logo",
+    }),
+  };
+
   const data = {
     brandGold: input.brandGold,
     brandDeep: input.brandDeep,
     brandSafety: input.brandSafety,
     headingFontKey: input.headingFontKey,
     bodyFontKey: input.bodyFontKey,
-    ...logoFields,
+    ...storedLogoFields,
     rawCss: input.rawCss ?? "",
     completedAt,
   };

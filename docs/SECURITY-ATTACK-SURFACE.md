@@ -877,19 +877,22 @@ the Tokoroa fork's review and fixed in #2242.
   gated on it — self and `membership:view` admins must still see the photo when
   public display is off — and those responses fall back to `private, no-store`
   rather than keeping the short public cache.
-- **Metadata was stripped on one path out of four.** `stripImageMetadata` had
+- **Metadata was stripped on one path out of five.** `stripImageMetadata` had
   exactly one non-test caller (the member-photo route), while
-  `POST /api/admin/image-library`, `src/lib/config-transfer/media.ts` and
-  `POST /api/admin/image-manager/upload` stored raw bytes. All three feed
-  anonymously-served content — the first two as `MediaImage` rows served from
-  `/api/images/[id]` with `public, max-age=31536000, immutable`, the third as
-  files written straight into `public/images` at 10 MB × 25 files per batch — so
-  a straight-from-phone photo published its GPS coordinates effectively forever.
-  All four paths now strip. The member-photo route keeps its **fail-closed**
-  policy (an unconfirmable strip rejects the upload); the other three fail
-  **open** through the shared `storableImageBytes` helper, storing the original
-  and logging a warning, because blocking a legitimate admin content upload or an
-  operator's configuration restore is the worse outcome there. Relatedly,
+  `POST /api/admin/image-library`, `src/lib/config-transfer/media.ts`,
+  `POST /api/admin/image-manager/upload` and the inline club logo
+  (`ClubTheme.logoDataUrl`) stored raw bytes. All four feed anonymously-served
+  content — the first two as `MediaImage` rows served from `/api/images/[id]`
+  with `public, max-age=31536000, immutable`, the third as files written straight
+  into `public/images` at 10 MB × 25 files per batch, the fourth inlined into the
+  header, footer and mobile menu of every public page — so a straight-from-phone
+  photo published its GPS coordinates effectively forever. All five paths now
+  strip. The member-photo route keeps its **fail-closed** policy (an unconfirmable
+  strip rejects the upload); the other four fail **open** through the shared
+  `storableImageBytes` helper (the inline logo through `storableLogoDataUrl`,
+  which wraps it), storing the original and logging a warning, because blocking a
+  legitimate admin content upload, a site-style save, or an operator's
+  configuration restore is the worse outcome there. Relatedly,
   `stripImageMetadata`'s `default:` branch used to claim `ok: true` for the three
   allowed types it has no stripper for (gif, avif, svg+xml) — all of which do
   carry metadata — which silenced that warning for exactly the types that are
@@ -904,11 +907,29 @@ Notes on the fail-open choice and its cost:
   without a confirmed strip is visible in operations as
   `"Image stored without a confirmed metadata strip"` with the source, filename
   and content type.
-- `/api/admin/site-style/logo` is a fifth path that stores image bytes, and is
-  deliberately untouched: it re-encodes through `sharp` (`webp()`/`png()`) with
-  no `withMetadata()`, and sharp drops EXIF/XMP/ICC unless asked to keep it, so
-  the stored logo is already metadata-free by construction. Adding
-  `withMetadata()` there would reopen this hole.
+- `/api/admin/site-style/logo` also stores image bytes and is deliberately
+  untouched: it re-encodes through `sharp` (`webp()`/`png()`) with no
+  `withMetadata()`, and sharp drops EXIF/XMP/ICC unless asked to keep it, so the
+  stored logo is already metadata-free by construction. Adding `withMetadata()`
+  there would reopen this hole.
+- The INLINE club logo (`ClubTheme.logoDataUrl`, a base64 `data:` URI rendered
+  by `website-logo.tsx` in the public header, footer and mobile menu) is a
+  separate store from the `MediaImage` table and needed its own strip. It has two
+  writers — the site-style save (`saveClubTheme`) and the config-transfer import
+  (`deriveThemeWrite`, the single derivation plan and apply share) — and both now
+  route the value through `storableLogoDataUrl`. New logos normally go through
+  `POST /api/admin/site-style/logo` above and never touch this column, so what is
+  left here is the legacy rows and a small hand-crafted/bundled escape hatch (a
+  64 KB write budget, a 900 KB read bound) — but a hand-crafted logo can still be
+  a phone photo, and it renders on every public page. The helper returns the
+  value byte for byte whenever nothing was removed, so an untouched logo neither
+  churns the stored row on an unrelated colour change nor turns an "unchanged"
+  import dry-run into a spurious update; stripping only ever shrinks the value,
+  so both budgets still hold. Two consequences worth knowing: an existing
+  unstripped inline logo is scrubbed the next time the theme is saved or
+  re-imported (not by a backfill), and a legacy inline logo whose payload cannot
+  be sniffed or confirmed is stored unchanged and logged, exactly like the other
+  fail-open paths.
 - Cost on the widest path (image-manager batch): each stripper is a single linear
   pass with one output buffer, files are processed sequentially, and the batch is
   already fully buffered by the streamed multipart reader, so the added peak
